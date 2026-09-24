@@ -31,10 +31,12 @@
 
   <ItemGroup>
     <!-- The delivery suite's own fixtures, linked rather than copied: the in-memory ingestion tables a run reads, the
-         sample well logs they hold, and the SQL Server test databases of the module. One fixture, two suites, so the API
-         tests run a flow against exactly what the engine tests run it against. -->
+         sample well logs they hold, and the SQL Server test database of the module with the collection its tests run in
+         (xUnit reads a collection's definition only from the assembly whose tests join it, so it is compiled in here too).
+         One fixture, two suites, so the API tests run a flow against exactly what the engine tests run it against. -->
     <Compile Include="..\SqlFlow.Delivery.Tests\TestSupport.cs" Link="Fixtures\TestSupport.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\OsduTestDatabase.cs" Link="Fixtures\OsduTestDatabase.cs" />
+    <Compile Include="..\SqlFlow.Delivery.Tests\SqlServerSuite.cs" Link="Fixtures\SqlServerSuite.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\MemoryIngestionTables.cs" Link="Fixtures\MemoryIngestionTables.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="Fixtures\SampleWellLogs.cs" />
     <Compile Include="..\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="Fixtures\PandasMetadata.cs" />

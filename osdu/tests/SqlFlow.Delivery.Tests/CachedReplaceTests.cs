@@ -21,6 +21,7 @@ namespace SqlFlow.Delivery.Tests;
 /// read from an ingestion table, or OSDU reference data, matched and replaced by the cache's own rules, every row it used
 /// recorded, and what it cannot decide held rather than guessed.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class CachedReplaceTests : IDisposable
 {
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);

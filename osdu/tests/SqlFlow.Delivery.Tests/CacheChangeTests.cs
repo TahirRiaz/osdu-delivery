@@ -15,6 +15,7 @@ namespace SqlFlow.Delivery.Tests;
 /// the changes a new cache version raises against it, the approval gate, and the batched rollout that carries an
 /// approved change out without taking the estate with it.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class CacheChangeTests : IDisposable
 {
     /// <summary>The partition whose cache the records under test were built from.</summary>

@@ -29,7 +29,10 @@ import { E2E, databaseOf } from "../playwright.config";
 export default function globalSetup(): void {
   const here = import.meta.dirname;
   const fixturesDir = resolve(here, ".fixtures");
-  const repoDir = join(fixturesDir, "e2e-repo");
+  // One repository per estate, named after its catalog database. A catalog's repo source keeps syncing the folder it was
+  // registered with, and every run rewrites the repository with its own database names, so two estates sharing one
+  // folder would each end up syncing flows that point at the other's tables.
+  const repoDir = join(fixturesDir, `${databaseOf(E2E.catalogDb)}-repo`);
   const samplesDir = resolve(here, "..", "..", "samples", "wells");
 
   // The repository holds one folder per source, which is what the catalog and the GUI call a project: everything the
@@ -53,8 +56,8 @@ export default function globalSetup(): void {
   // real run against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no
   // schedule. The ingestion and delivery flows name their tables in OsduSample, while the pre flows write wherever
   // OSDU_SAMPLE_DB points; unless both name the same database, lineage never links a pre flow to what reads it, and the
-  // waves the chain runs in are wrong. That database is neither the catalog nor the module's: source data is the
-  // volume in an estate, and it has a database of its own.
+  // waves the chain runs in are wrong. By default that is the suite's one database, beside the catalog and the module's
+  // schema; SQLFLOW_E2E_SAMPLE_DB gives the source data a database of its own, as a real estate does.
   const sampleDatabase = databaseOf(E2E.sampleDb);
   for (const flow of CHAIN) {
     const shipped = readFileSync(join(samplesDir, folderOf(flow), `${flow}.yaml`), "utf8");

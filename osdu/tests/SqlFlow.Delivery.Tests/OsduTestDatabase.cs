@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json.Nodes;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -12,17 +11,19 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The SQL Server the module's suites run on. Development and testing expect a local one: without
-/// <c>SQLFLOW_TEST_DB</c> the suites use <see cref="LocalDefault"/>, the local default instance under Windows
-/// authentication; with it, the server and database it names (CI starts a server of its own and names one there). A
-/// database that is missing is created and allowed snapshot transactions, as the ledger's reads need; one that exists is
-/// never reconfigured, and one that does not allow them fails the suite naming the statement that does. A server that
-/// does not answer fails the suite with a message naming it, never skips it: the module runs on SQL Server in
+/// The SQL Server the module's suites run on, and the one database they use there. Development and testing expect a
+/// local server: without <c>SQLFLOW_TEST_DB</c> the suites use <see cref="LocalDefault"/>, the local default instance
+/// under Windows authentication; with it, the server and database it names (CI starts a server of its own and names one
+/// there). A database that is missing is created and allowed snapshot transactions, as the ledger's reads need; one that
+/// exists is never reconfigured, and one that does not allow them fails the suite naming the statement that does. A server
+/// that does not answer fails the suite with a message naming it, never skips it: the module runs on SQL Server in
 /// production, and a suite that skipped its database would prove nothing about it.
 /// </summary>
 /// <remarks>
-/// The database must be disposable. The suites migrate and seed it, and create the per-test databases of
-/// <see cref="OsduTestDatabases"/> beside it on the same server.
+/// The database must be disposable: the suites migrate it, seed it, and empty the module's schema in it. It is the only
+/// database they keep on the server. The tests that use it are the <see cref="SqlServerSuite"/>, which runs one test
+/// at a time and holds the database against every other test process while it runs, and the few that need a second
+/// database take <see cref="OsduScratchDatabase"/> for as long as they run.
 /// </remarks>
 public static class OsduTestServer
 {
@@ -37,8 +38,21 @@ public static class OsduTestServer
 
     private static readonly Lazy<string> Prepared = new(Prepare, LazyThreadSafetyMode.ExecutionAndPublication);
 
-    /// <summary>The test database's connection string, the database created and ready the first time it is asked for.</summary>
-    public static string ConnectionString => Prepared.Value;
+    /// <summary>
+    /// The test database's connection string, the database created and ready the first time it is asked for. Only a test
+    /// that holds the database may ask: one in the <see cref="SqlServerSuite"/>.
+    /// </summary>
+    public static string ConnectionString
+    {
+        get
+        {
+            OsduTestDatabaseLock.EnsureHeld($"{nameof(OsduTestServer)}.{nameof(ConnectionString)}");
+            return Prepared.Value;
+        }
+    }
+
+    /// <summary>The connection string without the check that the process holds the database, for the lock that takes it.</summary>
+    internal static string Unchecked => Prepared.Value;
 
     /// <summary>
     /// The test database, for a suite that shares it (the control plane's API suites, the SQL Server ledger suites), each
@@ -46,20 +60,12 @@ public static class OsduTestServer
     /// </summary>
     public static string Require() => ConnectionString;
 
-    /// <summary>A connection string to <paramref name="database"/> on the test server, under the same credentials.</summary>
-    public static string ForDatabase(string database)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(database);
-        return new SqlConnectionStringBuilder(ConnectionString) { InitialCatalog = database }.ConnectionString;
-    }
-
     /// <summary>
     /// Creates <paramref name="database"/> on the server <paramref name="server"/> names when it is missing, and lets a
-    /// database the suites own run snapshot transactions: one this call created, or any when <paramref name="owned"/> says
-    /// the suites made it (the per-test databases). Another process creating it at the same moment is not an error.
-    /// Returns whether the database allows snapshot transactions now.
+    /// database this call created run snapshot transactions. Another process creating it at the same moment is not an
+    /// error. Returns whether the database allows snapshot transactions now.
     /// </summary>
-    internal static bool EnsureDatabase(SqlConnectionStringBuilder server, string database, bool owned)
+    internal static bool EnsureDatabase(SqlConnectionStringBuilder server, string database)
     {
         ArgumentNullException.ThrowIfNull(server);
         ArgumentException.ThrowIfNullOrWhiteSpace(database);
@@ -84,7 +90,7 @@ public static class OsduTestServer
             created = false;
         }
 
-        if (created || owned)
+        if (created)
         {
             command.CommandText = """
                 DECLARE @allow nvarchar(300) = N'ALTER DATABASE ' + QUOTENAME(@name) + N' SET ALLOW_SNAPSHOT_ISOLATION ON';
@@ -109,7 +115,7 @@ public static class OsduTestServer
         bool snapshot;
         try
         {
-            snapshot = EnsureDatabase(server, server.InitialCatalog, owned: false);
+            snapshot = EnsureDatabase(server, server.InitialCatalog);
         }
         catch (SqlException ex)
         {
@@ -133,154 +139,215 @@ public static class OsduTestServer
 }
 
 /// <summary>
-/// The databases the ledger, store and engine suites run on, one test at a time each: <c>{test database}_osdu_{nn}</c>
-/// beside the test database, created and brought to the module's latest migration the first time a process takes it,
-/// and emptied of every row of the <c>osdu</c> schema each time a test takes it, so every test starts from a database
-/// that holds nothing, exactly as a new deployment does.
+/// The test database belongs to one test process at a time: whichever holds an exclusive, session-owned application lock
+/// on it. Inside a process the SQL Server tests run one at a time (they are one collection with parallelization
+/// disabled), so the hold is counted per process: the collection's fixture takes it for as long as the collection runs,
+/// and whatever uses the database inside it (a test's <see cref="OsduTestDatabase"/>, the scratch database) enters the
+/// hold the process already has. A process that dies releases it with its session.
 /// </summary>
-/// <remarks>
-/// A test holds its database through an exclusive session lock taken on the test database, released when the test
-/// disposes it, so two suites running at once in separate processes never share one. The pool grows to as many
-/// databases as tests run at once, up to <see cref="MaxDatabases"/>, and they stay on the server for the next run.
-/// </remarks>
-internal static class OsduTestDatabases
+internal static class OsduTestDatabaseLock
 {
-    /// <summary>The most databases the pool keeps; tests beyond it at once are a runaway, not a workload.</summary>
-    private const int MaxDatabases = 64;
+    /// <summary>How long a process waits for another to finish its SQL Server tests before it gives up.</summary>
+    private static readonly TimeSpan Wait = TimeSpan.FromMinutes(30);
 
-    private static readonly ConcurrentDictionary<string, Lazy<bool>> Migrated = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The name the holding session carries, so a waiting process can say who holds the database.</summary>
+    private const string HolderName = "OSDU Delivery tests (holding the test database)";
 
-    /// <summary>Takes the first free database of the pool, creating and migrating it when it is new, and empties it.</summary>
-    public static Lease Take()
+    private const string Resource = "osdu-test-database";
+
+    private static readonly object Gate = new();
+    private static readonly SemaphoreSlim Acquiring = new(1, 1);
+    private static SqlConnection? _session;
+    private static int _holds;
+
+    /// <summary>Takes the test database for this process, waiting while another process holds it.</summary>
+    public static IDisposable Acquire()
     {
-        var test = new SqlConnectionStringBuilder(OsduTestServer.ConnectionString);
+        if (TryEnter() is { } entered)
+        {
+            return entered;
+        }
 
-        // The locks live in the test database's sessions. Pooling is off so that closing the connection ends its session,
-        // and with it every lock it still holds, whatever happened to the test.
-        var locks = new SqlConnection(new SqlConnectionStringBuilder(test.ConnectionString) { Pooling = false }.ConnectionString);
+        Acquiring.Wait();
         try
         {
-            locks.Open();
-            for (var n = 0; n < MaxDatabases; n++)
+            if (TryEnter() is { } raced)
             {
-                var name = $"{test.InitialCatalog}_osdu_{n:00}";
-                if (!TryLock(locks, name))
-                {
-                    continue;
-                }
-
-                var connectionString = OsduTestServer.ForDatabase(name);
-                _ = Migrated.GetOrAdd(name, _ => new Lazy<bool>(() => Migrate(test, name, connectionString), LazyThreadSafetyMode.ExecutionAndPublication)).Value;
-                Empty(connectionString);
-                return new Lease(locks, name, connectionString);
+                return raced;
             }
+
+            var session = Lock();
+            lock (Gate)
+            {
+                _session = session;
+                _holds = 1;
+            }
+
+            return new Hold();
+        }
+        finally
+        {
+            Acquiring.Release();
+        }
+    }
+
+    /// <summary>Enters the hold this process already has; <paramref name="what"/> names the caller when it has none.</summary>
+    public static IDisposable Enter(string what) => TryEnter() ?? throw NotHeld(what);
+
+    /// <summary>Fails, naming <paramref name="what"/> and the fix, unless this process holds the test database.</summary>
+    public static void EnsureHeld(string what)
+    {
+        lock (Gate)
+        {
+            if (_holds == 0)
+            {
+                throw NotHeld(what);
+            }
+        }
+    }
+
+    private static Hold? TryEnter()
+    {
+        lock (Gate)
+        {
+            if (_holds == 0)
+            {
+                return null;
+            }
+
+            _holds++;
+            return new Hold();
+        }
+    }
+
+    private static InvalidOperationException NotHeld(string what) => new(
+        $"{what} was used by a test outside the SQL Server collection. The suites share one test database and use it one test at a time: "
+        + $"put the test class in [Collection({nameof(SqlServerSuite)}.{nameof(SqlServerSuite.Name)})].");
+
+    private static SqlConnection Lock()
+    {
+        // Pooling is off so that disposing the connection ends its session, and with it the lock, however the process ends.
+        var builder = new SqlConnectionStringBuilder(OsduTestServer.Unchecked) { Pooling = false, ApplicationName = HolderName };
+        var session = new SqlConnection(builder.ConnectionString);
+        try
+        {
+            session.Open();
+            using var command = session.CreateCommand();
+            command.CommandTimeout = (int)Wait.TotalSeconds + 60;
+            command.CommandText = """
+                DECLARE @result int;
+                EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Session', @LockTimeout = @timeout;
+                SELECT @result;
+                """;
+            command.Parameters.AddWithValue("@resource", Resource);
+            command.Parameters.AddWithValue("@timeout", (int)Wait.TotalMilliseconds);
+            var result = (int)command.ExecuteScalar()!;
+            if (result >= 0)
+            {
+                return session;
+            }
+
+            throw new InvalidOperationException(result == -1
+                ? $"Another test process has held the test database '{builder.InitialCatalog}' on '{builder.DataSource}' for {Wait.TotalMinutes:0} minutes. "
+                  + $"Its session carries the application name '{HolderName}': find it with SELECT session_id, host_process_id, login_time FROM sys.dm_exec_sessions "
+                  + $"WHERE program_name = N'{HolderName}', and wait for that test run or end it."
+                : $"SQL Server refused the lock on the test database '{builder.InitialCatalog}' on '{builder.DataSource}' (sp_getapplock returned {result}).");
         }
         catch
         {
-            locks.Dispose();
+            session.Dispose();
             throw;
         }
-
-        locks.Dispose();
-        throw new InvalidOperationException($"All {MaxDatabases} of the suites' databases are held by running tests; a test is not disposing the one it took.");
     }
 
-    private static bool TryLock(SqlConnection locks, string name)
+    private static void Release()
     {
-        using var command = locks.CreateCommand();
-        command.CommandText = """
-            DECLARE @result int;
-            EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Session', @LockTimeout = 0;
-            SELECT @result;
-            """;
-        command.Parameters.AddWithValue("@resource", ResourceOf(name));
-        return (int)command.ExecuteScalar()! >= 0;
-    }
-
-    private static string ResourceOf(string name) => "osdu-test-database/" + name;
-
-    private static bool Migrate(SqlConnectionStringBuilder test, string name, string connectionString)
-    {
-        OsduTestServer.EnsureDatabase(test, name, owned: true);
-        using var db = new OsduDbContext(OsduDbContext.SqlServerOptions(connectionString));
-        db.Database.Migrate();
-        return true;
-    }
-
-    /// <summary>
-    /// Empties every table of the module's schema but its migration history. The schema has no foreign keys and no
-    /// views, so each table is truncated, which also starts its identity column from its seed again.
-    /// </summary>
-    private static void Empty(string connectionString)
-    {
-        using var connection = new SqlConnection(connectionString);
-        connection.Open();
-        using var command = connection.CreateCommand();
-        command.Parameters.AddWithValue("@schema", DeliveryModel.SchemaName);
-        command.Parameters.AddWithValue("@history", OsduDbContext.MigrationsHistoryTable);
-        command.CommandText = """
-            DECLARE @sql nvarchar(max) = N'';
-            SELECT @sql = @sql + N'TRUNCATE TABLE ' + QUOTENAME(s.name) + N'.' + QUOTENAME(t.name) + N';'
-            FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id
-            WHERE s.name = @schema AND t.name <> @history;
-            EXEC sys.sp_executesql @sql;
-            """;
-        command.ExecuteNonQuery();
-    }
-
-    /// <summary>One test's hold on one database of the pool.</summary>
-    internal sealed class Lease : IDisposable
-    {
-        private readonly SqlConnection _locks;
-        private bool _disposed;
-
-        internal Lease(SqlConnection locks, string name, string connectionString)
+        lock (Gate)
         {
-            _locks = locks;
-            Name = name;
-            ConnectionString = connectionString;
+            _holds--;
+            if (_holds == 0)
+            {
+                _session?.Dispose();
+                _session = null;
+            }
         }
+    }
 
-        public string Name { get; }
-
-        public string ConnectionString { get; }
+    private sealed class Hold : IDisposable
+    {
+        private int _disposed;
 
         public void Dispose()
         {
-            if (_disposed)
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                return;
+                Release();
             }
-
-            _disposed = true;
-
-            // Closing the unpooled connection ends its session, which releases the lock however the test ended.
-            _locks.Dispose();
         }
     }
 }
 
 /// <summary>
-/// The module's own database (schema <c>osdu</c>) on SQL Server, empty when a test takes it, for the suites that run the
+/// The fixture of the <see cref="SqlServerSuite"/>: holds the test database against every other test process for as
+/// long as the collection runs in this one, and imports the sample templates and cache before the collection's first test,
+/// so that no test inside it finds its database written by that import.
+/// </summary>
+public sealed class OsduTestDatabaseFixture : IDisposable
+{
+    private readonly IDisposable _hold = OsduTestDatabaseLock.Acquire();
+
+    public OsduTestDatabaseFixture()
+    {
+        try
+        {
+            Samples.WarmSampleStores();
+        }
+        catch
+        {
+            _hold.Dispose();
+            throw;
+        }
+    }
+
+    public void Dispose() => _hold.Dispose();
+}
+
+/// <summary>
+/// The module's own database (schema <c>osdu</c>) on SQL Server, emptied when a test takes it, for the suites that run the
 /// ledger, the template and cache stores and the engine: the real <see cref="OsduLedger"/> over the real model and the
-/// schema its migrations build, on the provider production runs on. Each instance holds one database of
-/// <see cref="OsduTestDatabases"/> until it is disposed.
+/// schema its migrations build, on the provider production runs on. It is the test database itself, brought to the
+/// module's latest migration the first time a process takes it, and every row of the <c>osdu</c> schema is removed each
+/// time a test takes it, so every test starts from a module that holds nothing, exactly as a new deployment does. Only a
+/// test in the <see cref="SqlServerSuite"/> may take it.
 /// </summary>
 public sealed class OsduTestDatabase : IDisposable
 {
-    private static readonly ConcurrentDictionary<string, Lazy<bool>> CatalogMigrated = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Lazy<bool> Migrated = new(Migrate, LazyThreadSafetyMode.ExecutionAndPublication);
 
-    private readonly OsduTestDatabases.Lease _lease;
+    private static readonly Lazy<bool> CatalogMigrated = new(MigrateCatalog, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private readonly IDisposable _hold;
     private readonly DbContextOptions<OsduDbContext> _options;
 
     public OsduTestDatabase()
     {
-        _lease = OsduTestDatabases.Take();
-        _options = OsduDbContext.SqlServerOptions(_lease.ConnectionString);
+        _hold = OsduTestDatabaseLock.Enter(nameof(OsduTestDatabase));
+        try
+        {
+            ConnectionString = OsduTestServer.ConnectionString;
+            _ = Migrated.Value;
+            Empty(ConnectionString);
+            _options = OsduDbContext.SqlServerOptions(ConnectionString);
+        }
+        catch
+        {
+            _hold.Dispose();
+            throw;
+        }
     }
 
     /// <summary>The database's connection string, for a suite that reaches it as a host would.</summary>
-    public string ConnectionString => _lease.ConnectionString;
+    public string ConnectionString { get; }
 
     public OsduDbContext CreateDbContext() => new(_options);
 
@@ -298,16 +365,8 @@ public sealed class OsduTestDatabase : IDisposable
     /// </summary>
     public CatalogDbContext CreateCatalogContext()
     {
-        var options = CatalogDatabase.BuildOptions(ConnectionString);
-        _ = CatalogMigrated.GetOrAdd(_lease.Name, _ => new Lazy<bool>(
-            () =>
-            {
-                using var db = new CatalogDbContext(options);
-                db.Database.Migrate();
-                return true;
-            },
-            LazyThreadSafetyMode.ExecutionAndPublication)).Value;
-        return new CatalogDbContext(options);
+        _ = CatalogMigrated.Value;
+        return new CatalogDbContext(CatalogDatabase.BuildOptions(ConnectionString));
     }
 
     /// <summary>
@@ -350,5 +409,140 @@ public sealed class OsduTestDatabase : IDisposable
         await db.SaveChangesAsync();
     }
 
-    public void Dispose() => _lease.Dispose();
+    public void Dispose() => _hold.Dispose();
+
+    private static bool Migrate()
+    {
+        using var db = new OsduDbContext(OsduDbContext.SqlServerOptions(OsduTestServer.ConnectionString));
+        db.Database.Migrate();
+        return true;
+    }
+
+    private static bool MigrateCatalog()
+    {
+        using var db = new CatalogDbContext(CatalogDatabase.BuildOptions(OsduTestServer.ConnectionString));
+        db.Database.Migrate();
+        return true;
+    }
+
+    /// <summary>
+    /// Empties every table of the module's schema but its migration history. The schema has no foreign keys and no
+    /// views, so each table is truncated, which also starts its identity column from its seed again.
+    /// </summary>
+    private static void Empty(string connectionString)
+    {
+        using var connection = new SqlConnection(connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.Parameters.AddWithValue("@schema", DeliveryModel.SchemaName);
+        command.Parameters.AddWithValue("@history", OsduDbContext.MigrationsHistoryTable);
+        command.CommandText = """
+            DECLARE @sql nvarchar(max) = N'';
+            SELECT @sql = @sql + N'TRUNCATE TABLE ' + QUOTENAME(s.name) + N'.' + QUOTENAME(t.name) + N';'
+            FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id
+            WHERE s.name = @schema AND t.name <> @history;
+            EXEC sys.sp_executesql @sql;
+            """;
+        command.ExecuteNonQuery();
+    }
+}
+
+/// <summary>
+/// The one database a test may have beside the test database, for the few tests that need a second one: a migration that
+/// has to start from an empty schema, a database that does not allow snapshot isolation, an estate that keeps SQLFlow's
+/// catalog and the module apart, a counter that must see no other writer. It is always the same database,
+/// <c>{test database}_scratch</c>: created empty when a test takes it, after dropping whatever a test that died left
+/// there, and dropped when the test disposes it, so the server holds it only while such a test runs. Only a test in the
+/// <see cref="SqlServerSuite"/> may take it, and those run one at a time, so it never has two users.
+/// </summary>
+public sealed class OsduScratchDatabase : IAsyncDisposable
+{
+    private readonly IDisposable _hold;
+    private readonly string _master;
+    private bool _disposed;
+
+    private OsduScratchDatabase(IDisposable hold, string master, string name, string connectionString)
+    {
+        _hold = hold;
+        _master = master;
+        Name = name;
+        ConnectionString = connectionString;
+    }
+
+    /// <summary>The scratch database's name.</summary>
+    public string Name { get; }
+
+    /// <summary>Its connection string, under the test database's server and credentials.</summary>
+    public string ConnectionString { get; }
+
+    /// <summary>Creates the scratch database empty, as a database with the server's defaults.</summary>
+    public static async Task<OsduScratchDatabase> CreateAsync(CancellationToken ct = default)
+    {
+        var hold = OsduTestDatabaseLock.Enter(nameof(OsduScratchDatabase));
+        try
+        {
+            var test = new SqlConnectionStringBuilder(OsduTestServer.ConnectionString);
+            var name = test.InitialCatalog + "_scratch";
+            var master = new SqlConnectionStringBuilder(test.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
+            var connectionString = new SqlConnectionStringBuilder(test.ConnectionString) { InitialCatalog = name }.ConnectionString;
+            await DropAsync(master, name, connectionString, ct).ConfigureAwait(false);
+            await OnMasterAsync(master, name, "N'CREATE DATABASE ' + QUOTENAME(@name)", ct).ConfigureAwait(false);
+            return new OsduScratchDatabase(hold, master, name, connectionString);
+        }
+        catch
+        {
+            hold.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Lets the scratch database run snapshot transactions, as the ledger's reads need.</summary>
+    public Task AllowSnapshotIsolationAsync(CancellationToken ct = default)
+        => OnMasterAsync(_master, Name, "N'ALTER DATABASE ' + QUOTENAME(@name) + N' SET ALLOW_SNAPSHOT_ISOLATION ON'", ct);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        try
+        {
+            await DropAsync(_master, Name, ConnectionString, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _hold.Dispose();
+        }
+    }
+
+    private static async Task DropAsync(string master, string name, string connectionString, CancellationToken ct)
+    {
+        // A pooled connection to it would keep it in use; only its own pool is cleared, so no other test's connections go.
+        using (var pooled = new SqlConnection(connectionString))
+        {
+            SqlConnection.ClearPool(pooled);
+        }
+
+        // Single-user first, so a connection the test left open cannot keep the database alive.
+        await OnMasterAsync(
+            master,
+            name,
+            "CASE WHEN DB_ID(@name) IS NULL THEN N'' ELSE N'ALTER DATABASE ' + QUOTENAME(@name) + N' SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE ' + QUOTENAME(@name) + N';' END",
+            ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Runs, on master, the statement <paramref name="statement"/> builds from the database name <c>@name</c>.</summary>
+    private static async Task OnMasterAsync(string master, string name, string statement, CancellationToken ct)
+    {
+        await using var connection = new SqlConnection(master);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = connection.CreateCommand();
+        command.Parameters.AddWithValue("@name", name);
+        // EXEC takes a string built in a variable; it does not evaluate an expression in its argument.
+        command.CommandText = $"DECLARE @sql nvarchar(800) = {statement}; IF @sql <> N'' EXEC (@sql);";
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
 }

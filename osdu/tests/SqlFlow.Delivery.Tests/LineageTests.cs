@@ -18,6 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// the files the pre flows read to the OSDU types the delivery flows write and the flows that read them back. A mapping
 /// that cannot be read, or that lies outside the checkout, costs a flow its OSDU nodes with a warning and nothing else.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class LineageTests : IDisposable
 {
     private const string Platform = "${env:OSDU_URL}";

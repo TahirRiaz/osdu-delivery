@@ -10,6 +10,7 @@ namespace SqlFlow.Delivery.Tests;
 /// which arrived and which left, per type, a page at a time, and what each version changed against the one captured before
 /// it. The versions are written through the store, so the ranges the reads cover are the ones a refresh writes.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class CacheVersionComparisonTests : IDisposable
 {
     private const string Scope = "dev";

@@ -1,6 +1,5 @@
 using SqlFlow.Core.Secrets;
 using System.Runtime.CompilerServices;
-using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
@@ -21,10 +20,12 @@ namespace SqlFlow.ControlPlane.Tests;
 /// in one database the rows are part of the sync's own transaction, and in two they are written and committed on the
 /// module's connection. Both are proven here, over the sample estate, with the catalog database watched for anything
 /// the module might have written into it.
-/// <para>These tests need a reachable SQL Server whose login may create a database: they create two of their own beside
-/// the suites' test database (<see cref="OsduTestServer"/>), and drop both when they end. A server that refuses to
-/// create them fails the tests.</para>
+/// <para>These tests need a reachable SQL Server whose login may create a database: SQLFlow's catalog is the suites'
+/// scratch database (<see cref="OsduScratchDatabase"/>), created for each test and dropped when it ends, and a module of
+/// its own is the suites' test database (<see cref="OsduTestServer"/>). A server that refuses to create the scratch
+/// database fails the tests.</para>
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryModuleDatabaseTests
 {
     private static readonly Guid Repo = Guid.NewGuid();
@@ -195,70 +196,69 @@ public sealed class DeliveryModuleDatabaseTests
     }
 
     /// <summary>
-    /// The databases a test runs against, created on the suites' test server and dropped when the test
-    /// ends: SQLFlow's catalog, and the OSDU Delivery module either beside it in the same database or in one of its own.
-    /// The module's schema is migrated exactly as a host migrates it, into a database provisioned first, which is what
-    /// a deployment does.
+    /// The databases a test runs against: SQLFlow's catalog in the suites' scratch database, created empty for the test and
+    /// dropped when it ends, and the OSDU Delivery module either beside it in the same database or in a database of its
+    /// own, which is the suites' test database with the module's schema emptied. The module's schema is migrated exactly
+    /// as a host migrates it, into a database provisioned first, which is what a deployment does.
     /// </summary>
     private sealed class TestEstate : IAsyncDisposable
     {
-        private static readonly Regex SafeName = new("^[A-Za-z][A-Za-z0-9_]{0,120}$", RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
-
-        private readonly string _master;
-        private readonly List<string> _created = [];
+        private readonly OsduScratchDatabase _catalog;
+        private readonly OsduTestDatabase? _module;
         private readonly string? _moduleConnectionString;
 
-        private TestEstate(string master, string catalogConnectionString, string? moduleConnectionString)
+        private TestEstate(OsduScratchDatabase catalog, OsduTestDatabase? module, string? moduleConnectionString)
         {
-            _master = master;
-            CatalogConnectionString = catalogConnectionString;
+            _catalog = catalog;
+            _module = module;
             _moduleConnectionString = moduleConnectionString;
         }
 
         /// <summary>SQLFlow's catalog database.</summary>
-        public string CatalogConnectionString { get; }
+        public string CatalogConnectionString => _catalog.ConnectionString;
 
         /// <summary>
-        /// Two databases with the names an estate that separates them uses, or one holding both. With
-        /// <paramref name="declareModule"/> false the module is given no connection of its own, which is how a host that
-        /// keeps the <c>osdu</c> schema in the catalog's database is configured.
+        /// Two databases, or one holding both. With <paramref name="declareModule"/> false the module is given no connection
+        /// of its own, which is how a host that keeps the <c>osdu</c> schema in the catalog's database is configured.
         /// </summary>
         public static async Task<TestEstate> CreateAsync(bool separateDatabases, bool declareModule = true)
         {
-            var builder = new SqlConnectionStringBuilder(OsduTestServer.Require());
-            var master = new SqlConnectionStringBuilder(builder.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
-            var suffix = Guid.NewGuid().ToString("N")[..8];
-
-            var estate = new TestEstate(
-                master,
-                Named(builder, "SQLFlow_Test_" + suffix),
-                separateDatabases ? Named(builder, "OSDUDelivery_Test_" + suffix) : declareModule ? Named(builder, "SQLFlow_Test_" + suffix) : null);
-
+            OsduScratchDatabase catalog;
             try
             {
-                await estate.CreateDatabaseAsync("SQLFlow_Test_" + suffix);
-                if (separateDatabases)
-                {
-                    await estate.CreateDatabaseAsync("OSDUDelivery_Test_" + suffix);
-                }
+                catalog = await OsduScratchDatabase.CreateAsync();
+            }
+            catch (SqlException ex)
+            {
+                throw new InvalidOperationException(
+                    "These tests prove where the module's rows land by keeping SQLFlow's catalog in a database of its own, the suites' "
+                    + $"scratch database, which they create beside the test database and drop again. This server refused: {ex.Message}",
+                    ex);
+            }
+
+            OsduTestDatabase? module = null;
+            try
+            {
+                module = separateDatabases ? new OsduTestDatabase() : null;
+                var moduleConnectionString = module?.ConnectionString ?? (declareModule ? catalog.ConnectionString : null);
 
                 // The module's schema, migrated into the database that is to hold it, as 'sqlflow db migrate' does.
                 await ModuleDatabases.MigrateAsync(
                     OsduModuleDatabase.Create(),
-                    separateDatabases ? estate._moduleConnectionString! : estate.CatalogConnectionString,
+                    module?.ConnectionString ?? catalog.ConnectionString,
                     allowCreate: false,
                     appliedBy: "module database tests",
                     appliedUtc: Now,
                     catalogAppliedMigrations: CatalogDatabase.KnownMigrations);
+                return new TestEstate(catalog, module, moduleConnectionString);
             }
             catch
             {
-                // Whatever was created before the failure is still this test's to remove.
-                await estate.DisposeAsync();
+                // Whatever was taken before the failure is still this test's to give back.
+                module?.Dispose();
+                await catalog.DisposeAsync();
                 throw;
             }
-
-            return estate;
         }
 
         /// <summary>
@@ -278,46 +278,15 @@ public sealed class DeliveryModuleDatabaseTests
 
         public async ValueTask DisposeAsync()
         {
-            // The contexts above pool their connections, and a pooled connection keeps the database in use.
-            SqlConnection.ClearAllPools();
-            foreach (var name in _created)
-            {
-                await using var connection = new SqlConnection(_master);
-                await connection.OpenAsync();
-                await using var command = connection.CreateCommand();
-                command.CommandText =
-                    $"IF DB_ID('{name}') IS NOT NULL BEGIN ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}]; END";
-                await command.ExecuteNonQueryAsync();
-            }
-        }
-
-        private static string Named(SqlConnectionStringBuilder server, string database)
-            => new SqlConnectionStringBuilder(server.ConnectionString) { InitialCatalog = database }.ConnectionString;
-
-        private async Task CreateDatabaseAsync(string name)
-        {
-            if (!SafeName.IsMatch(name))
-            {
-                throw new InvalidOperationException($"'{name}' is not a database name this test may create.");
-            }
-
-            await using var connection = new SqlConnection(_master);
             try
             {
-                await connection.OpenAsync();
-                await using var command = connection.CreateCommand();
-                command.CommandText = $"CREATE DATABASE [{name}]";
-                await command.ExecuteNonQueryAsync();
+                // The scratch database clears its own connection pool and evicts any session left on it before it drops.
+                await _catalog.DisposeAsync();
             }
-            catch (SqlException ex)
+            finally
             {
-                throw new InvalidOperationException(
-                    "These tests prove where the module's rows land by giving it a database of its own, so they create two databases "
-                    + $"beside the suites' test database and drop them again. This server refused: {ex.Message}",
-                    ex);
+                _module?.Dispose();
             }
-
-            _created.Add(name);
         }
     }
 

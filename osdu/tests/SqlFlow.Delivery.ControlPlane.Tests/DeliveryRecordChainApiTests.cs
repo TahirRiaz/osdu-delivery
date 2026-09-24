@@ -22,6 +22,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// landed and the run that loaded it into the ingestion tables. Those runs are the platform's own, recorded against the
 /// files they processed, so the chain names what actually ran rather than reconstructing it.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryRecordChainApiTests
 {
     private const string FlowName = "wells-welllog-03-header-delivery";

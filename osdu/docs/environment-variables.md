@@ -72,7 +72,7 @@ orchestrator's termination grace period).
 | `SQLFLOW_CREDENTIALS_FILE` | Where the CLI keeps stored credentials (default: under the user profile). |
 | `SQLFLOW_CATALOG_DB` | The default `--db` for the verbs that talk to a database directly: `sqlflow db`, and the OSDU verbs `check`, `cache` and `template`, whose templates and cache versions live in the catalog database. |
 | `SQLFLOW_REPO` | The repository a local run is attributed to when `--repo` is omitted. |
-| `SQLFLOW_TEST_DB` | A disposable SQL Server database the suites migrate and seed, and beside which they create their per-test databases (`<database>_osdu_NN`). Unset, the suites use the local default: `localhost` under Windows authentication, database `OsduDeliveryTests`, created when missing. A server that does not answer fails the suites; none skips. Never point it at a database holding real data. |
+| `SQLFLOW_TEST_DB` | The one disposable SQL Server database the suites migrate, seed and empty. Unset, the suites use the local default: `localhost` under Windows authentication, database `OsduDeliveryTests`, created when missing. The tests that use it run one at a time and hold it against other test processes; the few that need a second database create `<database>_scratch` for as long as they run and drop it. A server that does not answer fails the suites; none skips. Never point it at a database holding real data. |
 
 ## The estate's flow references
 

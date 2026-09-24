@@ -538,17 +538,23 @@ public static class Samples
     /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
     public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
 
-    // One database holding the sample templates and the sample cache for the whole run: templates and cache versions are
-    // immutable, and after the warm-up a render never reaches the database behind them. It holds its pool database until
-    // the process ends, which ends the session holding it.
-    private static readonly Lazy<(OsduTestDatabase Database, OsduTemplateStore Store, ICacheStore Cache)> SampleDatabase = new(() =>
+    // The sample templates and the sample cache, imported once for the whole run through the real stores: template and
+    // cache versions are immutable, and after the warm-up a render never reaches the database behind them, so the import
+    // holds the test database only while it runs. The SQL Server collection warms them before its first test, so a test
+    // inside it never finds its database written by the import; a parallel test that asks first takes the database for
+    // the import, waiting while another test process holds it.
+    private static readonly Lazy<(OsduTemplateStore Store, ICacheStore Cache)> SampleStores = new(() =>
     {
-        var database = new OsduTestDatabase();
+        using var hold = OsduTestDatabaseLock.Acquire();
+        using var database = new OsduTestDatabase();
         var store = database.Templates();
         ImportSampleTemplatesAsync(store).GetAwaiter().GetResult();
         var version = ImportSampleCacheAsync(database.Caches()).GetAwaiter().GetResult();
-        return (database, store, new FixedCacheStore(SampleCacheScope, SampleCacheFlowName, version, SampleCacheDeclaration()));
+        return (store, new FixedCacheStore(SampleCacheScope, SampleCacheFlowName, version, SampleCacheDeclaration()));
     });
+
+    /// <summary>Imports the sample templates and cache now, when nothing has asked for them yet.</summary>
+    internal static void WarmSampleStores() => _ = SampleStores.Value;
 
     /// <summary>
     /// What the sample cache flows declare for their partition, as the module's database holds it after a sync: the
@@ -641,10 +647,10 @@ public static class Samples
     }
 
     /// <summary>A template store holding the sample templates, shared by the engine tests.</summary>
-    public static ITemplateStore SampleTemplates => SampleDatabase.Value.Store;
+    public static ITemplateStore SampleTemplates => SampleStores.Value.Store;
 
     /// <summary>The sample cache at its one version, shared by the engine tests.</summary>
-    public static ICacheStore SampleCache => SampleDatabase.Value.Cache;
+    public static ICacheStore SampleCache => SampleStores.Value.Cache;
 
     /// <summary>
     /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache, checked

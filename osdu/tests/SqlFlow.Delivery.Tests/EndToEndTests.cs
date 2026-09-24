@@ -23,6 +23,7 @@ namespace SqlFlow.Delivery.Tests;
 /// End to end over the sample mapping, the real WellLog 1.4.0 schema snapshot, the sample estate in the in-memory
 /// ingestion tables, the module's database on SQL Server and a fake protocol.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public class EndToEndTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

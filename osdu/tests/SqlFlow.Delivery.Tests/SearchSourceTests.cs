@@ -22,6 +22,7 @@ namespace SqlFlow.Delivery.Tests;
 /// the render unfinished, naming what it needs, and the caller asks the platform once and renders again. These tests
 /// are that protocol, and what each answer the platform can give does to the record.
 /// </remarks>
+[Collection(SqlServerSuite.Name)]
 public class SearchSourceTests
 {
     /// <summary>A wellbore schema with one property of every shape the indexer gives a property.</summary>

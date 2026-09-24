@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// interface of every delivery flow with the ledger identity it keeps, the route it goes by and the kind its mapping fills;
 /// an interface the repository no longer declares stays findable as inactive; and a ledger kept by two flows is reported.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class InterfaceCatalogSyncTests : IDisposable
 {
     private readonly OsduTestDatabase _module = new();

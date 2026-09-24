@@ -146,9 +146,9 @@ All of SQLFlow's metadata is one database. What is separated is the source data,
   join in memory, and the one raw SQL statement is the module's own.
 - The compose stack never created the chain's two data databases, so its first pre flow failed; a `dbinit` service
   creates them.
-- The e2e estate runs `SQLFlow_E2E` for the metadata and `OsduSample_E2E` for the source data. One
-  `SQLFLOW_E2E_CATALOG_DB` carries the server and login for both; `SQLFLOW_E2E_OSDU_DB` runs the suite against the
-  two-database shape instead. The suite waits for `/health/ready`, not `/health/live`: liveness is up before bootstrap
+- The e2e estate runs in one database, `OsduDeliveryE2E`: the metadata, the module's schema and the source data, reused
+  by every run (since 2026-09-24; it used to be `SQLFlow_E2E` beside `OsduSample_E2E`). `SQLFLOW_E2E_CATALOG_DB` names it
+  on another server; `SQLFLOW_E2E_OSDU_DB` and `SQLFLOW_E2E_SAMPLE_DB` run the suite against separate databases instead. The suite waits for `/health/ready`, not `/health/live`: liveness is up before bootstrap
   has created anything, and starting tests then cost a whole run.
 - `OsduDeliveryPre` and `OsduDeliveryIng` keep their names because they are flow source locations. `OSDUSource` and
   `OSDUIngestion` would read better; that is a change to ask for, not one to make.

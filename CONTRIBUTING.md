@@ -19,9 +19,11 @@ dotnet test OsduDelivery.sln
 cd osdu/gui && npm ci && npm run build && npm run lint
 ```
 
-The pure tests need no database. The DB-backed suites read a connection string from the `SQLFLOW_TEST_DB`
-environment variable and skip when it is unset or unreachable. Never point it at a database holding real data:
-the suites migrate and seed the database they are given.
+The pure tests need no database. The OSDU module's DB-backed suites use one database on a local SQL Server,
+`OsduDeliveryTests` under Windows authentication (created when missing), or the one the `SQLFLOW_TEST_DB`
+environment variable names; a server that does not answer fails them. The tests that use it run one at a time, so
+the suites never create a database per test or per run. SQLFlow's own suites read the same variable and skip when it
+is unset. Never point it at a database holding real data: the suites migrate and seed the database they are given.
 
 `dev.bat` runs the whole thing locally against a real estate; `osdu/tools/dev-setup.ps1` generates the
 git-ignored `.sqlflow/env` it reads.

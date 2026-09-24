@@ -15,6 +15,7 @@ namespace SqlFlow.Delivery.Tests;
 /// every record's metadata hash and redeliver everything built from the cache. Template versions are content-addressed and
 /// already immune; these cover the same property for cache versions, and what an import has to agree with.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class SnapshotVersioningTests : IDisposable
 {
     private const string Scope = "dev";

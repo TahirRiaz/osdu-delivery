@@ -31,6 +31,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// data definitions, served here by a stand-in for the repository's API. Gated on a reachable catalog database.
 /// </summary>
 [Trait("Category", "Integration")]
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryTemplateApiTests
 {
     private const string WellLogKind = "osdu:wks:work-product-component--WellLog:1.4.0";

@@ -20,6 +20,7 @@ namespace SqlFlow.Delivery.Tests;
 /// record goes to the collection serving its entity type, a survey whose stations its record does not describe is held
 /// before anything is sent, and every request keeps to the pinned contracts.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DdmsSourceTests : IDisposable
 {
     private const string TrajectoryTable = "OsduSample.ing.WellboreTrajectory";

@@ -37,6 +37,7 @@ namespace SqlFlow.Delivery.Tests;
 /// <para>Each test owns a fixture of its own (its schemas, its flow names, its ledger rows), so the suite is safe beside
 /// the other SQL Server suites and safe run in parallel with itself.</para>
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public class SqlServerChainTests
 {
     private readonly ITestOutputHelper _output;

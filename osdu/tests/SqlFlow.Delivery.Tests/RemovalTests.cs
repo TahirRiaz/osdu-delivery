@@ -270,6 +270,7 @@ public class RemovalProtocolTests
 }
 
 /// <summary>What each scope does to the ledger, which is not the same question as what it does to OSDU.</summary>
+[Collection(SqlServerSuite.Name)]
 public class RemovalLedgerTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();
@@ -449,6 +450,7 @@ public class RemovalLedgerTests : IDisposable
 }
 
 /// <summary>The runtime's removal: the ledger settled per record, and a selection that is a filter resolved here.</summary>
+[Collection(SqlServerSuite.Name)]
 public class RemovalRuntimeTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

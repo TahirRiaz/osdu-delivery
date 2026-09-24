@@ -11,6 +11,7 @@ namespace SqlFlow.Delivery.Tests;
 /// its document refers to is a record of the ledger that has not landed, the record goes back to pending when that one
 /// lands, and records never wait for each other in a circle.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public class RecordWaitTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

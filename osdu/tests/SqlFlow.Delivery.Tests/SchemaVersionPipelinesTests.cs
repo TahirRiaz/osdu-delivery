@@ -20,6 +20,7 @@ namespace SqlFlow.Delivery.Tests;
 /// to a partition of its own; in the first pipeline's partition it is held, and the way to move that partition to the new
 /// version is the first pipeline's own mapping, which keeps each record's OSDU id and history.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class SchemaVersionPipelinesTests : IDisposable
 {
     /// <summary>The partition the WellLog 1.5.0 pipeline delivers to, beside the sample partition the 1.4.0 pipeline uses.</summary>

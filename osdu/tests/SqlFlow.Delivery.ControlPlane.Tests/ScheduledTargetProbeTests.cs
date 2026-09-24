@@ -23,6 +23,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// interface of every active delivery flow it covers through the same node operation the operator's "Probe target"
 /// queues, recording what came back in the ledger's audit trail and counting it on the delivery meter.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class ScheduledTargetProbeTests
 {
     /// <summary>Off by default, on by configuration, and never paced faster than the floor.</summary>

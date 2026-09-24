@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// paged and cut on the table's identity primary key, and the tables whose declared primary key a read cannot rely on.
 /// Runs on the suites' test database (<see cref="OsduTestServer"/>).
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class SqlServerIngestionSourceTests
 {
     private static readonly DateTime Loaded = new(2026, 9, 1, 6, 0, 0, DateTimeKind.Utc);

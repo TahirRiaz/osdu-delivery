@@ -379,6 +379,7 @@ public class PayloadFileTests
 /// is refused. Several cache flows of one partition fill the same cache: a record is stored once however many of them
 /// capture it, and it leaves only when none of them still finds it.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class OsduCacheStoreTests : IDisposable
 {
     private const string Scope = "dev";

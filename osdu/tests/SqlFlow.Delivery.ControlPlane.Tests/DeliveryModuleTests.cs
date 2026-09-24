@@ -32,6 +32,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// database, and the search category it contributes. None of this needs a database: the host binds the module lazily, so
 /// it boots and answers the no-database surface (authorization, options, the registrations themselves) without SQL Server.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryModuleTests
 {
     [Fact]

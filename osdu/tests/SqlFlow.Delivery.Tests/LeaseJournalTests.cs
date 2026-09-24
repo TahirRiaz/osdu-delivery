@@ -13,6 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// each caller hears back once its entry is stored, the listener hears of a try only after its attempt is stored, and a
 /// write that fails fails exactly the entries it carried.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class LeaseJournalTests : IDisposable
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);

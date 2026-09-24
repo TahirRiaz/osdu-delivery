@@ -16,11 +16,10 @@ namespace SqlFlow.Delivery.Tests;
 /// writes only in the
 /// <c>osdu</c> schema its own migration creates, and every run works under a flow and keys of its own, so runs never
 /// see each other's rows.
-/// <para>Some of these tests watch the database as a whole (how often it locked a whole ledger table), which the suite's
-/// other SQL Server classes would disturb, so the class runs in <see cref="SqlServerLedgerIsolation"/>, after them and
-/// apart from them.</para>
+/// <para>The tests that watch a database as a whole (how often it locked a whole ledger table) do it in the suites'
+/// scratch database, which no other writer reaches while they run.</para>
 /// </summary>
-[Collection(SqlServerLedgerIsolation.Name)]
+[Collection(SqlServerSuite.Name)]
 public class SqlServerLedgerTests
 {
     /// <summary>The module's schema, brought up to date once per test run.</summary>
@@ -823,69 +822,37 @@ public class SqlServerLedgerTests
     private DeliveryKey Key(string name) => DeliveryKey.Derive("sqlserver-ledger-test", [_run, name]);
 
     /// <summary>
-    /// A migrated ledger database of this test's own on the test server, dropped when the test ends. A test that measures
-    /// a database-wide counter cannot share a database with anything else, or it measures the other writer too.
+    /// A migrated ledger in the suites' scratch database, dropped when the test ends. A test that measures a database-wide
+    /// counter cannot share a database with anything else, or it measures the other writer too.
     /// </summary>
     private static async Task<ScratchLedger> ScratchLedgerAsync()
     {
-        var name = "osdu_lock_escalation_" + Guid.NewGuid().ToString("N")[..12];
-        var master = new SqlConnectionStringBuilder(OsduTestServer.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
-        var connectionString = new SqlConnectionStringBuilder(OsduTestServer.ConnectionString) { InitialCatalog = name }.ConnectionString;
-
-        await ExecuteOnAsync(master, $"CREATE DATABASE [{name}];");
+        var scratch = await OsduScratchDatabase.CreateAsync();
         try
         {
             // The ledger's reads run under snapshot isolation, and the schema is the module's own migrations, so the
             // scratch database is the same database the suite's shared one is, with nothing else in it.
-            await ExecuteOnAsync(master, $"ALTER DATABASE [{name}] SET ALLOW_SNAPSHOT_ISOLATION ON;");
-            await using var db = new OsduDbContext(OsduDbContext.SqlServerOptions(connectionString));
+            await scratch.AllowSnapshotIsolationAsync();
+            await using var db = new OsduDbContext(OsduDbContext.SqlServerOptions(scratch.ConnectionString));
             await db.Database.MigrateAsync();
         }
         catch
         {
-            await DropAsync(master, name);
+            await scratch.DisposeAsync();
             throw;
         }
 
-        return new ScratchLedger(master, name, connectionString);
-    }
-
-    private static async Task ExecuteOnAsync(string connectionString, string sql)
-    {
-        await using var connection = new SqlConnection(connectionString);
-        await connection.OpenAsync();
-        await using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        await command.ExecuteNonQueryAsync();
-    }
-
-    private static async Task DropAsync(string master, string name)
-    {
-        try
-        {
-            // Single-user first, so a connection the test left open cannot keep the database alive.
-            await ExecuteOnAsync(master, $"ALTER DATABASE [{name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{name}];");
-        }
-        catch (SqlException)
-        {
-            // A scratch database left behind names itself and costs nothing; failing the test over the cleanup would hide
-            // whatever the test actually found.
-        }
+        return new ScratchLedger(scratch);
     }
 
     /// <summary>The scratch database, with the context factory a ledger is built over.</summary>
-    private sealed class ScratchLedger(string master, string name, string connectionString) : IAsyncDisposable
+    private sealed class ScratchLedger(OsduScratchDatabase scratch) : IAsyncDisposable
     {
-        public string ConnectionString { get; } = connectionString;
+        public string ConnectionString => scratch.ConnectionString;
 
         public OsduDbContext Context() => new(OsduDbContext.SqlServerOptions(ConnectionString));
 
-        public async ValueTask DisposeAsync()
-        {
-            // The drop sets the database single-user with rollback, which evicts whatever still holds a connection to it.
-            // Clearing the process's pools would reach every other test running beside this one, so it is not done here.
-            await DropAsync(master, name);
-        }
+        public ValueTask DisposeAsync() => scratch.DisposeAsync();
     }
 
     /// <summary>

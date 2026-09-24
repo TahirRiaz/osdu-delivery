@@ -21,6 +21,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// narrows to a custody state. With nothing to look for, the same route lists what the delivery system last took in or
 /// sent, newest first. Both are indexed reads, so a page past the candidate bound is empty rather than a scan.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryRecordLookupApiTests
 {
     private const string FlowName = "wells-wellbore-03-header-delivery";

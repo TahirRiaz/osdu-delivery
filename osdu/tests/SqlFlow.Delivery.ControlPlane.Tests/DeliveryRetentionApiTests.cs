@@ -20,6 +20,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// captured run log is cleared without the audit row it belongs to ever being deleted. These tests hold the endpoint to
 /// that bound, because a retention pass that took one row too many would quietly cost a delivered record its history.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryRetentionApiTests
 {
     private const string FlowName = "wells-retention";

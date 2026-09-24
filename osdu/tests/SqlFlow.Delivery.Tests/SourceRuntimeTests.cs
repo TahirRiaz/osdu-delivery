@@ -83,6 +83,7 @@ public sealed class MemoryEstate : IIngestionSourceFactory
 /// interfaces, a run of one interface, a fan-out member told which interface it plans, and a flow in the single form
 /// stopped by an outage.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class SourceRuntimeTests : IDisposable
 {
     private const string WellboreTable = "OsduSample.ing.Wellbore";

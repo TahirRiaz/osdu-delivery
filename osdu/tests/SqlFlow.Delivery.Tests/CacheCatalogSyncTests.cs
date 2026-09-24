@@ -13,6 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// which file defines it. The sync only reads the repository: a cache's versions are written by its runs, never by the
 /// sync, and snapshot files left in a repository are nothing to it.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class CacheCatalogSyncTests : IDisposable
 {
     private const string CacheFlow = """

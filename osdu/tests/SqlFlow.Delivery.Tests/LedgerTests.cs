@@ -8,6 +8,7 @@ using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
 
+[Collection(SqlServerSuite.Name)]
 public class SqlLedgerTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

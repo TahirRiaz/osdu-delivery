@@ -15,6 +15,7 @@ namespace SqlFlow.Delivery.Tests;
 /// its cache and kept with the version, apart from the cached records. A read that fails never fails the capture and never
 /// changes what the cache knew; a version without them hashes as versions always did.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class SystemPropertyTests : IDisposable
 {
     private const string Scope = "dev";

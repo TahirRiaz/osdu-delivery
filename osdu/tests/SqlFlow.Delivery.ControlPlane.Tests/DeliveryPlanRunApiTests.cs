@@ -26,6 +26,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// reachable catalog database.
 /// </summary>
 [Trait("Category", "Integration")]
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryPlanRunApiTests
 {
     [Fact]

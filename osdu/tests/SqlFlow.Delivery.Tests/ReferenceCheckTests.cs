@@ -18,6 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// refers to that no record of the ledger holds are looked up in OSDU's storage service, and a record naming one storage
 /// does not hold is not sent.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public class ReferenceCheckTests : IDisposable
 {
     private static readonly SecretResolver Secrets = new([new EnvSecretProvider()]);

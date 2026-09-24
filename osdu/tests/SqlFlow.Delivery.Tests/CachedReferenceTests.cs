@@ -17,6 +17,7 @@ namespace SqlFlow.Delivery.Tests;
 /// a render holds a reference to a record the cache says is not there. A record id is looked for by the id itself, never by
 /// a captured field that shares its name.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class CachedReferenceTests : IDisposable
 {
     private static readonly DateTimeOffset T0 = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);

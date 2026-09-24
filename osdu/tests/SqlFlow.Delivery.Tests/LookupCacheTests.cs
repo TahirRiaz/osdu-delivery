@@ -11,6 +11,7 @@ namespace SqlFlow.Delivery.Tests;
 /// Lookup tables in the partition's cache: types whose rows are not OSDU records, filled from an ingestion table or a
 /// dictionary document, kept under their keys, and read by a mapping the way any cached type is read.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class LookupCacheTests : IDisposable
 {
     private const string Scope = "dev";

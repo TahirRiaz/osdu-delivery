@@ -13,6 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// Dictionary documents: one lookup table per file in the repository's dictionaries folder, read as text exactly as it is
 /// written, held by a cache flow in its partition's cache, and captured by a refresh into a version like any cached type.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DictionaryTests : IDisposable
 {
     private const string Pairs = """

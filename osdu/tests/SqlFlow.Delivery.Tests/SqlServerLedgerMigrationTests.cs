@@ -14,9 +14,10 @@ namespace SqlFlow.Delivery.Tests;
 /// attempt given its record's flow, the OSDU ids already written claimed, an interrupted rollout's cursor completed, and
 /// the ledgers it cannot convert refused with a message that says why. <c>LeasesAndRecordEvents</c>: the leases stopped
 /// workers left behind kept as lease rows, and a revert refused while an appended event is not on its record. Each test
-/// works in a database of its own, created on the suites' test server (<see cref="OsduTestServer"/>) and dropped afterwards: a migration
-/// has to start from the schema it upgrades, and the suite's shared database is already past it.
+/// works in the suites' scratch database (<see cref="OsduScratchDatabase"/>), created empty and dropped afterwards: a
+/// migration has to start from the schema it upgrades, and the suite's test database is already past it.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class SqlServerLedgerMigrationTests
 {
     private const string Before = "20260916105416_RemoveManualSubmission";
@@ -384,48 +385,23 @@ public sealed class SqlServerLedgerMigrationTests
         PendingMetadata = true,
     };
 
-    /// <summary>A database of the test's own on the test server, dropped with everything in it when the test ends.</summary>
+    /// <summary>The suites' scratch database, empty when the test takes it and dropped with everything in it when the test ends.</summary>
     private sealed class ScratchDatabase : IAsyncDisposable
     {
-        private readonly string _master;
+        private readonly OsduScratchDatabase _database;
 
-        private ScratchDatabase(string master, string connectionString, string name)
-        {
-            _master = master;
-            ConnectionString = connectionString;
-            Name = name;
-        }
+        private ScratchDatabase(OsduScratchDatabase database) => _database = database;
 
-        public string ConnectionString { get; }
+        public string ConnectionString => _database.ConnectionString;
 
-        public string Name { get; }
+        public string Name => _database.Name;
 
-        public static async Task<ScratchDatabase> CreateAsync()
-        {
-            var name = "osdu_ledger_migration_" + Guid.NewGuid().ToString("N")[..12];
-            var master = new SqlConnectionStringBuilder(OsduTestServer.ConnectionString) { InitialCatalog = "master" }.ConnectionString;
-            await using (var connection = new SqlConnection(master))
-            {
-                await connection.OpenAsync();
-                await using var command = connection.CreateCommand();
-                command.CommandText = $"CREATE DATABASE [{name}];";
-                await command.ExecuteNonQueryAsync();
-            }
-
-            return new ScratchDatabase(master, new SqlConnectionStringBuilder(OsduTestServer.ConnectionString) { InitialCatalog = name }.ConnectionString, name);
-        }
+        public static async Task<ScratchDatabase> CreateAsync() => new(await OsduScratchDatabase.CreateAsync());
 
         public OsduDbContext Context() => new(OsduDbContext.SqlServerOptions(ConnectionString));
 
         /// <summary>Lets the database run snapshot transactions, as the ledger's reads need.</summary>
-        public async Task AllowSnapshotAsync()
-        {
-            await using var connection = new SqlConnection(_master);
-            await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
-            command.CommandText = $"ALTER DATABASE [{Name}] SET ALLOW_SNAPSHOT_ISOLATION ON;";
-            await command.ExecuteNonQueryAsync();
-        }
+        public Task AllowSnapshotAsync() => _database.AllowSnapshotIsolationAsync();
 
         /// <summary>Migrates to <paramref name="target"/>, up or down, or to the newest migration when it is null.</summary>
         public async Task MigrateAsync(string? target)
@@ -503,18 +479,6 @@ public sealed class SqlServerLedgerMigrationTests
             return columns;
         }
 
-        public async ValueTask DisposeAsync()
-        {
-            using (var pooled = new SqlConnection(ConnectionString))
-            {
-                SqlConnection.ClearPool(pooled);
-            }
-
-            await using var connection = new SqlConnection(_master);
-            await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
-            command.CommandText = $"ALTER DATABASE [{Name}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [{Name}];";
-            await command.ExecuteNonQueryAsync();
-        }
+        public ValueTask DisposeAsync() => _database.DisposeAsync();
     }
 }

@@ -299,13 +299,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   migration, and a new test fails whenever the model and its last migration differ.
 - **The module's suites run on SQL Server, the only provider the module supports.** The ledger, store and engine suites
   ran on an in-memory SQLite copy of the module's database, which proved nothing about the provider production runs
-  on. Every suite now runs on SQL Server: each test takes a database of its own from a pool beside the test database
-  (`<database>_osdu_NN`), built by the module's migrations and emptied when a test takes it, held through a session
-  lock so two suites running at once never share one. Development and testing expect a local SQL Server: without
-  `SQLFLOW_TEST_DB` the suites use `localhost` under Windows authentication and the database `OsduDeliveryTests`,
-  created when missing. A server that does not answer fails the suites; none skips any more. The SQLite package is
-  gone from the solution. The SQL Server chain suite takes a database of its own as well: a run whose process died
-  left its flow's claims on OSDU ids in the shared database, and every later run's identical records were held for them.
+  on. Every suite now runs on SQL Server, in one database: `OsduDeliveryTests` on `localhost` under Windows
+  authentication (created when missing), or the one `SQLFLOW_TEST_DB` names. The tests that use it form one xUnit
+  collection that runs a test at a time and holds the database against every other test process through a session
+  lock; a test empties the module's schema when it takes the database, so the chain suite no longer finds the claims a
+  run whose process died left on OSDU ids. The few tests that need a second database (a migration from an empty schema,
+  a database without snapshot isolation, a catalog kept apart from the module) share `<database>_scratch`, created when
+  one of them starts and dropped when it ends. A server that does not answer fails the suites; none skips any more. The
+  SQLite package is gone from the solution. The e2e suite keeps its catalog, the module's schema and the sample tables
+  in one database, `OsduDeliveryE2E`, which every run reuses, and writes its fixture repository to a folder named after
+  that database, so a development estate synced from a fixture repository of its own is never repointed by a run.
 - **Inline replace tables are matched by the cache's own rules.** One matcher serves inline and cached tables: an exact
   key wins, and case is ignored only when that finds one key. A value several keys answer to only once case is ignored
   now holds the record, naming them, unless they all give the same value; before, it passed on unchanged. Keys that are

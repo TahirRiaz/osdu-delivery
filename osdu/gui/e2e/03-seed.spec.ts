@@ -61,9 +61,10 @@ function sampleSql(connectionString: string, query: string, what: string, onMast
 }
 
 /**
- * Creates the sample database when it is not there yet. It holds the chain's source and ingestion tables, not the
- * catalog's or the module's rows, so nothing else provisions it: the control plane creates its catalog and the module's
- * database, and a pre flow creates schemas and tables but never a database. Creating it again does nothing.
+ * Creates the sample database when it is not there yet. By default it is the estate's one database, which the control
+ * plane has created by the time the seed runs, and this does nothing. A sample database of its own
+ * (SQLFLOW_E2E_SAMPLE_DB) holds only the chain's source and ingestion tables, so nothing else provisions it: the control
+ * plane creates its catalog and the module's database, and a pre flow creates schemas and tables but never a database.
  */
 function ensureSampleDatabase(connectionString: string): void {
   const database = connectionValue(connectionParts(connectionString), "database", "initial catalog");

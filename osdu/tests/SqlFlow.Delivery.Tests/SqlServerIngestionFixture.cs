@@ -98,10 +98,10 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     }
 
     /// <summary>
-    /// The fixture's own database from the suites' pool (<see cref="OsduTestDatabases"/>), its module schema empty when the
-    /// fixture starts. The chain's records are the same every run, and so are the OSDU ids they render to: in a database
-    /// shared across runs, a run whose process died before it cleaned up would leave those ids claimed by its flow, and
-    /// every later run's records would be held for them.
+    /// The suites' test database (<see cref="OsduTestDatabase"/>), its module schema emptied when the fixture starts. The
+    /// chain's records are the same every run, and so are the OSDU ids they render to: without the emptying, a run whose
+    /// process died before it cleaned up would leave those ids claimed by its flow, and every later run's records would be
+    /// held for them.
     /// </summary>
     public string ConnectionString { get; }
 
@@ -186,8 +186,9 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     public static async Task<SqlServerIngestionFixture> StartAsync(int fanOut = 0, int batchRecords = 0, bool wellboreChain = false, CancellationToken ct = default)
     {
         // The chain runs against a real server or not at all: there is no in-memory stand-in for what it proves. Its
-        // database is its own, migrated and empty, allowing the snapshot isolation a record and its child rows are read
-        // under; its catalog name is what the chain's flows write three-part names with.
+        // database is the suites' test database, migrated and with the module's schema emptied, allowing the snapshot
+        // isolation a record and its child rows are read under; its catalog name is what the chain's flows write
+        // three-part names with.
         var database = new OsduTestDatabase();
         var connectionString = database.ConnectionString;
         var databaseName = new SqlConnectionStringBuilder(connectionString).InitialCatalog;

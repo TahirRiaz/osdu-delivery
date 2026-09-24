@@ -12,6 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// could not hold refused whole. Runs on the suites' test database (<see cref="OsduTestServer"/>); every test
 /// works in a schema of its own, dropped afterwards, and keeps its cache in memory.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class SqlServerTableCaptureTests : IAsyncLifetime, IDisposable
 {
     private readonly string _suffix = Guid.NewGuid().ToString("N")[..8];

@@ -19,6 +19,7 @@ namespace SqlFlow.Delivery.Tests;
 /// ledger's payload hash and location, the worker sends only the part that moved, a redelivery of the files alone sends
 /// them and rewrites the record with its bulk link, and every request keeps to the pinned contracts.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class ComposedSourceTests : IDisposable
 {
     private const string WellLogTable = "OsduSample.ing.WellLog";

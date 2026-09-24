@@ -24,6 +24,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// its pipeline and interface, the interface travelling with every task it queues for a node.
 /// </summary>
 [Trait("Category", "Integration")]
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryInterfacesApiTests
 {
     [Fact]

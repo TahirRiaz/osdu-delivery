@@ -5,9 +5,10 @@ import { defineConfig, devices } from "@playwright/test";
 // "@playwright/test" to its directory; that resolves to the CommonJS entry, and every named import from it fails.
 //
 // The e2e suite spins up EVERYTHING itself:
-//  1. the OSDU Delivery control plane host (dotnet), pointed at a dedicated local test metadata database; bootstrap
+//  1. the OSDU Delivery control plane host (dotnet), pointed at the suite's one database, OsduDeliveryE2E; bootstrap
 //     provisioning applies SQLFlow's catalog migrations and the OSDU module's beside them, seeds roles, and creates the
-//     e2e admin the tests sign in with. The chain's source and ingestion tables are a database of their own;
+//     e2e admin the tests sign in with. The chain's source and ingestion tables are in the same database, in schemas
+//     of their own;
 //  2. the GUI dev server, pointed at that control plane via VITE_API_BASE_URL (which wins in dev mode);
 //  3. a stand-in for the OSDU platform the sample flows deliver to (e2e/osdu-standin.mjs), which answers the wellbore
 //     searches a WellLog or a trajectory makes when it renders, and nothing else, so no run reaches a real OSDU.
@@ -24,11 +25,13 @@ const apiPort = Number(process.env.SQLFLOW_E2E_API_PORT ?? 5299);
 const guiPort = Number(process.env.SQLFLOW_E2E_GUI_PORT ?? 5173);
 const osduPort = Number(process.env.SQLFLOW_E2E_OSDU_PORT ?? 5301);
 
-// Overridable so a run can provision its own catalog next to an existing one: a database left behind by an older
-// build cannot always be migrated forward, and pointing the suite at a fresh name is the non-destructive way past it.
-// The suite creates whatever database it is given.
+// The suite's one database: SQLFlow's catalog, the module's osdu schema and the chain's source and ingestion tables.
+// Every local run uses this same database and brings it forward: the host migrates it, and the seed waits for this
+// run's fixture commit and replaces what an earlier run left. Never point a run at a new name to get a fresh estate:
+// every such name stays on the server. If an estate ever cannot be brought forward, drop OsduDeliveryE2E and run again.
+// SQLFLOW_E2E_CATALOG_DB names the database on another server, a SQL login included (CI runs the suite that way).
 const catalogDb = process.env.SQLFLOW_E2E_CATALOG_DB
-  ?? "Server=localhost;Database=SQLFlow_E2E;Trusted_Connection=True;TrustServerCertificate=True";
+  ?? "Server=localhost;Database=OsduDeliveryE2E;Trusted_Connection=True;TrustServerCertificate=True";
 
 /** The keywords of a SQL Server connection string, lower-cased, each with its last value. */
 export function connectionParts(connectionString: string): Map<string, string> {
@@ -58,17 +61,6 @@ export function databaseOf(connectionString: string): string {
   return database;
 }
 
-/**
- * The same connection with another database: the server, the login and every other setting of the catalog connection,
- * so one SQLFLOW_E2E_CATALOG_DB configures all three databases of the estate and each can still be overridden alone.
- */
-function inDatabase(connectionString: string, database: string): string {
-  const kept = connectionString
-    .split(";")
-    .filter((pair) => !/^\s*(database|initial catalog)\s*=/i.test(pair) && pair.trim() !== "");
-  return [`Database=${database}`, ...kept].join(";");
-}
-
 // The build configuration the hosts run from. Unset, `dotnet run` builds them on the way, inside the servers' start-up
 // timeout. CI builds the solution in Release first and names it here, so the hosts start from that build instead.
 const dotnetConfiguration = process.env.SQLFLOW_E2E_DOTNET_CONFIGURATION ?? "";
@@ -95,9 +87,10 @@ export const E2E = {
   // what an estate on Azure SQL has to do. A node is given this connection either way, since a node opens no catalog
   // connection at all.
   osduDb: process.env.SQLFLOW_E2E_OSDU_DB ?? catalogDb,
-  // Where the chain's source and ingestion tables live, which is where the volume is in a real estate. The pre and
-  // ingestion flows create their own schemas in it; the seed spec creates the database itself.
-  sampleDb: process.env.SQLFLOW_E2E_SAMPLE_DB ?? inDatabase(catalogDb, "OsduSample_E2E"),
+  // Where the chain's source and ingestion tables live: the suite's one database, where the pre and ingestion flows
+  // create their own schemas. SQLFLOW_E2E_SAMPLE_DB moves them to a database of their own, the shape of a real estate,
+  // where the source data is the volume; the seed spec creates that database when it is missing.
+  sampleDb: process.env.SQLFLOW_E2E_SAMPLE_DB ?? catalogDb,
   // Where the sample flows deliver, as every process of the estate resolves their ${env:...} references: the stand-in
   // platform on loopback, which a delivery host reaches only when told it may, and the partition, access groups and
   // legal tag every sample mapping fixture pins. The estate is hermetic, so these are declared here rather than taken
@@ -149,9 +142,9 @@ export default defineConfig({
     },
     {
       command: ["dotnet", ...hostRun("../hosts/SqlFlow.Delivery.ControlPlane.Host")].join(" "),
-      // Readiness, not liveness: liveness is up before bootstrap has created a thing, and an estate of three fresh
-      // databases takes long enough to provision that the first test would spend its timeout retrying a login against
-      // an estate with no admin yet. Readiness answers when the catalog is reachable and every module database is
+      // Readiness, not liveness: liveness is up before bootstrap has created a thing, and a fresh estate takes long
+      // enough to provision that the first test would spend its timeout retrying a login against an estate with no
+      // admin yet. Readiness answers when the catalog is reachable and every module database is
       // verified, which is the state every spec assumes.
       url: `${E2E.apiBaseUrl}/health/ready`,
       timeout: 240_000,

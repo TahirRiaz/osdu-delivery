@@ -817,6 +817,7 @@ public class DeliverOutcomeTests
 }
 
 /// <summary>The run boundary: a run ends as a recorded failure whatever stopped it.</summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryRunBoundaryTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();

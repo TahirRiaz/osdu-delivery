@@ -21,6 +21,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// survives the record moving on to a newer row. The ledger has carried all of it since the ingestion tables replaced
 /// drops; these tests hold the served contract to it, because a field the DTO omits is invisible to every reader.
 /// </summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class DeliveryRecordOriginApiTests
 {
     private const string FlowName = "wells-wellbore-03-header-delivery";

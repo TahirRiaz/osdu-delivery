@@ -128,6 +128,7 @@ public class OsduTemplateTests
 }
 
 /// <summary>The template store over the catalog: immutable versions, pinned by mappings.</summary>
+[Collection(SqlServerSuite.Name)]
 public sealed class OsduTemplateStoreTests : IDisposable
 {
     private readonly OsduTestDatabase _db = new();
