@@ -10,7 +10,8 @@ namespace SqlFlow.Delivery.Cli;
 /// <summary>
 /// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval and cache flow kinds (so SQLFlow's own
 /// <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
-/// module's database, and the module's own verbs: <c>check</c>, <c>records</c>, <c>cache</c> and <c>template</c>.
+/// module's database, and the module's own verbs: <c>check</c>, <c>fixtures</c>, <c>records</c>, <c>config</c>,
+/// <c>cache</c> and <c>template</c>.
 /// </summary>
 /// <remarks>
 /// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless
@@ -38,6 +39,22 @@ public sealed class DeliveryCliModule : ICliModule
             DeliveryVerbs.CheckAsync)
         {
             Flags = ["--connect"],
+            ValueOptions = ["--interface"],
+        },
+        new CliVerb(
+            "fixtures",
+            [
+                "sqlflow fixtures update <flow.yaml> [--interface <name>] [--dry-run]",
+                "                                   Render the fixtures of the flow's mapping as the preflight does and write",
+                "                                   each into its expected block, leaving the rest of the file as written",
+                "                                   (needs --db: the pinned template and cache live in the module's database).",
+                "                                   A fixture whose record would be held is left and named; --dry-run says",
+                "                                   what would change and writes nothing.",
+            ],
+            DeliveryFixtureVerbs.FixturesAsync)
+        {
+            Subcommands = ["update"],
+            Flags = ["--dry-run"],
             ValueOptions = ["--interface"],
         },
         new CliVerb(

@@ -3,7 +3,7 @@
 // the YAML and checks it.
 
 import type {
-  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftEntry, MappingDraftFind, MappingDraftInput,
+  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftEntry, MappingDraftFind, MappingDraftInput,
   MappingDraftModifier, MappingDraftModifierKind,
 } from "../../api/delivery";
 
@@ -24,10 +24,13 @@ export const DATASET_COLUMN = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)?$/;
 /** A key under an object with free keys (a tag name): anything but dots, brackets and whitespace. */
 export const KEY_NAME = /^[^.[\]\s]+$/;
 
-export const MODIFIER_KINDS: readonly MappingDraftModifierKind[] = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number", "id"];
+export const MODIFIER_KINDS: readonly MappingDraftModifierKind[] = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number", "id", "ref"];
+
+/** The modifiers that build the id an entry writes, from a dataset value: always the last, and at most one of them. */
+export const ID_MODIFIER_KINDS: readonly MappingDraftModifierKind[] = ["id", "ref"];
 
 /** What a new id modifier starts from: a reference to a unit of measure whose code is the value. */
-export const ID_TEMPLATE_EXAMPLE = "{param.dataPartition}:reference-data--UnitOfMeasure:{value}:";
+export const ID_TEMPLATE_EXAMPLE = "{$param.dataPartition}:reference-data--UnitOfMeasure:{$value}:";
 
 /** The separators a number modifier reads before the decimals. */
 export const DECIMAL_SEPARATORS: readonly { value: string; label: string }[] = [
@@ -58,7 +61,9 @@ export function emptyEntry(target: string, input: MappingDraftInput): MappingDra
     cacheField: null,
     findBy: [],
     modifiers: [],
-    appliesWhen: null,
+    expression: null,
+    when: null,
+    where: null,
     required: true,
     ignoreSeparators: false,
     static: null,
@@ -87,6 +92,7 @@ export function newModifier(kind: MappingDraftModifierKind): MappingDraftModifie
     case "upper":
     case "lower":
     case "date":
+    case "ref":
       return { kind, separator: null, part: null, replacements: null, text: null, decimalSeparator: null, groupSeparator: null };
   }
 }
@@ -104,7 +110,7 @@ export function inputsFor(variable: Pick<DeliveryTemplateVariable, "shape" | "pa
   switch (variable.shape) {
     case "Value":
     case "ValueList":
-      return ["Dataset", "Cache", "Search", "Static"];
+      return ["Dataset", "Expression", "Cache", "Search", "Static"];
     case "GroupList":
       return ["Repeat", "Static"];
     case "Group":
@@ -157,7 +163,7 @@ export function putEntry(
   return [...entries.slice(0, after + 1), entry, ...entries.slice(after + 1)];
 }
 
-/** The entry's input in one short line, as the YAML writes it. */
+/** The entry's input in one short line: the column, child rows, cached field or search it reads, or its fixed value. */
 export function entrySummary(entry: MappingDraftEntry): string {
   switch (entry.input) {
     case "Dataset":
@@ -168,6 +174,8 @@ export function entrySummary(entry: MappingDraftEntry): string {
       return `cache.${entry.cacheType ?? ""}.${entry.cacheField ?? ""}`;
     case "Search":
       return `search.${entry.cacheType ?? ""}.${entry.cacheField ?? "id"}`;
+    case "Expression":
+      return entry.expression ?? "";
     case "Static":
       return `static ${entry.static ?? ""}`;
   }
@@ -188,7 +196,7 @@ export function entryText(entry: MappingDraftEntry): string {
     entrySummary(entry),
     lookup === "" ? "" : `by ${lookup}`,
     entry.modifiers.length === 0 ? "" : `| ${entry.modifiers.map(modifierText).join(" | ")}`,
-    entry.appliesWhen === null ? "" : `when ${conditionText(entry.appliesWhen)}`,
+    entry.when === null ? "" : `when ${entry.when}`,
   ].filter((part) => part !== "").join(" ");
 }
 
@@ -203,13 +211,13 @@ export interface PropertyRow {
   sourceValue: string;
   /** The record's lookup as one phrase, `Code/Name = dataset.elev_meas_ref`; empty when no record is looked up. */
   lookup: string;
-  /** One line per findBy, as the YAML writes them, for the property's own view. */
+  /** One line per findBy, naming the record set and the field compared, for the property's own view. */
   lookupDetail: string[];
   /** The modifiers in order, one line each; empty for a value taken as it stands. */
   modifiers: string[];
   /** The modifier kinds in order, which is what a row has room for: `split, replace`. */
   modifierKinds: string;
-  /** The entry's appliesWhen in one line, or null when it always applies. */
+  /** The entry's condition (`$when`), or null when it always applies. */
   condition: string | null;
   description: string | null;
   required: boolean;
@@ -224,7 +232,7 @@ export function propertyRow(entry: MappingDraftEntry): PropertyRow {
   const source = entrySummary(entry);
   const lookup = lookupText(entry);
   const modifiers = entry.modifiers.map(modifierText);
-  const condition = entry.appliesWhen === null ? null : conditionText(entry.appliesWhen);
+  const condition = entry.when;
   // The modifiers change the value a lookup compares, not the cached field, so they read after that value.
   const detail = [
     source,
@@ -238,7 +246,7 @@ export function propertyRow(entry: MappingDraftEntry): PropertyRow {
     input: entry.input,
     source,
     sourceValue: entry.input === "Repeat"
-      ? `dataset.${entry.child ?? ""}`
+      ? `dataset.${entry.child ?? ""}${entry.where === null ? "" : ` where ${entry.where}`}`
       : entry.input === "Static" ? entry.static ?? "" : source,
     lookup,
     lookupDetail: lookupLines(entry),
@@ -296,7 +304,7 @@ export function modifierText(modifier: MappingDraftModifier): string {
         const match = (modifier.match ?? "").trim();
         const field = (modifier.field ?? "").trim();
         const fields = match === "" && field === "" ? "" : ` (${match === "" ? "its key" : match} to ${field === "" ? "its value" : field})`;
-        return `replace from cache.${(modifier.table ?? "").trim()}${fields}${otherwiseText(modifier)}`;
+        return `replace from $cache.${(modifier.table ?? "").trim()}${fields}${otherwiseText(modifier)}`;
       }
 
       const pairs = (modifier.replacements ?? []).map((pair) => `${pair.from} to ${pair.to === null ? "no value" : pair.to}`).join(", ");
@@ -312,6 +320,8 @@ export function modifierText(modifier: MappingDraftModifier): string {
     }
     case "id":
       return `id ${modifier.text ?? ""}`;
+    case "ref":
+      return modifier.text === null || modifier.text.trim() === "" ? "ref" : `ref ${modifier.text.trim()}`;
     case "trim":
     case "upper":
     case "lower":
@@ -337,9 +347,9 @@ function operandOf(find: MappingDraftFind): string {
 }
 
 /**
- * The lookup an entry finds its record by, one line per findBy, as the YAML writes them:
- * `cache.UnitOfMeasure.Code = dataset.elev_meas_ref`, `search.Wellbore.data.FacilityName = dataset.wellbore_uwi`. Empty
- * for an entry that looks nothing up.
+ * The lookup an entry finds its record by, one line per findBy, each naming the record set, the field compared and the
+ * value it must equal: `cache.UnitOfMeasure.Code = dataset.elev_meas_ref`,
+ * `search.Wellbore.data.FacilityName = dataset.wellbore_uwi`. Empty for an entry that looks nothing up.
  */
 export function lookupLines(entry: MappingDraftEntry): string[] {
   if (!looksUp(entry)) {
@@ -374,22 +384,7 @@ export function lookupText(entry: MappingDraftEntry): string {
   return groups.map((group) => `${group.fields.join("/")} = ${group.operand}`).join(" or ");
 }
 
-/** An appliesWhen in one line, as the condition syntax reads it: `dataset.depth_coding is not empty`. */
-export function conditionText(condition: MappingDraftCondition): string {
-  const column = `dataset.${condition.column}`;
-  switch (condition.operator) {
-    case "isEmpty":
-      return `${column} is empty`;
-    case "isNotEmpty":
-      return `${column} is not empty`;
-    case "isNot":
-      return `${column} is not ${condition.text ?? ""}`;
-    case "is":
-      return `${column} is ${condition.text ?? ""}`;
-  }
-}
-
-/** The dataset columns and child datasets a draft already names: its key, label, entries, findBy lines, conditions and fixtures. */
+/** The dataset columns and child datasets a draft already names: its key, label, entries, findBy lines and fixtures. */
 export function knownColumns(draft: MappingDraft): { columns: string[]; children: string[] } {
   const columns = new Set<string>(draft.key);
   const children = new Set<string>();
@@ -406,10 +401,6 @@ export function knownColumns(draft: MappingDraft): { columns: string[]; children
       if (find.column !== null && find.column !== "") {
         columns.add(find.column);
       }
-    }
-
-    if (entry.appliesWhen !== null && entry.appliesWhen.column !== "") {
-      columns.add(entry.appliesWhen.column);
     }
   }
 

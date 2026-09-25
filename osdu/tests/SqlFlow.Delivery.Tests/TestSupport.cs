@@ -872,14 +872,20 @@ public static class TestSchema
 {
     public const string Kind = "test:wks:work-product-component--Thing:1.0.0";
 
-    /// <summary>The entries every test mapping starts from: the envelope, the key's own property and the one property the schema requires.</summary>
-    public const string BaseEntries = """
-          - { target: osdu.acl.owners, static: [owners@x] }
-          - { target: osdu.acl.viewers, static: [viewers@x] }
-          - { target: osdu.legal.legaltags, static: [tag] }
-          - { target: osdu.legal.otherRelevantDataCountries, static: [NO] }
-          - { target: osdu.data.Name, source: dataset.name }
-          - { target: osdu.data.Depth, source: dataset.depth }
+    /// <summary>The envelope every test mapping's record carries, at the record's own level.</summary>
+    public const string Envelope = """
+        acl:
+          owners: [owners@x]
+          viewers: [viewers@x]
+        legal:
+          legaltags: [tag]
+          otherRelevantDataCountries: [NO]
+        """;
+
+    /// <summary>The data properties every test mapping starts from: the key's own property and the one property the schema requires.</summary>
+    public const string BaseData = """
+        Name: { $from: name }
+        Depth: { $from: depth }
         """;
 
     public static SchemaSnapshot Build() => SchemaSnapshot.Parse(Kind, """
@@ -954,42 +960,70 @@ public static class TestSchema
     };
 
     /// <summary>
-    /// A mapping document over the test template: the header, <paramref name="baseEntries"/>, then <paramref name="entries"/>
-    /// (YAML list items indented by two spaces), then <paramref name="fixtures"/> (a whole top-level block).
+    /// A mapping document over the test template: the header, then the record with <see cref="Envelope"/>, the data
+    /// properties <paramref name="baseData"/> followed by <paramref name="data"/>, and the record-level properties
+    /// <paramref name="record"/> (a tags block, or a property the record writes itself), then <paramref name="fixtures"/>
+    /// (a whole top-level block). A fragment is written at any indentation: it is laid under its parent as it stands.
     /// </summary>
-    public static string MappingDocument(string entries = "", string fixtures = "", string baseEntries = BaseEntries) =>
-        $"""
-        documentType: mapping
-        name: Thing
-        version: 1.0.0
-        template:
-          kind: {Kind}
-          version: {Build().Version}
-        dataset:
-          system: test
-          key: [dataset.name]
-        parameters:
-          dataPartition: {"{"} required: true {"}"}
-        mappings:
+    public static string MappingDocument(string data = "", string fixtures = "", string baseData = BaseData, string record = "")
+    {
+        var body = Indented(Envelope, 2) + Indented(record, 2);
+        var properties = Indented(baseData, 4) + Indented(data, 4);
+        if (properties.Length > 0)
+        {
+            body += "  data:\n" + properties;
+        }
 
-        """ + baseEntries + "\n" + entries + "\n" + fixtures + "\n";
+        return $"""
+            documentType: mapping
+            name: Thing
+            version: 1.0.0
+            template:
+              kind: {Kind}
+              version: {Build().Version}
+            dataset:
+              system: test
+              key: [name]
+            parameters:
+              dataPartition: {"{"} required: true {"}"}
+            record:
 
-    /// <summary>A valid mapping over the test template, with <paramref name="entries"/> appended to the base entries.</summary>
-    public static MappingDefinition Mapping(string entries = "", string fixtures = "", string baseEntries = BaseEntries)
-        => new DeliveryDocumentLoader().ParseMapping(MappingDocument(entries, fixtures, baseEntries), "thing.yaml");
+            """ + body + "\n" + fixtures + "\n";
+    }
 
-    /// <summary>A mapping document with a cache entry and a repeater, for the loader tests.</summary>
+    /// <summary>A valid mapping over the test template, with <paramref name="data"/> after the base data properties.</summary>
+    public static MappingDefinition Mapping(string data = "", string fixtures = "", string baseData = BaseData, string record = "")
+        => new DeliveryDocumentLoader().ParseMapping(MappingDocument(data, fixtures, baseData, record), "thing.yaml");
+
+    /// <summary>A mapping document with a cache node and a repeated array, for the loader tests.</summary>
     public static string MappingYaml => MappingDocument("""
-          - target: osdu.data.Unit
-            source: cache.UnitOfMeasure.id
-            findBy: cache.UnitOfMeasure.Code = dataset.unit
-          - target: osdu.data.Curves
-            source: dataset.curves
-          - target: osdu.data.Curves[].CurveID
-            source: dataset.curves.curve_id
-          - target: osdu.data.Curves[].TopDepth
-            source: dataset.curves.top
+        Unit:
+          $cache: UnitOfMeasure.id
+          $findBy: Code = unit
+        Curves:
+          $forEach: curves
+          $item:
+            CurveID: { $from: curve_id }
+            TopDepth: { $from: top }
         """);
+
+    /// <summary>
+    /// A YAML fragment laid under a parent at <paramref name="indent"/> spaces: its lines keep their indentation relative
+    /// to the least indented one, which moves to <paramref name="indent"/>. Blank lines are dropped.
+    /// </summary>
+    public static string Indented(string fragment, int indent)
+    {
+        ArgumentNullException.ThrowIfNull(fragment);
+        var lines = fragment.ReplaceLineEndings("\n").Split('\n').Where(l => l.Trim().Length > 0).ToList();
+        if (lines.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var least = lines.Min(l => l.Length - l.TrimStart(' ').Length);
+        var pad = new string(' ', indent);
+        return string.Concat(lines.Select(l => pad + l[least..] + "\n"));
+    }
 
     public static JsonObject Doc(string json) => (JsonObject)JsonNode.Parse(json)!;
 }

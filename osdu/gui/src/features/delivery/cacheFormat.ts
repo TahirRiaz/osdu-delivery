@@ -37,47 +37,48 @@ export function cachedFieldsText(fields: Record<string, unknown> | null): string
 }
 
 /**
- * How a mapping reads a cached value: cache.<type>.<name>, where the name is what the cache flow caches a path under, or
- * id for the record's OSDU id. The partition is never named: a delivery flow reads the cache of the partition it delivers to.
+ * How a mapping reads a cached value: `$cache: <Type>.<name>` on the property it fills, where the name is what the cache
+ * flow caches a path under, or id for the record's OSDU id. The partition is never named: a delivery flow reads the cache of
+ * the partition it delivers to.
  */
 export function cacheReference(typeName: string, name: string): string {
-  return `cache.${typeName}.${name}`;
+  return `$cache: ${typeName}.${name}`;
 }
 
 /** The name a mapping reads a cached record's OSDU id under. */
 export const CACHE_ID_FIELD = "id";
 
 /**
- * A mapping entry that fills a variable with a cached record's OSDU id, found by one of its captured values matching a
- * dataset column: what a mapping author starts from for a type. The column is a placeholder the author renames.
+ * The node a property of the record is written as to hold a cached record's OSDU id, found by one of its captured values
+ * matching a column of the row: what a mapping author starts from for a type. The column is a placeholder the author renames.
  */
 export function cacheEntryExample(typeName: string, lookupField: string | null): string {
-  const lines = [`source: ${cacheReference(typeName, CACHE_ID_FIELD)}`];
+  const lines = [cacheReference(typeName, CACHE_ID_FIELD)];
   if (lookupField !== null) {
-    lines.push(`findBy: ${cacheReference(typeName, lookupField)} = dataset.<column>`);
+    lines.push(`$findBy: ${lookupField} = <column>`);
   }
 
   return lines.join("\n");
 }
 
 /**
- * A mapping entry that reads a value of a lookup table's row, found by its key matching a dataset column. A lookup row has
- * no OSDU id, so the entry reads one of its values; the column is a placeholder the author renames.
+ * The node that reads a value of a lookup table's row, found by its key matching a column of the row. A lookup row has no
+ * OSDU id, so the node reads one of its values; the column is a placeholder the author renames.
  */
 export function lookupEntryExample(typeName: string, keyField: string, valueField: string | null): string {
   return [
-    `source: ${cacheReference(typeName, valueField ?? keyField)}`,
-    `findBy: ${cacheReference(typeName, keyField)} = dataset.<column>`,
+    cacheReference(typeName, valueField ?? keyField),
+    `$findBy: ${keyField} = <column>`,
   ].join("\n");
 }
 
 /**
- * A replace modifier that turns a dataset value into what a lookup table gives for it, on its way to the entry: matched on
- * the table's key and replaced by the one value a row holds beside it; a table holding several names the one it replaces by.
+ * A replace modifier that turns a dataset value into what a lookup table gives for it, on its way to the property: matched
+ * on the table's key and replaced by the one value a row holds beside it; a table holding several names the one it replaces by.
  */
 export function lookupReplaceExample(typeName: string, keyField: string, valueFields: string[]): string {
   const beside = valueFields.filter((name) => name !== keyField);
-  const lines = ["modifiers:", `  - replace: cache.${typeName}`];
+  const lines = ["$modifiers:", `  - replace: $cache.${typeName}`];
   if (beside.length > 1) {
     lines.push(`    field: ${beside[0]}`);
   }

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Model;
@@ -101,10 +102,10 @@ public class MappingBuilderTests
     {
         var loader = new DeliveryDocumentLoader();
         var original = loader.ParseMapping(TestSchema.MappingDocument("""
-              - { target: osdu.data.Weight, source: dataset.a, modifiers: [number] }
-              - { target: osdu.data.Symbol, source: dataset.b, modifiers: [{ number: { decimal: ",", group: " " } }] }
-              - { target: osdu.data.Count, source: dataset.c, modifiers: [{ number: { decimal: ",", group: "." } }] }
-              - { target: osdu.data.Big, source: dataset.d, modifiers: [{ number: { group: "'" } }] }
+            Weight: { $from: a, $modifiers: [number] }
+            Symbol: { $from: b, $modifiers: [{ number: { decimal: ",", group: " " } }] }
+            Count: { $from: c, $modifiers: [{ number: { decimal: ",", group: "." } }] }
+            Big: { $from: d, $modifiers: [{ number: { group: "'" } }] }
             """), "m.yaml");
         var draft = MappingBuilder.FromDefinition(original);
 
@@ -135,9 +136,12 @@ public class MappingBuilderTests
                 new MappingDraftEntry { Target = "osdu.data.Unit", Input = MappingDraftInput.Cache, CacheType = "UnitOfMeasure", CacheField = "id" },
                 new MappingDraftEntry { Target = "osdu.data.Symbol", Input = MappingDraftInput.Static, Static = "{not json" },
                 new MappingDraftEntry { Target = "osdu.data.Description", Input = MappingDraftInput.Dataset, Column = "a", Modifiers = [new MappingDraftModifier("split", ",")] },
-                new MappingDraftEntry { Target = "osdu.data.Count", Input = MappingDraftInput.Dataset, Column = "a", AppliesWhen = new MappingDraftCondition("a", "is", null) },
+                new MappingDraftEntry { Target = "osdu.data.Count", Input = MappingDraftInput.Dataset, Column = "a", When = "a =" },
                 new MappingDraftEntry { Target = "data.Nope", Input = MappingDraftInput.Dataset, Column = "a" },
-                new MappingDraftEntry { Target = "osdu.data.When", Input = MappingDraftInput.Dataset, Column = "a", AppliesWhen = new MappingDraftCondition("a", "is", "one\ntwo") },
+                new MappingDraftEntry { Target = "osdu.data.When", Input = MappingDraftInput.Dataset, Column = "a", When = "a is FINAL" },
+                new MappingDraftEntry { Target = "osdu.data.Symbol", Input = MappingDraftInput.Expression, Expression = "coalesce(a)", Where = "not empty(a)" },
+                new MappingDraftEntry { Target = "osdu.data.Aliases", Input = MappingDraftInput.Expression, Expression = "upper(\"x\")" },
+                new MappingDraftEntry { Target = "osdu.data.Weight2", Input = MappingDraftInput.Dataset, Column = "a", When = "a" },
                 new MappingDraftEntry { Target = "osdu.data.Name", Input = MappingDraftInput.Dataset, Column = "name" },
                 new MappingDraftEntry { Target = "osdu.data.Day", Input = MappingDraftInput.Dataset, Column = "a", Modifiers = [new MappingDraftModifier("date", Text: "dd.MM.yy")] },
                 new MappingDraftEntry { Target = "osdu.data.Weight", Input = MappingDraftInput.Dataset, Column = "a", Modifiers = [new MappingDraftModifier("number", DecimalSeparator: ",", GroupSeparator: ",")] },
@@ -153,9 +157,13 @@ public class MappingBuilderTests
         Assert.Contains(issues, i => i.Target == "osdu.data.Unit" && i.Message.Contains("at least one findBy line", StringComparison.Ordinal));
         Assert.Contains(issues, i => i.Target == "osdu.data.Symbol" && i.Message.Contains("not valid JSON", StringComparison.Ordinal));
         Assert.Contains(issues, i => i.Target == "osdu.data.Description" && i.Message.Contains("split needs", StringComparison.Ordinal));
-        Assert.Contains(issues, i => i.Target == "osdu.data.Count" && i.Message.Contains("text the column is compared with", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.Count" && i.Message.Contains("$when 'a =': the expression ends", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.Symbol" && i.Message.Contains("gives coalesce 1 value, and it takes at least 2 values", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.Symbol" && i.Message.Contains("only a repeat input takes it", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.Aliases" && i.Message.Contains("reads no column, so every record gets the same value", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.Weight2" && i.Message.Contains("gives a value, and $when is a condition", StringComparison.Ordinal));
         Assert.Contains(issues, i => i.Target == "data.Nope" && i.Message.Contains("must start with 'osdu.'", StringComparison.Ordinal));
-        Assert.Contains(issues, i => i.Target == "osdu.data.When" && i.Message.Contains("text on one line", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.When" && i.Message.Contains("a condition is an expression now: $when: a = \"FINAL\"", StringComparison.Ordinal));
     }
 
     [Theory]
@@ -185,8 +193,9 @@ public class MappingBuilderTests
                     Input = MappingDraftInput.Dataset,
                     Column = "name",
                     Modifiers = [new MappingDraftModifier("replace", Replacements: [new MappingDraftReplacement(text.Length == 0 ? "empty" : text, text)])],
-                    AppliesWhen = new MappingDraftCondition("name", "isNot", ConditionText(text)),
+                    When = ConditionText(text),
                 },
+                new MappingDraftEntry { Target = "osdu.data.Count", Input = MappingDraftInput.Expression, Expression = $"length({ExpressionText(text)} & name)" },
             ],
         };
 
@@ -196,6 +205,7 @@ public class MappingBuilderTests
         var description = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Description");
         Assert.Equal(text, description.Modifiers.Single().Replacements.Values.Single());
         Assert.Equal(ConditionText(text), description.AppliesWhen!.Text);
+        Assert.Equal($"length({ExpressionText(text)} & name)", mapping.Entries.Single(e => e.Target.Text == "osdu.data.Count").Source!.Expression!.Text);
         if (text.Length > 0)
         {
             Assert.Equal(text.Trim(), mapping.Description?.Trim());
@@ -310,9 +320,9 @@ public class MappingBuilderTests
         Assert.DoesNotContain(MappingBuilder.Incomplete(draft), issue => issue.Target == "osdu.data.Symbol");
 
         var yaml = MappingBuilder.ToYaml(draft).ReplaceLineEndings("\n");
-        Assert.Contains("      - replace: cache.CurveClasses\n", yaml, StringComparison.Ordinal);
-        Assert.Equal(match is not null, yaml.Contains("        match: mnemonic\n", StringComparison.Ordinal));
-        Assert.Equal(field is not null, yaml.Contains("        field: curve_family\n", StringComparison.Ordinal));
+        Assert.Contains("        - replace: $cache.CurveClasses\n", yaml, StringComparison.Ordinal);
+        Assert.Equal(match is not null, yaml.Contains("          match: mnemonic\n", StringComparison.Ordinal));
+        Assert.Equal(field is not null, yaml.Contains("          field: curve_family\n", StringComparison.Ordinal));
 
         var modifier = new DeliveryDocumentLoader().ParseMapping(yaml, "cached-replace.yaml").Entries.Single(e => e.Target.Text == "osdu.data.Symbol").Modifiers.Single();
         Assert.Equal(new CachedReplaceTable("CurveClasses", match, field), modifier.Table);
@@ -345,8 +355,197 @@ public class MappingBuilderTests
         Assert.True(System.Text.Json.Nodes.JsonNode.DeepEquals(System.Text.Json.Nodes.JsonNode.Parse(Meta), mapping.Entries.Single(e => e.Target.Text == "osdu.tags.Meta").Static));
     }
 
-    /// <summary>A condition compares with one line of text, so the awkward texts are put on one line for it.</summary>
-    private static string ConditionText(string text) => text.Length == 0 ? "empty" : text.Replace('\n', ' ');
+    [Fact]
+    public void A_draft_is_written_as_the_record_tree_its_targets_name()
+    {
+        var draft = BaseDraft() with
+        {
+            Label = "{name} / {$dataset.depth}",
+            Entries =
+            [
+                .. BaseDraft().Entries,
+                new MappingDraftEntry { Target = "osdu.tags.Source", Input = MappingDraftInput.Static, Static = "\"{$param.dataPartition}-test\"" },
+                new MappingDraftEntry { Target = "osdu.data.Depth", Input = MappingDraftInput.Dataset, Column = "depth" },
+                new MappingDraftEntry { Target = "osdu.data.Curves[].TopDepth", Input = MappingDraftInput.Dataset, Column = "curves.top", Required = false },
+                new MappingDraftEntry
+                {
+                    Target = "osdu.data.Curves",
+                    Input = MappingDraftInput.Repeat,
+                    Child = "curves",
+                    Where = "curve_id != \"DEPT\"",
+                    When = "not empty(flag)",
+                },
+                new MappingDraftEntry
+                {
+                    Target = "osdu.data.Curves[].CurveID",
+                    Input = MappingDraftInput.Dataset,
+                    Column = "name",
+                    Modifiers = [new MappingDraftModifier("id", Text: "{$param.dataPartition}:reference-data--LogCurveType:{curve_id}-{$value}:")],
+                    When = "curve_id != \"MD\"",
+                },
+                new MappingDraftEntry { Target = "osdu.data.Curves[].Mnemonic", Input = MappingDraftInput.Expression, Expression = "coalesce(mnemonic, curve_id)", Modifiers = [new MappingDraftModifier("upper")] },
+                new MappingDraftEntry { Target = "osdu.data.Symbol", Input = MappingDraftInput.Expression, Expression = "iif(depth > 1000, 'deep', 'shallow')" },
+                new MappingDraftEntry { Target = "osdu.data.Nested.Inner", Input = MappingDraftInput.Static, Static = "\"fixed\"", Description = "Always the same." },
+                new MappingDraftEntry
+                {
+                    Target = "osdu.data.Unit",
+                    Input = MappingDraftInput.Cache,
+                    CacheType = "UnitOfMeasure",
+                    CacheField = "id",
+                    FindBy = [new MappingDraftFind("Code", "unit", null), new MappingDraftFind("Name", null, "metre")],
+                    IgnoreSeparators = true,
+                },
+            ],
+        };
+        Assert.Empty(MappingBuilder.Incomplete(draft));
+
+        var yaml = MappingBuilder.ToYaml(draft).ReplaceLineEndings("\n");
+        Assert.Contains(
+            """
+            record:
+              acl:
+                owners: [owners@x]
+                viewers: [viewers@x]
+              legal:
+                legaltags: [tag]
+                otherRelevantDataCountries: ["NO"]
+              data:
+                Name: { $from: name }
+                Depth: { $from: depth }
+                Curves:
+                  $forEach: curves
+                  $where: curve_id != "DEPT"
+                  $when: not empty(flag)
+                  $item:
+                    TopDepth:
+                      $from: top
+                      $required: false
+                    CurveID:
+                      $from: $dataset.name
+                      $modifiers:
+                        - id: "{$param.dataPartition}:reference-data--LogCurveType:{curve_id}-{$value}:"
+                      $when: curve_id != "MD"
+                    Mnemonic:
+                      $expr: coalesce(mnemonic, curve_id)
+                      $modifiers:
+                        - upper
+                Symbol:
+                  $expr: iif(depth > 1000, 'deep', 'shallow')
+                Nested:
+                  Inner:
+                    $value: fixed
+                    $description: Always the same.
+                Unit:
+                  $cache: UnitOfMeasure.id
+                  $findBy:
+                    - Code = unit
+                    - Name = 'metre'
+                  $ignoreSeparators: true
+              tags:
+                Source: "{$param.dataPartition}-test"
+            """,
+            yaml,
+            StringComparison.Ordinal);
+        Assert.Contains("  label: \"{name} / {$dataset.depth}\"\n", yaml, StringComparison.Ordinal);
+
+        // What the builder wrote loads, reads the item's row and the dataset's row where the draft said, and opens again as
+        // the same entries in the tree's order.
+        var mapping = new DeliveryDocumentLoader().ParseMapping(yaml, "tree.yaml");
+        var curveId = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveID");
+        Assert.Equal(new DatasetColumn(null, "name"), curveId.Source!.Column);
+        Assert.Equal([new DatasetColumn("curves", "curve_id")], curveId.AppliesWhen!.Columns);
+        var curves = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves");
+        Assert.Equal([new DatasetColumn("curves", "curve_id")], curves.RowFilter!.Columns);
+        Assert.Equal([new DatasetColumn(null, "flag")], curves.AppliesWhen!.Columns);
+        Assert.Equal(
+            [new DatasetColumn("curves", "mnemonic"), new DatasetColumn("curves", "curve_id")],
+            mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].Mnemonic").Source!.Expression!.Columns);
+        Assert.Equal([new DatasetColumn("curves", "curve_id")], curveId.Modifiers.Single().Id!.Columns);
+        Assert.Equal("record.data.Curves.$item.CurveID", curveId.Location);
+        Assert.Equal("{name} / {depth}", mapping.Dataset.Label);
+
+        var reopened = MappingBuilder.FromDefinition(mapping);
+        Assert.Equal(yaml.Replace("{$dataset.depth}", "{depth}", StringComparison.Ordinal), MappingBuilder.ToYaml(reopened).ReplaceLineEndings("\n"));
+        Assert.Equal(MappingBuilder.ToYaml(reopened), MappingBuilder.ToYaml(MappingBuilder.FromDefinition(new DeliveryDocumentLoader().ParseMapping(MappingBuilder.ToYaml(reopened), "again.yaml"))));
+    }
+
+    [Fact]
+    public void An_entry_the_tree_has_no_place_for_is_left_out_with_why_and_reported()
+    {
+        var draft = BaseDraft() with
+        {
+            Entries =
+            [
+                .. BaseDraft().Entries,
+                new MappingDraftEntry { Target = "osdu.data.Curves[].CurveID", Input = MappingDraftInput.Dataset, Column = "curves.curve_id" },
+                new MappingDraftEntry { Target = "osdu.data.Nested", Input = MappingDraftInput.Static, Static = """{"Inner":"x"}""" },
+                new MappingDraftEntry { Target = "osdu.data.Nested.Inner", Input = MappingDraftInput.Dataset, Column = "name" },
+                new MappingDraftEntry { Target = "osdu.data.Depth", Input = MappingDraftInput.Dataset, Column = "depth" },
+            ],
+        };
+
+        var issues = MappingBuilder.Incomplete(draft);
+        Assert.Contains(issues, i => i.Target == "osdu.data.Curves[].CurveID" && i.Message.Contains("no entry repeats a child dataset's rows at osdu.data.Curves", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.Curves[].CurveID" && i.Message.Contains("reads a column of child dataset 'curves'", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Target == "osdu.data.Nested.Inner" && i.Message.Contains("lies inside osdu.data.Nested, which an entry fills whole", StringComparison.Ordinal));
+
+        // What has a place is written, and loads; the rest is named in a comment where the record starts.
+        var yaml = MappingBuilder.ToYaml(draft).ReplaceLineEndings("\n");
+        Assert.Contains("record:\n  # Left out: osdu.data.Nested.Inner lies inside osdu.data.Nested, which an entry fills whole.\n", yaml, StringComparison.Ordinal);
+        Assert.Contains("  # Left out: osdu.data.Curves[].CurveID fills a property of the items of osdu.data.Curves", yaml, StringComparison.Ordinal);
+        var mapping = new DeliveryDocumentLoader().ParseMapping(yaml, "partial.yaml");
+        Assert.Equal("""{"Inner":"x"}""", mapping.Entries.Single(e => e.Target.Text == "osdu.data.Nested").Static!.ToJsonString());
+        Assert.DoesNotContain(mapping.Entries, e => e.Target.Text is "osdu.data.Curves[].CurveID" or "osdu.data.Nested.Inner");
+
+        // A repeat whose items nothing fills yet is written with an empty item for the author to fill, and reported.
+        var empty = BaseDraft() with { Entries = [.. BaseDraft().Entries, new MappingDraftEntry { Target = "osdu.data.Curves", Input = MappingDraftInput.Repeat, Child = "curves" }] };
+        Assert.Contains(MappingBuilder.Incomplete(empty), i => i.Target == "osdu.data.Curves" && i.Message.Contains("add an entry for each property an item takes", StringComparison.Ordinal));
+        Assert.Contains("    Curves:\n      $forEach: curves\n      $item: {}\n", MappingBuilder.ToYaml(empty).ReplaceLineEndings("\n"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_literal_keeps_properties_whose_names_start_with_a_dollar()
+    {
+        const string Listed = """[{"$ref":"a","Plain":{"$deep":1}}]""";
+        const string Whole = """{"$ref":"b","List":[{"$id":2}]}""";
+        var draft = BaseDraft() with
+        {
+            Entries =
+            [
+                .. BaseDraft().Entries,
+                new MappingDraftEntry { Target = "osdu.data.Curves", Input = MappingDraftInput.Static, Static = Listed },
+                new MappingDraftEntry { Target = "osdu.data.Nested", Input = MappingDraftInput.Static, Static = Whole },
+            ],
+        };
+
+        // In the tree a list's objects write such a property with one more '$'; what $value holds is written as it is.
+        var yaml = MappingBuilder.ToYaml(draft).ReplaceLineEndings("\n");
+        Assert.Contains("      - $$ref: a\n        Plain:\n          $$deep: 1\n", yaml, StringComparison.Ordinal);
+        Assert.Contains("      $value:\n        $ref: b\n", yaml, StringComparison.Ordinal);
+
+        var mapping = new DeliveryDocumentLoader().ParseMapping(yaml, "dollars.yaml");
+        Assert.Equal(Listed, mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves").Static!.ToJsonString());
+        Assert.Equal(Whole, mapping.Entries.Single(e => e.Target.Text == "osdu.data.Nested").Static!.ToJsonString());
+    }
+
+    [Theory]
+    [InlineData("\"{$dataset.name}\"", "a literal reads only a parameter")]
+    [InlineData("\"{param.dataPartition}\"", "a parameter is read as {$param.dataPartition}")]
+    [InlineData("[\"{$value}\"]", "a literal reads only a parameter")]
+    public void A_fixed_value_holding_a_token_it_cannot_read_is_an_issue_and_the_loader_refuses_it(string value, string problem)
+    {
+        var draft = BaseDraft() with { Entries = [.. BaseDraft().Entries, new MappingDraftEntry { Target = "osdu.data.Symbol", Input = MappingDraftInput.Static, Static = value }] };
+        Assert.Contains(MappingBuilder.Incomplete(draft), i => i.Target == "osdu.data.Symbol" && i.Message.Contains(problem, StringComparison.Ordinal));
+        var refused = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseMapping(MappingBuilder.ToYaml(draft), "tokens.yaml"));
+        Assert.Contains(problem, refused.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A condition comparing the name with the awkward text, written as an expression text literal.</summary>
+    private static string ConditionText(string text) => $"name != {ExpressionText(text)}";
+
+    /// <summary>A text as an expression writes it: in double quotes, with its backslashes, quotes and line breaks escaped.</summary>
+    private static string ExpressionText(string text)
+        => "\"" + text.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal) + "\"";
 
     private static MappingDraft BaseDraft() => new()
     {

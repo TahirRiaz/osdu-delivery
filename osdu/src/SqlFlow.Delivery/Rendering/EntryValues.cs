@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using SqlFlow.Delivery.Expressions;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Search;
 using SqlFlow.Delivery.Snapshots;
@@ -18,21 +19,34 @@ internal static partial class EntryValues
     public static JsonNode? Evaluate(
         MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, SearchTrail searched)
     {
-        if (entry.AppliesWhen is { } condition && !Applies(condition, root, item))
+        var path = entry.Target.Text;
+        if (entry.AppliesWhen is { } condition && !Applies(condition, root, item, renderer, holds, path))
         {
             return null;
         }
 
-        var path = entry.Target.Text;
         object? raw;
         if (entry.Static is { } fixedValue)
         {
             raw = Expand(fixedValue, renderer);
         }
-        else if (entry.Source!.Kind == MappingSourceKind.DatasetColumn)
+        else if (entry.Source!.ReadsRow)
         {
-            var column = entry.Source.Column!;
-            if (!TryModify(entry, Read(column, root, item), root, item, renderer, holds, usages, out raw))
+            object? read;
+            if (entry.Source.Expression is { } expression)
+            {
+                if (!expression.TryEvaluate(Input(root, item, renderer), out read, out var problem))
+                {
+                    holds.Add($"{path}: {problem}");
+                    return null;
+                }
+            }
+            else
+            {
+                read = Read(entry.Source.Column!, root, item);
+            }
+
+            if (!TryModify(entry, read, root, item, renderer, holds, usages, out raw))
             {
                 return null;
             }
@@ -41,7 +55,9 @@ internal static partial class EntryValues
             {
                 if (entry.Required)
                 {
-                    holds.Add($"{path}: {column} is empty, and the entry is required");
+                    holds.Add(entry.Source.Expression is { } computed
+                        ? $"{path}: {computed} gives no value, and the entry is required"
+                        : $"{path}: {entry.Source.Column} is empty, and the entry is required");
                 }
 
                 return null;
@@ -161,19 +177,25 @@ internal static partial class EntryValues
         _ => modifier.ToString(),
     }));
 
-    /// <summary>Whether an entry's <c>appliesWhen</c> holds for the row. Comparison is of trimmed text, ignoring case.</summary>
-    public static bool Applies(EntryCondition condition, SourceRow root, SourceRow? item)
+    /// <summary>
+    /// Whether a <c>$when</c> or a <c>$where</c> holds for the row. A condition the row gives a value it cannot test
+    /// (text where a number is compared, say) does not hold, and holds the record with the reason: whether the property
+    /// belongs in the record is then unknown, and a record written without it would hide that.
+    /// </summary>
+    public static bool Applies(MappingExpression condition, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, string path)
     {
-        var text = SourceRow.Stringify(Read(condition.Column, root, item))?.Trim();
-        var empty = string.IsNullOrEmpty(text);
-        return condition.Operator switch
+        if (condition.TryTest(Input(root, item, renderer), out var applies, out var problem))
         {
-            ConditionOperator.IsEmpty => empty,
-            ConditionOperator.IsNotEmpty => !empty,
-            ConditionOperator.Is => !empty && string.Equals(text, condition.Text!.Trim(), StringComparison.OrdinalIgnoreCase),
-            _ => empty || !string.Equals(text, condition.Text!.Trim(), StringComparison.OrdinalIgnoreCase),
-        };
+            return applies;
+        }
+
+        holds.Add($"{path}: {problem}");
+        return false;
     }
+
+    /// <summary>What an expression reads for a row: the row's columns, the dataset's own row's, and the render's parameters.</summary>
+    private static ExpressionInput Input(SourceRow root, SourceRow? item, MappingRenderer renderer)
+        => new(column => Read(column, root, item), renderer.ParameterValue);
 
     private static object? Read(DatasetColumn column, SourceRow root, SourceRow? item)
         => column.Child is null ? root.Get(column.Column) : item?.Get(column.Column);
@@ -246,6 +268,20 @@ internal static partial class EntryValues
                     break;
                 case ModifierKind.Id:
                     if (!TryBuildId(modifier.Id!, text, entry, root, item, renderer, holds, usages, out result))
+                    {
+                        return false;
+                    }
+
+                    break;
+                case ModifierKind.Ref:
+                    if (renderer.ReferenceTemplate(entry, out var referenceProblem) is not { } reference)
+                    {
+                        holds.Add($"{path}: {referenceProblem}");
+                        result = null;
+                        return false;
+                    }
+
+                    if (!TryBuildId(reference, text, entry, root, item, renderer, holds, usages, out result))
                     {
                         return false;
                     }
@@ -342,7 +378,7 @@ internal static partial class EntryValues
         var type = renderer.References.Type(table.CacheType);
         if (type is null)
         {
-            holds.Add($"{path}: replace reads cache.{table.CacheType}, and {version} holds no type '{table.CacheType}'");
+            holds.Add($"{path}: replace reads $cache.{table.CacheType}, and {version} holds no type '{table.CacheType}'");
             return false;
         }
 

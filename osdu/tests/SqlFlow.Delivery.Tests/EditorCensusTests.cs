@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Expressions;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -57,8 +58,8 @@ public sealed class EditorCensusTests
         Assert.Equal(keys.Count, Paths(census).Count);
         var text = File.ReadAllText(Path.Combine(CensusDirectory, file));
         // The project's writing style forbids the em dash in any text it ships, and an en dash standing in for one.
-        Assert.DoesNotContain('—', text);
-        Assert.DoesNotContain('–', text);
+        Assert.DoesNotContain('\u2014', text);
+        Assert.DoesNotContain('\u2013', text);
     }
 
     [Theory]
@@ -94,42 +95,34 @@ public sealed class EditorCensusTests
         var missing = accepted.Paths.Keys.Where(p => !documented.Contains(p)).ToList();
         Assert.True(missing.Count == 0, $"keys.mapping.json leaves out keys the loader accepts: {string.Join(", ", missing)}");
 
-        // Below a modifier, the census documents what MappingMapper parses by hand: a keyed modifier, its settings, and
-        // the settings a replace takes beside its table.
-        const string Modifier = "mappings[].modifiers[]";
-        var keyed = MappingMapper.ModifierNames.Except(["trim", "upper", "lower"], StringComparer.Ordinal).ToList();
-        var expectedBelow = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var name in keyed)
-        {
-            expectedBelow.Add($"{Modifier}.{name}");
-        }
-
-        foreach (var setting in MappingMapper.SplitSettings)
-        {
-            expectedBelow.Add($"{Modifier}.split.{setting}");
-        }
-
-        foreach (var setting in MappingMapper.NumberSettings)
-        {
-            expectedBelow.Add($"{Modifier}.number.{setting}");
-        }
-
-        foreach (var setting in MappingMapper.ReplaceSettings)
-        {
-            expectedBelow.Add($"{Modifier}.{setting}");
-        }
-
-        expectedBelow.Add($"{Modifier}.replace.<value>");
-        var below = documented.Where(p => p.StartsWith(Modifier + ".", StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal);
-        Assert.Equal(expectedBelow, below.Order(StringComparer.Ordinal).ToHashSet(StringComparer.Ordinal));
-
-        // Nothing else is documented that the loader would refuse.
-        var extras = documented.Where(p => !accepted.Paths.ContainsKey(p) && !p.StartsWith(Modifier + ".", StringComparison.Ordinal)).ToList();
+        // The record is a tree the loader reads node by node, so the census documents it as free-form, names the record's
+        // own blocks for completion, and nothing else the loader would refuse.
+        Assert.Contains("record.<name>", accepted.FreeForm);
+        string[] blocks = ["record.acl", "record.legal", "record.tags", "record.data"];
+        var extras = documented.Where(p => !accepted.Paths.ContainsKey(p) && !blocks.Contains(p)).ToList();
         Assert.True(extras.Count == 0, $"keys.mapping.json documents keys the loader refuses: {string.Join(", ", extras)}");
+        Assert.All(blocks, block => Assert.Contains(block, documented));
 
-        // The named modifiers are the census's allowed values for a modifier written as a name.
-        var modifierEntry = Keys(Census("keys.mapping.json")).Single(k => k["path"]!.GetValue<string>() == Modifier);
-        Assert.Equal(MappingMapper.ModifierNames, modifierEntry["enumValues"]!.AsArray().Select(v => v!.GetValue<string>()));
+        // A node's grammar is what MappingMapper parses by hand, so the free-form entry names every word of the mapping
+        // language, every modifier and every setting a modifier takes, and the editor's hover says all of it.
+        var node = Keys(Census("keys.mapping.json")).Single(k => k["path"]!.GetValue<string>() == "record.<name>");
+        Assert.True(node["freeForm"]?.GetValue<bool>() ?? false, "record.<name> takes any node below it.");
+        var grammar = node["description"]!.GetValue<string>();
+        var words = MappingMapper.NodeKeys
+            .Concat(MappingMapper.ModifierNames)
+            .Concat(MappingMapper.SplitSettings)
+            .Concat(MappingMapper.NumberSettings)
+            .Concat(MappingMapper.ReplaceSettings)
+            .Append(MappingMapper.DatasetReference)
+            .Append(MappingMapper.CacheReference)
+            .Append("{$param.<name>}")
+            .Append("{$value}")
+            .Append("$$<name>")
+            .Append("$param.<name>")
+            .Append("iif(condition, value, other)")
+            .Concat(ExpressionFunctions.All.Select(f => f.Signature));
+        var unnamed = words.Where(word => !grammar.Contains(word, StringComparison.Ordinal)).ToList();
+        Assert.True(unnamed.Count == 0, $"record.<name> does not describe: {string.Join(", ", unnamed)}");
     }
 
     [Fact]

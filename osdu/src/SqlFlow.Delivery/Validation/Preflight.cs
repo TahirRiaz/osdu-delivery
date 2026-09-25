@@ -32,13 +32,17 @@ public static partial class Preflight
     /// The mapping's searches resolved against the schemas they pin. A mapping that declares searches is checked only
     /// with them, since without them nothing says whether its lookups can be asked at all.
     /// </param>
+    /// <param name="fixtures">
+    /// False leaves the fixtures unchecked, for a caller that renders them itself (<see cref="RenderFixtures"/>).
+    /// </param>
     public static IReadOnlyList<ValidationIssue> Check(
         MappingDefinition mapping,
         SchemaSnapshot schema,
         ReferenceSnapshot references,
         RenderContext context,
         IReadOnlyDictionary<string, IReadOnlySet<string>>? sourceColumns,
-        ResolvedSearches? searches = null)
+        ResolvedSearches? searches = null,
+        bool fixtures = true)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schema);
@@ -116,8 +120,13 @@ public static partial class Preflight
             return issues;
         }
 
-        // 10. Every fixture renders exactly as declared under this context.
-        CheckFixtures(mapping, renderer, issues, where);
+        // 10. Every fixture renders exactly as declared under this context, unless the caller renders them itself (the
+        //     fixtures update verb, which writes what they render).
+        if (fixtures)
+        {
+            CheckFixtures(mapping, renderer, issues, where);
+        }
+
         return issues;
     }
 
@@ -197,7 +206,7 @@ public static partial class Preflight
 
         if (variable.Nested)
         {
-            issues.Add(ValidationIssue.Error($"{name}: {entry.Target.Text} is a list inside a repeated item; a repeater inside a repeater is not supported."));
+            issues.Add(ValidationIssue.Error($"{name}: {entry.Target.Text} is a list inside a repeated item; a $forEach inside a $forEach is not supported."));
             return;
         }
 
@@ -208,7 +217,7 @@ public static partial class Preflight
             return;
         }
 
-        if (entry.Modifiers.Count > 0 && entry.Modifiers[^1].Kind == ModifierKind.Equals && entry.Source?.Kind == MappingSourceKind.DatasetColumn
+        if (entry.Modifiers.Count > 0 && entry.Modifiers[^1].Kind == ModifierKind.Equals && entry.Source?.ReadsRow == true
             && variable.Type is not ("boolean" or "any"))
         {
             issues.Add(ValidationIssue.Error($"{name}: the last modifier is equals, which gives true or false, but the template takes a {variable.Type} at {entry.Target.Text}."));
@@ -217,6 +226,7 @@ public static partial class Preflight
         CheckWrittenForm(entry, variable, renderer, issues, name);
         CheckReplaces(entry, references, issues, name);
         CheckId(entry, variable, references, renderer, issues, name);
+        CheckExpressionParameters(entry, renderer, issues, name);
 
         if (entry.IsStatic)
         {
@@ -240,7 +250,7 @@ public static partial class Preflight
     /// </summary>
     private static void CheckWrittenForm(MappingEntry entry, TemplateVariable variable, MappingRenderer renderer, List<ValidationIssue> issues, string name)
     {
-        if (entry.Source?.Kind != MappingSourceKind.DatasetColumn)
+        if (entry.Source?.ReadsRow != true)
         {
             return;
         }
@@ -294,31 +304,31 @@ public static partial class Preflight
         {
             return shape == TemplateVariableShape.GroupList
                 ? null
-                : $"{entry.Source} repeats rows into {target}, but a repeater fills a list of objects and {target} is {Describe(variable)}.";
+                : $"{entry.Source} repeats rows into {target}, but a $forEach fills a list of objects and {target} is {Describe(variable)}.";
         }
 
         if (entry.Static is JsonObject)
         {
             return shape is TemplateVariableShape.Group or TemplateVariableShape.Whole && variable.Type is "object" or "any"
                 ? null
-                : $"a static object cannot be written to {target}, which is {Describe(variable)}.";
+                : $"a literal object cannot be written to {target}, which is {Describe(variable)}.";
         }
 
         if (entry.Static is JsonArray)
         {
             return shape is TemplateVariableShape.ValueList or TemplateVariableShape.GroupList or TemplateVariableShape.Whole && variable.Type is "array" or "any"
                 ? null
-                : $"a static list cannot be written to {target}, which is {Describe(variable)}.";
+                : $"a literal list cannot be written to {target}, which is {Describe(variable)}.";
         }
 
         if (entry.IsStatic)
         {
             return shape is TemplateVariableShape.Value or TemplateVariableShape.ValueList
                 ? null
-                : $"a single static value cannot be written to {target}, which is {Describe(variable)}.";
+                : $"a single literal value cannot be written to {target}, which is {Describe(variable)}.";
         }
 
-        if (entry.Source!.Kind == MappingSourceKind.DatasetColumn)
+        if (entry.Source!.ReadsRow)
         {
             return shape is TemplateVariableShape.Value or TemplateVariableShape.ValueList
                 ? null
@@ -333,7 +343,7 @@ public static partial class Preflight
         }
 
         return shape == TemplateVariableShape.GroupList
-            ? $"{target} is {Describe(variable)}, which a repeater fills from a child dataset, not a cache value."
+            ? $"{target} is {Describe(variable)}, which a $forEach fills from a child dataset, not a cache value."
             : null;
     }
 
@@ -346,6 +356,21 @@ public static partial class Preflight
         _ => variable.Type == "array" ? "a list the schema does not break into properties" : "an object the schema does not break into properties",
     };
 
+    /// <summary>
+    /// Every parameter an expression of the entry reads has a value in the flow: one without reads as no value, so a
+    /// condition on it would never hold and a value computed from it would be missing, on every record.
+    /// </summary>
+    private static void CheckExpressionParameters(MappingEntry entry, MappingRenderer renderer, List<ValidationIssue> issues, string name)
+    {
+        foreach (var expression in entry.Expressions)
+        {
+            foreach (var parameter in expression.Parameters.Where(p => string.IsNullOrWhiteSpace(renderer.ParameterValue(p))))
+            {
+                issues.Add(ValidationIssue.Error($"{name} reads $param.{parameter} in '{expression}', which the flow supplies no value for."));
+            }
+        }
+    }
+
     private static void CheckStatic(MappingEntry entry, TemplateVariable variable, ReferenceSnapshot references, MappingRenderer renderer, List<ValidationIssue> issues, string name)
     {
         var texts = MappingMapper.StaticTexts(entry.Static).ToList();
@@ -355,7 +380,7 @@ public static partial class Preflight
             {
                 if (renderer.ParameterValue(parameter) is null)
                 {
-                    issues.Add(ValidationIssue.Error($"{name} uses {{param.{parameter}}}, which the flow supplies no value for."));
+                    issues.Add(ValidationIssue.Error($"{name} uses {{$param.{parameter}}}, which the flow supplies no value for."));
                 }
             }
         }
@@ -429,7 +454,7 @@ public static partial class Preflight
         {
             var available = references.Types.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
             issues.Add(ValidationIssue.Error(
-                $"{name} reads cache.{source.CacheType}, which cache version '{references.Version}' does not hold. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
+                $"{name} reads {source.CacheType} from the cache, and cache version '{references.Version}' does not hold it. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
             return;
         }
 
@@ -451,7 +476,7 @@ public static partial class Preflight
         if (source.ReadsRecordId && cached.IsLookup)
         {
             issues.Add(ValidationIssue.Error(
-                $"{name} reads cache.{cached.Name}.id, and {cached.Name} is a lookup table whose rows are not OSDU records, so it has no id to write. Read one of its fields: {string.Join(", ", cached.FieldNames)}."));
+                $"{name} reads the id of a {cached.Name} row, and {cached.Name} is a lookup table whose rows are not OSDU records, so it has no id to write. Read one of its fields: {string.Join(", ", cached.FieldNames)}."));
             return;
         }
 
@@ -487,15 +512,31 @@ public static partial class Preflight
     }
 
     /// <summary>
-    /// 7c. An id modifier: the variable takes text; each cache token reads a lookup table the cache version holds, at a field
-    /// its rows hold; each parameter has a value; and the id the template builds, with a stand-in for what a row gives, is
-    /// one the variable takes: of an entity type its relationship allows, and matching its pattern.
+    /// 7c. An id or a ref modifier: a ref's entity type is one the template settles; the variable takes text; each cache
+    /// token reads a lookup table the cache version holds, at a field its rows hold; each parameter has a value; and the id
+    /// the template builds, with a stand-in for what a row gives, is one the variable takes: of an entity type its
+    /// relationship allows, and matching its pattern.
     /// </summary>
     private static void CheckId(MappingEntry entry, TemplateVariable variable, ReferenceSnapshot references, MappingRenderer renderer, List<ValidationIssue> issues, string name)
     {
-        if (entry.Modifiers.LastOrDefault(m => m.Kind == ModifierKind.Id)?.Id is not { } template)
+        if (entry.Modifiers.LastOrDefault(m => m.BuildsId) is not { } builder)
         {
             return;
+        }
+
+        IdTemplate? template;
+        if (builder.Kind == ModifierKind.Ref)
+        {
+            template = renderer.ReferenceTemplate(entry, out var problem);
+            if (template is null)
+            {
+                issues.Add(ValidationIssue.Error($"{name}: {problem}."));
+                return;
+            }
+        }
+        else
+        {
+            template = builder.Id!;
         }
 
         var target = entry.Target.Text;
@@ -517,7 +558,7 @@ public static partial class Preflight
 
         foreach (var parameter in template.Parameters.Where(p => string.IsNullOrWhiteSpace(renderer.ParameterValue(p))))
         {
-            issues.Add(ValidationIssue.Error($"{name}: the id {template} reads {{param.{parameter}}}, which the flow supplies no value for."));
+            issues.Add(ValidationIssue.Error($"{name}: the id {template} reads {{$param.{parameter}}}, which the flow supplies no value for."));
         }
 
         if (template.EntityType is not { } entityType)
@@ -575,14 +616,14 @@ public static partial class Preflight
         {
             issues.Add(ValidationIssue.Error(
                 $"{name}: the id reads {token}, and {type.Name} holds OSDU records ({type.EntityType}), which have no key to look the value up by; a cache token reads a lookup table, "
-                + $"keyed by the value. Turn the value into the field an id needs with a replace before the id, such as replace: cache.{type.Name}, match: Code, field: Code."));
+                + $"keyed by the value. Turn the value into the field an id needs with a replace before the id, such as replace: $cache.{type.Name}, match: Code, field: Code."));
             return;
         }
 
         var field = ReferenceField.Normalize(token.CacheField!);
         if (field.Equals(ReferenceField.Normalize(key), StringComparison.OrdinalIgnoreCase))
         {
-            issues.Add(ValidationIssue.Warning($"{name}: the id reads {token}, the key {type.Name} is looked up by, which is the value itself; write {{value}}."));
+            issues.Add(ValidationIssue.Warning($"{name}: the id reads {token}, the key {type.Name} is looked up by, which is the value itself; write {{$value}}."));
             return;
         }
 
@@ -659,7 +700,7 @@ public static partial class Preflight
         {
             var available = references.Types.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
             issues.Add(ValidationIssue.Error(
-                $"{name}: replace reads cache.{table.CacheType}, which cache version '{references.Version}' does not hold. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
+                $"{name}: replace reads $cache.{table.CacheType}, which cache version '{references.Version}' does not hold. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
             return null;
         }
 
@@ -673,7 +714,7 @@ public static partial class Preflight
         if (type.Items.Count == 0)
         {
             issues.Add(ValidationIssue.Warning(
-                $"{name}: replace reads cache.{type.Name}, which holds no rows in cache version '{references.Version}', so every value becomes what its otherwise says."));
+                $"{name}: replace reads $cache.{type.Name}, which holds no rows in cache version '{references.Version}', so every value becomes what its otherwise says."));
             return [];
         }
 
@@ -873,7 +914,7 @@ public static partial class Preflight
         {
             foreach (Match token in MappingMapper.LabelToken().Matches(label))
             {
-                Require(new DatasetColumn(null, token.Groups["column"].Value[(DatasetColumn.Prefix.Length + 1)..]), "dataset.label");
+                Require(new DatasetColumn(null, token.Groups["column"].Value), "dataset.label");
             }
         }
 
@@ -891,8 +932,17 @@ public static partial class Preflight
         }
     }
 
-    private static void CheckFixtures(MappingDefinition mapping, MappingRenderer renderer, List<ValidationIssue> issues, string where)
+    /// <summary>
+    /// Renders every fixture of <paramref name="mapping"/> as the preflight gate does: over its own rows, with its
+    /// parameters over the render's, against the search answers it declares and never the platform. A fixture that fails
+    /// to render, or asks a search it declares no answer to, carries why instead of a result. The gate compares what each
+    /// renders with what it expects; <c>sqlflow fixtures update</c> writes it.
+    /// </summary>
+    public static IReadOnlyList<FixtureRender> RenderFixtures(MappingDefinition mapping, MappingRenderer renderer)
     {
+        ArgumentNullException.ThrowIfNull(mapping);
+        ArgumentNullException.ThrowIfNull(renderer);
+        var renders = new List<FixtureRender>(mapping.Fixtures.Count);
         foreach (var fixture in mapping.Fixtures)
         {
             var datasets = fixture.Datasets.ToDictionary(
@@ -923,7 +973,7 @@ public static partial class Preflight
             }
             catch (DeliveryException ex)
             {
-                issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' failed to render: {ex.Message}"));
+                renders.Add(new FixtureRender(fixture, null, $"failed to render: {ex.Message}"));
                 continue;
             }
 
@@ -932,11 +982,28 @@ public static partial class Preflight
                 var searchesOf = mapping.Searches.Values.ToDictionary(v => v.Kind, v => v.Name, StringComparer.Ordinal);
                 var missing = string.Join("; ", result.Unanswered.Select(q =>
                     $"{{ search: {searchesOf.GetValueOrDefault(q.Kind, q.Kind)}, field: {q.Field}, value: {q.Value}, id: <the record found, or leave it out for none> }}"));
-                issues.Add(ValidationIssue.Error(
-                    $"{where}: fixture '{fixture.Name}' searches for what it declares no answer to; a fixture says what the platform answers to every search its render asks, under 'searches': {missing}"));
+                renders.Add(new FixtureRender(
+                    fixture, null, $"searches for what it declares no answer to; a fixture says what the platform answers to every search its render asks, under 'searches': {missing}"));
                 continue;
             }
 
+            renders.Add(new FixtureRender(fixture, result, null));
+        }
+
+        return renders;
+    }
+
+    private static void CheckFixtures(MappingDefinition mapping, MappingRenderer renderer, List<ValidationIssue> issues, string where)
+    {
+        foreach (var (fixture, rendered, problem) in RenderFixtures(mapping, renderer))
+        {
+            if (problem is not null)
+            {
+                issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' {problem}"));
+                continue;
+            }
+
+            var result = rendered!;
             JsonNode? expected;
             try
             {
@@ -965,6 +1032,15 @@ public static partial class Preflight
     [GeneratedRegex(@"^(?<id>[\w\-\.]+:(?<entity>[\w\-\.]+--[\w\-\.]+):[\w\-\.\%]+):?[0-9]*$")]
     private static partial Regex RecordId();
 }
+
+/// <summary>
+/// One fixture as the preflight renders it: the render, or why there is none (it failed, or it asked a search the
+/// fixture declares no answer to).
+/// </summary>
+/// <param name="Fixture">The fixture rendered.</param>
+/// <param name="Result">What it rendered, or null when <paramref name="Problem"/> says why it did not.</param>
+/// <param name="Problem">Why the fixture has no render, as a phrase that follows "fixture 'name'", or null.</param>
+public sealed record FixtureRender(MappingFixture Fixture, RenderResult? Result, string? Problem);
 
 public enum IssueSeverity
 {

@@ -17,7 +17,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// A replace that reads its table from the partition's cache (<c>replace: cache.&lt;Type&gt;</c>): a dictionary, a table
+/// A replace that reads its table from the partition's cache (<c>replace: $cache.&lt;Type&gt;</c>): a dictionary, a table
 /// read from an ingestion table, or OSDU reference data, matched and replaced by the cache's own rules, every row it used
 /// recorded, and what it cannot decide held rather than guessed.
 /// </summary>
@@ -63,14 +63,14 @@ public sealed class CachedReplaceTests : IDisposable
     public void A_replace_names_a_cached_table_and_the_fields_it_matches_on_and_replaces_by()
     {
         var mapping = TestSchema.Mapping("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                modifiers:
-                  - replace: cache.RecallUnits
-              - target: osdu.data.Description
-                source: dataset.unit
-                modifiers:
-                  - replace: cache.CurveClasses
+              Symbol:
+                $from: unit
+                $modifiers:
+                  - replace: $cache.RecallUnits
+              Description:
+                $from: unit
+                $modifiers:
+                  - replace: $cache.CurveClasses
                     field: curve_family
                     match: mnemonic
                     otherwise: ~
@@ -80,39 +80,39 @@ public sealed class CachedReplaceTests : IDisposable
         Assert.Equal(new CachedReplaceTable("RecallUnits", null, null), plain.Table);
         Assert.Empty(plain.Replacements);
         Assert.Equal(ReplaceFallback.Keep, plain.Otherwise);
-        Assert.Equal("replace from cache.RecallUnits", plain.ToString());
+        Assert.Equal("replace from $cache.RecallUnits", plain.ToString());
 
         var named = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Description").Modifiers.Single();
         Assert.Equal(new CachedReplaceTable("CurveClasses", "mnemonic", "curve_family"), named.Table);
-        Assert.Equal("replace from cache.CurveClasses (mnemonic to curve_family), otherwise ~", named.ToString());
+        Assert.Equal("replace from $cache.CurveClasses (mnemonic to curve_family), otherwise ~", named.ToString());
 
         // A table read by a modifier alone is still a type the mapping reads, for the render, the intake and lineage alike.
         Assert.Equal(["CurveClasses", "RecallUnits"], mapping.CacheTypesRead());
         Assert.Equal(["CurveClasses", "RecallUnits"], DeliveryLineage.CacheTypes(mapping));
 
         string Refused(string modifier) => Assert.Throws<FlowValidationException>(() => TestSchema.Mapping($"""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                modifiers:
+              Symbol:
+                $from: unit
+                $modifiers:
             {modifier}
             """)).Message;
-        Assert.Contains("a table read from the cache is named cache.<Type>, such as replace: cache.RecallUnits", Refused("      - replace: RecallUnits"), StringComparison.Ordinal);
-        Assert.Contains("a table read from the cache is named cache.<Type>", Refused("      - replace: cache.Recall.Units"), StringComparison.Ordinal);
-        Assert.Contains("a table read from the cache is named cache.<Type>", Refused("      - replace: search.Wellbore"), StringComparison.Ordinal);
-        Assert.Contains("replace's match names a field of the cached table", Refused("      - replace: cache.RecallUnits\n        match: [a, b]"), StringComparison.Ordinal);
-        Assert.Contains("replace's field names a field of the cached table", Refused("      - replace: cache.RecallUnits\n        field: \"a b\""), StringComparison.Ordinal);
-        Assert.Contains("replace's field names a field of the cached table", Refused("      - replace: cache.RecallUnits\n        field: ~"), StringComparison.Ordinal);
+        Assert.Contains("a table read from the cache is named $cache.<Type>, such as replace: $cache.RecallUnits", Refused("      - replace: RecallUnits"), StringComparison.Ordinal);
+        Assert.Contains("a table read from the cache is named $cache.<Type>", Refused("      - replace: $cache.Recall.Units"), StringComparison.Ordinal);
+        Assert.Contains("a table read from the cache is named $cache.<Type>", Refused("      - replace: search.Wellbore"), StringComparison.Ordinal);
+        Assert.Contains("replace's match names a field of the cached table", Refused("      - replace: $cache.RecallUnits\n        match: [a, b]"), StringComparison.Ordinal);
+        Assert.Contains("replace's field names a field of the cached table", Refused("      - replace: $cache.RecallUnits\n        field: \"a b\""), StringComparison.Ordinal);
+        Assert.Contains("replace's field names a field of the cached table", Refused("      - replace: $cache.RecallUnits\n        field: ~"), StringComparison.Ordinal);
     }
 
     [Fact]
     public void A_cached_dictionary_replaces_a_value_on_its_key_by_its_value_and_every_row_it_used_is_recorded()
     {
         var renderer = Renderer("""
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
-                modifiers:
-                  - replace: cache.RecallUnits
+              Unit:
+                $cache: UnitOfMeasure.id
+                $findBy: Code = unit
+                $modifiers:
+                  - replace: $cache.RecallUnits
             """, Cache(RecallUnits()));
 
         var metre = renderer.Render(Record(" METRE "));
@@ -152,11 +152,11 @@ public sealed class CachedReplaceTests : IDisposable
         string? Symbol(string settings, string curve)
         {
             var result = Renderer($$"""
-                  - target: osdu.data.Symbol
-                    source: dataset.unit
-                    required: false
-                    modifiers:
-                      - replace: cache.CurveClasses
+                  Symbol:
+                    $from: unit
+                    $required: false
+                    $modifiers:
+                      - replace: $cache.CurveClasses
                         {{settings}}
                 """, Cache(CurveClasses())).Render(Record(curve));
             Assert.False(result.IsHeld, string.Join("; ", result.Holds));
@@ -182,10 +182,10 @@ public sealed class CachedReplaceTests : IDisposable
     {
         // A lookup table with several fields beside its key does not say which of them replaces.
         var several = Renderer("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                modifiers:
-                  - replace: cache.CurveClasses
+              Symbol:
+                $from: unit
+                $modifiers:
+                  - replace: $cache.CurveClasses
             """, Cache(CurveClasses())).Render(Record("GR"));
         Assert.True(several.IsHeld);
         Assert.Contains(
@@ -195,11 +195,11 @@ public sealed class CachedReplaceTests : IDisposable
 
         // A dictionary whose every entry gives no value is read as the dictionary of pairs it is: every row gives none.
         var empty = Renderer("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                required: false
-                modifiers:
-                  - replace: cache.RecallUnits
+              Symbol:
+                $from: unit
+                $required: false
+                $modifiers:
+                  - replace: $cache.RecallUnits
             """, Cache(RecallUnits(("NONE", null)))).Render(Record("none"));
         Assert.False(empty.IsHeld, string.Join("; ", empty.Holds));
         Assert.Null(Data(empty, "Symbol"));
@@ -208,18 +208,18 @@ public sealed class CachedReplaceTests : IDisposable
         string Held(string settings)
         {
             var result = Renderer($$"""
-                  - target: osdu.data.Symbol
-                    source: dataset.unit
-                    modifiers:
-                      - replace: cache.UnitOfMeasure
+                  Symbol:
+                    $from: unit
+                    $modifiers:
+                      - replace: $cache.UnitOfMeasure
                         {{settings}}
                 """, Cache()).Render(Record("metre"));
             Assert.True(result.IsHeld);
             return Assert.Single(result.Holds);
         }
 
-        Assert.Contains("cache.UnitOfMeasure holds OSDU records (reference-data--UnitOfMeasure), which have no key for a replace to match on; name the field the incoming value is compared with, such as match: Code", Held("field: Code"), StringComparison.Ordinal);
-        Assert.Contains("cache.UnitOfMeasure holds OSDU records (reference-data--UnitOfMeasure); name the field that replaces the value, such as field: id", Held("match: Name"), StringComparison.Ordinal);
+        Assert.Contains("$cache.UnitOfMeasure holds OSDU records (reference-data--UnitOfMeasure), which have no key for a replace to match on; name the field the incoming value is compared with, such as match: Code", Held("field: Code"), StringComparison.Ordinal);
+        Assert.Contains("$cache.UnitOfMeasure holds OSDU records (reference-data--UnitOfMeasure); name the field that replaces the value, such as field: id", Held("match: Name"), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -228,10 +228,10 @@ public sealed class CachedReplaceTests : IDisposable
         string? Symbol(string field, string unit, out IReadOnlyList<CacheUsage> usages)
         {
             var result = Renderer($$"""
-                  - target: osdu.data.Symbol
-                    source: dataset.unit
-                    modifiers:
-                      - replace: cache.UnitOfMeasure
+                  Symbol:
+                    $from: unit
+                    $modifiers:
+                      - replace: $cache.UnitOfMeasure
                         match: Name
                         field: {{field}}
                 """, Cache()).Render(Record(unit));
@@ -256,11 +256,11 @@ public sealed class CachedReplaceTests : IDisposable
         string Held(string table, ReferenceSnapshot cache, string unit, string settings = "")
         {
             var result = Renderer($$"""
-                  - target: osdu.data.Symbol
-                    source: dataset.unit
-                    required: false
-                    modifiers:
-                      - replace: cache.{{table}}
+                  Symbol:
+                    $from: unit
+                    $required: false
+                    $modifiers:
+                      - replace: $cache.{{table}}
                         {{settings}}
                 """, cache).Render(Record(unit));
             Assert.True(result.IsHeld, $"'{unit}' was not held");
@@ -268,7 +268,7 @@ public sealed class CachedReplaceTests : IDisposable
         }
 
         Assert.Contains(
-            "osdu.data.Symbol: replace reads cache.Nope, and version refs-1 of the cache of partition 'dev' holds no type 'Nope'",
+            "osdu.data.Symbol: replace reads $cache.Nope, and version refs-1 of the cache of partition 'dev' holds no type 'Nope'",
             Held("Nope", Cache(RecallUnits()), "M"),
             StringComparison.Ordinal);
 
@@ -281,10 +281,10 @@ public sealed class CachedReplaceTests : IDisposable
 
         // Agreeing rows make no difference which was meant.
         var agreeing = Renderer("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                modifiers:
-                  - replace: cache.RecallUnits
+              Symbol:
+                $from: unit
+                $modifiers:
+                  - replace: $cache.RecallUnits
             """, Cache(RecallUnits(("Ft", "ft"), ("FT", "ft")))).Render(Record("ft"));
         Assert.Equal("ft", Data(agreeing, "Symbol"));
         Assert.Equal(2, agreeing.CacheUsages.Count(u => u.Kind == CacheUsageKind.Match));
@@ -308,10 +308,10 @@ public sealed class CachedReplaceTests : IDisposable
             Held("Aliases", Cache(aliases), "m", "match: Code\n        field: Alias"),
             StringComparison.Ordinal);
         var single = Renderer("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                modifiers:
-                  - replace: cache.Aliases
+              Symbol:
+                $from: unit
+                $modifiers:
+                  - replace: $cache.Aliases
                     match: Code
                     field: Alias
             """, Cache(aliases)).Render(Record("ft"));
@@ -326,13 +326,13 @@ public sealed class CachedReplaceTests : IDisposable
             => Preflight.Check(TestSchema.Mapping(entries), schema, cache, TestSchema.Context(), sourceColumns: null);
 
         const string ThroughUnits = """
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy:
-                  - cache.UnitOfMeasure.Code = dataset.unit
-                  - cache.UnitOfMeasure.Name = dataset.unit
-                modifiers:
-                  - replace: cache.RecallUnits
+              Unit:
+                $cache: UnitOfMeasure.id
+                $findBy:
+                  - Code = unit
+                  - Name = unit
+                $modifiers:
+                  - replace: $cache.RecallUnits
             """;
         Assert.DoesNotContain(Check(ThroughUnits, Cache(RecallUnits())), i => i.Message.Contains("replace", StringComparison.Ordinal));
 
@@ -344,11 +344,11 @@ public sealed class CachedReplaceTests : IDisposable
 
         // A written table's values, and a text otherwise, are listed the same way; a case modifier after the replace is applied.
         var written = Check("""
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
-                required: false
-                modifiers:
+              Unit:
+                $cache: UnitOfMeasure.id
+                $findBy: Code = unit
+                $required: false
+                $modifiers:
                   - replace: { METRE: M, FEET: FT }
                     otherwise: Unknown
                   - lower
@@ -359,28 +359,28 @@ public sealed class CachedReplaceTests : IDisposable
         string Error(string modifier, ReferenceSnapshot cache)
         {
             var issues = Check($$"""
-                  - target: osdu.data.Symbol
-                    source: dataset.unit
-                    modifiers:
+                  Symbol:
+                    $from: unit
+                    $modifiers:
                 {{modifier}}
                 """, cache);
             return Assert.Single(issues, i => i.Severity == IssueSeverity.Error).Message;
         }
 
-        Assert.Contains("replace reads cache.Nope, which cache version 'refs-1' does not hold. Cached: RecallUnits, UnitOfMeasure, Wellbore.", Error("      - replace: cache.Nope", Cache(RecallUnits())), StringComparison.Ordinal);
-        Assert.Contains("replace matches the value on 'colour' of RecallUnits, which cache version 'refs-1' does not cache", Error("      - replace: cache.RecallUnits\n        match: colour", Cache(RecallUnits())), StringComparison.Ordinal);
-        Assert.Contains("replace replaces the value by 'colour' of CurveClasses, which cache version 'refs-1' does not cache. Cached: id, curve_family, mnemonic, unit.", Error("      - replace: cache.CurveClasses\n        field: colour", Cache(CurveClasses())), StringComparison.Ordinal);
-        Assert.Contains("lookup table CurveClasses holds 2 fields beside its key mnemonic", Error("      - replace: cache.CurveClasses", Cache(CurveClasses())), StringComparison.Ordinal);
-        Assert.Contains("cache.UnitOfMeasure holds OSDU records (reference-data--UnitOfMeasure), which have no key", Error("      - replace: cache.UnitOfMeasure", Cache()), StringComparison.Ordinal);
+        Assert.Contains("replace reads $cache.Nope, which cache version 'refs-1' does not hold. Cached: RecallUnits, UnitOfMeasure, Wellbore.", Error("      - replace: $cache.Nope", Cache(RecallUnits())), StringComparison.Ordinal);
+        Assert.Contains("replace matches the value on 'colour' of RecallUnits, which cache version 'refs-1' does not cache", Error("      - replace: $cache.RecallUnits\n        match: colour", Cache(RecallUnits())), StringComparison.Ordinal);
+        Assert.Contains("replace replaces the value by 'colour' of CurveClasses, which cache version 'refs-1' does not cache. Cached: id, curve_family, mnemonic, unit.", Error("      - replace: $cache.CurveClasses\n        field: colour", Cache(CurveClasses())), StringComparison.Ordinal);
+        Assert.Contains("lookup table CurveClasses holds 2 fields beside its key mnemonic", Error("      - replace: $cache.CurveClasses", Cache(CurveClasses())), StringComparison.Ordinal);
+        Assert.Contains("$cache.UnitOfMeasure holds OSDU records (reference-data--UnitOfMeasure), which have no key", Error("      - replace: $cache.UnitOfMeasure", Cache()), StringComparison.Ordinal);
 
         // An empty table replaces nothing, which is worth saying; it is not an error, since a refresh may fill it.
         var emptyTable = Check("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                modifiers:
-                  - replace: cache.Empty
+              Symbol:
+                $from: unit
+                $modifiers:
+                  - replace: $cache.Empty
             """, Cache(new ReferenceType("Empty", ReferenceType.LookupEntityType("Empty"), [], "key")));
-        Assert.Contains(emptyTable, i => i.Severity == IssueSeverity.Warning && i.Message.Contains("replace reads cache.Empty, which holds no rows in cache version 'refs-1', so every value becomes what its otherwise says", StringComparison.Ordinal));
+        Assert.Contains(emptyTable, i => i.Severity == IssueSeverity.Warning && i.Message.Contains("replace reads $cache.Empty, which holds no rows in cache version 'refs-1', so every value becomes what its otherwise says", StringComparison.Ordinal));
         Assert.DoesNotContain(emptyTable, i => i.Severity == IssueSeverity.Error);
     }
 
@@ -392,10 +392,10 @@ public sealed class CachedReplaceTests : IDisposable
         var caches = _db.Caches();
         var directory = Samples.NewTempDirectory();
         await File.WriteAllTextAsync(Path.Combine(directory, "Thing@1.0.0.yaml"), TestSchema.MappingDocument("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                modifiers:
-                  - replace: cache.RecallUnits
+              Symbol:
+                $from: unit
+                $modifiers:
+                  - replace: $cache.RecallUnits
             """));
         var resolver = new RenderResolver(new MappingCatalog(directory, new DeliveryDocumentLoader()), caches, templates, new SecretResolver([new EnvSecretProvider()]));
         var flow = Samples.Targeting(new FlowTarget
@@ -429,11 +429,11 @@ public sealed class CachedReplaceTests : IDisposable
     {
         var ledger = _db.Ledger(_clock);
         var renderer = Renderer("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                required: false
-                modifiers:
-                  - replace: cache.RecallUnits
+              Symbol:
+                $from: unit
+                $required: false
+                $modifiers:
+                  - replace: $cache.RecallUnits
             """, Cache(RecallUnits()));
         var before = RecallUnits();
 

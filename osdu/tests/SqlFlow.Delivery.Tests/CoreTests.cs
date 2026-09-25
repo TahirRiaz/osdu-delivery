@@ -10,6 +10,7 @@ using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Tests;
 using SqlFlow.Delivery.Validation;
 using Xunit;
@@ -162,8 +163,8 @@ public class MappingRendererTests
             },
         };
 
-    private static MappingRenderer Renderer(string entries = "", ReferenceSnapshot? references = null)
-        => new(TestSchema.Mapping(entries), TestSchema.Build(), references ?? TestSchema.References(), TestSchema.Context());
+    private static MappingRenderer Renderer(string data = "", ReferenceSnapshot? references = null, string record = "")
+        => new(TestSchema.Mapping(data, record: record), TestSchema.Build(), references ?? TestSchema.References(), TestSchema.Context());
 
     [Fact]
     public void Writes_the_id_and_kind_and_converts_values_to_the_template_types()
@@ -182,36 +183,39 @@ public class MappingRendererTests
     [Fact]
     public void Renders_cache_ids_repeaters_objects_and_modifiers()
     {
-        var renderer = Renderer("""
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
-              - target: osdu.data.WellboreID
-                source: cache.Wellbore.id
-                findBy: cache.Wellbore.FacilityName = dataset.wb
-              - target: osdu.data.IsRegular
-                source: dataset.flag
-                modifiers:
-                  - equals: regular
-              - target: osdu.data.Nested.Inner
-                source: dataset.name
-                modifiers: [upper]
-              - target: osdu.data.Description
-                source: dataset.pass
-                modifiers:
-                  - split: { separator: ",", part: 2 }
-              - target: osdu.data.When
-                source: dataset.when
-                modifiers:
-                  - date: dd.MM.yyyy
-              - target: osdu.tags.Source
-                static: test
-              - target: osdu.data.Curves
-                source: dataset.curves
-              - target: osdu.data.Curves[].CurveID
-                source: dataset.curves.curve_id
-              - target: osdu.data.Curves[].TopDepth
-                source: dataset.curves.top
+        var renderer = Renderer(
+            """
+            Unit:
+              $cache: UnitOfMeasure.id
+              $findBy: Code = unit
+            WellboreID:
+              $cache: Wellbore.id
+              $findBy: FacilityName = wb
+            IsRegular:
+              $from: flag
+              $modifiers:
+                - equals: regular
+            Nested:
+              Inner:
+                $from: name
+                $modifiers: [upper]
+            Description:
+              $from: pass
+              $modifiers:
+                - split: { separator: ",", part: 2 }
+            When:
+              $from: when
+              $modifiers:
+                - date: dd.MM.yyyy
+            Curves:
+              $forEach: curves
+              $item:
+                CurveID: { $from: curve_id }
+                TopDepth: { $from: top }
+            """,
+            record: """
+            tags:
+              Source: test
             """);
         var result = renderer.Render(Record());
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
@@ -230,11 +234,11 @@ public class MappingRendererTests
     [Fact]
     public void An_empty_required_value_holds_the_record_and_an_empty_optional_value_is_left_out()
     {
-        var required = Renderer("  - { target: osdu.data.Description, source: dataset.missing }").Render(Record());
+        var required = Renderer("Description: { $from: missing }").Render(Record());
         Assert.True(required.IsHeld);
         Assert.Contains(required.Holds, h => h.Contains("osdu.data.Description: dataset.missing is empty", StringComparison.Ordinal));
 
-        var optional = Renderer("  - { target: osdu.data.Description, source: dataset.missing, required: false }").Render(Record());
+        var optional = Renderer("Description: { $from: missing, $required: false }").Render(Record());
         Assert.False(optional.IsHeld);
         Assert.Null(optional.Document["data"]!["Description"]);
     }
@@ -243,15 +247,15 @@ public class MappingRendererTests
     public void A_cache_miss_holds_a_required_entry_and_leaves_an_optional_one_out()
     {
         const string Unit = """
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
+            Unit:
+              $cache: UnitOfMeasure.id
+              $findBy: Code = unit
             """;
         var missing = Renderer(Unit).Render(Record(unit: "furlong"));
         Assert.True(missing.IsHeld);
         Assert.Contains(missing.Holds, h => h.Contains("no UnitOfMeasure matches 'furlong' by Code", StringComparison.Ordinal));
 
-        var optional = Renderer(Unit + "\n    required: false").Render(Record(unit: "furlong"));
+        var optional = Renderer(Unit + "\n  $required: false").Render(Record(unit: "furlong"));
         Assert.False(optional.IsHeld);
         Assert.Null(optional.Document["data"]!["Unit"]);
 
@@ -272,10 +276,10 @@ public class MappingRendererTests
             ]),
         ]);
         var result = Renderer("""
-              - target: osdu.data.WellboreID
-                source: cache.Wellbore.id
-                findBy: cache.Wellbore.FacilityName = dataset.wb
-                required: false
+            WellboreID:
+              $cache: Wellbore.id
+              $findBy: FacilityName = wb
+              $required: false
             """, references).Render(Record());
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h =>
@@ -296,11 +300,11 @@ public class MappingRendererTests
             ]),
         ]);
         var renderer = Renderer("""
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy:
-                  - cache.UnitOfMeasure.Code = dataset.unit
-                  - cache.UnitOfMeasure.Name = dataset.unit
+            Unit:
+              $cache: UnitOfMeasure.id
+              $findBy:
+                - Code = unit
+                - Name = unit
             """, references);
 
         var feet = renderer.Render(Record(unit: "ft"));
@@ -317,18 +321,18 @@ public class MappingRendererTests
     }
 
     [Fact]
-    public void AppliesWhen_leaves_the_variable_out_for_rows_it_does_not_apply_to()
+    public void When_leaves_the_variable_out_for_rows_it_does_not_apply_to()
     {
         var renderer = Renderer("""
-              - target: osdu.data.Description
-                source: dataset.name
-                appliesWhen: dataset.flag is REGULAR
-              - target: osdu.data.Symbol
-                static: flagged
-                appliesWhen: dataset.flag is not empty
-              - target: osdu.data.Count
-                static: 1
-                appliesWhen: dataset.flag is not "regular"
+            Description:
+              $from: name
+              $when: flag = "REGULAR"
+            Symbol:
+              $value: flagged
+              $when: not empty(flag)
+            Count:
+              $value: 1
+              $when: flag != "regular"
             """);
 
         var regular = renderer.Render(Record(flag: "regular"));
@@ -350,16 +354,16 @@ public class MappingRendererTests
     public void A_repeater_without_rows_holds_when_required_and_is_left_out_when_optional()
     {
         const string Curves = """
-              - target: osdu.data.Curves[].CurveID
-                source: dataset.curves.curve_id
-              - target: osdu.data.Curves
-                source: dataset.curves
+            Curves:
+              $forEach: curves
+              $item:
+                CurveID: { $from: curve_id }
             """;
         var required = Renderer(Curves).Render(Record(curves: false));
         Assert.True(required.IsHeld);
         Assert.Contains(required.Holds, h => h.Contains("osdu.data.Curves: dataset.curves has no rows", StringComparison.Ordinal));
 
-        var optional = Renderer(Curves + "\n    required: false").Render(Record(curves: false));
+        var optional = Renderer(Curves + "\n  $required: false").Render(Record(curves: false));
         Assert.False(optional.IsHeld);
         Assert.Null(optional.Document["data"]!["Curves"]);
     }
@@ -368,10 +372,10 @@ public class MappingRendererTests
     public void Static_values_expand_parameters_and_take_the_template_type()
     {
         var result = Renderer("""
-              - { target: osdu.data.Description, static: "{param.dataPartition}-x" }
-              - { target: osdu.data.Count, static: "5" }
-              - { target: osdu.data.IsRegular, static: true }
-              - { target: osdu.data.Aliases, static: [one, two] }
+            Description: "{$param.dataPartition}-x"
+            Count: "5"
+            IsRegular: true
+            Aliases: [one, two]
             """).Render(Record());
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
         var data = result.Document["data"]!;
@@ -385,11 +389,11 @@ public class MappingRendererTests
     public void Replace_takes_an_exact_key_first_and_otherwise_the_one_key_that_matches_ignoring_case()
     {
         var renderer = Renderer("""
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
-                modifiers:
-                  - replace: { Metre: m, FEET: ft, feet: ft, Mtr: m, MTR: metre }
+            Unit:
+              $cache: UnitOfMeasure.id
+              $findBy: Code = unit
+              $modifiers:
+                - replace: { Metre: m, FEET: ft, feet: ft, Mtr: m, MTR: metre }
             """);
         Assert.Equal("dev:reference-data--UnitOfMeasure:m:", renderer.Render(Record(unit: "METRE")).Document["data"]!["Unit"]!.GetValue<string>());
         Assert.Equal("dev:reference-data--UnitOfMeasure:ft:", renderer.Render(Record(unit: "feet")).Document["data"]!["Unit"]!.GetValue<string>());
@@ -410,11 +414,11 @@ public class MappingRendererTests
     public void Replace_gives_no_value_for_a_tilde_and_the_required_flag_decides()
     {
         var required = Renderer("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                modifiers:
-                  - replace: { NONE: ~, M: m }
-                  - upper
+            Symbol:
+              $from: unit
+              $modifiers:
+                - replace: { NONE: ~, M: m }
+                - upper
             """);
         Assert.Equal("M", required.Render(Record(unit: "m")).Document["data"]!["Symbol"]!.GetValue<string>());
         var held = required.Render(Record(unit: " none "));
@@ -422,11 +426,11 @@ public class MappingRendererTests
         Assert.Contains("osdu.data.Symbol: dataset.unit is empty, and the entry is required", held.Holds, StringComparer.Ordinal);
 
         var optional = Renderer("""
-              - target: osdu.data.Symbol
-                source: dataset.unit
-                required: false
-                modifiers:
-                  - replace: { NONE: ~ }
+            Symbol:
+              $from: unit
+              $required: false
+              $modifiers:
+                - replace: { NONE: ~ }
             """);
         var left = optional.Render(Record(unit: "NONE"));
         Assert.False(left.IsHeld);
@@ -439,12 +443,12 @@ public class MappingRendererTests
         string? Symbol(string otherwise, string unit)
         {
             var result = Renderer($$"""
-                  - target: osdu.data.Symbol
-                    source: dataset.unit
-                    required: false
-                    modifiers:
-                      - replace: { M: m }
-                        {{otherwise}}
+                Symbol:
+                  $from: unit
+                  $required: false
+                  $modifiers:
+                    - replace: { M: m }
+                      {{otherwise}}
                 """).Render(Record(unit: unit));
             Assert.False(result.IsHeld);
             return result.Document["data"]!["Symbol"]?.GetValue<string>();
@@ -466,11 +470,11 @@ public class MappingRendererTests
     public void A_date_that_is_not_a_date_holds_whatever_the_required_flag()
     {
         var result = Renderer("""
-              - target: osdu.data.When
-                source: dataset.name
-                modifiers:
-                  - date: dd.MM.yyyy
-                required: false
+            When:
+              $from: name
+              $modifiers:
+                - date: dd.MM.yyyy
+              $required: false
             """).Render(Record());
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h => h.Contains("'well-1' is not a date/time in the format dd.MM.yyyy", StringComparison.Ordinal));
@@ -489,9 +493,9 @@ public class MappingRendererTests
     public void The_date_modifier_reads_ISO_8601_and_writes_an_RFC_3339_UTC_date_time(string incoming, string expected)
     {
         var result = Renderer("""
-              - target: osdu.data.When
-                source: dataset.when
-                modifiers: [date]
+            When:
+              $from: when
+              $modifiers: [date]
             """).Render(Record(when: incoming));
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
         Assert.Equal(expected, result.Document["data"]!["When"]!.GetValue<string>());
@@ -511,10 +515,10 @@ public class MappingRendererTests
     public void The_date_modifier_never_guesses_at_a_form_that_is_not_ISO_8601(string incoming)
     {
         var result = Renderer("""
-              - target: osdu.data.When
-                source: dataset.when
-                modifiers: [date]
-                required: false
+            When:
+              $from: when
+              $modifiers: [date]
+              $required: false
             """).Render(Record(when: incoming));
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h => h.Contains($"'{incoming}' is not an ISO 8601 date or date-time", StringComparison.Ordinal));
@@ -529,9 +533,9 @@ public class MappingRendererTests
     public void The_date_modifier_reads_exactly_the_format_given(string format, string incoming, string expected)
     {
         var result = Renderer($$"""
-              - target: osdu.data.When
-                source: dataset.when
-                modifiers: [{ date: "{{format}}" }]
+            When:
+              $from: when
+              $modifiers: [{ date: "{{format}}" }]
             """).Render(Record(when: incoming));
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
         Assert.Equal(expected, result.Document["data"]!["When"]!.GetValue<string>());
@@ -545,9 +549,9 @@ public class MappingRendererTests
     public void Where_the_template_takes_a_date_the_date_modifier_writes_a_full_date(string incoming, string modifiers)
     {
         var result = Renderer($$"""
-              - target: osdu.data.Day
-                source: dataset.when
-                modifiers: {{modifiers}}
+            Day:
+              $from: when
+              $modifiers: {{modifiers}}
             """).Render(Record(when: incoming));
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
         Assert.Equal("2026-09-01", result.Document["data"]!["Day"]!.GetValue<string>());
@@ -557,9 +561,9 @@ public class MappingRendererTests
     public void A_time_of_day_where_the_template_takes_a_date_holds_rather_than_being_dropped()
     {
         var result = Renderer("""
-              - target: osdu.data.Day
-                source: dataset.when
-                modifiers: [date]
+            Day:
+              $from: when
+              $modifiers: [date]
             """).Render(Record(when: "2026-09-01T10:15:30Z"));
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h => h.Contains("osdu.data.Day: '2026-09-01T10:15:30+00:00' has a time of day, but the template takes a date", StringComparison.Ordinal));
@@ -574,10 +578,8 @@ public class MappingRendererTests
         };
 
         var renderer = Renderer("""
-              - target: osdu.data.When
-                source: dataset.stamp
-              - target: osdu.data.Day
-                source: dataset.stamp
+            When: { $from: stamp }
+            Day: { $from: stamp }
             """);
 
         var midnight = renderer.Render(Stamped(new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero)));
@@ -612,7 +614,7 @@ public class MappingRendererTests
     [InlineData("-0", "0")]
     [InlineData("9007199254740993", "9007199254740993")]
     public void Text_is_written_as_the_number_it_states(string incoming, string expected)
-        => Assert.Equal(expected, Written(Renderer("  - { target: osdu.data.Weight, source: dataset.v }").Render(Valued(incoming)), "Weight"));
+        => Assert.Equal(expected, Written(Renderer("Weight: { $from: v }").Render(Valued(incoming)), "Weight"));
 
     [Theory]
     [InlineData("12,5", "separators this entry does not read")]
@@ -628,7 +630,7 @@ public class MappingRendererTests
     [InlineData("١٢", "not written as a number")]
     public void Text_that_does_not_state_a_number_holds_with_the_reason(string incoming, string reason)
     {
-        var result = Renderer("  - { target: osdu.data.Weight, source: dataset.v, required: false }").Render(Valued(incoming));
+        var result = Renderer("Weight: { $from: v, $required: false }").Render(Valued(incoming));
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h => h.Contains($"osdu.data.Weight: value '{incoming}' is not a valid number", StringComparison.Ordinal) && h.Contains(reason, StringComparison.Ordinal));
     }
@@ -636,19 +638,19 @@ public class MappingRendererTests
     [Fact]
     public void A_number_from_the_drop_is_written_in_the_form_its_property_takes()
     {
-        const string Weight = "  - { target: osdu.data.Weight, source: dataset.v }";
+        const string Weight = "Weight: { $from: v }";
         Assert.Equal("12.3", Written(Renderer(Weight).Render(Valued(12.3f)), "Weight"));
         Assert.Equal("12.5", Written(Renderer(Weight).Render(Valued(12.50m)), "Weight"));
         Assert.Equal(CanonicalJson.FormatDouble((double)1234567890.123456789m), Written(Renderer(Weight).Render(Valued(1234567890.123456789m)), "Weight"));
         Assert.Equal("9007199254740993", Written(Renderer(Weight).Render(Valued(9007199254740993L)), "Weight"));
 
-        const string Symbol = "  - { target: osdu.data.Symbol, source: dataset.v }";
+        const string Symbol = "Symbol: { $from: v }";
         Assert.Equal("\"1234567890.123456789\"", Written(Renderer(Symbol).Render(Valued(1234567890.123456789m)), "Symbol"));
         Assert.Equal("\"12.5\"", Written(Renderer(Symbol).Render(Valued(12.50m)), "Symbol"));
         Assert.Equal("\"0.0001\"", Written(Renderer(Symbol).Render(Valued(0.0001m)), "Symbol"));
         Assert.Equal("\"12.3\"", Written(Renderer(Symbol).Render(Valued(12.3f)), "Symbol"));
 
-        foreach (var entry in new[] { Weight, Symbol, "  - { target: osdu.data.Count, source: dataset.v }" })
+        foreach (var entry in new[] { Weight, Symbol, "Count: { $from: v }" })
         {
             var infinite = Renderer(entry).Render(Valued(double.PositiveInfinity));
             Assert.True(infinite.IsHeld);
@@ -664,7 +666,7 @@ public class MappingRendererTests
     [InlineData("3000000000", "Big", "3000000000")]
     [InlineData("9223372036854775807", "Big", "9223372036854775807")]
     public void Text_fills_an_integer_when_it_is_a_whole_number_in_range(string incoming, string property, string expected)
-        => Assert.Equal(expected, Written(Renderer($"  - {{ target: osdu.data.{property}, source: dataset.v }}").Render(Valued(incoming)), property));
+        => Assert.Equal(expected, Written(Renderer($"{property}: {{ $from: v }}").Render(Valued(incoming)), property));
 
     [Theory]
     [InlineData("12.5", "Count", "it has a fraction")]
@@ -674,7 +676,7 @@ public class MappingRendererTests
     [InlineData("true", "Count", "not written as a number")]
     public void Text_that_is_not_a_whole_number_in_range_holds_an_integer(string incoming, string property, string reason)
     {
-        var result = Renderer($"  - {{ target: osdu.data.{property}, source: dataset.v }}").Render(Valued(incoming));
+        var result = Renderer($"{property}: {{ $from: v }}").Render(Valued(incoming));
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h => h.Contains($"osdu.data.{property}: value '{incoming}' is not a valid integer", StringComparison.Ordinal) && h.Contains(reason, StringComparison.Ordinal));
     }
@@ -683,11 +685,11 @@ public class MappingRendererTests
     public void A_number_from_the_drop_fills_an_integer_only_when_it_is_exactly_a_whole_number_in_range()
     {
         static string Filled(string property, object value)
-            => Written(Renderer($"  - {{ target: osdu.data.{property}, source: dataset.v }}").Render(Valued(value)), property);
+            => Written(Renderer($"{property}: {{ $from: v }}").Render(Valued(value)), property);
 
         static void Holds(string property, object value, string reason)
         {
-            var result = Renderer($"  - {{ target: osdu.data.{property}, source: dataset.v }}").Render(Valued(value));
+            var result = Renderer($"{property}: {{ $from: v }}").Render(Valued(value));
             Assert.True(result.IsHeld);
             Assert.Contains(result.Holds, h => h.Contains($"osdu.data.{property}: value", StringComparison.Ordinal) && h.Contains(reason, StringComparison.Ordinal));
         }
@@ -717,7 +719,7 @@ public class MappingRendererTests
     [InlineData("−5,5", "{ decimal: \",\" }", "-5.5")]
     public void The_number_modifier_reads_text_written_with_the_separators_it_is_given(string incoming, string settings, string expected)
     {
-        var result = Renderer($"  - {{ target: osdu.data.Weight, source: dataset.v, modifiers: [{{ number: {settings} }}] }}").Render(Valued(incoming));
+        var result = Renderer($"Weight: {{ $from: v, $modifiers: [{{ number: {settings} }}] }}").Render(Valued(incoming));
         Assert.Equal(expected, Written(result, "Weight"));
     }
 
@@ -729,7 +731,7 @@ public class MappingRendererTests
     [InlineData("12,", "{ group: \",\" }")]
     public void The_number_modifier_holds_text_its_separators_do_not_read_rather_than_guess(string incoming, string settings)
     {
-        var result = Renderer($"  - {{ target: osdu.data.Weight, source: dataset.v, required: false, modifiers: [{{ number: {settings} }}] }}").Render(Valued(incoming));
+        var result = Renderer($"Weight: {{ $from: v, $required: false, $modifiers: [{{ number: {settings} }}] }}").Render(Valued(incoming));
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h => h.Contains($"osdu.data.Weight: value '{incoming}' is not a valid number", StringComparison.Ordinal));
     }
@@ -737,21 +739,21 @@ public class MappingRendererTests
     [Fact]
     public void The_number_modifier_writes_text_as_its_shortest_exact_form()
     {
-        var result = Renderer("  - { target: osdu.data.Symbol, source: dataset.v, modifiers: [{ number: { decimal: \",\", group: \" \" } }] }").Render(Valued("1 234,50"));
+        var result = Renderer("Symbol: { $from: v, $modifiers: [{ number: { decimal: \",\", group: \" \" } }] }").Render(Valued("1 234,50"));
         Assert.Equal("\"1234.5\"", Written(result, "Symbol"));
     }
 
     [Fact]
     public void A_list_of_dates_writes_each_item_in_the_form_its_items_take()
     {
-        var result = Renderer("  - { target: osdu.data.Days, source: dataset.v, modifiers: [date] }").Render(Valued("2026-09-01T00:00:00Z"));
+        var result = Renderer("Days: { $from: v, $modifiers: [date] }").Render(Valued("2026-09-01T00:00:00Z"));
         Assert.Equal("[\"2026-09-01\"]", Written(result, "Days"));
     }
 
     [Fact]
     public void A_static_list_of_objects_fills_an_array_of_objects_item_for_item()
     {
-        var result = Renderer("  - { target: osdu.data.Curves, static: [{ CurveID: MD, TopDepth: 0 }, { CurveID: GR }] }").Render(Record());
+        var result = Renderer("Curves: [{ CurveID: MD, TopDepth: 0 }, { CurveID: GR }]").Render(Record());
         Assert.Empty(result.Holds);
         Assert.Equal("[{\"CurveID\":\"MD\",\"TopDepth\":0},{\"CurveID\":\"GR\"}]", Written(result, "Curves"));
     }
@@ -800,8 +802,9 @@ public class PreflightTests
             ["curves"] = new HashSet<string>(["curve_id", "top"], StringComparer.OrdinalIgnoreCase),
         };
 
-    private static IReadOnlyList<ValidationIssue> Check(string entries, IReadOnlyDictionary<string, IReadOnlySet<string>>? columns = null, string baseEntries = TestSchema.BaseEntries, RenderContext? context = null, string fixtures = "")
-        => Preflight.Check(TestSchema.Mapping(entries, fixtures, baseEntries), TestSchema.Build(), TestSchema.References(), context ?? TestSchema.Context(), columns);
+    private static IReadOnlyList<ValidationIssue> Check(
+        string data, IReadOnlyDictionary<string, IReadOnlySet<string>>? columns = null, string baseData = TestSchema.BaseData, RenderContext? context = null, string fixtures = "", string record = "")
+        => Preflight.Check(TestSchema.Mapping(data, fixtures, baseData, record), TestSchema.Build(), TestSchema.References(), context ?? TestSchema.Context(), columns);
 
     private static void HasError(IReadOnlyList<ValidationIssue> issues, string text)
         => Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains(text, StringComparison.Ordinal));
@@ -817,25 +820,24 @@ public class PreflightTests
     public void Fails_on_missing_columns_an_unknown_variable_and_a_missing_cache_type()
     {
         var issues = Check("""
-              - { target: osdu.data.Nope, source: dataset.depth }
-              - target: osdu.data.Unit
-                source: cache.Country.id
-                findBy: cache.Country.Code = dataset.unit
+            Nope: { $from: depth }
+            Unit:
+              $cache: Country.id
+              $findBy: Code = unit
             """, Columns("name"));
         HasError(issues, "reads dataset.depth, which the record table does not hold");
         HasError(issues, "fills a variable that template test:wks:work-product-component--Thing:1.0.0");
-        HasError(issues, "reads cache.Country, which cache version 'refs-1' does not hold");
+        HasError(issues, "reads Country from the cache, and cache version 'refs-1' does not hold it");
         Assert.Throws<FlowValidationException>(() => Preflight.ThrowIfFailed(issues, "test"));
     }
 
     [Fact]
     public void Fails_when_a_schema_required_property_has_no_entry_or_may_be_left_out()
     {
-        var withoutDepth = TestSchema.BaseEntries.Replace("  - { target: osdu.data.Depth, source: dataset.depth }", string.Empty, StringComparison.Ordinal);
-        HasError(Check(string.Empty, baseEntries: withoutDepth), "requires osdu.data.Depth, which the mapping does not fill");
+        HasError(Check(string.Empty, baseData: "Name: { $from: name }"), "requires osdu.data.Depth, which the mapping does not fill");
 
-        var optionalDepth = TestSchema.BaseEntries.Replace("source: dataset.depth }", "source: dataset.depth, required: false }", StringComparison.Ordinal);
-        HasError(Check(string.Empty, baseEntries: optionalDepth), "is required: false, but the template requires osdu.data.Depth");
+        var optionalDepth = TestSchema.BaseData.Replace("Depth: { $from: depth }", "Depth: { $from: depth, $required: false }", StringComparison.Ordinal);
+        HasError(Check(string.Empty, baseData: optionalDepth), "is $required: false, but the template requires osdu.data.Depth");
     }
 
     [Fact]
@@ -856,87 +858,87 @@ public class PreflightTests
         static bool Mentions(IReadOnlyList<ValidationIssue> issues) => issues.Any(i => i.Severity == IssueSeverity.Error && i.Message.Contains("osdu.data.Nested", StringComparison.Ordinal));
 
         HasError(Issues(string.Empty), "requires osdu.data.Nested, which the mapping does not fill");
-        Assert.False(Mentions(Issues("  - { target: osdu.data.Nested.Inner, source: dataset.name }")));
-        Assert.False(Mentions(Issues("  - { target: osdu.data.Nested.Inner, static: fixed }")));
+        Assert.False(Mentions(Issues("Nested: { Inner: { $from: name } }")));
+        Assert.False(Mentions(Issues("Nested: { Inner: fixed }")));
 
-        var optional = Issues("  - { target: osdu.data.Nested.Inner, source: dataset.name, required: false }");
+        var optional = Issues("Nested: { Inner: { $from: name, $required: false } }");
         HasError(optional, "requires osdu.data.Nested, and every entry filling its properties (");
-        HasError(optional, " (osdu.data.Nested.Inner)) may leave it out (required: false or appliesWhen), so a record without it cannot be sent.");
-        HasError(Issues("  - { target: osdu.data.Nested.Inner, source: dataset.name, appliesWhen: dataset.flag is yes }"), "may leave it out (required: false or appliesWhen)");
+        HasError(optional, " (record.data.Nested.Inner) may leave it out ($required: false or $when), so a record without it cannot be sent.");
+        HasError(Issues("Nested: { Inner: { $from: name, $when: flag = \"yes\" } }"), "may leave it out ($required: false or $when)");
     }
 
     [Fact]
     public void Refuses_what_the_engine_and_OSDU_write()
     {
-        HasError(Check("  - { target: osdu.id, static: x }"), "osdu.id is written by OSDU Delivery");
-        HasError(Check("  - { target: osdu.kind, static: x }"), "osdu.kind is written by OSDU Delivery");
+        HasError(Check(string.Empty, record: "id: x"), "osdu.id is written by OSDU Delivery");
+        HasError(Check(string.Empty, record: "kind: x"), "osdu.kind is written by OSDU Delivery");
     }
 
     [Fact]
     public void Refuses_values_whose_shape_the_variable_does_not_take()
     {
         HasError(Check("""
-              - target: osdu.data.Nested[].Inner
-                source: dataset.curves.curve_id
-              - target: osdu.data.Nested
-                source: dataset.curves
-            """), "a repeater fills a list of objects");
-        HasError(Check("  - { target: osdu.data.Nested, source: dataset.name }"), "is one value");
-        HasError(Check("  - { target: osdu.data.Symbol, static: { a: b } }"), "a static object cannot be written");
-        HasError(Check("  - { target: osdu.data.Symbol, source: dataset.flag, modifiers: [{ equals: yes }] }"), "the last modifier is equals");
-        HasError(Check("  - { target: osdu.data.Count, source: dataset.when, modifiers: [date] }"), "the last modifier is date, which gives a date written as text");
-        HasError(Check("  - { target: osdu.data.Clock, source: dataset.when, modifiers: [date] }"), "takes a time string, which a date is not written as");
-        HasError(Check("  - { target: osdu.data.IsRegular, source: dataset.v, modifiers: [number] }"), "the last modifier is number, which gives a number, but the template takes a boolean");
-        HasError(Check("  - { target: osdu.data.When, source: dataset.v, modifiers: [number] }"), "takes a date-time string, which a number is not written as");
+            Nested:
+              $forEach: curves
+              $item:
+                Inner: { $from: curve_id }
+            """), "a $forEach fills a list of objects");
+        HasError(Check("Nested: { $from: name }"), "is one value");
+        HasError(Check("Symbol: { $value: { a: b } }"), "a literal object cannot be written");
+        HasError(Check("Symbol: { $from: flag, $modifiers: [{ equals: yes }] }"), "the last modifier is equals");
+        HasError(Check("Count: { $from: when, $modifiers: [date] }"), "the last modifier is date, which gives a date written as text");
+        HasError(Check("Clock: { $from: when, $modifiers: [date] }"), "takes a time string, which a date is not written as");
+        HasError(Check("IsRegular: { $from: v, $modifiers: [number] }"), "the last modifier is number, which gives a number, but the template takes a boolean");
+        HasError(Check("When: { $from: v, $modifiers: [number] }"), "takes a date-time string, which a number is not written as");
         foreach (var target in new[] { "Weight", "Count", "Small", "Symbol" })
         {
-            Assert.DoesNotContain(Check($"  - {{ target: osdu.data.{target}, source: dataset.v, modifiers: [number] }}"), i => i.Message.Contains("the last modifier is number", StringComparison.Ordinal));
+            Assert.DoesNotContain(Check($"{target}: {{ $from: v, $modifiers: [number] }}"), i => i.Message.Contains("the last modifier is number", StringComparison.Ordinal));
         }
 
         // A list of values is judged by each item's type and format.
-        HasError(Check("  - { target: osdu.data.Days, source: dataset.v, modifiers: [number] }"), "takes a list of date strings, which a number is not written as");
-        Assert.DoesNotContain(Check("  - { target: osdu.data.Days, source: dataset.v, modifiers: [date] }"), i => i.Message.Contains("the last modifier is date", StringComparison.Ordinal));
+        HasError(Check("Days: { $from: v, $modifiers: [number] }"), "takes a list of date strings, which a number is not written as");
+        Assert.DoesNotContain(Check("Days: { $from: v, $modifiers: [date] }"), i => i.Message.Contains("the last modifier is date", StringComparison.Ordinal));
     }
 
     [Fact]
     public void Warns_when_a_date_property_takes_dataset_text_without_the_date_modifier()
     {
         const string Warning = "add the date modifier so every record carries the RFC 3339 form";
-        Assert.Contains(Check("  - { target: osdu.data.When, source: dataset.when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains(Warning, StringComparison.Ordinal));
-        Assert.Contains(Check("  - { target: osdu.data.Day, source: dataset.when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains(Warning, StringComparison.Ordinal));
-        Assert.Contains(Check("  - { target: osdu.data.Days, source: dataset.when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains("takes a list of date strings", StringComparison.Ordinal) && i.Message.Contains(Warning, StringComparison.Ordinal));
-        Assert.DoesNotContain(Check("  - { target: osdu.data.When, source: dataset.when, modifiers: [date, trim] }"), i => i.Message.Contains(Warning, StringComparison.Ordinal));
-        Assert.DoesNotContain(Check("  - { target: osdu.data.Symbol, source: dataset.when }"), i => i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.Contains(Check("When: { $from: when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.Contains(Check("Day: { $from: when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.Contains(Check("Days: { $from: when }"), i => i.Severity == IssueSeverity.Warning && i.Message.Contains("takes a list of date strings", StringComparison.Ordinal) && i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.DoesNotContain(Check("When: { $from: when, $modifiers: [date, trim] }"), i => i.Message.Contains(Warning, StringComparison.Ordinal));
+        Assert.DoesNotContain(Check("Symbol: { $from: when }"), i => i.Message.Contains(Warning, StringComparison.Ordinal));
     }
 
     [Fact]
     public void Refuses_a_cache_id_of_another_entity_type_than_the_template_points_to()
     {
         HasError(Check("""
-              - target: osdu.data.WellboreID
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
+            WellboreID:
+              $cache: UnitOfMeasure.id
+              $findBy: Code = unit
             """), "writes the id of a cached UnitOfMeasure (reference-data--UnitOfMeasure), but the template points osdu.data.WellboreID to master-data--Wellbore");
     }
 
     [Fact]
     public void Checks_a_static_reference_against_the_cache_and_the_relationship()
     {
-        var known = Check("  - { target: osdu.data.Unit, static: \"{param.dataPartition}:reference-data--UnitOfMeasure:m:\" }");
+        var known = Check("Unit: \"{$param.dataPartition}:reference-data--UnitOfMeasure:m:\"");
         Assert.DoesNotContain(known, i => i.Severity == IssueSeverity.Error);
 
-        HasError(Check("  - { target: osdu.data.Unit, static: \"dev:reference-data--UnitOfMeasure:furlong:\" }"), "is not in cache version 'refs-1'");
-        HasError(Check("  - { target: osdu.data.Unit, static: \"dev:master-data--Wellbore:abc:\" }"), "is a master-data--Wellbore record, and osdu.data.Unit points to reference-data--UnitOfMeasure");
-        HasError(Check("  - { target: osdu.data.Unit, static: metre }"), "'metre' is not an OSDU record id");
+        HasError(Check("Unit: \"dev:reference-data--UnitOfMeasure:furlong:\""), "is not in cache version 'refs-1'");
+        HasError(Check("Unit: \"dev:master-data--Wellbore:abc:\""), "is a master-data--Wellbore record, and osdu.data.Unit points to reference-data--UnitOfMeasure");
+        HasError(Check("Unit: metre"), "'metre' is not an OSDU record id");
     }
 
     [Fact]
     public void Refuses_matching_by_fields_the_cache_does_not_hold()
     {
         HasError(Check("""
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.NotCached = dataset.unit
+            Unit:
+              $cache: UnitOfMeasure.id
+              $findBy: NotCached = unit
             """), "caches none of those");
     }
 
@@ -954,7 +956,7 @@ public class PreflightTests
         string Fixture(string depth) => $$$"""
             fixtures:
               - name: f
-                record: { name: w, depth: "1" }
+                row: { name: w, depth: "1" }
                 expected: |
                   {"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"w","Depth":{{{depth}}}}}
             """;
@@ -963,7 +965,75 @@ public class PreflightTests
         HasError(Check(string.Empty, fixtures: Fixture("2")), "~ data.Depth: 2 -> 1");
 
         // A fixture that renders its document but would hold the record is not a passing fixture.
-        HasError(Check("  - { target: osdu.data.Description, source: dataset.missing }", fixtures: Fixture("1")), "renders the expected document but holds the record");
+        HasError(Check("Description: { $from: missing }", fixtures: Fixture("1")), "renders the expected document but holds the record");
+    }
+
+    [Fact]
+    public void Fixture_defaults_give_every_fixture_its_parameters_and_a_fixture_replaces_them_by_name()
+    {
+        var key = DeliveryKey.Derive("test", ["w"]).Value.ToString("N");
+        string Expected(string region) =>
+            $$$"""{"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"w","Depth":1,"Description":"w-{{{region}}}"}}""";
+        var fixtures = $$$"""
+            fixtureDefaults:
+              parameters:
+                dataPartition: dev
+                region: north
+            fixtures:
+              - name: the defaults
+                row: { name: w, depth: "1" }
+                expected: |
+                  {{{Expected("north")}}}
+              - name: its own region
+                parameters: { region: south }
+                row: { name: w, depth: "1" }
+                expected: |
+                  {{{Expected("south")}}}
+            """;
+        var document = TestSchema.MappingDocument(
+            """
+            Description:
+              $expr: name & "-" & $param.region
+            """,
+            fixtures).Replace("  dataPartition: { required: true }", "  dataPartition: { required: true }\n  region: {}", StringComparison.Ordinal);
+
+        var loader = new DeliveryDocumentLoader();
+        var mapping = loader.ParseMapping(document, "thing.yaml");
+        Assert.Equal("north", mapping.Fixtures[0].Parameters["region"]);
+        Assert.Equal("dev", mapping.Fixtures[1].Parameters["dataPartition"]);
+        Assert.Equal("south", mapping.Fixtures[1].Parameters["region"]);
+
+        var context = TestSchema.Context() with { Parameters = new Dictionary<string, string> { ["dataPartition"] = "dev", ["region"] = "east" } };
+        Assert.DoesNotContain(Preflight.Check(mapping, TestSchema.Build(), TestSchema.References(), context, null), i => i.Severity == IssueSeverity.Error);
+
+        // The builder writes the block back and each fixture with only what it gives beyond it.
+        var draft = MappingBuilder.FromDefinition(mapping);
+        Assert.Empty(draft.Fixtures[0].Parameters);
+        Assert.Equal(new Dictionary<string, string> { ["region"] = "south" }, draft.Fixtures[1].Parameters);
+        var yaml = MappingBuilder.ToYaml(draft).ReplaceLineEndings("\n");
+        Assert.Contains("fixtureDefaults:\n  parameters:\n    dataPartition: dev\n    region: north\n", yaml, StringComparison.Ordinal);
+        Assert.Equal(yaml, MappingBuilder.ToYaml(MappingBuilder.FromDefinition(loader.ParseMapping(yaml, "again.yaml"))).ReplaceLineEndings("\n"));
+    }
+
+    [Fact]
+    public void Fixture_defaults_that_say_nothing_or_apply_to_nothing_are_refused()
+    {
+        var loader = new DeliveryDocumentLoader();
+        var empty = Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingDocument(fixtures: """
+            fixtureDefaults:
+              parameters: {}
+            fixtures:
+              - name: f
+                row: { name: w }
+                expected: "{}"
+            """), "thing.yaml"));
+        Assert.Contains("fixtureDefaults.parameters lists the parameter values every fixture renders with", empty.Message, StringComparison.Ordinal);
+
+        var alone = Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingDocument(fixtures: """
+            fixtureDefaults:
+              parameters: { dataPartition: dev }
+            """), "thing.yaml"));
+        Assert.Contains("the mapping has no fixtures; remove it, or add fixtures", alone.Message, StringComparison.Ordinal);
     }
 }
 

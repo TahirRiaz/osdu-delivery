@@ -217,14 +217,15 @@ public sealed class DspdmDocumentsTests
         Assert.Empty(mapping.Envelope.Owners);
         Assert.Empty(mapping.Envelope.LegalTags);
 
-        var envelope = Assert.Throws<FlowValidationException>(() => _loader.ParseMapping(WellMapping("  - { target: osdu.acl.owners, static: [owners@x] }"), "well.yaml"));
+        var envelope = Assert.Throws<FlowValidationException>(() => _loader.ParseMapping(WellMapping("acl: { owners: [owners@x] }"), "well.yaml"));
         Assert.Contains("fills osdu.acl.owners, and acme:dspdm:well:1.0.0 is a row of a DSPDM business object, which has no access or legal block", envelope.Message, StringComparison.Ordinal);
 
-        var outside = Assert.Throws<FlowValidationException>(() => _loader.ParseMapping(WellMapping("  - { target: osdu.tags.Source, static: acme }"), "well.yaml"));
-        Assert.Contains("fills osdu.tags.Source, and acme:dspdm:well:1.0.0 is a row of a DSPDM business object, whose attributes are the properties of osdu.data", outside.Message, StringComparison.Ordinal);
+        var outside = Assert.Throws<FlowValidationException>(() => _loader.ParseMapping(WellMapping("tags: { Source: acme }"), "well.yaml"));
+        Assert.Contains("fills osdu.tags.Source, and acme:dspdm:well:1.0.0 is a row of a DSPDM business object, whose attributes are the properties of record.data", outside.Message, StringComparison.Ordinal);
 
         // An OSDU record still needs its envelope.
-        var record = Assert.Throws<FlowValidationException>(() => TestSchema.Mapping(baseEntries: "  - { target: osdu.data.Depth, source: dataset.depth }"));
+        var withoutEnvelope = TestSchema.MappingDocument().Replace(TestSchema.Indented(TestSchema.Envelope, 2), string.Empty, StringComparison.Ordinal);
+        var record = Assert.Throws<FlowValidationException>(() => _loader.ParseMapping(withoutEnvelope, "thing.yaml"));
         Assert.Contains("every OSDU record carries owners", record.Message, StringComparison.Ordinal);
     }
 
@@ -384,23 +385,25 @@ public sealed class DspdmDocumentsTests
         }
         """, new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero));
 
-    private static string WellMapping(string extra = "") => $"""
+    /// <summary>The well's mapping, with <paramref name="record"/> laid beside its data at the record's own level.</summary>
+    private static string WellMapping(string record = "") => $$"""
         documentType: mapping
         name: Well
         version: 1.0.0
         template:
-          kind: {Kind}
-          version: {WellSchema().Version}
+          kind: {{Kind}}
+          version: {{WellSchema().Version}}
         dataset:
           system: acme
-          key: [dataset.uwi]
+          key: [uwi]
         parameters:
-          dataPartition: {"{"} required: true {"}"}
-        mappings:
-          - {"{"} target: osdu.data.UWI, source: dataset.uwi, modifiers: [trim] {"}"}
-          - {"{"} target: osdu.data.WELL_NAME, source: dataset.name {"}"}
-          - {"{"} target: osdu.data.OPERATOR, source: dataset.op {"}"}
-          - {"{"} target: osdu.data.REMARK, source: dataset.remark, required: false {"}"}
-        {extra}
-        """.ReplaceLineEndings("\n");
+          dataPartition: { required: true }
+        record:
+          data:
+            UWI: { $from: uwi, $modifiers: [trim] }
+            WELL_NAME: { $from: name }
+            OPERATOR: { $from: op }
+            REMARK: { $from: remark, $required: false }
+
+        """.ReplaceLineEndings("\n") + TestSchema.Indented(record, 2);
 }

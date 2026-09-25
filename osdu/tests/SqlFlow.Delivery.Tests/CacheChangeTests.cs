@@ -134,12 +134,12 @@ public sealed class CacheChangeTests : IDisposable
     public void A_render_records_what_it_read_out_of_the_cache()
     {
         var mapping = TestSchema.Mapping("""
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
-              - target: osdu.data.Symbol
-                source: cache.UnitOfMeasure.Name
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
+              Unit:
+                $cache: UnitOfMeasure.id
+                $findBy: Code = unit
+              Symbol:
+                $cache: UnitOfMeasure.Name
+                $findBy: Code = unit
             """);
         var renderer = new MappingRenderer(mapping, TestSchema.Build(), new ReferenceSnapshot("refs-1", DateTimeOffset.UnixEpoch, [Units("metre")]), TestSchema.Context());
 

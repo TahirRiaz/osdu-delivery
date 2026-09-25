@@ -76,8 +76,8 @@ test.describe.serial("osdu cache", () => {
     // is read by a findBy on its key, or translates a value as a replace.
     const guide = definition.getByTestId("delivery-cache-mapping-guide");
     await expect(guide).toContainText(PARTITION);
-    await expect(guide.getByTestId("delivery-cache-mapping-guide-entry")).toContainText(/source: cache\.\w+\.id/);
-    await expect(guide.getByTestId("delivery-cache-mapping-guide-replace-entry")).toContainText(/- replace: cache\.\w+/);
+    await expect(guide.getByTestId("delivery-cache-mapping-guide-entry")).toContainText(/\$cache: \w+\.id/);
+    await expect(guide.getByTestId("delivery-cache-mapping-guide-replace-entry")).toContainText(/- replace: \$cache\.\w+/);
 
     // Two flows fill the partition, so Refresh asks which one: a refresh captures what one flow declares. The suite never
     // submits the reference cache's refresh, which searches the OSDU target.
@@ -154,8 +154,8 @@ test.describe.serial("osdu cache", () => {
     await expect(reference("cache.UnitOfMeasure.ID")).toContainText("dega");
     await expect(reference("cache.UnitOfMeasure.ID")).not.toContainText("reference-data--UnitOfMeasure");
     await expect(references.filter({ hasText: "cache.UnitOfMeasure.Code" })).toBeVisible();
-    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("source: cache.UnitOfMeasure.id");
-    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("findBy: cache.UnitOfMeasure.");
+    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("$cache: UnitOfMeasure.id");
+    await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("$findBy: ");
     await detail.getByRole("button", { name: "Close" }).click();
 
     // Clearing the picker lifts the scope.

@@ -196,6 +196,9 @@ public sealed class LineageTests : IDisposable
         Rewrite("flows/recall-welllog-03-header-delivery.yaml", "protocol: ddms", "protocol: file");
         Rewrite("flows/recall-welllog-03-header-delivery.yaml", "    sessionThresholdChunks: 1\n", "    datasetKind: osdu:wks:dataset--File.Generic:1.0.0\n");
 
+        // The file route reaches its services under the endpoint, so the DDMS's own root goes with the DDMS route.
+        Rewrite("flows/recall-welllog-03-header-delivery.yaml", "    ddmsRoot: /api/os-wellbore-ddms\n", string.Empty);
+
         var lineage = Describe("flows/recall-welllog-03-header-delivery.yaml");
 
         Assert.Empty(lineage.Warnings);

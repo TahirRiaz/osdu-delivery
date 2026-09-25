@@ -19,11 +19,11 @@ namespace SqlFlow.Delivery.Tests;
 public class SearchMappingTests
 {
     private const string ByNameThenAlias = """
-          - target: osdu.data.WellboreID
-            source: search.Wellbore.id
-            findBy:
-              - search.Wellbore.data.FacilityName = dataset.wb
-              - search.Wellbore.data.NameAliases.AliasName = dataset.wb
+          WellboreID:
+            $search: Wellbore
+            $findBy:
+              - data.FacilityName = wb
+              - data.NameAliases.AliasName = wb
         """;
 
     private static IReadOnlyList<ValidationIssue> Check(MappingDefinition mapping, ResolvedSearches? searches)
@@ -46,7 +46,7 @@ public class SearchMappingTests
         fixtures:
           - name: the wellbore of WB-1
         {searches}
-            record:
+            row:
               name: thing-1
               depth: "1"
               wb: WB-1
@@ -70,14 +70,14 @@ public class SearchMappingTests
     public void A_property_a_search_cannot_ask_for_fails_the_preflight_naming_the_entry_and_the_reason()
     {
         var mapping = SearchSourceTests.Mapping("""
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy: search.Wellbore.data.SpudDate = dataset.wb
+              WellboreID:
+                $search: Wellbore
+                $findBy: data.SpudDate = wb
             """);
 
         var error = Assert.Single(Errors(Check(mapping, SearchSourceTests.Resolve(mapping))));
 
-        Assert.Contains("osdu.data.WellboreID", error, StringComparison.Ordinal);
+        Assert.Contains("record.data.WellboreID", error, StringComparison.Ordinal);
         Assert.Contains("search.Wellbore.data.SpudDate", error, StringComparison.Ordinal);
         Assert.Contains("indexes as a date", error, StringComparison.Ordinal);
     }
@@ -86,9 +86,9 @@ public class SearchMappingTests
     public void A_search_that_finds_another_kind_of_record_than_the_property_points_to_fails_the_preflight()
     {
         var mapping = SearchSourceTests.Mapping("""
-              - target: osdu.data.Unit
-                source: search.Wellbore.id
-                findBy: search.Wellbore.data.FacilityName = dataset.wb
+              Unit:
+                $search: Wellbore
+                $findBy: data.FacilityName = wb
             """);
 
         var errors = Errors(Check(mapping, SearchSourceTests.Resolve(mapping))).ToList();
@@ -102,9 +102,9 @@ public class SearchMappingTests
     public void A_search_cannot_fill_an_object_since_it_finds_one_id()
     {
         var mapping = SearchSourceTests.Mapping("""
-              - target: osdu.data.Nested
-                source: search.Wellbore.id
-                findBy: search.Wellbore.data.FacilityName = dataset.wb
+              Nested:
+                $search: Wellbore
+                $findBy: data.FacilityName = wb
             """);
 
         var errors = Errors(Check(mapping, SearchSourceTests.Resolve(mapping))).ToList();
@@ -190,7 +190,7 @@ public class SearchMappingTests
         var expected = await Rendered(Row, ("data.FacilityName", "WB-1", "dev:master-data--Wellbore:abc"));
         var loader = new DeliveryDocumentLoader();
         var original = loader.ParseMapping(
-            SearchSourceTests.Document(ByNameThenAlias + "\n    required: false", Fixture("""
+            SearchSourceTests.Document(ByNameThenAlias + "\n    $required: false", Fixture("""
                     searches:
                       - { search: Wellbore, field: data.FacilityName, value: WB-1, id: "dev:master-data--Wellbore:abc" }
                 """, expected)),
@@ -221,7 +221,7 @@ public class SearchMappingTests
     {
         var loader = new DeliveryDocumentLoader();
         var original = loader.ParseMapping(
-            TestSchema.MappingDocument().Replace("  key: [dataset.name]", "  key: [dataset.name]\n  identity: [dataset.name, dataset.depth]", StringComparison.Ordinal),
+            TestSchema.MappingDocument().Replace("  key: [name]", "  key: [name]\n  identity: [name, depth]", StringComparison.Ordinal),
             "thing.yaml");
         Assert.Equal(["name", "depth"], original.Dataset.Identity);
 

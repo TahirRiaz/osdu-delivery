@@ -112,15 +112,15 @@ public class ReferenceFoldTests
     public void The_fold_belongs_on_an_entry_that_reads_the_cache()
     {
         var yaml = TestSchema.MappingDocument("""
-              - target: osdu.data.Description
-                source: dataset.name
-                modifiers: [upper]
-                ignoreSeparators: true
+              Description:
+                $from: name
+                $modifiers: [upper]
+                $ignoreSeparators: true
             """);
 
         var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseMapping(yaml, "folded.yaml"));
         Assert.Contains("ignoreSeparators", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("only applies to a cache source", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("only applies to a $cache node", ex.Message, StringComparison.Ordinal);
     }
 
     private static ReferenceType Wellbores(params (string Id, string FacilityName)[] items)

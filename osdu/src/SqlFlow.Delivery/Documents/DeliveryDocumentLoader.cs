@@ -22,12 +22,15 @@ public sealed class DeliveryDocumentLoader
         .IgnoreUnmatchedProperties()
         .Build();
 
-    // Strict: no IgnoreUnmatchedProperties. A misspelled key fails here rather than being silently ignored.
+    // Strict: no IgnoreUnmatchedProperties. A misspelled key fails here rather than being silently ignored, and a key written
+    // twice in one map fails rather than the second silently replacing the first (a record property laid out twice in a
+    // mapping, a setting given twice in a flow).
     private readonly IDeserializer _strict = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
-        // Where a document holds a value of any shape (a mapping entry's static value, a modifier's settings), an
-        // unquoted scalar keeps the type YAML reads it as, so static: 5 is a number and static: "5" is text.
+        // Where a document holds a value of any shape (a literal in a mapping's record, a modifier's settings), an unquoted
+        // scalar keeps the type YAML reads it as, so Count: 5 is a number and Count: "5" is text.
         .WithAttemptingUnquotedStringTypeDeserialization()
+        .WithDuplicateKeyChecking()
         .Build();
 
     /// <summary>Loads a delivery flow document as a source: every interface it declares, or the one its single form is.</summary>

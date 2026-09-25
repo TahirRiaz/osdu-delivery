@@ -78,27 +78,26 @@ types:
     fields: [curve_type, curve_family, curve_main_family, unit]
 ```
 
-A mapping reads cached tables through `replace` and `findBy`:
+A mapping reads cached tables through `replace` and `$findBy` (written here in the record tree the mapping format has
+since become, osdu/docs/mapping-templates.md):
 
 ```yaml
-  - target: osdu.data.Curves[].CurveUnit
-    source: cache.UnitOfMeasure.id
-    findBy: cache.UnitOfMeasure.Code = dataset.curves.curve_unit
-    modifiers:
-      - replace: cache.RecallUnits           # the key matches, the value replaces
-
-  - target: osdu.data.Curves[].LogCurveFamilyID
-    source: cache.LogCurveFamily.id
-    findBy: cache.LogCurveFamily.Name = dataset.curves.curve_id
-    modifiers:
-      - replace: cache.CurveClasses
-        field: curve_family                  # match defaults to the key, mnemonic
-        otherwise: ~                         # an unlisted mnemonic gives no value
-    required: false
-
-  - target: osdu.tags.CurveFamily            # a plain value read straight from a cached table
-    source: cache.CurveClasses.curve_family
-    findBy: cache.CurveClasses.mnemonic = dataset.curves.curve_id
+    Curves:
+      $forEach: curves
+      $item:
+        CurveUnit:
+          $cache: UnitOfMeasure.id
+          $findBy: Code = curve_unit
+          $modifiers:
+            - replace: $cache.RecallUnits        # the key matches, the value replaces
+        LogCurveFamilyID:
+          $cache: LogCurveFamily.id
+          $findBy: Name = curve_id
+          $modifiers:
+            - replace: $cache.CurveClasses
+              field: curve_family              # match defaults to the key, mnemonic
+              otherwise: ~                     # an unlisted mnemonic gives no value
+          $required: false
 ```
 
 Where the partition holds OSDU's own translations, they are cached from OSDU like any reference data, and a cached
@@ -111,10 +110,10 @@ field that holds an OSDU id is written directly:
     name: RecallUnitAliases
     fields: [data.Code, data.UnitOfMeasureID]
 
-  # mapping
-  - target: osdu.data.Curves[].CurveUnit
-    source: cache.RecallUnitAliases.UnitOfMeasureID
-    findBy: cache.RecallUnitAliases.Code = dataset.curves.curve_unit
+  # mapping, under the curves' $item
+  CurveUnit:
+    $cache: RecallUnitAliases.UnitOfMeasureID
+    $findBy: Code = curve_unit
 ```
 
 ## Before starting
@@ -346,7 +345,7 @@ is (`IngestionConnection.CheckDeclared`).
 **Syntax.**
 
 ```yaml
-- replace: cache.<Type>
+- replace: $cache.<Type>
   match: <field>        # default: the type's key; required for an OSDU type
   field: <field>        # default: value, for a dictionary of pairs; otherwise required
   otherwise: ~          # as in stage 1
@@ -359,7 +358,7 @@ is (`IngestionConnection.CheckDeclared`).
 
 **Changes.**
 
-- Parser: `ParseModifier` accepts a scalar `cache.<Type>` after `replace`, with `match`, `field` and `otherwise` as
+- Parser: `ParseModifier` accepts a scalar `$cache.<Type>` after `replace`, with `match`, `field` and `otherwise` as
   siblings. The defaults are settled against the cache version, by the gate and the render alike.
 - Which types a mapping reads: a single `MappingDefinition` answer covering sources and `replace` modifiers, used by
   `RenderResolver.CacheAsync` (the `readsCache` test at 175), `SubmissionIntake` (401-410, which refuses usages without a
@@ -371,10 +370,10 @@ is (`IngestionConnection.CheckDeclared`).
   whose `findBy` resolves the replaced value (a reference), every value the table can produce, inline or cached, is
   looked up in the target type, and the ones that find nothing are listed as a warning.
 - Shape, coverage and builder: `EntryValues.Describe` and `ModifierText` write
-  `replace from cache.CurveClasses (mnemonic to curve_family)`; the builder's replace editor offers the cached types of
+  `replace from $cache.CurveClasses (mnemonic to curve_family)`; the builder's replace editor offers the cached types of
   the chosen partition with pickers for `match` and `field`; `mappingDraft.ts`, `MappingEntryDetail.tsx` and
   `MappingPropertiesView.tsx` describe it.
-- Samples: the WellLog and WellboreTrajectory mappings replace their inline unit tables with `replace: cache.RecallUnits`;
+- Samples: the WellLog and WellboreTrajectory mappings replace their inline unit tables with `replace: $cache.RecallUnits`;
   WellLog fills `LogCurveFamilyID` through `CurveClasses`; the sample cache records gain the `LogCurveFamily` records the
   fixtures resolve; the fixtures are re-derived and reviewed.
 - Docs: `replace` in `documents.md` and `mapping-templates.md`; the "What is removed" line updated.

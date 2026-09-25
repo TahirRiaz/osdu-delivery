@@ -36,7 +36,8 @@ source:
         log_id: log_id
       orderBy: [curve_ordinal]
   payloads:
-    # The curve values stay where the export wrote them: the record's row says which folder.
+    # The curve values stay where the export wrote them: the record's row says which folder. The only payload the
+    # flow declares, so the ddms route streams it as each log's bulk data without naming it again.
     curves:
       root: ../data/curves
       locationColumn: curve_folder
@@ -73,7 +74,6 @@ target:
     data-partition-id: ${env:OSDU_DATA_PARTITION}
   protocol: ddms
   protocolOptions:
-    payload: curves
     sessionThresholdChunks: 1
     preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
     # OSDU_URL is the platform root, shared with every other flow kind (cache, retrieval); the wellbore DDMS itself

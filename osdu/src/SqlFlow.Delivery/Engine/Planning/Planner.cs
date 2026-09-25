@@ -293,7 +293,7 @@ public sealed class Planner
             Mapping = resolved,
             Parameters = parameters,
             Issues = issues,
-            PayloadName = PayloadName(flow),
+            PayloadName = PayloadParts.Streamed(flow),
             Parts = PayloadParts.Of(flow),
             GatedCacheSets = gatedSets,
             References = ReferenceReader.Of(Templates.OsduTemplate.From(resolved.Schema)),
@@ -493,21 +493,6 @@ public sealed class Planner
     {
         ArgumentNullException.ThrowIfNull(parameters);
         return string.Join(";", parameters.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + "=" + kv.Value));
-    }
-
-    /// <summary>
-    /// The payload set the flow's protocol streams, or null when it streams none or sends its payload in parts
-    /// (<see cref="PayloadParts.Of"/>).
-    /// </summary>
-    public static string? PayloadName(FlowDefinition flow)
-    {
-        ArgumentNullException.ThrowIfNull(flow);
-        if (!DeliveryProtocols.CarriesPayload(flow.Target.Protocol) || PayloadParts.Composed(flow.Target.Protocol))
-        {
-            return null;
-        }
-
-        return flow.Target.ProtocolOptions.Payload ?? (flow.Source.Payloads.Count == 1 ? flow.Source.Payloads.Keys.First() : null);
     }
 
     private async Task PlanBatchAsync(PlanHeader header, List<SourceRecord> batch, List<PlanEntry> entries, CancellationToken ct)

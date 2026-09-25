@@ -83,7 +83,7 @@ public static class RouteChecks
             return;
         }
 
-        var sendsBulk = flow.Target.Protocol != DeliveryProtocol.Ddms || Planning.Planner.PayloadName(flow) is not null;
+        var sendsBulk = flow.Target.Protocol != DeliveryProtocol.Ddms || PayloadParts.Streamed(flow) is not null;
         if ((routing ?? DdmsRouting.Of(flow)).Problem(entityType, sendsBulk) is { } problem)
         {
             throw new DeliveryException($"{problem} ({mapping} renders {kind}.)");
@@ -97,7 +97,7 @@ public static class RouteChecks
     private static bool RegistersFiles(FlowDefinition flow) => flow.Target.Protocol switch
     {
         DeliveryProtocol.File or DeliveryProtocol.Dataset or DeliveryProtocol.FileAndDdms => true,
-        DeliveryProtocol.Manifest => Planning.Planner.PayloadName(flow) is not null,
+        DeliveryProtocol.Manifest => PayloadParts.Streamed(flow) is not null,
         DeliveryProtocol.ManifestAndDdms => flow.Source.Payloads.ContainsKey(PayloadParts.Files),
         DeliveryProtocol.Workflow => flow.Target.Workflow?.Anchor == WorkflowAnchor.Dataset || flow.Source.Payloads.ContainsKey(PayloadParts.Files),
         _ => false,

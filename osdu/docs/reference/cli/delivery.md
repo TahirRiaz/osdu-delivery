@@ -1,4 +1,4 @@
-# sqlflow check, cache, template, and the OSDU run options
+# sqlflow check, fixtures, cache, template, and the OSDU run options
 
 ## check
 
@@ -42,6 +42,35 @@ each reference left out of a cycle. Interfaces that wait for each other in a way
 `--json` the answer is the flow's name, its `order`, and an `interfaces` array holding one object per interface, each
 with its `interface`, `ledger`, `route` (`name` and `reason`), `after`, `wave`, `waitsFor` and `notWaitedFor` (each an
 `interface`, its `origin`, `after` or `schema`, and `why`) beside the facts above.
+
+## fixtures
+
+```text
+sqlflow fixtures update <flow.yaml> [--interface <name>] [--dry-run] [--db <ref>] [--json]
+```
+
+Writes what each fixture of the flow's mapping renders into its `expected` block
+([mapping-templates.md](../../mapping-templates.md#fixtures)). The mapping is resolved and checked exactly as `check`
+does, against the template it pins and the cache version it reads, except that its fixtures are not compared: they are
+rendered, each over its own rows, with its parameters over `fixtureDefaults.parameters` and the flow's, against the
+search answers it declares and never the platform. Templates and caches live in the catalog, so it needs `--db <ref>` or
+`SQLFLOW_CATALOG_DB`, as `check` does.
+
+Only the lines of the `expected` blocks that change are written; the rest of the file, its comments and its layout stay
+as they were. A written record reads the way the sample fixtures do: `id` and `kind`, then the properties in the order
+the mapping's record tree writes them, an object or a list of plain values on one line when it fits. The file is written
+through a temporary file beside it and read back as a mapping first, so an interrupted run leaves it as it was.
+
+| Fixture | What happens |
+| --- | --- |
+| Renders what it expects (compared canonically, as the gate compares) | `unchanged`: its text is left exactly as written. |
+| Renders a record a delivery would send, and expects another | `updated`: its `expected` block now holds the record. A value that was not a block (`expected: "{}"`) becomes one. |
+| Renders a record that would be held, fails to render, or asks a search it declares no answer to | `skipped`, with the reason: a fixture expects a record a delivery would send. |
+| Is written as a flow mapping (`- { name: ..., expected: ... }`), or its `expected` is anchored or followed by more on its line | `skipped`, naming what to write instead. |
+
+`--dry-run` says what would change (`differs`) and writes nothing. A source with interfaces updates the mapping of each
+interface, and a mapping file two interfaces share once; `--interface <name>` updates one. `--json` answers one object
+per mapping file: `mapping`, `path`, `written`, and `fixtures`, each with its `name`, `outcome` and `reason`.
 
 ## cache
 
@@ -169,4 +198,5 @@ the flow, the current version and what each type's search matches.
 ## Exit codes
 
 `check`, `cache` and `template` exit 0 on success and 1 on a failure, which prints one `ERROR` line naming the
-problem. `run` exits 0 when the run succeeded and 1 when it failed; Ctrl+C exits 130.
+problem. `fixtures update` exits 1 as well when any fixture was skipped, after writing the others, so a script never
+takes a partial update for a complete one. `run` exits 0 when the run succeeded and 1 when it failed; Ctrl+C exits 130.

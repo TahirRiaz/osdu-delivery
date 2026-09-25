@@ -1057,14 +1057,12 @@ export interface DeliveryBuilderCache {
 }
 
 /**
- * Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, a fixed value, or the
- * id of a record found by searching the platform.
+ * Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, a fixed value, the
+ * id of a record found by searching the platform, or a value an expression computes from the row.
  */
-export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search";
+export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search" | "Expression";
 
-export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number" | "id";
-
-export type MappingDraftConditionOperator = "is" | "isNot" | "isEmpty" | "isNotEmpty";
+export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number" | "id" | "ref";
 
 /** A parameter the mapping declares, which the flow supplies under render.parameters. */
 export interface MappingDraftParameter {
@@ -1117,13 +1115,6 @@ export interface MappingDraftModifier {
   field?: string | null;
 }
 
-/** An appliesWhen: the dataset column (without `dataset.`), the operator, and the text for is and isNot. */
-export interface MappingDraftCondition {
-  column: string;
-  operator: MappingDraftConditionOperator;
-  text: string | null;
-}
-
 /** One entry as the builder edits it. */
 export interface MappingDraftEntry {
   target: string;
@@ -1138,7 +1129,12 @@ export interface MappingDraftEntry {
   cacheField: string | null;
   findBy: MappingDraftFind[];
   modifiers: MappingDraftModifier[];
-  appliesWhen: MappingDraftCondition | null;
+  /** Expression: the expression the value is computed with, as the record tree writes it in the entry's scope. */
+  expression: string | null;
+  /** The condition (`$when`) that decides whether the property is written for a row, such as `status = "FINAL"`; null always writes it. */
+  when: string | null;
+  /** Repeat: the condition (`$where`) a child row must hold to become an item; null keeps every row. */
+  where: string | null;
   required: boolean;
   ignoreSeparators: boolean;
   /** Static: the value as JSON text, such as "[\"a\"]", "\"MD\"", "5" or "true". */
@@ -1189,7 +1185,7 @@ export interface MappingDraft {
   system: string;
   /** The dataset columns of the key, without `dataset.`. */
   key: string[];
-  /** The label as written, with {dataset.column} tokens. */
+  /** The label as written, with {column} tokens naming columns of the dataset's own row. */
   label: string | null;
   /** The dataset columns an operator finds a record by, without `dataset.`. */
   identity: string[];
@@ -1197,6 +1193,8 @@ export interface MappingDraft {
   /** The record sets the mapping's search entries look in. */
   searches: MappingDraftSearch[];
   entries: MappingDraftEntry[];
+  /** The parameter values every fixture renders with unless it gives its own (fixtureDefaults.parameters). */
+  fixtureParameters: Record<string, string>;
   fixtures: MappingDraftFixture[];
 }
 

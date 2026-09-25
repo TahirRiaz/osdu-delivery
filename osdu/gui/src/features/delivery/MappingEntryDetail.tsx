@@ -11,6 +11,7 @@ const SOURCE_LABEL: Record<MappingDraftInput, string> = {
   Cache: "Cached record",
   Static: "Static value",
   Search: "Record found by searching the platform",
+  Expression: "Computed by the expression",
 };
 
 /** One end of the pipeline: where the value comes from, or the property it lands on. */

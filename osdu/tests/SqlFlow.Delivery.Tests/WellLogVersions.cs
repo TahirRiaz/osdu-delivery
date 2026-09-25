@@ -98,9 +98,10 @@ internal static class WellLogVersions
             return text;
         }
 
-        var at = text.IndexOf("\nfixtures:\n", StringComparison.Ordinal);
-        Assert.True(at > 0, "The sample WellLog mapping has no fixtures section: the derived 1.5.0 mapping no longer follows it.");
-        var fixtures = Replace(text[at..], $"dataPartition: {Samples.SamplePartition}\n", $"dataPartition: {partition}\n", 2);
+        // The fixtures render under the partition fixtureDefaults gives them all.
+        var at = text.IndexOf("\nfixtureDefaults:\n", StringComparison.Ordinal);
+        Assert.True(at > 0, "The sample WellLog mapping has no fixtureDefaults section: the derived 1.5.0 mapping no longer follows it.");
+        var fixtures = Replace(text[at..], $"dataPartition: {Samples.SamplePartition}\n", $"dataPartition: {partition}\n", 1);
         fixtures = Replace(fixtures, $"\"{Samples.SamplePartition}:", $"\"{partition}:", expected: null);
         return text[..at] + fixtures;
     }

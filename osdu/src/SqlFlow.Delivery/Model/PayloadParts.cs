@@ -46,6 +46,23 @@ public static class PayloadParts
         => protocol is DeliveryProtocol.FileAndDdms or DeliveryProtocol.ManifestAndDdms or DeliveryProtocol.Workflow or DeliveryProtocol.Etp;
 
     /// <summary>
+    /// The one payload set <paramref name="flow"/>'s route streams whole: the set <c>target.protocolOptions.payload</c>
+    /// names, or, when it names none, the only set <c>source.payloads</c> declares, so a flow declares its payload once.
+    /// Null when the route streams no payload, sends its payload in parts (<see cref="Of"/>), or the flow declares none.
+    /// The plan, the check of the flow against its tables, the route checks and lineage all ask this one question.
+    /// </summary>
+    public static string? Streamed(FlowDefinition flow)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        if (!DeliveryProtocols.CarriesPayload(flow.Target.Protocol) || Composed(flow.Target.Protocol))
+        {
+            return null;
+        }
+
+        return flow.Target.ProtocolOptions.Payload ?? (flow.Source.Payloads.Count == 1 ? flow.Source.Payloads.Keys.First() : null);
+    }
+
+    /// <summary>
     /// The payload sets <paramref name="flow"/>'s route sends as parts, in the order it sends them, or null for a route
     /// that sends at most one payload set. The files come first, since a record refers to them; then the bulk data a DDMS
     /// keeps for the record once it is written; the inputs a workflow reads come with the files.

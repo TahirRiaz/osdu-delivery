@@ -83,6 +83,7 @@ internal static partial class MappingMapper
         var entries = ReadRecord(y.Record, source);
         Validate(entries, parameters, source);
         ValidateSearches(entries, searches, source);
+        var fixtureParameters = FixtureDefaults(y, source);
 
         return new MappingDefinition
         {
@@ -102,6 +103,7 @@ internal static partial class MappingMapper
             Searches = searches,
             Entries = entries,
             Envelope = Envelope(entries, kind, source),
+            FixtureParameters = fixtureParameters,
             Fixtures = (y.Fixtures ?? []).Select((f, i) => new MappingFixture
             {
                 Name = FlowMapper.Require(f.Name, $"fixtures[{i}].name", source),
@@ -110,11 +112,49 @@ internal static partial class MappingMapper
                     kv => kv.Key,
                     kv => (IReadOnlyList<IReadOnlyDictionary<string, string?>>)(kv.Value ?? []).Select(r => (IReadOnlyDictionary<string, string?>)r).ToList(),
                     StringComparer.Ordinal),
-                Parameters = f.Parameters ?? new Dictionary<string, string>(StringComparer.Ordinal),
+                Parameters = WithDefaults(fixtureParameters, f.Parameters),
                 Searches = FixtureSearches(f.Searches, searches, entries, $"{source}: fixtures[{i}]"),
                 Expected = FlowMapper.Require(f.Expected, $"fixtures[{i}].expected", source),
             }).ToList(),
         };
+    }
+
+    /// <summary>
+    /// The parameter values every fixture renders with unless it gives its own (<c>fixtureDefaults.parameters</c>). A
+    /// defaults block with nothing in it, or with no fixture to apply to, is refused: it would say something that is never
+    /// used.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> FixtureDefaults(MappingYaml y, string source)
+    {
+        if (y.FixtureDefaults is not { } defaults)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        if (defaults.Parameters is not { Count: > 0 } parameters)
+        {
+            throw new FlowValidationException(
+                $"{source}: fixtureDefaults.parameters lists the parameter values every fixture renders with, such as dataPartition: dev; it is empty.");
+        }
+
+        if (y.Fixtures is not { Count: > 0 })
+        {
+            throw new FlowValidationException($"{source}: fixtureDefaults says what every fixture renders with, and the mapping has no fixtures; remove it, or add fixtures.");
+        }
+
+        return new Dictionary<string, string>(parameters, StringComparer.Ordinal);
+    }
+
+    /// <summary>A fixture's parameters: the defaults, each replaced by the fixture's own value where it gives one.</summary>
+    private static Dictionary<string, string> WithDefaults(IReadOnlyDictionary<string, string> defaults, Dictionary<string, string>? own)
+    {
+        var merged = new Dictionary<string, string>(defaults, StringComparer.Ordinal);
+        foreach (var (name, value) in own ?? [])
+        {
+            merged[name] = value;
+        }
+
+        return merged;
     }
 
     /// <summary>
@@ -230,7 +270,8 @@ internal static partial class MappingMapper
         var repeaters = entries.Where(e => e.IsRepeater).ToDictionary(e => e.Target);
         foreach (var entry in entries)
         {
-            string? child = null;
+            // A repeater's $where reads the rows it repeats; everything else under it reads the item's row.
+            string? child = entry.IsRepeater ? entry.Source!.Child : null;
             if (entry.Target.Repeater is { } array)
             {
                 if (!repeaters.TryGetValue(array, out var repeater))
@@ -242,9 +283,10 @@ internal static partial class MappingMapper
                 child = repeater.Source!.Child;
             }
 
-            if (entry.IsRepeater && entry.AppliesWhen?.Column.Child is not null)
+            if (entry.IsRepeater && entry.AppliesWhen?.Columns.FirstOrDefault(c => c.Child is not null) is { } itemColumn)
             {
-                throw new FlowValidationException($"{source}: {entry.Where}: a {ForEachKey} node's {WhenKey} decides for the whole array, so it reads the dataset's own row, not {entry.AppliesWhen.Column}.");
+                throw new FlowValidationException(
+                    $"{source}: {entry.Where}: a {ForEachKey} node's {WhenKey} decides for the whole array, so it reads the dataset's own row, not {itemColumn}; {WhereKey} decides for each row.");
             }
 
             foreach (var column in entry.Columns)
@@ -265,7 +307,15 @@ internal static partial class MappingMapper
             {
                 if (!parameters.ContainsKey(name))
                 {
-                    throw new FlowValidationException($"{source}: {entry.Where} uses {{param.{name}}}, but the mapping declares no parameter '{name}'.");
+                    throw new FlowValidationException($"{source}: {entry.Where} uses {{$param.{name}}}, but the mapping declares no parameter '{name}'.");
+                }
+            }
+
+            foreach (var expression in entry.Expressions)
+            {
+                foreach (var name in expression.Parameters.Where(name => !parameters.ContainsKey(name)))
+                {
+                    throw new FlowValidationException($"{source}: {entry.Where} reads $param.{name} in '{expression}', but the mapping declares no parameter '{name}'.");
                 }
             }
 
@@ -273,7 +323,7 @@ internal static partial class MappingMapper
             {
                 if (!parameters.ContainsKey(name))
                 {
-                    throw new FlowValidationException($"{source}: {entry.Where} builds an id from {{param.{name}}}, but the mapping declares no parameter '{name}'.");
+                    throw new FlowValidationException($"{source}: {entry.Where} builds an id from {{$param.{name}}}, but the mapping declares no parameter '{name}'.");
                 }
             }
         }
@@ -340,13 +390,13 @@ internal static partial class MappingMapper
             : throw new FlowValidationException($"{source}: {key} names '{text}'; it names a column of the dataset's own row as it is, such as log_id.");
 
     /// <summary>
-    /// The label with each token read as a column of the dataset's own row (<c>{wellbore_uwi}</c>), kept as the loaded model
-    /// reads it (<c>{dataset.wellbore_uwi}</c>).
+    /// The label with each token read as a column of the dataset's own row, <c>{wellbore_uwi}</c> or
+    /// <c>{$dataset.wellbore_uwi}</c>, and kept in the first form, which the renderer and the preflight read.
     /// </summary>
-    private static string LabelColumns(string label, string source) => IdToken().Replace(label, token =>
+    private static string LabelColumns(string label, string source) => BraceToken().Replace(label, token =>
     {
         var column = Column(token.Groups["token"].Value, TreeScope.Root, $"{source}: dataset.label token {token.Value}");
-        return "{" + column + "}";
+        return "{" + column.Column + "}";
     });
 
     /// <summary>The part of a record a search compares: its data, as the schema of the kind searched describes it.</summary>
@@ -363,7 +413,7 @@ internal static partial class MappingMapper
         if (!NamePattern().IsMatch(name))
         {
             throw new FlowValidationException(
-                $"{where} is named with something other than letters, digits, underscores and hyphens; entries write the name in search.<name>.id.");
+                $"{where} is named with something other than letters, digits, underscores and hyphens; nodes read it as $search: <name>.");
         }
 
         var kind = y?.Kind?.Trim();
@@ -454,7 +504,7 @@ internal static partial class MappingMapper
     }
 
     /// <summary>The modifiers a mapping entry takes, by the name it writes them with.</summary>
-    internal static readonly IReadOnlyList<string> ModifierNames = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number", "id"];
+    internal static readonly IReadOnlyList<string> ModifierNames = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number", "id", "ref"];
 
     /// <summary>The settings a replace takes beside its table: what an unlisted value becomes, and a cached table's fields.</summary>
     internal static readonly IReadOnlyList<string> ReplaceSettings = ["otherwise", "match", "field"];
@@ -471,7 +521,7 @@ internal static partial class MappingMapper
     private static string SettingList(IReadOnlyList<string> settings)
         => string.Join(", ", settings.Take(settings.Count - 1).Select(s => $"'{s}'")) + $" and '{settings[^1]}'";
 
-    private static Modifier ParseModifier(object value, string where)
+    private static Modifier ParseModifier(object value, string? child, string where)
     {
         switch (value)
         {
@@ -483,6 +533,7 @@ internal static partial class MappingMapper
                     "lower" => new Modifier { Kind = ModifierKind.Lower },
                     "date" => new Modifier { Kind = ModifierKind.Date },
                     "number" => new Modifier { Kind = ModifierKind.Number, DecimalSeparator = Rendering.NumberValues.DecimalPoint },
+                    "ref" => new Modifier { Kind = ModifierKind.Ref },
                     "split" or "equals" => throw new FlowValidationException($"{where}: '{name}' needs settings, such as {Example(name)}."),
                     "replace" => throw new FlowValidationException($"{where}: 'replace' needs a table, such as {Example(name)}."),
                     "id" => throw new FlowValidationException($"{where}: 'id' needs the template the id is built from, such as {Example(name)}."),
@@ -506,7 +557,8 @@ internal static partial class MappingMapper
                             : new Modifier { Kind = ModifierKind.Equals, Text = Convert.ToString(settings, CultureInfo.InvariantCulture) },
                         "date" => Date(settings, where),
                         "number" => Number(settings, where),
-                        "id" => Id(settings, where),
+                        "id" => Id(settings, child, where),
+                        "ref" => Ref(settings, where),
                         _ => throw new FlowValidationException($"{where}: '{modifier}' is not a modifier. The modifiers are {ModifierList}."),
                     };
                 }
@@ -522,6 +574,35 @@ internal static partial class MappingMapper
 
     private static string KeyText(object key) => Convert.ToString(key, CultureInfo.InvariantCulture)?.Trim() ?? string.Empty;
 
+    /// <summary>A modifier's name as a message says it: id or ref.</summary>
+    private static string Word(Modifier modifier) => modifier.Kind.ToString().ToLowerInvariant();
+
+    /// <summary>
+    /// A ref modifier naming the entity type the reference is of: in full (<c>reference-data--UnitOfMeasure</c>), which
+    /// builds its template here, or by the entity's name alone (<c>UnitOfMeasure</c>), which picks one of the types the
+    /// property points to when the template is read. Written bare, <c>ref</c> takes the one type the property points to.
+    /// </summary>
+    private static Modifier Ref(object? settings, string where)
+    {
+        var text = settings switch
+        {
+            string written => written.Trim(),
+            null or IDictionary<object, object> or IEnumerable<object> => throw new FlowValidationException(
+                $"{where}: ref names the entity type of the record it references, such as {Example("ref")}, or is written alone, as ref, to take the one the property points to."),
+            _ => ScalarText(settings),
+        };
+
+        if (IdTemplate.IsEntityType(text))
+        {
+            return new Modifier { Kind = ModifierKind.Ref, EntityType = text, Id = IdTemplate.Reference(text) };
+        }
+
+        return EntityNamePattern().IsMatch(text)
+            ? new Modifier { Kind = ModifierKind.Ref, EntityType = text }
+            : throw new FlowValidationException(
+                $"{where}: ref '{text}' is not an entity type; name it as the template does, such as {Example("ref")}, or in full, such as ref: reference-data--UnitOfMeasure.");
+    }
+
     /// <summary>
     /// A scalar as the text the document wrote: a boolean as <c>true</c> or <c>false</c>, which is how YAML spells it, and a
     /// number in the invariant culture.
@@ -532,8 +613,12 @@ internal static partial class MappingMapper
         _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty,
     };
 
-    /// <summary>An id modifier: the template the id is built from, read and checked here, before any row is rendered.</summary>
-    private static Modifier Id(object? settings, string where)
+    /// <summary>
+    /// An id modifier: the template the id is built from, read and checked here, before any row is rendered. Its bare
+    /// <c>{column}</c> tokens read the row of <paramref name="child"/>, the child dataset the node is under, or the
+    /// dataset's own row.
+    /// </summary>
+    private static Modifier Id(object? settings, string? child, string where)
     {
         if (settings is not string text)
         {
@@ -541,7 +626,7 @@ internal static partial class MappingMapper
                 $"{where}: id takes the template the id is built from as text, such as {Example("id")}; quote it, since YAML reads text that starts with '{{' as a map.");
         }
 
-        return IdTemplate.TryParse(text, out var problem) is { } template
+        return IdTemplate.TryParse(text, child, out var problem) is { } template
             ? new Modifier { Kind = ModifierKind.Id, Id = template }
             : throw new FlowValidationException($"{where}: id '{text}': {problem}.");
     }
@@ -664,7 +749,7 @@ internal static partial class MappingMapper
             }
         }
 
-        // A table read from the cache is named, not written: replace: cache.<Type>.
+        // A table read from the cache is named, not written: replace: $cache.<Type>.
         if (table is string named)
         {
             return new Modifier { Kind = ModifierKind.Replace, Table = CachedTable(named, match, field, where), Otherwise = fallback };
@@ -673,7 +758,7 @@ internal static partial class MappingMapper
         if (match is not null || field is not null)
         {
             throw new FlowValidationException(
-                $"{where}: 'match' and 'field' choose the fields of a table read from the cache (replace: cache.<Type>); a table written in the mapping matches on its keys and replaces with what each lists.");
+                $"{where}: 'match' and 'field' choose the fields of a table read from the cache (replace: $cache.<Type>); a table written in the mapping matches on its keys and replaces with what each lists.");
         }
 
         if (table is not IDictionary<object, object> pairs || pairs.Count == 0)
@@ -710,14 +795,14 @@ internal static partial class MappingMapper
         return new Modifier { Kind = ModifierKind.Replace, Replacements = replacements, Otherwise = fallback };
     }
 
-    /// <summary>The cached table a replace names: <c>cache.&lt;Type&gt;</c>, with the fields it matches on and replaces by.</summary>
+    /// <summary>The cached table a replace names: <c>$cache.&lt;Type&gt;</c>, with the fields it matches on and replaces by.</summary>
     private static CachedReplaceTable CachedTable(string named, string? match, string? field, string where)
     {
         var parts = named.Trim().Split('.');
-        if (parts.Length != 2 || parts[0] != MappingSource.CachePrefix || !NamePattern().IsMatch(parts[1]))
+        if (parts.Length != 2 || parts[0] != CacheReference || !NamePattern().IsMatch(parts[1]))
         {
             throw new FlowValidationException(
-                $"{where}: replace names '{named}', and a table read from the cache is named cache.<Type>, such as replace: cache.RecallUnits; a table written here is a map, such as {Example("replace")}.");
+                $"{where}: replace names '{named}', and a table read from the cache is named {CacheReference}.<Type>, such as replace: {CacheReference}.RecallUnits; a table written here is a map, such as {Example("replace")}.");
         }
 
         return new CachedReplaceTable(parts[1], match, field);
@@ -740,7 +825,8 @@ internal static partial class MappingMapper
         "split" => "split: { separator: \",\", part: 1 }",
         "replace" => "replace: { GAPI: gAPI }",
         "number" => "number: { decimal: \",\", group: \" \" }",
-        "id" => "id: \"{param.dataPartition}:reference-data--UnitOfMeasure:{value}:\"",
+        "id" => "id: " + IdTemplate.Example,
+        "ref" => "ref: UnitOfMeasure",
         _ => "equals: REGULAR",
     };
 
@@ -767,20 +853,24 @@ internal static partial class MappingMapper
         decimal number => JsonValue.Create((double)number),
         IDictionary<object, object> map => new JsonObject(map.Select(kv => new KeyValuePair<string, JsonNode?>(
             Convert.ToString(kv.Key, CultureInfo.InvariantCulture) ?? string.Empty,
-            StaticValue(kv.Value, where) ?? throw new FlowValidationException($"{where}: static value '{kv.Key}' is empty.")))),
+            StaticValue(kv.Value, where) ?? throw new FlowValidationException($"{where}: the literal's '{kv.Key}' has no value.")))),
         IEnumerable<object> list => new JsonArray(list.Select(item => StaticValue(item, where)
-            ?? throw new FlowValidationException($"{where}: a static list holds an empty item.")).ToArray()),
+            ?? throw new FlowValidationException($"{where}: a literal list holds an empty item.")).ToArray()),
         _ => JsonValue.Create(Convert.ToString(value, CultureInfo.InvariantCulture)),
     };
 
     private static FlowValidationException NonFiniteStatic(object number, string where)
-        => new($"{where}: static value {Convert.ToString(number, CultureInfo.InvariantCulture)} is NaN or Infinity, which a JSON record cannot carry (RFC 8259).");
+        => new($"{where}: the literal {Convert.ToString(number, CultureInfo.InvariantCulture)} is NaN or Infinity, which a JSON record cannot carry (RFC 8259).");
 
     [GeneratedRegex(@"^[0-9a-f]{16}$")]
     private static partial Regex TemplateVersionPattern();
 
     [GeneratedRegex(@"^[A-Za-z0-9_\-]+$")]
     private static partial Regex NamePattern();
+
+    /// <summary>The name of an OSDU entity, as a relationship names it after its group: letters, digits and '_'.</summary>
+    [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9_]*$")]
+    private static partial Regex EntityNamePattern();
 
     [GeneratedRegex(@"^[A-Za-z0-9_\-\$]+$")]
     private static partial Regex FieldPattern();
@@ -791,6 +881,7 @@ internal static partial class MappingMapper
     [GeneratedRegex(@"^(?<column>\S+)\s+is\s+(?<not>not\s+)?(?<rest>.+)$")]
     private static partial Regex ConditionPattern();
 
-    [GeneratedRegex(@"\{(?<column>dataset\.[A-Za-z0-9_\-\.]+)\}")]
+    /// <summary>A token of a loaded label: a column of the dataset's own row, <c>{wellbore_uwi}</c>.</summary>
+    [GeneratedRegex(@"\{(?<column>[A-Za-z0-9_\-]+)\}")]
     internal static partial Regex LabelToken();
 }

@@ -792,7 +792,16 @@ internal sealed class MappingYaml
     /// </summary>
     public Dictionary<string, object?>? Record { get; set; }
 
+    /// <summary>What every fixture renders with unless it says otherwise, written once.</summary>
+    public MappingFixtureDefaultsYaml? FixtureDefaults { get; set; }
+
     public List<MappingFixtureYaml>? Fixtures { get; set; }
+}
+
+/// <summary>What every fixture of a mapping renders with unless the fixture gives its own: the parameter values.</summary>
+internal sealed class MappingFixtureDefaultsYaml
+{
+    public Dictionary<string, string>? Parameters { get; set; }
 }
 
 /// <summary>

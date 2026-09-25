@@ -50,7 +50,13 @@ public sealed class RenderResolver
         _search = search;
     }
 
-    public async Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, CancellationToken ct = default)
+    public Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, CancellationToken ct = default) => ResolveAsync(flow, checkFixtures: true, ct);
+
+    /// <summary>
+    /// Resolves the flow's mapping and runs its preflight. <paramref name="checkFixtures"/> false leaves the fixtures to
+    /// the caller, which renders them itself: the fixtures update verb, which writes what they render now.
+    /// </summary>
+    public async Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, bool checkFixtures, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
         var where = KeyPaths.Where(flow);
@@ -104,7 +110,7 @@ public sealed class RenderResolver
         };
 
         var searches = await SearchesAsync(_templates, mapping, ct).ConfigureAwait(false);
-        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches);
+        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches, checkFixtures);
         Preflight.ThrowIfFailed(issues, where);
         var renderer = new MappingRenderer(mapping, schema, references, context, searches, _search);
         return new ResolvedMapping(mapping, schema, references, context, renderer);

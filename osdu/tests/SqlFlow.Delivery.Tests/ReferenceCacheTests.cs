@@ -680,16 +680,16 @@ public class CachedLookupTests
         Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase),
     };
 
-    private static string Read(string target, string field, string findBy = "Code") => $$"""
-          - target: {{target}}
-            source: cache.UnitOfMeasure.{{field}}
-            findBy: cache.UnitOfMeasure.{{findBy}} = dataset.unit
+    private static string Read(string property, string field, string findBy = "Code") => $$"""
+          {{property}}:
+            $cache: UnitOfMeasure.{{field}}
+            $findBy: {{findBy}} = unit
         """;
 
     [Fact]
     public void Reads_a_cached_scalar_into_the_document()
     {
-        var result = Renderer(Read("osdu.data.Symbol", "Symbol")).Render(Record());
+        var result = Renderer(Read("Symbol", "Symbol")).Render(Record());
         Assert.False(result.IsHeld);
         Assert.Equal("m", result.Document["data"]!["Symbol"]!.GetValue<string>());
     }
@@ -697,7 +697,7 @@ public class CachedLookupTests
     [Fact]
     public void Reads_a_cached_set_into_an_array()
     {
-        var result = Renderer(Read("osdu.data.Aliases", "Alias")).Render(Record());
+        var result = Renderer(Read("Aliases", "Alias")).Render(Record());
         Assert.False(result.IsHeld);
         Assert.Equal(["meter", "metre"], result.Document["data"]!["Aliases"]!.AsArray().Select(n => n!.GetValue<string>()));
     }
@@ -705,7 +705,7 @@ public class CachedLookupTests
     [Fact]
     public void Reads_a_path_inside_a_cached_object()
     {
-        var result = Renderer(Read("osdu.data.Symbol", "Persistable.Scale.Code")).Render(Record());
+        var result = Renderer(Read("Symbol", "Persistable.Scale.Code")).Render(Record());
         Assert.False(result.IsHeld);
         Assert.Equal("SI", result.Document["data"]!["Symbol"]!.GetValue<string>());
     }
@@ -713,10 +713,10 @@ public class CachedLookupTests
     [Fact]
     public void A_scalar_target_wraps_into_an_array_and_a_set_holds()
     {
-        var single = Renderer(Read("osdu.data.Aliases", "Name")).Render(Record());
+        var single = Renderer(Read("Aliases", "Name")).Render(Record());
         Assert.Equal(["metre"], single.Document["data"]!["Aliases"]!.AsArray().Select(n => n!.GetValue<string>()));
 
-        var set = Renderer(Read("osdu.data.Symbol", "Alias")).Render(Record());
+        var set = Renderer(Read("Symbol", "Alias")).Render(Record());
         Assert.True(set.IsHeld);
         Assert.Contains(set.Holds, h => h.Contains("2 values were given but the template takes one string", StringComparison.Ordinal));
     }
@@ -724,7 +724,7 @@ public class CachedLookupTests
     [Fact]
     public void An_uncached_field_holds_the_record_and_names_what_is_cached()
     {
-        var result = Renderer(Read("osdu.data.Symbol", "NotCached")).Render(Record());
+        var result = Renderer(Read("Symbol", "NotCached")).Render(Record());
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h =>
             h.Contains("caches nothing at 'NotCached'", StringComparison.Ordinal) && h.Contains("Cached: id, Alias, Code", StringComparison.Ordinal));
@@ -733,7 +733,7 @@ public class CachedLookupTests
     [Fact]
     public void A_missed_match_holds_exactly_as_reading_the_id_does()
     {
-        var result = Renderer(Read("osdu.data.Symbol", "Symbol")).Render(Record(unit: "furlong"));
+        var result = Renderer(Read("Symbol", "Symbol")).Render(Record(unit: "furlong"));
         Assert.True(result.IsHeld);
         Assert.Contains(result.Holds, h => h.Contains("no UnitOfMeasure matches 'furlong'", StringComparison.Ordinal));
     }
@@ -741,14 +741,14 @@ public class CachedLookupTests
     [Fact]
     public void Preflight_rejects_a_field_the_cache_cannot_answer()
     {
-        var issues = Preflight.Check(TestSchema.Mapping(Read("osdu.data.Symbol", "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), sourceColumns: null);
+        var issues = Preflight.Check(TestSchema.Mapping(Read("Symbol", "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), sourceColumns: null);
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("reads 'NotCached' out of UnitOfMeasure", StringComparison.Ordinal));
     }
 
     [Fact]
     public void Preflight_rejects_matching_by_fields_the_cache_does_not_hold()
     {
-        var issues = Preflight.Check(TestSchema.Mapping(Read("osdu.data.Unit", "id", findBy: "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), sourceColumns: null);
+        var issues = Preflight.Check(TestSchema.Mapping(Read("Unit", "id", findBy: "NotCached")), TestSchema.Build(), References(), TestSchema.Context(), sourceColumns: null);
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("caches none of those", StringComparison.Ordinal));
     }
 }

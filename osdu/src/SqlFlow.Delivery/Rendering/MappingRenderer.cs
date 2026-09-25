@@ -28,6 +28,7 @@ public sealed class MappingRenderer
     private readonly IReadOnlyList<string>? _owned;
     private readonly ResolvedSearches _searches;
     private readonly IRecordSearch _search;
+    private readonly IReadOnlyDictionary<int, (IdTemplate? Template, string? Problem)> _referenceTemplates;
 
     /// <param name="mapping">The mapping rendered.</param>
     /// <param name="schema">The template the mapping pins.</param>
@@ -93,6 +94,9 @@ public sealed class MappingRenderer
         _requiredData = schema.RequiredAt("data");
         _recordEntries = mapping.Entries.Where(e => !e.IsRepeater && !e.Target.IsRepeated).ToList();
         _repeaters = mapping.Entries.Where(e => e.IsRepeater).Select(r => (r, (IReadOnlyList<MappingEntry>)mapping.ItemEntries(r).ToList())).ToList();
+        _referenceTemplates = mapping.Entries
+            .Where(e => e.Modifiers.Any(m => m.Kind == ModifierKind.Ref))
+            .ToDictionary(e => e.Index, e => ResolveReference(e, e.Modifiers.Last(m => m.Kind == ModifierKind.Ref), schema));
 
         // A DSPDM business object row lists the attributes its mapping fills, which are the ones a save may clear.
         _owned = DspdmKinds.Is(mapping.Kind)
@@ -135,14 +139,14 @@ public sealed class MappingRenderer
         {
             if (string.IsNullOrWhiteSpace(renderer.ParameterValue(name)))
             {
-                notes.Add($"parameter '{name}' has no value, so the shape shows {{param.{name}}} where the mapping uses it");
+                notes.Add($"parameter '{name}' has no value, so the shape shows {{$param.{name}}} where the mapping uses it");
             }
         }
 
         var partition = renderer.ParameterValue(RenderContext.DataPartitionParameter);
         if (string.IsNullOrWhiteSpace(partition))
         {
-            partition = "{param." + RenderContext.DataPartitionParameter + "}";
+            partition = "{$param." + RenderContext.DataPartitionParameter + "}";
         }
         else
         {
@@ -191,7 +195,7 @@ public sealed class MappingRenderer
 
         var label = MappingMapper.LabelToken().Replace(
             _mapping.Dataset.Label,
-            m => row.GetString(m.Groups["column"].Value[(DatasetColumn.Prefix.Length + 1)..]) ?? string.Empty).Trim();
+            m => row.GetString(m.Groups["column"].Value) ?? string.Empty).Trim();
         return label.Length == 0 ? null : label.Length <= 400 ? label : label[..400];
     }
 
@@ -329,6 +333,78 @@ public sealed class MappingRenderer
     internal static string Where(MappingDefinition mapping) => mapping.SourcePath ?? mapping.Reference;
 
     /// <summary>
+    /// The id template the entry's ref modifier builds with, <c>{$param.dataPartition}:&lt;group--Entity&gt;:{$value}:</c>,
+    /// or null with why the template does not say which entity type the reference is of. The render holds the record with
+    /// that reason and the preflight refuses the mapping with it, so the two never disagree.
+    /// </summary>
+    internal IdTemplate? ReferenceTemplate(MappingEntry entry, out string? problem)
+    {
+        if (_referenceTemplates.TryGetValue(entry.Index, out var resolved))
+        {
+            problem = resolved.Problem;
+            return resolved.Template;
+        }
+
+        problem = $"{entry.Target.Text} has no ref modifier";
+        return null;
+    }
+
+    /// <summary>
+    /// Which entity type a ref modifier references. Written in full, it is the one written. Written bare, it is the one
+    /// entity type the variable's relationship names. Written by the entity's name alone, it is the one of the variable's
+    /// relationships with that name, or the name in the group a relationship names without an entity.
+    /// </summary>
+    private static (IdTemplate? Template, string? Problem) ResolveReference(MappingEntry entry, Modifier modifier, SchemaSnapshot schema)
+    {
+        if (modifier.Id is { } written)
+        {
+            return (written, null);
+        }
+
+        var target = entry.Target.Text;
+        var relationships = schema.Resolve(entry.Target.SchemaPath) is { } property ? IdValues.Relationships(property) : [];
+        var named = modifier.EntityType;
+        var candidates = named is null
+            ? relationships.Where(r => r.Contains("--", StringComparison.Ordinal)).ToList()
+            : relationships
+                .Select(r => r.Contains("--", StringComparison.Ordinal)
+                    ? (r.EndsWith("--" + named, StringComparison.Ordinal) ? r : null)
+                    : $"{r}--{named}")
+                .OfType<string>()
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+        if (candidates.Count == 1)
+        {
+            try
+            {
+                return (IdTemplate.Reference(candidates[0]), null);
+            }
+            catch (ArgumentException ex)
+            {
+                return (null, $"ref cannot reference {candidates[0]}, which the template names for {target}: {ex.Message}");
+            }
+        }
+
+        if (relationships.Count == 0)
+        {
+            return (null,
+                $"ref builds a reference of the entity type {target} points to, and the template names none for it; write the type in full, such as ref: reference-data--UnitOfMeasure");
+        }
+
+        var listed = string.Join(" or ", relationships);
+        if (named is not null)
+        {
+            return (null, candidates.Count == 0
+                ? $"{target} points to {listed}, and none of them is a {named}; name one of them, or write the type in full"
+                : $"{target} points to {listed}, and {named} is more than one of them ({string.Join(", ", candidates)}); write the one meant in full");
+        }
+
+        var example = relationships.FirstOrDefault(r => r.Contains("--", StringComparison.Ordinal)) is { } first ? first[(first.IndexOf("--", StringComparison.Ordinal) + 2)..] : "<Entity>";
+        return (null, $"{target} points to {listed}, so a bare ref cannot tell which the value is a code of; name it, such as ref: {example}");
+    }
+
+    /// <summary>
     /// Writes every entry's value into <paramref name="document"/>: the list of attributes a DSPDM business object row owns
     /// (<see cref="DspdmKinds.OwnedProperty"/>), the record's own entries at their targets, then each repeater's array with one
     /// item per row, then the check that the data the schema requires is there. What a value cannot be written for is added
@@ -452,9 +528,16 @@ public sealed class MappingRenderer
     {
         public JsonNode? Value(MappingEntry entry, SourceRow? item) => EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages, searched);
 
-        public bool Applies(MappingEntry repeater) => repeater.AppliesWhen is not { } condition || EntryValues.Applies(condition, record.Row, item: null);
+        public bool Applies(MappingEntry repeater)
+            => repeater.AppliesWhen is not { } condition || EntryValues.Applies(condition, record.Row, item: null, renderer, holds, repeater.Target.Text);
 
-        public IEnumerable<SourceRow?> Items(MappingEntry repeater) => record.ScopeRows(repeater.Source!.Child!);
+        public IEnumerable<SourceRow?> Items(MappingEntry repeater)
+        {
+            var rows = record.ScopeRows(repeater.Source!.Child!);
+            return repeater.RowFilter is not { } filter
+                ? rows
+                : rows.Where(row => EntryValues.Applies(filter, record.Row, row, renderer, holds, repeater.Target.Text));
+        }
     }
 
     /// <summary>Placeholders in place of a record's values: one item per repeater, whatever its condition, with a note saying how many a record takes.</summary>
@@ -467,8 +550,9 @@ public sealed class MappingRenderer
         public IEnumerable<SourceRow?> Items(MappingEntry repeater)
         {
             var when = repeater.AppliesWhen is { } condition ? $", only when {condition}" : string.Empty;
+            var where = repeater.RowFilter is { } filter ? $" where {filter}" : string.Empty;
             var none = repeater.Required ? "a record without any is held" : "left out when there are none";
-            notes.Add($"{repeater.Target.Text}: one item per row of {repeater.Source}{when}; {none}");
+            notes.Add($"{repeater.Target.Text}: one item per row of {repeater.Source}{where}{when}; {none}");
             return [null];
         }
     }

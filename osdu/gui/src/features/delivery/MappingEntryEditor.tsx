@@ -14,12 +14,12 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type {
-  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftCondition, MappingDraftConditionOperator,
+  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft,
   MappingDraftEntry, MappingDraftInput, MappingDraftIssue, MappingDraftModifier, MappingDraftModifierKind, MappingDraftOtherwiseKind,
 } from "../../api/delivery";
 import { isLookupEntityType } from "./cacheFormat";
 import {
-  cachedReplaceFields, DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, ID_TEMPLATE_EXAMPLE, inputsFor, isCachedReplace, KEY_NAME, knownColumns, MODIFIER_KINDS,
+  cachedReplaceFields, DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, ID_MODIFIER_KINDS, ID_TEMPLATE_EXAMPLE, inputsFor, isCachedReplace, KEY_NAME, knownColumns, MODIFIER_KINDS,
   newModifier, NO_GROUP, parseJson, repeaterOf, staticModeFor,
   type StaticMode,
 } from "./mappingDraft";
@@ -46,13 +46,7 @@ const CHOICE_LABELS: Record<Choice, string> = {
   Cache: "Cache",
   Static: "Static value",
   Search: "Platform search",
-};
-
-const OPERATOR_LABELS: Record<MappingDraftConditionOperator, string> = {
-  is: "is",
-  isNot: "is not",
-  isEmpty: "is empty",
-  isNotEmpty: "is not empty",
+  Expression: "Expression",
 };
 
 /** One findBy line as the form edits it: the cached field, and a dataset column or a fixed text. */
@@ -530,7 +524,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
   const known = useMemo(() => knownColumns(draft), [draft]);
 
   const searches = draft.searches;
-  const offered: MappingDraftInput[] = outside !== null ? ["Dataset", "Repeat", "Cache", "Search", "Static"] : inputsFor(variable);
+  const offered: MappingDraftInput[] = outside !== null ? ["Dataset", "Expression", "Repeat", "Cache", "Search", "Static"] : inputsFor(variable);
   // A search is offered once the mapping declares one to look in; the searches block says which kinds it looks in.
   const allowed = offered.filter((input) => input !== "Search" || searches.length > 0);
   if (entry !== null && !allowed.includes(entry.input)) {
@@ -552,8 +546,11 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
       : { field: find.field, mode: "column", value: find.column ?? "" })));
   const [ignoreSeparators, setIgnoreSeparators] = useState(entry?.ignoreSeparators ?? false);
   const [modifiers, setModifiers] = useState<MappingDraftModifier[]>(entry?.modifiers ?? []);
-  const [conditionOn, setConditionOn] = useState(entry !== null && entry.appliesWhen !== null);
-  const [condition, setCondition] = useState<MappingDraftCondition>(entry?.appliesWhen ?? { column: "", operator: "is", text: "" });
+  const [expression, setExpression] = useState(entry?.expression ?? "");
+  const [conditionOn, setConditionOn] = useState(entry !== null && entry.when !== null);
+  const [condition, setCondition] = useState(entry?.when ?? "");
+  const [whereOn, setWhereOn] = useState(entry !== null && entry.where !== null);
+  const [where, setWhere] = useState(entry?.where ?? "");
   const [required, setRequired] = useState(entry?.required ?? true);
   const [description, setDescription] = useState(entry?.description ?? "");
   const [jsonMode, setJsonMode] = useState(() => typedMode === "json" || staticModeFor(variable, initialStatic) === "json");
@@ -683,16 +680,12 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
           ? { field: line.field.trim(), column: null, literal: line.value }
           : { field: line.field.trim(), column: bare(line.value), literal: null }))
         : [],
-      modifiers: choice === "Dataset" || lookup
+      modifiers: choice === "Dataset" || choice === "Expression" || lookup
         ? modifiers.map((modifier) => (modifier.kind === "date" && (modifier.text ?? "").trim() === "" ? { ...modifier, text: null } : modifier))
         : [],
-      appliesWhen: conditionOn
-        ? {
-          column: bare(condition.column),
-          operator: condition.operator,
-          text: condition.operator === "is" || condition.operator === "isNot" ? condition.text ?? "" : null,
-        }
-        : null,
+      expression: choice === "Expression" ? expression.trim() : null,
+      when: conditionOn && condition.trim() !== "" ? condition.trim() : null,
+      where: choice === "Repeat" && whereOn && where.trim() !== "" ? where.trim() : null,
       required: choice === "Static" ? true : required,
       ignoreSeparators: choice === "Cache" && ignoreSeparators,
       static: choice === "Static" ? staticResult.json : null,
@@ -807,6 +800,23 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
           </Section>
         )}
 
+        {choice === "Expression" && (
+          <Section
+            title="Expression"
+            hint={repeater === null
+              ? "Computed from the dataset row: a column by its name, a parameter as $param.<name>, text in quotes. Such as coalesce(log_name, log_source), upper(trim(unit)) or iif(depth > 1000, \"deep\", \"shallow\"). Work heavier than this belongs in the ingestion SQL."
+              : `Inside ${repeater}, a name reads the item's row of ${repeaterChild ?? "the child dataset"}, and $dataset.<column> the dataset row. Such as coalesce(curve_unit, $dataset.depth_unit).`}
+          >
+            <Textarea
+              className="min-h-16 font-mono text-[12px]"
+              placeholder={repeater === null ? "coalesce(log_name, log_source)" : "coalesce(curve_unit, $dataset.depth_unit)"}
+              value={expression}
+              onChange={(event) => setExpression(event.target.value)}
+              data-testid="mapping-builder-entry-expression"
+            />
+          </Section>
+        )}
+
         {choice === "Repeat" && (
           <Section
             title="Child dataset"
@@ -820,6 +830,19 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
               onChange={(event) => setChild(event.target.value)}
               data-testid="mapping-builder-entry-child"
             />
+            <Label className="flex items-center gap-2 text-[13px] font-normal">
+              <Switch checked={whereOn} onCheckedChange={setWhereOn} data-testid="mapping-builder-entry-where-on" />
+              Only the rows a condition holds for
+            </Label>
+            {whereOn && (
+              <Input
+                className="h-8 font-mono"
+                placeholder={'curve_id != "DEPT"'}
+                value={where}
+                onChange={(event) => setWhere(event.target.value)}
+                data-testid="mapping-builder-entry-where"
+              />
+            )}
           </Section>
         )}
 
@@ -948,7 +971,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
         {choice === "Static" && (
           <Section
             title="Static value"
-            hint="{param.name} tokens in text are replaced with the flow's parameter values."
+            hint="{$param.name} tokens in text are replaced with the flow's parameter values."
             action={typedMode !== "json" ? (
               <Label className="flex items-center gap-2 text-xs font-normal">
                 <Switch
@@ -1040,7 +1063,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
           </Section>
         )}
 
-        {(choice === "Dataset" || lookup) && (
+        {(choice === "Dataset" || choice === "Expression" || lookup) && (
           <Section
             title="Modifiers"
             hint={choice === "Cache"
@@ -1054,7 +1077,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                   <SelectValue placeholder="Add a modifier" />
                 </SelectTrigger>
                 <SelectContent>
-                  {MODIFIER_KINDS.filter((kind) => kind !== "id" || choice === "Dataset").map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}
+                  {MODIFIER_KINDS.filter((kind) => !ID_MODIFIER_KINDS.includes(kind) || choice === "Dataset" || choice === "Expression").map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}
                 </SelectContent>
               </Select>
             )}
@@ -1144,8 +1167,26 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                       data-testid={`mapping-builder-entry-modifier-id-${index}`}
                     />
                     <span>
-                      {"Tokens: {value}, {dataset.<column>}, {cache.<Type>.<field>} (a lookup table row keyed by the value) and {param.<name>}. "
+                      {"Tokens: {$value}, {<column>} (the row the entry reads, an item's row inside a repeated array), {$dataset.<column>} (the dataset's own row), {$cache.<Type>.<field>} (a lookup table row keyed by the value) and {$param.<name>}. "
                         + "Values are percent-encoded; a token with no value gives no value. The last modifier; a reference ends with ':'."}
+                    </span>
+                  </div>
+                )}
+                {modifier.kind === "ref" && (
+                  <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <Input
+                      className="h-7 w-full font-mono text-[12px]"
+                      placeholder={variable.relationships.length === 1 ? variable.relationships[0] : "UnitOfMeasure"}
+                      spellCheck={false}
+                      value={modifier.text ?? ""}
+                      onChange={(event) => updateModifier(index, { text: event.target.value === "" ? null : event.target.value })}
+                      data-testid={`mapping-builder-entry-modifier-ref-${index}`}
+                    />
+                    <span>
+                      {(variable.relationships.length > 0
+                        ? `The reference to the record whose code is the value, in the flow's partition. ${variable.path} points to ${variable.relationships.join(" or ")}; `
+                        : "The reference to the record whose code is the value, in the flow's partition. The template names no type for this property, so name one in full, such as reference-data--UnitOfMeasure; ")
+                        + "leave the type empty when the property points to one, or name the entity (UnitOfMeasure) or the type in full. The last modifier."}
                     </span>
                   </div>
                 )}
@@ -1185,44 +1226,22 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
         {choice !== "None" && (
           <Section
             title="When it applies"
-            hint="When the condition is false, the variable is left out for that row. It never holds a record."
+            hint={choice === "Repeat"
+              ? "A condition on the dataset row that decides for the whole array. When it is false, the array is left out. A value it cannot test, such as text where it compares a number, holds the record with the reason."
+              : "A condition such as depth_coding = \"REGULAR\", not empty(unit), or depth > 0 and status in [\"A\", \"B\"]. When it is false, the variable is left out for that row. A value it cannot test, such as text where it compares a number, holds the record with the reason."}
           >
             <Label className="flex items-center gap-2 text-[13px] font-normal">
               <Switch checked={conditionOn} onCheckedChange={setConditionOn} data-testid="mapping-builder-entry-applies" />
               Only when a condition holds
             </Label>
             {conditionOn && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="font-mono text-[12px] text-muted-foreground">dataset.</span>
-                <Input
-                  list={columnsList}
-                  className="h-8 w-48 font-mono"
-                  placeholder="depth_coding"
-                  value={condition.column}
-                  onChange={(event) => { const value = event.target.value; setCondition((current) => ({ ...current, column: value })); }}
-                  data-testid="mapping-builder-entry-applies-column"
-                />
-                <Select
-                  value={condition.operator}
-                  onValueChange={(next) => setCondition((current) => ({ ...current, operator: next as MappingDraftConditionOperator }))}
-                >
-                  <SelectTrigger size="sm" className="h-8 w-36" data-testid="mapping-builder-entry-applies-operator"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {(Object.keys(OPERATOR_LABELS) as MappingDraftConditionOperator[]).map((operator) => (
-                      <SelectItem key={operator} value={operator}>{OPERATOR_LABELS[operator]}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {(condition.operator === "is" || condition.operator === "isNot") && (
-                  <Input
-                    className="h-8 w-44 font-mono"
-                    placeholder="REGULAR"
-                    value={condition.text ?? ""}
-                    onChange={(event) => { const value = event.target.value; setCondition((current) => ({ ...current, text: value })); }}
-                    data-testid="mapping-builder-entry-applies-text"
-                  />
-                )}
-              </div>
+              <Input
+                className="h-8 font-mono"
+                placeholder={'depth_coding = "REGULAR"'}
+                value={condition}
+                onChange={(event) => setCondition(event.target.value)}
+                data-testid="mapping-builder-entry-applies-condition"
+              />
             )}
           </Section>
         )}

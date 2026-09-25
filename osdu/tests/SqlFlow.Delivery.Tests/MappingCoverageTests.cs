@@ -10,13 +10,13 @@ namespace SqlFlow.Delivery.Tests;
 /// <summary>What a mapping covers of its template: the state of every variable, and what it leaves required and empty.</summary>
 public class MappingCoverageTests
 {
-    private static CoverageReport Cover(string entries = "", string baseEntries = TestSchema.BaseEntries)
-        => MappingCoverage.Of(TestSchema.Mapping(entries, baseEntries: baseEntries), OsduTemplate.From(TestSchema.Build()));
+    private static CoverageReport Cover(string data = "", string baseData = TestSchema.BaseData, string record = "")
+        => MappingCoverage.Of(TestSchema.Mapping(data, baseData: baseData, record: record), OsduTemplate.From(TestSchema.Build()));
 
     /// <summary>The same mapping over a schema the test changed: the document pins whatever version the change makes.</summary>
-    private static CoverageReport Cover(SchemaSnapshot schema, string entries)
+    private static CoverageReport Cover(SchemaSnapshot schema, string data)
     {
-        var yaml = TestSchema.MappingDocument(entries).Replace($"version: {TestSchema.Build().Version}", $"version: {schema.Version}", StringComparison.Ordinal);
+        var yaml = TestSchema.MappingDocument(data).Replace($"version: {TestSchema.Build().Version}", $"version: {schema.Version}", StringComparison.Ordinal);
         return MappingCoverage.Of(new DeliveryDocumentLoader().ParseMapping(yaml, "thing.yaml"), OsduTemplate.From(schema));
     }
 
@@ -55,27 +55,34 @@ public class MappingCoverageTests
     [Fact]
     public void An_entry_that_may_be_left_out_fills_its_variable_only_sometimes()
     {
-        Assert.Equal(CoverageState.Sometimes, Variable(Cover("  - { target: osdu.data.Symbol, source: dataset.sym, required: false }"), "osdu.data.Symbol").State);
+        Assert.Equal(CoverageState.Sometimes, Variable(Cover("Symbol: { $from: sym, $required: false }"), "osdu.data.Symbol").State);
         Assert.Equal(
             CoverageState.Sometimes,
-            Variable(Cover("  - { target: osdu.data.Symbol, source: dataset.sym, appliesWhen: dataset.flag is yes }"), "osdu.data.Symbol").State);
+            Variable(Cover("Symbol: { $from: sym, $when: flag = \"yes\" }"), "osdu.data.Symbol").State);
 
         // An object reads from what it holds: an array whose own entry may be left out still carries items whose
         // properties are always written, so the branch reads as filled and only the entry itself is optional.
         var repeated = Cover("""
-              - target: osdu.data.Curves
-                source: dataset.curves
-                appliesWhen: dataset.flag is yes
-              - target: osdu.data.Curves[].CurveID
-                source: dataset.curves.curve_id
+            Curves:
+              $forEach: curves
+              $when: flag = "yes"
+              $item:
+                CurveID: { $from: curve_id }
             """);
         Assert.Equal(CoverageState.Always, Variable(repeated, "osdu.data.Curves").State);
         Assert.True(Variable(repeated, "osdu.data.Curves").Direct);
         Assert.Equal(CoverageState.Always, Variable(repeated, "osdu.data.Curves[].CurveID").State);
 
-        // With nothing inside it filled, the entry alone decides: a conditional repeater reaches only some rows.
-        var alone = Cover("  - { target: osdu.data.Curves, source: dataset.curves, appliesWhen: dataset.flag is yes }");
-        Assert.Equal(CoverageState.Sometimes, Variable(alone, "osdu.data.Curves").State);
+        // With nothing inside it always written, the array is only as good as what it holds: an item property that may be
+        // left out makes the conditional array reach only some rows.
+        var optionalItems = Cover("""
+            Curves:
+              $forEach: curves
+              $when: flag = "yes"
+              $item:
+                CurveID: { $from: curve_id, $required: false }
+            """);
+        Assert.Equal(CoverageState.Sometimes, Variable(optionalItems, "osdu.data.Curves").State);
     }
 
     [Fact]
@@ -83,13 +90,11 @@ public class MappingCoverageTests
     {
         // One property filled on some rows only makes the object holding it that, however its siblings are filled.
         var partly = Cover("""
-              - target: osdu.data.Curves
-                source: dataset.curves
-              - target: osdu.data.Curves[].CurveID
-                source: dataset.curves.curve_id
-              - target: osdu.data.Curves[].TopDepth
-                source: dataset.curves.top
-                required: false
+            Curves:
+              $forEach: curves
+              $item:
+                CurveID: { $from: curve_id }
+                TopDepth: { $from: top, $required: false }
             """);
         Assert.Equal(CoverageState.Sometimes, Variable(partly, "osdu.data.Curves").State);
         Assert.Equal(CoverageState.Always, Variable(partly, "osdu.data.Curves[].CurveID").State);
@@ -101,10 +106,10 @@ public class MappingCoverageTests
         // A property the schema requires and nothing fills makes the object holding it missing, filled siblings and all.
         var missing = Requiring("\"TopDepth\":{\"type\":\"number\"}}}", "\"TopDepth\":{\"type\":\"number\"}},\"required\":[\"TopDepth\"]}");
         var incomplete = Cover(missing, """
-              - target: osdu.data.Curves
-                source: dataset.curves
-              - target: osdu.data.Curves[].CurveID
-                source: dataset.curves.curve_id
+            Curves:
+              $forEach: curves
+              $item:
+                CurveID: { $from: curve_id }
             """);
         Assert.Equal(CoverageState.Empty, Variable(incomplete, "osdu.data.Curves").State);
         Assert.Equal(CoverageState.Always, Variable(incomplete, "osdu.data.Curves[].CurveID").State);
@@ -126,7 +131,7 @@ public class MappingCoverageTests
     public void An_entry_filling_a_free_key_is_covered_under_the_object_that_takes_them()
     {
         // osdu.tags takes keys of its own, so an entry fills a target the template has no variable for.
-        var report = Cover("  - { target: osdu.tags.DeliveredBy, static: osdu-delivery }");
+        var report = Cover(record: "tags: { DeliveredBy: osdu-delivery }");
         var key = Variable(report, "osdu.tags.DeliveredBy");
         Assert.Equal(CoverageState.Always, key.State);
         Assert.True(key.Direct);
@@ -141,8 +146,7 @@ public class MappingCoverageTests
     [Fact]
     public void What_the_gate_stops_a_delivery_for_is_an_error_and_what_it_does_not_check_is_a_warning()
     {
-        var withoutDepth = TestSchema.BaseEntries.Replace("  - { target: osdu.data.Depth, source: dataset.depth }", string.Empty, StringComparison.Ordinal);
-        var report = Cover(baseEntries: withoutDepth);
+        var report = Cover(baseData: "Name: { $from: name }");
 
         // The gate's own rule, unchanged: a required property of data that nothing fills stops a delivery, and the finding
         // now names the variable it is about.
@@ -151,7 +155,7 @@ public class MappingCoverageTests
 
         // A property required deeper than the gate looks is a warning: the delivery is not stopped for it today.
         var nested = Requiring("\"Inner\":{\"type\":\"string\"}}}", "\"Inner\":{\"type\":\"string\"}},\"required\":[\"Inner\"]}");
-        var optional = Cover(nested, "  - { target: osdu.data.Nested.Inner, source: dataset.name, required: false }");
+        var optional = Cover(nested, "Nested: { Inner: { $from: name, $required: false } }");
         Has(optional, IssueSeverity.Warning, "requires osdu.data.Nested.Inner, and what fills it may leave it out");
         Assert.DoesNotContain(optional.Issues, i => i.Severity == IssueSeverity.Error);
         Assert.Equal(CoverageState.Sometimes, Variable(optional, "osdu.data.Nested").State);
@@ -168,7 +172,7 @@ public class MappingCoverageTests
 
         // Once the array is filled, the property it requires is missing from every item it renders.
         Has(
-            Cover(schema, "  - { target: osdu.data.Curves, source: dataset.curves }"),
+            Cover(schema, "Curves: { $forEach: curves, $item: { TopDepth: { $from: top } } }"),
             IssueSeverity.Warning,
             "requires osdu.data.Curves[].CurveID, which the mapping does not fill");
     }

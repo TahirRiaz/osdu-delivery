@@ -4,14 +4,14 @@ name: wells-wellbore-02-aliases-ing
 batch: wells
 
 connections:
-  sample: ${env:OSDU_DATA_DB}
+  osduData: ${env:OSDU_DATA_DB}
 
 source:
-  server: sample
+  server: osduData
   object: OsduData.pre.v_WellboreAlias
 
 target:
-  server: sample
+  server: osduData
   object: OsduData.arc.WellboreAlias
   # The identity primary key every ingestion table carries: the clustered key the other indexes point at, and the
   # column the OSDU flow pages and fans out by (source.record.primaryKey).

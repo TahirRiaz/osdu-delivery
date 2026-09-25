@@ -7,14 +7,14 @@ name: recall-cachecurvedictionary-02-ing
 batch: recall
 
 connections:
-  sample: ${env:OSDU_DATA_DB}
+  osduData: ${env:OSDU_DATA_DB}
 
 source:
-  server: sample
+  server: osduData
   object: OsduData.pre.v_CacheCurveDictionary
 
 target:
-  server: sample
+  server: osduData
   object: OsduData.arc.CacheCurveDictionary
   identityColumn: RecId
 

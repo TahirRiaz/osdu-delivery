@@ -683,24 +683,29 @@ public sealed class ExternalDataServicesTests
               version: {{schema.Version}}
             dataset:
               system: eds
-              key: [dataset.name]
+              key: [name]
             parameters:
               dataPartition: { required: true }
-            mappings:
-              - { target: osdu.acl.owners, static: [data.default.owners@dev.example.com] }
-              - { target: osdu.acl.viewers, static: [data.default.viewers@dev.example.com] }
-              - { target: osdu.legal.legaltags, static: [dev-public] }
-              - { target: osdu.legal.otherRelevantDataCountries, static: [NO] }
-              - { target: osdu.data.Name, source: dataset.name }
-              - { target: osdu.data.DatasetURL, source: dataset.url, required: false }
-              - { target: osdu.data.SecuritySchemes, source: dataset.schemes }
-              - { target: "osdu.data.SecuritySchemes[].Name", source: dataset.schemes.name }
-              - { target: "osdu.data.SecuritySchemes[].TypeID", static: "dev:reference-data--SecuritySchemeType:OAuth2:" }
-              - { target: "osdu.data.SecuritySchemes[].FlowTypeID", source: dataset.schemes.flow }
-              - { target: "osdu.data.SecuritySchemes[].TokenUrl", source: dataset.schemes.token_url }
-              - { target: "osdu.data.SecuritySchemes[].ClientIDKeyName", source: dataset.schemes.client_id }
-              - { target: "osdu.data.SecuritySchemes[].ClientSecretKeyName", source: dataset.schemes.client_secret, required: false }
-              - { target: "osdu.data.SecuritySchemes[].ScopesKeyName", source: dataset.schemes.scopes }
+            record:
+              acl:
+                owners: [data.default.owners@dev.example.com]
+                viewers: [data.default.viewers@dev.example.com]
+              legal:
+                legaltags: [dev-public]
+                otherRelevantDataCountries: [NO]
+              data:
+                Name: { $from: name }
+                DatasetURL: { $from: url, $required: false }
+                SecuritySchemes:
+                  $forEach: schemes
+                  $item:
+                    Name: { $from: name }
+                    TypeID: "dev:reference-data--SecuritySchemeType:OAuth2:"
+                    FlowTypeID: { $from: flow }
+                    TokenUrl: { $from: token_url }
+                    ClientIDKeyName: { $from: client_id }
+                    ClientSecretKeyName: { $from: client_secret, $required: false }
+                    ScopesKeyName: { $from: scopes }
             """.ReplaceLineEndings("\n"), "registry.yaml");
         var context = new RenderContext
         {

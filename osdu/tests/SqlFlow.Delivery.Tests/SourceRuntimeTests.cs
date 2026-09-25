@@ -482,13 +482,13 @@ public sealed class SourceRuntimeTests : IDisposable
         }
 
         var wellbore = File.ReadAllText(Path.Combine(Samples.FixtureMappings, "Wellbore@1.0.0.yaml")).ReplaceLineEndings("\n");
-        const string Anchor = "\n  # Alternative names:";
+        const string Anchor = "\n    # Alternative names:";
         Assert.Contains(Anchor, wellbore, StringComparison.Ordinal);
         var sidetrack = wellbore
             .Replace("\nname: Wellbore\n", "\nname: Sidetrack\n", StringComparison.Ordinal)
             .Replace(
                 Anchor,
-                "\n  - target: osdu.data.KickOffWellbore\n    source: dataset.kickoff_wellbore\n    required: false\n" + Anchor,
+                "\n    KickOffWellbore: { $from: kickoff_wellbore, $required: false }\n" + Anchor,
                 StringComparison.Ordinal);
         File.WriteAllText(Path.Combine(directory, "Sidetrack@1.0.0.yaml"), sidetrack);
         return directory;

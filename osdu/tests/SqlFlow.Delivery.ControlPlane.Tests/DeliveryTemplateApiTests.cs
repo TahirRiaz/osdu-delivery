@@ -284,8 +284,8 @@ public sealed class DeliveryTemplateApiTests
             };
             var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
-            Assert.Contains("target: osdu.data.WellboreID", checkedSample.Yaml, StringComparison.Ordinal);
-            Assert.Contains("      - replace: cache.CurveDictionary\n        field: log_curve_family_id\n        otherwise: ~\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("    WellboreID:\n      $search: Wellbore\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("            - replace: $cache.CurveDictionary\n              field: log_curve_family_id\n              otherwise: ~\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
 
             // A cached table the partition's cache does not hold is refused by the check, naming what it does hold.
             var missingTable = parsed.Draft with
@@ -296,7 +296,7 @@ public sealed class DeliveryTemplateApiTests
             };
             var missing = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope, draft = missingTable, parameters }));
             Assert.False(missing.Valid);
-            Assert.Contains(missing.Issues, i => i.Severity == "error" && i.Message.Contains("replace reads cache.NoSuchUnits, which cache version", StringComparison.Ordinal));
+            Assert.Contains(missing.Issues, i => i.Severity == "error" && i.Message.Contains("replace reads $cache.NoSuchUnits, which cache version", StringComparison.Ordinal));
 
             // The same document drawn as the shape of the records it renders: the identity and the envelope as a render
             // writes them, and a placeholder wherever a value comes from a row or the cache.

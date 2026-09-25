@@ -596,7 +596,7 @@ export default function MappingBuilderPage() {
                 <Input
                   id="mapping-builder-label"
                   className="h-8 font-mono"
-                  placeholder="{dataset.wellbore_uwi} / {dataset.log_source}"
+                  placeholder="{wellbore_uwi} / {log_source}"
                   value={draft.label ?? ""}
                   onChange={(event) => {
                     const value = event.target.value;
@@ -605,7 +605,7 @@ export default function MappingBuilderPage() {
                   data-testid="mapping-builder-label"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Display text for the ledger and the GUI, with {"{dataset.column}"} tokens. It never enters the record.
+                  Display text for the ledger and the GUI, with {"{column}"} tokens naming columns of the dataset's own row. It never enters the record.
                 </p>
               </div>
             </Card>

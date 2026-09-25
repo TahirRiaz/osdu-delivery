@@ -98,7 +98,7 @@ internal static class ReplaceTables
         var match = table.Match ?? type.Key;
         if (match is null)
         {
-            problem = $"cache.{type.Name} holds OSDU records ({type.EntityType}), which have no key for a replace to match on; name the field the incoming value is compared with, such as match: Code";
+            problem = $"$cache.{type.Name} holds OSDU records ({type.EntityType}), which have no key for a replace to match on; name the field the incoming value is compared with, such as match: Code";
             return null;
         }
 
@@ -107,7 +107,7 @@ internal static class ReplaceTables
         {
             if (!type.IsLookup)
             {
-                problem = $"cache.{type.Name} holds OSDU records ({type.EntityType}); name the field that replaces the value, such as field: id";
+                problem = $"$cache.{type.Name} holds OSDU records ({type.EntityType}); name the field that replaces the value, such as field: id";
                 return null;
             }
 

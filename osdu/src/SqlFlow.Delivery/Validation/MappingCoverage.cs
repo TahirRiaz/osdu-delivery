@@ -72,7 +72,7 @@ public static class MappingCoverage
                 if (!entry.IsStatic && !entry.Required)
                 {
                     issues.Add(ValidationIssue.Error(
-                        $"{where}: {entry.Where} is required: false, but the template requires {target}, so a record without it cannot be sent.", target));
+                        $"{where}: {entry.Where} is $required: false, but the template requires {target}, so a record without it cannot be sent.", target));
                 }
 
                 continue;
@@ -87,7 +87,7 @@ public static class MappingCoverage
             {
                 issues.Add(ValidationIssue.Error(
                     $"{where}: template {mapping.Template.Kind} requires {target}, and every entry filling its properties ({string.Join(", ", properties.Select(p => p.Where))}) "
-                    + $"may leave it out (required: false or appliesWhen), so a record without it cannot be sent. Make one of them required, or fill {target} itself.",
+                    + $"may leave it out ($required: false or $when), so a record without it cannot be sent. Make one of them required, or fill {target} itself.",
                     target));
             }
         }
@@ -167,7 +167,7 @@ public static class MappingCoverage
             issues.Add(state == CoverageState.Empty
                 ? ValidationIssue.Warning($"{where}: template {template.Kind} requires {path}, which the mapping does not fill.", path)
                 : ValidationIssue.Warning(
-                    $"{where}: template {template.Kind} requires {path}, and what fills it may leave it out (required: false or appliesWhen).", path));
+                    $"{where}: template {template.Kind} requires {path}, and what fills it may leave it out ($required: false or $when).", path));
         }
 
         return new CoverageReport(variables, issues);

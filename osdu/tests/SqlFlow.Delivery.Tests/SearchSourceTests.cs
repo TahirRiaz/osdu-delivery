@@ -110,16 +110,16 @@ public class SearchSourceTests
     }
 
     private const string ByNameThenAlias = """
-          - target: osdu.data.WellboreID
-            source: search.Wellbore.id
-            findBy:
-              - search.Wellbore.data.FacilityName = dataset.wb
-              - search.Wellbore.data.NameAliases.AliasName = dataset.wb
+          WellboreID:
+            $search: Wellbore
+            $findBy:
+              - data.FacilityName = wb
+              - data.NameAliases.AliasName = wb
         """;
 
     private const string OptionalByNameThenAlias = ByNameThenAlias + """
 
-            required: false
+            $required: false
         """;
 
     /// <param name="search">Where the render's questions are answered.</param>
@@ -317,11 +317,11 @@ public class SearchSourceTests
     public async Task A_line_that_cannot_ask_does_not_keep_a_later_line_from_finding_the_record()
     {
         const string AliasFirst = """
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy:
-                  - search.Wellbore.data.NameAliases.AliasName = dataset.wb
-                  - search.Wellbore.data.FacilityName = dataset.wb
+              WellboreID:
+                $search: Wellbore
+                $findBy:
+                  - data.NameAliases.AliasName = wb
+                  - data.FacilityName = wb
             """;
         var search = Platform(("data.FacilityName", "BRAND X:1", "dev:master-data--Wellbore:abc"));
         var (result, _) = await Settle(Renderer(search, AliasFirst), search, Row("BRAND X:1"));
@@ -432,8 +432,8 @@ public class SearchSourceTests
     public void A_declared_search_nothing_reads_is_refused_rather_than_left_to_cost_calls()
     {
         var refused = Assert.Throws<FlowValidationException>(() => Mapping("""
-              - target: osdu.data.Unit
-                source: dataset.name
+              Unit:
+                $from: name
             """));
 
         Assert.Contains("nothing reads it", refused.Message, StringComparison.Ordinal);
@@ -443,51 +443,51 @@ public class SearchSourceTests
     {
         {
             """
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.data.FacilityName
-                findBy: search.Wellbore.data.FacilityName = dataset.wb
+              WellboreID:
+                $search: Wellbore.data.FacilityName
+                $findBy: data.FacilityName = wb
             """,
-            "a search returns only the record's id"
+            "gives the id of the record it finds; 'Wellbore.data.FacilityName' is not a search name"
         },
         {
             """
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy: search.Wellbore.FacilityName = dataset.wb
-            """,
-            "a search compares a property under data"
-        },
-        {
-            """
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy: search.Wellbore.data.Facility-Name = dataset.wb
+              WellboreID:
+                $search: Wellbore
+                $findBy: FacilityName = wb
             """,
             "a search compares a property under data"
         },
         {
             """
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy: cache.Wellbore.data.FacilityName = dataset.wb
+              WellboreID:
+                $search: Wellbore
+                $findBy: data.Facility-Name = wb
             """,
-            "findBy selects a record of the set the entry reads"
+            "a search compares a property under data"
         },
         {
             """
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy: search.Wellbore.data.FacilityName = dataset.wb
-                ignoreSeparators: true
+              WellboreID:
+                $search: Wellbore
+                $findBy: cache.Wellbore.data.FacilityName = wb
             """,
-            "only applies to a cache source"
+            "a line compares a field of the record the node reads, written as the record names it"
         },
         {
             """
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy: search.Wellbore.data.FacilityName = 'NO 15/9-F-1'
-                modifiers: [trim]
+              WellboreID:
+                $search: Wellbore
+                $findBy: data.FacilityName = wb
+                $ignoreSeparators: true
+            """,
+            "only applies to a $cache node"
+        },
+        {
+            """
+              WellboreID:
+                $search: Wellbore
+                $findBy: data.FacilityName = 'NO 15/9-F-1'
+                $modifiers: [trim]
             """,
             "what a search finds is never modified"
         },
@@ -545,9 +545,9 @@ public class SearchSourceTests
         var schema = WellboreSchema();
         var document = TestSchema.MappingDocument(ByNameThenAlias + """
 
-              - target: osdu.data.Unit
-                source: search.Other.id
-                findBy: search.Other.data.FacilityName = dataset.wb
+              Unit:
+                $search: Other
+                $findBy: data.FacilityName = wb
             """).Replace("parameters:", SearchesBlock(schema) + $"""
 
               Other:
@@ -621,10 +621,10 @@ public class SearchSourceTests
     public async Task A_keyword_property_has_no_lowercased_copy_so_it_is_asked_exactly_alone()
     {
         const string ByLegacyRef = """
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy: search.Wellbore.data.LegacyRef = dataset.wb
-                required: false
+              WellboreID:
+                $search: Wellbore
+                $findBy: data.LegacyRef = wb
+                $required: false
             """;
         var search = new QuerySearch();
         var (result, _) = await Settle(Renderer(search, ByLegacyRef, KeywordLowerOn), search, Row("srn:master-data/Well:a:"));

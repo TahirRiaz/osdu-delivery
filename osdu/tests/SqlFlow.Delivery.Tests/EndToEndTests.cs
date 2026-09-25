@@ -700,8 +700,8 @@ public class EndToEndTests : IDisposable
         description: The wellbore each well log was run in, one record per log row.
         dataset:
           system: recall
-          key: [dataset.source_project, dataset.log_id]
-          label: "{dataset.wellbore_uwi} ({dataset.log_id})"
+          key: [source_project, log_id]
+          label: "{wellbore_uwi} ({log_id})"
         parameters:
           dataPartition:
             required: true
@@ -709,17 +709,15 @@ public class EndToEndTests : IDisposable
           aclOwner: { required: true }
           aclViewer: { required: true }
           legalTag: { required: true }
-        mappings:
-          - target: osdu.acl.owners
-            static: ["{param.aclOwner}"]
-          - target: osdu.acl.viewers
-            static: ["{param.aclViewer}"]
-          - target: osdu.legal.legaltags
-            static: ["{param.legalTag}"]
-          - target: osdu.legal.otherRelevantDataCountries
-            static: [NO]
-          - target: osdu.data.FacilityName
-            source: dataset.wellbore_uwi
+        record:
+          acl:
+            owners: ["{$param.aclOwner}"]
+            viewers: ["{$param.aclViewer}"]
+          legal:
+            legaltags: ["{$param.legalTag}"]
+            otherRelevantDataCountries: [NO]
+          data:
+            FacilityName: { $from: wellbore_uwi }
         """;
 
     /// <summary>The sample well log flow turned into a second flow over the same rows, rendering <see cref="LogWellboreMapping"/>.</summary>

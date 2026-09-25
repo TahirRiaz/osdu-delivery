@@ -3,9 +3,9 @@
   "product": "OSDU Delivery",
   "documentType": "mapping",
   "strictKeys": true,
-  "generatedFrom": "osdu/docs/documents.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and DictionaryMapper.cs",
+  "generatedFrom": "osdu/docs/mapping-templates.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and MappingMapper.Record.cs",
   "naming": "The loader reads the document with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 70,
+  "keyCount": 53,
   "keys": [
     {
       "path": "documentType",
@@ -68,31 +68,31 @@
       "path": "dataset.key",
       "type": "list",
       "required": true,
-      "description": "The columns of the dataset's row that identify a record, in order, each written dataset.<column>. The delivery key, and so the OSDU id, is derived from them; a key column need not be written into the record."
+      "description": "The columns of the dataset's own row that identify a record, in order, each named as it is (log_id). The delivery key, and so the OSDU id, is derived from them; a key column need not be written into the record."
     },
     {
       "path": "dataset.key[]",
       "type": "string",
       "required": false,
-      "description": "A key column, written dataset.<column>."
+      "description": "A key column, named as it is, such as log_id."
     },
     {
       "path": "dataset.label",
       "type": "string",
       "required": false,
-      "description": "Optional display text for the ledger and the GUI, with {dataset.<column>} tokens, cut at 400 characters. It never enters the record."
+      "description": "Optional display text for the ledger and the GUI, with {<column>} tokens naming columns of the dataset's own row, such as \"{wellbore_uwi} / {log_id}\", cut at 400 characters. It never enters the record."
     },
     {
       "path": "dataset.identity",
       "type": "list",
       "required": false,
-      "description": "Optional columns whose values identify the record to a person (a wellbore id, a log id). The ledger indexes every value, so the Records page finds the record by any of them. Search only: never in the record."
+      "description": "Optional columns of the dataset's own row whose values identify the record to a person (a wellbore id, a log id), each named as it is. The ledger indexes every value, so the Records page finds the record by any of them. Search only: never in the record."
     },
     {
       "path": "dataset.identity[]",
       "type": "string",
       "required": false,
-      "description": "An identifying column, written dataset.<column>."
+      "description": "An identifying column, named as it is, such as wellbore_uwi."
     },
     {
       "path": "parameters",
@@ -104,7 +104,7 @@
       "path": "parameters.<name>",
       "type": "object",
       "required": false,
-      "description": "One parameter, read in static values as {param.<name>}."
+      "description": "One parameter, read in a literal's text and in an id template as {$param.<name>}."
     },
     {
       "path": "parameters.<name>.required",
@@ -128,13 +128,13 @@
       "path": "searches",
       "type": "map",
       "required": false,
-      "description": "The record sets the mapping's search.<name> sources look in on the platform, as each record needs one, rather than capturing them into the cache. One search per kind, each read by an entry."
+      "description": "The record sets the mapping's $search nodes look in on the platform, as each record needs one, rather than capturing them into the cache. One search per kind, each read by a node."
     },
     {
       "path": "searches.<name>",
       "type": "object",
       "required": false,
-      "description": "One search, read by entries as search.<name>.id."
+      "description": "One search, read by a node as $search: <name>."
     },
     {
       "path": "searches.<name>.kind",
@@ -146,7 +146,7 @@
       "path": "searches.<name>.schema",
       "type": "object",
       "required": true,
-      "description": "The saved template whose schema says how the searched kind's properties are indexed, so a findBy line is asked the way the platform answers it."
+      "description": "The saved template whose schema says how the searched kind's properties are indexed, so a $findBy line is asked the way the platform answers it."
     },
     {
       "path": "searches.<name>.schema.kind",
@@ -167,182 +167,63 @@
       "description": "Free text describing the search."
     },
     {
-      "path": "mappings",
-      "type": "list",
+      "path": "record",
+      "type": "map",
       "required": true,
-      "description": "The entries, at least one: each names a template variable and where its value comes from. A variable without an entry is left out of the record, and no two entries fill the same variable."
+      "description": "The record the mapping renders, laid out the way the rendered record is: acl, legal, tags and data, and the properties below them. Every word of the mapping language starts with '$' ($from, $forEach...); every other key is a property of the record, so no template's property name is ever read as the language. A property that is not written is left out of the record."
     },
     {
-      "path": "mappings[]",
+      "path": "record.<name>",
       "type": "object",
       "required": false,
-      "description": "One entry: the variable it fills (target) and where the value comes from (source or static), with the lookup, modifiers and condition that apply."
+      "freeForm": true,
+      "description": "A property of the record, written as one of four nodes. A literal is the value it is: text, a number, a boolean or a list, such as ReferenceCurveID: MD. Its text reads a parameter as {$param.<name>} and no other token. An object is a map of the property names it holds, each a node in turn. A value node is a map whose keys all start with '$'. It reads one value with $from: <column>, $expr: <expression>, $value: <literal>, $cache: <Type>.<field> or $search: <name>, and takes beside it $findBy (with $cache and $search: one line or a list of <field> = <column> or <field> = 'text', tried in order), $modifiers (a list applied top to bottom: trim, upper, lower, split: { separator, part }, replace: { <value>: <value or ~> } with otherwise beside it, or replace: $cache.<Type> with match, field and otherwise beside it, equals: <text>, date or date: <format>, number or number: { decimal, group }, id: \"<template>\", or ref, ref: <Entity> or ref: <group>--<Entity>, the reference {$param.dataPartition}:<group>--<Entity>:{$value}: to the record whose code is the value, of the type the property points to; id or ref is always the last), $when (a condition: an expression giving true or false, such as log_status = \"FINAL\" or not empty(curve_unit); false leaves the property out), $required (true by default: an empty value holds the record; false leaves the property out), $ignoreSeparators (with $cache) and $description. A $forEach node repeats the rows of a child dataset as the items of an array: $forEach: <child dataset>, and $item laying out the properties each row fills, with $where (a condition each child row must hold to become an item), $when (decides for the whole array), $required and $description. A bare column name reads the row the node is in: the dataset's own row, or under $forEach the item's row; $dataset.<column> reads the dataset's own row from anywhere. An id template reads {$value}, {<column>}, {$dataset.<column>}, {$cache.<Type>.<field>} and {$param.<name>}. A property whose own name starts with '$' is written with one more, $$<name>; what $value holds is written verbatim. An expression reads a column by its name (in backticks when the name is a keyword, starts with a digit or holds '-'), $dataset.<column> and $param.<name>, and writes text in quotes; it compares with =, !=, <, <=, >, >= and in [ ... ], joins conditions with and, or and not, joins text with &, computes with + - * /, and calls iif(condition, value, other), coalesce(value, value, ...), nullif(value, other), empty(value), trim(text), upper(text), lower(text), substring(text, start, length), left(text, count), right(text, count), replace(text, find, with), length(text), contains(text, part), startsWith(text, part), endsWith(text, part), number(value), text(value), round(number, digits) and abs(number). Text compares ignoring case and surrounding spaces; no value is the same only as no value; arithmetic on no value gives no value."
     },
     {
-      "path": "mappings[].target",
-      "type": "string",
-      "required": true,
-      "description": "The template variable to fill: osdu. and the property's path in the record, with [] after an array of objects (osdu.data.Curves[].CurveID). A path steps into at most one array."
-    },
-    {
-      "path": "mappings[].source",
-      "type": "string",
-      "required": false,
-      "description": "Where the value comes from: dataset.<column>, dataset.<child>.<column>, dataset.<child> (a repeater), cache.<Type>.id, cache.<Type>.<field>, or search.<name>.id. An entry has source or static, never both."
-    },
-    {
-      "path": "mappings[].static",
-      "type": "any",
-      "required": false,
-      "description": "A fixed value: text, a number, a boolean, a list or an object. {param.name} tokens in its text are replaced with the flow's parameter values. A static entry takes only appliesWhen and description besides.",
-      "freeForm": true
-    },
-    {
-      "path": "mappings[].findBy",
-      "type": "string or list",
-      "required": false,
-      "description": "With a cache or a search source, and required there: which record to read. One line or a list, such as cache.UnitOfMeasure.Code = dataset.unit; the lines are tried in order and the first that finds exactly one record wins.",
-      "freeForm": true
-    },
-    {
-      "path": "mappings[].modifiers",
-      "type": "list",
-      "required": false,
-      "description": "Changes to the incoming dataset value, applied top to bottom. On a cache or search source they change the value findBy compares; cached values and platform records are never modified."
-    },
-    {
-      "path": "mappings[].modifiers[]",
-      "type": "string or object",
-      "required": false,
-      "description": "A modifier: a name (trim, upper, lower, date, number) or one setting (split, replace, equals, date, number, id) written as a one-key mapping. Only replace takes settings beside it: otherwise, and for a cached table match and field. An id modifier is the last one.",
-      "enumValues": [
-        "trim",
-        "upper",
-        "lower",
-        "split",
-        "replace",
-        "equals",
-        "date",
-        "number",
-        "id"
-      ]
-    },
-    {
-      "path": "mappings[].modifiers[].split",
+      "path": "record.acl",
       "type": "object",
       "required": false,
-      "description": "Splits the value and keeps one part: split: { separator: \",\", part: 1 }. A part the value does not have, or an empty one, gives an empty value."
+      "freeForm": true,
+      "description": "The access control list every OSDU record carries: owners and viewers, each a literal list of at least one entitlements group, such as owners: [\"{$param.aclOwner}\"]. A DSPDM business object row has none."
     },
     {
-      "path": "mappings[].modifiers[].split.separator",
-      "type": "string",
-      "required": true,
-      "description": "The text the value is split on. A single space splits on any run of whitespace."
-    },
-    {
-      "path": "mappings[].modifiers[].split.part",
-      "type": "integer",
-      "required": true,
-      "description": "The part to keep, counting from one."
-    },
-    {
-      "path": "mappings[].modifiers[].replace",
-      "type": "map or string",
-      "required": false,
-      "description": "Replaces the trimmed value. Written as a table ({ M: m, NONE: ~ }) it lists incoming values and what each becomes, ~ being no value. Written as cache.<Type> it reads the table from the partition's cache: a dictionary, an ingestion table or OSDU reference data. A value is matched exactly first, then ignoring case when that finds one row."
-    },
-    {
-      "path": "mappings[].modifiers[].replace.<value>",
-      "type": "string",
-      "required": false,
-      "description": "An incoming value, and what it becomes: text, or ~ for no value, so the entry's required flag decides."
-    },
-    {
-      "path": "mappings[].modifiers[].otherwise",
-      "type": "string",
-      "required": false,
-      "description": "What a value the table does not list becomes: left out, it passes on unchanged; ~ gives no value; any other text replaces it. Written beside replace, never inside its table.",
-      "appliesWhen": "replace"
-    },
-    {
-      "path": "mappings[].modifiers[].match",
-      "type": "string",
-      "required": false,
-      "description": "For a table read from the cache: the cached field the incoming value is compared with. It defaults to the table's key; a type of OSDU records has none, so it is named there.",
-      "appliesWhen": "replace: cache.<Type>"
-    },
-    {
-      "path": "mappings[].modifiers[].field",
-      "type": "string",
-      "required": false,
-      "description": "For a table read from the cache: the cached field that replaces the value. It defaults to the one field a lookup table holds beside its key (value, for a dictionary of pairs); a table with several fields, and a type of OSDU records, names it. A row with nothing there gives no value.",
-      "appliesWhen": "replace: cache.<Type>"
-    },
-    {
-      "path": "mappings[].modifiers[].equals",
-      "type": "string",
-      "required": false,
-      "description": "Gives true when the trimmed value equals this text, ignoring case, and false otherwise. The entry's last modifier being equals, it must fill a boolean."
-    },
-    {
-      "path": "mappings[].modifiers[].date",
-      "type": "string",
-      "required": false,
-      "description": "Reads the value as a date in this .NET format (dd.MM.yyyy) and writes it in the form the template's format names: a full-date for a date, a UTC date-time otherwise. Without a format (- date) it reads ISO 8601 only."
-    },
-    {
-      "path": "mappings[].modifiers[].number",
+      "path": "record.legal",
       "type": "object",
       "required": false,
-      "description": "Reads the value as a number written with these separators: number: { decimal: \",\", group: \" \" }. Without settings (- number) the decimal separator is a point and there is no group separator."
+      "freeForm": true,
+      "description": "The legal block every OSDU record carries: legaltags and otherRelevantDataCountries, each a literal list of at least one value, free of repeats, such as legaltags: [\"{$param.legalTag}\"] and otherRelevantDataCountries: [NO]. A DSPDM business object row has none."
     },
     {
-      "path": "mappings[].modifiers[].number.decimal",
+      "path": "record.tags",
+      "type": "object",
+      "required": false,
+      "freeForm": true,
+      "description": "Free keys of the record, each a text: a literal, such as DeliveredBy: osdu-delivery, or a value node, such as SourceProject: { $from: source_project }."
+    },
+    {
+      "path": "record.data",
+      "type": "object",
+      "required": false,
+      "freeForm": true,
+      "description": "The record's data, laid out as the template names its properties: each a literal, an object of properties, a value node ($from, $expr, $value, $cache or $search with its settings) or a $forEach array whose $item lays out what each row of a child dataset fills."
+    },
+    {
+      "path": "fixtureDefaults",
+      "type": "object",
+      "required": false,
+      "description": "What every fixture renders with unless it says otherwise, written once rather than in each fixture."
+    },
+    {
+      "path": "fixtureDefaults.parameters",
+      "type": "map",
+      "required": true,
+      "description": "The render parameters every fixture renders with; a fixture's own parameters replace them name by name."
+    },
+    {
+      "path": "fixtureDefaults.parameters.<name>",
       "type": "string",
       "required": false,
-      "description": "The separator before the decimals: . or ,.",
-      "enumValues": [
-        ".",
-        ","
-      ]
-    },
-    {
-      "path": "mappings[].modifiers[].number.group",
-      "type": "string",
-      "required": false,
-      "description": "The separator between groups of three digits, when the value is written with one."
-    },
-    {
-      "path": "mappings[].modifiers[].id",
-      "type": "string",
-      "required": false,
-      "description": "Builds the OSDU id the entry writes from a template, quoted: id: \"{param.dataPartition}:reference-data--UnitOfMeasure:{value}:\". Tokens: {value} (the value after the modifiers before it), {dataset.<column>} and {dataset.<child>.<column>} (the row), {cache.<Type>.<field>} (the row of a cached lookup table whose key is the value) and {param.<name>}. Token values are trimmed and percent-encoded, keeping ':' and escapes already there; a token with no value gives no value, so required decides. The template's own text gives the colons: <partition>:<group>--<Entity>:<code>, and a trailing ':' (and a version) for a reference. The id is checked against the variable's pattern and relationship. Only on a dataset source, and always the last modifier."
-    },
-    {
-      "path": "mappings[].appliesWhen",
-      "type": "string",
-      "required": false,
-      "description": "When the entry applies to a row: dataset.<column> is <text>, is not <text>, is empty or is not empty (trimmed text, ignoring case). When it does not, the variable is left out for that row."
-    },
-    {
-      "path": "mappings[].required",
-      "type": "boolean",
-      "required": false,
-      "description": "What an empty value does: true (the default) holds the record, false leaves the variable out.",
-      "default": "true"
-    },
-    {
-      "path": "mappings[].ignoreSeparators",
-      "type": "boolean",
-      "required": false,
-      "description": "With a cache source: a last matching attempt with punctuation and spacing folded away on both sides, for names rather than codes.",
-      "default": "false"
-    },
-    {
-      "path": "mappings[].description",
-      "type": "string",
-      "required": false,
-      "description": "Free text describing the entry."
+      "description": "A parameter's value."
     },
     {
       "path": "fixtures",
@@ -366,7 +247,7 @@
       "path": "fixtures[].parameters",
       "type": "map",
       "required": false,
-      "description": "The render parameters the fixture renders with."
+      "description": "The render parameters the fixture renders with, over fixtureDefaults.parameters."
     },
     {
       "path": "fixtures[].parameters.<name>",
@@ -375,13 +256,13 @@
       "description": "A parameter's value."
     },
     {
-      "path": "fixtures[].record",
+      "path": "fixtures[].row",
       "type": "map",
       "required": false,
       "description": "The dataset's row: its columns and values."
     },
     {
-      "path": "fixtures[].record.<name>",
+      "path": "fixtures[].row.<name>",
       "type": "string",
       "required": false,
       "description": "A column's value."

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
@@ -133,7 +134,7 @@ public class YamlDocumentLoaderTests
         Assert.Contains(mapping.Entries, e => e.Target.Text == "osdu.data.Curves" && e.IsRepeater && e.Source!.Child == "curves");
         Assert.Equal(["curves"], mapping.ChildDatasets);
         Assert.Equal(2, mapping.Fixtures.Count);
-        Assert.Equal(["{param.legalTag}"], mapping.Envelope.LegalTags);
+        Assert.Equal(["{$param.legalTag}"], mapping.Envelope.LegalTags);
         Assert.Equal(["NO"], mapping.Envelope.OtherRelevantDataCountries);
     }
 
@@ -257,7 +258,7 @@ public class YamlDocumentLoaderTests
     {
         var loader = new DeliveryDocumentLoader();
         Modifier Only(string modifiers) => Assert.Single(loader
-            .ParseMapping(TestSchema.MappingDocument($"  - {{ target: osdu.data.Weight, source: dataset.a, modifiers: {modifiers} }}"), "m.yaml")
+            .ParseMapping(TestSchema.MappingDocument($"Weight: {{ $from: a, $modifiers: {modifiers} }}"), "m.yaml")
             .Entries.Single(e => e.Target.Text == "osdu.data.Weight").Modifiers);
 
         var plain = Only("[number]");
@@ -277,7 +278,7 @@ public class YamlDocumentLoaderTests
     {
         var loader = new DeliveryDocumentLoader();
         Modifier Only(string modifiers) => Assert.Single(loader
-            .ParseMapping(TestSchema.MappingDocument($"  - target: osdu.data.Symbol\n    source: dataset.a\n    modifiers:\n{modifiers}"), "m.yaml")
+            .ParseMapping(TestSchema.MappingDocument($"Symbol:\n  $from: a\n  $modifiers:\n{modifiers}"), "m.yaml")
             .Entries.Single(e => e.Target.Text == "osdu.data.Symbol").Modifiers);
 
         var plain = Only("      - replace: { M: m, NONE: ~, 1.5: one and a half, true: yes }");
@@ -308,6 +309,50 @@ public class YamlDocumentLoaderTests
     }
 
     [Fact]
+    public void A_yaml_anchor_repeats_a_node_exactly_as_writing_it_out_again_would()
+    {
+        var loader = new DeliveryDocumentLoader();
+        var anchored = loader.ParseMapping(TestSchema.MappingDocument("""
+            Unit:
+              $from: unit
+              $modifiers: &unit
+                - trim
+                - replace: { M: m, FT: ft }
+                - ref
+            Symbol:
+              $from: unit
+              $modifiers: *unit
+              $when: &regular flag = "REGULAR"
+            Description:
+              $expr: upper(name)
+              $when: *regular
+            """), "anchored.yaml");
+        var expanded = loader.ParseMapping(TestSchema.MappingDocument("""
+            Unit:
+              $from: unit
+              $modifiers:
+                - trim
+                - replace: { M: m, FT: ft }
+                - ref
+            Symbol:
+              $from: unit
+              $modifiers:
+                - trim
+                - replace: { M: m, FT: ft }
+                - ref
+              $when: flag = "REGULAR"
+            Description:
+              $expr: upper(name)
+              $when: flag = "REGULAR"
+            """), "expanded.yaml");
+
+        var json = new JsonSerializerOptions { WriteIndented = false };
+        Assert.Equal(
+            JsonSerializer.Serialize(MappingBuilder.FromDefinition(expanded), json),
+            JsonSerializer.Serialize(MappingBuilder.FromDefinition(anchored), json));
+    }
+
+    [Fact]
     public void Mapping_parse_reads_sources_and_refuses_what_is_malformed()
     {
         var loader = new DeliveryDocumentLoader();
@@ -321,42 +366,110 @@ public class YamlDocumentLoaderTests
         Assert.True(mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves").IsRepeater);
         Assert.Equal(new DatasetColumn("curves", "curve_id"), mapping.Entries.Single(e => e.Target.Text == "osdu.data.Curves[].CurveID").Source!.Column);
 
-        string Refused(string entries) => Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingDocument(entries), "m.yaml")).Message;
-        Assert.Contains("needs 'findBy'", Refused("  - { target: osdu.data.Unit, source: cache.UnitOfMeasure.id }"), StringComparison.Ordinal);
-        Assert.Contains("both 'source' and 'static'", Refused("  - { target: osdu.data.Symbol, source: dataset.a, static: b }"), StringComparison.Ordinal);
-        Assert.Contains("neither 'source' nor 'static'", Refused("  - { target: osdu.data.Symbol }"), StringComparison.Ordinal);
-        Assert.Contains("must start with 'dataset.'", Refused("  - { target: osdu.data.Symbol, source: column_a }"), StringComparison.Ordinal);
-        Assert.Contains("must start with 'osdu.'", Refused("  - { target: data.Symbol, source: dataset.a }"), StringComparison.Ordinal);
-        Assert.Contains("fills the same variable", Refused("  - { target: osdu.data.Name, source: dataset.other }"), StringComparison.Ordinal);
-        Assert.Contains("no entry repeats osdu.data.Curves", Refused("  - { target: \"osdu.data.Curves[].CurveID\", source: dataset.curves.curve_id }"), StringComparison.Ordinal);
-        Assert.Contains("only an entry inside a repeater", Refused("  - { target: osdu.data.Symbol, source: dataset.curves.curve_id }"), StringComparison.Ordinal);
-        Assert.Contains("is not a modifier", Refused("  - { target: osdu.data.Symbol, source: dataset.a, modifiers: [shout] }"), StringComparison.Ordinal);
-        Assert.Contains("the date format 'MM.yyyy' has no day of the month", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: MM.yyyy }] }"), StringComparison.Ordinal);
-        Assert.Contains("reads a two-digit year", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: dd.MM.yy }] }"), StringComparison.Ordinal);
-        Assert.Contains("has no year", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: dd.MM }] }"), StringComparison.Ordinal);
-        Assert.Contains("is one letter", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: d }] }"), StringComparison.Ordinal);
-        Assert.Contains("never closed", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: \"dd.MM.yyyy 'at\" }] }"), StringComparison.Ordinal);
-        Assert.Contains("date takes the input format as text", Refused("  - { target: osdu.data.When, source: dataset.a, modifiers: [{ date: [dd.MM.yyyy] }] }"), StringComparison.Ordinal);
-        Assert.Contains("number takes '.' or ',' as its decimal separator, not ';'", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { decimal: \";\" } }] }"), StringComparison.Ordinal);
-        Assert.Contains("cannot use ',' both between digit groups and before the decimals", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { decimal: \",\", group: \",\" } }] }"), StringComparison.Ordinal);
-        Assert.Contains("cannot use '.' both between digit groups", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { group: \".\" } }] }"), StringComparison.Ordinal);
-        Assert.Contains("as its group separator, not '-'", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { group: \"-\" } }] }"), StringComparison.Ordinal);
-        Assert.Contains("number takes 'decimal' and 'group', not 'thousands'", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: { thousands: \",\" } }] }"), StringComparison.Ordinal);
-        Assert.Contains("number takes its separators", Refused("  - { target: osdu.data.Weight, source: dataset.a, modifiers: [{ number: \",\" }] }"), StringComparison.Ordinal);
-        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("  - { target: osdu.data.Weight, static: .inf }"), StringComparison.Ordinal);
-        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("  - { target: osdu.data.Aliases, static: [a, .nan] }"), StringComparison.Ordinal);
-        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("  - { target: osdu.data.Nested, static: { Inner: -.inf } }"), StringComparison.Ordinal);
-        Assert.Contains("split needs the part", Refused("  - { target: osdu.data.Symbol, source: dataset.a, modifiers: [{ split: { separator: x } }] }"), StringComparison.Ordinal);
-        Assert.Contains("appliesWhen 'dataset.a equals b'", Refused("  - { target: osdu.data.Symbol, source: dataset.a, appliesWhen: dataset.a equals b }"), StringComparison.Ordinal);
-        Assert.Contains("compares cache.Wellbore", Refused("  - { target: osdu.data.Unit, source: cache.UnitOfMeasure.id, findBy: cache.Wellbore.Code = dataset.a }"), StringComparison.Ordinal);
-        Assert.Contains("uses {param.missing}", Refused("  - { target: osdu.data.Symbol, static: \"{param.missing}\" }"), StringComparison.Ordinal);
-        Assert.Contains("a static entry takes only", Refused("  - { target: osdu.data.Symbol, static: b, required: false }"), StringComparison.Ordinal);
-        Assert.Contains("steps into more than one array", Refused("  - { target: \"osdu.data.Curves[].Points[].X\", source: dataset.a }"), StringComparison.Ordinal);
+        string Refused(string data) => Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingDocument(data), "m.yaml")).Message;
+        Assert.Contains("a $cache node needs $findBy", Refused("Unit: { $cache: UnitOfMeasure.id }"), StringComparison.Ordinal);
+        Assert.Contains("reads its value with $from and $value", Refused("Symbol: { $from: a, $value: b }"), StringComparison.Ordinal);
+        Assert.Contains("record.data.Symbol reads no value", Refused("Symbol: { $required: false }"), StringComparison.Ordinal);
+        Assert.Contains("'column a' is not a column", Refused("Symbol: { $from: column a }"), StringComparison.Ordinal);
+        Assert.Contains("a column of the dataset's own row is $dataset.a", Refused("Symbol: { $from: dataset.a }"), StringComparison.Ordinal);
+        Assert.Contains("'Curves[].CurveID' is not a property name", Refused("\"Curves[].CurveID\": { $from: a }"), StringComparison.Ordinal);
+        Assert.Contains("duplicate key", Refused("Name: { $from: other }"), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("lays out $item, the items of an array whose rows a $forEach node repeats", Refused("Curves: { $item: { CurveID: { $from: curve_id } } }"), StringComparison.Ordinal);
+        Assert.Contains("'curves.curve_id' is not a column", Refused("Symbol: { $from: curves.curve_id }"), StringComparison.Ordinal);
+        Assert.Contains("under the $forEach over curves a bare name reads its row, so write curve_id", Refused("Curves: { $forEach: curves, $item: { CurveID: { $from: curves.curve_id } } }"), StringComparison.Ordinal);
+        Assert.Contains("is not a modifier", Refused("Symbol: { $from: a, $modifiers: [shout] }"), StringComparison.Ordinal);
+        Assert.Contains("the date format 'MM.yyyy' has no day of the month", Refused("When: { $from: a, $modifiers: [{ date: MM.yyyy }] }"), StringComparison.Ordinal);
+        Assert.Contains("reads a two-digit year", Refused("When: { $from: a, $modifiers: [{ date: dd.MM.yy }] }"), StringComparison.Ordinal);
+        Assert.Contains("has no year", Refused("When: { $from: a, $modifiers: [{ date: dd.MM }] }"), StringComparison.Ordinal);
+        Assert.Contains("is one letter", Refused("When: { $from: a, $modifiers: [{ date: d }] }"), StringComparison.Ordinal);
+        Assert.Contains("never closed", Refused("When: { $from: a, $modifiers: [{ date: \"dd.MM.yyyy 'at\" }] }"), StringComparison.Ordinal);
+        Assert.Contains("date takes the input format as text", Refused("When: { $from: a, $modifiers: [{ date: [dd.MM.yyyy] }] }"), StringComparison.Ordinal);
+        Assert.Contains("number takes '.' or ',' as its decimal separator, not ';'", Refused("Weight: { $from: a, $modifiers: [{ number: { decimal: \";\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("cannot use ',' both between digit groups and before the decimals", Refused("Weight: { $from: a, $modifiers: [{ number: { decimal: \",\", group: \",\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("cannot use '.' both between digit groups", Refused("Weight: { $from: a, $modifiers: [{ number: { group: \".\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("as its group separator, not '-'", Refused("Weight: { $from: a, $modifiers: [{ number: { group: \"-\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("number takes 'decimal' and 'group', not 'thousands'", Refused("Weight: { $from: a, $modifiers: [{ number: { thousands: \",\" } }] }"), StringComparison.Ordinal);
+        Assert.Contains("number takes its separators", Refused("Weight: { $from: a, $modifiers: [{ number: \",\" }] }"), StringComparison.Ordinal);
+        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("Weight: .inf"), StringComparison.Ordinal);
+        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("Aliases: [a, .nan]"), StringComparison.Ordinal);
+        Assert.Contains("is NaN or Infinity, which a JSON record cannot carry", Refused("Nested: { $value: { Inner: -.inf } }"), StringComparison.Ordinal);
+        Assert.Contains("split needs the part", Refused("Symbol: { $from: a, $modifiers: [{ split: { separator: x } }] }"), StringComparison.Ordinal);
+        Assert.Contains("$when 'a equals b': 'equals' at character 3 is not expected after a complete expression", Refused("Symbol: { $from: a, $when: a equals b }"), StringComparison.Ordinal);
+        Assert.Contains("$when 'a is b' is a condition as the mapping language no longer writes it; a condition is an expression now: $when: a = \"b\"", Refused("Symbol: { $from: a, $when: a is b }"), StringComparison.Ordinal);
+        Assert.Contains("$when 'upper(a)' gives a value, and $when is a condition", Refused("Symbol: { $from: a, $when: upper(a) }"), StringComparison.Ordinal);
+        Assert.Contains("$when '1 = 1' reads no column", Refused("Symbol: { $from: a, $when: 1 = 1 }"), StringComparison.Ordinal);
+        Assert.Contains("$expr 'upper(\"x\")' reads no column, so every record gets the same value", Refused("Symbol: { $expr: upper(\"x\") }"), StringComparison.Ordinal);
+        Assert.Contains("reads $param.missing in 'a & $param.missing', but the mapping declares no parameter 'missing'", Refused("Symbol: { $expr: a & $param.missing }"), StringComparison.Ordinal);
+        Assert.Contains("this node computes its value with $expr", Refused("Symbol: { $expr: trim(a), $findBy: Code = a }"), StringComparison.Ordinal);
+        Assert.Contains("a $forEach node takes $forEach, '$item', '$where', '$when'", Refused("Curves: { $forEach: curves, $findBy: x, $item: { CurveID: { $from: curve_id } } }"), StringComparison.Ordinal);
+        Assert.Contains("$where 'curve_id' gives a value, and $where is a condition", Refused("Curves: { $forEach: curves, $where: curve_id, $item: { CurveID: { $from: curve_id } } }"), StringComparison.Ordinal);
+        Assert.Contains("names 'cache.Wellbore.Code'", Refused("Unit: { $cache: UnitOfMeasure.id, $findBy: cache.Wellbore.Code = a }"), StringComparison.Ordinal);
+        Assert.Contains("uses {$param.missing}", Refused("Symbol: \"{$param.missing}\""), StringComparison.Ordinal);
+        Assert.Contains("a literal $value takes only $when and $description beside it", Refused("Symbol: { $value: b, $required: false }"), StringComparison.Ordinal);
+        Assert.Contains(
+            "a repeated array inside a repeated item is not supported",
+            Refused("Curves: { $forEach: curves, $item: { Points: { $forEach: points, $item: { X: { $from: a } } } } }"),
+            StringComparison.Ordinal);
 
         Assert.Contains("template.version", Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingYaml.Replace(TestSchema.Build().Version, "latest", StringComparison.Ordinal), "m")).Message, StringComparison.Ordinal);
         Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingYaml.Replace("dataPartition: { required: true }", "other: { required: true }", StringComparison.Ordinal), "m"));
         var wrongKind = Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingYaml.Replace("documentType: mapping", "flowType: delivery", StringComparison.Ordinal), "m"));
         Assert.Contains("expected 'documentType: mapping'", wrongKind.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_record_tree_reads_the_mapping_language_by_its_marker_and_everything_else_as_the_record()
+    {
+        var loader = new DeliveryDocumentLoader();
+        var mapping = loader.ParseMapping(
+            TestSchema.MappingDocument(
+                """
+                # A property whose own name starts with '$' takes one more, and so does one inside a literal list's objects.
+                Nested:
+                  $$weird: { $from: a }
+                  from: { $from: b }
+                Aliases: [{ $$ref: x, value: 1 }]
+                Symbol:
+                  $value: { $ref: verbatim, $from: text }
+                Unit:
+                  $from: unit
+                  $modifiers:
+                    - id: "{$param.dataPartition}:reference-data--UnitOfMeasure:{value}-{$value}:"
+                """,
+                record: "tags: { $$from: literal }"),
+            "m.yaml");
+
+        // The record's own names, however much they look like the language, are properties; the language starts with '$'.
+        Assert.Equal("osdu.data.Nested.$weird", mapping.Entries.Single(e => e.Location == "record.data.Nested.$$weird").Target.Text);
+        Assert.Equal(new DatasetColumn(null, "b"), mapping.Entries.Single(e => e.Target.Text == "osdu.data.Nested.from").Source!.Column);
+        Assert.Equal("""[{"$ref":"x","value":1}]""", mapping.Entries.Single(e => e.Target.Text == "osdu.data.Aliases").Static!.ToJsonString());
+        Assert.Equal("""{"$ref":"verbatim","$from":"text"}""", mapping.Entries.Single(e => e.Target.Text == "osdu.data.Symbol").Static!.ToJsonString());
+        Assert.Equal("literal", mapping.Entries.Single(e => e.Target.Text == "osdu.tags.$from").Static!.GetValue<string>());
+
+        // In an id, a bare name is a column, even one called value; the entry's own value is {$value}.
+        var id = mapping.Entries.Single(e => e.Target.Text == "osdu.data.Unit").Modifiers.Single().Id!;
+        Assert.Equal([IdTokenKind.Parameter, IdTokenKind.Text, IdTokenKind.Dataset, IdTokenKind.Text, IdTokenKind.Value, IdTokenKind.Text], id.Tokens.Select(t => t.Kind));
+        Assert.Equal(new DatasetColumn(null, "value"), id.Tokens[2].Column);
+
+        string Refused(string data, string record = "") => Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingDocument(data, record: record), "m.yaml")).Message;
+
+        // A node's keys are all the language's; a word it does not have is named with the one it most likely meant.
+        Assert.Contains("beside the property 'Other'; a node's keys all start with '$'", Refused("Symbol: { $from: a, Other: b }"), StringComparison.Ordinal);
+        Assert.Contains("'$form' is not a word of the mapping language. Did you mean '$from'?", Refused("Symbol: { $form: a }"), StringComparison.Ordinal);
+        Assert.Contains("'$colour' is not a word of the mapping language, which reads", Refused("Symbol: { $colour: a }"), StringComparison.Ordinal);
+        Assert.Contains("A property whose name starts with '$' is written $$colour", Refused("Symbol: { $colour: a }"), StringComparison.Ordinal);
+        Assert.Contains("record holds '$from'", Assert.Throws<FlowValidationException>(() => loader.ParseMapping(
+            TestSchema.MappingDocument().ReplaceLineEndings("\n").Replace("record:\n", "record:\n  $from: x\n", StringComparison.Ordinal), "m.yaml")).Message, StringComparison.Ordinal);
+
+        // What a list, an item and an id cannot hold yet, and the tokens of the vocabulary before the marker.
+        Assert.Contains("its item [0] is a node of the mapping language, which a list does not hold yet", Refused("Aliases: [{ $from: a }]"), StringComparison.Ordinal);
+        Assert.Contains("An array of values from rows is not supported yet", Refused("Curves: { $forEach: curves, $item: { $from: curve_id } }"), StringComparison.Ordinal);
+        Assert.Contains(
+            "{param.dataPartition} is not a column; the mapping's own tokens start with '$', so write {$param.dataPartition}",
+            Refused("Unit: { $from: unit, $modifiers: [{ id: \"{param.dataPartition}:reference-data--UnitOfMeasure:{$value}:\" }] }"),
+            StringComparison.Ordinal);
+        Assert.Contains("a parameter is read as {$param.dataPartition}", Refused("Symbol: \"{param.dataPartition}-x\""), StringComparison.Ordinal);
+        Assert.Contains("replace: $cache.RecallUnits", Refused("Symbol: { $from: a, $modifiers: [{ replace: cache.RecallUnits }] }"), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -413,8 +526,8 @@ public class OsduIdentifierValidationTests
     }
 
     [Theory]
-    [InlineData("static: [tag] }", "static: [tag, tag] }", "osdu.legal.legaltags")]
-    [InlineData("static: [NO] }", "static: [NO, NO] }", "osdu.legal.otherRelevantDataCountries")]
+    [InlineData("legaltags: [tag]", "legaltags: [tag, tag]", "record.legal.legaltags")]
+    [InlineData("otherRelevantDataCountries: [NO]", "otherRelevantDataCountries: [NO, NO]", "record.legal.otherRelevantDataCountries")]
     public void A_repeated_legal_entry_is_rejected_because_the_legal_lists_are_sets(string from, string to, string key)
     {
         var yaml = TestSchema.MappingYaml.Replace(from, to, StringComparison.Ordinal);

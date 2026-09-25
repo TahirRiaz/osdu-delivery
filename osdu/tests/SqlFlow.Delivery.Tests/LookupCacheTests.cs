@@ -244,22 +244,22 @@ public sealed class LookupCacheTests : IDisposable
         var units = Pairs("RecallUnits", ("M", "m"), ("dev:reference-data--UnitOfMeasure:m", "m, written as an id"));
         var references = WithLookups(units);
         var byId = TestSchema.Mapping("""
-              - target: osdu.data.Symbol
-                source: cache.RecallUnits.id
-                findBy: cache.RecallUnits.key = dataset.unit
+              Symbol:
+                $cache: RecallUnits.id
+                $findBy: key = unit
             """);
         var held = new MappingRenderer(byId, TestSchema.Build(), references, TestSchema.Context()).Render(Record("M"));
         Assert.True(held.IsHeld);
         Assert.Contains("is a lookup table in version refs-1 of the cache of partition 'dev', whose rows are not OSDU records, so it has no id to write", Assert.Single(held.Holds), StringComparison.Ordinal);
 
         var issues = Preflight.Check(byId, TestSchema.Build(), references, TestSchema.Context(), sourceColumns: null);
-        Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("reads cache.RecallUnits.id, and RecallUnits is a lookup table whose rows are not OSDU records", StringComparison.Ordinal));
+        Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("reads the id of a RecallUnits row, and RecallUnits is a lookup table whose rows are not OSDU records", StringComparison.Ordinal));
 
         // A field reads like any cached field, and a value shaped like an OSDU id is only a key in a table of no OSDU records.
         var byField = new MappingRenderer(TestSchema.Mapping("""
-              - target: osdu.data.Symbol
-                source: cache.RecallUnits.value
-                findBy: cache.RecallUnits.key = dataset.unit
+              Symbol:
+                $cache: RecallUnits.value
+                $findBy: key = unit
             """), TestSchema.Build(), references, TestSchema.Context());
         Assert.Equal("m", byField.Render(Record("m")).Document["data"]!["Symbol"]!.GetValue<string>());
         Assert.Equal("m, written as an id", byField.Render(Record("dev:reference-data--UnitOfMeasure:m")).Document["data"]!["Symbol"]!.GetValue<string>());

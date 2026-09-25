@@ -97,12 +97,12 @@ public class SearchFieldsTests
     public void A_mapping_is_resolved_against_the_schema_its_search_pins_and_every_problem_is_listed()
     {
         var mapping = SearchSourceTests.Mapping("""
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy:
-                  - search.Wellbore.data.FacilityName = dataset.wb
-                  - search.Wellbore.data.SpudDate = dataset.wb
-                  - search.Wellbore.data.Plain.Code = dataset.wb
+              WellboreID:
+                $search: Wellbore
+                $findBy:
+                  - data.FacilityName = wb
+                  - data.SpudDate = wb
+                  - data.Plain.Code = wb
             """);
 
         var resolved = SearchSourceTests.Resolve(mapping);
@@ -118,9 +118,9 @@ public class SearchFieldsTests
     public void A_search_whose_pinned_schema_is_not_saved_is_named_with_where_to_save_it()
     {
         var mapping = SearchSourceTests.Mapping("""
-              - target: osdu.data.WellboreID
-                source: search.Wellbore.id
-                findBy: search.Wellbore.data.FacilityName = dataset.wb
+              WellboreID:
+                $search: Wellbore
+                $findBy: data.FacilityName = wb
             """);
 
         var resolved = ResolvedSearches.Resolve(mapping, new Dictionary<Templates.TemplateReference, Snapshots.SchemaSnapshot>());

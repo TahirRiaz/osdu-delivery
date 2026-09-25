@@ -399,7 +399,7 @@ Pipelines like any other flow.
   against unless a flow pins another; picking an earlier one says so above the table, because nothing shown then is
   what a render would read today. Every version the partition's cache flows wrote stays readable.
 - **Definition.** What the partition's cache flow files declare, as the last sync found them. A guide says how a
-  mapping reads the cache (`source: cache.<Type>.id` or `cache.<Type>.<name>`, and `findBy` lines), with an entry to
+  mapping reads the cache (`$cache: <Type>.id` or `$cache: <Type>.<name>`, and `$findBy` lines), with a node to
   copy, and that a mapping never names the cache. The cache flows follow, each with its repository, file, the endpoint
   it searches, its schedules and the types it declares, with View YAML and Refresh in its row; then each type as the
   flows together declare it: the kind and query each flow searches it with, every path kept (the source that reads it

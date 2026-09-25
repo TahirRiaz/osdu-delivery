@@ -13,13 +13,6 @@ namespace SqlFlow.Delivery.Source;
 /// </summary>
 public static class SourceBindings
 {
-    /// <summary>The payload set the flow's protocol streams, or null when it streams none.</summary>
-    public static string? PayloadName(FlowDefinition flow)
-    {
-        ArgumentNullException.ThrowIfNull(flow);
-        return flow.Target.ProtocolOptions.Payload;
-    }
-
     /// <summary>Throws a <see cref="FlowValidationException"/> naming the first disagreement, or returns when everything binds.</summary>
     /// <param name="flow">The flow being planned.</param>
     /// <param name="mapping">The mapping the flow pins.</param>
@@ -78,7 +71,7 @@ public static class SourceBindings
     private static void CheckPayload(FlowDefinition flow, IReadOnlySet<string> record, string where)
     {
         var keys = KeyPaths.Of(flow);
-        if (PayloadName(flow) is not { } payloadName)
+        if (PayloadParts.Streamed(flow) is not { } payloadName)
         {
             return;
         }

@@ -7,14 +7,14 @@ name: recall-cacheunits-02-curve-ing
 batch: recall
 
 connections:
-  sample: ${env:OSDU_DATA_DB}
+  osduData: ${env:OSDU_DATA_DB}
 
 source:
-  server: sample
+  server: osduData
   object: OsduData.pre.v_CacheRecallUnits
 
 target:
-  server: sample
+  server: osduData
   object: OsduData.arc.CacheRecallUnits
   identityColumn: RecId
 

@@ -10,16 +10,16 @@ public enum IdTokenKind
     /// <summary>Text written as it stands in the template.</summary>
     Text,
 
-    /// <summary><c>{value}</c>: the entry's value, after the modifiers before the id modifier.</summary>
+    /// <summary><c>{$value}</c>: the entry's value, after the modifiers before the id modifier.</summary>
     Value,
 
-    /// <summary><c>{dataset.column}</c> or <c>{dataset.child.column}</c>: a column of the row being rendered.</summary>
+    /// <summary><c>{column}</c>, a column of the row the node reads, or <c>{$dataset.column}</c>, a column of the dataset's own row.</summary>
     Dataset,
 
-    /// <summary><c>{cache.Type.field}</c>: a field of the row of a cached lookup table whose key is the entry's value.</summary>
+    /// <summary><c>{$cache.Type.field}</c>: a field of the row of a cached lookup table whose key is the entry's value.</summary>
     Cache,
 
-    /// <summary><c>{param.name}</c>: a parameter of the mapping, as the flow supplies it.</summary>
+    /// <summary><c>{$param.name}</c>: a parameter of the mapping, as the flow supplies it.</summary>
     Parameter,
 }
 
@@ -28,7 +28,7 @@ public sealed record IdToken
 {
     public required IdTokenKind Kind { get; init; }
 
-    /// <summary>The literal text, or the token as the template writes it (<c>{dataset.uwi}</c>).</summary>
+    /// <summary>The literal text, or the token as the template writes it (<c>{wellbore_uwi}</c>).</summary>
     public required string Text { get; init; }
 
     /// <summary>For a dataset token: the column it reads.</summary>
@@ -47,15 +47,35 @@ public sealed record IdToken
 }
 
 /// <summary>
-/// The template an <c>id</c> modifier builds an OSDU id from (<c>{param.dataPartition}:reference-data--UnitOfMeasure:{value}:</c>):
+/// The template an <c>id</c> modifier builds an OSDU id from (<c>{$param.dataPartition}:reference-data--UnitOfMeasure:{$value}:</c>):
 /// text written as it stands, and tokens that read the entry's value, a column of the row, a field of a cached lookup table
-/// and a parameter of the mapping. A template is read once, when the mapping is, and refused there when it could never give
-/// an id: a token it cannot read, text an id cannot carry, fewer parts than an id has, or no token that changes by record.
+/// and a parameter of the mapping. A token of the mapping language starts with <c>$</c>, so a bare name is always a column:
+/// <c>{curve_unit}</c> reads the row the node reads (under a <c>$forEach</c>, the item's row), and <c>{$dataset.log_id}</c>
+/// the dataset's own row. A template is read once, when the mapping is, and refused there when it could never give an id:
+/// a token it cannot read, text an id cannot carry, fewer parts than an id has, or no token that changes by record.
 /// </summary>
 public sealed partial record IdTemplate
 {
     /// <summary>What a message says an id template reads.</summary>
-    public const string TokenList = "{value}, {dataset.<column>}, {dataset.<child>.<column>}, {cache.<Type>.<field>} and {param.<name>}";
+    public const string TokenList = "{$value}, {<column>}, {$dataset.<column>}, {$cache.<Type>.<field>} and {$param.<name>}";
+
+    /// <summary>The id template a message shows as an example.</summary>
+    public const string Example = "\"{$param.dataPartition}:reference-data--UnitOfMeasure:{$value}:\"";
+
+    /// <summary>
+    /// The template a <c>ref</c> modifier stands for: a reference to a record of <paramref name="entityType"/> in the
+    /// flow's partition, whose code is the node's value (<c>{$param.dataPartition}:reference-data--UnitOfMeasure:{$value}:</c>).
+    /// </summary>
+    public static IdTemplate Reference(string entityType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
+        var text = $"{{{Marker}{ParameterWord}.{Snapshots.RenderContext.DataPartitionParameter}}}:{entityType}:{{{Marker}{ValueWord}}}:";
+        return TryParse(text, child: null, out var problem)
+            ?? throw new ArgumentException($"'{entityType}' is not an entity type a reference can name: {problem}.", nameof(entityType));
+    }
+
+    /// <summary>Whether <paramref name="text"/> names an entity type in full, <c>group--Entity</c>, as a reference's template writes it.</summary>
+    public static bool IsEntityType(string text) => !string.IsNullOrEmpty(text) && EntityTypePattern().IsMatch(text);
 
     private IdTemplate(string text, IReadOnlyList<IdToken> tokens, string? entityType)
     {
@@ -76,7 +96,7 @@ public sealed partial record IdTemplate
     /// </summary>
     public string? EntityType { get; }
 
-    /// <summary>Whether the template writes the entry's value, <c>{value}</c>.</summary>
+    /// <summary>Whether the template writes the entry's value, <c>{$value}</c>.</summary>
     public bool ReadsValue => Tokens.Any(t => t.Kind == IdTokenKind.Value);
 
     /// <summary>The dataset columns the template reads, each once.</summary>
@@ -96,12 +116,18 @@ public sealed partial record IdTemplate
     /// (ASCII letters, digits, <c>_ - . :</c> and percent-escapes such as <c>%2F</c>) and holds the colons that part an id:
     /// at least two, <c>partition:group--Entity:code</c>, and a third for a reference's version.
     /// </summary>
-    public static IdTemplate? TryParse(string? text, out string? problem)
+    /// <param name="text">The template as the mapping writes it.</param>
+    /// <param name="child">
+    /// The child dataset whose rows the node reads, when it sits under a <c>$forEach</c>; null for a node that reads the
+    /// dataset's own row. A bare <c>{column}</c> reads that row.
+    /// </param>
+    /// <param name="problem">Why the template is refused, or null.</param>
+    public static IdTemplate? TryParse(string? text, string? child, out string? problem)
     {
         problem = null;
         if (string.IsNullOrWhiteSpace(text))
         {
-            problem = $"an id template is text with tokens, such as \"{{param.dataPartition}}:reference-data--UnitOfMeasure:{{value}}:\"; this one is empty";
+            problem = $"an id template is text with tokens, such as {Example}; this one is empty";
             return null;
         }
 
@@ -131,7 +157,7 @@ public sealed partial record IdTemplate
 
                 Flush();
                 var written = text[i..(close + 1)];
-                if (Token(text[(i + 1)..close].Trim(), written, out problem) is not { } token)
+                if (Token(text[(i + 1)..close].Trim(), written, child, out problem) is not { } token)
                 {
                     return null;
                 }
@@ -173,8 +199,8 @@ public sealed partial record IdTemplate
 
         if (!tokens.Any(t => t.Kind is IdTokenKind.Value or IdTokenKind.Dataset or IdTokenKind.Cache))
         {
-            problem = "the template reads nothing that changes from record to record, so every record would get the same id; write it as a static value, which takes {param.<name>} too, or read "
-                + "{value}, a {dataset.<column>} or a {cache.<Type>.<field>}";
+            problem = "the template reads nothing that changes from record to record, so every record would get the same id; write it as a literal, which takes {$param.<name>} too, or read "
+                + "{$value}, a {<column>}, a {$dataset.<column>} or a {$cache.<Type>.<field>}";
             return null;
         }
 
@@ -199,26 +225,38 @@ public sealed partial record IdTemplate
     /// <summary>Whether <paramref name="c"/> is written into an id as it stands: an ASCII letter or digit, '_', '-', '.' or ':'.</summary>
     public static bool IsIdCharacter(char c) => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.' or ':';
 
-    private static IdToken? Token(string inner, string written, out string? problem)
+    /// <summary>
+    /// One token of an id template: a bare name is a column of the row the node reads, and a word of the mapping language
+    /// starts with <c>$</c>, so no column's name is ever read as one.
+    /// </summary>
+    private static IdToken? Token(string inner, string written, string? child, out string? problem)
     {
         problem = null;
-        if (inner == "value")
+        if (!inner.StartsWith(Marker, StringComparison.Ordinal))
         {
-            return new IdToken { Kind = IdTokenKind.Value, Text = written };
+            if (NamePattern().IsMatch(inner))
+            {
+                return new IdToken { Kind = IdTokenKind.Dataset, Text = written, Column = new DatasetColumn(child, inner) };
+            }
+
+            // A reader of the old vocabulary writes {value} or {param.x} without the marker; a dotted name is never a
+            // column, so it is refused with the token it most likely meant.
+            var first = inner.Split('.')[0];
+            problem = first is ValueWord or ParameterWord or MappingSource.CachePrefix or DatasetColumn.Prefix
+                ? $"{written} is not a column; the mapping's own tokens start with '$', so write {{{Marker}{inner}}}"
+                : $"{written} is not a token; an id template reads {TokenList}";
+            return null;
         }
 
-        var parts = inner.Split('.');
+        var parts = inner[Marker.Length..].Split('.');
         switch (parts[0])
         {
-            case DatasetColumn.Prefix when parts.Length is 2 or 3 && parts.Skip(1).All(p => NamePattern().IsMatch(p)):
-                return new IdToken
-                {
-                    Kind = IdTokenKind.Dataset,
-                    Text = written,
-                    Column = parts.Length == 2 ? new DatasetColumn(null, parts[1]) : new DatasetColumn(parts[1], parts[2]),
-                };
+            case ValueWord when parts.Length == 1:
+                return new IdToken { Kind = IdTokenKind.Value, Text = written };
+            case DatasetColumn.Prefix when parts.Length == 2 && NamePattern().IsMatch(parts[1]):
+                return new IdToken { Kind = IdTokenKind.Dataset, Text = written, Column = new DatasetColumn(null, parts[1]) };
             case DatasetColumn.Prefix:
-                problem = $"{written} reads the row as {{dataset.<column>}}, or {{dataset.<child>.<column>}} inside a repeater";
+                problem = $"{written} reads a column of the dataset's own row as {{{Marker}dataset.<column>}}, and a column of the row the node reads as {{<column>}}";
                 return null;
             case MappingSource.CachePrefix when parts.Length >= 3 && NamePattern().IsMatch(parts[1]) && parts.Skip(2).All(p => FieldPattern().IsMatch(p)):
                 return new IdToken
@@ -229,18 +267,25 @@ public sealed partial record IdTemplate
                     CacheField = string.Join('.', parts.Skip(2)),
                 };
             case MappingSource.CachePrefix:
-                problem = $"{written} reads a cached lookup table as {{cache.<Type>.<field>}}, such as {{cache.CurveDictionary.log_curve_type}}";
+                problem = $"{written} reads a cached lookup table as {{{Marker}cache.<Type>.<field>}}, such as {{{Marker}cache.CurveDictionary.log_curve_type_id}}";
                 return null;
-            case "param" when parts.Length == 2 && ParameterPattern().IsMatch(parts[1]):
+            case ParameterWord when parts.Length == 2 && ParameterPattern().IsMatch(parts[1]):
                 return new IdToken { Kind = IdTokenKind.Parameter, Text = written, Parameter = parts[1] };
-            case "param":
-                problem = $"{written} reads a parameter as {{param.<name>}}, with a name of letters, digits and '_'";
+            case ParameterWord:
+                problem = $"{written} reads a parameter as {{{Marker}param.<name>}}, with a name of letters, digits and '_'";
                 return null;
             default:
                 problem = $"{written} is not a token; an id template reads {TokenList}";
                 return null;
         }
     }
+
+    /// <summary>What starts every word of the mapping language.</summary>
+    private const string Marker = "$";
+
+    private const string ValueWord = "value";
+
+    private const string ParameterWord = "param";
 
     /// <summary>
     /// The entity type between the first and second colon of the template's own text, when nothing but text writes it. A

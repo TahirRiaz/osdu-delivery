@@ -64,9 +64,9 @@ public sealed class CachedReferenceTests : IDisposable
     private static ReferenceSnapshot Cache(params ReferenceType[] types) => new("refs-1", T0, types);
 
     private const string ThroughAliases = """
-          - target: osdu.data.Unit
-            source: cache.RecallUnitAliases.UnitOfMeasureID
-            findBy: cache.RecallUnitAliases.Code = dataset.unit
+          Unit:
+            $cache: RecallUnitAliases.UnitOfMeasureID
+            $findBy: Code = unit
         """;
 
     private static MappingRenderer Renderer(ReferenceSnapshot cache, string entries = ThroughAliases)
@@ -102,10 +102,10 @@ public sealed class CachedReferenceTests : IDisposable
     public void A_reference_to_a_record_the_cache_does_not_hold_or_to_no_record_holds_the_record_whatever_required_says()
     {
         const string Optional = """
-              - target: osdu.data.Unit
-                source: cache.RecallUnitAliases.UnitOfMeasureID
-                findBy: cache.RecallUnitAliases.Code = dataset.unit
-                required: false
+              Unit:
+                $cache: RecallUnitAliases.UnitOfMeasureID
+                $findBy: Code = unit
+                $required: false
             """;
         var renderer = Renderer(Cache(Units(), Aliases()), Optional);
 
@@ -157,19 +157,19 @@ public sealed class CachedReferenceTests : IDisposable
 
         // A static reference to a unit the cache holds is not refused because units cache an ID of their own.
         var staticIssues = Preflight.Check(
-            TestSchema.Mapping("""  - { target: osdu.data.Unit, static: "dev:reference-data--UnitOfMeasure:m:" }"""),
+            TestSchema.Mapping("""Unit: "dev:reference-data--UnitOfMeasure:m:" """),
             TestSchema.Build(), cache, TestSchema.Context(), sourceColumns: null);
         Assert.DoesNotContain(staticIssues, i => i.Severity == IssueSeverity.Error);
         var unknown = Preflight.Check(
-            TestSchema.Mapping("""  - { target: osdu.data.Unit, static: "dev:reference-data--UnitOfMeasure:yd:" }"""),
+            TestSchema.Mapping("""Unit: "dev:reference-data--UnitOfMeasure:yd:" """),
             TestSchema.Build(), cache, TestSchema.Context(), sourceColumns: null);
         Assert.Contains(unknown, i => i.Severity == IssueSeverity.Error && i.Message.Contains("is not in cache version 'refs-1'", StringComparison.Ordinal));
 
         // A value that already is a unit's id names that unit, and the render records the unit it found.
         var byId = Renderer(cache, """
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
+              Unit:
+                $cache: UnitOfMeasure.id
+                $findBy: Code = unit
             """).Render(Record("dev:reference-data--UnitOfMeasure:ft:"));
         Assert.Equal("dev:reference-data--UnitOfMeasure:ft:", Unit(byId));
         Assert.Contains(byId.CacheUsages, u => u.TypeName == "UnitOfMeasure" && u.ItemId == "dev:reference-data--UnitOfMeasure:ft" && u.Kind == CacheUsageKind.Match && u.Path == "id");
@@ -180,9 +180,9 @@ public sealed class CachedReferenceTests : IDisposable
     {
         var ledger = _db.Ledger(_clock);
         var renderer = Renderer(Cache(Units()), """
-              - target: osdu.data.Unit
-                source: cache.UnitOfMeasure.id
-                findBy: cache.UnitOfMeasure.Code = dataset.unit
+              Unit:
+                $cache: UnitOfMeasure.id
+                $findBy: Code = unit
             """);
         var usages = renderer.Render(Record("m")).CacheUsages;
         Assert.Contains(new CacheUsage("UnitOfMeasure", "dev:reference-data--UnitOfMeasure:m", "id", "dev:reference-data--UnitOfMeasure:m", CacheUsageKind.Value), usages);
@@ -210,7 +210,7 @@ public sealed class CachedReferenceTests : IDisposable
         var mapping = TestSchema.Mapping(ThroughAliases, $$$"""
             fixtures:
               - name: a Recall unit spelling, translated by OSDU's own ExternalUnitOfMeasure records
-                record: { name: w, depth: "1", unit: M }
+                row: { name: w, depth: "1", unit: M }
                 expected: |
                   {"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"w","Depth":1,"Unit":"dev:reference-data--UnitOfMeasure:m:"}}
             """);

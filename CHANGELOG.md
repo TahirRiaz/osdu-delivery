@@ -13,6 +13,38 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A mapping computes values and decides conditions with expressions.** `$expr` gives a property a value computed
+  from the row (`$expr: coalesce(log_name, log_source)`), `$when` is now an expression giving true or false
+  (`$when: depth_coding = "REGULAR" and not empty(index_increment)`), and a `$forEach` node's new `$where` keeps the
+  child rows that hold one (`$where: curve_id != "DEPT"`). The language is OSDU Delivery's own, small and fixed:
+  columns as `$from` names them, `$dataset.<column>` and `$param.<name>`; `=`, `!=`, `<`, `<=`, `>`, `>=`,
+  `in [...]`, `and`, `or`, `not`, `&` for text and `+ - * /`; and `iif`, `coalesce`, `nullif`, `empty`, `trim`,
+  `upper`, `lower`, `substring`, `left`, `right`, `replace`, `length`, `contains`, `startsWith`, `endsWith`, `number`,
+  `text`, `round` and `abs`, named and behaving as in SQL, so whoever writes the ingestion SQL reads a mapping without
+  learning another language. Nothing an expression calls reads a clock, a random source or anything outside the row.
+  Missing and blank values are no value, text compares trimmed and ignoring case, numbers and dates compare as what they
+  are, and a value an expression cannot work with holds the record, naming the expression, the part and the value.
+  Every column and parameter an expression reads is known when the mapping is read, so the preflight checks them against
+  the ingestion tables and the flow's parameters like any other, and lineage and coverage see them. Mistakes are refused
+  with what to write instead, including a condition in the old `column is text` form, which is refused with the
+  expression that replaces it. Heavy computation stays in the ingestion SQL: an expression is at most 2000 characters and
+  nests at most 48 levels ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md#expressions)).
+- **The ref modifier builds a reference from the entity type the property points to.** `- ref` writes
+  `{$param.dataPartition}:<group>--<Entity>:{$value}:` for a property whose template relationship names one entity type;
+  `- ref: UnitOfMeasure` picks one of several, and `- ref: reference-data--UnitOfMeasure` names any. It is checked and
+  rendered exactly as an `id` template is, and one the template does not settle fails the preflight with the types the
+  property points to. The sample WellLog mapping's seven `{$value}` references use it
+  ([osdu/docs/documents.md](osdu/docs/documents.md#ref)).
+- **Fixtures share their parameters, and `sqlflow fixtures update` writes their expected records.** `fixtureDefaults.parameters`
+  gives every fixture the parameter values it renders with, and a fixture's own `parameters` replace them name by name.
+  `sqlflow fixtures update <flow.yaml>` renders each fixture as the preflight does and writes what it renders into its
+  `expected` block, touching nothing else in the file, leaving a fixture that already matches as written, and skipping,
+  with the reason and a failing exit code, one whose record would be held or whose `expected` cannot be edited in place;
+  `--dry-run` says what would change ([osdu/docs/reference/cli/delivery.md](osdu/docs/reference/cli/delivery.md#fixtures)).
+- **The mapping builder edits expressions.** An entry can be an Expression input, its condition is an expression typed
+  in one line, a repeat entry takes the condition its rows are kept by, and the modifier list offers `ref`; the builder
+  checks each with the loader's own rules as the draft is composed, and writes them back as the tree reads them.
+
 - **The sample estate translates Recall values with petrodb-api's own tables.** Its unit maps and curve dictionary were
   stand-ins written for the samples; they are now the tables petrodb-api applies, held as data rather than code. The
   curve unit map (78 entries), the depth and vertical unit map (8) and the curve dictionary (498 mnemonics) are CSV files
@@ -292,6 +324,30 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A mapping is laid out the way the record it renders is.** The flat `mappings:` list, where every entry named its
+  variable by a `target` path (`osdu.data.Curves[].CurveUnit`) and read with `source`, `static` and `appliesWhen`, is
+  replaced by a `record` tree: `acl`, `legal`, `tags` and `data`, and below them each property at the place the record
+  has it, so reading the mapping reads the record. Every word of the mapping language starts with `$` (`$from`,
+  `$value`, `$cache`, `$search`, `$findBy`, `$modifiers`, `$when`, `$required`, `$forEach`, `$item`...) and every other
+  key is a property of the record, so no template's property name and no column can collide with the language; a
+  property whose own name starts with `$` is written `$$name`, a map mixing the language with properties is refused,
+  and a misspelled word is refused with the one it most likely meant (`$form` is `$from`). Columns are named as they
+  are: a bare name reads the row a node is in (under `$forEach`, the item's row), and `$dataset.<column>` the dataset's
+  own row; `dataset.key`, `dataset.identity` and the label's `{column}` tokens name columns bare. Tokens carry the
+  marker too: a literal reads `{$param.name}`, an id template `{$value}`, `{<column>}`, `{$dataset.<column>}`,
+  `{$cache.<Type>.<field>}` and `{$param.name}`, and a replace names its cached table `replace: $cache.<Type>`. A token
+  of the old vocabulary written without its marker is refused with the token it meant, rather than written into a
+  record as text. A fixture's source row is `row`. Messages name a node by where the document writes it
+  (`record.data.Curves.$item.CurveUnit`). The tree is read into the same model the renderer, the preflight, coverage
+  and lineage read, so a converted mapping renders the same records: its content hash changes, so each record renders
+  once more, and the rendered hash does not, so `onUnchanged: skip` sends nothing again. The mapping builder writes the
+  tree from its draft, placing each entry by its variable and leaving out, with a comment and a check that names it, an
+  entry the tree has no place for; the GUI's hints, the cache page's copyable snippets and the editor census speak the
+  new vocabulary. Every mapping in the samples and the test fixtures is converted
+  ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md), [osdu/docs/documents.md](osdu/docs/documents.md#mapping)).
+- **A key written twice in one map is refused.** The document loader read the last of two identical keys and dropped the
+  first without a word, which in a mapping's record tree would lose a property; every delivery, retrieval and cache
+  flow and every mapping now fails to load, naming the line, instead.
 - **The ledger has one write path.** Staging pending records, appending and applying a lease's events, and marking
   and releasing waits each had an entity path beside the set-based SQL Server statements, for a provider no deployment
   runs on; the entity paths are gone, and so are the model built per provider (the binary collation on OSDU ids always

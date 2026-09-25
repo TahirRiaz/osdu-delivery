@@ -1,4 +1,4 @@
-# Mapping: Directional surveys into the WellboreTrajectory 1.3.0 template (docs/mapping-templates.md).
+# Mapping: Directional surveys into the WellboreTrajectory 1.3.0 template (osdu/docs/mapping-templates.md).
 #
 # One record per survey. The dataset is the survey's metadata rows, and its child dataset "stations" holds one row per
 # station property the survey carries (measured depth, inclination, azimuth); the station values themselves are
@@ -18,10 +18,10 @@ description: Directional surveys (one record per survey) with their station prop
 dataset:
   system: wells
   # The delivery key is UUIDv5 over (source system, source project, survey id): one record per survey.
-  key: [dataset.source_project, dataset.survey_id]
-  label: "{dataset.wellbore_uwi} / {dataset.survey_name} ({dataset.survey_id})"
+  key: [source_project, survey_id]
+  label: "{wellbore_uwi} / {survey_name} ({survey_id})"
   # The wellbore and survey an operator holds this trajectory by, indexed by the ledger for the Records page.
-  identity: [dataset.wellbore_uwi, dataset.survey_id]
+  identity: [wellbore_uwi, survey_id]
 
 parameters:
   dataPartition:
@@ -50,80 +50,77 @@ searches:
       version: 58d6bdbd9d066a06
     description: The partition's wellbores, found by name or by any of their aliases.
 
-mappings:
+record:
   # Access and legal: every record carries them.
-  - target: osdu.acl.owners
-    static: ["{param.aclOwner}"]
-  - target: osdu.acl.viewers
-    static: ["{param.aclViewer}"]
-  - target: osdu.legal.legaltags
-    static: ["{param.legalTag}"]
-  - target: osdu.legal.otherRelevantDataCountries
-    static: [NO]
-  - target: osdu.tags.DeliveredBy
-    static: osdu-delivery
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [NO]
+  tags:
+    DeliveredBy: osdu-delivery
 
   # The survey.
-  - target: osdu.data.Name
-    source: dataset.survey_name
-    modifiers: [trim]
-  - target: osdu.data.SurveyReferenceIdentifier
-    source: dataset.survey_id
-  - target: osdu.data.SurveyType
-    source: dataset.survey_type
-    required: false
-  - target: osdu.data.SurveyVersion
-    source: dataset.survey_version
-    required: false
-  - target: osdu.data.WellboreID
-    source: search.Wellbore.id
-    findBy:
-      - search.Wellbore.data.FacilityName = dataset.wellbore_uwi
-      - search.Wellbore.data.NameAliases.AliasName = dataset.wellbore_uwi
-  - target: osdu.data.TopDepthMeasuredDepth
-    source: dataset.top_md
-  - target: osdu.data.BaseDepthMeasuredDepth
-    source: dataset.base_md
+  data:
+    Name:
+      $from: survey_name
+      $modifiers: [trim]
+    SurveyReferenceIdentifier: { $from: survey_id }
+    SurveyType:
+      $from: survey_type
+      $required: false
+    SurveyVersion:
+      $from: survey_version
+      $required: false
+    WellboreID:
+      $search: Wellbore
+      $findBy:
+        - data.FacilityName = wellbore_uwi
+        - data.NameAliases.AliasName = wellbore_uwi
+    TopDepthMeasuredDepth: { $from: top_md }
+    BaseDepthMeasuredDepth: { $from: base_md }
 
-  # The vertical reference, carried in one column as a value and a unit ("23.5 M").
-  - target: osdu.data.VerticalMeasurement.VerticalMeasurement
-    source: dataset.elev_meas_ref
-    modifiers:
-      - split: { separator: " ", part: 1 }
-  - target: osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID
-    source: cache.UnitOfMeasure.id
-    findBy:
-      - cache.UnitOfMeasure.ID = dataset.elev_meas_ref
-      - cache.UnitOfMeasure.Code = dataset.elev_meas_ref
-      - cache.UnitOfMeasure.Name = dataset.elev_meas_ref
-      - cache.UnitOfMeasure.id = dataset.elev_meas_ref
-    modifiers:
-      - split: { separator: " ", part: 2 }
-      - replace: cache.RecallDepthUnits
-  - target: osdu.data.VerticalMeasurement.VerticalMeasurementTypeID
-    static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
+    # The vertical reference, carried in one column as a value and a unit ("23.5 M").
+    VerticalMeasurement:
+      VerticalMeasurement:
+        $from: elev_meas_ref
+        $modifiers:
+          - split: { separator: " ", part: 1 }
+      VerticalMeasurementUnitOfMeasureID:
+        $cache: UnitOfMeasure.id
+        $findBy:
+          - ID = elev_meas_ref
+          - Code = elev_meas_ref
+          - Name = elev_meas_ref
+          - id = elev_meas_ref
+        $modifiers:
+          - split: { separator: " ", part: 2 }
+          - replace: $cache.RecallDepthUnits
+      VerticalMeasurementTypeID: "{$param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"
 
-  # The station properties: one item per row of the stations child dataset. Name is the bulk column's label.
-  - target: osdu.data.AvailableTrajectoryStationProperties
-    source: dataset.stations
-  - target: osdu.data.AvailableTrajectoryStationProperties[].Name
-    source: dataset.stations.station_property
-  - target: osdu.data.AvailableTrajectoryStationProperties[].TrajectoryStationPropertyTypeID
-    source: cache.TrajectoryStationPropertyType.id
-    findBy:
-      - cache.TrajectoryStationPropertyType.Code = dataset.stations.property_type
-      - cache.TrajectoryStationPropertyType.Name = dataset.stations.property_type
-      - cache.TrajectoryStationPropertyType.ID = dataset.stations.property_type
-  - target: osdu.data.AvailableTrajectoryStationProperties[].StationPropertyUnitID
-    source: cache.UnitOfMeasure.id
-    findBy:
-      - cache.UnitOfMeasure.ID = dataset.stations.property_unit
-      - cache.UnitOfMeasure.Code = dataset.stations.property_unit
-      - cache.UnitOfMeasure.Name = dataset.stations.property_unit
-      - cache.UnitOfMeasure.id = dataset.stations.property_unit
-    modifiers:
-      # The source's spelling becomes the partition's unit code through the curve unit map: DEG becomes dega.
-      - replace: cache.RecallUnits
+    # The station properties: one item per row of the stations child dataset, whose columns a bare name reads under
+    # $item. Name is the bulk column's label.
+    AvailableTrajectoryStationProperties:
+      $forEach: stations
+      $item:
+        Name: { $from: station_property }
+        TrajectoryStationPropertyTypeID:
+          $cache: TrajectoryStationPropertyType.id
+          $findBy:
+            - Code = property_type
+            - Name = property_type
+            - ID = property_type
+        StationPropertyUnitID:
+          $cache: UnitOfMeasure.id
+          $findBy:
+            - ID = property_unit
+            - Code = property_unit
+            - Name = property_unit
+            - id = property_unit
+          $modifiers:
+            # The source's spelling becomes the partition's unit code through the curve unit map: DEG becomes dega.
+            - replace: $cache.RecallUnits
 
 # Example rows and the exact record each must render to under the pinned template and cache. They are the mapping's
 # regression suite, which the preflight gate runs before every render (design.md section 10.3).
@@ -137,7 +134,7 @@ fixtures:
     # The platform holds the fixture's wellbore under its name; the lookup by alias is never reached.
     searches:
       - { search: Wellbore, field: data.FacilityName, value: OSDU-DEV-1-A, id: "dev:master-data--Wellbore:OSDU-DEV-1-A" }
-    record:
+    row:
       source_project: NO_15_9
       survey_id: T-1001
       wellbore_uwi: OSDU-DEV-1-A

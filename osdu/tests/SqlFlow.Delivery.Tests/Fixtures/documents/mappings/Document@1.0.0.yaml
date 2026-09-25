@@ -1,4 +1,4 @@
-# Mapping: a source system's documents into the Document 1.0.0 template (../../docs/mapping-templates.md).
+# Mapping: a source system's documents into the Document 1.0.0 template (osdu/docs/mapping-templates.md).
 #
 # A work product component whose content is a file: the record carries what the source system knows about the document,
 # and the file itself travels beside it. The route registers each file as a dataset and writes the record with its
@@ -14,8 +14,8 @@ description: Documents (one record per document) delivered with the file that is
 dataset:
   system: wells
   # The source system's own document number: what it is filed under there, and what the delivery key derives from.
-  key: [dataset.doc_id]
-  label: "{dataset.doc_title}"
+  key: [doc_id]
+  label: "{doc_title}"
 
 parameters:
   dataPartition:
@@ -31,29 +31,28 @@ parameters:
     required: true
     description: The legal tag every record this mapping renders carries (legal.legaltags).
 
-mappings:
-  - target: osdu.acl.owners
-    static: ["{param.aclOwner}"]
-  - target: osdu.acl.viewers
-    static: ["{param.aclViewer}"]
-  - target: osdu.legal.legaltags
-    static: ["{param.legalTag}"]
-  - target: osdu.legal.otherRelevantDataCountries
-    static: [NO]
-  - target: osdu.tags.DeliveredBy
-    static: osdu-delivery
+record:
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers: ["{$param.aclViewer}"]
+  legal:
+    legaltags: ["{$param.legalTag}"]
+    otherRelevantDataCountries: [NO]
+  tags:
+    DeliveredBy: osdu-delivery
 
-  - target: osdu.data.Name
-    source: dataset.doc_title
-    modifiers: [trim]
-    description: The document's title, as the source system files it.
-  - target: osdu.data.Description
-    source: dataset.doc_description
-    modifiers: [trim]
-    required: false
-  - target: osdu.data.Source
-    static: recall
-    description: The system the document came from, carried as provenance.
+  data:
+    Name:
+      $from: doc_title
+      $modifiers: [trim]
+      $description: The document's title, as the source system files it.
+    Description:
+      $from: doc_description
+      $modifiers: [trim]
+      $required: false
+    Source:
+      $value: recall
+      $description: The system the document came from, carried as provenance.
 
 fixtures:
   - name: a document with a title and a description
@@ -62,7 +61,7 @@ fixtures:
       aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
       aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
       legalTag: dev-equinor-osdu-reference-default
-    record:
+    row:
       doc_id: D-0001
       doc_title: " Well report NO 15/9 A "
       doc_description: Geological observations over the logged interval.

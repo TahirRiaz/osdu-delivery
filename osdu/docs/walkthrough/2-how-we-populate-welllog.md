@@ -18,20 +18,24 @@ Everything below is taken from the sample estate:
 
 1. **The ingestion tables supply rows.** `ing.WellLog` holds one row per log, keyed by `(source_project, log_id)`.
    `ing.WellLogCurve` holds one row per curve, joined to its log by those same key columns and ordered by
-   `curve_ordinal`. The flow reads the first as the dataset's row (`dataset.<column>`) and the second as the child
-   dataset `curves` (`dataset.curves.<column>`), as its `source.datasets` declares.
-2. **The mapping lists entries.** Each entry names a template variable (`osdu.data.SamplingStart`) and where its value
-   comes from: `source: dataset.index_min` for a source column, `source: cache.<Type>.<field>` with `findBy` for the
-   OSDU cache, or `static` for a fixed value. It can add modifiers (`trim`, `split`, `replace`, `equals`).
-3. **The engine looks every target up in the template.** From file 1 it learns whether the variable exists, its type,
+   `curve_ordinal`. The flow reads the first as the dataset's row, whose columns a property names as they are, and the second as the child
+   dataset `curves`, which a `$forEach: curves` node repeats and whose columns its `$item` reads by name, as the
+   flow's `source.datasets` declares.
+2. **The mapping lays out the record.** Its `record` block is written the way the record is, so each property sits where
+   the template has it (`data: { SamplingStart: ... }` fills `osdu.data.SamplingStart`) and says where its value comes
+   from: `$from: index_min` for a source column, `$expr` for a value computed from the row (`coalesce(log_name,
+   log_source)`), `$cache: <Type>.<field>` with `$findBy` for the OSDU cache, or a literal for a fixed value. It can add
+   `$modifiers` (`trim`, `split`, `replace`, `equals`, `ref`...) and a `$when` condition. Every word of the mapping
+   language starts with `$`; every other key is a property of the record.
+3. **The engine looks every property up in the template.** From file 1 it learns whether the variable exists, its type,
    and whether it is an object or an array. The mapping never states a type itself.
 4. **The modifiers run, then the value is converted to the template's type.** `"1000"` becomes the number `1000`
-   because the schema says `number`. A value that cannot be converted holds the record with a reason naming the target.
-5. **`id` and `kind` come from the engine, not from entries.** `id` is derived from the mapping's `dataset.system` and
-   `dataset.key`, and `kind` is the template's kind. `acl` and `legal` are static entries like the others, and every
+   because the schema says `number`. A value that cannot be converted holds the record with a reason naming the variable.
+5. **`id` and `kind` come from the engine, not from the mapping.** `id` is derived from the mapping's `dataset.system`
+   and `dataset.key`, and `kind` is the template's kind. `acl` and `legal` are literal lists like any other, and every
    mapping must have them.
-6. **Before anything renders, the preflight gate checks the mapping against the template.** A target the template does
-   not have, a single value written to an object, or a required property without an entry stops the run.
+6. **Before anything renders, the preflight gate checks the mapping against the template.** A property the template does
+   not have, a single value written to an object, or a required property nothing fills stops the run.
 7. **The flow's protocol sends it.** `ddms` writes the record to the wellbore DDMS (`POST /ddms/v3/welllogs`)
    and then streams the curve values to its `/data` endpoint from the folder the record's own `curve_folder` column
    names, under the flow's declared payload root. The curve values never appear in the record.
@@ -40,8 +44,8 @@ The status column in the tables below uses these words:
 
 | Status | Meaning |
 | --- | --- |
-| **Mapped** | An entry fills it from a source column (`source: dataset...`) or from the OSDU cache (`source: cache...`). |
-| **Static** | A `static` entry writes the same value on every record. |
+| **Mapped** | The mapping fills it from a source column (`$from`), from the OSDU cache (`$cache`), or by searching the platform (`$search`). |
+| **Static** | A literal writes the same value on every record. |
 | **Engine** | OSDU Delivery writes it: `id` from the mapping's `dataset.key`, `kind` from the template. |
 | **OSDU** | The platform sets it. We never send it. |
 | **Kept** | On an update, copied forward from the record OSDU already holds, because the flow lists it under `protocolOptions.preserveDataKeys`. A new record does not get it from us. |
@@ -56,9 +60,9 @@ The example values are for log `L-1001` in the sample estate.
 | `id` | Engine | `{dataPartition}:work-product-component--WellLog:{key}`. The partition is the flow's `render.parameters.dataPartition`. The key is a UUIDv5 over the source system `recall` (`dataset.system`) and the values of the `dataset.key` columns, `source_project` and `log_id`. The same log always gets the same id. | `dev:work-product-component--WellLog:ea10870200ce5404ac1b49154b070e74` |
 | `kind` | Engine | The template's kind, `template.kind` in the mapping. | `osdu:wks:work-product-component--WellLog:1.4.0` |
 | `version` | OSDU | Assigned by OSDU on each write. The ledger records the version OSDU returns. | |
-| `acl` | Static | `osdu.acl.owners` and `osdu.acl.viewers`, each a `static` list. | owners `data.default.owners@dev.dataservices.energy`, viewers `data.default.viewers@dev.dataservices.energy` |
-| `legal` | Static | `osdu.legal.legaltags` and `osdu.legal.otherRelevantDataCountries`, each a `static` list. `status` is not sent. | `dev-reference-data-default`, `NO` |
-| `tags` | Static and Mapped | `osdu.tags.DeliveredBy` is `static: osdu-delivery`. `osdu.tags.WellLogNativeUID` is `source: dataset.native_uid` with the modifier `split: { separator: ",", part: 1 }`, keeping the first part. | `DeliveredBy: osdu-delivery`, `WellLogNativeUID: NO_15_9:L-1001` |
+| `acl` | Static | `osdu.acl.owners` and `osdu.acl.viewers`, each a literal list. | owners `data.default.owners@dev.dataservices.energy`, viewers `data.default.viewers@dev.dataservices.energy` |
+| `legal` | Static | `osdu.legal.legaltags` and `osdu.legal.otherRelevantDataCountries`, each a literal list. `status` is not sent. | `dev-reference-data-default`, `NO` |
+| `tags` | Static and Mapped | `tags.DeliveredBy` is the literal `osdu-delivery`. `osdu.tags.WellLogNativeUID` is `$from: native_uid` with the modifier `split: { separator: ",", part: 1 }`, keeping the first part. | `DeliveredBy: osdu-delivery`, `WellLogNativeUID: NO_15_9:L-1001` |
 | `ancestry` | Not filled | | |
 | `meta` | Not filled | | |
 | `createTime`, `createUser`, `modifyTime`, `modifyUser` | OSDU | Set by OSDU. | |
@@ -91,7 +95,7 @@ does nothing for this kind.
 
 | Property | Status | Entry | Modifiers | L-1001 |
 | --- | --- | --- | --- | --- |
-| `Name` | Mapped | `source: dataset.log_source` | `trim` | `"STAT_COMP"` |
+| `Name` | Mapped | `$from: log_source` | `trim` | `"STAT_COMP"` |
 
 The other ten are not filled: `AuthorIDs`, `BusinessActivities`, `CreationDateTime`, `Description`, `GeoContexts`,
 `LineageAssertions`, `SpatialArea`, `SpatialPoint`, `SubmitterName` and `Tags`.
@@ -102,21 +106,21 @@ Fifteen of the thirty-four properties are filled.
 
 | Property | Status | Entry | Modifiers | Schema type | L-1001 | Does it match what the schema describes? |
 | --- | --- | --- | --- | --- | --- | --- |
-| `ActivityType` | Mapped | `source: dataset.creator` | none | string | `"SLB"` | **No.** The schema describes "General method or circumstance of logging - MWD, completion, ...". `SLB` is the logging company. |
-| `BottomMeasuredDepth` | Mapped | `source: dataset.index_max` | none | number | `1004` | Yes, but see the unit finding below. |
-| `Curves` | Mapped | `source: dataset.curves`, the repeater: one item per row of the `curves` child dataset, filled by the `osdu.data.Curves[]` entries | none | array | three items, section 2.4.1 | Yes. |
-| `IsRegular` | Mapped | `source: dataset.depth_coding` | `equals: REGULAR` | boolean | `true` | Yes. |
-| `LogActivity` | Mapped | `source: dataset.log_pass` | `split: { separator: ",", part: 1 }` | string | `"MAIN"` | Yes. The schema describes the type of pass. A value such as `MAIN,REPEAT` loses its second part. |
-| `LogRun` | Mapped | `source: dataset.log_id` | none | string | `"L-1001"` | **No.** The schema describes the run of the log. The ingestion table has a `log_run` column (`"1"`) holding exactly that. |
-| `LogSource` | Mapped | `source: dataset.source_project` | none | string | `"NO_15_9"` | **No.** The schema says "OSDU Native Log Source - will be updated for later releases - not to be used yet". |
-| `LogVersion` | Mapped | `source: dataset.log_version` | none | string | `"1"` | Yes. |
-| `ReferenceCurveID` | Static | `static: MD` | none | string | `"MD"` | Yes for this estate, since every log has an `MD` curve. The DDMS refuses a log whose reference curve is not among its curves, so the protocol holds such a record before sending it. |
-| `SamplingInterval` | Mapped | `source: dataset.index_increment` | none | number | `0.5` | **Not always.** The schema says it is not set for irregular sampling. Log `L-2001` is `DISCRETE` and still gets `0.5`. |
-| `SamplingStart` | Mapped | `source: dataset.index_min` | none | number | `1000` | Yes, but see the unit finding below. |
-| `SamplingStop` | Mapped | `source: dataset.index_max` | none | number | `1004` | Yes, but see the unit finding below. |
-| `TopMeasuredDepth` | Mapped | `source: dataset.index_min` | none | number | `1000` | Yes, but see the unit finding below. |
+| `ActivityType` | Mapped | `$from: creator` | none | string | `"SLB"` | **No.** The schema describes "General method or circumstance of logging - MWD, completion, ...". `SLB` is the logging company. |
+| `BottomMeasuredDepth` | Mapped | `$from: index_max` | none | number | `1004` | Yes, but see the unit finding below. |
+| `Curves` | Mapped | `$forEach: curves`, the repeated array: one item per row of the `curves` child dataset, filled by the `osdu.data.Curves[]` entries | none | array | three items, section 2.4.1 | Yes. |
+| `IsRegular` | Mapped | `$from: depth_coding` | `equals: REGULAR` | boolean | `true` | Yes. |
+| `LogActivity` | Mapped | `$from: log_pass` | `split: { separator: ",", part: 1 }` | string | `"MAIN"` | Yes. The schema describes the type of pass. A value such as `MAIN,REPEAT` loses its second part. |
+| `LogRun` | Mapped | `$from: log_id` | none | string | `"L-1001"` | **No.** The schema describes the run of the log. The ingestion table has a `log_run` column (`"1"`) holding exactly that. |
+| `LogSource` | Mapped | `$from: source_project` | none | string | `"NO_15_9"` | **No.** The schema says "OSDU Native Log Source - will be updated for later releases - not to be used yet". |
+| `LogVersion` | Mapped | `$from: log_version` | none | string | `"1"` | Yes. |
+| `ReferenceCurveID` | Static | `MD` | none | string | `"MD"` | Yes for this estate, since every log has an `MD` curve. The DDMS refuses a log whose reference curve is not among its curves, so the protocol holds such a record before sending it. |
+| `SamplingInterval` | Mapped | `$from: index_increment` | none | number | `0.5` | **Not always.** The schema says it is not set for irregular sampling. Log `L-2001` is `DISCRETE` and still gets `0.5`. |
+| `SamplingStart` | Mapped | `$from: index_min` | none | number | `1000` | Yes, but see the unit finding below. |
+| `SamplingStop` | Mapped | `$from: index_max` | none | number | `1004` | Yes, but see the unit finding below. |
+| `TopMeasuredDepth` | Mapped | `$from: index_min` | none | number | `1000` | Yes, but see the unit finding below. |
 | `VerticalMeasurement` | Mapped | entries for three of its properties, section 2.4.2 | | object | section 2.4.2 | Partly. |
-| `WellboreID` | Mapped | `source: search.Wellbore.id` with `findBy: search.Wellbore.data.FacilityName = dataset.wellbore_uwi`, then `search.Wellbore.data.NameAliases.AliasName` with the same value. Each line asks the platform for the one wellbore whose name, or one of whose aliases, is exactly the value. The entry is required, so the record is held if no wellbore matches, and held whatever `required` says if several do. | none | string, points to master-data--Wellbore | `"dev:master-data--Wellbore:OSDU-DEV-1-A:"` | Yes. |
+| `WellboreID` | Mapped | `$search: Wellbore` with `$findBy: data.FacilityName = wellbore_uwi`, then `data.NameAliases.AliasName` with the same value. Each line asks the platform for the one wellbore whose name, or one of whose aliases, is exactly the value. The entry is required, so the record is held if no wellbore matches, and held whatever `required` says if several do. | none | string, points to master-data--Wellbore | `"dev:master-data--Wellbore:OSDU-DEV-1-A:"` | Yes. |
 
 The other nineteen are not filled: `CandidateReferenceCurveIDs`, `CompanyID`, `ConveyanceMethodID`,
 `DrillingFluidProperty`, `FrameIdentifier`, `HoleTypeLogging`, `LogRemark`, `LogServiceDateInterval`,
@@ -134,14 +138,14 @@ twenty-one properties are filled.
 
 | Property | Status | Entry | Modifiers | GR curve of L-1001 |
 | --- | --- | --- | --- | --- |
-| `CurveID` | Mapped | `source: dataset.curves.curve_id` | none | `"GR"` |
-| `CurveUnit` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.curves.curve_unit`. The record is held if nothing matches. | `replace: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, G/CM3: g/cm3, V/V: m3/m3 }`, applied to the value `findBy` compares | `"dev:reference-data--UnitOfMeasure:gAPI:"` |
-| `DepthUnit` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.curves.index_unit` | `replace: { M: m, FT: ft }` | `"dev:reference-data--UnitOfMeasure:m:"` |
-| `TopDepth` | Mapped | `source: dataset.curves.index_min` | none | `1000` |
-| `BaseDepth` | Mapped | `source: dataset.curves.index_max` | none | `1004` |
-| `CurveDescription` | Mapped | `source: dataset.curves.curve_description` | none | `"Gamma ray"` |
-| `CurveVersion` | Mapped | `source: dataset.curves.curve_version` | none | `"1"` |
-| `LogCurveBusinessValueID` | Mapped | `source: cache.LogCurveBusinessValue.id`, with `findBy` on `Code`, then `Name`, each compared with `dataset.curves.business_value`, and `required: false`, so the property is left out if nothing matches. | none | `"dev:reference-data--LogCurveBusinessValue:High:"` |
+| `CurveID` | Mapped | `$from: curve_id` | none | `"GR"` |
+| `CurveUnit` | Mapped | `$cache: UnitOfMeasure.id`, with `$findBy` on `Code`, then `Name`, then `id`, each compared with `curve_unit`. The record is held if nothing matches. | `replace: { M: m, METRE: m, METER: m, FT: ft, FEET: ft, GAPI: gAPI, G/CM3: g/cm3, V/V: m3/m3 }`, applied to the value `findBy` compares | `"dev:reference-data--UnitOfMeasure:gAPI:"` |
+| `DepthUnit` | Mapped | `$cache: UnitOfMeasure.id`, with `$findBy` on `Code`, then `Name`, then `id`, each compared with `index_unit` | `replace: { M: m, FT: ft }` | `"dev:reference-data--UnitOfMeasure:m:"` |
+| `TopDepth` | Mapped | `$from: index_min` | none | `1000` |
+| `BaseDepth` | Mapped | `$from: index_max` | none | `1004` |
+| `CurveDescription` | Mapped | `$from: curve_description` | none | `"Gamma ray"` |
+| `CurveVersion` | Mapped | `$from: curve_version` | none | `"1"` |
+| `LogCurveBusinessValueID` | Mapped | `$cache: LogCurveBusinessValue.id`, with `$findBy` on `Code`, then `Name`, each compared with `business_value`, and `required: false`, so the property is left out if nothing matches. | none | `"dev:reference-data--LogCurveBusinessValue:High:"` |
 
 The other thirteen are not filled: `CurveQuality`, `CurveSampleTypeID`, `DateStamp`, `DepthCoding`, `Interpolate`,
 `InterpreterName`, `IsProcessed`, `LogCurveFamilyID`, `LogCurveMainFamilyID`, `LogCurveTypeID`, `Mnemonic`,
@@ -150,7 +154,7 @@ The other thirteen are not filled: `CurveQuality`, `CurveSampleTypeID`, `DateSta
 The schema says `TopDepth` and `BaseDepth` take their unit from `DepthUnit`, so each curve's depths declare their unit.
 
 The `CurveUnit` entry reads the cache captured from OSDU. For `GAPI` the `replace` modifier makes the value `gAPI`, and
-`findBy` finds this cached record by its `Code`, whose `id` the entry writes with a trailing `:`:
+`$findBy` finds this cached record by its `Code`, whose `id` the property writes with a trailing `:`:
 
 ```json
 { "Code": "gAPI", "ID": "gAPI", "Name": "API gamma ray unit", "id": "dev:reference-data--UnitOfMeasure:gAPI" }
@@ -164,9 +168,9 @@ and one with a static value.
 
 | Property | Status | Entry | Modifiers | L-1001 |
 | --- | --- | --- | --- | --- |
-| `VerticalMeasurement` | Mapped | `source: dataset.elev_meas_ref`, converted to a number | `split: { separator: " ", part: 1 }`, where a single space splits on any run of whitespace | `23.5` |
-| `VerticalMeasurementUnitOfMeasureID` | Mapped | `source: cache.UnitOfMeasure.id`, with `findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.elev_meas_ref` | `split: { separator: " ", part: 2 }`, then `replace: { M: m, FT: ft }`, applied to the value `findBy` compares | `"dev:reference-data--UnitOfMeasure:m:"` |
-| `VerticalMeasurementTypeID` | Static | `static: "{param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"` | none | `"dev:reference-data--VerticalMeasurementType:KellyBushing:"` |
+| `VerticalMeasurement` | Mapped | `$from: elev_meas_ref`, converted to a number | `split: { separator: " ", part: 1 }`, where a single space splits on any run of whitespace | `23.5` |
+| `VerticalMeasurementUnitOfMeasureID` | Mapped | `$cache: UnitOfMeasure.id`, with `$findBy` on `Code`, then `Name`, then `id`, each compared with `dataset.elev_meas_ref` | `split: { separator: " ", part: 2 }`, then `replace: { M: m, FT: ft }`, applied to the value `findBy` compares | `"dev:reference-data--UnitOfMeasure:m:"` |
+| `VerticalMeasurementTypeID` | Static | `"{$param.dataPartition}:reference-data--VerticalMeasurementType:KellyBushing:"` | none | `"dev:reference-data--VerticalMeasurementType:KellyBushing:"` |
 
 The other nine are not filled: `EffectiveDateTime`, `TerminationDateTime`, `VerticalCRSID`,
 `VerticalMeasurementDescription`, `VerticalMeasurementPathID`, `VerticalMeasurementSourceID`,
@@ -301,7 +305,7 @@ its shape) and cannot know what a column means, so these are for a person to jud
    the root `meta` block, which we do not fill. Log `L-2001` is in feet, and its `1500` reads the same as a value in
    metres. The curves are not affected, because each declares `DepthUnit`.
 6. **`SamplingInterval` is written for irregular logs.** The schema says it is not set when sampling is not regular.
-   `appliesWhen: dataset.depth_coding is REGULAR` on the entry would leave it out for such logs.
+   `$when: depth_coding = "REGULAR"` on the property would leave it out for such logs.
 7. **`Name` does not tell logs apart.** Its entry reads `dataset.log_source`, and every log of the `STAT_COMP` source has
    the name `STAT_COMP`.
 8. **`VerticalMeasurementTypeID` is always kelly bushing.** The source does not say what the elevation is measured from.

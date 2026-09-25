@@ -67,7 +67,7 @@ public static class DeliveryLineage
 
         var files = new List<DeclaredFileLocation>();
         var sent = PayloadParts.Of(flow)?.Select(p => p.Payload).ToList()
-            ?? (Planner.PayloadName(flow) is { } payloadName ? [payloadName] : []);
+            ?? (PayloadParts.Streamed(flow) is { } payloadName ? [payloadName] : []);
         foreach (var name in sent)
         {
             if (flow.Source.Payloads.TryGetValue(name, out var payload))

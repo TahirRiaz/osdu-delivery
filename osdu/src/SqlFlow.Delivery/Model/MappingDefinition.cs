@@ -1,12 +1,13 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using SqlFlow.Delivery.Expressions;
 using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.Model;
 
 /// <summary>
-/// A mapping (docs/delivery/mapping-templates.md): which saved template version it fills, what identifies a record of
-/// the incoming dataset, and one entry per template variable it fills, each saying where the value comes from.
+/// A mapping (osdu/docs/mapping-templates.md) as it is loaded: which saved template version it fills, what identifies a record of
+/// the incoming dataset, and one entry per template variable its record tree fills, each saying where the value comes from.
 /// </summary>
 public sealed record MappingDefinition
 {
@@ -82,6 +83,12 @@ public sealed record MappingDefinition
     /// <summary>Example rows and the exact record each must render to.</summary>
     public IReadOnlyList<MappingFixture> Fixtures { get; init; } = [];
 
+    /// <summary>
+    /// The parameter values every fixture renders with unless it gives its own (<c>fixtureDefaults.parameters</c>); each
+    /// fixture's <see cref="MappingFixture.Parameters"/> already holds them. Kept so the builder writes the block back.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> FixtureParameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
+
     public string Reference => Name + "@" + Version;
 
     /// <summary>The OSDU kind of the records the mapping renders.</summary>
@@ -120,7 +127,7 @@ public sealed record MappingDataset
     /// <summary>The columns of the dataset's row the delivery key is derived from, in order.</summary>
     public required IReadOnlyList<string> Key { get; init; }
 
-    /// <summary>Display text with <c>{dataset.column}</c> tokens, for the ledger and the GUI; never part of the record.</summary>
+    /// <summary>Display text with <c>{column}</c> tokens naming columns of the dataset's own row, for the ledger and the GUI; never part of the record.</summary>
     public string? Label { get; init; }
 
     /// <summary>
@@ -166,6 +173,9 @@ public enum MappingSourceKind
     /// units and the type codes a cache is for are closed sets that a capture holds cheaply.
     /// </summary>
     Search,
+
+    /// <summary>A value an expression computes from the row, the dataset's own row and the parameters (<c>$expr</c>).</summary>
+    Expression,
 }
 
 /// <summary>Where an entry's value comes from.</summary>
@@ -180,6 +190,9 @@ public sealed record MappingSource
 
     /// <summary>The column a dataset column source reads.</summary>
     public DatasetColumn? Column { get; init; }
+
+    /// <summary>For an expression source: the expression that computes the value.</summary>
+    public MappingExpression? Expression { get; init; }
 
     /// <summary>The child dataset a repeater reads.</summary>
     public string? Child { get; init; }
@@ -197,8 +210,12 @@ public sealed record MappingSource
     {
         MappingSourceKind.DatasetColumn => Column!.ToString(),
         MappingSourceKind.DatasetRows => $"{DatasetColumn.Prefix}.{Child}",
+        MappingSourceKind.Expression => Expression!.Text,
         _ => $"{Prefix}.{CacheType}.{CacheField}",
     };
+
+    /// <summary>True when the source reads the row it is evaluated for: a column, or an expression over it.</summary>
+    public bool ReadsRow => Kind is MappingSourceKind.DatasetColumn or MappingSourceKind.Expression;
 
     /// <summary>True when a resolved source reads the record id, which renders in the reference form OSDU relationships use.</summary>
     public bool ReadsRecordId
@@ -221,26 +238,6 @@ public sealed record FindBy(string Type, string Field, DatasetColumn? Column, st
         => $"{Prefix}.{Type}.{Field} = {(Column is not null ? Column.ToString() : "'" + Literal + "'")}";
 }
 
-public enum ConditionOperator
-{
-    Is,
-    IsNot,
-    IsEmpty,
-    IsNotEmpty,
-}
-
-/// <summary>An entry's <c>appliesWhen</c>: a dataset value compared with text, or tested for emptiness.</summary>
-public sealed record EntryCondition(DatasetColumn Column, ConditionOperator Operator, string? Text)
-{
-    public override string ToString() => Operator switch
-    {
-        ConditionOperator.Is => $"{Column} is {Text}",
-        ConditionOperator.IsNot => $"{Column} is not {Text}",
-        ConditionOperator.IsEmpty => $"{Column} is empty",
-        _ => $"{Column} is not empty",
-    };
-}
-
 public enum ModifierKind
 {
     Trim,
@@ -254,6 +251,13 @@ public enum ModifierKind
 
     /// <summary>Builds an OSDU id from a template (<see cref="IdTemplate"/>); always the last modifier.</summary>
     Id,
+
+    /// <summary>
+    /// Builds a reference to a record of the entity type the property points to, in the flow's partition, whose code is
+    /// the value: the id template <c>{$param.dataPartition}:&lt;entity type&gt;:{$value}:</c> written for you. Always the
+    /// last modifier.
+    /// </summary>
+    Ref,
 }
 
 /// <summary>One change to an incoming dataset value.</summary>
@@ -291,11 +295,24 @@ public sealed record Modifier
     /// <summary>For number: the separator between groups of three digits, or null when the value is written without one.</summary>
     public string? GroupSeparator { get; init; }
 
-    /// <summary>For id: the template the id is built from.</summary>
+    /// <summary>
+    /// For id: the template the id is built from. For ref: the same, once the entity type is known; null until a render or
+    /// the preflight reads it off the template variable the node fills.
+    /// </summary>
     public IdTemplate? Id { get; init; }
+
+    /// <summary>
+    /// For ref: the entity type the reference names, as written (<c>UnitOfMeasure</c>, or in full
+    /// <c>reference-data--UnitOfMeasure</c>), or null to take the one the template variable points to.
+    /// </summary>
+    public string? EntityType { get; init; }
+
+    /// <summary>True for the modifiers that build the id a node writes, id and ref, which are always last.</summary>
+    public bool BuildsId => Kind is ModifierKind.Id or ModifierKind.Ref;
 
     public override string ToString() => Kind switch
     {
+        ModifierKind.Ref => EntityType is null ? "ref" : $"ref({EntityType})",
         ModifierKind.Split => $"split(separator '{Separator}', part {Part})",
         ModifierKind.Replace when Table is { } table => $"replace from {table}"
             + (Otherwise.Kind == ReplaceFallbackKind.Keep ? string.Empty : $", otherwise {Otherwise}"),
@@ -311,7 +328,7 @@ public sealed record Modifier
 }
 
 /// <summary>
-/// A replace reading its table from the partition's cache (<c>replace: cache.CurveDictionary</c>): the value is matched on
+/// A replace reading its table from the partition's cache (<c>replace: $cache.CurveDictionary</c>): the value is matched on
 /// <see cref="Match"/> and replaced by the matched row's <see cref="Field"/>. Either may be left for the cached type to
 /// decide: a lookup table matches on its key, and replaces by the one field it holds beside it (a dictionary of pairs'
 /// value).
@@ -321,9 +338,9 @@ public sealed record Modifier
 /// <param name="Field">The field of the matched row a value is replaced by, or null for the one field beside the key.</param>
 public sealed record CachedReplaceTable(string CacheType, string? Match, string? Field)
 {
-    /// <summary>The table as the mapping names it, with the fields it names: <c>cache.CurveDictionary (mnemonic to log_curve_family_id)</c>.</summary>
+    /// <summary>The table as the mapping names it, with the fields it names: <c>$cache.CurveDictionary (mnemonic to log_curve_family_id)</c>.</summary>
     public override string ToString()
-        => $"{MappingSource.CachePrefix}.{CacheType}" + (Match is null && Field is null ? string.Empty : $" ({Match ?? "its key"} to {Field ?? "its value"})");
+        => $"${MappingSource.CachePrefix}.{CacheType}" + (Match is null && Field is null ? string.Empty : $" ({Match ?? "its key"} to {Field ?? "its value"})");
 }
 
 /// <summary>What a replace does with a value its table does not list.</summary>
@@ -384,7 +401,17 @@ public sealed partial record MappingEntry
 
     public IReadOnlyList<Modifier> Modifiers { get; init; } = [];
 
-    public EntryCondition? AppliesWhen { get; init; }
+    /// <summary>
+    /// The node's <c>$when</c>: the condition that decides whether the property is written for a row. Null writes it
+    /// always. A repeater's decides for the whole array, so it reads the dataset's own row.
+    /// </summary>
+    public MappingExpression? AppliesWhen { get; init; }
+
+    /// <summary>
+    /// For a repeater: its <c>$where</c>, the condition a child row must hold to become an item, tested against each row.
+    /// Null repeats every row.
+    /// </summary>
+    public MappingExpression? RowFilter { get; init; }
 
     /// <summary>What an empty value does: true holds the record, false leaves the variable out.</summary>
     public bool Required { get; init; } = true;
@@ -401,7 +428,32 @@ public sealed partial record MappingEntry
     /// <summary>How messages name the entry: where the document writes it, or its template variable.</summary>
     public string Where => Location ?? Target.Text;
 
-    /// <summary>Every dataset column the entry reads: its source, its findBy values, its condition and the tokens of an id it builds.</summary>
+    /// <summary>The entry's expressions: the one its value is computed by, its <c>$when</c> and its <c>$where</c>.</summary>
+    public IEnumerable<MappingExpression> Expressions
+    {
+        get
+        {
+            if (Source?.Expression is { } computed)
+            {
+                yield return computed;
+            }
+
+            if (AppliesWhen is { } condition)
+            {
+                yield return condition;
+            }
+
+            if (RowFilter is { } filter)
+            {
+                yield return filter;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every dataset column the entry reads: the column its source reads, those its expressions read, its findBy values
+    /// and the tokens of an id it builds.
+    /// </summary>
     public IEnumerable<DatasetColumn> Columns
     {
         get
@@ -411,17 +463,17 @@ public sealed partial record MappingEntry
                 yield return column;
             }
 
+            foreach (var expressionColumn in Expressions.SelectMany(e => e.Columns))
+            {
+                yield return expressionColumn;
+            }
+
             foreach (var find in FindBy)
             {
                 if (find.Column is { } findColumn)
                 {
                     yield return findColumn;
                 }
-            }
-
-            if (AppliesWhen is { } condition)
-            {
-                yield return condition.Column;
             }
 
             foreach (var modifier in Modifiers)
@@ -437,10 +489,10 @@ public sealed partial record MappingEntry
         }
     }
 
-    /// <summary>A <c>{param.name}</c> token inside a static text.</summary>
-    public const string ParameterTokenPattern = @"\{param\.(?<name>[A-Za-z0-9_]+)\}";
+    /// <summary>A <c>{$param.name}</c> token inside a literal text.</summary>
+    public const string ParameterTokenPattern = @"\{\$param\.(?<name>[A-Za-z0-9_]+)\}";
 
-    /// <summary>Replaces <c>{param.name}</c> tokens in a static text; a parameter without a value leaves its token, which the preflight reports.</summary>
+    /// <summary>Replaces <c>{$param.name}</c> tokens in a literal text; a parameter without a value leaves its token, which the preflight reports.</summary>
     public static string ExpandParameters(string text, Func<string, string?> parameter)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -448,7 +500,7 @@ public sealed partial record MappingEntry
         return ParameterToken().Replace(text, m => parameter(m.Groups["name"].Value) ?? m.Value);
     }
 
-    /// <summary>The parameter names a static text's tokens name.</summary>
+    /// <summary>The parameter names a literal text's tokens name.</summary>
     public static IEnumerable<string> ParameterNames(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -470,7 +522,7 @@ public sealed record MappingFixture
     public IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> Datasets { get; init; }
         = new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>>(StringComparer.Ordinal);
 
-    /// <summary>Parameter values for the fixture render.</summary>
+    /// <summary>Parameter values for the fixture render: the mapping's fixture defaults, and the fixture's own over them.</summary>
     public IReadOnlyDictionary<string, string> Parameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
 
     /// <summary>
@@ -494,7 +546,7 @@ public sealed record FixtureSearchAnswer(string Search, string Field, string Val
 /// One record set a mapping resolves by searching the platform. The kind is what a search is issued against; the name
 /// is what entries write, so a mapping can search two sets of the same kind under different names.
 /// </summary>
-/// <param name="Name">The name entries write, as in <c>search.Wellbore.id</c>.</param>
+/// <param name="Name">The name nodes write, as in <c>$search: Wellbore</c>.</param>
 /// <param name="Kind">
 /// The OSDU kind searched: one entity type, at one version or at every version (<c>osdu:wks:master-data--Wellbore:*</c>).
 /// </param>

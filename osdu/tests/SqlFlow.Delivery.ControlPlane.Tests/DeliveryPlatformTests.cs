@@ -52,8 +52,8 @@ public sealed class DeliveryPlatformTests
     [Fact]
     public void MappingThatDoesNotLoad_IsAnError_NamingWhyTheSyncWouldRecordItInvalid()
     {
-        // A target written without its origin is not a template variable, so the sync would record the mapping as invalid.
-        var yaml = SampleMapping().Replace("target: osdu.data.FacilityName", "target: data.FacilityName", StringComparison.Ordinal);
+        // A word the mapping language does not have is refused, so the sync would record the mapping as invalid.
+        var yaml = SampleMapping().Replace("$from: facility_name", "$form: facility_name", StringComparison.Ordinal);
 
         var result = FlowProposalPreflight.Run([new ProposalFile("mappings/Wellbore@1.0.0.yaml", yaml)], [], DeliveryDocuments);
 
@@ -61,7 +61,7 @@ public sealed class DeliveryPlatformTests
         Assert.Equal("mappings/Wellbore@1.0.0.yaml", error.Path);
         Assert.Contains("does not parse as a companion document", error.Message, StringComparison.Ordinal);
         // And it names the cause the sync would have recorded the mapping invalid for.
-        Assert.Contains("osdu.", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'$form' is not a word of the mapping language. Did you mean '$from'?", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -97,9 +97,9 @@ public sealed class DeliveryPlatformTests
         Assert.Contains("\"planned\":12", result, StringComparison.Ordinal);
     }
 
-    /// <summary>The sample estate's wellbore mapping, as the mapping builder writes one into a proposal.</summary>
+    /// <summary>The fixture estate's wellbore mapping, as the mapping builder writes one into a proposal.</summary>
     private static string SampleMapping()
-        => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "samples", "wells", "mappings", "Wellbore@1.0.0.yaml"));
+        => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "documents", "mappings", "Wellbore@1.0.0.yaml"));
 
     private static CatalogRun Project(string json)
     {

@@ -10,7 +10,7 @@ checks for these documents in the GUI's YAML editor, and in the language server 
 | `keys.delivery.json` | A delivery flow, `flowType: delivery`, in the single form and as a source with interfaces. |
 | `keys.retrieval.json` | A retrieval flow, `flowType: retrieval`. |
 | `keys.cache.json` | A cache flow, `flowType: cache`: OSDU types, ingestion table types and dictionary types. |
-| `keys.mapping.json` | A mapping, `documentType: mapping`, with every modifier and the settings a replace takes. |
+| `keys.mapping.json` | A mapping, `documentType: mapping`: its header, its fixtures, and its `record` tree, whose node grammar (every `$` word, modifier and setting) is described on `record.<name>`. |
 | `keys.dictionary.json` | A dictionary, `documentType: dictionary`. |
 
 Every loader of the module refuses a key it does not know, so each file says `strictKeys: true`, and the flow kinds
@@ -18,8 +18,9 @@ take the platform envelope (`includeEnvelope: true`) as SQLFlow documents it. Th
 [documents.md](../documents.md) and the loaders.
 
 `EditorCensusTests` checks the files against the code: every key a flow kind's strict loader accepts is documented and
-nothing is documented that it would refuse (read off the YAML models by reflection), and the mapping's modifiers and the
-dictionary's keys match the names `MappingMapper` and `DictionaryMapper` accept. A key added to a loader without its
-entry here fails that suite, so the editor never stops documenting a key an author can write.
+nothing is documented that it would refuse (read off the YAML models by reflection), the mapping's node grammar names
+every word, modifier and setting `MappingMapper` accepts, and the dictionary's keys match the names `DictionaryMapper`
+accepts. A key added to a loader without its entry here fails that suite, so the editor never stops documenting a key an
+author can write.
 
 The GUI module registers the files (`osdu/gui/src/module.tsx`), and each one loads when the editor first starts.
