@@ -8,14 +8,14 @@ name: wells-wellbore-03-header-delivery
 batch: wells
 
 source:
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   record:
-    object: OsduSample.ing.Wellbore
+    object: OsduData.arc.Wellbore
     key: [facility_name]
     primaryKey: RecId
   datasets:
     aliases:
-      object: OsduSample.ing.WellboreAlias
+      object: OsduData.arc.WellboreAlias
       join:
         facility_name: facility_name
       orderBy: [alias_name]

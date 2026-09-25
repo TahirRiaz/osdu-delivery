@@ -29,7 +29,7 @@ function cli(...args: string[]): string {
       timeout: 300_000,
       env: {
         ...process.env,
-        OSDU_SAMPLE_DB: fixtureMeta().sampleDb,
+        OSDU_DATA_DB: fixtureMeta().dataDb,
         SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
         // The ledger these commands read is the module's database, which is not the catalog's: a node reaches it
         // through exactly this reference, and so does a command run beside one.

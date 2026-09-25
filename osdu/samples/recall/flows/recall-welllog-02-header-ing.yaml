@@ -8,15 +8,15 @@ name: recall-welllog-02-header-ing
 batch: recall
 
 connections:
-  sample: ${env:OSDU_SAMPLE_DB}
+  sample: ${env:OSDU_DATA_DB}
 
 source:
   server: sample
-  object: OsduSample.pre.v_WellLog
+  object: OsduData.pre.v_WellLog
 
 target:
   server: sample
-  object: OsduSample.ing.WellLog
+  object: OsduData.arc.WellLog
   # The identity primary key every ingestion table carries: the clustered key the other indexes point at, and the
   # column the delivery pages and fans out by (source.record.primaryKey).
   identityColumn: RecId

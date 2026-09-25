@@ -14,7 +14,7 @@ source:
     srcFile: "*.csv"
 
 target:
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   schema: pre
   table: WellboreAlias
 

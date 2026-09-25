@@ -22,7 +22,7 @@ namespace SqlFlow.Delivery.Tests;
 [Collection(SqlServerSuite.Name)]
 public sealed class ComposedSourceTests : IDisposable
 {
-    private const string WellLogTable = "OsduSample.ing.WellLog";
+    private const string WellLogTable = "OsduData.arc.WellLog";
     private const string Ddms = FakeOsduPlatform.DdmsRoot + "/ddms/v3/welllogs";
 
     private readonly OsduTestDatabase _db = new();
@@ -54,7 +54,7 @@ public sealed class ComposedSourceTests : IDisposable
             parameters:
               logSource: { required: true }
             source:
-              connection: ${env:OSDU_SAMPLE_DB}
+              connection: ${env:OSDU_DATA_DB}
               lastModified: update_date
               work: '{{root}}/work/{logSource}'
             render:
@@ -80,7 +80,7 @@ public sealed class ComposedSourceTests : IDisposable
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
-                  curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                  curves: { object: OsduData.arc.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 files: { root: '{{root}}/las', locationColumn: las_folder, pattern: "*.las", hashColumn: las_hash }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: WellLog@1.4.0

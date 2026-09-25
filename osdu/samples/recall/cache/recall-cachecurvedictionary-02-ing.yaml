@@ -3,19 +3,19 @@
 # One row per mnemonic. A newer file replaces a mnemonic's row, so the table always holds the dictionary as its latest
 # file has it, and recall-lookups-00-cache captures it whole into the partition's cache as CurveDictionary.
 flowType: ing
-name: recall-curvedictionary-02-ing
+name: recall-cachecurvedictionary-02-ing
 batch: recall
 
 connections:
-  sample: ${env:OSDU_SAMPLE_DB}
+  sample: ${env:OSDU_DATA_DB}
 
 source:
   server: sample
-  object: OsduSample.pre.v_CurveDictionary
+  object: OsduData.pre.v_CacheCurveDictionary
 
 target:
   server: sample
-  object: OsduSample.ing.CurveDictionary
+  object: OsduData.arc.CacheCurveDictionary
   identityColumn: RecId
 
 load:

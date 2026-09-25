@@ -50,8 +50,8 @@ public class RecordWaitTests : IDisposable
         FlowName = flowId == _logs ? "well-logs" : "wellbores",
         MappingReference = "Thing@1.0.0",
         RenderContext = "{}",
-        SourceConnection = "${env:OSDU_SAMPLE_DB}",
-        SourceObject = "OsduSample.ing.Thing",
+        SourceConnection = "${env:OSDU_DATA_DB}",
+        SourceObject = "OsduData.arc.Thing",
         RecordCount = 1,
     };
 

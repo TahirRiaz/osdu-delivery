@@ -90,15 +90,15 @@ parameters:
     description: The log source (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
 
 source:
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   record:
-    object: OsduSample.ing.WellLog
+    object: OsduData.arc.WellLog
     key: [source_project, log_id]
     scope:
       log_name: logSource
   datasets:
     curves:
-      object: OsduSample.ing.WellLogCurve
+      object: OsduData.arc.WellLogCurve
       join:
         source_project: source_project
         log_id: log_id
@@ -126,11 +126,11 @@ in the current sample, with the schedule carrying `values: { logSource: STAT_COM
   `incremental.dateColumn: FileDate_DW`, `load.mode: append`.
 - `wells-welllog-01-curves-pre`: csv from `../data/curves-meta` into `pre.WellLogCurve`, typed `curve_ordinal`,
   `curve_version`, `business_value` (`NULLIF(@ColName, '')`).
-- `wells-welllog-02-header-ing`: `OsduSample.pre.v_WellLog` into `OsduSample.ing.WellLog`, `keyColumns: [source_project, log_id]`,
+- `wells-welllog-02-header-ing`: `OsduData.pre.v_WellLog` into `OsduData.arc.WellLog`, `keyColumns: [source_project, log_id]`,
   `incremental.columns: [FileDate_DW]`, `systemColumns.insertedDate/updatedDate: true`.
-- `wells-welllog-02-curves-ing`: `OsduSample.pre.v_WellLogCurve` into `OsduSample.ing.WellLogCurve`,
+- `wells-welllog-02-curves-ing`: `OsduData.pre.v_WellLogCurve` into `OsduData.arc.WellLogCurve`,
   `keyColumns: [source_project, log_id, curve_id]`.
-- `OsduSample` is the Initial Catalog of `${env:OSDU_SAMPLE_DB}`; SQL Server suites generate these files with the test
+- `OsduData` is the Initial Catalog of `${env:OSDU_DATA_DB}`; SQL Server suites generate these files with the test
   database's name.
 
 ### 1.4 Sample data
@@ -147,7 +147,7 @@ in the current sample, with the schedule carrying `values: { logSource: STAT_COM
 ### 1.5 Wellbore chain
 
 `wells-wellbore-01-header-pre`, `wells-wellbore-01-aliases-pre`, `wells-wellbore-02-header-ing` (`keyColumns: [facility_name]`),
-`wells-wellbore-02-aliases-ing` (`[facility_name, alias_name]`) and `wells-wellbore-03-header-delivery` (record `OsduSample.ing.Wellbore`,
+`wells-wellbore-02-aliases-ing` (`[facility_name, alias_name]`) and `wells-wellbore-03-header-delivery` (record `OsduData.arc.Wellbore`,
 dataset `aliases` joined on `facility_name`, `protocol: storage`).
 
 ## 2. Planning over the ingestion tables

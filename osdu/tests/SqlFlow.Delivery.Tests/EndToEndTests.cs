@@ -1,4 +1,4 @@
-﻿using SqlFlow.Core;
+using SqlFlow.Core;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Intake;
 using SqlFlow.Delivery.Engine.Planning;
@@ -129,8 +129,8 @@ public class EndToEndTests : IDisposable
                 FlowName = "wells-wellbore-03-header-delivery",
                 MappingReference = "Wellbore@1.3.0",
                 RenderContext = "{}",
-                SourceConnection = "${env:OSDU_SAMPLE_DB}",
-                SourceObject = "OsduSample.ing.Wellbore",
+                SourceConnection = "${env:OSDU_DATA_DB}",
+                SourceObject = "OsduData.arc.Wellbore",
             });
             await ledger.UpsertPendingAsync(wellboreFlow, [new RecordState
             {

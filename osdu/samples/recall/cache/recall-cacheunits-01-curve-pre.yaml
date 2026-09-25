@@ -3,8 +3,8 @@
 # Each row maps one spelling Recall writes a curve's unit in to the code of the partition's UnitOfMeasure record, as
 # petrodb-api's CurveUnit valueMap maps it (src/PetroDb/MappingGenerator/mappings/WellLog1_4_0.json). petrodb-api matches
 # a spelling ignoring case, so spellings that differ only by case are one row here, as the table's key holds them. This
-# flow lands data/curve-units, recall-units-02-curve-ing keys it, and recall-lookups-00-cache holds that table.
-name: recall-units-01-curve-pre
+# flow lands data/curve-units, recall-cacheunits-02-curve-ing keys it, and recall-lookups-00-cache holds that table.
+name: recall-cacheunits-01-curve-pre
 batch: recall
 
 source:
@@ -16,9 +16,9 @@ source:
     srcFile: "*.csv"
 
 target:
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   schema: pre
-  table: RecallUnits
+  table: CacheRecallUnits
 
 schema:
   evolve: widen

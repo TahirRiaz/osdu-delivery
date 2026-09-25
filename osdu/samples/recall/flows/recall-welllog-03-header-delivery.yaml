@@ -19,9 +19,9 @@ parameters:
 
 source:
   # Resolved on the node that runs the flow; never a connection string in the document.
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   record:
-    object: OsduSample.ing.WellLog
+    object: OsduData.arc.WellLog
     key: [source_project, log_id]
     # The table's identity primary key: the read pages by it and a fan-out cuts its ranges on it.
     primaryKey: RecId
@@ -30,7 +30,7 @@ source:
       log_source: logSource
   datasets:
     curves:
-      object: OsduSample.ing.WellLogCurve
+      object: OsduData.arc.WellLogCurve
       join:
         source_project: source_project
         log_id: log_id

@@ -88,9 +88,9 @@ export const E2E = {
   // connection at all.
   osduDb: process.env.SQLFLOW_E2E_OSDU_DB ?? catalogDb,
   // Where the chain's source and ingestion tables live: the suite's one database, where the pre and ingestion flows
-  // create their own schemas. SQLFLOW_E2E_SAMPLE_DB moves them to a database of their own, the shape of a real estate,
+  // create their own schemas. SQLFLOW_E2E_DATA_DB moves them to a database of their own, the shape of a real estate,
   // where the source data is the volume; the seed spec creates that database when it is missing.
-  sampleDb: process.env.SQLFLOW_E2E_SAMPLE_DB ?? catalogDb,
+  dataDb: process.env.SQLFLOW_E2E_DATA_DB ?? catalogDb,
   // Where the sample flows deliver, as every process of the estate resolves their ${env:...} references: the stand-in
   // platform on loopback, which a delivery host reaches only when told it may, and the partition, access groups and
   // legal tag every sample mapping fixture pins. The estate is hermetic, so these are declared here rather than taken
@@ -170,7 +170,7 @@ export default defineConfig({
           : {}),
         // The sample flows read their ingestion tables through this reference. Without it a plan cannot open the tables
         // the seed loaded, and every delivery run fails on a connection it cannot resolve.
-        OSDU_SAMPLE_DB: E2E.sampleDb,
+        OSDU_DATA_DB: E2E.dataDb,
         // Where the sample flows deliver: the stand-in platform, whose search a plan asks for the wellbores it renders.
         ...E2E.osdu,
         ControlPlane__Jwt__SigningKey: "e2e-signing-key-0123456789abcdef-0123456789abcdef-PADDING",

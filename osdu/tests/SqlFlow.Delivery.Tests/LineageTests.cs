@@ -128,9 +128,9 @@ public sealed class LineageTests : IDisposable
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
             [
-                "OsduSample.ing.Wellbore", "OsduSample.ing.WellboreAlias", "OsduSample.ing.WellLog",
-                "OsduSample.ing.WellLogCurve", "OsduSample.ing.WellboreTrajectory", "OsduSample.ing.WellboreTrajectoryStation",
-                "OsduSample.ing.Document",
+                "OsduData.arc.Wellbore", "OsduData.arc.WellboreAlias", "OsduData.arc.WellLog",
+                "OsduData.arc.WellLogCurve", "OsduData.arc.WellboreTrajectory", "OsduData.arc.WellboreTrajectoryStation",
+                "OsduData.arc.Document",
             ],
             lineage.Objects.Select(o => $"{o.Database}.{o.Schema}.{o.Name}").ToList());
         Assert.All(lineage.Objects, o => Assert.Equal(LineageRelation.Reads, o.Relation));
@@ -158,7 +158,7 @@ public sealed class LineageTests : IDisposable
 
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
-            ["OsduSample.ing.WellLog", "OsduSample.ing.WellLogCurve"],
+            ["OsduData.arc.WellLog", "OsduData.arc.WellLogCurve"],
             lineage.Objects.Select(o => $"{o.Database}.{o.Schema}.{o.Name}").ToList());
         Assert.All(lineage.Objects, o => Assert.Equal(LineageRelation.Reads, o.Relation));
         var payload = Assert.Single(lineage.Files);
@@ -302,9 +302,9 @@ public sealed class LineageTests : IDisposable
         // and keyed by a pre and an ing flow of its own, so it runs after them and writes each table into the cache.
         foreach (var (pre, ing, table) in new[]
         {
-            ("recall-units-01-curve-pre", "recall-units-02-curve-ing", "RecallUnits"),
-            ("recall-units-01-depth-pre", "recall-units-02-depth-ing", "RecallDepthUnits"),
-            ("recall-curvedictionary-01-pre", "recall-curvedictionary-02-ing", "CurveDictionary"),
+            ("recall-cacheunits-01-curve-pre", "recall-cacheunits-02-curve-ing", "RecallUnits"),
+            ("recall-cacheunits-01-depth-pre", "recall-cacheunits-02-depth-ing", "RecallDepthUnits"),
+            ("recall-cachecurvedictionary-01-pre", "recall-cachecurvedictionary-02-ing", "CurveDictionary"),
         })
         {
             Assert.True(WaveOf(report, pre) < WaveOf(report, ing), $"{pre} runs before {ing}");

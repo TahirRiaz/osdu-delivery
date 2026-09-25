@@ -16,14 +16,14 @@ public class YamlDocumentLoaderTests
         parameters:
           logSource: { required: true }
         source:
-          connection: ${env:OSDU_SAMPLE_DB}
+          connection: ${env:OSDU_DATA_DB}
           record:
-            object: OsduSample.ing.WellLog
+            object: OsduData.arc.WellLog
             key: [source_project, log_id]
             scope: { log_source: logSource }
           datasets:
             curves:
-              object: OsduSample.ing.WellLogCurve
+              object: OsduData.arc.WellLogCurve
               join: { source_project: source_project, log_id: log_id }
               orderBy: [curve_ordinal]
           payloads:
@@ -118,11 +118,11 @@ public class YamlDocumentLoaderTests
         Assert.Equal(["Datasets", "DDMSDatasets", "ExtensionProperties"], flow.Target.ProtocolOptions.PreserveDataKeys);
 
         // The sample delivers what its own pre and ing flows load into the ingestion tables.
-        Assert.Equal("OsduSample.ing.WellLog", flow.Source.Record.Object);
+        Assert.Equal("OsduData.arc.WellLog", flow.Source.Record.Object);
         Assert.Equal(["source_project", "log_id"], flow.Source.Record.Key);
         Assert.Equal("RecId", flow.Source.Record.PrimaryKey);
         Assert.Equal("logSource", flow.Source.Record.Scope["log_source"]);
-        Assert.Equal("OsduSample.ing.WellLogCurve", flow.Source.Datasets["curves"].Object);
+        Assert.Equal("OsduData.arc.WellLogCurve", flow.Source.Datasets["curves"].Object);
         Assert.Equal("source_project", flow.Source.Datasets["curves"].Join["source_project"]);
         Assert.Equal(["curve_ordinal"], flow.Source.Datasets["curves"].OrderBy);
         Assert.Equal("curve_folder", flow.Source.Payloads["curves"].LocationColumn);

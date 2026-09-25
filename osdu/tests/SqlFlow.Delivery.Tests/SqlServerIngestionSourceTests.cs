@@ -39,7 +39,7 @@ public sealed class SqlServerIngestionSourceTests
             FROM (SELECT TOP (6000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b) AS n
             ORDER BY n.rn;
             DELETE FROM {table} WHERE [RecId] BETWEEN 2001 AND 4000;
-            DBCC CHECKIDENT ('[{estate.IngSchema}].[Item]', RESEED, 100000) WITH NO_INFOMSGS;
+            DBCC CHECKIDENT ('[{estate.ArcSchema}].[Item]', RESEED, 100000) WITH NO_INFOMSGS;
             INSERT INTO {table} ([item_key], [UpdatedDate_DW])
             SELECT CONCAT(N'late-', FORMAT(n.rn, 'D6')), @loaded
             FROM (SELECT TOP (1000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS rn FROM sys.all_objects AS a CROSS JOIN sys.all_objects AS b) AS n
@@ -131,7 +131,7 @@ public sealed class SqlServerIngestionSourceTests
 
         var plain = await RefusedAsync("PlainId");
         Assert.Contains("which is neither an identity column nor the table's primary key", plain, StringComparison.Ordinal);
-        Assert.Contains($"ALTER TABLE [{estate.DatabaseName}].[{estate.IngSchema}].[PlainId] ADD [RecId] bigint IDENTITY(1, 1) NOT NULL", plain, StringComparison.Ordinal);
+        Assert.Contains($"ALTER TABLE [{estate.DatabaseName}].[{estate.ArcSchema}].[PlainId] ADD [RecId] bigint IDENTITY(1, 1) NOT NULL", plain, StringComparison.Ordinal);
         Assert.Contains("which is not the table's single-column primary key", await RefusedAsync("KeyedByName"), StringComparison.Ordinal);
         Assert.Contains("which is not the table's single-column primary key", await RefusedAsync("Composite"), StringComparison.Ordinal);
         Assert.Contains("has no unique index without a filter", await RefusedAsync("NoUniqueKey"), StringComparison.Ordinal);
@@ -153,7 +153,7 @@ public sealed class SqlServerIngestionSourceTests
             {
                 Record = new FlowSourceTable
                 {
-                    Object = $"[{estate.DatabaseName}].[{estate.IngSchema}].[{table}]",
+                    Object = $"[{estate.DatabaseName}].[{estate.ArcSchema}].[{table}]",
                     Key = ["item_key"],
                     PrimaryKey = "RecId",
                 },
@@ -183,7 +183,7 @@ public sealed class SqlServerIngestionSourceTests
     /// <summary>Creates a table in the fixture's ingestion schema, with the statements that follow it; <c>{0}</c> names the table.</summary>
     private static async Task<string> CreateTableAsync(SqlServerIngestionFixture estate, string name, string columns, string then)
     {
-        var table = $"[{estate.IngSchema}].[{name}]";
+        var table = $"[{estate.ArcSchema}].[{name}]";
         await ExecuteAsync(estate, $"CREATE TABLE {table} ({columns});");
         if (then.Length > 0)
         {

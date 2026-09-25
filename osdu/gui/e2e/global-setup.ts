@@ -54,16 +54,16 @@ export default function globalSetup(): void {
 
   // Every flow of the estate, each without its schedule and with its tables in the sample database. A fire would be a
   // real run against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no
-  // schedule. The ingestion and delivery flows name their tables in OsduSample, while the pre flows write wherever
-  // OSDU_SAMPLE_DB points; unless both name the same database, lineage never links a pre flow to what reads it, and the
+  // schedule. The ingestion and delivery flows name their tables in OsduData, while the pre flows write wherever
+  // OSDU_DATA_DB points; unless both name the same database, lineage never links a pre flow to what reads it, and the
   // waves the chain runs in are wrong. By default that is the suite's one database, beside the catalog and the module's
-  // schema; SQLFLOW_E2E_SAMPLE_DB gives the source data a database of its own, as a real estate does.
-  const sampleDatabase = databaseOf(E2E.sampleDb);
+  // schema; SQLFLOW_E2E_DATA_DB gives the source data a database of its own, as a real estate does.
+  const dataDatabase = databaseOf(E2E.dataDb);
   for (const flow of CHAIN) {
     const shipped = readFileSync(join(samplesDir, folderOf(flow), `${flow}.yaml`), "utf8");
     writeFileSync(
       join(sourceDir, folderOf(flow), `${flow}.yaml`),
-      withoutTheLegalCheck(inSampleDatabase(withoutSchedule(shipped, flow), flow, sampleDatabase)),
+      withoutTheLegalCheck(inDataDatabase(withoutSchedule(shipped, flow), flow, dataDatabase)),
     );
   }
 
@@ -81,7 +81,7 @@ export default function globalSetup(): void {
   // the seed refreshes them for real. The tables live in the sample database, like every other ingestion table of the estate.
   writeFileSync(
     join(sourceDir, "cache", `${LOOKUPS}.yaml`),
-    inSampleDatabase(withoutSchedule(readFileSync(join(samplesDir, "cache", `${LOOKUPS}.yaml`), "utf8"), LOOKUPS), LOOKUPS, sampleDatabase),
+    inDataDatabase(withoutSchedule(readFileSync(join(samplesDir, "cache", `${LOOKUPS}.yaml`), "utf8"), LOOKUPS), LOOKUPS, dataDatabase),
   );
 
   const git = (...args: string[]) =>
@@ -103,7 +103,7 @@ export default function globalSetup(): void {
       repoDir: repoDir.replace(/\\/g, "/"),
       sourceDir: sourceDir.replace(/\\/g, "/"),
       headSha,
-      sampleDb: E2E.sampleDb,
+      dataDb: E2E.dataDb,
       osduDb: E2E.osduDb,
     }, null, 2),
   );
@@ -134,7 +134,7 @@ export interface FixtureMeta {
   sourceDir: string;
   /** The commit the sync has to reach before the seed assertions hold. */
   headSha: string;
-  sampleDb: string;
+  dataDb: string;
   osduDb: string;
 }
 
@@ -233,18 +233,18 @@ ${indent}  validateLegalTags: false`);
 }
 
 /** The database the shipped ingestion and delivery flows name their tables in. */
-const SHIPPED_DATABASE = "OsduSample";
+const SHIPPED_DATABASE = "OsduData";
 
 /**
- * A sample flow whose tables live in the given database rather than the shipped OsduSample: every
- * `object: OsduSample.<schema>.<table>`, and every cache flow's `table: OsduSample.<schema>.<table>`, becomes the
- * bracketed three-part name in that database. Any other mention of OsduSample fails the setup, so a shipped document that
+ * A sample flow whose tables live in the given database rather than the shipped OsduData: every
+ * `object: OsduData.<schema>.<table>`, and every cache flow's `table: OsduData.<schema>.<table>`, becomes the
+ * bracketed three-part name in that database. Any other mention of OsduData fails the setup, so a shipped document that
  * names it somewhere new cannot leave the estate reading a database the suite never loaded.
  */
-function inSampleDatabase(yaml: string, flow: string, database: string): string {
+function inDataDatabase(yaml: string, flow: string, database: string): string {
   const quoted = `[${database.replace(/]/g, "]]")}]`;
   const rewritten = yaml.replace(
-    /^([ \t]*(?:- )?)(object|table):[ \t]*OsduSample\.(\w+)\.(\w+)[ \t]*$/gm,
+    /^([ \t]*(?:- )?)(object|table):[ \t]*OsduData\.(\w+)\.(\w+)[ \t]*$/gm,
     (_match, indent: string, key: string, schema: string, table: string) => `${indent}${key}: "${quoted}.[${schema}].[${table}]"`,
   );
   if (rewritten.includes(`${SHIPPED_DATABASE}.`)) {

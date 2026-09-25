@@ -23,8 +23,8 @@ namespace SqlFlow.Delivery.Tests;
 [Collection(SqlServerSuite.Name)]
 public sealed class DdmsSourceTests : IDisposable
 {
-    private const string TrajectoryTable = "OsduSample.ing.WellboreTrajectory";
-    private const string WellLogTable = "OsduSample.ing.WellLog";
+    private const string TrajectoryTable = "OsduData.arc.WellboreTrajectory";
+    private const string WellLogTable = "OsduData.arc.WellLog";
     private const string Root = "/api/os-wellbore-ddms";
 
     private readonly OsduTestDatabase _db = new();
@@ -54,7 +54,7 @@ public sealed class DdmsSourceTests : IDisposable
             parameters:
               logSource: { required: true }
             source:
-              connection: ${env:OSDU_SAMPLE_DB}
+              connection: ${env:OSDU_DATA_DB}
               lastModified: update_date
               work: '{{root}}/work/{logSource}'
             render:
@@ -80,13 +80,13 @@ public sealed class DdmsSourceTests : IDisposable
               trajectories:
                 record: { object: {{TrajectoryTable}}, key: [source_project, survey_id], primaryKey: RecId }
                 datasets:
-                  stations: { object: OsduSample.ing.WellboreTrajectoryStation, join: { source_project: source_project, survey_id: survey_id }, orderBy: [station_ordinal] }
+                  stations: { object: OsduData.arc.WellboreTrajectoryStation, join: { source_project: source_project, survey_id: survey_id }, orderBy: [station_ordinal] }
                 bulk: { root: '{{root}}/stations', locationColumn: station_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: WellboreTrajectory@1.3.0
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
-                  curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                  curves: { object: OsduData.arc.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: WellLog@1.4.0
             """).ReplaceLineEndings("\n");

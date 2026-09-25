@@ -3,9 +3,9 @@
 # One row per curve mnemonic, as petrodb-api's curve dictionary gives it (src/PetroDb/Api.Core/Mapping/CurveDictionary.json):
 # the OSDU LogCurveType, LogCurveMainFamily and LogCurveFamily each mnemonic is filed under, written as the code the
 # record's id ends with, and the unit quantity and unit of a curve of that type. This flow lands data/curve-dictionary,
-# recall-curvedictionary-02-ing keys it, and recall-lookups-00-cache captures that table, so the mapping classifies a
+# recall-cachecurvedictionary-02-ing keys it, and recall-lookups-00-cache captures that table, so the mapping classifies a
 # curve by its mnemonic exactly as petrodb-api does.
-name: recall-curvedictionary-01-pre
+name: recall-cachecurvedictionary-01-pre
 batch: recall
 
 source:
@@ -17,9 +17,9 @@ source:
     srcFile: "*.csv"
 
 target:
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   schema: pre
-  table: CurveDictionary
+  table: CacheCurveDictionary
 
 schema:
   evolve: widen

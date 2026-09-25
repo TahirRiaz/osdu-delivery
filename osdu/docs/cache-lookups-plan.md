@@ -73,7 +73,7 @@ source:
 types:
   - dictionary: RecallUnits                # dictionaries/RecallUnits.yaml
   - name: CurveClasses
-    table: OsduSample.ing.CurveDictionary  # an ingestion table SQLFlow's flows load
+    table: OsduData.arc.CurveDictionary  # an ingestion table SQLFlow's flows load
     key: mnemonic
     fields: [curve_type, curve_family, curve_main_family, unit]
 ```
@@ -326,7 +326,7 @@ is (`IngestionConnection.CheckDeclared`).
 - Lineage: `CacheLineage` adds `DeclaredDataObject.Reads(connection, table)`, so SQLFlow orders the ingestion flow
   before the cache flow, and the cache flow before the delivery flows that read its types.
 - Samples: a curve dictionary CSV under `samples/wells/data/`, a pre-ingestion and an ingestion flow loading
-  `OsduSample.ing.CurveDictionary`, and the table type in the lookups cache flow.
+  `OsduData.arc.CurveDictionary`, and the table type in the lookups cache flow.
 - Docs: the table origin in `documents.md`, and the lineage order in `architecture.md`.
 
 **Tests.**

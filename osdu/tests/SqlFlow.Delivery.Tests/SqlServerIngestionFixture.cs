@@ -25,11 +25,11 @@ namespace SqlFlow.Delivery.Tests;
 /// generated with the test database's name and with schemas of this fixture's own, plus the host composition that runs
 /// them (docs/stage4-design.md section 6). What executes is the shipped estate, rewritten only where it names a database,
 /// a schema, a connection reference or a network target, so a chain run here is the chain an operator would run.
-/// <para>Every fixture instance owns a unique pair of schemas (<c>pre_&lt;n&gt;</c> and <c>ing_&lt;n&gt;</c>), a unique flow
+/// <para>Every fixture instance owns a unique pair of schemas (<c>pre_&lt;n&gt;</c> and <c>arc_&lt;n&gt;</c>), a unique flow
 /// name prefix and therefore unique ledger rows, and a unique environment variable holding the connection. Suites and
 /// classes running beside each other never meet, and everything the fixture created is dropped when it is disposed.</para>
 /// <para>The tables themselves are created by SQLFlow's own flows rather than by the fixture: the pre flow creates
-/// <c>pre_&lt;n&gt;.WellLog</c> and its typed view, the ingestion flow creates the keyed <c>ing_&lt;n&gt;.WellLog</c> with
+/// <c>pre_&lt;n&gt;.WellLog</c> and its typed view, the ingestion flow creates the keyed <c>arc_&lt;n&gt;.WellLog</c> with
 /// the system columns the delivery reads. The fixture creates only what the engine does not, which is the schemas.</para>
 /// </summary>
 public sealed class SqlServerIngestionFixture : IAsyncDisposable
@@ -79,7 +79,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         """.ReplaceLineEndings("\n");
 
     /// <summary>The database the shipped documents name their ingestion tables in, which every generated one replaces.</summary>
-    private const string SampleDatabase = "OsduSample.";
+    private const string DataDatabase = "OsduData.";
 
     private readonly OsduTestDatabase _database;
 
@@ -118,7 +118,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     public string PreSchema => "pre_" + Suffix;
 
     /// <summary>The schema the ingestion flows keep their keyed tables in, which the OSDU flow reads.</summary>
-    public string IngSchema => "ing_" + Suffix;
+    public string ArcSchema => "arc_" + Suffix;
 
     /// <summary>The environment variable the generated flows reference; a flow document never holds a connection string.</summary>
     public string ConnectionVariable => "SQLFLOW_CHAIN_DB_" + Suffix;
@@ -133,7 +133,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     public Guid FlowId => Identity.FlowId.Of(DeliveryFlowName);
 
     /// <summary>The record table the OSDU flow reads, as its document names it.</summary>
-    public string RecordObject => $"[{DatabaseName}].[{IngSchema}].[WellLog]";
+    public string RecordObject => $"[{DatabaseName}].[{ArcSchema}].[WellLog]";
 
     /// <summary>The target the fake protocol stands in for; every delivery the chain makes is recorded on it.</summary>
     public FakeProtocol Protocol { get; }
@@ -202,7 +202,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         ServiceProvider? provider = null;
         try
         {
-            await CreateSchemasAsync(connectionString, "pre_" + suffix, "ing_" + suffix, ct).ConfigureAwait(false);
+            await CreateSchemasAsync(connectionString, "pre_" + suffix, "arc_" + suffix, ct).ConfigureAwait(false);
             GenerateEstate(root, databaseName, suffix, variable, fanOut, batchRecords, wellboreChain);
             provider = Compose(connectionString, protocol);
             await ImportRenderInputsAsync(connectionString, ct).ConfigureAwait(false);
@@ -216,7 +216,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             }
 
             Environment.SetEnvironmentVariable(variable, null);
-            await DropSchemasAsync(connectionString, "pre_" + suffix, "ing_" + suffix, CancellationToken.None).ConfigureAwait(false);
+            await DropSchemasAsync(connectionString, "pre_" + suffix, "arc_" + suffix, CancellationToken.None).ConfigureAwait(false);
             Delete(root);
             database.Dispose();
             throw;
@@ -348,7 +348,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var command = connection.CreateCommand();
         command.CommandText =
-            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{IngSchema}].[{table}] WHERE [source_project] = @project AND [log_id] = @log;";
+            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{ArcSchema}].[{table}] WHERE [source_project] = @project AND [log_id] = @log;";
         command.Parameters.AddWithValue("@project", sourceProject);
         command.Parameters.AddWithValue("@log", logId);
         var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
@@ -364,7 +364,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     {
         await _provider.DisposeAsync().ConfigureAwait(false);
         await ClearLedgerAsync().ConfigureAwait(false);
-        await DropSchemasAsync(ConnectionString, PreSchema, IngSchema, CancellationToken.None).ConfigureAwait(false);
+        await DropSchemasAsync(ConnectionString, PreSchema, ArcSchema, CancellationToken.None).ConfigureAwait(false);
         Environment.SetEnvironmentVariable(ConnectionVariable, null);
         Delete(Root);
         _database.Dispose();
@@ -470,7 +470,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         await Samples.ImportSampleCacheAsync(new OsduCacheStore(Contexts)).ConfigureAwait(false);
     }
 
-    private static async Task CreateSchemasAsync(string connectionString, string preSchema, string ingSchema, CancellationToken ct)
+    private static async Task CreateSchemasAsync(string connectionString, string preSchema, string arcSchema, CancellationToken ct)
     {
         // SQLFlow's flows create a schema they find missing, but two first runs can both find it missing, and the second
         // CREATE then fails. [raw], where ingestion stages its rows, is shared by every fixture on the database, so the
@@ -486,7 +486,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             EXEC @granted = sys.sp_getapplock @Resource = N'SqlFlow.Delivery.Tests.schemas', @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 20000;
             IF @granted < 0 THROW 50000, N'The chain fixture waited 20 seconds for another fixture to finish creating its schemas.', 1;
             IF SCHEMA_ID('{preSchema}') IS NULL EXEC(N'CREATE SCHEMA [{preSchema}]');
-            IF SCHEMA_ID('{ingSchema}') IS NULL EXEC(N'CREATE SCHEMA [{ingSchema}]');
+            IF SCHEMA_ID('{arcSchema}') IS NULL EXEC(N'CREATE SCHEMA [{arcSchema}]');
             IF SCHEMA_ID('raw') IS NULL EXEC(N'CREATE SCHEMA [raw]');
             COMMIT TRANSACTION;
             """,
@@ -497,7 +497,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// Drops the views, then the tables, then the schemas themselves. The order matters: a typed view is bound to the table
     /// it projects, and a schema cannot be dropped while it holds anything.
     /// </summary>
-    private static async Task DropSchemasAsync(string connectionString, string preSchema, string ingSchema, CancellationToken ct)
+    private static async Task DropSchemasAsync(string connectionString, string preSchema, string arcSchema, CancellationToken ct)
     {
         try
         {
@@ -508,13 +508,13 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
                 DECLARE @sql nvarchar(max) = N'';
                 SELECT @sql = @sql + N'DROP VIEW [' + s.[name] + N'].[' + v.[name] + N'];'
                 FROM sys.views v INNER JOIN sys.schemas s ON s.[schema_id] = v.[schema_id]
-                WHERE s.[name] IN (N'{preSchema}', N'{ingSchema}');
+                WHERE s.[name] IN (N'{preSchema}', N'{arcSchema}');
                 SELECT @sql = @sql + N'DROP TABLE [' + s.[name] + N'].[' + t.[name] + N'];'
                 FROM sys.tables t INNER JOIN sys.schemas s ON s.[schema_id] = t.[schema_id]
-                WHERE s.[name] IN (N'{preSchema}', N'{ingSchema}');
+                WHERE s.[name] IN (N'{preSchema}', N'{arcSchema}');
                 IF @sql <> N'' EXEC sp_executesql @sql;
                 IF SCHEMA_ID('{preSchema}') IS NOT NULL EXEC(N'DROP SCHEMA [{preSchema}]');
-                IF SCHEMA_ID('{ingSchema}') IS NOT NULL EXEC(N'DROP SCHEMA [{ingSchema}]');
+                IF SCHEMA_ID('{arcSchema}') IS NOT NULL EXEC(N'DROP SCHEMA [{arcSchema}]');
                 """,
                 ct).ConfigureAwait(false);
         }
@@ -523,7 +523,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             // The database is a disposable one, and a schema left behind must not turn a passing chain into a failing
             // suite; it is reported so the leftover is visible rather than silent.
             throw new InvalidOperationException(
-                $"The chain fixture could not drop its schemas [{preSchema}] and [{ingSchema}] from the test database; drop them by hand. {ex.Message}", ex);
+                $"The chain fixture could not drop its schemas [{preSchema}] and [{arcSchema}] from the test database; drop them by hand. {ex.Message}", ex);
         }
     }
 
@@ -574,7 +574,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     private static string Generate(string shipped, string name, string databaseName, string suffix, string variable, int fanOut, int batchRecords)
     {
-        var text = Rename(Replace(shipped.ReplaceLineEndings("\n"), "${env:OSDU_SAMPLE_DB}", "${env:" + variable + "}", name), suffix);
+        var text = Rename(Replace(shipped.ReplaceLineEndings("\n"), "${env:OSDU_DATA_DB}", "${env:" + variable + "}", name), suffix);
         text = QualifyObjectNames(text, name, databaseName, suffix);
 
         if (name.EndsWith("-pre", StringComparison.Ordinal))
@@ -631,12 +631,12 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             }
 
             var value = line[(at + Key.Length)..].Trim();
-            if (!value.StartsWith(SampleDatabase, StringComparison.Ordinal))
+            if (!value.StartsWith(DataDatabase, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            var qualified = value[SampleDatabase.Length..];
+            var qualified = value[DataDatabase.Length..];
             var dot = qualified.IndexOf('.', StringComparison.Ordinal);
             if (dot <= 0 || dot == qualified.Length - 1)
             {
@@ -648,19 +648,19 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             var schema = layer switch
             {
                 "pre" => "pre_" + suffix,
-                "ing" => "ing_" + suffix,
+                "arc" => "arc_" + suffix,
                 _ => throw new InvalidOperationException(
-                    $"The sample flow '{document}.yaml' names the schema '{layer}', which the chain fixture has no schema of its own for; it creates only a pre and an ing schema."),
+                    $"The sample flow '{document}.yaml' names the schema '{layer}', which the chain fixture has no schema of its own for; it creates only a pre and an arc schema."),
             };
 
             lines[i] = $"{line[..at]}{Key} \"[{databaseName}].[{schema}].[{qualified[(dot + 1)..]}]\"";
         }
 
         var rewritten = string.Join('\n', lines);
-        if (rewritten.Contains(SampleDatabase, StringComparison.Ordinal))
+        if (rewritten.Contains(DataDatabase, StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                $"The sample flow '{document}.yaml' still names {SampleDatabase.TrimEnd('.')} somewhere the chain fixture does not rewrite, so the generated estate would read the repository's own tables. Rewrite that value too.");
+                $"The sample flow '{document}.yaml' still names {DataDatabase.TrimEnd('.')} somewhere the chain fixture does not rewrite, so the generated estate would read the repository's own tables. Rewrite that value too.");
         }
 
         return rewritten;

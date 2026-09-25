@@ -164,7 +164,7 @@ public class EtpDocumentsTests
         flowType: delivery
         name: grids
         source:
-          connection: ${env:OSDU_SAMPLE_DB}
+          connection: ${env:OSDU_DATA_DB}
           record: { object: Db.ing.Grid, key: [grid_id] }
           work: work
         render:
@@ -181,7 +181,7 @@ public class EtpDocumentsTests
         flowType: delivery
         name: estate
         source:
-          connection: ${env:OSDU_SAMPLE_DB}
+          connection: ${env:OSDU_DATA_DB}
           work: work
         target:
           endpoint: https://osdu.example.com

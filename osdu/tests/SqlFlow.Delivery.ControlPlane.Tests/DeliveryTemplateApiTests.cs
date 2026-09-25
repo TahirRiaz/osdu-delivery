@@ -43,7 +43,7 @@ public sealed class DeliveryTemplateApiTests
     private const string ReferenceVersion = "20260908T212727Z";
 
     /// <summary>The source connection of the seeded flow, as a flow declares one: a reference, never a connection string.</summary>
-    private const string SourceConnectionReference = "${env:OSDU_SAMPLE_DB}";
+    private const string SourceConnectionReference = "${env:OSDU_DATA_DB}";
 
     /// <summary>A reference nothing sets, so the builder's repository listing cannot resolve it.</summary>
     private const string UnsetReference = "${env:ODTEST_BUILDER_UNSET_LEGAL_TAG}";
@@ -625,7 +625,7 @@ public sealed class DeliveryTemplateApiTests
                 source:
                   connection: {SourceConnectionReference}
                   record:
-                    object: OsduSample.ing.WellLog
+                    object: OsduData.arc.WellLog
                     key: [source_project, log_id]
                   lastModified: update_date
                   work: ../.work/{flowName}
@@ -693,7 +693,7 @@ public sealed class DeliveryTemplateApiTests
                 Scope = scope,
                 Origin = "table",
                 Connection = SourceConnectionReference,
-                SourceObject = "OsduSample.ing." + lookup.Name,
+                SourceObject = "OsduData.arc." + lookup.Name,
                 KeyField = lookup.Key,
                 DictionaryPath = null,
                 RelativePath = "cache/" + cacheFlowName + "-lookups.yaml",

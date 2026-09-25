@@ -86,9 +86,9 @@ public sealed class MemoryEstate : IIngestionSourceFactory
 [Collection(SqlServerSuite.Name)]
 public sealed class SourceRuntimeTests : IDisposable
 {
-    private const string WellboreTable = "OsduSample.ing.Wellbore";
-    private const string ArchiveTable = "OsduSample.ing.WellboreArchive";
-    private const string WellLogTable = "OsduSample.ing.WellLog";
+    private const string WellboreTable = "OsduData.arc.Wellbore";
+    private const string ArchiveTable = "OsduData.arc.WellboreArchive";
+    private const string WellLogTable = "OsduData.arc.WellLog";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -126,7 +126,7 @@ public sealed class SourceRuntimeTests : IDisposable
                 archive:
                   record: { object: {{ArchiveTable}}, key: [facility_name], primaryKey: RecId }
                   datasets:
-                    aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
+                    aliases: { object: OsduData.arc.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
                   mapping: {{archiveMapping}}
               """
             : string.Empty;
@@ -136,7 +136,7 @@ public sealed class SourceRuntimeTests : IDisposable
             parameters:
               logSource: { required: true }
             source:
-              connection: ${env:OSDU_SAMPLE_DB}
+              connection: ${env:OSDU_DATA_DB}
               lastModified: update_date
               work: '{{root}}/work/{logSource}'
             render:
@@ -161,13 +161,13 @@ public sealed class SourceRuntimeTests : IDisposable
               wellbores:
                 record: { object: {{WellboreTable}}, key: [facility_name], primaryKey: RecId }
                 datasets:
-                  aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
+                  aliases: { object: OsduData.arc.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
                 mapping: {{wellboreMapping}}
                 {{wellbores}}
               welllogs:
                 record: { object: {{WellLogTable}}, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
                 datasets:
-                  curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+                  curves: { object: OsduData.arc.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
                 bulk: { root: '{{root}}/curves', locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
                 mapping: {{welllogMapping}}
                 {{(welllogsAfter ? "after: [wellbores]" : string.Empty)}}
@@ -322,7 +322,7 @@ public sealed class SourceRuntimeTests : IDisposable
     {
         var source = Load(SourceYaml(welllogMapping: "WellLog@9.9.9"));
         var estate = await EstateAsync();
-        estate[WellboreTable].ShapeProblem = "the table OsduSample.ing.Wellbore, declared under interfaces.wellbores.record.object, was not found";
+        estate[WellboreTable].ShapeProblem = "the table OsduData.arc.Wellbore, declared under interfaces.wellbores.record.object, was not found";
         _protocols["wellbores"].Reachable = false;
         var engine = Engine(estate);
 
@@ -333,7 +333,7 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.Contains("The preflight of 'wells' found 3 problem(s), so nothing was planned or sent", result.Error, StringComparison.Ordinal);
         Assert.Contains("interface 'welllogs':", result.Error, StringComparison.Ordinal);
         Assert.Contains("WellLog@9.9.9", result.Error, StringComparison.Ordinal);
-        Assert.Contains("interface 'wellbores': Flow 'wells/wellbores': the table OsduSample.ing.Wellbore", result.Error, StringComparison.Ordinal);
+        Assert.Contains("interface 'wellbores': Flow 'wells/wellbores': the table OsduData.arc.Wellbore", result.Error, StringComparison.Ordinal);
         Assert.Contains("interface 'wellbores': the storage route's service is failing (HTTP 503) at /about", result.Error, StringComparison.Ordinal);
         Assert.Empty(_protocols["wellbores"].Deliveries);
         Assert.Empty(_protocols["welllogs"].Deliveries);

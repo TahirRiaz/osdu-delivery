@@ -438,9 +438,9 @@ public class WellboreDdmsRootTests
         parameters:
           logSource: { required: true }
         source:
-          connection: ${env:OSDU_SAMPLE_DB}
+          connection: ${env:OSDU_DATA_DB}
           record:
-            object: OsduSample.ing.WellLog
+            object: OsduData.arc.WellLog
             key: [log_id]
             scope: { log_source: logSource }
           payloads:
@@ -566,9 +566,9 @@ public class LegalTagCheckTests
         parameters:
           logSource: { required: true }
         source:
-          connection: ${env:OSDU_SAMPLE_DB}
+          connection: ${env:OSDU_DATA_DB}
           record:
-            object: OsduSample.ing.WellLog
+            object: OsduData.arc.WellLog
             key: [log_id]
             scope: { log_source: logSource }
           work: work/{logSource}
@@ -607,9 +607,9 @@ public class SkipDuplicatesOptionTests
         parameters:
           logSource: { required: true }
         source:
-          connection: ${env:OSDU_SAMPLE_DB}
+          connection: ${env:OSDU_DATA_DB}
           record:
-            object: OsduSample.ing.WellLog
+            object: OsduData.arc.WellLog
             key: [log_id]
             scope: { log_source: logSource }
           work: work/{logSource}

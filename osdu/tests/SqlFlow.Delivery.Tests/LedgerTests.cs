@@ -44,8 +44,8 @@ public class SqlLedgerTests : IDisposable
         FlowName = "test-flow",
         MappingReference = "Thing@1.0.0",
         RenderContext = "{}",
-        SourceConnection = "${env:OSDU_SAMPLE_DB}",
-        SourceObject = "OsduSample.ing.WellLog",
+        SourceConnection = "${env:OSDU_DATA_DB}",
+        SourceObject = "OsduData.arc.WellLog",
         RecordCount = 1,
     };
 

@@ -2,19 +2,19 @@
 #
 # One row per spelling, captured whole by recall-lookups-00-cache into the partition's cache as RecallDepthUnits.
 flowType: ing
-name: recall-units-02-depth-ing
+name: recall-cacheunits-02-depth-ing
 batch: recall
 
 connections:
-  sample: ${env:OSDU_SAMPLE_DB}
+  sample: ${env:OSDU_DATA_DB}
 
 source:
   server: sample
-  object: OsduSample.pre.v_RecallDepthUnits
+  object: OsduData.pre.v_CacheRecallDepthUnits
 
 target:
   server: sample
-  object: OsduSample.ing.RecallDepthUnits
+  object: OsduData.arc.CacheRecallDepthUnits
   identityColumn: RecId
 
 load:

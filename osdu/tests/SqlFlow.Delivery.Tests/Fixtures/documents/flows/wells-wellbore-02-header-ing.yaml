@@ -4,15 +4,15 @@ name: wells-wellbore-02-header-ing
 batch: wells
 
 connections:
-  sample: ${env:OSDU_SAMPLE_DB}
+  sample: ${env:OSDU_DATA_DB}
 
 source:
   server: sample
-  object: OsduSample.pre.v_Wellbore
+  object: OsduData.pre.v_Wellbore
 
 target:
   server: sample
-  object: OsduSample.ing.Wellbore
+  object: OsduData.arc.Wellbore
   # The identity primary key every ingestion table carries: the clustered key the other indexes point at, and the
   # column the OSDU flow pages and fans out by (source.record.primaryKey).
   identityColumn: RecId

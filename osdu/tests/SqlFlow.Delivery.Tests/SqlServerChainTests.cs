@@ -73,8 +73,8 @@ public class SqlServerChainTests
         Assert.Equal(estate.DeliveryFlowName, order.Single(m => m.Wave == 2).FlowName);
 
         // What the ingestion flows left is what the delivery reads: one row per logging run, one per curve.
-        Assert.Equal(5, await estate.CountAsync(estate.IngSchema, "WellLog"));
-        Assert.Equal(logs.Sum(l => l.Curves.Count), await estate.CountAsync(estate.IngSchema, "WellLogCurve"));
+        Assert.Equal(5, await estate.CountAsync(estate.ArcSchema, "WellLog"));
+        Assert.Equal(logs.Sum(l => l.Curves.Count), await estate.CountAsync(estate.ArcSchema, "WellLogCurve"));
 
         // The first plan over the loaded tables, with nothing delivered yet: every record is new, so every entry creates.
         // Rendered from the real tables, each document is the one the mapping's own fixture pins, which is what holds the
@@ -238,7 +238,7 @@ public class SqlServerChainTests
         await estate.DeliverAsync();
 
         Assert.Empty(estate.Protocol.Deliveries);
-        Assert.Equal(5, await estate.CountAsync(estate.IngSchema, "WellLog"));
+        Assert.Equal(5, await estate.CountAsync(estate.ArcSchema, "WellLog"));
         Assert.Equal(updatedBefore, await estate.ValueAsync("WellLog", "UpdatedDate_DW", logs[0].SourceProject, logs[0].LogId));
         Assert.Equal(LogFile, await estate.ValueAsync("WellLog", "FileName_DW", logs[0].SourceProject, logs[0].LogId));
         var record = await estate.Ledger.GetRecordAsync(estate.FlowId, logs[0].Key);
@@ -291,7 +291,7 @@ public class SqlServerChainTests
         await estate.WriteRowsAsync("welllog", LogFile, SampleWellLogs.LogColumns, GeneratedLogs(template, Records));
         await estate.WriteRowsAsync("curves-meta", CurveFile, SampleWellLogs.CurveColumns, GeneratedCurves(template, Records));
         await estate.RunIngestionChainAsync();
-        Assert.Equal(Records, await estate.CountAsync(estate.IngSchema, "WellLog"));
+        Assert.Equal(Records, await estate.CountAsync(estate.ArcSchema, "WellLog"));
 
         // The fan-out needs a dispatcher and a run to belong to; the members run inline here, each on a runtime of its
         // own over the same engine, which is what another node would do with the slices it was dealt.
@@ -351,7 +351,7 @@ public class SqlServerChainTests
         await estate.WriteRowsAsync("welllog", LogFile, SampleWellLogs.LogColumns, GeneratedLogs(template, Records));
         await estate.WriteRowsAsync("curves-meta", CurveFile, SampleWellLogs.CurveColumns, GeneratedCurves(template, Records));
         await estate.RunIngestionChainAsync();
-        Assert.Equal(Records, await estate.CountAsync(estate.IngSchema, "WellLog"));
+        Assert.Equal(Records, await estate.CountAsync(estate.ArcSchema, "WellLog"));
 
         // The shipped flow delivers WellLog 1.4.0 to the sample partition; the second pipeline renders the same rows with
         // the same mapping entries as WellLog 1.5.0, into a partition of its own.
@@ -531,9 +531,9 @@ public class SqlServerChainTests
         await estate.WriteWellboreFilesAsync(GeneratedWellbores(Wellbores), GeneratedAliases(Wellbores));
         await estate.RunWellboreChainAsync();
         await estate.RunIngestionChainAsync();
-        Assert.Equal(Wellbores, await estate.CountAsync(estate.IngSchema, "Wellbore"));
-        Assert.Equal(2 * Wellbores, await estate.CountAsync(estate.IngSchema, "WellboreAlias"));
-        Assert.Equal(Logs, await estate.CountAsync(estate.IngSchema, "WellLog"));
+        Assert.Equal(Wellbores, await estate.CountAsync(estate.ArcSchema, "Wellbore"));
+        Assert.Equal(2 * Wellbores, await estate.CountAsync(estate.ArcSchema, "WellboreAlias"));
+        Assert.Equal(Logs, await estate.CountAsync(estate.ArcSchema, "WellLog"));
 
         var name = estate.FlowPrefix + "-source";
         var file = Path.Combine(estate.FlowsDirectory, name + ".yaml");
@@ -641,7 +641,7 @@ public class SqlServerChainTests
     /// </summary>
     private static string SourceDocument(SqlServerIngestionFixture estate, string name, int nodes)
     {
-        string Table(string table) => $"\"[{estate.DatabaseName}].[{estate.IngSchema}].[{table}]\"";
+        string Table(string table) => $"\"[{estate.DatabaseName}].[{estate.ArcSchema}].[{table}]\"";
         return $$"""
             flowType: delivery
             name: {{name}}
@@ -822,10 +822,10 @@ public class SqlServerChainTests
             var flow = new DeliveryDocumentLoader().LoadFlow(Path.Combine(root, "flows", "rw" + Suffix + ".yaml"));
             var record = SourceObjectName.Parse(flow.Source.Record.Object);
             Assert.Equal(Database, record.Database);
-            Assert.Equal("ing_" + Suffix, record.Schema);
+            Assert.Equal("arc_" + Suffix, record.Schema);
             Assert.Equal("WellLog", record.Name);
             var curves = SourceObjectName.Parse(flow.Source.Datasets["curves"].Object);
-            Assert.Equal("ing_" + Suffix, curves.Schema);
+            Assert.Equal("arc_" + Suffix, curves.Schema);
             Assert.Equal("WellLogCurve", curves.Name);
         }
         finally
@@ -998,7 +998,7 @@ public class SqlServerChainTests
         await connection.OpenAsync();
         await using var command = connection.CreateCommand();
         command.CommandText =
-            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{estate.IngSchema}].[WellLogCurve] WHERE [source_project] = @p AND [log_id] = @l AND [curve_id] = @c;";
+            $"SET QUOTED_IDENTIFIER ON; SELECT [{column}] FROM [{estate.ArcSchema}].[WellLogCurve] WHERE [source_project] = @p AND [log_id] = @l AND [curve_id] = @c;";
         AddParameter(command, "@p", project);
         AddParameter(command, "@l", logId);
         AddParameter(command, "@c", curveId);

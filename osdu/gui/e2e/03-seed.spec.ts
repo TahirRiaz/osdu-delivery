@@ -63,10 +63,10 @@ function sampleSql(connectionString: string, query: string, what: string, onMast
 /**
  * Creates the sample database when it is not there yet. By default it is the estate's one database, which the control
  * plane has created by the time the seed runs, and this does nothing. A sample database of its own
- * (SQLFLOW_E2E_SAMPLE_DB) holds only the chain's source and ingestion tables, so nothing else provisions it: the control
+ * (SQLFLOW_E2E_DATA_DB) holds only the chain's source and ingestion tables, so nothing else provisions it: the control
  * plane creates its catalog and the module's database, and a pre flow creates schemas and tables but never a database.
  */
-function ensureSampleDatabase(connectionString: string): void {
+function ensureDataDatabase(connectionString: string): void {
   const database = connectionValue(connectionParts(connectionString), "database", "initial catalog");
   if (!database) {
     throw new Error("The e2e sample database connection string names no database, so the suite cannot create it.");
@@ -197,9 +197,9 @@ test.describe.serial("seed the estate via repo source sync", () => {
   test("load the sample ingestion tables by running the chain", () => {
     test.setTimeout(900_000);
     const meta = fixtureMeta();
-    ensureSampleDatabase(meta.sampleDb);
-    allowSnapshotIsolation(meta.sampleDb);
-    replaceTablesWithoutIdentityKey(meta.sampleDb);
+    ensureDataDatabase(meta.dataDb);
+    allowSnapshotIsolation(meta.dataDb);
+    replaceTablesWithoutIdentityKey(meta.dataDb);
     for (const flow of LOADING_FLOWS) {
       const output = execFileSync(
         "dotnet",
@@ -214,7 +214,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
           env: {
             ...process.env,
             ...E2E.osdu,
-            OSDU_SAMPLE_DB: meta.sampleDb,
+            OSDU_DATA_DB: meta.dataDb,
             SQLFLOW_OSDU_DB: meta.osduDb,
             SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
           },
@@ -243,7 +243,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
         env: {
           ...process.env,
           ...E2E.osdu,
-          OSDU_SAMPLE_DB: meta.sampleDb,
+          OSDU_DATA_DB: meta.dataDb,
           SQLFLOW_OSDU_DB: meta.osduDb,
           SQLFLOW_E2E_CATALOG_CONNECTION: E2E.catalogDb,
         },

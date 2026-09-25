@@ -2,8 +2,8 @@
 #
 # Each row maps one spelling Recall writes a depth or an elevation unit in to the code of the partition's UnitOfMeasure
 # record, as petrodb-api's DepthUnit and VerticalMeasurementUnitOfMeasureID valueMaps map it. This flow lands
-# data/depth-units, recall-units-02-depth-ing keys it, and recall-lookups-00-cache holds that table.
-name: recall-units-01-depth-pre
+# data/depth-units, recall-cacheunits-02-depth-ing keys it, and recall-lookups-00-cache holds that table.
+name: recall-cacheunits-01-depth-pre
 batch: recall
 
 source:
@@ -15,9 +15,9 @@ source:
     srcFile: "*.csv"
 
 target:
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   schema: pre
-  table: RecallDepthUnits
+  table: CacheRecallDepthUnits
 
 schema:
   evolve: widen

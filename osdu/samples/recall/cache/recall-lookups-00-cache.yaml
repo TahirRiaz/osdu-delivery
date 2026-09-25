@@ -7,8 +7,8 @@
 #
 # The tables are the translations petrodb-api applies when it turns a Recall well log into an OSDU record, held as data
 # instead of code: its unit maps and its curve dictionary. Their files sit in data/, and beside this flow the pre and ing
-# flows land and key each file into an ingestion table (recall-units-01/02-curve, recall-units-01/02-depth,
-# recall-curvedictionary-01/02). This flow captures those tables, so lineage runs it after them in the recall-cache
+# flows land and key each file into an ingestion table (recall-cacheunits-01/02-curve, recall-cacheunits-01/02-depth,
+# recall-cachecurvedictionary-01/02). This flow captures those tables, so lineage runs it after them in the recall-cache
 # schedule. Nothing here reaches the platform, so the flow needs no endpoint or credentials; the partition is still
 # named, because it says whose cache the tables belong to.
 flowType: cache
@@ -17,22 +17,25 @@ batch: recall
 
 source:
   # The ingestion database the table types are read from, resolved on the node that runs the flow.
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   headers:
     data-partition-id: ${env:OSDU_DATA_PARTITION}
 
 types:
   # The spellings a curve's unit is written in, as the partition's UnitOfMeasure codes (petrodb-api's CurveUnit map).
-  - table: OsduSample.ing.RecallUnits
+  - table: OsduData.arc.CacheRecallUnits
+    name: RecallUnits
     key: source_unit
     fields: [osdu_unit]
   # The spellings a depth's unit is written in (petrodb-api's DepthUnit and VerticalMeasurementUnitOfMeasureID map).
-  - table: OsduSample.ing.RecallDepthUnits
+  - table: OsduData.arc.CacheRecallDepthUnits
+    name: RecallDepthUnits
     key: source_unit
     fields: [osdu_unit]
   # What each curve mnemonic is: the codes of the LogCurveType, LogCurveMainFamily and LogCurveFamily records it is filed
   # under, and its unit quantity and unit (petrodb-api's curve dictionary).
-  - table: OsduSample.ing.CurveDictionary
+  - table: OsduData.arc.CacheCurveDictionary
+    name: CurveDictionary
     key: mnemonic
     fields: [log_curve_type_id, log_curve_main_family_id, log_curve_family_id, unit_quantity_id, unit]
 

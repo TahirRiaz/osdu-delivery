@@ -13,16 +13,16 @@ parameters:                        # optional; {name} tokens usable in source.wo
   logSource: { required: true, default: null, description: ... }
 
 source:
-  connection: ${env:OSDU_SAMPLE_DB}  # the ingestion database, resolved on the node; never a literal secret
+  connection: ${env:OSDU_DATA_DB}  # the ingestion database, resolved on the node; never a literal secret
   record:
-    object: OsduSample.ing.WellLog   # three-part name of the record ingestion table
+    object: OsduData.arc.WellLog   # three-part name of the record ingestion table
     key: [source_project, log_id]    # the ing flow's load.keyColumns; must equal the mapping's dataset.key columns
     primaryKey: RecId                # the table's identity primary key (the ing flow's target.identityColumn); required with fanOut
     scope:                           # optional: column -> parameter, each a typed [column] = @p predicate
       log_name: logSource
   datasets:                          # optional child ingestion tables the mapping repeats
     curves:
-      object: OsduSample.ing.WellLogCurve
+      object: OsduData.arc.WellLogCurve
       join: { source_project: source_project, log_id: log_id }   # childColumn: recordColumn, covering every key column
       orderBy: [curve_ordinal]       # child row order within a record
       maxRowsPerRecord: 100000       # a record with more child rows than this is held
@@ -711,7 +711,7 @@ parameters:
 schedule: { cron: "0 * * * *", values: { logSource: STAT_COMP } }
 
 source:                               # shared by every interface
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   lastModified: update_date
   work: ../.work/wells/{logSource}
 render:
@@ -731,15 +731,15 @@ failWhen: { failedPercent: 20 }       # every interface's stop rules, unless it 
 interfaces:
   wellbores:
     ledger: wells-wellbore-03-header-delivery           # keep the ledger of the flow this interface replaces
-    record: { object: OsduSample.ing.Wellbore, key: [facility_name], primaryKey: RecId }
+    record: { object: OsduData.arc.Wellbore, key: [facility_name], primaryKey: RecId }
     datasets:
-      aliases: { object: OsduSample.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
+      aliases: { object: OsduData.arc.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
     mapping: Wellbore@1.0.0
   welllogs:
     ledger: wells-welllog-03-header-delivery
-    record: { object: OsduSample.ing.WellLog, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
+    record: { object: OsduData.arc.WellLog, key: [source_project, log_id], primaryKey: RecId, scope: { log_source: logSource } }
     datasets:
-      curves: { object: OsduSample.ing.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
+      curves: { object: OsduData.arc.WellLogCurve, join: { source_project: source_project, log_id: log_id }, orderBy: [curve_ordinal] }
     bulk: { root: ../data/curves, locationColumn: curve_folder, pattern: "chunk_*.parquet", hashColumn: payload_hash, chunkCountColumn: chunk_count }
     protocolOptions: { sessionThresholdChunks: 1 }
     mapping: WellLog@1.4.0          # fills osdu.data.WellboreID, so it waits for wellbores without an after:
@@ -1229,7 +1229,7 @@ type. Editing the file changes nothing until the cache flow runs; that refresh w
 records a changed entry reaches are tagged and delivered again ([Cache flow](#cache-flow)). A table another system
 keeps, or one too large to review as a document, is better held as an ingestion table: the sample estate keeps
 petrodb-api's unit maps and curve dictionary as CSV files in `samples/wells/cache/data/`, which the pre and ing flows
-beside them in `samples/wells/cache/` load into `OsduSample.ing.RecallUnits`, `RecallDepthUnits` and `CurveDictionary`,
+beside them in `samples/wells/cache/` load into `OsduData.arc.RecallUnits`, `RecallDepthUnits` and `CurveDictionary`,
 and `samples/wells/cache/wells-lookups-00-cache.yaml` captures those tables. The data is static, so it and the flows that
 load it sit in the cache folder rather than among the flows of the source's data.
 

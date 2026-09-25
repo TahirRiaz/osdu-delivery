@@ -123,7 +123,7 @@ public class ReferenceCheckTests : IDisposable
         flowType: delivery
         name: references
         source:
-          connection: ${env:OSDU_SAMPLE_DB}
+          connection: ${env:OSDU_DATA_DB}
           record: { object: Db.ing.WellLog, key: [uwi] }
           work: work
         render:

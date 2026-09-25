@@ -760,7 +760,7 @@ public class DeliverRunScopeTests
 /// <summary>What a deliver run reports: its own work, and the submission it worked on alongside.</summary>
 public class DeliverOutcomeTests
 {
-    private const string Source = "OsduSample.ing.WellLog";
+    private const string Source = "OsduData.arc.WellLog";
 
     private static SubmissionState Submission(long planned, long delivered) => new()
     {
@@ -770,7 +770,7 @@ public class DeliverOutcomeTests
         MappingReference = "WellLog@1.4.0",
         RenderContext = "{}",
         SourceObject = Source,
-        SourceConnection = "${env:OSDU_SAMPLE_DB}",
+        SourceConnection = "${env:OSDU_DATA_DB}",
         Status = SubmissionStatus.Completed,
         Planned = planned,
         Delivered = delivered,

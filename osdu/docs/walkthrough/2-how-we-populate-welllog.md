@@ -7,7 +7,7 @@ Everything below is taken from the sample estate:
 
 | Input | File | What it decides |
 | --- | --- | --- |
-| The ingestion tables | `OsduSample.ing.WellLog` and `OsduSample.ing.WellLogCurve`, loaded by `wells-welllog-01-header-pre` and `wells-welllog-02-header-ing` from `samples/wells/data` | The values: one row per log, one row per curve. |
+| The ingestion tables | `OsduData.arc.WellLog` and `OsduData.arc.WellLogCurve`, loaded by `wells-welllog-01-header-pre` and `wells-welllog-02-header-ing` from `samples/wells/data` | The values: one row per log, one row per curve. |
 | The mapping | `samples/wells/mappings/WellLog@1.4.0.yaml` | Which template variable each entry fills, and where its value comes from: a source column, the OSDU cache, a search of the platform, or a static value. |
 | The flow | `samples/wells/flows/wells-welllog-03-header-delivery.yaml` | Which mapping to use, the data partition, and where the record is sent. |
 | The OSDU cache | `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, captured into the catalog by its runs (or imported from `samples/cache-records`) | The OSDU ids that reference properties resolve to (units, business values). |

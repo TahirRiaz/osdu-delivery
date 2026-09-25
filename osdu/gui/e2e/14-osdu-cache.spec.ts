@@ -67,9 +67,9 @@ test.describe.serial("osdu cache", () => {
     await expect(units.getByTitle("cache.UnitOfMeasure.Code reads data.Code")).toBeVisible();
     await expect(rows.filter({ hasText: "master-data--Wellbore" })).toHaveCount(0);
     // A lookup table says where its rows come from and what they are kept under.
-    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("ing.RecallUnits");
+    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("arc.CacheRecallUnits");
     await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("source_unit");
-    await expect(rows.filter({ hasText: "CurveDictionary" })).toContainText("ing.CurveDictionary");
+    await expect(rows.filter({ hasText: "CurveDictionary" })).toContainText("arc.CacheCurveDictionary");
     await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(2);
 
     // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache; a lookup table

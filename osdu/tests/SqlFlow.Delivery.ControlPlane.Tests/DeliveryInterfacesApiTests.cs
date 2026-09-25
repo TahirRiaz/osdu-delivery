@@ -47,7 +47,7 @@ public sealed class DeliveryInterfacesApiTests
             parameters:
               logSource: { required: true }
             source:
-              connection: ${env:OSDU_SAMPLE_DB}
+              connection: ${env:OSDU_DATA_DB}
               work: ../.work/{logSource}
             render:
               parameters:
@@ -58,10 +58,10 @@ public sealed class DeliveryInterfacesApiTests
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:
               wellbores:
-                record: { object: OsduSample.ing.Wellbore, key: [facility_name] }
+                record: { object: OsduData.arc.Wellbore, key: [facility_name] }
                 mapping: Wellbore@1.0.0
               welllogs:
-                record: { object: OsduSample.ing.WellLog, key: [source_project, log_id] }
+                record: { object: OsduData.arc.WellLog, key: [source_project, log_id] }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
                 mapping: WellLog@1.4.0
             """;

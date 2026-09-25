@@ -709,14 +709,14 @@ parameters:
   logSource: { required: true }
 
 source:
-  connection: ${env:OSDU_SAMPLE_DB}
+  connection: ${env:OSDU_DATA_DB}
   record:
-    object: OsduSample.ing.WellLog
+    object: OsduData.arc.WellLog
     key: [source_project, log_id]
     scope: { log_source: logSource }
   datasets:
     curves:
-      object: OsduSample.ing.WellLogCurve
+      object: OsduData.arc.WellLogCurve
       join: { source_project: source_project, log_id: log_id }
   payloads:
     curves: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }

@@ -7,15 +7,15 @@ name: recall-welllog-02-curves-ing
 batch: recall
 
 connections:
-  sample: ${env:OSDU_SAMPLE_DB}
+  sample: ${env:OSDU_DATA_DB}
 
 source:
   server: sample
-  object: OsduSample.pre.v_WellLogCurve
+  object: OsduData.pre.v_WellLogCurve
 
 target:
   server: sample
-  object: OsduSample.ing.WellLogCurve
+  object: OsduData.arc.WellLogCurve
   identityColumn: RecId
 
 load:

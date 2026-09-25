@@ -61,7 +61,7 @@ public sealed class SqlServerLedgerMigrationTests
                 [BatchCount], [Slices], [Status], [ReceivedUtc], [Planned], [SkippedUnchanged], [AwaitingApproval], [SkippedStale], [UnchangedAtPush],
                 [Blocked], [Delivered], [Held], [Failed], [Untracked], [Kind], [SourceConnection], [SourceObject])
             VALUES (@submission, @logs, N'recall-welllog-03-header-delivery', N'WellLog@1.4.0', N'{}', N'{}', 3, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 1, 1, 0, 0,
-                N'incremental', N'${env:OSDU_SAMPLE_DB}', N'OsduSample.ing.WellLog');
+                N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog');
             INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
                 [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [LastDeliveredUtc], [PendingDocumentRef], [LastSubmissionId])
             VALUES

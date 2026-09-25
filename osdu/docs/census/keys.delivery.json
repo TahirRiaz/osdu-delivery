@@ -831,7 +831,7 @@
       "path": "interfaces.<name>.record.object",
       "type": "string",
       "required": true,
-      "description": "The record table's three-part name, `[database].[schema].[table]` (`OsduSample.ing.WellLog`). A two-part name is refused."
+      "description": "The record table's three-part name, `[database].[schema].[table]` (`OsduData.arc.WellLog`). A two-part name is refused."
     },
     {
       "path": "interfaces.<name>.record.primaryKey",
@@ -1879,7 +1879,7 @@
       "path": "source.record.object",
       "type": "string",
       "required": true,
-      "description": "The record table's three-part name, `[database].[schema].[table]` (`OsduSample.ing.WellLog`). A two-part name is refused."
+      "description": "The record table's three-part name, `[database].[schema].[table]` (`OsduData.arc.WellLog`). A two-part name is refused."
     },
     {
       "path": "source.record.primaryKey",

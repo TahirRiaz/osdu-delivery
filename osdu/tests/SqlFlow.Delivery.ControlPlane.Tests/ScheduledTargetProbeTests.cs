@@ -249,7 +249,7 @@ public sealed class ScheduledTargetProbeTests
             flowType: delivery
             name: {{flowName}}
             source:
-              connection: ${env:OSDU_SAMPLE_DB}
+              connection: ${env:OSDU_DATA_DB}
               work: ../.work/probe
             render:
               parameters:
@@ -260,23 +260,23 @@ public sealed class ScheduledTargetProbeTests
               protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }
             interfaces:
               wellbores:
-                record: { object: OsduSample.ing.Wellbore, key: [facility_name] }
+                record: { object: OsduData.arc.Wellbore, key: [facility_name] }
                 mapping: Wellbore@1.0.0
               welllogs:
-                record: { object: OsduSample.ing.WellLog, key: [source_project, log_id] }
+                record: { object: OsduData.arc.WellLog, key: [source_project, log_id] }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
                 mapping: WellLog@1.4.0
               trajectories:
-                record: { object: OsduSample.ing.WellboreTrajectory, key: [source_project, trajectory_id] }
+                record: { object: OsduData.arc.WellboreTrajectory, key: [source_project, trajectory_id] }
                 mapping: WellboreTrajectory@1.0.0
             """;
         var idleYaml = $$"""
             flowType: delivery
             name: {{idleName}}
             source:
-              connection: ${env:OSDU_SAMPLE_DB}
+              connection: ${env:OSDU_DATA_DB}
               work: ../.work/probe-idle
-              record: { object: OsduSample.ing.Wellbore, key: [facility_name] }
+              record: { object: OsduData.arc.Wellbore, key: [facility_name] }
             render:
               mapping: Wellbore@1.0.0
               parameters:
