@@ -562,7 +562,10 @@ Two switches ask about the whole template rather than narrowing the overview, an
   by the check that names it.
 
 An entry filling a free key of an object that takes them (`osdu.tags.DeliveredBy`) is a row under that object, and an
-entry the template does not let a mapping fill is named above the tree, so no entry of the document goes unseen.
+entry the template does not let a mapping fill is named above the tree, so no entry of the document goes unseen. A
+literal object or list fills the properties it holds as well: a `TechnicalAssurances` list whose item names its
+`TechnicalAssuranceTypeID` fills that property on every row, and a property only some of a list's items carry is
+filled on some rows.
 
 Each row says how the document reaches its variable.
 

@@ -1,8 +1,8 @@
 # Cache flow: recall-lookups-00-cache
 #
-# The lookup tables the WellLog mapping translates Recall's values through before it resolves a reference: tables kept by
-# this estate rather than by the OSDU platform. Each type here is a lookup table in the cache of the partition, beside the
-# reference data recall-osdu-00-reference-cache captures, and the mapping reads it the same way it reads any cached type.
+# The lookup tables the WellLog mapping translates Recall's values through before it builds a reference: tables kept by
+# this estate rather than by the OSDU platform. Each type here is a lookup table in the cache of the partition the flow
+# names, the only types this estate keeps there, and the mapping reads it the same way it reads any cached type.
 # A lookup table is declared by one cache flow of a partition, and a refresh replaces it whole.
 #
 # The tables are the translations petrodb-api applies when it turns a Recall well log into an OSDU record, held as data

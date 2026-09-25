@@ -345,6 +345,20 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   entry the tree has no place for; the GUI's hints, the cache page's copyable snippets and the editor census speak the
   new vocabulary. Every mapping in the samples and the test fixtures is converted
   ([osdu/docs/mapping-templates.md](osdu/docs/mapping-templates.md), [osdu/docs/documents.md](osdu/docs/documents.md#mapping)).
+- **The GUI end-to-end suite runs the recall estate.** Its fixture repository is the sample `osdu/samples/recall` (the
+  well log chain, the lookup tables and the delivery flow) with the suites' fixture wellbore flows, interfaces source,
+  retrieval flow and mappings beside it, the estate the control plane suites compose; it copied `samples/wells` before,
+  which no longer exists, so the suite had failed in its global setup. The seed saves the four templates, imports the
+  fixture reference records (`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/cache-records`) for
+  `fixtures-osdu-00-reference-cache`, runs the recall chain into its `arc` tables and refreshes `recall-lookups-00-cache`.
+  The OSDU stand-in holds the wellbores of the five Recall logs under the ids the delivery suites give them, and the
+  record trace finds a Recall log by its source key, its wellbore name and its log id. A local `OsduDeliveryE2E` seeded
+  before this change still holds the old estate's ingestion rows and cache versions, which fail the cache and records
+  specs: drop it once, and the next run creates it again.
+- **The docs describe the recall sample.** The READMEs, the operations guide, the CLI references and the notifications
+  guide name the recall flows and its lookups cache, the test matrix describes the recall estate with the fixtures
+  beside it, and the walkthrough of how a WellLog 1.4.0 record is filled is written against the recall mapping, its data
+  and its first fixture.
 - **A key written twice in one map is refused.** The document loader read the last of two identical keys and dropped the
   first without a word, which in a mapping's record tree would lose a property; every delivery, retrieval and cache
   flow and every mapping now fails to load, naming the line, instead.
@@ -482,6 +496,17 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   together with rows of its own, went with it.
 
 ### Fixed
+
+- **The control plane suites expect the recall estate.** The module database tests expect the two mappings a copy of
+  the sample estate holds (the recall well log mapping and the wellbore fixture beside it), and the mapping builder test
+  expects the recall mapping as it is: a unit translated through `$cache.RecallUnits` and then made a reference, a curve
+  family built by an `id` template from the curve dictionary, the three vertical measurement types the sample records
+  hold, `recall` as the system in the record's shape, and a check without a partition that names the unit table the
+  empty cache does not hold. Its hand-made wrong draft drops the fixtures' shared parameters with the fixtures.
+- **Coverage counts what a literal writes.** A literal object or list fills the properties it holds, so the sample's
+  `TechnicalAssurances` list no longer shows its `TechnicalAssuranceTypeID` as a required property nothing fills, and
+  Show missing answers that the recall mapping satisfies the WellLog schema. A property only some items of a literal
+  list carry is filled on some rows.
 
 - **The Records flow picker no longer crashes the control plane when an estate holds many flows.** It asked which
   flows hold records with one query per flow joined by `UNION`, which nested as deep as the flow list was long, and

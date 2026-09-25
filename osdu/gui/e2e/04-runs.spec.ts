@@ -1,3 +1,4 @@
+import { DELIVERY_FLOW, LOG_SOURCE, REPO_NAME, SOURCE } from "./global-setup";
 import { expect, test } from "./helpers";
 
 // The run lifecycle from the GUI: trigger a plan of the delivery flow, watch the in-process worker execute it, and
@@ -16,15 +17,15 @@ test.describe.serial("runs", () => {
 
     await adminPage.getByTestId("open-trigger-run").click();
     await expect(adminPage.getByTestId("trigger-run-dialog")).toBeVisible();
-    await adminPage.getByTestId("trigger-repo").fill("e2e-repo");
-    await adminPage.getByRole("option", { name: "e2e-repo" }).click();
-    await adminPage.getByTestId("trigger-flow").fill("wells");
+    await adminPage.getByTestId("trigger-repo").fill(REPO_NAME);
+    await adminPage.getByRole("option", { name: REPO_NAME }).click();
+    await adminPage.getByTestId("trigger-flow").fill(SOURCE);
     // Exactly: the estate holds the pre and ingestion flows too, whose names start with the delivery flow's.
-    await adminPage.getByRole("option", { name: "wells-welllog-03-header-delivery", exact: true }).click();
+    await adminPage.getByRole("option", { name: DELIVERY_FLOW, exact: true }).click();
     // The flow declares logSource as required: it fills the scope predicate the plan reads the ingestion table with.
     await adminPage.getByTestId("trigger-operation").click();
     await adminPage.getByRole("option", { name: /^Plan/ }).click();
-    await adminPage.getByTestId("trigger-values").fill("logSource=STAT_COMP");
+    await adminPage.getByTestId("trigger-values").fill(`logSource=${LOG_SOURCE}`);
     await adminPage.getByTestId("trigger-submit").click();
 
     // 202 accepted: the dialog navigates to the run detail, which polls to a terminal state.
@@ -35,6 +36,6 @@ test.describe.serial("runs", () => {
     // The run records what was asked: the operation and the flow parameter show on the run page.
     await expect(adminPage.getByTestId("run-parameters")).toBeVisible();
     await expect(adminPage.getByTestId("run-operation")).toHaveText("plan");
-    await expect(adminPage.getByTestId("run-parameters").getByText("logSource=STAT_COMP")).toBeVisible();
+    await expect(adminPage.getByTestId("run-parameters").getByText(`logSource=${LOG_SOURCE}`)).toBeVisible();
   });
 });

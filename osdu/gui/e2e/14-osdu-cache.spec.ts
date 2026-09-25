@@ -1,11 +1,12 @@
-import { CACHE, LOOKUPS, SOURCE } from "./global-setup";
+import { CACHE, DELIVERY_FLOW, LOOKUPS, SOURCE } from "./global-setup";
 import { expect, test } from "./helpers";
 
 // The OSDU cache page: the header names the cache and the file that defines it, a summary row says which version is
 // read and what it holds, and the records, versions, changes and definition are tabs, with a searchable type picker in
-// the tab bar. Runs after the seed (03), so the fixture repo is synced, its two cache flows declare ten types (none
-// asking for approval), the sample records were imported through the CLI as the first version, and the lookups flow's
-// refresh of the unit map and curve dictionary tables, loaded from cache/data by their own flows, wrote the second.
+// the tab bar. Runs after the seed (03), so the fixture repo is synced, its two cache flows declare five types (none
+// asking for approval): the reference data the fixture mappings read, whose records were imported through the CLI as
+// the first version, and the lookup tables the well log mapping translates through, whose refresh (the unit maps and
+// the curve dictionary, loaded from cache/data by their own flows) wrote the second.
 
 /** The partition the sample cache flow fills, and so the cache the page shows. */
 const PARTITION = "dev";
@@ -34,10 +35,7 @@ test.describe.serial("osdu cache", () => {
     await expect(picker).toHaveText(/All types/);
     await picker.click();
     const options = adminPage.getByRole("listbox");
-    for (const name of [
-      "UnitOfMeasure", "LogCurveBusinessValue", "LogCurveFamily", "LogCurveMainFamily", "LogCurveType", "VerticalMeasurementType",
-      "TrajectoryStationPropertyType", "RecallUnits", "RecallDepthUnits", "CurveDictionary",
-    ]) {
+    for (const name of ["UnitOfMeasure", "TrajectoryStationPropertyType", "RecallUnits", "RecallDepthUnits", "CurveDictionary"]) {
       await expect(options.getByRole("option").filter({ hasText: name }).first()).toBeVisible();
     }
     await expect(options.getByText(/reference data · \d+ records?/).first()).toBeVisible();
@@ -48,10 +46,10 @@ test.describe.serial("osdu cache", () => {
     await expect(options.getByRole("option").filter({ hasText: "Wellbore" })).toHaveCount(0);
     await adminPage.keyboard.press("Escape");
 
-    // The records of every type, out of the current version.
+    // The records of every type, out of the current version, a page at a time in the order of their types' names: the
+    // curve dictionary's rows come first.
     const items = adminPage.getByTestId("delivery-cache-items-table");
-    await expect(items.getByTestId("table-row").filter({ hasText: "UnitOfMeasure" }).filter({ hasText: "metre" }).first())
-      .toBeVisible({ timeout: 30_000 });
+    await expect(items.getByTestId("table-row").first()).toContainText("CurveDictionary", { timeout: 30_000 });
   });
 
   test("the definition tab reads back the file, and the header opens its YAML and refreshes it", async ({ adminPage }) => {
@@ -60,16 +58,16 @@ test.describe.serial("osdu cache", () => {
     await expect(definition).toContainText(`${SOURCE}/cache/${CACHE}.yaml`, { timeout: 30_000 });
     await expect(definition).toContainText("goes out on the next run");
     const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
-    await expect(rows).toHaveCount(10);
+    await expect(rows).toHaveCount(5);
     // Each kept path shows by the name a mapping reads it by, with the path it reads on hover.
     const units = rows.filter({ hasText: "reference-data--UnitOfMeasure" });
     await expect(units).toContainText("Code");
-    await expect(units.getByTitle("cache.UnitOfMeasure.Code reads data.Code")).toBeVisible();
+    await expect(units.getByTitle("$cache: UnitOfMeasure.Code reads data.Code")).toBeVisible();
     await expect(rows.filter({ hasText: "master-data--Wellbore" })).toHaveCount(0);
     // A lookup table says where its rows come from and what they are kept under.
-    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("arc.CacheRecallUnits");
+    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("[arc].[CacheRecallUnits]");
     await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("source_unit");
-    await expect(rows.filter({ hasText: "CurveDictionary" })).toContainText("arc.CacheCurveDictionary");
+    await expect(rows.filter({ hasText: "CurveDictionary" })).toContainText("[arc].[CacheCurveDictionary]");
     await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(2);
 
     // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache; a lookup table
@@ -104,7 +102,7 @@ test.describe.serial("osdu cache", () => {
     await folder.getByText(SOURCE, { exact: true }).click();
     const cacheRow = adminPage.getByTestId("repo-pipeline").filter({ hasText: CACHE });
     await expect(cacheRow.first()).toBeVisible({ timeout: 30_000 });
-    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog-03-header-delivery" })).toHaveCount(0);
+    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: DELIVERY_FLOW })).toHaveCount(0);
     await cacheRow.first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
     await adminPage.getByTestId("pipeline-tab-yaml").click();
@@ -150,10 +148,10 @@ test.describe.serial("osdu cache", () => {
     // The unit caches its own data.ID as well, a field distinct from the record id: `id` reads the record's id, `ID` the
     // value the record holds. A text filter ignores case, so each row is found by its reference cell, matched exactly.
     const reference = (name: string) => references.filter({ has: adminPage.getByRole("cell", { name, exact: true }) });
-    await expect(reference("cache.UnitOfMeasure.id")).toContainText("reference-data--UnitOfMeasure:dega:");
-    await expect(reference("cache.UnitOfMeasure.ID")).toContainText("dega");
-    await expect(reference("cache.UnitOfMeasure.ID")).not.toContainText("reference-data--UnitOfMeasure");
-    await expect(references.filter({ hasText: "cache.UnitOfMeasure.Code" })).toBeVisible();
+    await expect(reference("$cache: UnitOfMeasure.id")).toContainText("reference-data--UnitOfMeasure:dega:");
+    await expect(reference("$cache: UnitOfMeasure.ID")).toContainText("dega");
+    await expect(reference("$cache: UnitOfMeasure.ID")).not.toContainText("reference-data--UnitOfMeasure");
+    await expect(references.filter({ hasText: "$cache: UnitOfMeasure.Code" })).toBeVisible();
     await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("$cache: UnitOfMeasure.id");
     await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("$findBy: ");
     await detail.getByRole("button", { name: "Close" }).click();
@@ -163,7 +161,7 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByRole("option").filter({ hasText: "Clear filter" }).click();
     await expect(picker).toHaveText(/All types/);
     await expect(adminPage.getByTestId("delivery-cache-tab-records")).toHaveText("Records");
-    await expect(items.getByTestId("table-row").filter({ hasText: "LogCurveBusinessValue" }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(items.getByTestId("table-row").first()).toContainText("CurveDictionary", { timeout: 30_000 });
   });
 
   test("search finds a cached record by a value it holds rather than its id", async ({ adminPage }) => {
@@ -173,12 +171,14 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("delivery-cache-search").fill("metre");
     const rows = adminPage.getByTestId("delivery-cache-items-table").getByTestId("table-row");
     await expect(rows.filter({ hasText: "metre" }).first()).toBeVisible({ timeout: 30_000 });
-    await expect(rows.filter({ hasText: "LogCurveBusinessValue" })).toHaveCount(0);
+    await expect(rows.filter({ hasText: "TrajectoryStationPropertyType" })).toHaveCount(0);
   });
 
   test("the version picker reads the cache at one named version", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
 
+    // The metre unit, found by its name: the lookup tables' rows come before the units in the unfiltered records.
+    await adminPage.getByTestId("delivery-cache-search").fill("metre");
     const rows = adminPage.getByTestId("delivery-cache-items-table").getByTestId("table-row");
     await expect(rows.filter({ hasText: "metre" }).first()).toBeVisible({ timeout: 30_000 });
 

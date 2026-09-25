@@ -13,16 +13,16 @@ This page covers the estate verbs as they are used against OSDU flows.
 
 ```bash
 # the hourly deliver for one log source, now
-sqlflow trigger --repo wells --flow wells-welllog-03-header-delivery --set logSource=STAT_COMP
+sqlflow trigger --repo recall --flow recall-welllog-03-header-delivery --set logSource=STAT_COMP
 
 # plan it instead: render and compare, change nothing, and follow the trace
-sqlflow trigger --repo wells --flow wells-welllog-03-header-delivery --operation plan --set logSource=STAT_COMP --follow
+sqlflow trigger --repo recall --flow recall-welllog-03-header-delivery --operation plan --set logSource=STAT_COMP --follow
 
-# refresh a partition's OSDU cache
-sqlflow trigger --repo wells --flow wells-osdu-00-reference-cache
+# refresh a partition's cache
+sqlflow trigger --repo recall --flow recall-lookups-00-cache
 
 # what would be enqueued, without enqueuing it
-sqlflow trigger --repo wells --flow wells-welllog-03-header-delivery --preview
+sqlflow trigger --repo recall --flow recall-welllog-03-header-delivery --preview
 ```
 
 `trigger` enqueues one flow. `--repo` (a name or id) and `--flow` are required; `--pool` routes the run to a node
@@ -58,10 +58,10 @@ the `pre` and `ing` flows feeding them.
 ## The estate
 
 ```bash
-sqlflow pipelines list --repo wells --kind delivery
+sqlflow pipelines list --repo recall --kind delivery
 sqlflow pipelines show <id> --yaml
-sqlflow schedules create --repo wells --flow wells-welllog-03-header-delivery --cron "0 * * * *" --operation deliver
-sqlflow schedules create --repo wells --flow wells-welllog-03-header-delivery --cron "0 3 * * *" --operation verify
+sqlflow schedules create --repo recall --flow recall-welllog-03-header-delivery --cron "0 * * * *" --operation deliver
+sqlflow schedules create --repo recall --flow recall-welllog-03-header-delivery --cron "0 3 * * *" --operation verify
 sqlflow repos sync recall
 sqlflow search <term>
 ```

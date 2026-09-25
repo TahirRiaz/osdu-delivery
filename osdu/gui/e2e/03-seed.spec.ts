@@ -2,15 +2,15 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { E2E, connectionParts, connectionValue, hostRun } from "../playwright.config";
-import { CACHE, FixtureMeta, LOADING_FLOWS, LOOKUPS, REPO_NAME, SOURCE, folderOf } from "./global-setup";
+import { CACHE, CACHE_RECORDS, DELIVERY_FLOW, FixtureMeta, LOADING_FLOWS, LOOKUPS, REPO_NAME, SOURCE, TEMPLATES, folderOf } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
-// Seeds the estate THROUGH the product: saves the templates the sample mappings pin, imports the sample cache records as the
-// cache's first version, registers the fixture git repo as a source from the Repos page in the GUI, then watches the
+// Seeds the estate THROUGH the product: saves the templates the estate's mappings pin, imports the fixture reference records
+// as the cache's first version, registers the fixture git repo as a source from the Repos page in the GUI, then watches the
 // control plane's managed sync pull it and the pipelines appear in the catalog. Everything after this spec runs against
 // real synced data.
 
-/** The OSDU module's folder: the sample estate and the hosts live beside the GUI. */
+/** The OSDU module's folder: the sample estate, the suites' fixtures and the hosts live beside the GUI. */
 const moduleRoot = join(import.meta.dirname, "..", "..");
 
 function fixtureMeta(): FixtureMeta {
@@ -18,8 +18,11 @@ function fixtureMeta(): FixtureMeta {
   return JSON.parse(readFileSync(metaPath, "utf8")) as FixtureMeta;
 }
 
+/** The schema the ingestion flows key their tables into. */
+const INGESTION_SCHEMA = "arc";
+
 /** The ingestion tables the chain loads, each keyed by the identity column the delivery flows page and fan out by. */
-const INGESTION_TABLES = ["WellLog", "WellLogCurve", "Wellbore", "WellboreAlias", "CurveDictionary", "RecallUnits", "RecallDepthUnits"] as const;
+const INGESTION_TABLES = ["WellLog", "WellLogCurve", "CacheCurveDictionary", "CacheRecallUnits", "CacheRecallDepthUnits"] as const;
 
 /**
  * Runs one batch against the database a connection string names, or against master beside it. sqlcmd is used because
@@ -108,7 +111,7 @@ function replaceTablesWithoutIdentityKey(connectionString: string): void {
     `DECLARE @sql nvarchar(max) = N'';
 SELECT @sql = @sql + N'DROP TABLE ' + QUOTENAME(s.[name]) + N'.' + QUOTENAME(t.[name]) + N';'
 FROM sys.tables AS t INNER JOIN sys.schemas AS s ON s.[schema_id] = t.[schema_id]
-WHERE s.[name] = N'ing' AND t.[name] IN (${names})
+WHERE s.[name] = N'${INGESTION_SCHEMA}' AND t.[name] IN (${names})
   AND NOT EXISTS (SELECT 1 FROM sys.identity_columns AS c WHERE c.[object_id] = t.[object_id] AND c.[name] = N'RecId');
 IF @sql <> N'' EXEC sp_executesql @sql;`,
     "replace the ingestion tables that lack their identity key",
@@ -116,23 +119,16 @@ IF @sql <> N'' EXEC sp_executesql @sql;`,
 }
 
 test.describe.serial("seed the estate via repo source sync", () => {
-  // Templates live in the module's database, not the repository, so the ones the sample mappings pin are saved first:
+  // Templates live in the module's database, not the repository, so the ones the estate's mappings pin are saved first:
   // every plan the later specs run renders against them.
-  test("save the templates the sample mappings pin", async ({ request }) => {
+  test("save the templates the estate's mappings pin", async ({ request }) => {
     const session = await adminSession(request);
-    const templates = [
-      { kind: "osdu:wks:work-product-component--WellLog:1.4.0", file: "osdu_wks_work-product-component--WellLog_1.4.0.json", version: "26a3c3441882db4f" },
-      { kind: "osdu:wks:master-data--Wellbore:1.3.0", file: "osdu_wks_master-data--Wellbore_1.3.0.json", version: "58d6bdbd9d066a06" },
-      { kind: "osdu:wks:work-product-component--Document:1.0.0", file: "osdu_wks_work-product-component--Document_1.0.0.json", version: "5c6898ebc6775f6e" },
-      { kind: "osdu:wks:work-product-component--WellboreTrajectory:1.3.0", file: "osdu_wks_work-product-component--WellboreTrajectory_1.3.0.json", version: "bfbc5973bbdeb7ec" },
-    ];
-    for (const template of templates) {
-      const schema: unknown = JSON.parse(
-        readFileSync(join(moduleRoot, "samples", "templates", template.file), "utf8"),
-      );
+    for (const template of TEMPLATES) {
+      const schema: unknown = JSON.parse(readFileSync(join(moduleRoot, template.file), "utf8"));
+      const name = template.file.split(/[\\/]/).at(-1);
       const response = await request.post(`${E2E.apiBaseUrl}/api/v1/delivery/templates`, {
         headers: { Authorization: `Bearer ${session.token}` },
-        data: { kind: template.kind, schema, origin: `file ${template.file}` },
+        data: { kind: template.kind, schema, origin: `file ${name}` },
       });
       expect(response.status(), await response.text()).toBe(200);
       const saved = (await response.json()) as { template: { kind: string; version: string }; outcome: string };
@@ -141,10 +137,10 @@ test.describe.serial("seed the estate via repo source sync", () => {
     }
   });
 
-  // A cache lives in the module database, never in the repository. A refresh would search the sample's OSDU target, so
-  // the suite imports the sample cache records as the cache's first version through the OSDU Delivery CLI host, the
-  // offline path an operator uses. Importing the same files again writes nothing, so a rerun keeps one version.
-  test("import the sample cache records as the first version of the cache", () => {
+  // A cache lives in the module database, never in the repository. A refresh would search the estate's OSDU target, so
+  // the suite imports the fixture reference records as the cache's first version through the OSDU Delivery CLI host,
+  // the offline path an operator uses. Importing the same files again writes nothing, so a rerun keeps one version.
+  test("import the reference records as the first version of the cache", () => {
     test.setTimeout(420_000);
     const meta = fixtureMeta();
     const output = execFileSync(
@@ -152,16 +148,16 @@ test.describe.serial("seed the estate via repo source sync", () => {
       [
         ...hostRun(join(moduleRoot, "hosts", "SqlFlow.Delivery.Cli.Host")), "--",
         "cache", "import", `${meta.sourceDir}/cache/${CACHE}.yaml`,
-        // The records are not repository content: a cache lives in the module's database, so the sample records that
-        // stand in for a capture sit beside the estate rather than inside the source that reads the cache.
-        "--from-dir", join(moduleRoot, "samples", "cache-records"),
+        // The records are not repository content: a cache lives in the module's database, so the records that stand in
+        // for a capture sit beside the estate rather than inside the source that reads the cache.
+        "--from-dir", join(moduleRoot, CACHE_RECORDS),
         "--db", "${env:SQLFLOW_E2E_CACHE_DB}",
         "--json",
       ],
       // The cache belongs to the partition the cache flow names, resolved as every other process of the estate resolves it.
       { encoding: "utf8", timeout: 400_000, env: { ...process.env, ...E2E.osdu, SQLFLOW_E2E_CACHE_DB: E2E.catalogDb, SQLFLOW_OSDU_DB: E2E.osduDb } },
     );
-    expect(output).toContain("wells-osdu-00-reference-cache");
+    expect(output).toContain(CACHE);
   });
 
   test("register the fixture repo as a source and watch it sync", async ({ adminPage }) => {
@@ -224,10 +220,10 @@ test.describe.serial("seed the estate via repo source sync", () => {
     }
   });
 
-  // The lookup tables the mappings translate source spellings through: the unit dictionary of the repository, and the
-  // curve dictionary the chain has just keyed into its ingestion table. Neither reaches OSDU, so the lookups cache flow is
+  // The lookup tables the well log mapping translates source spellings through: the unit maps and the curve dictionary the
+  // chain has just keyed into their ingestion tables. Neither reaches OSDU, so the lookups cache flow is
   // refreshed for real through the CLI host, as a node runs it, and writes the next version of the partition's cache.
-  test("refresh the lookup tables from the dictionary and the curve dictionary", async ({ request }) => {
+  test("refresh the lookup tables from the unit maps and the curve dictionary", async ({ request }) => {
     test.setTimeout(420_000);
     const meta = fixtureMeta();
     const output = execFileSync(
@@ -269,8 +265,8 @@ test.describe.serial("seed the estate via repo source sync", () => {
     await adminPage.getByTestId("nav-pipelines").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
     // The page lists a repo's flows as the folder tree they are; a search expands it onto the matching rows.
-    await adminPage.getByTestId("filter-name").fill("wells-welllog-03-header-delivery");
-    const row = adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog-03-header-delivery" });
+    await adminPage.getByTestId("filter-name").fill(DELIVERY_FLOW);
+    const row = adminPage.getByTestId("repo-pipeline").filter({ hasText: DELIVERY_FLOW });
     await expect(row.first()).toBeVisible({ timeout: 60_000 });
   });
 
@@ -287,7 +283,7 @@ test.describe.serial("seed the estate via repo source sync", () => {
     await expect(projects).toHaveCount(1, { timeout: 30_000 });
     await expect(projects.first()).toContainText(SOURCE);
     // The project accordions start collapsed; a search opens the matching one and surfaces the flow row.
-    await adminPage.getByTestId("repo-pipeline-search").fill("wells-welllog-03-header-delivery");
-    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog-03-header-delivery" }).first()).toBeVisible();
+    await adminPage.getByTestId("repo-pipeline-search").fill(DELIVERY_FLOW);
+    await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: DELIVERY_FLOW }).first()).toBeVisible();
   });
 });

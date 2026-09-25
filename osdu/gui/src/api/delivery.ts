@@ -1107,7 +1107,7 @@ export interface MappingDraftModifier {
   otherwiseKind?: MappingDraftOtherwiseKind | null;
   /** replace: the text an unlisted value becomes when otherwiseKind is text. */
   otherwiseText?: string | null;
-  /** replace: the cached type the table is read from (replace: cache.<table>), instead of pairs; null for pairs. */
+  /** replace: the cached type the table is read from (replace: $cache.<table>), instead of pairs; null for pairs. */
   table?: string | null;
   /** replace from the cache: the field a value is matched on; null for the table's key. */
   match?: string | null;

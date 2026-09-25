@@ -86,6 +86,36 @@ public class MappingCoverageTests
     }
 
     [Fact]
+    public void A_literal_writes_the_properties_it_holds()
+    {
+        // A literal list writes its items' properties wherever it is written, with no entry of their own: one every item
+        // carries is filled on every row, and one only some items carry is filled only for those.
+        var required = Requiring("\"TopDepth\":{\"type\":\"number\"}}}", "\"TopDepth\":{\"type\":\"number\"}},\"required\":[\"TopDepth\"]}");
+        var partly = Cover(required, """
+            Curves:
+              - CurveID: GR
+                TopDepth: 1000
+              - CurveID: RHOB
+            """);
+        Assert.Equal(CoverageState.Always, Variable(partly, "osdu.data.Curves[].CurveID").State);
+        Assert.False(Variable(partly, "osdu.data.Curves[].CurveID").Direct);
+        Assert.Equal(CoverageState.Sometimes, Variable(partly, "osdu.data.Curves[].TopDepth").State);
+        Assert.Equal(CoverageState.Sometimes, Variable(partly, "osdu.data.Curves").State);
+        Assert.True(Variable(partly, "osdu.data.Curves").Direct);
+        Has(partly, IssueSeverity.Warning, "requires osdu.data.Curves[].TopDepth, and what fills it may leave it out");
+
+        // With every item carrying the required property, nothing is missing.
+        var whole = Cover(required, """
+            Curves:
+              - CurveID: GR
+                TopDepth: 1000
+            """);
+        Assert.Equal(CoverageState.Always, Variable(whole, "osdu.data.Curves[].TopDepth").State);
+        Assert.Equal(CoverageState.Always, Variable(whole, "osdu.data.Curves").State);
+        Assert.DoesNotContain(whole.Issues, i => i.Target == "osdu.data.Curves[].TopDepth");
+    }
+
+    [Fact]
     public void An_object_is_only_as_good_as_the_weakest_thing_it_promises()
     {
         // One property filled on some rows only makes the object holding it that, however its siblings are filled.

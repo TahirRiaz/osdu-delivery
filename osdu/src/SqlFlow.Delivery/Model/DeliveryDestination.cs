@@ -10,7 +10,7 @@ namespace SqlFlow.Delivery.Model;
 /// </summary>
 /// <remarks>
 /// <para>
-/// A mapping declares the ones it fills and writes them with <c>{param.name}</c>. A flow may still supply a value under
+/// A mapping declares the ones it fills and writes them with <c>{$param.name}</c>. A flow may still supply a value under
 /// <c>render.parameters</c>, and what it supplies wins. A parameter the flow leaves out defaults to the reference named
 /// here, which resolves like every other reference the flow declares: from the central configuration the control plane
 /// supplied with the run, and from the node's own environment where the configuration is silent. Both routes end in one

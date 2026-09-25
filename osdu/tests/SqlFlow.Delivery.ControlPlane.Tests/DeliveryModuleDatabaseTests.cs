@@ -32,9 +32,11 @@ public sealed class DeliveryModuleDatabaseTests
 
     private static readonly DateTime Now = new(2026, 9, 18, 9, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>The mapping documents the sample estate holds, which is what a reconciliation of it writes.</summary>
-    private static readonly string[] SampleMappings =
-        ["Document@1.0.0", "WellLog@1.4.0", "Wellbore@1.0.0", "WellboreTrajectory@1.3.0"];
+    /// <summary>
+    /// The mapping documents a copy of the sample estate holds, which is what a reconciliation of it writes: the Recall
+    /// well log mapping, and the wellbore fixture mapping the copy puts beside it (<see cref="SampleEstate.CopyTo"/>).
+    /// </summary>
+    private static readonly string[] SampleMappings = ["WellLog@1.4.0", SampleEstate.WellboreMapping];
 
     /// <summary>The partition the sample cache flow declares its types for.</summary>
     private const string SampleScope = "dev";

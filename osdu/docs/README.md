@@ -35,8 +35,8 @@ replica.
 | `osdu/src/SqlFlow.Delivery.Cli` | `sqlflow check`, `sqlflow cache` and `sqlflow template`. |
 | `osdu/hosts` | The control plane, node and CLI hosts that compose SQLFlow with the module and its branding. |
 | `osdu/gui` | The delivery overview, the flow tabs (stats, records, submissions; retrievals for a retrieval flow), the record page, the submission page with its batches, the audit trail, mappings, the OSDU cache page, templates and the mapping builder. |
-| `osdu/samples/wells` | A complete sample estate, laid out the way a repository is: one folder for the wells source, holding the pre, ingestion and OSDU flows of its data (`flows/`), the mappings (`mappings/`), everything static (`cache/`: the document that defines the cache its mappings read, `wells-osdu-00-reference-cache.yaml`, the lookups cache flow, the lookup tables' files in `cache/data/` and the pre and ingestion flows that load them), and the drop-off folder the pre flows read (`data/`). |
-| `osdu/samples/cache-records` | Sample records for that cache, one file per cached type, to import for work without an OSDU platform. Beside the source folders, never inside one: a cache lives in the module's database, captured there by a run, so a repository holds the flow document and nothing else about it. |
+| `osdu/samples/recall` | A complete sample estate, laid out the way a repository is: one folder for the Recall source, holding the pre, ingestion and delivery flows of its well logs (`flows/`), the WellLog mapping (`mappings/`), everything static (`cache/`: the lookups cache flow `recall-lookups-00-cache.yaml`, the lookup tables' files in `cache/data/` and the pre and ingestion flows that load them), the schedules (`schedules.yaml`), and the drop-off folder the pre flows read (`data/`, five real Recall logs with their curve grids). The mapping builds its references with the `ref` and `id` modifiers and searches the platform for the wellbore, so it reads no reference data captured from OSDU. |
+| `osdu/samples/cache-records` | Sample records of OSDU reference data, one file per cached type, to import into a partition's cache for work without an OSDU platform. Beside the source folders, never inside one: a cache lives in the module's database, captured there by a run, so a repository holds the flow document and nothing else about it. |
 | `osdu/samples/templates` | The bundled OSDU schemas the suites and the e2e seed save as templates. They sit beside the source folders, not inside one: a template is a catalog object captured from OSDU's schema service through the Templates page, never a file a repository sync reads. |
 | `osdu/tests` | The module's suites: the domain suites, and the delivery submission and template API suites. |
 | `osdu/deploy` | The container images, and the compose, Kubernetes and Azure Container Apps assets. |
@@ -49,17 +49,17 @@ project:
 
 ```text
 repo/
-  wells/                                        one source, and nothing the product writes
-    flows/wells-welllog-01-header-pre.yaml      lands the source files
-    flows/wells-welllog-02-header-ing.yaml      loads the keyed ingestion table
-    flows/wells-welllog-03-header-delivery.yaml flowType: delivery; reads those tables and delivers
-    mappings/WellLog@1.4.0.yaml                 documentType: mapping, pinned by name and version
-    cache/wells-osdu-00-reference-cache.yaml    flowType: cache: the OSDU types it caches
-    cache/wells-lookups-00-cache.yaml           flowType: cache: the lookup tables it captures
-    cache/wells-units-01-curve-pre.yaml         lands a lookup table's static file
-    cache/wells-units-02-curve-ing.yaml         keys it into the table the cache flow reads
-    cache/data/curve-units/                     the static file itself
-    data/welllog/                               the drop-off point the pre flow reads
+  recall/                                        one source, and nothing the product writes
+    flows/recall-welllog-01-header-pre.yaml      lands the source files
+    flows/recall-welllog-02-header-ing.yaml      loads the keyed ingestion table
+    flows/recall-welllog-03-header-delivery.yaml flowType: delivery; reads those tables and delivers
+    mappings/WellLog@1.4.0.yaml                  documentType: mapping, pinned by name and version
+    cache/recall-lookups-00-cache.yaml           flowType: cache: the lookup tables it captures
+    cache/recall-cacheunits-01-curve-pre.yaml    lands a lookup table's static file
+    cache/recall-cacheunits-02-curve-ing.yaml    keys it into the table the cache flow reads
+    cache/data/curve-units/                      the static file itself
+    data/welllog/                                the drop-off point the pre flow reads
+    schedules.yaml                               the schedules the flows join, each firing its flows in lineage order
 ```
 
 The cache folder holds what is static: the cache flows, the files of the lookup tables the source keeps (unit maps, a
@@ -72,11 +72,11 @@ those tables hold. The area separates a record from the collections hanging off 
 its curves sit next to each other at each step.
 
 ```text
-    wells-welllog-01-curves-pre     wells-wellbore-01-aliases-pre
-    wells-welllog-01-header-pre     wells-wellbore-01-header-pre
-    wells-welllog-02-curves-ing     wells-wellbore-02-aliases-ing
-    wells-welllog-02-header-ing     wells-wellbore-02-header-ing
-    wells-welllog-03-header-delivery wells-wellbore-03-header-delivery
+    recall-welllog-01-curves-pre
+    recall-welllog-01-header-pre
+    recall-welllog-02-curves-ing
+    recall-welllog-02-header-ing
+    recall-welllog-03-header-delivery
 ```
 
 The repository is the developers', and the product only reads it. Templates and cache versions are not in it: both

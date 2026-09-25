@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
@@ -113,13 +114,22 @@ public static class MappingCoverage
         var where = mapping.SourcePath ?? mapping.Reference.ToString();
 
         // What each entry writes, and what that makes of every object on the way to it: a holder is reached by the best of
-        // what it holds, so an object with no entry of its own still reads as filled when its properties are filled.
+        // what it holds, so an object with no entry of its own still reads as filled when its properties are filled. A
+        // literal object or list writes the properties it holds as well (a TechnicalAssurances list whose item names its
+        // TechnicalAssuranceTypeID), so those are written wherever the literal is, without an entry of their own.
         var own = new Dictionary<string, CoverageState>(StringComparer.Ordinal);
         var inside = new Dictionary<string, CoverageState>(StringComparer.Ordinal);
+        var direct = new HashSet<string>(StringComparer.Ordinal);
         foreach (var entry in mapping.Entries)
         {
             var state = FillsEveryRow(entry) ? CoverageState.Always : CoverageState.Sometimes;
             own[entry.Target.Text] = Best(own, entry.Target.Text, state);
+            direct.Add(entry.Target.Text);
+            if (entry.IsStatic && entry.Static is { } literal)
+            {
+                WrittenBy(own, entry.Target.Text, [literal], state);
+            }
+
             for (var holder = entry.Target.Parent; holder is not null; holder = holder.Parent)
             {
                 inside[holder.Text] = Best(inside, holder.Text, state);
@@ -151,7 +161,7 @@ public static class MappingCoverage
             listed.Add((target, entry.Target.Parent?.Text, key.Required));
         }
 
-        var variables = Rolled(listed, states, own);
+        var variables = Rolled(listed, states, own, direct);
 
         var issues = new List<ValidationIssue>(RequiredIssues(mapping, template.Schema, where));
         var gated = new HashSet<string>(issues.Select(i => i.Target).OfType<string>(), StringComparer.Ordinal);
@@ -187,7 +197,8 @@ public static class MappingCoverage
     private static List<VariableCoverage> Rolled(
         List<(string Path, string? Holder, bool Required)> listed,
         IReadOnlyDictionary<string, CoverageState> states,
-        IReadOnlyDictionary<string, CoverageState> own)
+        IReadOnlyDictionary<string, CoverageState> own,
+        IReadOnlySet<string> direct)
     {
         // The variables each object holds, and then the objects read back to front, so what they hold is settled first.
         var held = new Dictionary<string, List<(string Path, bool Required)>>(StringComparer.Ordinal);
@@ -212,7 +223,42 @@ public static class MappingCoverage
                 : promised.Aggregate(CoverageState.Always, (worst, state) => state < worst ? state : worst);
         }
 
-        return listed.Select(v => new VariableCoverage(v.Path, shown[v.Path], own.ContainsKey(v.Path), v.Required)).ToList();
+        return listed.Select(v => new VariableCoverage(v.Path, shown[v.Path], direct.Contains(v.Path), v.Required)).ToList();
+    }
+
+    /// <summary>
+    /// Records what a literal writes below <paramref name="path"/>, given every value it writes there (one for a literal
+    /// the entry writes; one per item for the items of a list). An object writes each property it holds a value for, and a
+    /// list of objects writes the properties of its items at <c>path[].name</c>. A property every holder carries is written
+    /// as surely as the literal is; one only some of them carry is written for those, so no more than sometimes.
+    /// </summary>
+    private static void WrittenBy(Dictionary<string, CoverageState> written, string path, IReadOnlyList<JsonNode> values, CoverageState state)
+    {
+        var objects = values.OfType<JsonObject>().ToList();
+        if (objects.Count > 0)
+        {
+            WrittenInside(written, path + ".", objects, state);
+        }
+
+        var items = values.OfType<JsonArray>().SelectMany(list => list).ToList();
+        if (items.Count > 0 && items.All(item => item is JsonObject))
+        {
+            WrittenInside(written, path + "[].", items.Cast<JsonObject>().ToList(), state);
+        }
+    }
+
+    private static void WrittenInside(Dictionary<string, CoverageState> written, string prefix, List<JsonObject> holders, CoverageState state)
+    {
+        var names = holders.SelectMany(holder => holder).Where(property => property.Value is not null).Select(property => property.Key)
+            .Distinct(StringComparer.Ordinal).ToList();
+        foreach (var name in names)
+        {
+            var values = holders.Select(holder => holder[name]).OfType<JsonNode>().ToList();
+            var reached = values.Count == holders.Count ? state : CoverageState.Sometimes;
+            var path = prefix + name;
+            written[path] = Best(written, path, reached);
+            WrittenBy(written, path, values, reached);
+        }
     }
 
     /// <summary>

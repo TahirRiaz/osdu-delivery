@@ -1,3 +1,4 @@
+import { DELIVERY_FLOW } from "./global-setup";
 import { expect, test } from "./helpers";
 
 // Traceability from the product's front door (CLAUDE.md: traceability is the product). An operator holding a source key,
@@ -5,44 +6,45 @@ import { expect, test } from "./helpers";
 // journey: when the row was received, when it was planned, every dispatch and what OSDU answered, and where it stands.
 // A batch is undoable from its submission's page, aimed at what that submission delivered.
 //
-// The intake of the records CLI spec staged the well logs of the STAT_COMP scope, so the ledger holds pending records
-// with a queued document and no dispatch yet; nothing here reaches an OSDU, and no removal is run.
+// The intake of the records CLI spec staged the Recall well logs of the STAT_COMP scope, so the ledger holds pending
+// records with a queued document and no dispatch yet; nothing here reaches an OSDU, and no removal is run.
 
 test.describe.serial("record trace", () => {
   test("a record is found from what an operator holds, and its page tells its journey", async ({ adminPage }) => {
     // The Delivery page's field opens the Records page looked up for the term.
     await adminPage.getByTestId("nav-delivery").click();
     await expect(adminPage.getByTestId("page-delivery")).toBeVisible();
-    // A source key is the source's name and the row's key columns (wells:NO_15_9/L-1001); the lookup is a prefix.
-    await adminPage.getByTestId("delivery-find-record-term").fill("wells:NO_15_9");
+    // A source key is the source system and the row's key columns (recall:NORWAY_WELLDB/12359/1: the Recall project and
+    // the log id); the lookup is a prefix.
+    await adminPage.getByTestId("delivery-find-record-term").fill("recall:NORWAY_WELLDB");
     await adminPage.getByTestId("delivery-find-record-go").click();
     await expect(adminPage.getByTestId("page-delivery-records")).toBeVisible();
-    await expect(adminPage).toHaveURL(/q=wells%3ANO_15_9/);
-    await expect(adminPage.getByTestId("delivery-lookup-search")).toHaveValue("wells:NO_15_9");
+    await expect(adminPage).toHaveURL(/q=recall%3ANORWAY_WELLDB/);
+    await expect(adminPage.getByTestId("delivery-lookup-search")).toHaveValue("recall:NORWAY_WELLDB");
 
     // The lookup lists every record whose source key starts with the term, across flows, each naming its flow.
     const table = adminPage.getByTestId("delivery-lookup-table");
     await expect(table).toBeVisible();
     const rows = table.getByTestId("table-row");
     await expect(rows.first()).toBeVisible({ timeout: 30_000 });
-    await expect(rows.first()).toContainText("NO_15_9");
-    await expect(rows.first()).toContainText("wells-welllog-03-header-delivery");
+    await expect(rows.first()).toContainText("NORWAY_WELLDB");
+    await expect(rows.first()).toContainText(DELIVERY_FLOW);
 
     // Every row says which of its values answered, so a hit explains itself.
     await expect(rows.first().getByTestId("lookup-matched")).toBeVisible();
 
-    // The wellbore id the mapping declares as an identity finds it, which is what an operator actually holds. The
-    // log id does too, and neither is the start of the source key.
-    for (const [term, url] of [["OSDU-DEV-1-A", /q=OSDU-DEV-1-A/], ["L-1001", /q=L-1001/]] as const) {
+    // The wellbore name the mapping declares as an identity finds it, which is what an operator actually holds. The
+    // Recall log id does too, and neither is the start of the source key. The address carries each term encoded.
+    for (const [term, url] of [["NO 33/9-C-28 B", /q=NO(\+|%20)33%2F9-C-28(\+|%20)B/], ["12359/1", /q=12359%2F1/]] as const) {
       await adminPage.getByTestId("delivery-lookup-search").fill(term);
       await expect(adminPage).toHaveURL(url);
       await expect(rows.first()).toBeVisible({ timeout: 30_000 });
       await expect(rows.first().getByTestId("lookup-matched")).toContainText(term);
     }
 
-    await adminPage.getByTestId("delivery-lookup-search").fill("wells:NO_15_9");
-    await expect(adminPage).toHaveURL(/q=wells%3ANO_15_9/);
-    await expect(rows.first()).toContainText("NO_15_9", { timeout: 30_000 });
+    await adminPage.getByTestId("delivery-lookup-search").fill("recall:NORWAY_WELLDB");
+    await expect(adminPage).toHaveURL(/q=recall%3ANORWAY_WELLDB/);
+    await expect(rows.first()).toContainText("NORWAY_WELLDB", { timeout: 30_000 });
 
     // A state narrows the same lookup; a state nothing is in leaves it empty rather than wrong.
     await adminPage.getByTestId("delivery-lookup-status").click();
@@ -53,7 +55,7 @@ test.describe.serial("record trace", () => {
     await adminPage.getByRole("option", { name: "pending" }).click();
     // The empty answer to the last state stays on screen until this one arrives, so the row is waited for by what it holds.
     await expect(adminPage).toHaveURL(/status=pending/);
-    await expect(rows.first()).toContainText("NO_15_9", { timeout: 30_000 });
+    await expect(rows.first()).toContainText("NORWAY_WELLDB", { timeout: 30_000 });
 
     // A row opens the record, whose journey starts with the row the intake staged it from and ends with the queued
     // document: planned, never dispatched, nothing landed.
@@ -71,15 +73,15 @@ test.describe.serial("record trace", () => {
     // The chain before the ledger, named run by run. Pre-ingestion is found by the file it processed; ingestion
     // processed no file of its own (it reads the table the pre flow landed), so it is found by the table it was
     // writing when the row was stamped. Both are the estate's own runs, recorded as they ran.
-    await expect(adminPage.getByTestId("milestone-pre")).toContainText("wells-welllog-01-header-pre", { timeout: 30_000 });
-    await expect(adminPage.getByTestId("milestone-ing")).toContainText("wells-welllog-02-header-ing");
+    await expect(adminPage.getByTestId("milestone-pre")).toContainText("recall-welllog-01-header-pre", { timeout: 30_000 });
+    await expect(adminPage.getByTestId("milestone-ing")).toContainText("recall-welllog-02-header-ing");
     await expect(adminPage.getByTestId("milestone-pre")).not.toContainText("no run recorded");
     await expect(adminPage.getByTestId("milestone-ing")).not.toContainText("no run recorded");
 
     // Each stage is in the timeline too, saying what it did: the file it took in, and the table it loaded the row into.
     const journey = adminPage.getByTestId("record-journey");
-    await expect(journey).toContainText("Landed: wells-welllog-01-header-pre took the file in");
-    await expect(journey).toContainText("Ingested: wells-welllog-02-header-ing loaded the row into its table");
+    await expect(journey).toContainText("Landed: recall-welllog-01-header-pre took the file in");
+    await expect(journey).toContainText("Ingested: recall-welllog-02-header-ing loaded the row into its table");
 
     // With every stage named there is nothing missing to explain, so the note is not rendered at all.
     await expect(adminPage.getByTestId("record-chain-note")).toHaveCount(0);

@@ -1,16 +1,35 @@
 // The OSDU platform the e2e suite's flows reach, as far as a plan needs one: a token for the flows' client credentials,
-// and the search service answering the lookups the sample mappings make when they render. A WellLog or a trajectory
-// names its wellbore, and a render finds that wellbore by searching the platform; here the platform holds the two sample
-// wellbores, in whichever partition the request names. Everything else answers 404, so a spec that tried to send a
-// record would fail loudly rather than reach a real OSDU.
+// and the search service answering the lookups the sample mappings make when they render. A WellLog names its wellbore,
+// and a render finds that wellbore by searching the platform; here the platform holds the wellbores of the five sample
+// Recall logs and the two the fixture documents name, in whichever partition the request names. Everything else answers
+// 404, so a spec that tried to send a record would fail loudly rather than reach a real OSDU.
 //
 // Started by playwright.config.ts beside the control plane, on SQLFLOW_E2E_OSDU_PORT (5301 by default).
 import { createServer } from "node:http";
 
 const port = Number(process.env.SQLFLOW_E2E_OSDU_PORT ?? 5301);
 
-/** The sample wellbores, by the names the sample drops give them. */
-const WELLBORES = new Set(["OSDU-DEV-1-A", "OSDU-DEV-1-B"]);
+/**
+ * The wellbores the platform holds, by the name a search asks for: the wellbores of the sample Recall logs
+ * (osdu/samples/recall/data/welllog) and the two the fixture documents name.
+ */
+const WELLBORES = new Set([
+  "NO 15/5-7 AT2",
+  "NO 33/9-A-24 AT2",
+  "NO 33/9-C-28 A",
+  "NO 33/9-C-28 B",
+  "NO 34/10-B-31 AT2",
+  "OSDU-DEV-1-A",
+  "OSDU-DEV-1-B",
+]);
+
+/**
+ * The id a wellbore of that name has here: its name with spaces and slashes as hyphens (NO 33/9-C-28 B is
+ * NO-33-9-C-28-B), which is the id the delivery suites give it and one the WellboreID pattern takes.
+ */
+function wellboreId(name) {
+  return name.replace(/[ /]/g, "-");
+}
 
 /** The kind the sample mappings search for wellbores in. */
 const WELLBORE_KIND = /^osdu:wks:master-data--Wellbore:/;
@@ -43,7 +62,7 @@ function search(body, partition) {
     && typeof body.kind === "string" && WELLBORE_KIND.test(body.kind)
     && name !== null && WELLBORES.has(name);
   return found
-    ? { results: [{ id: `${partition}:master-data--Wellbore:${name}` }], totalCount: 1 }
+    ? { results: [{ id: `${partition}:master-data--Wellbore:${wellboreId(name)}` }], totalCount: 1 }
     : { results: [], totalCount: 0 };
 }
 

@@ -13,6 +13,14 @@ import { E2E, databaseOf } from "../playwright.config";
  * tables, which the pre and ingestion flows load from the sample files. The seed spec runs those flows through the CLI
  * host, so the tables a plan reads are made the way production makes them.
  *
+ * It is the sample estate (`osdu/samples/recall`: the well log chain, its lookup tables and their cache flow) with the
+ * documents the suites keep beside it as fixtures (`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/documents`): the wellbore
+ * flows, a source that delivers several kinds as interfaces, a retrieval flow, the Wellbore, Document and
+ * WellboreTrajectory mappings, and the cache flow of the reference data those mappings read. The sample well log chain is
+ * the one the specs run; the fixture flows are synced and read, never run, since their source files are not kept. So the
+ * catalog holds more than one kind, a source with interfaces and a reference cache, as a real estate does, the same way
+ * the control plane suites lay the two out (`SampleEstate`).
+ *
  * The repository is laid out per source: one top-level folder for the source, holding its flows, the mappings they pin,
  * the cache they resolve against and the drop-off folder the pre flows load from. That folder is what the catalog and
  * the GUI call a project, so the Repos page shows one project per source. The cache folder holds everything static: the
@@ -33,11 +41,12 @@ export default function globalSetup(): void {
   // registered with, and every run rewrites the repository with its own database names, so two estates sharing one
   // folder would each end up syncing flows that point at the other's tables.
   const repoDir = join(fixturesDir, `${databaseOf(E2E.catalogDb)}-repo`);
-  const samplesDir = resolve(here, "..", "..", "samples", "wells");
+  const samplesDir = resolve(here, "..", "..", SAMPLES);
+  const fixtureDocuments = resolve(here, "..", "..", FIXTURE_DOCUMENTS);
 
   // The repository holds one folder per source, which is what the catalog and the GUI call a project: everything the
-  // wells source needs (its flows, the mappings they pin, the cache they read and the drop-off folder the pre flows
-  // load from) sits under `wells/`, and a second source would be a folder beside it rather than more files mixed into
+  // recall source needs (its flows, the mappings they pin, the cache they read and the drop-off folder the pre flows
+  // load from) sits under `recall/`, and a second source would be a folder beside it rather than more files mixed into
   // the same `flows/` and `mappings/`.
   const sourceDir = join(repoDir, SOURCE);
 
@@ -52,6 +61,11 @@ export default function globalSetup(): void {
     cpSync(join(samplesDir, part), join(sourceDir, part), { recursive: true });
   }
 
+  // The fixture mappings the wellbore flows and the interfaces source pin, beside the sample's own.
+  for (const mapping of FIXTURE_MAPPINGS) {
+    cpSync(join(fixtureDocuments, "mappings", `${mapping}.yaml`), join(sourceDir, "mappings", `${mapping}.yaml`));
+  }
+
   // Every flow of the estate, each without its schedule and with its tables in the sample database. A fire would be a
   // real run against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no
   // schedule. The ingestion and delivery flows name their tables in OsduData, while the pre flows write wherever
@@ -60,20 +74,25 @@ export default function globalSetup(): void {
   // schema; SQLFLOW_E2E_DATA_DB gives the source data a database of its own, as a real estate does.
   const dataDatabase = databaseOf(E2E.dataDb);
   for (const flow of CHAIN) {
-    const shipped = readFileSync(join(samplesDir, folderOf(flow), `${flow}.yaml`), "utf8");
+    const shipped = readFileSync(
+      (FIXTURE_FLOWS as readonly string[]).includes(flow)
+        ? join(fixtureDocuments, "flows", `${flow}.yaml`)
+        : join(samplesDir, folderOf(flow), `${flow}.yaml`),
+      "utf8",
+    );
     writeFileSync(
       join(sourceDir, folderOf(flow), `${flow}.yaml`),
       withoutTheLegalCheck(inDataDatabase(withoutSchedule(shipped, flow), flow, dataDatabase)),
     );
   }
 
-  // The document that defines the cache the source's mappings resolve against, under the source that needs it. That
-  // document is the whole of what a repository holds about a cache: the cache itself lives in the module's database,
-  // captured there by a run. The flow comes along without its schedule, because the suite never refreshes it (that
-  // would need an OSDU target), and the seed spec imports the sample records from osdu/samples as its first version.
+  // The document that defines the reference data the fixture mappings resolve against, under the source that needs it.
+  // That document is the whole of what a repository holds about a cache: the cache itself lives in the module's
+  // database, captured there by a run. The suite never refreshes it (that would need an OSDU target), so the seed spec
+  // imports the fixture records the suites import (`CACHE_RECORDS`) as its first version.
   writeFileSync(
     join(sourceDir, "cache", `${CACHE}.yaml`),
-    withoutSchedule(readFileSync(join(samplesDir, "cache", `${CACHE}.yaml`), "utf8"), CACHE),
+    withoutSchedule(readFileSync(join(fixtureDocuments, "cache", `${CACHE}.yaml`), "utf8"), CACHE),
   );
 
   // The lookup tables the mappings translate source spellings through (the unit maps and the curve dictionary) fill the
@@ -91,7 +110,7 @@ export default function globalSetup(): void {
   git("config", "user.email", "e2e@sqlflow.test");
   git("config", "user.name", "OSDU Delivery E2E");
   git("add", "-A");
-  git("commit", "-m", "e2e fixture: the wells delivery estate");
+  git("commit", "-m", "e2e fixture: the recall delivery estate");
   const headSha = git("rev-parse", "HEAD");
 
   // Tests read the repo path, the source folder inside it, the exact commit to expect and the database the chain loads
@@ -118,13 +137,60 @@ export default function globalSetup(): void {
  * lives under it, so the catalog and the GUI see one project named after the source rather than a repository whose top
  * level is a pile of file kinds.
  */
-export const SOURCE = "wells";
+export const SOURCE = "recall";
 
-/** The cache the source's mappings resolve against: the flow file `<SOURCE>/cache/<CACHE>.yaml`, and the folder of sample records beside it. */
-export const CACHE = "wells-osdu-00-reference-cache";
+/** The sample estate the fixture repository is built from, relative to the OSDU module's folder. */
+export const SAMPLES = join("samples", "recall");
+
+/** The documents the suites keep beside the sample estate, relative to the OSDU module's folder. */
+export const FIXTURE_DOCUMENTS = join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "documents");
+
+/**
+ * The reference data cache the fixture mappings resolve against (units, trajectory station property types): the flow
+ * file `<SOURCE>/cache/<CACHE>.yaml`, whose first version the seed imports from `CACHE_RECORDS`.
+ */
+export const CACHE = "fixtures-osdu-00-reference-cache";
+
+/** The records the seed imports as the reference cache's first version, relative to the OSDU module's folder. */
+export const CACHE_RECORDS = join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "cache-records");
 
 /** The cache flow holding the lookup tables in the same partition's cache: `<SOURCE>/cache/<LOOKUPS>.yaml`. */
-export const LOOKUPS = "wells-lookups-00-cache";
+export const LOOKUPS = "recall-lookups-00-cache";
+
+/** The delivery flow the specs run: the sample's well log delivery, with the logSource its one required parameter. */
+export const DELIVERY_FLOW = "recall-welllog-03-header-delivery";
+
+/** The log source the sample's schedule delivers, and so the value the specs run the delivery flow with. */
+export const LOG_SOURCE = "STAT_COMP";
+
+/** The source that delivers several kinds as interfaces, each with a ledger of its own. */
+export const INTERFACES_FLOW = "wells-source-03-interfaces-delivery";
+
+/**
+ * The templates the estate's mappings pin, each with the bundled schema it is saved from (relative to the OSDU module's
+ * folder) and the version saving it gives. The sample's own sit in `samples/templates`, the fixture mappings' in the
+ * fixtures.
+ */
+export const TEMPLATES = [
+  { kind: "osdu:wks:work-product-component--WellLog:1.4.0", file: join("samples", "templates", "osdu_wks_work-product-component--WellLog_1.4.0.json"), version: "26a3c3441882db4f" },
+  { kind: "osdu:wks:master-data--Wellbore:1.3.0", file: join("samples", "templates", "osdu_wks_master-data--Wellbore_1.3.0.json"), version: "58d6bdbd9d066a06" },
+  { kind: "osdu:wks:work-product-component--Document:1.0.0", file: join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "templates", "osdu_wks_work-product-component--Document_1.0.0.json"), version: "5c6898ebc6775f6e" },
+  { kind: "osdu:wks:work-product-component--WellboreTrajectory:1.3.0", file: join("tests", "SqlFlow.Delivery.Tests", "Fixtures", "templates", "osdu_wks_work-product-component--WellboreTrajectory_1.3.0.json"), version: "bfbc5973bbdeb7ec" },
+] as const;
+
+/** The fixture mappings the wellbore flows and the interfaces source pin, copied beside the sample's WellLog mapping. */
+export const FIXTURE_MAPPINGS = ["Wellbore@1.0.0", "Document@1.0.0", "WellboreTrajectory@1.3.0"] as const;
+
+/** The flows of the estate taken from the fixture documents rather than the sample: synced and read, never run. */
+export const FIXTURE_FLOWS = [
+  "wells-wellbore-01-header-pre",
+  "wells-wellbore-01-aliases-pre",
+  "wells-wellbore-02-header-ing",
+  "wells-wellbore-02-aliases-ing",
+  "wells-wellbore-03-header-delivery",
+  INTERFACES_FLOW,
+  "wells-osdu-04-metadata-retrieval",
+] as const;
 
 /** What globalSetup leaves behind for the specs, which run in a process of their own and so cannot be told directly. */
 export interface FixtureMeta {
@@ -149,12 +215,12 @@ export const REPO_NAME = "e2e-repo";
  * cache flow that holds the tables, rather than among the flows of the source's data.
  */
 export const CACHE_LOADING_FLOWS = [
-  "wells-curvedictionary-01-pre",
-  "wells-curvedictionary-02-ing",
-  "wells-units-01-curve-pre",
-  "wells-units-02-curve-ing",
-  "wells-units-01-depth-pre",
-  "wells-units-02-depth-ing",
+  "recall-cachecurvedictionary-01-pre",
+  "recall-cachecurvedictionary-02-ing",
+  "recall-cacheunits-01-curve-pre",
+  "recall-cacheunits-02-curve-ing",
+  "recall-cacheunits-01-depth-pre",
+  "recall-cacheunits-02-depth-ing",
 ] as const;
 
 /** The folder of the source a flow of the estate sits in. */
@@ -164,55 +230,37 @@ export function folderOf(flow: string): "cache" | "flows" {
 
 /** The delivery flows of the fixture estate, and the pre and ingestion flows that fill the tables they read. */
 export const CHAIN = [
-  "wells-welllog-01-header-pre",
-  "wells-welllog-01-curves-pre",
-  "wells-welllog-02-header-ing",
-  "wells-welllog-02-curves-ing",
-  "wells-welllog-03-header-delivery",
-  "wells-wellbore-01-header-pre",
-  "wells-wellbore-01-aliases-pre",
-  "wells-wellbore-02-header-ing",
-  "wells-wellbore-02-aliases-ing",
-  "wells-wellbore-03-header-delivery",
-  "wells-document-01-header-pre",
-  "wells-document-02-header-ing",
-  "wells-trajectory-01-header-pre",
-  "wells-trajectory-01-stations-pre",
-  "wells-trajectory-02-header-ing",
-  "wells-trajectory-02-stations-ing",
+  "recall-welllog-01-header-pre",
+  "recall-welllog-01-curves-pre",
+  "recall-welllog-02-header-ing",
+  "recall-welllog-02-curves-ing",
+  DELIVERY_FLOW,
   ...CACHE_LOADING_FLOWS,
-  // The same estate in the shape a source takes: two interfaces, each with a ledger of its own. It is synced and read,
-  // never run, so it adds a multi-interface source to the catalog without delivering anything twice.
-  "wells-source-03-interfaces-delivery",
-  "wells-osdu-04-metadata-retrieval",
+  // The fixture flows: the wellbore chain, and the estate in the shape a source takes, several kinds as interfaces each
+  // with a ledger of its own. They are synced and read, never run, so they add more kinds, routes and a multi-interface
+  // source to the catalog without delivering anything twice.
+  ...FIXTURE_FLOWS,
 ] as const;
 
 /** The flows that load the ingestion tables, in the order they have to run: the pre flows land files, the ing flows key them. */
 export const LOADING_FLOWS = [
-  "wells-welllog-01-header-pre",
-  "wells-welllog-01-curves-pre",
-  "wells-wellbore-01-header-pre",
-  "wells-wellbore-01-aliases-pre",
-  "wells-welllog-02-header-ing",
-  "wells-welllog-02-curves-ing",
-  "wells-wellbore-02-header-ing",
-  "wells-wellbore-02-aliases-ing",
-  "wells-document-01-header-pre",
-  "wells-document-02-header-ing",
-  "wells-trajectory-01-header-pre",
-  "wells-trajectory-01-stations-pre",
-  "wells-trajectory-02-header-ing",
-  "wells-trajectory-02-stations-ing",
+  "recall-welllog-01-header-pre",
+  "recall-welllog-01-curves-pre",
+  "recall-welllog-02-header-ing",
+  "recall-welllog-02-curves-ing",
   ...CACHE_LOADING_FLOWS,
 ] as const;
 
 /**
- * A sample flow without its top-level schedule block. The suite triggers every run itself: a fire would be a real run
- * against the sample's OSDU target whenever a suite crossed its cron, and the specs expect flows that join no schedule,
- * so the runs board and the schedules page show only what the suite created.
+ * A sample flow without its schedule: the top-level block a flow of its own declares, or the one line naming a schedule
+ * of the estate's library it joins. The suite triggers every run itself: a fire would be a real run against the sample's
+ * OSDU target whenever a suite crossed its cron, and the specs expect flows that join no schedule, so the runs board and
+ * the schedules page show only what the suite created. The library itself (`schedules.yaml`) is not copied either.
  */
 function withoutSchedule(yaml: string, flow: string): string {
-  const stripped = yaml.replace(/^schedule:\r?\n(?:[ \t].*\r?\n)*/m, "");
+  const stripped = yaml
+    .replace(/^schedule:\r?\n(?:[ \t].*\r?\n)*/m, "")
+    .replace(/^(?:#.*\r?\n)*schedule:[ \t]*[A-Za-z0-9_.-]+[ \t]*(?:#.*)?(?:\r?\n|$)/m, "");
   if (/^schedule:/m.test(stripped)) {
     throw new Error(`The fixture flow '${flow}' still declares a schedule block; the e2e suite needs flows that join no schedule.`);
   }

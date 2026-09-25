@@ -368,12 +368,12 @@ test.describe.serial("templates and the mapping builder", () => {
     // The name starts as the template's entity; this draft takes its own, so it is never taken for the synced mapping.
     await expect(adminPage.getByTestId("mapping-builder-name")).toHaveValue("WellLog");
     await adminPage.getByTestId("mapping-builder-name").fill("WellLogDraft");
-    await adminPage.getByTestId("mapping-builder-system").fill("wells");
+    await adminPage.getByTestId("mapping-builder-system").fill("recall");
     await adminPage.getByTestId("mapping-builder-start").click();
 
-    // A well log points at the kind of its vertical measurement, reference data the cache holds, so that entry starts
-    // filled from the cache. Its wellbore is searched for on the platform, so nothing prefills that one.
-    const measurement = rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.VerticalMeasurement.VerticalMeasurementTypeID");
+    // A well log points at the unit of its vertical measurement, reference data the cache holds (the partition's units),
+    // so that entry starts filled from the cache. Its wellbore is searched for on the platform, so nothing prefills that one.
+    const measurement = rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID");
     await expect(measurement).toBeVisible({ timeout: 15_000 });
     await expect(measurement.getByTestId("mapping-builder-prefilled")).toBeVisible();
     const wellbore = rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.WellboreID");
@@ -405,15 +405,14 @@ test.describe.serial("templates and the mapping builder", () => {
     const properties = detail.getByTestId("delivery-mapping-coverage");
     await expect(properties.getByTestId("templates-view-coverage-osdu.acl")).toHaveAttribute("data-coverage", "Always", { timeout: 30_000 });
     await expect(properties.getByTestId("templates-view-coverage-osdu.data.Name")).toHaveAttribute("data-coverage", "Always");
-    // A curve's business value is the one entry the mapping leaves optional, so a log without it still delivers.
+    // A curve's business value is left optional, so a log whose curves have none still delivers.
     await expect(properties.getByTestId("templates-view-coverage-osdu.data.Curves[].LogCurveBusinessValueID"))
       .toHaveAttribute("data-coverage", "Sometimes");
     // An entry filling a free key of an object that takes them is a row under that object.
     await expect(properties.getByTestId("templates-view-coverage-osdu.tags.DeliveredBy")).toHaveAttribute("data-coverage", "Always");
 
-    // What fills a variable is read beside the tree, whole: the origin, every line the lookup tries, and the modifiers
-    // in order. A cache entry's modifiers change the value the lookup compares, which is the one thing a reader gets wrong.
-    // The wellbore is searched for on the platform, by its name and then by its aliases.
+    // What fills a variable is read beside the tree, whole: the origin, every line a lookup tries, and the modifiers in
+    // order. The wellbore is searched for on the platform, by its name and then by its aliases.
     await properties.getByTestId("templates-view-variable-osdu.data.WellboreID").click();
     const entry = properties.getByTestId("templates-view-properties-entry");
     await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("search.Wellbore.id");
@@ -422,12 +421,13 @@ test.describe.serial("templates and the mapping builder", () => {
       .toContainText("search.Wellbore.data.FacilityName = dataset.wellbore_uwi");
     await expect(entry.getByTestId("delivery-mapping-property-detail-lookup"))
       .toContainText("search.Wellbore.data.NameAliases.AliasName = dataset.wellbore_uwi");
+    // The unit of the vertical measurement is read from its column, translated through the depth unit map the
+    // partition's cache holds (not a list in the mapping), and written as the reference to that unit.
     await properties.getByTestId("templates-view-variable-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID").click();
+    await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("dataset.elev_meas_ref");
+    // The steps are numbered in the order they run: the unit split out, translated, then written as the reference.
     const modifiers = entry.getByTestId("delivery-mapping-property-detail-modifiers");
-    await expect(modifiers).toContainText("split on ' ', part 2");
-    // The unit spelling is translated through the depth unit map the partition's cache holds, not a list in the mapping.
-    await expect(modifiers).toContainText("replace from $cache.RecallDepthUnits");
-    await expect(modifiers).toContainText("the value the lookup compares");
+    await expect(modifiers).toHaveText(/^1split on ' ', part 2\s*2replace from \$cache\.RecallDepthUnits\s*3ref$/);
 
     // The search reads what fills a variable too, so a source column answers with every variable it reaches: the
     // vertical measurement, and the unit that measurement is found by.
@@ -458,10 +458,19 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(properties.getByTestId("templates-view-coverage-osdu.acl")).toHaveAttribute("data-coverage", "Always");
 
     // The mapping's YAML is analysed as the flows are: a key's documentation on hover, and nothing flagged in the sample.
-    // The editor draws only the lines in view, so the key hovered is one near the top.
+    // The sample opens on its header comment and the editor draws only the lines in view, so it is scrolled until the
+    // template key is drawn.
     await detail.getByTestId("delivery-mapping-tab-yaml").click();
     const yaml = detail.getByTestId("delivery-mapping-yaml");
-    await yaml.locator(".view-lines").getByText("template", { exact: true }).first().hover();
+    const templateKey = yaml.locator(".view-line").filter({ hasText: /^template:$/ });
+    await expect(async () => {
+      if (await templateKey.count() === 0) {
+        await yaml.hover();
+        await adminPage.mouse.wheel(0, 100);
+      }
+      await expect(templateKey).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 30_000 });
+    await templateKey.getByText("template", { exact: true }).hover();
     await expect(adminPage.locator(".monaco-hover:not(.hidden)")).toContainText("The saved template version the mapping fills", { timeout: 15_000 });
     await expect(yaml.locator(".squiggly-error, .squiggly-warning")).toHaveCount(0);
 
@@ -469,7 +478,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await detail.getByTestId("delivery-mapping-tab-shape").click();
     const shape = detail.getByTestId("delivery-mapping-shape-json");
     // The editor draws only the lines in view, so the check reads the id on the first lines rather than a deeper field.
-    await expect(shape).toContainText("<delivery key from wells", { timeout: 15_000 });
+    await expect(shape).toContainText("<delivery key from recall", { timeout: 15_000 });
     await detail.getByTestId("delivery-mapping-shape-parameter-dataPartition").fill("dev");
     await expect(shape).toContainText("dev:work-product-component--WellLog:", { timeout: 15_000 });
 
@@ -484,15 +493,16 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(adminPage.getByTestId("mapping-builder-valid")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("mapping-builder-propose")).toBeEnabled();
 
-    // A replace reading a cached table opens as one: the table, the field it names, and the key it matches on by default,
-    // which the table settles, so the draft leaves it out.
-    await rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.Curves[].LogCurveFamilyID").click();
-    await expect(adminPage.getByTestId("mapping-builder-entry-target")).toHaveText("osdu.data.Curves[].LogCurveFamilyID");
+    // A replace reading a cached table opens as one: the table, and the key it matches on and the field it replaces by,
+    // both of which the table settles, so the draft leaves them out. A spelling the table does not list is left as it is.
+    await rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.Curves[].CurveUnit").click();
+    await expect(adminPage.getByTestId("mapping-builder-entry-target")).toHaveText("osdu.data.Curves[].CurveUnit");
     await expect(adminPage.getByTestId("mapping-builder-entry-modifier-source-cache-0")).toHaveAttribute("data-state", "on");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText("CurveDictionary");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText("RecallUnits");
     await expect(adminPage.getByTestId("mapping-builder-entry-modifier-match-0")).toContainText("the table's key");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("log_curve_family_id");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-otherwise-0")).toContainText("gives no value");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("the table's only field");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("osdu_unit");
+    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-otherwise-0")).toContainText("is left as it is");
 
     // Switching to values listed in the mapping leaves the table behind; switching back offers the partition's lookup tables.
     await adminPage.getByTestId("mapping-builder-entry-modifier-source-pairs-0").click();

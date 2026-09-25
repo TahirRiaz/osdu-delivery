@@ -16,10 +16,10 @@ One file per cached type, named after the type, holding its entity type and its 
 a cache flow captures). They are generic OSDU reference-data samples, not tied to one flow of the recall estate: the
 recall estate's own well log mapping (`osdu/samples/recall/mappings/WellLog@1.4.0.yaml`) builds every reference id it
 writes from a template and the lookup tables of `recall/cache/recall-lookups-00-cache.yaml`, so it imports none of
-these files. They exist for the fixture mappings this repository's suites carry
-(`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/documents/cache/fixtures-osdu-00-reference-cache.yaml` and the cache
-flows it declares), and for the GUI end-to-end suite's seed step, both of which name the type a file holds against
-what their own cache flow declares.
+these files. They serve a first-time setup whose own mappings read OSDU reference data from the cache, and the control
+plane suite's mapping builder test, which seeds a partition's cache from them. The suites' fixture mappings and the GUI
+end-to-end suite's seed step import records of their own instead (`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/cache-records`),
+exactly what their cache flow (`Fixtures/documents/cache/fixtures-osdu-00-reference-cache.yaml`) declares.
 
 ```bash
 sqlflow cache import <cache flow file> --from-dir <this folder> --db <conn-ref>

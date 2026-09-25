@@ -1,3 +1,4 @@
+import { DELIVERY_FLOW } from "./global-setup";
 import { expect, test } from "./helpers";
 
 // The pipeline catalog for a delivery flow: the module's Delivery tab and the platform's own read-only tabs beside
@@ -7,8 +8,8 @@ test.describe.serial("pipelines", () => {
   test("pipeline detail shows the delivery, records, YAML, definition, runs and schedules tabs", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-pipelines").click();
     // The folder tree starts collapsed; a search expands it and surfaces the flow row.
-    await adminPage.getByTestId("filter-name").fill("wells-welllog-03-header-delivery");
-    await adminPage.getByTestId("repo-pipeline").filter({ hasText: "wells-welllog-03-header-delivery" }).first().click();
+    await adminPage.getByTestId("filter-name").fill(DELIVERY_FLOW);
+    await adminPage.getByTestId("repo-pipeline").filter({ hasText: DELIVERY_FLOW }).first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
 
     const tabs = adminPage.getByTestId("pipeline-tabs");
@@ -22,7 +23,7 @@ test.describe.serial("pipelines", () => {
     await tabs.getByRole("tab", { name: /yaml/i }).click();
     await expect(adminPage.getByTestId("pipeline-yaml")).toBeVisible();
     // Monaco renders the synced document: the flow name from the fixture YAML is on screen.
-    await expect(adminPage.getByTestId("pipeline-yaml").getByText("wells-welllog-03-header-delivery").first())
+    await expect(adminPage.getByTestId("pipeline-yaml").getByText(DELIVERY_FLOW).first())
       .toBeVisible({ timeout: 30_000 });
 
     await tabs.getByRole("tab", { name: /definition/i }).click();

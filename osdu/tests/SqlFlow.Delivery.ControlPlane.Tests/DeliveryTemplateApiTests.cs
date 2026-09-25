@@ -236,9 +236,9 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal("tests", described.Current.CapturedBy);
             Assert.Equal(cacheFlowName, described.Current.Flow);
             Assert.Equal(1, described.Versions);
-            Assert.Equal(2, Assert.Single(described.Types, t => t.Name == "VerticalMeasurementType").Items);
+            Assert.Equal(3, Assert.Single(described.Types, t => t.Name == "VerticalMeasurementType").Items);
             var measurementTypes = await ReadAsync<PagedResult<DeliveryCachedItemDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/items?scope={scope}&type=VerticalMeasurementType"));
-            Assert.Equal(2, measurementTypes.Total);
+            Assert.Equal(3, measurementTypes.Total);
             Assert.All(measurementTypes.Items, item => Assert.Equal(ReferenceVersion, item.Version));
             var history = await ReadAsync<List<DeliveryCacheHistoryEntryDto>>(await SendAsync(client, author, HttpMethod.Get, $"/api/v1/delivery/cache/history?scope={scope}"));
             var only = Assert.Single(history);
@@ -253,7 +253,7 @@ public sealed class DeliveryTemplateApiTests
 
             var draft = await ReadAsync<MappingDraft>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/draft", new
             {
-                scope,kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "wells",
+                scope,kind = WellLogKind, version = WellLogVersion, name = "WellLog", mappingVersion = "9.0.0", system = "recall",
             }));
             var prefilled = Assert.Single(draft.Entries, e => e.Target == "osdu.data.VerticalMeasurement.VerticalMeasurementTypeID");
             Assert.True(prefilled.Prefilled);
@@ -269,12 +269,21 @@ public sealed class DeliveryTemplateApiTests
             Assert.Empty(parsed.Issues);
             Assert.NotNull(parsed.Draft);
 
-            // A replace reading a cached table opens with the table and the fields it names, and nothing the table settles.
+            // A replace reading a cached table opens with the table, and nothing the table settles: RecallUnits names its key
+            // and its one field, so the draft leaves both out, and a spelling it does not list is kept as it is. The ref after
+            // it writes the translated unit as the reference to that unit.
+            var unitModifiers = Assert.Single(parsed.Draft.Entries, e => e.Target == "osdu.data.Curves[].CurveUnit").Modifiers;
+            Assert.Equal(["replace", "ref"], unitModifiers.Select(m => m.Kind));
+            var unit = unitModifiers[0];
+            Assert.Equal(("RecallUnits", (string?)null, (string?)null, "keep"), (unit.Table, unit.Match, unit.Field, unit.OtherwiseKind));
+            Assert.Null(unit.Replacements);
+
+            // An id built from a cached table opens as its template, whole: the curve's family is the code the curve
+            // dictionary gives its mnemonic.
             var family = Assert.Single(Assert.Single(parsed.Draft.Entries, e => e.Target == "osdu.data.Curves[].LogCurveFamilyID").Modifiers);
-            Assert.Equal(("replace", "CurveDictionary", (string?)null, "log_curve_family_id", "empty"), (family.Kind, family.Table, family.Match, family.Field, family.OtherwiseKind));
-            Assert.Null(family.Replacements);
-            var unit = Assert.Single(Assert.Single(parsed.Draft.Entries, e => e.Target == "osdu.data.Curves[].CurveUnit").Modifiers);
-            Assert.Equal(("RecallUnits", (string?)null, (string?)null), (unit.Table, unit.Match, unit.Field));
+            Assert.Equal(
+                ("id", "{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveDictionary.log_curve_family_id}:"),
+                (family.Kind, family.Text));
             var parameters = new Dictionary<string, string>
             {
                 ["dataPartition"] = "dev",
@@ -285,7 +294,8 @@ public sealed class DeliveryTemplateApiTests
             var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
             Assert.Contains("    WellboreID:\n      $search: Wellbore\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
-            Assert.Contains("            - replace: $cache.CurveDictionary\n              field: log_curve_family_id\n              otherwise: ~\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("            - replace: $cache.RecallUnits\n            - ref\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("            - id: \"{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveDictionary.log_curve_family_id}:\"\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
 
             // A cached table the partition's cache does not hold is refused by the check, naming what it does hold.
             var missingTable = parsed.Draft with
@@ -303,7 +313,7 @@ public sealed class DeliveryTemplateApiTests
             var shape = await ReadAsync<DeliveryMappingShapeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/shape", new { yaml = sample, path = "mappings/WellLog@1.4.0.yaml", parameters }));
             Assert.Empty(shape.Issues);
             Assert.NotNull(shape.Record);
-            Assert.Equal("dev:work-product-component--WellLog:<delivery key from wells, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
+            Assert.Equal("dev:work-product-component--WellLog:<delivery key from recall, dataset.source_project, dataset.log_id>", shape.Record["id"]!.GetValue<string>());
             Assert.Equal("<string from dataset.curves.curve_id>", shape.Record["data"]!["Curves"]![0]!["CurveID"]!.GetValue<string>());
             Assert.Equal("dev", Assert.Single(shape.Parameters, p => p.Name == "dataPartition").Value);
 
@@ -331,7 +341,8 @@ public sealed class DeliveryTemplateApiTests
             Assert.Contains(unsaved.Issues, i => i.Severity == "error" && i.Message.Contains("which is not saved", StringComparison.Ordinal));
 
             // A wellbore reference read from the unit cache is written, and refused by the check against the template. The
-            // entry no longer searches for the wellbore, so the search it read goes with it.
+            // entry no longer searches for the wellbore, so the search it read goes with it, and the fixtures go too, with
+            // the parameters they share.
             var wrong = parsed.Draft with
             {
                 Searches = [],
@@ -339,6 +350,7 @@ public sealed class DeliveryTemplateApiTests
                     ? e with { Input = MappingDraftInput.Cache, CacheType = "UnitOfMeasure", CacheField = "id", FindBy = [new MappingDraftFind("Code", "wellbore_uwi", null)] }
                     : e).ToList(),
                 Fixtures = [],
+                FixtureParameters = new Dictionary<string, string>(StringComparer.Ordinal),
             };
             var refused = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = wrong, parameters }));
             Assert.False(refused.Valid);
@@ -347,7 +359,7 @@ public sealed class DeliveryTemplateApiTests
             // Without a partition named there is no cache to check the cache entries against, and the check says so.
             var noCache = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope = (string?)null, draft = parsed.Draft, parameters }));
             Assert.False(noCache.Valid);
-            Assert.Contains(noCache.Issues, i => i.Message.Contains("reads cache.UnitOfMeasure, which cache version 'none' does not hold", StringComparison.Ordinal));
+            Assert.Contains(noCache.Issues, i => i.Message.Contains("replace reads $cache.RecallUnits, which cache version 'none' does not hold", StringComparison.Ordinal));
         }
         finally
         {

@@ -1,4 +1,5 @@
 import { E2E } from "../playwright.config";
+import { DELIVERY_FLOW } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
 // Lineage over the synced estate: every OSDU flow shows with its data on both sides. The delivery flows write the OSDU
@@ -42,15 +43,16 @@ test.describe.serial("lineage", () => {
 
     const wellLog = named("osdu-type", WELL_LOG);
     expect(wellLog, `no ${WELL_LOG} among ${datasets.map((d) => d.name).join(", ")}`).toBeDefined();
-    // Two flows deliver well logs: wells-welllog-03-header-delivery in the single form, and the welllogs interface of wells-source-03-interfaces-delivery.
+    // Two flows deliver well logs: the sample's delivery flow in the single form, and the welllogs interface of the
+    // fixture source that delivers several kinds as interfaces.
     // The estate names its partition as a reference, and lineage keeps a reference as its text rather than resolving it,
     // so every flow naming the partition the same way meets on the same node.
     expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual([PARTITION, "work-product-component", 2]);
 
     const wellbore = named("osdu-type", WELLBORE);
     expect(wellbore).toBeDefined();
-    // wells-wellbore-03-header-delivery and the wellbores interface of wells-source-03-interfaces-delivery write it; the cache flow and the download
-    // read it back through their wildcard kinds.
+    // The fixture wellbore flow and the wellbores interface of the fixture source write it; the well log mapping's search and
+    // the download read it back through their wildcard kinds.
     expect(wellbore!.writers).toBe(2);
     expect(wellbore!.readers).toBeGreaterThanOrEqual(2);
 
@@ -58,8 +60,8 @@ test.describe.serial("lineage", () => {
     expect(units).toBeDefined();
     expect([units!.namespace, units!.group, units!.writers]).toEqual([PARTITION, "cache", 1]);
 
-    // The lookup tables sit in the same partition's cache, written by the lookups flow and read by the mappings that
-    // translate through them.
+    // The lookup tables sit in the same partition's cache, written by the lookups flow and read by the well log mapping,
+    // which translates through them.
     const recallUnits = named(CACHE_SYSTEM, "RecallUnits");
     expect([recallUnits?.namespace, recallUnits?.group, recallUnits?.writers]).toEqual([PARTITION, "cache", 1]);
     expect(recallUnits!.readers).toBeGreaterThanOrEqual(1);
@@ -77,7 +79,7 @@ test.describe.serial("lineage", () => {
     await expect(details.getByText("osdu type", { exact: true })).toBeVisible();
     await details.getByTestId("catalog-tab-pipelines").click();
     const provenance = adminPage.getByTestId("catalog-file-provenance");
-    await expect(provenance.getByText("wells-welllog-03-header-delivery", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(provenance.getByText(DELIVERY_FLOW, { exact: true })).toBeVisible({ timeout: 30_000 });
 
     await details.getByTestId("search-open-graph").click();
     await adminPage.getByTestId("lineage-jump-option").first().click();
@@ -85,7 +87,7 @@ test.describe.serial("lineage", () => {
     await expect(graph).toBeVisible();
     await expect(graph.getByText(WELL_LOG, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await expect(graph.getByText(`osdu type · ${PARTITION}.work-product-component`).first()).toBeVisible();
-    await expect(graph.getByText("wells-welllog-03-header-delivery", { exact: true }).first()).toBeVisible();
+    await expect(graph.getByText(DELIVERY_FLOW, { exact: true }).first()).toBeVisible();
   });
 
   test("the catalog tree groups datasets by system, partition and group", async ({ adminPage }) => {

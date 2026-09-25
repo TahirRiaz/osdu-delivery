@@ -7,7 +7,7 @@ are a parse error. Every validation failure names the file.
 
 ```yaml
 flowType: delivery                 # required discriminator
-name: wells-welllog-03-header-delivery               # required; the flow id is derived from it
+name: recall-welllog-03-header-delivery              # required; the flow id is derived from it
 
 parameters:                        # optional; {name} tokens usable in source.work and each payload root
   logSource: { required: true, default: null, description: ... }
@@ -1051,13 +1051,14 @@ well log names, are searched for by the mapping as each record needs one ([findB
 Beside OSDU's own records, a partition's cache holds lookup tables this estate keeps itself, such as how a source spells
 its units: a cache flow fills one from a dictionary document in the repository ([Dictionary](#dictionary)), and every
 mapping reads it the way it reads any cached type. It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
-reads the cache of the partition it delivers to ([The partition cache](#the-partition-cache)). The sample estate's
-cache flow, `samples/wells/cache/wells-osdu-00-reference-cache.yaml`, fills partition `dev`:
+reads the cache of the partition it delivers to ([The partition cache](#the-partition-cache)). A cache flow capturing
+the reference data well log and trajectory mappings look units, business values and station property types up in,
+filling partition `dev`, reads:
 
 ```yaml
 flowType: cache
-name: wells-osdu-00-reference-cache
-batch: wells
+name: osdu-reference-00-cache
+batch: reference
 
 source:
   endpoint: ${env:OSDU_URL}
@@ -1098,6 +1099,10 @@ reliability:
 schedule:
   cron: "0 2 * * *"
 ```
+
+The sample estate (`osdu/samples/recall`) has no such flow: its WellLog mapping builds every reference it writes with the
+`ref` and `id` modifiers and searches the platform for the wellbore, so the only cache it reads is the lookup tables
+its own cache flow, `recall/cache/recall-lookups-00-cache.yaml`, captures ([Dictionary](#dictionary)).
 
 | Key | Meaning |
 | --- | --- |
@@ -1228,9 +1233,10 @@ it in the partition's cache (`types: [{ dictionary: <name> }]`), where a mapping
 type. Editing the file changes nothing until the cache flow runs; that refresh writes a new cache version, and only the
 records a changed entry reaches are tagged and delivered again ([Cache flow](#cache-flow)). A table another system
 keeps, or one too large to review as a document, is better held as an ingestion table: the sample estate keeps
-petrodb-api's unit maps and curve dictionary as CSV files in `samples/wells/cache/data/`, which the pre and ing flows
-beside them in `samples/wells/cache/` load into `OsduData.arc.RecallUnits`, `RecallDepthUnits` and `CurveDictionary`,
-and `samples/wells/cache/wells-lookups-00-cache.yaml` captures those tables. The data is static, so it and the flows that
+petrodb-api's unit maps and curve dictionary as CSV files in `samples/recall/cache/data/`, which the pre and ing flows
+beside them in `samples/recall/cache/` load into `OsduData.arc.CacheRecallUnits`, `CacheRecallDepthUnits` and
+`CacheCurveDictionary`, and `samples/recall/cache/recall-lookups-00-cache.yaml` captures those tables as the cache types
+`RecallUnits`, `RecallDepthUnits` and `CurveDictionary`. The data is static, so it and the flows that
 load it sit in the cache folder rather than among the flows of the source's data.
 
 A dictionary of pairs maps each key to one value:

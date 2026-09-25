@@ -6,7 +6,8 @@ The mapping document is laid out the way the rendered OSDU record is, the mappin
 mapping can compute values and decide conditions with a small expression language of its own. The loader, the
 renderer, the preflight, the builder, the census, the GUI, the docs, the samples, the test fixtures and the tests are
 all on the new form, and the recall repository (`B:\osdu-recall-metadata\recall`) matches `osdu/samples/recall` file for
-file. Nothing is committed yet in either repository.
+file. That work is committed: `f438e4c` here, pushed, and `82b08c3` in the recall repository, which has no remote.
+Everything downstream of the sample has since been brought to it (third part, below); that part is not committed yet.
 
 ```yaml
 record:
@@ -75,16 +76,30 @@ the control-plane suite, run in a worktree without `.sqlflow/env`, fails exactly
 pre-rebuild commit; the GUI builds and lints clean; `sqlflow validate` passes all 14 recall documents;
 `tools/check-vendored-sqlflow.sh` passes (nothing under `sqlflow/` changed); no changed file holds an em dash.
 
+### Everything downstream of the sample (third part, not committed)
+
+`samples/wells` was deleted in a7cb146, and what copied or described it was left pointing at it. All of it now uses the
+recall sample, in the new mapping format:
+
+| Area | Change |
+| --- | --- |
+| GUI e2e suite (`osdu/gui/e2e`) | The global setup builds the fixture repository from `samples/recall` plus the fixture wellbore flows, interfaces source, retrieval flow, mappings and reference cache, the estate `SampleEstate.cs` composes for the control plane suites. The seed imports `Fixtures/cache-records`, runs the recall chain into `arc` tables and refreshes `recall-lookups-00-cache`; the OSDU stand-in holds the five Recall wellbores (spaces and slashes as hyphens in the id); every spec names the recall flows through the constants in `global-setup.ts`, and the cache and builder specs read the new `$cache:` vocabulary. |
+| Coverage (`Validation/MappingCoverage.cs`) | A literal object or list fills the properties it holds, so the sample's `TechnicalAssurances` literal no longer shows `TechnicalAssuranceTypeID` as required and unfilled. |
+| Control plane tests | `DeliveryModuleDatabaseTests` expect the two mappings a copy of the sample holds; the builder test expects the recall mapping as it is. |
+| SQLFlow (`sqlflow/src/SqlFlow.Node/GitMaterializer.cs`) | The history clone behind a repo's tree and git history moves HEAD to what a fetch brings. It never did, so the repo page listed the tree the clone was first made from. Its own `sqlflow:` commit, recorded in `docs/sqlflow-changes.md`. |
+| Docs | READMEs, operations, CLI references, the notifications guide and the test matrix name the recall estate; the WellLog walkthrough is rewritten against the recall mapping and its fixture; `samples/cache-records/README.md` says who reads those records now. |
+| Outside the repository | `.sqlflow/live-e2e/repo/mappings` (git-ignored) converted to the record tree and proven to render byte-identical records to the old form; the recall repository's lookups flow comment matches the sample's. |
+
+A local `OsduDeliveryE2E` seeded before this work holds the old estate's ingestion rows and cache versions, which fail
+the cache and records specs; it was dropped once here and recreated by the next run.
+
 ## Known failures that predate this work
 
-- Control plane, on 584c1b1 as well: `DeliveryModuleDatabaseTests` (three; they expect the old `samples/wells` estate's
-  four mappings) and `DeliveryTemplateApiTests.The_builder_drafts_from_a_cache_and_checks_what_it_writes`. That test
-  carries three stale premises in a row: a seeded cache count (2 where the seed now holds 3), the sample's
-  `LogCurveFamilyID` reading through a cached replace (it builds an id since a7cb146), and a shape naming the system
-  `wells` (the sample says `recall`). With those three set aside in a scratch copy, the part this work touches passes:
-  the sample, with `ref` and `fixtureDefaults`, opens in the builder with no issues and composes valid.
-- Run from the main checkout, twelve more control-plane tests fail because the test host picks up `.sqlflow/env`
-  (`SQLFLOW_OSDU_DB`, `OSDU_ACL_OWNER` among others); in a worktree without it they pass.
+- Run from the main checkout, control-plane tests pick up `.sqlflow/env` through the test host (`OSDU_ACL_OWNER` among
+  others). Set `SQLFLOW_LOCAL_ENV_FILE=false` for the run, which is what a clean checkout gets; SQLFlow's own
+  `ControlPlaneLocalEnvFileTests` need the file read, so leave the variable unset for SQLFlow's suites.
+- SQLFlow's CLI tests run the Release build of `sqlflow.dll` when one exists, so a stale Release build fails them;
+  rebuild `sqlflow/src/SqlFlow.Cli` in Release first.
 - `SqlServerChainTests` fan-out tests: see the repository memory note; compare with a baseline run before attributing a
   failure there to a change.
 
@@ -101,8 +116,12 @@ The tree has the syntax for these and the loader refuses them by name:
 
 ## Local environment notes
 
-- The local incoming-data database is `OsduData` (schemas `pre` and `arc`; the lookup tables are `Cache*`), its
-  connection `OSDU_DATA_DB` in `.sqlflow/env`. `.sqlflow/env` also sets `ControlPlane__ManagedSync__Enabled=true`.
-- The registered `recall` repo in the local catalog points at `C:\projects\osdu-recall-metadata\recall`; the recall
-  repository on this machine is `B:\osdu-recall-metadata`. Re-register or re-point it before a local sync.
+- On this machine `.sqlflow/env` names two local databases: `SQLFlow` (the catalog) and `OsduDelivery` (the module,
+  which also holds the chain's `pre` and `arc` tables). It sets no `OSDU_DATA_DB`, so a dev run of a flow that reads the
+  ingestion tables cannot resolve its connection. It also sets `ControlPlane__ManagedSync__Enabled=true`.
+- The dev catalog's one repo source is `e2e-repo`, the fixture repository `osdu/gui/e2e/.fixtures/SQLFlow-repo`, synced
+  every 300 seconds while the dev control plane runs. The e2e global setup writes it, and running only
+  `e2e/03-seed.spec.ts` against the dev pair seeds it (`SQLFLOW_E2E_CATALOG_DB` naming `SQLFlow`, `SQLFLOW_E2E_OSDU_DB`
+  and `SQLFLOW_E2E_DATA_DB` naming `OsduDelivery`, `SQLFLOW_E2E_GUI_PORT=5174`). No repo points at the recall repository
+  (`B:\osdu-recall-metadata`, which has no remote); register it to sync it on its own.
 - A running control plane locks the Debug bins; stop it before building the solution.

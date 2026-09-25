@@ -92,21 +92,27 @@ say what the suites prove; the live column says which of them a live platform ha
 
 ## The sample estate
 
-`osdu/samples/wells` is a runnable estate rather than a fixture: the pre and ingestion flows load its files
-into SQL Server, and the delivery flows plan and render against real templates and a real cache version. It covers four
-kinds and three route types:
+`osdu/samples/recall` is a runnable estate rather than a fixture: five real Recall well logs with their curves, and the
+unit maps and curve dictionary petrodb-api translates Recall's values through. Its pre and ingestion flows load the files
+into SQL Server, its lookups flow captures those tables into the partition's cache, and its delivery flow plans and
+renders against the WellLog 1.4.0 template through the ddms route, with each log's curves as bulk data.
 
-| Interface or flow | Kind | Route |
-| --- | --- | --- |
-| `wells-wellbore-03-header-delivery`, `wells-source-03-interfaces-delivery/wellbores` | `master-data--Wellbore` | storage |
-| `wells-welllog-03-header-delivery` | `work-product-component--WellLog` | ddms (well logs, with bulk data) |
-| `wells-source-03-interfaces-delivery/welllogs` | `work-product-component--WellLog` | storage |
-| `wells-source-03-interfaces-delivery/trajectories` | `work-product-component--WellboreTrajectory` | ddms (trajectories, with bulk data) |
-| `wells-source-03-interfaces-delivery/documents` | `work-product-component--Document` | file |
+The suites put fixture documents (`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/documents`) beside it for the kinds and
+routes the sample does not deliver. Together they cover four kinds and three route types:
 
-The GUI's end-to-end suite runs that estate through the product: the repository is synced, the templates saved, the
-cache imported, the chain run, a plan executed, and the source read one interface at a time through the GUI and the
-CLI.
+| Interface or flow | Kind | Route | From |
+| --- | --- | --- | --- |
+| `recall-welllog-03-header-delivery` | `work-product-component--WellLog` | ddms (well logs, with bulk data) | the sample |
+| `wells-wellbore-03-header-delivery`, `wells-source-03-interfaces-delivery/wellbores` | `master-data--Wellbore` | storage | the fixtures |
+| `wells-source-03-interfaces-delivery/welllogs` | `work-product-component--WellLog` | storage | the fixtures, rendered with the sample's mapping |
+| `wells-source-03-interfaces-delivery/trajectories` | `work-product-component--WellboreTrajectory` | ddms (trajectories, with bulk data) | the fixtures |
+| `wells-source-03-interfaces-delivery/documents` | `work-product-component--Document` | file | the fixtures |
+
+The GUI's end-to-end suite runs the two together through the product: the repository is synced, the templates saved,
+the fixture reference records imported as the cache's first version, the Recall chain run and its lookup tables
+refreshed, a plan executed and an intake staged, and the fixture source read one interface at a time through the GUI and
+the CLI. The fixture flows are synced and read but never run: their source files are not part of the estate, so their
+ledgers stay empty.
 
 ## What no suite proves
 
