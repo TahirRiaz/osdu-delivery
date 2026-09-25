@@ -367,26 +367,42 @@ Pipelines like any other flow.
   the payload files, the records it refers to and its source rows, and downloads as JSON. Every records list, a
   flow's and the Records page's, carries **In OSDU** on each row the ledger has an OSDU id for, which opens the record's
   page reading it from OSDU.
-- **A record's page**: the answers an operator arrives with first, as a journey across the whole chain. The strip
-  reads in the order the estate moves a row: **pre-ingestion** (the run that landed the file), **ingestion** (the run
-  that loaded it into the table the delivery flow reads), then received, planned, dispatched, landed, verified and
-  removed. The two chain stages come from the platform's own record of processed files
-  (`GET /api/v1/delivery/records/{flowId}/{key}/chain`), matched on the ingestion file the record carries, so they
-  name runs that actually ran; a file no run recorded says so rather than showing a blank. The rest of the strip says
-  when the row was received (with the ingestion file and row), when it was planned, how many times it was dispatched and how many
-  failed, when it landed and as which version, when it was last verified and what that found, and whether it was
-  removed; under it the timeline of every dated fact the ledger holds, oldest first, every dispatch with its phase,
-  duration, worker, run, submission, the origin it sent and what OSDU answered, every intervention with who asked for
-  it, and folded in the middle when it is long. The pre-ingestion and ingestion runs take their place in the same
-  timeline, each with the rows it handled and a link to its run and flow. Then custody state, hashes, versions, the received-from file and row,
-  the pending document, the render context; the history of attempts and interventions as tables; Verify, Redeliver,
-  Read back, Source row (the record's rows as the ingestion tables hold them now, read on a node), Release and
-  Remove from OSDU. The **In OSDU** tab shows the record as OSDU holds it, read on a node through the flow's route
-  (Read back opens it): OSDU's own fields (version, who created and last changed it and when), its viewers, owners and
-  legal tags, the document, and every OSDU record it refers to, each of which is read in turn, through the same route,
-  and opens beneath it (a link followed from further up closes what was opened below it). A page opened with
-  `?tab=osdu` reads the record at once. The **Compare** tab shows what OSDU holds beside what a delivery would send now,
-  as a side-by-side comparison and a list of the paths that differ.
+- **A record's page**: three layers, each fact in one place, and as little as answers the question. The **header** is
+  who the record is and where it stands: its label, custody state and blocked flag; its OSDU id, flow and last
+  submission as chips; the **situation** its state calls for and no other (held or failed with the error and the next
+  try; waiting, with the record it waits for; being delivered under a lease, or a lease that ran out; a rendered
+  document waiting to go, with its work batch; blocked; removed), so a delivered record with nothing wrong has no
+  situation line at all; and the operations: Verify, Redeliver, Release (while blocked), Send without waiting (while
+  waiting) and Remove from OSDU. The **milestones** strip under it is four cells in the order the estate moves a row:
+  **pre-ingestion** (the run that landed the file), **ingestion** (when the row reached the table the delivery flow
+  reads, and the run that loaded it), **landed** (when, as which version; until then how many tries and how many
+  failed) and **verified** (when, what it found), with **removed** added for a record that was. The two chain stages
+  come from the platform's own record of processed files (`GET /api/v1/delivery/records/{flowId}/{key}/chain`),
+  matched on the ingestion file the record carries, so they name runs that actually ran; a run the platform did not
+  record says so beside the time the row was stamped, rather than showing a blank. Then the **tabs**, one question
+  each:
+  - **Timeline**: what happened, newest first, in a box of fixed height that scrolls, so a record with hundreds of
+    tries does not push the page down: where it stands now, every intervention with who asked for it, every dispatch
+    with its phase, duration, run and submission and what OSDU answered, when the record was planned and the row
+    received, and the pre-ingestion and ingestion runs with the rows they handled. An entry opens to the rest the
+    ledger holds about it (the steps a try took and what each returned, its worker, correlation id, work batch and
+    the origin it sent; an intervention's parameters). The timeline narrows to the dispatches or the interventions
+    alone.
+  - **Source**: where the row came from: the source key, the ingestion file and row the delivered document was built
+    from (and the newer row a waiting document is built from), when the row was received and the source last
+    modified, the key columns that find it, and a read of its rows as the ingestion tables hold them now, on a node
+    with the flow's own connection.
+  - **Document**: what the ledger holds to send: the rendered document waiting to go (its work batch, submission,
+    reference, payload location and the steps an earlier try completed), what OSDU returned when the record last
+    landed, the fingerprints (metadata hash, payload hash, source fingerprint) the ledger decides "changed" by, and
+    the render context.
+  - **In OSDU**: the record as OSDU holds it, read on a node through the flow's route: OSDU's own fields (version, who
+    created and last changed it and when), its viewers, owners and legal tags, the document, and every OSDU record it
+    refers to, each of which is read in turn, through the same route, and opens beneath it (a link followed from
+    further up closes what was opened below it). A page opened with `?tab=osdu` reads the record at once.
+  - **Compare**: what OSDU holds beside what a delivery would send now, as a side-by-side comparison and a list of
+    the paths that differ.
+  - **References**: the OSDU ids the waiting document refers to, and the records of the ledger waiting for this one.
 - **The removal dialog**: one surface for both. It names the target first (endpoint as declared, data partition,
   protocol, auth) because that is which OSDU the records are about to leave, then the three scopes side by side
   with what each destroys, whether it can be undone, what the ledger will do, and the exact call it makes. The
@@ -543,7 +559,7 @@ redacted before it is written.
 | Submission `failed` with a validation message | The submission page; the run's trace | Fix the documents or the source rows, then run the flow again. |
 | A record-scoped run plans nothing: the ingestion tables hold no row for its key | The run's trace names the record table and the key | Look at the pre and ingestion runs that load that table; a run scoped to the record reads it by key once they have loaded it. |
 | Records `held` | The Records tab filtered to held | Read the last error. Fix the data (reference miss, empty key) or the mapping; then Release (one record, or all blocked). |
-| Records `failed` | The record's History tab | The retry budget is spent; the last error is redacted but specific. Release after fixing the cause. |
+| Records `failed` | The record's page: the situation line under its header, and the failed dispatches on its Timeline tab | The retry budget is spent; the last error is redacted but specific. Release after fixing the cause. |
 | Records `waiting` | The Records tab filtered to waiting; the record page says what it waits for | Each refers to a record of the ledger that has not landed. Nothing is charged and nothing is needed: they go out on their own when that record is delivered. When the record they wait for is held or failed, fix that one and release it. To send one as it is, with the reference pointing at nothing until the other lands, use "Send without waiting" on its page. |
 | Records held with `refers to ... which neither the ledger nor OSDU's storage service holds` | The record's last error names the ids and the properties | The flow declares `target.verifyReferences: storage`, and the records it names are in neither the ledger nor OSDU. Deliver them (another flow, another system), or correct the mapping or the source rows, then Release. |
 | Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The flow's next deliver run (the recovered run, a re-run of the submission, or `drain`) waits out the lease, recovers it (applying what the stopped worker had sent) and sends the rest; nothing else to do unless a node is wedged. |
@@ -583,7 +599,7 @@ redacted before it is written.
 | An API call answers 400 `Interface required` | The message lists the flow's interfaces | The flow is a source of several interfaces: add `?interface=<name>`. |
 | A flow fails to load: `the document declares interfaces, so these belong to an interface rather than the source` | The error names each misplaced key | Move `source.record`, `source.datasets`, `source.payloads`, `render.mapping`, `target.protocol` or `target.protocolOptions.payload` under the interface they belong to ([documents.md](documents.md#a-source-with-interfaces)). |
 | The sync warns that a ledger is kept by two flows | The warning names the interface and the flow keeping it | An interface adopted the ledger (`ledger:`) of a flow the repository still holds. Remove the old flow, or the adoption; until then both deliver into one ledger. |
-| A failure has to be followed into OSDU's own logs | The record's History tab: the attempt's result names its `correlationId`, and a refused request's error quotes `(correlation-id ...)` | Give the OSDU operators that id: every request of the try carried it. |
+| A failure has to be followed into OSDU's own logs | The record's Timeline tab: the dispatch, opened, names its correlation id, and a refused request's error quotes `(correlation-id ...)` | Give the OSDU operators that id: every request of the try carried it. |
 
 ## Metrics
 

@@ -63,12 +63,10 @@ test.describe.serial("record trace", () => {
     await expect(adminPage.getByTestId("page-delivery-record")).toBeVisible();
     await expect(adminPage.getByTestId("record-journey")).toBeVisible();
     await expect(adminPage.getByTestId("record-milestones")).toBeVisible({ timeout: 30_000 });
-    await expect(adminPage.getByTestId("milestone-dispatched")).toContainText("not yet");
     await expect(adminPage.getByTestId("milestone-landed")).toContainText("not yet");
     await expect(adminPage.getByTestId("journey-planned")).toBeVisible();
     await expect(adminPage.getByTestId("journey-planned")).toContainText("claimed the OSDU id");
     await expect(adminPage.getByTestId("journey-queued")).toBeVisible();
-    await expect(adminPage.getByTestId("record-origin")).toContainText("welllog_");
 
     // The chain before the ledger, named run by run. Pre-ingestion is found by the file it processed; ingestion
     // processed no file of its own (it reads the table the pre flow landed), so it is found by the table it was
@@ -86,8 +84,18 @@ test.describe.serial("record trace", () => {
     // With every stage named there is nothing missing to explain, so the note is not rendered at all.
     await expect(adminPage.getByTestId("record-chain-note")).toHaveCount(0);
 
-    // Every long value of the header is clipped to its own column and copyable: a staged payload's path is longer
-    // than the column it sits in, and a value wider than its cell used to run under the value beside it.
+    // An entry opens to the rest of what the ledger holds about it: the ingestion run's flow, status and file.
+    await journey.getByTestId("journey-chain-ingestion").getByTestId("journey-event-toggle").click();
+    await expect(journey.getByTestId("journey-chain-ingestion").getByTestId("journey-event-detail")).toContainText("recall-welllog-02-header-ing");
+
+    // The Source tab names the ingestion file and row the record was staged from.
+    await adminPage.getByTestId("record-tab-source").click();
+    await expect(adminPage.getByTestId("record-origin")).toContainText("welllog_");
+
+    // The Document tab holds the waiting document. Every long value it shows is clipped to its own column and
+    // copyable: a staged payload's path is longer than the column it sits in, and a value wider than its cell used
+    // to run under the value beside it.
+    await adminPage.getByTestId("record-tab-document").click();
     const location = adminPage.getByTestId("copy-record-payload-location");
     await expect(location).toBeVisible();
     const fits = await adminPage.evaluate(() => Array.from(document.querySelectorAll("span[style*='max-width']"))

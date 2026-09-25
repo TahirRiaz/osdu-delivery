@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link as RouterLink, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpenCheck, CircleAlert, Database, Hourglass, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { BookOpenCheck, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,136 +10,41 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
-import {
-  deliveryApi,
-  type DeliveryActivity,
-  type DeliveryAttempt,
-  type DeliveryAttemptResult,
-  type DeliveryRecordLink,
-  type DeliveryRecordRef,
-  type DeliveryRecordReference,
-} from "../../api/delivery";
-import { AttemptDetail } from "./AttemptDetail";
-import { CodeView } from "@/components/CodeView";
+import { deliveryApi, type DeliveryRecordLink, type DeliveryRecordRef, type DeliveryRecordReference } from "../../api/delivery";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CorrelationError } from "@/components/CorrelationError";
 import { DataTable, type Column } from "@/components/DataTable";
-import { DetailHeaderCard } from "@/components/DetailHeaderCard";
-import { DetailPair } from "@/components/DetailPair";
 import { IdChip } from "@/components/IdChip";
 import { Page } from "@/components/Page";
-import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useTabTitle } from "@/layout/workbench/TabsContext";
-import { BlockedBadge, RecordStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
+import { BlockedBadge, RecordStatusBadge } from "./DeliveryBadges";
 import { OsduRecordPanel } from "./OsduRecordView";
-import { prettyJson } from "./prettyJson";
 import { RecordCompare } from "./RecordCompare";
-import { RecordJourney } from "./RecordJourney";
+import { RecordDocumentTab } from "./RecordDocumentTab";
+import { RecordJourney, RecordMilestones } from "./RecordJourney";
+import { RecordLink, RecordSituation } from "./RecordSituation";
+import { RecordSourceTab } from "./RecordSourceTab";
 import { RemovalDialog } from "./RemovalDialog";
+import { TaskResultCard } from "./TaskResultCard";
 import { ProblemView } from "./TemplateSheet";
-import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
+import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
-/** The record page's tabs; `?tab=` opens the page on one of them, and `?tab=osdu` also reads the record from OSDU. */
-const RECORD_TABS = ["history", "activity", "osdu", "compare", "document", "context", "references"] as const;
+/**
+ * The record page's tabs, one question each: what happened to it, where it came from, what the ledger holds to send,
+ * what OSDU holds, whether the two agree, and what it is linked to. `?tab=` opens the page on one of them, and
+ * `?tab=osdu` also reads the record from OSDU.
+ */
+const RECORD_TABS = ["timeline", "source", "document", "osdu", "compare", "references"] as const;
 type RecordTab = (typeof RECORD_TABS)[number];
 
-function isRecordTab(value: string | null): value is RecordTab {
-  return value !== null && (RECORD_TABS as readonly string[]).includes(value);
-}
-
-/** The steps of one try, compactly: name, status, duration, and whether an earlier try had completed it. */
-function AttemptSteps({ result }: { result: DeliveryAttemptResult | null }) {
-  const steps = result?.steps ?? [];
-  if (steps.length === 0) {
-    return <span className="text-muted-foreground">-</span>;
+/** The tab a `?tab=` names, including the names the page's earlier tabs went by, so an old link still lands somewhere. */
+function tabFromParam(value: string | null): RecordTab {
+  if (value !== null && (RECORD_TABS as readonly string[]).includes(value)) {
+    return value as RecordTab;
   }
 
-  return (
-    <div className="flex flex-wrap gap-1">
-      {steps.map((step, index) => (
-        <Badge
-          key={`${step.name}-${index}`}
-          variant="outline"
-          className={step.error !== undefined ? "text-destructive" : undefined}
-          title={step.returned !== undefined ? JSON.stringify(step.returned) : undefined}
-        >
-          {step.name}
-          {step.status !== undefined ? ` ${step.status}` : ""}
-          {step.ms !== undefined ? ` ${step.ms}ms` : ""}
-          {step.resumed === true ? " (resumed)" : ""}
-        </Badge>
-      ))}
-    </div>
-  );
-}
-
-const attemptColumns: Column<DeliveryAttempt>[] = [
-  { id: "started", header: "When", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
-  {
-    id: "outcome",
-    header: "Outcome",
-    render: (row) => (
-      <Badge
-        variant="secondary"
-        className={row.outcome === "delivered" ? "bg-success/15 text-success" : row.outcome === "failed" ? "bg-destructive/15 text-destructive" : row.outcome === "held" ? "bg-warning/15 text-warning" : undefined}
-      >
-        {row.outcome}
-      </Badge>
-    ),
-  },
-  { id: "phase", header: "Phase", render: (row) => <span className="font-mono text-[12px]">{row.phase}</span> },
-  { id: "steps", header: "Steps", render: (row) => <AttemptSteps result={row.result} /> },
-  { id: "version", header: "Version", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.targetVersion ?? "-"}</span> },
-  { id: "batch", header: "Batch", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.workBatch ?? "-"}</span> },
-  { id: "worker", header: "Worker", render: (row) => <TruncatedText text={row.worker} mono maxWidth={200} /> },
-  { id: "run", header: "Run", render: (row) => (row.runId ? <RunLink runId={row.runId} /> : <span className="text-muted-foreground">-</span>) },
-  { id: "submission", header: "Submission", render: (row) => (row.submissionId ? <SubmissionLink submissionId={row.submissionId} /> : <span className="text-muted-foreground">-</span>) },
-  { id: "error", header: "Detail", render: (row) => <AttemptDetail attempt={row} /> },
-];
-
-const activityColumns: Column<DeliveryActivity>[] = [
-  { id: "started", header: "When", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
-  { id: "kind", header: "Action", render: (row) => <span className="font-medium">{row.kind}</span> },
-  { id: "actor", header: "By", render: (row) => <span className="font-mono text-[12px]">{row.actor}</span> },
-  {
-    id: "outcome",
-    header: "Outcome",
-    render: (row) => (
-      <Badge variant="secondary" className={row.outcome === "completed" ? "bg-success/15 text-success" : row.outcome === "failed" ? "bg-destructive/15 text-destructive" : undefined}>
-        {row.outcome}
-      </Badge>
-    ),
-  },
-  { id: "run", header: "Run", render: (row) => (row.runId ? <RunLink runId={row.runId} /> : <span className="text-muted-foreground">-</span>) },
-  { id: "summary", header: "Summary", render: (row) => <TruncatedText text={row.summary} maxWidth={420} /> },
-];
-
-function RunLink({ runId }: { runId: string }) {
-  const navigate = useNavigate();
-  return (
-    <button type="button" className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/runs/${runId}`); }}>
-      {runId.slice(0, 8)}
-    </button>
-  );
-}
-
-function SubmissionLink({ submissionId }: { submissionId: string }) {
-  const navigate = useNavigate();
-  return (
-    <button type="button" className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/delivery/submissions/${submissionId}`); }}>
-      {submissionId.slice(0, 8)}
-    </button>
-  );
-}
-
-/** A link to another record's page, named as the ledger names the record. */
-function RecordLink({ link, testId }: { link: DeliveryRecordLink; testId?: string }) {
-  return (
-    <RouterLink to={`/delivery/records/${link.flowId}/${link.deliveryKey}`} className="text-primary hover:underline" data-testid={testId}>
-      {link.label ?? link.sourceKey}
-    </RouterLink>
-  );
+  return value === "history" || value === "activity" ? "timeline" : value === "context" ? "document" : "timeline";
 }
 
 const referenceColumns: Column<DeliveryRecordReference>[] = [
@@ -154,12 +58,11 @@ const waiterColumns: Column<DeliveryRecordLink>[] = [
   { id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status} testId="record-waiter-status" /> },
 ];
 
-function Hash({ value, testId }: { value: string | null; testId?: string }) {
-  return <TruncatedText text={value} mono maxWidth={180} copy={value !== null} copyTestId={testId} />;
-}
-
-/** Everything the ledger knows about one record: its custody state, every delivery try, every intervention, the
- * document waiting to go, and the buttons that act on it (verify, redeliver, read back, release, delete). */
+/**
+ * One record of the ledger, top down: who it is and where it stands (the header: identity, custody state, the
+ * situation its state calls for, and the operations on it), how far it has come (the milestones), and the evidence
+ * behind each answer, one tab per question.
+ */
 export default function DeliveryRecordPage() {
   const { flowId, key } = useParams<{ flowId: string; key: string }>();
   if (!flowId || !key) {
@@ -175,14 +78,16 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const queryClient = useQueryClient();
   const [confirm, setConfirm] = useState<"redeliver" | "send-now" | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [taskLabel, setTaskLabel] = useState("");
+  // The removal a node runs for this record, shown under the header whatever tab is open, since it changes the record.
+  const [removal, setRemoval] = useState<{ taskId: string; label: string } | null>(null);
+  // A read of the record's rows from the ingestion tables, shown on the Source tab where it was asked for.
+  const [sourceTaskId, setSourceTaskId] = useState<string | null>(null);
   const ref = useMemo<DeliveryRecordRef>(() => ({ flowId, deliveryKey }), [flowId, deliveryKey]);
   const { hasScope } = useAuth();
   const canOperate = hasScope("operate");
   const [searchParams] = useSearchParams();
   const askedTab = searchParams.get("tab");
-  const [tab, setTab] = useState<RecordTab>(isRecordTab(askedTab) ? askedTab : "history");
+  const [tab, setTab] = useState<RecordTab>(tabFromParam(askedTab));
   // A read of the record from OSDU, shown on the In OSDU tab. A page opened with ?tab=osdu reads it once, as soon as the
   // record is known to have an id OSDU may hold.
   const [osduTaskId, setOsduTaskId] = useState<string | null>(null);
@@ -214,19 +119,20 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     queryFn: () => deliveryApi.recordChain(ref),
     staleTime: 60000,
   });
-  const task = useComputeTask(taskId);
+  const removalTask = useComputeTask(removal?.taskId ?? null);
+  const sourceTask = useComputeTask(sourceTaskId);
   useTabTitle(query.data ? (query.data.record.label ?? query.data.record.sourceKey) : undefined);
 
   const refresh = useCallback(() => void queryClient.invalidateQueries({ queryKey: ["delivery"] }), [queryClient]);
 
   // A removal that finished on a node changed the ledger (the record is now deleted and blocked): refetch the
   // record once the task reaches a terminal state, so the page reflects it without a manual reload.
-  const finishedTask = task.data && ["succeeded", "failed", "cancelled"].includes(task.data.status) ? task.data.taskId : null;
+  const finishedRemoval = isTerminalTask(removalTask.data) ? removalTask.data?.taskId ?? null : null;
   useEffect(() => {
-    if (finishedTask !== null) {
+    if (finishedRemoval !== null) {
       refresh();
     }
-  }, [finishedTask, refresh]);
+  }, [finishedRemoval, refresh]);
   const fail = (error: unknown) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error));
 
   const verify = useMutation({
@@ -271,7 +177,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   // connection, with the origin file and row the ledger records against every delivered version.
   const readSource = useMutation({
     mutationFn: () => deliveryApi.readSource(ref),
-    onSuccess: (accepted) => { setTaskLabel("The record in the ingestion tables"); setTaskId(accepted.taskId); },
+    onSuccess: (accepted) => setSourceTaskId(accepted.taskId),
     onError: fail,
   });
   if (query.isError) {
@@ -286,7 +192,8 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   if (detail === undefined) {
     return (
       <Page data-testid="page-delivery-record">
-        <Skeleton className="h-60 w-full rounded-lg" />
+        <Skeleton className="h-28 w-full rounded-lg" />
+        <Skeleton className="h-16 w-full rounded-lg" />
         <Skeleton className="h-80 w-full rounded-lg" />
       </Page>
     );
@@ -297,73 +204,27 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   const references = record.references ?? [];
   const waiters = detail.waitedOnBy ?? [];
-  const taskState = task.data;
-  const taskJson = isTerminalTask(taskState) ? taskResultJson(taskState) : null;
+  const flowLabel = detail.flowName === null ? undefined : detail.interface ? `${detail.flowName} / ${detail.interface}` : detail.flowName;
 
   return (
     <Page data-testid="page-delivery-record">
-      {record.lastError !== null && (record.status === "held" || record.status === "failed") && (
-        <Alert variant="destructive" data-testid="record-error">
-          <CircleAlert />
-          <AlertDescription>{record.lastError}</AlertDescription>
-        </Alert>
-      )}
-      {record.status === "waiting" && (
-        <Alert data-testid="record-waiting">
-          <Hourglass />
-          <AlertDescription>
-            <span>{record.lastError ?? `Waits for ${record.waitingFor ?? "a record it refers to"}.`}</span>
-            {detail.waitsOn && (
-              <span>
-                {"It goes out on its own once "}
-                <RecordLink link={detail.waitsOn} testId="record-waits-on-link" />
-                {" is delivered."}
-              </span>
-            )}
-          </AlertDescription>
-        </Alert>
-      )}
-
-      <DetailHeaderCard
-        title={record.label ?? record.sourceKey}
-        badges={(
-          <>
-            <RecordStatusBadge status={record.status} />
-            {record.blocked && <BlockedBadge />}
-            <VerifyOutcomeBadge outcome={record.lastVerifyOutcome} />
-            <Badge variant="outline" data-testid="record-mapping">{record.mappingName}</Badge>
-            {record.hasPendingDocument && (
-              <Badge variant="outline">pending {record.pendingMetadata && record.pendingPayload ? "metadata+payload" : record.pendingPayload ? "payload" : "metadata"}</Badge>
-            )}
-          </>
-        )}
-        actions={(
-          <>
-            <Button variant="outline" size="sm" onClick={() => verify.mutate()} disabled={busy || !canActOnTarget} data-testid="record-verify">
+      <Card className="gap-3 rounded-lg p-4" data-testid="record-header">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="min-w-0 break-words text-lg font-semibold leading-7">{record.label ?? record.sourceKey}</h1>
+          <RecordStatusBadge status={record.status} />
+          {record.blocked && <BlockedBadge />}
+          <div className="grow" />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => verify.mutate()} disabled={busy || !canActOnTarget} title="Queue a verify run scoped to this record: compares what OSDU holds against the ledger" data-testid="record-verify">
               <ShieldCheck />
               Verify
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setConfirm("redeliver")} disabled={busy || detail.pipelineId === null} data-testid="record-redeliver">
+            <Button variant="outline" size="sm" onClick={() => setConfirm("redeliver")} disabled={busy || detail.pipelineId === null} title="Render and send the record again from its current source row" data-testid="record-redeliver">
               <RotateCcw />
               Redeliver
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => { setTab("osdu"); readBack.mutate(); }}
-              disabled={busy || !canActOnTarget || !canOperate}
-              title={canOperate ? "Read the record as OSDU holds it now, through its flow's route" : "A read runs on a node, which takes the operate scope."}
-              data-testid="record-read"
-            >
-              <BookOpenCheck />
-              Read back
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => readSource.mutate()} disabled={busy || detail.pipelineId === null} data-testid="record-read-source">
-              <Database />
-              Source row
-            </Button>
             {record.blocked && (
-              <Button variant="outline" size="sm" onClick={() => release.mutate()} disabled={busy} data-testid="record-release">
+              <Button variant="outline" size="sm" onClick={() => release.mutate()} disabled={busy} title="Let the record be sent again" data-testid="record-release">
                 <Unlock />
                 Release
               </Button>
@@ -384,83 +245,46 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               <Trash2 />
               Remove from OSDU
             </Button>
-          </>
-        )}
-        meta={(
-          <>
-            <IdChip label="key" value={record.deliveryKey} testId="record-key" copyTestId="copy-record-key" />
-            {record.targetId && <IdChip label="osdu" value={record.targetId} display={record.targetId} testId="record-target" copyTestId="copy-record-target" />}
-            {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={detail.flowName ?? undefined} to={`/pipelines/${detail.pipelineId}`} testId="record-pipeline-link" copyTestId="copy-record-pipeline" />}
-            {record.lastSubmissionId && <IdChip label="submission" value={record.lastSubmissionId} to={`/delivery/submissions/${record.lastSubmissionId}`} testId="record-submission-link" copyTestId="copy-record-submission" />}
-          </>
-        )}
-      >
-        <DetailPair label="Source key"><TruncatedText text={record.sourceKey} mono maxWidth={260} copy copyTestId="copy-record-source-key" /></DetailPair>
-        <DetailPair label="Received from">
-          {record.sourceFileName === null && record.pendingSourceFileName === null
-            ? <span className="text-muted-foreground">not recorded</span>
-            : (
-              <span className="inline-flex flex-wrap items-baseline gap-1" data-testid="record-origin">
-                <TruncatedText text={record.sourceFileName ?? record.pendingSourceFileName} mono maxWidth={240} copy copyTestId="copy-record-origin" />
-                {(record.sourceRowNumber ?? record.pendingSourceRowNumber) !== null && (
-                  <span className="text-[12px] text-muted-foreground">row <span className="font-mono">{record.sourceRowNumber ?? record.pendingSourceRowNumber}</span></span>
-                )}
-              </span>
-            )}
-        </DetailPair>
-        <DetailPair label="Received"><RelativeTime value={record.sourceUpdatedUtc ?? record.pendingSourceUpdatedUtc} absolute /></DetailPair>
-        <DetailPair label="OSDU version"><span className="font-mono tabular-nums">{record.targetVersion ?? "-"}</span></DetailPair>
-        <DetailPair label="Last delivered"><RelativeTime value={record.lastDeliveredUtc} absolute /></DetailPair>
-        <DetailPair label="Last verified"><RelativeTime value={record.lastVerifiedUtc} absolute /></DetailPair>
-        <DetailPair label="Attempts"><span className="font-mono tabular-nums">{record.attemptCount}</span></DetailPair>
-        <DetailPair label="Next attempt"><RelativeTime value={record.nextAttemptUtc} absolute /></DetailPair>
-        <DetailPair label="Lease"><TruncatedText text={record.leaseOwner} mono maxWidth={220} copy={record.leaseOwner !== null} copyTestId="copy-record-lease" /></DetailPair>
-        <DetailPair label="Metadata hash"><Hash value={record.metadataHash} testId="copy-record-metadata-hash" /></DetailPair>
-        <DetailPair label="Payload hash"><Hash value={record.payloadHash} testId="copy-record-payload-hash" /></DetailPair>
-        <DetailPair label="Source fingerprint"><Hash value={record.sourceFingerprint} testId="copy-record-fingerprint" /></DetailPair>
-        <DetailPair label="Source last modified">{record.sourceModifiedUtc ? <RelativeTime value={record.sourceModifiedUtc} absolute /> : "-"}</DetailPair>
-        <DetailPair label="Payload files modified">{record.payloadModifiedUtc ? <RelativeTime value={record.payloadModifiedUtc} absolute /> : "-"}</DetailPair>
-        <DetailPair label="Payload location">
-          <TruncatedText text={record.pendingPayloadLocation} mono maxWidth={260} copy={record.pendingPayloadLocation !== null} copyTestId="copy-record-payload-location" />
-        </DetailPair>
-        <DetailPair label="Created"><RelativeTime value={record.createdUtc} absolute /></DetailPair>
-        <DetailPair label="Updated"><RelativeTime value={record.updatedUtc} absolute /></DetailPair>
-      </DetailHeaderCard>
-
-      <RecordJourney record={record} attempts={attempts.data} activities={activities.data} chain={chain.data} />
-
-      {taskId !== null && (
-        <Card className="gap-2 rounded-lg p-3" data-testid="record-task">
-          <div className="flex items-center gap-2 text-[13px] font-medium">
-            {taskLabel}
-            <Badge variant="outline">{taskState?.status ?? "queued"}</Badge>
-            {taskState?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{taskState.claimedByNode}</span>}
           </div>
-          {taskState?.error && <p className="text-[13px] text-destructive">{taskState.error}</p>}
-          {taskJson !== null && (
-            <CodeView value={taskJson} language="json" height={360} data-testid="record-task-json" />
-          )}
-        </Card>
-      )}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {record.targetId && <IdChip label="osdu" value={record.targetId} display={record.targetId} testId="record-target" copyTestId="copy-record-target" />}
+          {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={flowLabel} to={`/pipelines/${detail.pipelineId}`} testId="record-pipeline-link" copyTestId="copy-record-pipeline" />}
+          {record.lastSubmissionId && <IdChip label="submission" value={record.lastSubmissionId} to={`/delivery/submissions/${record.lastSubmissionId}`} testId="record-submission-link" copyTestId="copy-record-submission" />}
+        </div>
+        <RecordSituation record={record} waitsOn={detail.waitsOn} />
+      </Card>
 
-      <Tabs value={tab} onValueChange={(next) => { if (isRecordTab(next)) { setTab(next); } }}>
+      <RecordMilestones record={record} attempts={attempts.data} chain={chain.data} />
+
+      {removal !== null && <TaskResultCard key={removal.taskId} label={removal.label} task={removalTask.data} testId="record-task" />}
+
+      <Tabs value={tab} onValueChange={(next) => setTab(tabFromParam(next))}>
         <TabsList data-testid="record-tabs">
-          <TabsTrigger value="history" data-testid="record-tab-history">History</TabsTrigger>
-          <TabsTrigger value="activity" data-testid="record-tab-activity">Interventions</TabsTrigger>
+          <TabsTrigger value="timeline" data-testid="record-tab-timeline">Timeline</TabsTrigger>
+          <TabsTrigger value="source" data-testid="record-tab-source">Source</TabsTrigger>
+          <TabsTrigger value="document" data-testid="record-tab-document">Document</TabsTrigger>
           <TabsTrigger value="osdu" data-testid="record-tab-osdu">In OSDU</TabsTrigger>
           <TabsTrigger value="compare" data-testid="record-tab-compare">Compare</TabsTrigger>
-          <TabsTrigger value="document" data-testid="record-tab-document">Target state</TabsTrigger>
-          <TabsTrigger value="context" data-testid="record-tab-context">Render context</TabsTrigger>
           <TabsTrigger value="references" data-testid="record-tab-references">
             References
-            {waiters.length > 0 && <Badge variant="secondary" className="ml-1">{waiters.length}</Badge>}
+            {(references.length > 0 || waiters.length > 0) && <Badge variant="secondary" className="ml-1">{references.length + waiters.length}</Badge>}
           </TabsTrigger>
         </TabsList>
-        <TabsContent value="history">
-          <DataTable columns={attemptColumns} rows={attempts.data} rowKey={(row) => row.attemptId} emptyMessage="No delivery attempts yet." data-testid="record-attempts" />
+        <TabsContent value="timeline">
+          <RecordJourney record={record} attempts={attempts.data} activities={activities.data} chain={chain.data} />
         </TabsContent>
-        <TabsContent value="activity">
-          <DataTable columns={activityColumns} rows={activities.data} rowKey={(row) => row.activityId} emptyMessage="No interventions on this record." data-testid="record-activities" />
+        <TabsContent value="source">
+          <RecordSourceTab
+            record={record}
+            canRead={detail.pipelineId !== null && !busy}
+            reading={sourceTaskId !== null && !isTerminalTask(sourceTask.data)}
+            onRead={() => readSource.mutate()}
+            task={sourceTaskId === null ? null : { id: sourceTaskId, state: sourceTask.data }}
+          />
+        </TabsContent>
+        <TabsContent value="document">
+          <RecordDocumentTab record={record} />
         </TabsContent>
         <TabsContent value="osdu">
           <div className="flex flex-col gap-3">
@@ -470,6 +294,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
                 size="sm"
                 onClick={() => readBack.mutate()}
                 disabled={busy || !canActOnTarget || !canOperate || (osduTaskId !== null && !isTerminalTask(osduTask.data))}
+                title={canOperate ? "Read the record as OSDU holds it now, through its flow's route" : "A read runs on a node, which takes the operate scope."}
                 data-testid="record-osdu-read"
               >
                 <BookOpenCheck />
@@ -503,38 +328,10 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
             canRun={canOperate && detail.pipelineId !== null}
           />
         </TabsContent>
-        <TabsContent value="document">
-          <div className="flex flex-col gap-3">
-            {record.hasPendingDocument
-              ? (
-                <p className="text-[13px] text-muted-foreground" data-testid="record-pending-ref">
-                  {`A rendered document is waiting in work batch ${record.workBatch ?? "?"} of submission ${record.lastSubmissionId ?? "?"} (reference ${record.pendingDocumentRef}); the node that drains the batch reads it from the flow's work location.`}
-                </p>
-              )
-              : <p className="text-[13px] text-muted-foreground">No document is waiting: the record is not pending. The In OSDU tab reads what OSDU holds.</p>}
-            {record.pendingSteps !== null && (
-              <div className="flex flex-col gap-1">
-                <h3 className="text-[13px] font-medium">Steps the last try completed</h3>
-                <CodeView value={prettyJson(JSON.stringify(record.pendingSteps))} language="json" height={160} data-testid="record-pending-steps" />
-              </div>
-            )}
-            <div className="flex flex-col gap-1">
-              <h3 className="text-[13px] font-medium">What OSDU returned</h3>
-              {record.targetState !== null
-                ? <CodeView value={prettyJson(JSON.stringify(record.targetState))} language="json" height={220} data-testid="record-target-state" />
-                : <p className="text-[13px] text-muted-foreground">Nothing yet: the record has not been delivered.</p>}
-            </div>
-          </div>
-        </TabsContent>
-        <TabsContent value="context">
-          {record.renderContext
-            ? <CodeView value={prettyJson(record.renderContext)} language="json" height={280} data-testid="record-render-context" />
-            : <p className="text-[13px] text-muted-foreground">Recorded once the record has been delivered.</p>}
-        </TabsContent>
         <TabsContent value="references">
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-1">
-              <h3 className="text-[13px] font-medium">What the waiting document refers to</h3>
+              <h3 className="text-[13px] font-medium">What the document refers to</h3>
               <p className="text-[12px] text-muted-foreground">
                 A record another record of the ledger holds and has not delivered is waited for; any other id is OSDU&apos;s or another system&apos;s.
               </p>
@@ -587,8 +384,10 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           selection={{ kind: "keys", keys: [deliveryKey] }}
           singleLabel={record.label ?? record.sourceKey}
           onQueued={(accepted) => {
-            setTaskLabel(accepted.scope === "history" ? "Purge history in OSDU" : accepted.scope === "everything" ? "Purge from OSDU" : "Remove from OSDU");
-            setTaskId(accepted.taskId);
+            setRemoval({
+              taskId: accepted.taskId,
+              label: accepted.scope === "history" ? "Purge history in OSDU" : accepted.scope === "everything" ? "Purge from OSDU" : "Remove from OSDU",
+            });
             toast.success("Removal queued on a node.");
           }}
         />
