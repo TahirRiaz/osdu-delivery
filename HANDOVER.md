@@ -7,7 +7,8 @@ mapping can compute values and decide conditions with a small expression languag
 renderer, the preflight, the builder, the census, the GUI, the docs, the samples, the test fixtures and the tests are
 all on the new form, and the recall repository (`B:\osdu-recall-metadata\recall`) matches `osdu/samples/recall` file for
 file. That work is committed: `f438e4c` here, pushed, and `82b08c3` in the recall repository, which has no remote.
-Everything downstream of the sample has since been brought to it (third part, below); that part is not committed yet.
+Everything downstream of the sample has since been brought to it (third part, below), committed as `04fa03f` (the
+SQLFlow fix), `d882363` and `e17460b`, pushed; the recall repository's matching comment fix is `a33c177`.
 
 ```yaml
 record:
@@ -76,7 +77,7 @@ the control-plane suite, run in a worktree without `.sqlflow/env`, fails exactly
 pre-rebuild commit; the GUI builds and lints clean; `sqlflow validate` passes all 14 recall documents;
 `tools/check-vendored-sqlflow.sh` passes (nothing under `sqlflow/` changed); no changed file holds an em dash.
 
-### Everything downstream of the sample (third part, not committed)
+### Everything downstream of the sample (third part)
 
 `samples/wells` was deleted in a7cb146, and what copied or described it was left pointing at it. All of it now uses the
 recall sample, in the new mapping format:
