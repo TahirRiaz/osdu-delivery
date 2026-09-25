@@ -408,7 +408,8 @@ public sealed class CatalogSync
     private static async Task UpsertRepoAsync(
         CatalogDbContext context, Guid repoId, string repoName, string? remoteUrl, string root, DateTime nowUtc, CancellationToken ct)
     {
-        var repo = await context.Repos.FindAsync([repoId], ct).ConfigureAwait(false);
+        // AsTracking: under the control plane's NoTracking context a found row is not tracked and its update would be lost.
+        var repo = await context.Repos.AsTracking().FirstOrDefaultAsync(r => r.Id == repoId, ct).ConfigureAwait(false);
         if (repo is null)
         {
             context.Repos.Add(new CatalogRepo
