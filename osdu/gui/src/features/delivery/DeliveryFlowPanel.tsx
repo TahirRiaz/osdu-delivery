@@ -26,10 +26,16 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
+import { InterfacePicker } from "./InterfacePicker";
+import { OpenInOsduLink } from "./OpenInOsduLink";
+import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 
 const ALL = "all";
+
+/** The URL filters that name records of one interface, which another interface's view drops. */
+const SCOPED_TO_INTERFACE = ["submission", "delivered", "run"] as const;
 
 const recordColumns: Column<DeliveryRecord>[] = [
   { id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status} /> },
@@ -59,6 +65,7 @@ const recordColumns: Column<DeliveryRecord>[] = [
     ),
   },
   { id: "error", header: "Last error", render: (row) => <TruncatedText text={row.lastError} maxWidth={320} /> },
+  { id: "osdu", header: "", render: (row) => (row.targetId !== null && row.status !== "deleted" ? <OpenInOsduLink record={row} /> : null) },
 ];
 
 /** The flow's stats strip, its submissions, and its searchable records, with the flow-level interventions. */
@@ -72,29 +79,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const submissionFilter = searchParams.get("submission");
   const deliveredFilter = searchParams.get("delivered");
   const runFilter = searchParams.get("run");
-  // Every view of a source is about one of its interfaces: they have separate ledgers, so their records, submissions
-  // and targets are never summed. The choice travels in the URL, so a link to a source's records is a link to one
-  // interface's records.
-  const interfaces = useQuery({
-    queryKey: ["delivery", "interfaces", pipelineId],
-    queryFn: () => deliveryApi.interfaces(pipelineId),
-    staleTime: 30000,
-  });
-  const names = useMemo(
-    () => (interfaces.data ?? []).map((row) => row.interface).filter((name): name is string => name !== null),
-    [interfaces.data]);
-  const many = names.length > 1;
-  const asked = searchParams.get("interface");
-  const interfaceName = many ? (asked !== null && names.includes(asked) ? asked : names[0]) : null;
-  const selectInterface = useCallback((next: string) => setSearchParams((current) => {
-    const params = new URLSearchParams(current);
-    params.set("interface", next);
-    // The chips point at records of the interface that was showing; another interface's records are not those.
-    params.delete("submission");
-    params.delete("delivered");
-    params.delete("run");
-    return params;
-  }), [setSearchParams]);
+  // The chips point at records of the interface that was showing; another interface's records are not those.
+  const { interfaces, names, many, interfaceName, selectInterface } = useInterfaceChoice(pipelineId, SCOPED_TO_INTERFACE);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string>(ALL);
   const [drifted, setDrifted] = useState(false);
@@ -199,22 +185,14 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   return (
     <div className="flex flex-col gap-4" data-testid={`delivery-panel-${section}`}>
       {many && (
-        <div className="flex flex-wrap items-center gap-2" data-testid="delivery-interface-picker">
-          <Label className="text-[13px] text-muted-foreground">Interface</Label>
-          <Select value={interfaceName ?? ""} onValueChange={selectInterface}>
-            <SelectTrigger size="sm" className="h-8 w-56" data-testid="delivery-interface-select">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {names.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <span className="text-[13px] text-muted-foreground">
-            {section === "overview"
-              ? `of ${names.length} interfaces; the counts below are the whole source`
-              : `of ${names.length} interfaces of ${flowName}`}
-          </span>
-        </div>
+        <InterfacePicker
+          names={names}
+          interfaceName={interfaceName}
+          onSelect={selectInterface}
+          caption={section === "overview"
+            ? `of ${names.length} interfaces; the counts below are the whole source`
+            : `of ${names.length} interfaces of ${flowName}`}
+        />
       )}
 
       {section === "overview" && (

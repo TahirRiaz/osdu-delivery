@@ -17,6 +17,7 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { RecordStatusBadge } from "./DeliveryBadges";
+import { OpenInOsduLink } from "./OpenInOsduLink";
 
 const ALL = "all";
 
@@ -97,6 +98,7 @@ const restColumns: Column<DeliveryRecordHit>[] = [
   { id: "delivered", header: "Delivered", render: (row) => <RelativeTime value={row.lastDeliveredUtc} /> },
   { id: "updated", header: "Updated", render: (row) => <RelativeTime value={row.updatedUtc} /> },
   { id: "key", header: "Delivery key", render: (row) => <TruncatedText text={row.deliveryKey} mono maxWidth={140} copy copyTestId="copy-hit-key" /> },
+  { id: "osdu", header: "", render: (row) => (row.targetId !== null && row.status !== "deleted" ? <OpenInOsduLink record={row} /> : null) },
 ];
 
 /** The columns of a search, and the columns of the recency listing, which has nothing matched to explain. */

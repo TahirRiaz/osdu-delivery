@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link as RouterLink, Navigate, useNavigate, useParams } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link as RouterLink, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookOpenCheck, CircleAlert, Database, Hourglass, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "@/api/client";
+import { useAuth } from "@/auth/AuthContext";
 import {
   deliveryApi,
   type DeliveryActivity,
@@ -32,10 +33,21 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { BlockedBadge, RecordStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
+import { OsduRecordPanel } from "./OsduRecordView";
 import { prettyJson } from "./prettyJson";
+import { RecordCompare } from "./RecordCompare";
 import { RecordJourney } from "./RecordJourney";
 import { RemovalDialog } from "./RemovalDialog";
+import { ProblemView } from "./TemplateSheet";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
+
+/** The record page's tabs; `?tab=` opens the page on one of them, and `?tab=osdu` also reads the record from OSDU. */
+const RECORD_TABS = ["history", "activity", "osdu", "compare", "document", "context", "references"] as const;
+type RecordTab = (typeof RECORD_TABS)[number];
+
+function isRecordTab(value: string | null): value is RecordTab {
+  return value !== null && (RECORD_TABS as readonly string[]).includes(value);
+}
 
 /** The steps of one try, compactly: name, status, duration, and whether an earlier try had completed it. */
 function AttemptSteps({ result }: { result: DeliveryAttemptResult | null }) {
@@ -166,6 +178,16 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskLabel, setTaskLabel] = useState("");
   const ref = useMemo<DeliveryRecordRef>(() => ({ flowId, deliveryKey }), [flowId, deliveryKey]);
+  const { hasScope } = useAuth();
+  const canOperate = hasScope("operate");
+  const [searchParams] = useSearchParams();
+  const askedTab = searchParams.get("tab");
+  const [tab, setTab] = useState<RecordTab>(isRecordTab(askedTab) ? askedTab : "history");
+  // A read of the record from OSDU, shown on the In OSDU tab. A page opened with ?tab=osdu reads it once, as soon as the
+  // record is known to have an id OSDU may hold.
+  const [osduTaskId, setOsduTaskId] = useState<string | null>(null);
+  const osduTask = useComputeTask(osduTaskId);
+  const autoRead = useRef(askedTab === "osdu");
 
   const query = useQuery({
     queryKey: ["delivery", "record", flowId, deliveryKey],
@@ -234,9 +256,17 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   });
   const readBack = useMutation({
     mutationFn: () => deliveryApi.read(ref),
-    onSuccess: (accepted) => { setTaskLabel("Read back from OSDU"); setTaskId(accepted.taskId); },
+    onSuccess: (accepted) => { setOsduTaskId(accepted.taskId); setTab("osdu"); },
     onError: fail,
   });
+  const { mutate: readFromOsdu } = readBack;
+  const readable = query.data !== undefined && query.data.record.targetId !== null && query.data.record.status !== "deleted" && canOperate;
+  useEffect(() => {
+    if (autoRead.current && readable) {
+      autoRead.current = false;
+      readFromOsdu();
+    }
+  }, [readable, readFromOsdu]);
   // Where the record came from: its rows as the ingestion tables hold them now, read on a node with the flow's own
   // connection, with the origin file and row the ledger records against every delivered version.
   const readSource = useMutation({
@@ -317,7 +347,14 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               <RotateCcw />
               Redeliver
             </Button>
-            <Button variant="outline" size="sm" onClick={() => readBack.mutate()} disabled={busy || !canActOnTarget} data-testid="record-read">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { setTab("osdu"); readBack.mutate(); }}
+              disabled={busy || !canActOnTarget || !canOperate}
+              title={canOperate ? "Read the record as OSDU holds it now, through its flow's route" : "A read runs on a node, which takes the operate scope."}
+              data-testid="record-read"
+            >
               <BookOpenCheck />
               Read back
             </Button>
@@ -406,10 +443,12 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         </Card>
       )}
 
-      <Tabs defaultValue="history">
+      <Tabs value={tab} onValueChange={(next) => { if (isRecordTab(next)) { setTab(next); } }}>
         <TabsList data-testid="record-tabs">
           <TabsTrigger value="history" data-testid="record-tab-history">History</TabsTrigger>
           <TabsTrigger value="activity" data-testid="record-tab-activity">Interventions</TabsTrigger>
+          <TabsTrigger value="osdu" data-testid="record-tab-osdu">In OSDU</TabsTrigger>
+          <TabsTrigger value="compare" data-testid="record-tab-compare">Compare</TabsTrigger>
           <TabsTrigger value="document" data-testid="record-tab-document">Target state</TabsTrigger>
           <TabsTrigger value="context" data-testid="record-tab-context">Render context</TabsTrigger>
           <TabsTrigger value="references" data-testid="record-tab-references">
@@ -423,6 +462,47 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         <TabsContent value="activity">
           <DataTable columns={activityColumns} rows={activities.data} rowKey={(row) => row.activityId} emptyMessage="No interventions on this record." data-testid="record-activities" />
         </TabsContent>
+        <TabsContent value="osdu">
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => readBack.mutate()}
+                disabled={busy || !canActOnTarget || !canOperate || (osduTaskId !== null && !isTerminalTask(osduTask.data))}
+                data-testid="record-osdu-read"
+              >
+                <BookOpenCheck />
+                {osduTaskId === null ? "Read from OSDU" : "Read again"}
+              </Button>
+              <p className="text-[12px] text-muted-foreground">
+                {canActOnTarget
+                  ? "Reads the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written."
+                  : record.status === "deleted"
+                    ? "The record was removed from OSDU, so there is nothing of this flow's to read there."
+                    : "The record has no OSDU id yet: it has not been planned for delivery."}
+              </p>
+            </div>
+            {osduTaskId !== null && (osduTask.isError
+              ? <ProblemView error={osduTask.error} testId="record-osdu-error" />
+              : (
+                <OsduRecordPanel
+                  key={osduTaskId}
+                  pipelineId={detail.pipelineId}
+                  interfaceName={detail.interface ?? null}
+                  task={osduTask.data}
+                  label="Reading the record from OSDU through its flow's route"
+                />
+              ))}
+          </div>
+        </TabsContent>
+        <TabsContent value="compare">
+          <RecordCompare
+            recordRef={ref}
+            targetId={canActOnTarget ? record.targetId : null}
+            canRun={canOperate && detail.pipelineId !== null}
+          />
+        </TabsContent>
         <TabsContent value="document">
           <div className="flex flex-col gap-3">
             {record.hasPendingDocument
@@ -431,7 +511,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
                   {`A rendered document is waiting in work batch ${record.workBatch ?? "?"} of submission ${record.lastSubmissionId ?? "?"} (reference ${record.pendingDocumentRef}); the node that drains the batch reads it from the flow's work location.`}
                 </p>
               )
-              : <p className="text-[13px] text-muted-foreground">No document is waiting: the record is not pending. Use Read back to see what OSDU holds.</p>}
+              : <p className="text-[13px] text-muted-foreground">No document is waiting: the record is not pending. The In OSDU tab reads what OSDU holds.</p>}
             {record.pendingSteps !== null && (
               <div className="flex flex-col gap-1">
                 <h3 className="text-[13px] font-medium">Steps the last try completed</h3>

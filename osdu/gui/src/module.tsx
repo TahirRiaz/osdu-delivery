@@ -29,6 +29,10 @@ const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
   () => import("./features/delivery/DeliveryFlowPanel").then((loaded) => ({ default: loaded.DeliveryFlowPanel })),
 );
+const DeliveryPreviewPanel = lazyRoute(
+  "DeliveryPreviewPanel",
+  () => import("./features/delivery/DeliveryPreviewPanel").then((loaded) => ({ default: loaded.DeliveryPreviewPanel })),
+);
 const RetrievalFlowPanel = lazyRoute(
   "RetrievalFlowPanel",
   () => import("./features/delivery/RetrievalFlowPanel").then((loaded) => ({ default: loaded.RetrievalFlowPanel })),
@@ -103,6 +107,15 @@ const deliveryKind: FlowKindContribution = {
       testId: "pipeline-tab-submissions",
       render: (pipeline) => (
         <Deferred><DeliveryFlowPanel pipelineId={pipeline.id} flowName={pipeline.name} section="submissions" /></Deferred>
+      ),
+    },
+    {
+      // One record rendered as a delivery would render it, on a node, and sent nowhere.
+      value: "preview",
+      label: "Preview",
+      testId: "pipeline-tab-preview",
+      render: (pipeline) => (
+        <Deferred><DeliveryPreviewPanel pipelineId={pipeline.id} flowName={pipeline.name} /></Deferred>
       ),
     },
   ],

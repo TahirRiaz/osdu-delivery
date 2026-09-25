@@ -1,8 +1,13 @@
 // The OSDU platform the e2e suite's flows reach, as far as a plan needs one: a token for the flows' client credentials,
 // and the search service answering the lookups the sample mappings make when they render. A WellLog names its wellbore,
 // and a render finds that wellbore by searching the platform; here the platform holds the wellbores of the five sample
-// Recall logs and the two the fixture documents name, in whichever partition the request names. Everything else answers
-// 404, so a spec that tried to send a record would fail loudly rather than reach a real OSDU.
+// Recall logs and the two the fixture documents name, in whichever partition the request names.
+//
+// A record can be read back as well, which is what a record page's In OSDU and Compare tabs do: through the storage
+// service, or through the wellbore DDMS a well log flow delivers by. The wellbores are held as records too, and a spec
+// can hold a record of its own for as long as it needs one, through /__e2e/records: a path of this stand-in, not of the
+// platform, so no flow reaches it. Everything else answers 404, so a spec that tried to send a record would fail loudly
+// rather than reach a real OSDU.
 //
 // Started by playwright.config.ts beside the control plane, on SQLFLOW_E2E_OSDU_PORT (5301 by default).
 import { createServer } from "node:http";
@@ -66,10 +71,97 @@ function search(body, partition) {
     : { results: [], totalCount: 0 };
 }
 
+/** The records a spec asked the stand-in to hold, by id (its version set aside). */
+const held = new Map();
+
+/** A record reference without its version: p:t:k: and p:t:k:123 read as p:t:k, as the control plane reads them. */
+function withoutVersion(id) {
+  const last = id.lastIndexOf(":");
+  const colons = id.split(":").length - 1;
+  return last >= 0 && colons >= 3 && /^\d*$/.test(id.slice(last + 1)) ? id.slice(0, last) : id;
+}
+
+/** The version every record the stand-in holds reads at: a storage version is a microsecond timestamp. */
+const VERSION = 1727280000000000;
+
+/** A wellbore of the platform as a record: what a read of one of the wellbores the search finds gives back. */
+function wellboreRecord(id) {
+  const [partition, type, unique] = id.split(":");
+  const name = [...WELLBORES].find((candidate) => wellboreId(candidate) === unique);
+  if (type !== "master-data--Wellbore" || name === undefined) {
+    return null;
+  }
+
+  return {
+    id,
+    kind: "osdu:wks:master-data--Wellbore:1.1.0",
+    version: VERSION,
+    acl: { viewers: [`data.default.viewers@${partition}.dataservices.energy`], owners: [`data.default.owners@${partition}.dataservices.energy`] },
+    legal: { legaltags: [`${partition}-reference-data-default`], otherRelevantDataCountries: ["NO"], status: "compliant" },
+    data: { FacilityName: name },
+    createUser: "e2e-stand-in",
+    createTime: "2026-09-25T00:00:00.000Z",
+  };
+}
+
+/** The record a read of `id` finds: one a spec holds, or a wellbore of the platform; null when there is none. */
+function readRecord(id) {
+  const key = withoutVersion(id);
+  const own = held.get(key);
+  return own !== undefined ? { ...own, version: own.version ?? VERSION } : wellboreRecord(key);
+}
+
+/** A record read: storage's (GET /api/storage/v2/records/{id}) or a wellbore DDMS collection's (GET .../ddms/v3/{collection}/{id}). */
+const RECORD_READ = /^\/api\/(?:storage\/v2\/records|os-wellbore-ddms\/ddms\/v3\/[A-Za-z]+)\/([^/]+)$/;
+
 const server = createServer((request, response) => {
   const path = new URL(request.url ?? "/", "http://stand-in").pathname;
   if (request.method === "GET" && path === "/health") {
     send(response, 200, { status: "up" });
+    return;
+  }
+
+  if (path === "/__e2e/records") {
+    if (request.method === "DELETE") {
+      held.clear();
+      send(response, 200, { held: 0 });
+      return;
+    }
+
+    if (request.method === "PUT") {
+      read(request)
+        .then((text) => {
+          const record = JSON.parse(text);
+          if (record === null || typeof record !== "object" || typeof record.id !== "string" || record.id === "") {
+            send(response, 400, { message: "A record to hold is a JSON object with an id." });
+            return;
+          }
+
+          held.set(withoutVersion(record.id), record);
+          send(response, 200, { id: record.id, held: held.size });
+        })
+        .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the record: ${error instanceof Error ? error.message : String(error)}` }));
+      return;
+    }
+  }
+
+  const reading = request.method === "GET" ? RECORD_READ.exec(path) : null;
+  if (reading !== null) {
+    let id;
+    try {
+      id = decodeURIComponent(reading[1]);
+    } catch {
+      send(response, 400, { message: `The e2e OSDU stand-in cannot read the id in ${path}.` });
+      return;
+    }
+
+    const record = readRecord(id);
+    if (record === null) {
+      send(response, 404, { code: 404, reason: "Record not found", message: `The e2e OSDU stand-in holds no record ${id}.` });
+    } else {
+      send(response, 200, record);
+    }
+
     return;
   }
 
@@ -86,7 +178,7 @@ const server = createServer((request, response) => {
     return;
   }
 
-  send(response, 404, { message: `The e2e OSDU stand-in answers a token and the search service, not ${request.method} ${path}.` });
+  send(response, 404, { message: `The e2e OSDU stand-in answers a token, the search service and record reads, not ${request.method} ${path}.` });
 });
 
 server.listen(port, "127.0.0.1", () => {

@@ -758,6 +758,226 @@ export interface DeliveryInterface {
   notWaitedFor: DeliveryInterfaceWait[] | null;
   /** Why the order shown is only what `after:` gives (a mapping the catalog does not hold, interfaces that wait for each other). */
   orderProblem: string | null;
+  /** The parameters the flow declares, whose values fill its record scope; absent from a control plane that predates them. */
+  parameters?: DeliveryParameter[] | null;
+  /** The record table's key columns, in the order a key's parts are named. */
+  keyColumns?: string[] | null;
+}
+
+/** A parameter a flow declares: a value of it fills the record scope's predicate and the work location. */
+export interface DeliveryParameter {
+  name: string;
+  required: boolean;
+  default?: string | null;
+  description?: string | null;
+}
+
+/** How a record preview read the key it was given. */
+export type DeliveryPreviewKeyForm = "first" | "delivery key" | "osdu id" | "source key" | "key parts";
+
+/** What a preview was asked for and how it picked its row. */
+export interface DeliveryPreviewAsked {
+  key?: string | null;
+  how: DeliveryPreviewKeyForm;
+  keyParts?: string[] | null;
+  keyColumns: string[];
+  /** Rows before the first renderable one that a preview of the first record passed over (deleted, keyless, held). */
+  passedOver: number;
+  passedOverWhy: string[];
+  /** How many records the scope holds, when the preview read the scope's first. */
+  scopeRecords?: number | null;
+  values: Record<string, string>;
+}
+
+/** The render inputs a preview's document comes from. */
+export interface DeliveryPreviewInputs {
+  mapping: string;
+  kind: string;
+  templateVersion: string;
+  cachePartition?: string | null;
+  cacheVersion?: string | null;
+  contextHash: string;
+}
+
+/** The route the flow delivers by, why, and where a DDMS route sends the record. */
+export interface DeliveryPreviewRoute {
+  protocol: string;
+  reason?: string | null;
+  ddms?: string | null;
+}
+
+/** A child dataset's first rows, with how many it holds. */
+export interface DeliveryPreviewRows {
+  rows: Record<string, string | null>[];
+  total: number;
+  truncated: boolean;
+}
+
+/** The record's rows as the ingestion tables hold them now. */
+export interface DeliveryPreviewSource {
+  sourceKey: string;
+  keyParts: (string | null)[];
+  deliveryKey?: string | null;
+  label?: string | null;
+  identities: string[];
+  originFile?: string | null;
+  originRow?: number | null;
+  originUpdatedUtc?: string | null;
+  fingerprint?: string | null;
+  deletedUtc?: string | null;
+  hold?: string | null;
+  row: Record<string, string | null>;
+  datasets: Record<string, DeliveryPreviewRows>;
+  /** Why rows were left out to keep the answer within bounds. */
+  omitted?: string | null;
+}
+
+/** What the next run would do with a record. */
+export type DeliveryPreviewAction = "create" | "updateMetadata" | "updatePayload" | "updateBoth" | "skip" | "hold" | "blocked";
+
+/** The ledger's record of the previewed row, and whether the document rendered now is the one it holds. */
+export interface DeliveryPreviewLedgerRecord {
+  status: DeliveryRecordStatus;
+  blocked: boolean;
+  targetId?: string | null;
+  targetVersion?: number | null;
+  lastDeliveredUtc?: string | null;
+  lastError?: string | null;
+  metadataHash?: string | null;
+  sameDocument?: boolean | null;
+}
+
+export interface DeliveryPreviewDecision {
+  action: DeliveryPreviewAction;
+  skipTier?: "fingerprint" | "contentHash" | "approval" | "stale" | null;
+  reason: string;
+  deliverMetadata: boolean;
+  deliverPayload: boolean;
+  ledger?: DeliveryPreviewLedgerRecord | null;
+}
+
+/** A value of the sent document the platform gives when the record is sent. */
+export interface DeliveryPreviewPlaceholder {
+  path: string;
+  standsFor: string;
+}
+
+/** One question the render asked the platform's search, and what it found. */
+export interface DeliveryPreviewSearch {
+  kind: string;
+  field: string;
+  value: string;
+  outcome: string;
+  id?: string | null;
+}
+
+/** The record's document: as the mapping renders it, and as the route sends it where the route adds to it. */
+export interface DeliveryPreviewDocument {
+  targetId?: string | null;
+  kind: string;
+  metadataHash: string;
+  characters: number;
+  held: boolean;
+  holds: string[];
+  rendered?: Record<string, unknown> | null;
+  /** The document as the route sends it; absent when the route sends the rendered document as it is. */
+  sent?: Record<string, unknown> | null;
+  placeholders: DeliveryPreviewPlaceholder[];
+  /** Why the documents were left out: their size. */
+  omitted?: string | null;
+  searches: DeliveryPreviewSearch[];
+  cacheValues: number;
+}
+
+/** The record of the ledger delivered to a referenced id. */
+export interface DeliveryPreviewHolder {
+  flowId: string;
+  deliveryKey: string;
+  sourceKey: string;
+  label?: string | null;
+  status: DeliveryRecordStatus;
+}
+
+export interface DeliveryPreviewReference {
+  id: string;
+  property: string;
+  holder?: DeliveryPreviewHolder | null;
+}
+
+export interface DeliveryPreviewParquet {
+  rows: number;
+  columns: number;
+  columnNames: string[];
+  columnNamesTruncated: boolean;
+}
+
+export interface DeliveryPreviewFile {
+  name: string;
+  size: number;
+  modifiedUtc?: string | null;
+  parquet?: DeliveryPreviewParquet | null;
+  footerProblem?: string | null;
+}
+
+/** One payload part of the record and the files a delivery would upload for it. */
+export interface DeliveryPreviewPayloadPart {
+  role?: string | null;
+  payload: string;
+  location?: string | null;
+  files: DeliveryPreviewFile[];
+  totalFiles: number;
+  totalBytes: number;
+  truncated: boolean;
+  problem?: string | null;
+}
+
+/** One request of a delivery, in order. */
+export interface DeliveryPreviewStep {
+  order: number;
+  service: string;
+  request: string;
+  what: string;
+  returns?: string | null;
+  repeats?: string | null;
+  body?: Record<string, unknown> | null;
+}
+
+/**
+ * One record of a flow rendered on a node as a delivery would render it, with nothing sent: the `delivery-preview` task's
+ * result. `found` false carries the reason no row was previewed (an unknown key, an empty scope).
+ */
+export interface DeliveryRecordPreview {
+  flow: string;
+  interface?: string | null;
+  flowId: string;
+  asked: DeliveryPreviewAsked;
+  found: boolean;
+  reason?: string | null;
+  inputs: DeliveryPreviewInputs;
+  route: DeliveryPreviewRoute;
+  source?: DeliveryPreviewSource | null;
+  decision?: DeliveryPreviewDecision | null;
+  document?: DeliveryPreviewDocument | null;
+  noDocument?: string | null;
+  references: DeliveryPreviewReference[];
+  referenceCount: number;
+  payload: DeliveryPreviewPayloadPart[];
+  steps: DeliveryPreviewStep[];
+  notes: string[];
+  issues: string[];
+  previewedUtc: string;
+}
+
+/** A record as OSDU holds it, read on a node through a flow's route: the `delivery-read` task's result. */
+export interface DeliveryOsduRead {
+  flow: string;
+  deliveryKey?: string | null;
+  targetId: string;
+  correlationId?: string | null;
+  found: boolean;
+  version?: number | null;
+  record?: Record<string, unknown> | null;
+  readUtc: string;
 }
 
 /** The listing a removal is aimed at: the same filter the records list is built from. */
@@ -1447,6 +1667,18 @@ export const deliveryApi = {
    * system columns, its child datasets, and the origin file and row the ingestion tables record. Poll the task.
    */
   readSource: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/source`),
+  /**
+   * Queues a preview of one record of an interface on a node: the scope's first record, or the one `key` names (a source
+   * key, a delivery key, an OSDU id the ledger holds, or a JSON array of the key's parts), rendered as a delivery would
+   * render it and sent nowhere. `values` fill the flow's parameters; the declared defaults fill the rest. Poll the task.
+   */
+  preview: (pipelineId: string, request: { key?: string | null; values?: Record<string, string> }, interfaceName?: string | null) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/preview", interfaceName), request),
+  /** Queues a preview of this record, rendered from its current source row as a delivery would render it now. */
+  previewRecord: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/preview`),
+  /** Queues a read of any OSDU record by id, through the flow's route and credentials. Poll the task. */
+  readOsdu: (pipelineId: string, targetId: string, interfaceName?: string | null) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/osdu/read", interfaceName), { targetId }),
   /** Where the flow's records live, and which call each removal scope makes against them. */
   target: (pipelineId: string, interfaceName?: string | null) =>
     get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`, interfaceName ? { interface: interfaceName } : {}),
