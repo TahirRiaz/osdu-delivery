@@ -1,0 +1,39 @@
+# Pre-ingestion: the depth unit map into the pre layer.
+#
+# Each row maps one spelling Recall writes a depth or an elevation unit in to the code of the partition's UnitOfMeasure
+# record, as petrodb-api's DepthUnit and VerticalMeasurementUnitOfMeasureID valueMaps map it. This flow lands
+# data/depth-units, recall-units-02-depth-ing keys it, and recall-lookups-00-cache holds that table.
+name: recall-units-01-depth-pre
+batch: recall
+
+source:
+  type: csv
+  location: data/depth-units
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_SAMPLE_DB}
+  schema: pre
+  table: RecallDepthUnits
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: source_unit, type: nvarchar(50) }
+    - { name: osdu_unit, type: nvarchar(50) }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: recall-cache

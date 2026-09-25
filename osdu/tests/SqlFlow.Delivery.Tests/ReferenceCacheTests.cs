@@ -250,13 +250,13 @@ public class ReferenceCacheTests
     private static CacheDefinition CacheFlow(string types, string extra = "") => new DeliveryDocumentLoader().ParseCache(
         """
         flowType: cache
-        name: wells-osdu-00-reference-cache
+        name: recall-osdu-00-reference-cache
         source:
           endpoint: https://osdu.example.com
           headers: { data-partition-id: dev }
 
         """ + extra + "\ntypes:\n" + types + "\n",
-        "cache/wells-osdu-00-reference-cache.yaml");
+        "cache/recall-osdu-00-reference-cache.yaml");
 
     [Fact]
     public void A_cache_flow_reads_paths_written_either_way()
@@ -330,7 +330,7 @@ public class ReferenceCacheTests
             """,
             "onChange: approve\n");
 
-        Assert.Equal("wells-osdu-00-reference-cache", cache.Name);
+        Assert.Equal("recall-osdu-00-reference-cache", cache.Name);
         Assert.Equal("dev", cache.Scope);
         Assert.Equal("https://osdu.example.com", cache.Source.Endpoint);
         var wellbore = cache.Types[0];
@@ -453,7 +453,7 @@ public class ReferenceCacheTests
 
         // A flow still naming a cache is refused: the cache it reads is its partition's, whatever it names.
         var named = Assert.Throws<FlowValidationException>(() => loader.ParseFlow(
-            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: wells-osdu-00-reference-cache", StringComparison.Ordinal), "flow.yaml"));
+            sample.Replace("mapping: WellLog@1.4.0", "mapping: WellLog@1.4.0\n  cache: recall-osdu-00-reference-cache", StringComparison.Ordinal), "flow.yaml"));
         Assert.Contains("render.cache is not a setting any more", named.Message, StringComparison.Ordinal);
     }
 
@@ -526,28 +526,30 @@ public class ReferenceCacheTests
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [RenderContext.DataPartitionParameter] = "dev",
-                ["aclOwner"] = "data.default.owners@dev.dataservices.energy",
-                ["aclViewer"] = "data.default.viewers@dev.dataservices.energy",
-                ["legalTag"] = "dev-reference-data-default",
+                ["aclOwner"] = "data.welllogsrecall.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.sdd-well-logs.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-equinor-osdu-reference-default",
             },
         };
         // The wellbore the log belongs to is searched for, and the sample platform holds it.
         var searches = await RenderResolver.SearchesAsync(Samples.SampleTemplates, mapping);
-        var search = new FixedRecordSearch([("data.FacilityName", "OSDU-DEV-1-B", "dev:master-data--Wellbore:OSDU-DEV-1-B")]);
+        var fixture = mapping.Fixtures.Single(f => f.Name.StartsWith("22494/1", StringComparison.Ordinal));
+        var search = new FixedRecordSearch([("data.FacilityName", fixture.Record["wellbore_uwi"]!, fixture.Searches[0].Id!)]);
         var renderer = new MappingRenderer(mapping, schema, references, context, searches, search);
-        var fixture = mapping.Fixtures.Single(f => f.Name.StartsWith("L-2001", StringComparison.Ordinal));
+        // The neutron porosity of NO 15/5-7 AT2, as Recall describes it, in place of the fixture's own curves.
+        var nphi = SampleWellLogs.CurveRows(SampleWellLogs.Logs().Single(l => l.LogId == "9982/1")).Single(c => c["curve_id"] == "NPHI");
         var porosity = await Samples.RenderSettledAsync(renderer, new SourceRecord
         {
             Row = SourceRow.FromStrings(fixture.Record),
-            Scopes = fixture.Datasets.ToDictionary(
-                kv => kv.Key,
-                kv => (IReadOnlyList<SourceRow>)kv.Value.Select(SourceRow.FromStrings).ToList(),
-                StringComparer.OrdinalIgnoreCase),
+            Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["curves"] = [SourceRow.FromStrings(nphi.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase))],
+            },
         });
 
         Assert.False(porosity.IsHeld, string.Join("; ", porosity.Holds));
-        var nphi = porosity.Document["data"]!["Curves"]!.AsArray().Single(c => c!["CurveID"]!.GetValue<string>() == "NPHI");
-        Assert.Equal("dev:reference-data--UnitOfMeasure:v%2Fv:", nphi!["CurveUnit"]!.GetValue<string>());
+        var curve = porosity.Document["data"]!["Curves"]!.AsArray().Single(c => c!["CurveID"]!.GetValue<string>() == "NPHI");
+        Assert.Equal("dev:reference-data--UnitOfMeasure:v%2Fv:", curve!["CurveUnit"]!.GetValue<string>());
     }
 }
 

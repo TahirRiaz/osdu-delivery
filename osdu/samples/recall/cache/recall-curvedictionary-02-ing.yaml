@@ -1,0 +1,31 @@
+# Ingestion: the typed curve dictionary view into the keyed table the lookups cache flow reads.
+#
+# One row per mnemonic. A newer file replaces a mnemonic's row, so the table always holds the dictionary as its latest
+# file has it, and recall-lookups-00-cache captures it whole into the partition's cache as CurveDictionary.
+flowType: ing
+name: recall-curvedictionary-02-ing
+batch: recall
+
+connections:
+  sample: ${env:OSDU_SAMPLE_DB}
+
+source:
+  server: sample
+  object: OsduSample.pre.v_CurveDictionary
+
+target:
+  server: sample
+  object: OsduSample.ing.CurveDictionary
+  identityColumn: RecId
+
+load:
+  keyColumns: [mnemonic]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: recall-cache

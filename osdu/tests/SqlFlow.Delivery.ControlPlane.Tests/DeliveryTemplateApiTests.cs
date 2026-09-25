@@ -200,7 +200,7 @@ public sealed class DeliveryTemplateApiTests
             // The check renders with what a run would: the values the flow writes out, and for the aclOwner it leaves out the
             // kind's own ${env:OSDU_ACL_OWNER}, resolved from the repository's central configuration as a run resolves it.
             Assert.Equal("dev", flow.Parameters["dataPartition"]);
-            Assert.Equal("data.default.viewers@dev.dataservices.energy", flow.Parameters["aclViewer"]);
+            Assert.Equal("data.sdd-well-logs.viewers@dev.dataservices.energy", flow.Parameters["aclViewer"]);
             Assert.Equal("owners@" + suffix + ".example", flow.Parameters["aclOwner"]);
             // A reference the control plane cannot resolve leaves the value to the author, and the listing says which it is.
             Assert.False(flow.Parameters.ContainsKey("legalTag"));
@@ -278,9 +278,9 @@ public sealed class DeliveryTemplateApiTests
             var parameters = new Dictionary<string, string>
             {
                 ["dataPartition"] = "dev",
-                ["aclOwner"] = "data.default.owners@dev.dataservices.energy",
-                ["aclViewer"] = "data.default.viewers@dev.dataservices.energy",
-                ["legalTag"] = "dev-reference-data-default",
+                ["aclOwner"] = "data.welllogsrecall.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.sdd-well-logs.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-equinor-osdu-reference-default",
             };
             var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
@@ -633,7 +633,7 @@ public sealed class DeliveryTemplateApiTests
                   mapping: WellLog@1.4.0
                   parameters:
                     dataPartition: dev
-                    aclViewer: data.default.viewers@dev.dataservices.energy
+                    aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
                     legalTag: {UnsetReference}
                 target:
                   endpoint: https://osdu.example.test

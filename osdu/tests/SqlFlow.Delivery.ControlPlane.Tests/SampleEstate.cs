@@ -13,13 +13,13 @@ using SqlFlow.Delivery.Tests;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// The sample delivery estate (<c>osdu/samples/wells</c>) copied to a temp repository, for the API tests that
-/// need a real flow: the two OSDU flows with the pre and ing chains that feed them, the mappings they render with, and
-/// the drop-off folder the pre flows read. The copy keeps the shape a repository has, one folder per source, so a path
-/// the catalog records here is the path it would record for a customer's repo. What the flows render with lives in the
-/// module's database (the templates and the partition cache), so a test saves those rather than inventing a second
-/// estate that would drift from the real one. This mirrors what the engine suite and the GUI e2e fixture do, for the
-/// same reason.
+/// The sample delivery estate (<c>osdu/samples/recall</c>) copied to a temp repository, for the API tests that need a
+/// real flow: the well log delivery flow with the pre and ing chains that feed it, the mapping it renders with, the
+/// schedule library, and the drop-off folder the pre flows read. The wellbore fixture flow and its mapping are copied in
+/// beside them, for the suites that need a second flow with no payload files. The copy keeps the shape a repository has,
+/// one folder per source, so a path the catalog records here is the path it would record for a customer's repo. What the
+/// flows render with lives in the module's database (the templates and the partition cache), so a test saves those rather
+/// than inventing a second estate that would drift from the real one.
 /// </summary>
 internal static class SampleEstate
 {
@@ -27,9 +27,9 @@ internal static class SampleEstate
     public const string LogSource = "STAT_COMP";
 
     /// <summary>The well log flow of the sample estate, which streams payload files beside its documents.</summary>
-    public const string FlowName = "wells-welllog-03-header-delivery";
+    public const string FlowName = "recall-welllog-03-header-delivery";
 
-    /// <summary>The wellbore master data flow, which streams no payload files.</summary>
+    /// <summary>The wellbore master data fixture flow, which streams no payload files.</summary>
     public const string WellboreFlowName = "wells-wellbore-03-header-delivery";
 
     /// <summary>The mapping the wellbore flow pins, and the template version it fills.</summary>
@@ -39,19 +39,18 @@ internal static class SampleEstate
 
     public const string WellboreTemplateVersion = "58d6bdbd9d066a06";
 
-    /// <summary>The templates the sample mappings pin, by kind, and the bundled schema file each is saved from.</summary>
+    /// <summary>The templates the sample and fixture mappings pin, by kind, and the bundled schema file each is saved from.</summary>
     private static readonly (string Kind, string File)[] Templates =
     [
         ("osdu:wks:work-product-component--WellLog:1.4.0", "osdu_wks_work-product-component--WellLog_1.4.0.json"),
         (WellboreTemplateKind, "osdu_wks_master-data--Wellbore_1.3.0.json"),
-        ("osdu:wks:work-product-component--WellboreTrajectory:1.3.0", "osdu_wks_work-product-component--WellboreTrajectory_1.3.0.json"),
     ];
 
     /// <summary>
     /// The folder the source occupies in a repository. A repository is laid out per source: one top-level folder, which
     /// the catalog and the GUI read as a project, holding everything that source needs.
     /// </summary>
-    public const string SourceFolder = "wells";
+    public const string SourceFolder = "recall";
 
     /// <summary>
     /// What the source folder holds, and so what a copy of the estate is made of: the documents, what they render with,
@@ -60,10 +59,13 @@ internal static class SampleEstate
     /// </summary>
     private static readonly string[] Parts = ["flows", "cache", "mappings", "data"];
 
+    /// <summary>The schedule library every flow of the estate joins a schedule of.</summary>
+    private const string ScheduleLibrary = "schedules.yaml";
+
     /// <summary>
-    /// Copies the estate into <paramref name="destination"/> and returns it. Nothing about the flows is rewritten: what
-    /// executes is the sample flow as shipped, reading the ingestion tables its document declares, and the copy is a
-    /// disposable place for its run logs and work batches.
+    /// Copies the estate into <paramref name="destination"/> and returns it, with the wellbore fixture flow and its mapping
+    /// beside the estate's own. Nothing about the flows is rewritten: what executes is the sample flow as shipped, reading
+    /// the ingestion tables its document declares, and the copy is a disposable place for its run logs and work batches.
     /// </summary>
     public static string CopyTo(string destination)
     {
@@ -74,6 +76,9 @@ internal static class SampleEstate
             CopyDirectory(Path.Combine(source, part), Path.Combine(destination, SourceFolder, part));
         }
 
+        File.Copy(Path.Combine(source, ScheduleLibrary), Path.Combine(destination, SourceFolder, ScheduleLibrary), overwrite: true);
+        File.Copy(Samples.WellboreFlowFile, Path.Combine(destination, SourceFolder, "flows", WellboreFlowName + ".yaml"), overwrite: true);
+        File.Copy(Path.Combine(Samples.FixtureMappings, WellboreMapping + ".yaml"), Path.Combine(destination, SourceFolder, "mappings", WellboreMapping + ".yaml"), overwrite: true);
         return destination;
     }
 
@@ -96,11 +101,12 @@ internal static class SampleEstate
         return Path.Combine(root, SourceFolder, "mappings", reference + ".yaml");
     }
 
-    /// <summary>A sample mapping document (<c>Name@version</c>) as the repository holds it.</summary>
+    /// <summary>A sample mapping document (<c>Name@version</c>) as the repository holds it, or the fixture mapping of that name.</summary>
     public static string MappingYaml(string reference)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reference);
-        return File.ReadAllText(Path.Combine(SourceRoot(), "mappings", reference + ".yaml"));
+        var sample = Path.Combine(SourceRoot(), "mappings", reference + ".yaml");
+        return File.ReadAllText(File.Exists(sample) ? sample : Path.Combine(Samples.FixtureMappings, reference + ".yaml"));
     }
 
     /// <summary>
@@ -151,25 +157,18 @@ internal static class SampleEstate
     }
 
     /// <summary>
-    /// Merges the sample cache records into the cache of the sample partition in the module's database, checked against
-    /// the sample cache flow, exactly as 'sqlflow cache import' does, and the sample lookup tables as the lookups flow's
-    /// refresh writes them. The well log flow reads the cache of the partition it delivers to. A database that already
-    /// holds the same content keeps its current version.
+    /// Merges the sample lookup tables into the cache of the sample partition in the module's database, exactly as the
+    /// lookups flow's refresh writes them. The well log mapping builds every reference id it writes from these tables and
+    /// a template, so they are the only cache content the well log flow reads. A database that already holds the same
+    /// content keeps its current version.
     /// </summary>
     public static async Task SaveCacheAsync(string connectionString)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         await MigrateModuleAsync(connectionString);
-        var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(SourceRoot(), "cache", "wells-osdu-00-reference-cache.yaml"));
+        var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(SourceRoot(), "cache", "recall-lookups-00-cache.yaml"));
         var store = new OsduCacheStore(() => Context(connectionString));
-        var builder = new SnapshotBuilder(store, flow.Scope, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
-        // The flow document is all a repository holds about a cache; the records that stand in for a capture sit
-        // beside the source folders, because the cache itself belongs to the database.
-        await builder.ImportDirectoryAsync(Path.Combine(Locate(), "cache-records"), flow.Types, new CacheCapture(null, "tests", "sample files"));
-
-        // The lookup tables the mappings translate source spellings through, from the sample unit maps and the curve
-        // dictionary file, as the lookups flow captures them.
-        var lookups = new SnapshotBuilder(store, flow.Scope, Samples.SampleLookupsFlowName, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
+        var lookups = new SnapshotBuilder(store, flow.Scope, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
         await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample unit maps and curve dictionary"), []);
     }
 

@@ -1531,10 +1531,11 @@ A cached field written to a relationship, or to a list of them, is checked as a 
 | equals | `- equals: REGULAR` | `"REGULAR"` or `"DISCRETE"` | `true` or `false` |
 | date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"`, or `"2026-09-01"` where the template takes a date |
 | number | `- number` or `- number: { decimal: ",", group: " " }` | `"1 234,5"` | `1234.5` |
+| id | `- id: "{param.dataPartition}:reference-data--UnitOfMeasure:{value}:"` | `"m/s"` | `"dev:reference-data--UnitOfMeasure:m%2Fs:"` |
 
 `part` counts from one; a part the value does not have, or an empty one, gives an empty value. A separator of a single
 space splits on any run of whitespace. `equals` compares trimmed text and ignores case, and an entry whose last modifier
-is `equals` must fill a boolean. `replace` has its own section below.
+is `equals` must fill a boolean. `replace` and `id` have their own sections below.
 
 #### replace
 
@@ -1621,6 +1622,64 @@ The preflight checks that the type is in the cache version, that it holds `match
 that hold several values. Where the replaced value is then looked up in the cache by the entry's `findBy`, every value
 the replace can give (a written table's values, a cached table's `field` values, and a text `otherwise`) is looked up
 there as well, and the ones that find nothing are listed as a warning before any row arrives.
+
+#### id
+
+```yaml
+- target: osdu.data.Curves[].CurveUnit
+  source: dataset.curves.unit
+  modifiers:
+    - replace: cache.RecallUnits
+    - id: "{param.dataPartition}:reference-data--UnitOfMeasure:{value}:"
+
+- target: osdu.data.Curves[].LogCurveTypeID
+  source: dataset.curves.mnemonic
+  modifiers:
+    - id: "{param.dataPartition}:reference-data--LogCurveType:{cache.CurveDictionary.log_curve_type}:"
+  required: false
+```
+
+`id` builds the OSDU id an entry writes from a template, so a mapping generates references rather than looking every
+one up: reference data, master data, work product components and datasets alike, with or without a version. The
+template is text with tokens, quoted, since YAML reads text that starts with `{` as a map.
+
+| Token | Gives |
+| --- | --- |
+| `{value}` | The entry's value, after the modifiers before `id`. |
+| `{dataset.<column>}`, `{dataset.<child>.<column>}` | A column of the row, or inside a repeater of its child row, as `appliesWhen` reads them. |
+| `{cache.<Type>.<field>}` | `field` of the row of a cached lookup table (a [dictionary](#dictionary) or an ingestion table) whose key is the entry's value, matched as a replace matches it. |
+| `{param.<name>}` | A parameter the mapping declares, as the flow supplies it. |
+
+Everything else is written as it stands, and is what an id carries: ASCII letters, digits, `_`, `-`, `.`, `:` and
+percent-escapes such as `%2F`. The template's own text holds the colons that part an id,
+`<partition>:<group>--<Entity>:<code>`, and a reference ends with `:` and the version it pins, if any
+(`dev:master-data--Wellbore:1234:`). A template that reads nothing a record changes (only text and parameters) is
+refused: that is a static value, which takes `{param.<name>}` too.
+
+Each token's value is trimmed and percent-encoded as UTF-8: letters, digits, `_`, `-`, `.` and `:` stay as they are, a
+percent-escape already in the value is kept, so nothing is encoded twice, and anything else is escaped (`NO 15/5-7` gives
+`NO%2015%2F5-7`). A `:` stays because the code of an id may hold one (`Projected:EPSG::23031`). An incoming value that
+already is an OSDU id names its record and is written as it is, with the version separator added, when the template
+reads `{value}`; one of another entity type than the template builds holds the record.
+
+| Situation | `required: true` (default) | `required: false` |
+| --- | --- | --- |
+| The value is empty, or a token has no value (an empty column, a key the lookup table does not list, a row with nothing in the field) | Record held, naming the tokens | Variable left out |
+| A parameter the flow gives no value, a type the cache version does not hold or that holds OSDU records, a value two rows answer to only once case is ignored with different values, a row holding several values in the field, text that is not valid Unicode | Record held | Record held |
+| The id built is not OSDU's id shape, does not match the pattern the template gives the variable, or names an entity type its relationship does not allow | Record held | Record held |
+
+A half-built id is never written. `id` applies only to a dataset source, since a cache or search source gives the id
+itself, and it is the last modifier, since anything after it would change the id it built. Every row a cache token read,
+and every key a lookup table did not list, is recorded among the record's cache dependencies, exactly as for
+[a replace reading the cache](#a-table-read-from-the-cache), so a new version of the table tags the records built from it.
+
+The mapping is refused when it is read for a token it cannot read, text an id cannot carry, fewer than two colons, text
+between the first two colons that is no entity type, a parameter it does not declare, a column a repeater's item cannot
+read, or `id` anywhere but last. The preflight checks that the variable takes text; that each cache token reads a lookup
+table the cache version holds, at a field its rows hold; that each parameter has a value; and builds the id with a
+stand-in for every value a row gives, refusing a template whose ids are of an entity type the variable's relationship
+does not allow or do not match its pattern (a reference without its trailing `:`, say). Where a token writes the entity
+type, that is checked on each record as its id is built.
 
 #### date
 

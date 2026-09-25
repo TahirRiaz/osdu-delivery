@@ -43,10 +43,10 @@ public class ScaleEngineTests : IDisposable
 
         var intake = await runtime.Intake.IntakeAsync(flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
         var submissionId = intake.Submission.SubmissionId;
-        Assert.Equal(3, intake.Counts.Planned);
-        Assert.Equal(2, intake.Counts.Batches);
+        Assert.Equal(5, intake.Counts.Planned);
+        Assert.Equal(3, intake.Counts.Batches);
         var submission = (await ledger.GetSubmissionAsync(submissionId))!;
-        Assert.Equal(2, submission.BatchCount);
+        Assert.Equal(3, submission.BatchCount);
         Assert.Equal(SubmissionStatus.Planned, submission.Status);
         // The first run of a scope has no watermark, so its window opens at the beginning; it is still an incremental
         // read, and it is the watermark it writes that lets the next run start where this one stopped.
@@ -55,6 +55,7 @@ public class ScaleEngineTests : IDisposable
         Assert.NotNull(submission.WorkLocation);
         Assert.True(File.Exists(WorkBatchFile.PathFor(submission.WorkLocation!, submissionId, 0)));
         Assert.True(File.Exists(WorkBatchFile.PathFor(submission.WorkLocation!, submissionId, 1)));
+        Assert.True(File.Exists(WorkBatchFile.PathFor(submission.WorkLocation!, submissionId, 2)));
         var pending = await ledger.GetRecordAsync(flow.Id, SampleEstate.Key(0));
         Assert.NotNull(pending!.PendingDocumentRef);
         Assert.NotNull(pending.WorkBatch);
@@ -63,12 +64,12 @@ public class ScaleEngineTests : IDisposable
         Assert.Equal(1, pending.PendingSourceRowNumber);
 
         var summary = await Worker(runtime, protocol, ledger).DrainAsync(submissionId);
-        Assert.Equal(3, summary.Delivered);
-        Assert.Equal(2, summary.Batches);
+        Assert.Equal(5, summary.Delivered);
+        Assert.Equal(3, summary.Batches);
         var batches = await ledger.ListWorkBatchesAsync(submissionId, 10, 0);
-        Assert.Equal(2, batches.Count);
+        Assert.Equal(3, batches.Count);
         Assert.All(batches, b => Assert.Equal(WorkBatchStatus.Done, b.Status));
-        Assert.Equal(3, batches.Sum(b => b.Delivered));
+        Assert.Equal(5, batches.Sum(b => b.Delivered));
         Assert.All(batches, b => Assert.Null(b.LeaseOwner));
 
         var delivered = await ledger.GetRecordAsync(flow.Id, SampleEstate.Key(0));
@@ -90,7 +91,7 @@ public class ScaleEngineTests : IDisposable
 
         var closed = await runtime.Intake.CompleteAsync(submissionId, flow.Id);
         Assert.Equal(SubmissionStatus.Completed, closed.Status);
-        Assert.Equal(3, closed.Delivered);
+        Assert.Equal(5, closed.Delivered);
     }
 
     [Fact]
@@ -119,7 +120,7 @@ public class ScaleEngineTests : IDisposable
         var intake = await runtime.Intake.IntakeAsync(flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
         var submissionId = intake.Submission.SubmissionId;
         var first = await Worker(runtime, protocol, ledger).DrainAsync(submissionId);
-        Assert.Equal(3, first.Retried);
+        Assert.Equal(5, first.Retried);
         var waiting = await ledger.GetRecordAsync(flow.Id, SampleEstate.Key(0));
         Assert.Equal(RecordStatus.Pending, waiting!.Status);
         Assert.Contains("\"metadata\"", waiting.PendingStepJson, StringComparison.Ordinal);
@@ -127,8 +128,8 @@ public class ScaleEngineTests : IDisposable
 
         _clock.Advance(TimeSpan.FromMinutes(2));
         var second = await Worker(runtime, protocol, ledger, "resumer").DrainAsync(submissionId);
-        Assert.Equal(3, second.Delivered);
-        Assert.Equal(3, resumed);
+        Assert.Equal(5, second.Delivered);
+        Assert.Equal(5, resumed);
         var delivered = await ledger.GetRecordAsync(flow.Id, SampleEstate.Key(0));
         Assert.Equal(RecordStatus.Delivered, delivered!.Status);
         Assert.Null(delivered.PendingStepJson);
@@ -157,17 +158,17 @@ public class ScaleEngineTests : IDisposable
         var result = await runtime.RunAsync(force: false);
         var submissionId = result.Submission.SubmissionId;
 
-        // Three candidate records at one record per batch: three slices, dealt as one share each to the coordinating run
-        // and its two members.
+        // Five candidate records at one record per batch: five slices, dealt as shares to the coordinating run and its
+        // two members.
         Assert.Equal(2, result.IntakeMembers);
         Assert.Equal(2, result.DrainMembers);
         Assert.Equal(SubmissionStatus.Completed, result.Submission.Status);
-        Assert.Equal(3, result.Submission.Planned);
-        Assert.Equal(3, result.Submission.Delivered);
-        Assert.Equal(3, result.Submission.BatchCount);
-        Assert.Equal(3, result.Submission.Slices);
+        Assert.Equal(5, result.Submission.Planned);
+        Assert.Equal(5, result.Submission.Delivered);
+        Assert.Equal(5, result.Submission.BatchCount);
+        Assert.Equal(5, result.Submission.Slices);
         Assert.Equal("RecId", SourceWindowDescription.Parse(result.Submission.SourceWindowJson)!.SlicedOn);
-        Assert.Equal(3, protocol.Deliveries.Count);
+        Assert.Equal(5, protocol.Deliveries.Count);
 
         var intakeMembers = dispatcher.Enqueued.Where(e => e.Operation == DeliveryOperations.Intake).ToList();
         Assert.Equal(2, intakeMembers.Count);
@@ -179,7 +180,7 @@ public class ScaleEngineTests : IDisposable
         Assert.All(dispatcher.Enqueued.Where(e => e.Operation == DeliveryOperations.Drain), e => Assert.Equal(submissionId, e.Payload.SubmissionId));
 
         var batches = await ledger.ListWorkBatchesAsync(submissionId, 10, 0);
-        Assert.Equal(3, batches.Count);
+        Assert.Equal(5, batches.Count);
         Assert.All(batches, b => Assert.Equal(WorkBatchStatus.Done, b.Status));
         // The member's batch numbers live in their slice's namespace, never colliding with the root's.
         Assert.Contains(batches, b => b.Index >= SubmissionIntake.BatchBase(1));

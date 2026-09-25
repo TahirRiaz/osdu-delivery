@@ -26,7 +26,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
     /// <summary>The partition the WellLog 1.5.0 pipeline delivers to, beside the sample partition the 1.4.0 pipeline uses.</summary>
     private const string NextPartition = "dev-next";
 
-    private const string CurrentFlowName = "wells-welllog-03-header-delivery";
+    private const string CurrentFlowName = "recall-welllog-03-header-delivery";
 
     private const string NextFlowName = "wells-welllog-next";
 
@@ -46,12 +46,12 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
 
         var (currentRun, currentSubmission) = await RunAsync(current, estate.Ledger);
         var (nextRun, nextSubmission) = await RunAsync(next, estate.Ledger);
-        Assert.Equal((3, 3), (currentRun.Delivered, nextRun.Delivered));
+        Assert.Equal((SampleEstate.Logs().Count, SampleEstate.Logs().Count), (currentRun.Delivered, nextRun.Delivered));
 
-        // The same three rows, each sent twice: as WellLog 1.4.0 into the sample partition and as WellLog 1.5.0 into the
+        // The same rows, each sent twice: as WellLog 1.4.0 into the sample partition and as WellLog 1.5.0 into the
         // next one, with the same curve files and, through each partition's own cache and its own search, each
         // partition's own references.
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < SampleEstate.Logs().Count; i++)
         {
             var key = SampleEstate.Key(i);
             var sentCurrent = Assert.Single(current.Protocol.Deliveries, w => w.Key == key);
@@ -82,13 +82,15 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
         var submissions = (await estate.Ledger.GetSubmissionAsync(currentSubmission), await estate.Ledger.GetSubmissionAsync(nextSubmission));
         Assert.Equal(("WellLog@1.4.0", "WellLog@1.5.0"), (submissions.Item1!.MappingReference, submissions.Item2!.MappingReference));
         Assert.Equal(submissions.Item1.SourceObject, submissions.Item2.SourceObject);
-        Assert.Equal((3L, 3L), ((await estate.Ledger.StatsAsync(current.Runtime.Flow.Id, Now)).Delivered, (await estate.Ledger.StatsAsync(next.Runtime.Flow.Id, Now)).Delivered));
+        Assert.Equal(
+            ((long)SampleEstate.Logs().Count, (long)SampleEstate.Logs().Count),
+            ((await estate.Ledger.StatsAsync(current.Runtime.Flow.Id, Now)).Delivered, (await estate.Ledger.StatsAsync(next.Runtime.Flow.Id, Now)).Delivered));
 
         // A change to the one input reaches both pipelines, and each records it in its own history.
         current.Protocol.Deliveries.Clear();
         next.Protocol.Deliveries.Clear();
         _clock.Advance(TimeSpan.FromMinutes(10));
-        SampleEstate.Change(estate.Tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc.AddHours(2));
+        SampleEstate.Change(estate.Tables.Records[0], "log_service", "HAL", Now, SampleWellLogs.UpdatedUtc(0).AddHours(2));
         Assert.Equal(1, (await RunAsync(current, estate.Ledger)).Work.Delivered);
         Assert.Equal(1, (await RunAsync(next, estate.Ledger)).Work.Delivered);
         Assert.Equal(("HAL", "HAL"), (Text(Assert.Single(current.Protocol.Deliveries).Document["data"], "ActivityType"), Text(Assert.Single(next.Protocol.Deliveries).Document["data"], "ActivityType")));
@@ -97,12 +99,12 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
 
         // Taking the 1.5.0 records out of OSDU takes only those: the 1.4.0 records stay delivered where they are.
         next.Runtime.Actor = "gui:tahir";
-        var removal = await next.Runtime.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, 3).Select(SampleEstate.Key)]), RemovalScope.Record);
-        Assert.Equal(3, removal.Removed);
+        var removal = await next.Runtime.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, SampleEstate.Logs().Count).Select(SampleEstate.Key)]), RemovalScope.Record);
+        Assert.Equal(SampleEstate.Logs().Count, removal.Removed);
         Assert.All(next.Protocol.Deletes, d => Assert.StartsWith(NextPartition + ":", d.TargetId, StringComparison.Ordinal));
         Assert.Empty(current.Protocol.Deletes);
-        Assert.Equal(3, (await estate.Ledger.StatsAsync(next.Runtime.Flow.Id, Now)).Deleted);
-        Assert.Equal(3, (await estate.Ledger.StatsAsync(current.Runtime.Flow.Id, Now)).Delivered);
+        Assert.Equal(SampleEstate.Logs().Count, (await estate.Ledger.StatsAsync(next.Runtime.Flow.Id, Now)).Deleted);
+        Assert.Equal(SampleEstate.Logs().Count, (await estate.Ledger.StatsAsync(current.Runtime.Flow.Id, Now)).Delivered);
     }
 
     [Fact]
@@ -111,15 +113,15 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
         var estate = await EstateAsync();
         using var current = await PipelineAsync(estate, Samples.LocalFlow(_root));
         using var clash = await PipelineAsync(estate, NextFlow(NextFlowName, Samples.SampleCacheScope));
-        Assert.Equal(3, (await RunAsync(current, estate.Ledger)).Work.Delivered);
+        Assert.Equal(SampleEstate.Logs().Count, (await RunAsync(current, estate.Ledger)).Work.Delivered);
 
         // WellLog 1.5.0 in the sample partition renders the ids the 1.4.0 pipeline owns: nothing is sent, and every record
         // is held with the owner named, so the reason is on the record rather than in OSDU as alternating kinds.
         var (run, submissionId) = await RunAsync(clash, estate.Ledger);
         Assert.Equal(0, run.Processed);
         Assert.Empty(clash.Protocol.Deliveries);
-        Assert.Equal(3L, (await estate.Ledger.GetSubmissionAsync(submissionId))!.Held);
-        for (var i = 0; i < 3; i++)
+        Assert.Equal((long)SampleEstate.Logs().Count, (await estate.Ledger.GetSubmissionAsync(submissionId))!.Held);
+        for (var i = 0; i < SampleEstate.Logs().Count; i++)
         {
             var held = await estate.Ledger.GetRecordAsync(clash.Runtime.Flow.Id, SampleEstate.Key(i));
             Assert.Equal((RecordStatus.Held, (string?)null), (held!.Status, held.ClaimedTargetId));
@@ -142,7 +144,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
         using var after = await PipelineAsync(estate, NextFlow(CurrentFlowName, Samples.SampleCacheScope));
         Assert.Equal(before.Runtime.Flow.Id, after.Runtime.Flow.Id);
         var (upgrade, secondSubmission) = await RunAsync(after, estate.Ledger);
-        Assert.Equal(3, upgrade.Delivered);
+        Assert.Equal(SampleEstate.Logs().Count, upgrade.Delivered);
         foreach (var sent in after.Protocol.Deliveries)
         {
             var earlier = Assert.Single(before.Protocol.Deliveries, w => w.Key == sent.Key);
@@ -153,7 +155,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
         }
 
         // One record per row, whose history says which schema version each delivery carried.
-        for (var i = 0; i < 3; i++)
+        for (var i = 0; i < SampleEstate.Logs().Count; i++)
         {
             var key = SampleEstate.Key(i);
             var record = await estate.Ledger.GetRecordAsync(after.Runtime.Flow.Id, key);
@@ -183,7 +185,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
         await WellLogVersions.SaveNextTemplateAsync(templates);
         var caches = _db.Caches();
         await Samples.ImportSampleCacheAsync(caches);
-        await WellLogVersions.ImportPartitionCacheAsync(caches, NextPartition, Samples.SampleCacheFlowName, _root);
+        await WellLogVersions.ImportPartitionCacheAsync(caches, NextPartition, NextFlowName);
         return new Estate(tables, templates, caches, _db.Ledger(_clock));
     }
 

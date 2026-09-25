@@ -40,7 +40,8 @@ public sealed record MappingDefinition
 
     /// <summary>
     /// Every type of the partition's cache the mapping reads, in name order: those its cache sources read and their findBy
-    /// lines compare, and those a replace reads its table from, whatever the entry's source. A mapping that reads none of
+    /// lines compare, those a replace reads its table from, and those the tokens of an id modifier read, whatever the entry's
+    /// source. A mapping that reads none of
     /// them renders against no cache at all; one that reads any renders against a version, whose label enters its records'
     /// render context. The render, lineage and the intake all ask this one question, so none of them misses a type.
     /// </summary>
@@ -63,6 +64,11 @@ public sealed record MappingDefinition
                 if (modifier.Table is { } table)
                 {
                     types.Add(table.CacheType);
+                }
+
+                if (modifier.Id is { } id)
+                {
+                    types.UnionWith(id.CacheTypes);
                 }
             }
         }
@@ -245,6 +251,9 @@ public enum ModifierKind
     Equals,
     Date,
     Number,
+
+    /// <summary>Builds an OSDU id from a template (<see cref="IdTemplate"/>); always the last modifier.</summary>
+    Id,
 }
 
 /// <summary>One change to an incoming dataset value.</summary>
@@ -282,6 +291,9 @@ public sealed record Modifier
     /// <summary>For number: the separator between groups of three digits, or null when the value is written without one.</summary>
     public string? GroupSeparator { get; init; }
 
+    /// <summary>For id: the template the id is built from.</summary>
+    public IdTemplate? Id { get; init; }
+
     public override string ToString() => Kind switch
     {
         ModifierKind.Split => $"split(separator '{Separator}', part {Part})",
@@ -293,6 +305,7 @@ public sealed record Modifier
         ModifierKind.Date => Text is null ? "date" : $"date({Text})",
         ModifierKind.Number when GroupSeparator is null && DecimalSeparator is null or "." => "number",
         ModifierKind.Number => $"number(decimal '{DecimalSeparator ?? "."}'" + (GroupSeparator is null ? string.Empty : $", group '{GroupSeparator}'") + ")",
+        ModifierKind.Id => $"id({Id})",
         _ => Kind.ToString().ToLowerInvariant(),
     };
 }
@@ -385,7 +398,7 @@ public sealed partial record MappingEntry
     /// <summary>How messages name the entry.</summary>
     public string Where => $"mappings[{Index}] ({Target.Text})";
 
-    /// <summary>Every dataset column the entry reads: its source, its findBy values and its condition.</summary>
+    /// <summary>Every dataset column the entry reads: its source, its findBy values, its condition and the tokens of an id it builds.</summary>
     public IEnumerable<DatasetColumn> Columns
     {
         get
@@ -406,6 +419,17 @@ public sealed partial record MappingEntry
             if (AppliesWhen is { } condition)
             {
                 yield return condition.Column;
+            }
+
+            foreach (var modifier in Modifiers)
+            {
+                if (modifier.Id is { } id)
+                {
+                    foreach (var idColumn in id.Columns)
+                    {
+                        yield return idColumn;
+                    }
+                }
             }
         }
     }

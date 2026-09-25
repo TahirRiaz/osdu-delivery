@@ -49,3 +49,6 @@ secrets.json
 
 ## SQLFlow run artifacts, model state, the live OSDU action log and local secrets (.sqlflow/env)
 .sqlflow/
+
+## A delivery flow's own work area (source.work), where a local run stages rendered documents: a run artifact, not source.
+**/.work/

@@ -15,7 +15,7 @@ public class MappingBuilderTests
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    private static MappingDefinition Sample(string reference) => new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load(reference);
+    private static MappingDefinition Sample(string reference) => new MappingCatalog(Samples.FixtureMappings, new DeliveryDocumentLoader()).Load(reference);
 
     private static async Task<ReferenceSnapshot> SampleCacheAsync()
         => (await Samples.SampleCache.LoadAsync(Samples.SampleCacheScope, (await Samples.SampleCache.CurrentVersionAsync(Samples.SampleCacheScope))!))!;
@@ -49,9 +49,9 @@ public class MappingBuilderTests
             Parameters = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [RenderContext.DataPartitionParameter] = "dev",
-                ["aclOwner"] = "data.default.owners@dev.dataservices.energy",
-                ["aclViewer"] = "data.default.viewers@dev.dataservices.energy",
-                ["legalTag"] = "dev-reference-data-default",
+                ["aclOwner"] = "data.welllogsrecall.owners@dev.dataservices.energy",
+                ["aclViewer"] = "data.sdd-well-logs.viewers@dev.dataservices.energy",
+                ["legalTag"] = "dev-equinor-osdu-reference-default",
             },
         };
         var searches = await RenderResolver.SearchesAsync(Samples.SampleTemplates, reread);
@@ -60,10 +60,14 @@ public class MappingBuilderTests
     }
 
     [Fact]
-    public async Task A_new_draft_prefills_the_variables_the_cache_can_answer_outside_a_repeater()
+    public void A_new_draft_prefills_the_variables_the_cache_can_answer_outside_a_repeater()
     {
         var template = OsduTemplate.From(Samples.SampleTemplate(Samples.WellLogKind));
-        var cache = (await SampleCacheAsync()).Types.Select(t => new CachedTypeInfo(t.Name, t.EntityType, t.FieldNames)).ToList();
+        var cache = new List<CachedTypeInfo>
+        {
+            new("VerticalMeasurementType", "reference-data--VerticalMeasurementType", ["Code", "Name"]),
+            new("UnitOfMeasure", "reference-data--UnitOfMeasure", ["Code", "Name", "ID"]),
+        };
 
         var draft = MappingBuilder.Draft(template, cache, "WellLog", "2.0.0", "wells");
 

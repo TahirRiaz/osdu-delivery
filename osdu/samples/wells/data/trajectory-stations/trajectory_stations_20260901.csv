@@ -1,4 +1,0 @@
-source_project,survey_id,station_ordinal,station_property,property_type,property_unit
-NO_15_9,T-1001,0,MD,MD,M
-NO_15_9,T-1001,1,INC,Inclination,DEG
-NO_15_9,T-1001,2,AZI,AzimuthTN,DEG

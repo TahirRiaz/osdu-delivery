@@ -19,7 +19,7 @@ import type {
 } from "../../api/delivery";
 import { isLookupEntityType } from "./cacheFormat";
 import {
-  cachedReplaceFields, DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, inputsFor, isCachedReplace, KEY_NAME, knownColumns, MODIFIER_KINDS,
+  cachedReplaceFields, DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, ID_TEMPLATE_EXAMPLE, inputsFor, isCachedReplace, KEY_NAME, knownColumns, MODIFIER_KINDS,
   newModifier, NO_GROUP, parseJson, repeaterOf, staticModeFor,
   type StaticMode,
 } from "./mappingDraft";
@@ -1054,7 +1054,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                   <SelectValue placeholder="Add a modifier" />
                 </SelectTrigger>
                 <SelectContent>
-                  {MODIFIER_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}
+                  {MODIFIER_KINDS.filter((kind) => kind !== "id" || choice === "Dataset").map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}
                 </SelectContent>
               </Select>
             )}
@@ -1131,6 +1131,22 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                       data-testid={`mapping-builder-entry-modifier-format-${index}`}
                     />
                     <span>empty reads ISO 8601</span>
+                  </div>
+                )}
+                {modifier.kind === "id" && (
+                  <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    <Input
+                      className="h-7 w-full font-mono text-[12px]"
+                      placeholder={ID_TEMPLATE_EXAMPLE}
+                      spellCheck={false}
+                      value={modifier.text ?? ""}
+                      onChange={(event) => updateModifier(index, { text: event.target.value })}
+                      data-testid={`mapping-builder-entry-modifier-id-${index}`}
+                    />
+                    <span>
+                      {"Tokens: {value}, {dataset.<column>}, {cache.<Type>.<field>} (a lookup table row keyed by the value) and {param.<name>}. "
+                        + "Values are percent-encoded; a token with no value gives no value. The last modifier; a reference ends with ':'."}
+                    </span>
                   </div>
                 )}
                 {modifier.kind === "number" && (

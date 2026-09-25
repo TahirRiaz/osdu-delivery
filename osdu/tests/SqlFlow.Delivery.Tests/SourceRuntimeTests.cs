@@ -120,7 +120,7 @@ public sealed class SourceRuntimeTests : IDisposable
         string wellboreMapping = "Wellbore@1.0.0", string archiveMapping = "Wellbore@1.0.0", string? mappingsDirectory = null)
     {
         var root = _root.Replace('\\', '/');
-        var mappings = (mappingsDirectory ?? Samples.Mappings).Replace('\\', '/');
+        var mappings = (mappingsDirectory ?? Samples.FixtureMappings).Replace('\\', '/');
         var archiveInterface = archive
             ? $$"""
                 archive:
@@ -143,9 +143,9 @@ public sealed class SourceRuntimeTests : IDisposable
               mappings: '{{mappings}}'
               parameters:
                 dataPartition: dev
-                aclOwner: data.default.owners@dev.dataservices.energy
-                aclViewer: data.default.viewers@dev.dataservices.energy
-                legalTag: dev-reference-data-default
+                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
+                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
+                legalTag: dev-equinor-osdu-reference-default
             target:
               endpoint: http://localhost:9/petrodb
               headers:
@@ -189,7 +189,7 @@ public sealed class SourceRuntimeTests : IDisposable
     {
         var tables = new MemoryIngestionTables(_clock);
         var rowNumber = 0L;
-        foreach (var wellbore in SampleWellLogs.Wellbores)
+        foreach (var wellbore in FixtureWellbores.Wellbores)
         {
             rowNumber++;
             var record = new MemoryRecord
@@ -275,20 +275,20 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.Equal("wells", outcome.Source);
         Assert.Equal(2, outcome.Completed);
         Assert.Equal(0, outcome.Stopped + outcome.Skipped);
-        Assert.Equal(5, outcome.Delivered);
-        Assert.Equal(5, outcome.RowsLoaded);
+        Assert.Equal(7, outcome.Delivered);
+        Assert.Equal(7, outcome.RowsLoaded);
         var wellbores = outcome.Interfaces[0];
         var welllogs = outcome.Interfaces[1];
         Assert.Equal(("wellbores", 1, "storage", InterfaceStates.Completed), (wellbores.Interface, wellbores.Wave, wellbores.Route, wellbores.State));
         Assert.Equal(("welllogs", 2, "ddms", InterfaceStates.Completed), (welllogs.Interface, welllogs.Wave, welllogs.Route, welllogs.State));
         Assert.Equal(["wellbores"], welllogs.WaitsFor);
         Assert.Equal(FlowId.Of("wells/welllogs"), welllogs.FlowId);
-        Assert.Equal(3, Assert.IsType<DeliverOutcome>(welllogs.Result).Delivered);
+        Assert.Equal(5, Assert.IsType<DeliverOutcome>(welllogs.Result).Delivered);
         Assert.Equal(2, Assert.IsType<DeliverOutcome>(wellbores.Result).Delivered);
 
         // Each interface sent its own records to its own target, the wellbores first.
         Assert.Equal(2, _protocols["wellbores"].Deliveries.Count);
-        Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
+        Assert.Equal(5, _protocols["welllogs"].Deliveries.Count);
         var trace = _events.Events.Where(e => e.Kind.StartsWith("interface.", StringComparison.Ordinal)).Select(e => $"{e.Kind} {e.Interface}").ToList();
         Assert.Equal(["interface.started wellbores", "interface.completed wellbores", "interface.started welllogs", "interface.completed welllogs"], trace);
         Assert.All(_events.Events.Where(e => e.Kind.StartsWith("record.", StringComparison.Ordinal)), e => Assert.Equal($"wells/{e.Interface}", e.FlowName));
@@ -296,7 +296,7 @@ public sealed class SourceRuntimeTests : IDisposable
         // The ledger keeps each interface apart, with the flow and interface as the name its rows carry.
         var ledger = engine.Ledger!;
         Assert.Equal(2, (await ledger.StatsAsync(FlowId.Of("wells/wellbores"), _clock.GetUtcNow().UtcDateTime)).Delivered);
-        Assert.Equal(3, (await ledger.StatsAsync(FlowId.Of("wells/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        Assert.Equal(5, (await ledger.StatsAsync(FlowId.Of("wells/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
         var submissions = await ledger.ListSubmissionsAsync(FlowId.Of("wells/welllogs"), 10);
         Assert.Equal("wells/welllogs", Assert.Single(submissions).FlowName);
         var activities = await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = FlowId.Of("wells/wellbores"), Max = 10 });
@@ -307,14 +307,14 @@ public sealed class SourceRuntimeTests : IDisposable
         var interfaces = artifact.GetProperty("result").GetProperty("interfaces");
         Assert.Equal(2, interfaces.GetArrayLength());
         Assert.Equal("welllogs", interfaces[1].GetProperty("interface").GetString());
-        Assert.Equal(3, interfaces[1].GetProperty("result").GetProperty("delivered").GetInt64());
-        Assert.Equal(5, artifact.GetProperty("result").GetProperty("rowsLoaded").GetInt64());
+        Assert.Equal(5, interfaces[1].GetProperty("result").GetProperty("delivered").GetInt64());
+        Assert.Equal(7, artifact.GetProperty("result").GetProperty("rowsLoaded").GetInt64());
 
         // A second run finds nothing changed and sends nothing.
         var again = await RunAsync(engine, source);
         Assert.True(again.Success, again.Error);
         Assert.Equal(0, Outcome(again).Delivered);
-        Assert.Equal(5, _protocols["wellbores"].Deliveries.Count + _protocols["welllogs"].Deliveries.Count);
+        Assert.Equal(7, _protocols["wellbores"].Deliveries.Count + _protocols["welllogs"].Deliveries.Count);
     }
 
     [Fact]
@@ -378,7 +378,7 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.True(again.Success, again.Error);
         Assert.All(Outcome(again).Interfaces, i => Assert.Equal(InterfaceStates.Completed, i.State));
         Assert.Equal(2, (await engine.Ledger.StatsAsync(FlowId.Of("wells/wellbores"), _clock.GetUtcNow().UtcDateTime)).Delivered);
-        Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
+        Assert.Equal(5, _protocols["welllogs"].Deliveries.Count);
         Assert.Equal(2, _protocols["archive"].Deliveries.Count);
     }
 
@@ -402,7 +402,7 @@ public sealed class SourceRuntimeTests : IDisposable
             "archive: osdu.data.WellboreID refers to master-data--Wellbore, which archive delivers",
             Assert.Single(outcome.Interfaces[0].WaitReasons), StringComparison.Ordinal);
         Assert.Empty(_protocols["wellbores"].Deliveries);
-        Assert.Equal(3, _protocols["welllogs"].Deliveries.Count);
+        Assert.Equal(5, _protocols["welllogs"].Deliveries.Count);
 
         var unknown = await RunAsync(engine, source, payload: new DeliveryRunPayload { Interfaces = ["cores"] });
         Assert.False(unknown.Success);
@@ -476,12 +476,12 @@ public sealed class SourceRuntimeTests : IDisposable
     {
         var directory = Path.Combine(_root, "sidetrack-mappings");
         Directory.CreateDirectory(directory);
-        foreach (var file in Directory.EnumerateFiles(Samples.Mappings, "*.yaml"))
+        foreach (var file in Directory.EnumerateFiles(Samples.FixtureMappings, "*.yaml"))
         {
             File.Copy(file, Path.Combine(directory, Path.GetFileName(file)));
         }
 
-        var wellbore = File.ReadAllText(Path.Combine(Samples.Mappings, "Wellbore@1.0.0.yaml")).ReplaceLineEndings("\n");
+        var wellbore = File.ReadAllText(Path.Combine(Samples.FixtureMappings, "Wellbore@1.0.0.yaml")).ReplaceLineEndings("\n");
         const string Anchor = "\n  # Alternative names:";
         Assert.Contains(Anchor, wellbore, StringComparison.Ordinal);
         var sidetrack = wellbore
@@ -511,7 +511,7 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.True(plan.Success, plan.Error);
         var planned = Outcome(plan);
         Assert.Equal(0, Assert.IsType<PlanOutcome>(planned.Interfaces[0].Result).Deliveries);
-        Assert.Equal(3, Assert.IsType<PlanOutcome>(planned.Interfaces[1].Result).Deliveries);
+        Assert.Equal(5, Assert.IsType<PlanOutcome>(planned.Interfaces[1].Result).Deliveries);
 
         // Records belong to one interface: a run on them without its name is refused, with it they are redelivered.
         var key = SampleEstate.Key(0);
@@ -553,7 +553,7 @@ public sealed class SourceRuntimeTests : IDisposable
         Assert.All(members.Enqueued, member => Assert.Equal("welllogs", member.Payload.Interface));
         Assert.Contains(members.Enqueued, member => member.Operation == DeliveryOperations.Intake);
         Assert.Contains(members.Enqueued, member => member.Operation == DeliveryOperations.Drain);
-        Assert.Equal(3, (await engine.Ledger!.StatsAsync(FlowId.Of("wells/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        Assert.Equal(5, (await engine.Ledger!.StatsAsync(FlowId.Of("wells/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
     }
 
     [Fact]
@@ -569,15 +569,15 @@ public sealed class SourceRuntimeTests : IDisposable
 
         Assert.False(result.Success);
         Assert.IsType<OperationFailure>(result.Result);
-        Assert.Contains("'wells-welllog-03-header-delivery' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
+        Assert.Contains("'recall-welllog-03-header-delivery' stopped: an outage: 2 records in a row could not reach the service", result.Error, StringComparison.Ordinal);
         Assert.Contains("the next run carries on from there", result.Error, StringComparison.Ordinal);
 
-        // The two tries that failed are charged; the record the stop reached before it was sent is handed back untried.
+        // The two tries that failed are charged; the records the stop reached before they were sent are handed back untried.
         var records = await engine.Ledger!.ListAsync(flow.Id, new RecordQuery { Max = 10 });
-        Assert.Equal(3, records.Count);
+        Assert.Equal(5, records.Count);
         Assert.All(records, r => Assert.Equal(RecordStatus.Pending, r.Status));
         Assert.Equal(2, records.Count(r => r.AttemptCount == 1));
-        Assert.Equal(1, records.Count(r => r.AttemptCount == 0));
+        Assert.Equal(3, records.Count(r => r.AttemptCount == 0));
         Assert.Equal(2, _protocols[string.Empty].Deliveries.Count);
     }
 

@@ -1,0 +1,30 @@
+# Ingestion: the typed depth unit map view into the keyed table the lookups cache flow reads.
+#
+# One row per spelling, captured whole by recall-lookups-00-cache into the partition's cache as RecallDepthUnits.
+flowType: ing
+name: recall-units-02-depth-ing
+batch: recall
+
+connections:
+  sample: ${env:OSDU_SAMPLE_DB}
+
+source:
+  server: sample
+  object: OsduSample.pre.v_RecallDepthUnits
+
+target:
+  server: sample
+  object: OsduSample.ing.RecallDepthUnits
+  identityColumn: RecId
+
+load:
+  keyColumns: [source_unit]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: recall-cache

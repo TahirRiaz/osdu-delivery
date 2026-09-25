@@ -34,20 +34,23 @@
          holding its flows, the mappings they pin, and the cache flow with the folder of sample records beside it. The
          bundled schemas sit beside that folder rather than inside it, because a template is a catalog object captured
          from OSDU's schema service, not a file a repository sync reads. -->
-    <Content Include="..\..\samples\wells\mappings\**" Link="samples\wells\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\wells\cache\**" Link="samples\wells\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall\mappings\**" Link="samples\recall\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall\cache\**" Link="samples\recall\cache\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall\schedules.yaml" Link="samples\recall\schedules.yaml" CopyToOutputDirectory="PreserveNewest" />
     <!-- The key census files the editor analyses the module's documents with, checked against the loaders. -->
     <Content Include="..\..\docs\census\*.json" Link="census\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="..\..\samples\wells\flows\**" Link="samples\wells\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\samples\recall\flows\**" Link="samples\recall\flows\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\templates\**" Link="samples\templates\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\..\samples\cache-records\**" Link="samples\cache-records\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
-    <!-- The source's drop-off folder: what the pre-ingestion flows read and the payload files the delivery streams, so
-         a suite can check the committed estate against what the fixture regenerates. -->
-    <Content Include="..\..\samples\wells\data\**" Link="samples\wells\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The source's drop-off folder: what the pre-ingestion flows read and the payload files the delivery streams. The
+         suites read the sample logs back from these files (SampleWellLogs), so they exercise what the repository holds. -->
+    <Content Include="..\..\samples\recall\data\**" Link="samples\recall\data\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- The pinned OSDU contracts every route test checks its requests against. -->
     <Content Include="..\..\specs\**" Link="specs\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- The schemas the suites save beside the sample estate's, for the cases it does not carry (Fixtures/templates/README.md). -->
     <None Update="Fixtures\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The fixture documents' flows deliver well logs beside their own kinds, with the sample's WellLog mapping. -->
+    <Content Include="..\..\samples\recall\mappings\**" Link="Fixtures\documents\mappings\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

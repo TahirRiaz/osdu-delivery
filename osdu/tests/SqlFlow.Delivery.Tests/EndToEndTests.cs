@@ -32,6 +32,9 @@ public class EndToEndTests : IDisposable
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
+    /// <summary>How many logs the sample estate holds.</summary>
+    private static int LogCount => SampleEstate.Logs().Count;
+
     private async Task<MemoryIngestionTables> EstateAsync() => await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
 
     private async Task<(FlowRuntime Runtime, FakeProtocol Protocol, OsduLedger Ledger)> RuntimeAsync(
@@ -73,7 +76,7 @@ public class EndToEndTests : IDisposable
 
         var plan = await runtime.PlanAsync();
 
-        Assert.Equal(3, plan.Entries.Count);
+        Assert.Equal(LogCount, plan.Entries.Count);
         Assert.All(plan.Entries, e => Assert.Equal(PlannedAction.Create, e.Action));
         Assert.All(plan.Entries, e => Assert.Equal(1, e.ChunkCount));
         Assert.All(plan.Entries, e => Assert.StartsWith("dev:work-product-component--WellLog:", e.TargetId!, StringComparison.Ordinal));
@@ -94,13 +97,13 @@ public class EndToEndTests : IDisposable
         using (runtime)
         {
             var (summary, _) = await RunAsync(runtime, protocol, ledger);
-            Assert.Equal(3, summary.Delivered);
+            Assert.Equal(LogCount, summary.Delivered);
 
             var counted = capture.Of("osdu_delivery.records", "flow", runtime.Flow.Label);
-            Assert.Equal(3, counted.Count);
+            Assert.Equal(LogCount, counted.Count);
             Assert.All(counted, c => Assert.Equal("delivered", c.Tags["outcome"]));
             Assert.All(counted, c => Assert.Equal(DeliveryProtocols.Name(protocol.Kind), c.Tags["route"]));
-            Assert.Equal(3, capture.Of("osdu_delivery.record.duration", "flow", runtime.Flow.Label).Count);
+            Assert.Equal(LogCount, capture.Of("osdu_delivery.record.duration", "flow", runtime.Flow.Label).Count);
         }
     }
 
@@ -114,7 +117,9 @@ public class EndToEndTests : IDisposable
             // The wellbore the sample well logs refer to is another flow's record of this ledger, queued and not yet
             // delivered: the well logs point at a record that is not in OSDU.
             var wellboreFlow = FlowId.Of("wells-wellbore-03-header-delivery");
-            const string WellboreId = "dev:master-data--Wellbore:OSDU-DEV-1-A";
+            // The second log is moved into the first log's wellbore, so two logs wait for one wellbore.
+            tables.Records[1].Row["wellbore_uwi"] = SampleEstate.Logs()[0].WellboreUwi;
+            var wellboreId = "dev:master-data--Wellbore:" + FixedRecordSearchFactory.WellboreId(SampleEstate.Logs()[0].WellboreUwi);
             var wellbore = new DeliveryKey(Guid.NewGuid());
             var submission = Guid.NewGuid();
             await ledger.RegisterSubmissionAsync(new SubmissionState
@@ -131,9 +136,9 @@ public class EndToEndTests : IDisposable
             {
                 DeliveryKey = wellbore,
                 FlowId = wellboreFlow,
-                SourceKey = "OSDU-DEV-1-A",
+                SourceKey = SampleEstate.Logs()[0].WellboreUwi,
                 MappingName = "Wellbore",
-                TargetId = WellboreId,
+                TargetId = wellboreId,
                 LastSubmissionId = submission,
                 PendingDocumentRef = "0:0:10",
                 PendingRenderContext = "{}",
@@ -141,15 +146,15 @@ public class EndToEndTests : IDisposable
                 PendingMetadata = true,
             }]);
 
-            // The two logs of that wellbore wait, and no try is charged for them; the third log refers to the other
-            // wellbore, which no record of the ledger holds, so it goes out as it is.
+            // The two logs of that wellbore wait, and no try is charged for them; the other logs refer to their own
+            // wellbores, which no record of the ledger holds, so they go out as they are.
             var (work, logSubmission) = await RunAsync(runtime, protocol, ledger);
-            Assert.Equal(1, work.Delivered);
+            Assert.Equal(LogCount - 2, work.Delivered);
             Assert.Equal(2, work.Waiting);
-            Assert.Single(protocol.Deliveries);
+            Assert.Equal(LogCount - 2, protocol.Deliveries.Count);
             var waiting = await ledger.ListAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Waiting });
             Assert.Equal(2, waiting.Count);
-            Assert.All(waiting, r => Assert.Equal(WellboreId, r.WaitingFor));
+            Assert.All(waiting, r => Assert.Equal(wellboreId, r.WaitingFor));
             Assert.All(waiting, r => Assert.Equal(0, r.AttemptCount));
             Assert.All(waiting, r => Assert.Contains("data.WellboreID", r.LastError!, StringComparison.Ordinal));
             Assert.Equal(2, (await ledger.GetSubmissionAsync(logSubmission))!.Waiting);
@@ -162,7 +167,7 @@ public class EndToEndTests : IDisposable
                 Status = RecordStatus.Delivered,
                 Promote = true,
                 TargetVersion = 1,
-                TargetId = WellboreId,
+                TargetId = wellboreId,
                 Claimed = ClaimedWork.Of((await ledger.GetRecordAsync(wellboreFlow, wellbore))!),
                 Attempt = new AttemptRecord
                 {
@@ -182,7 +187,7 @@ public class EndToEndTests : IDisposable
 
             Assert.Equal(2, sent.Delivered);
             Assert.Equal(0, sent.Waiting);
-            Assert.Equal(3, protocol.Deliveries.Count);
+            Assert.Equal(LogCount, protocol.Deliveries.Count);
             Assert.Empty(await ledger.ListAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Waiting }));
         }
     }
@@ -212,14 +217,14 @@ public class EndToEndTests : IDisposable
                 CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null, References = check };
             var held = await worker.DrainAsync(intake.Submission.SubmissionId);
 
-            Assert.Equal(3, held.Held);
+            Assert.Equal(LogCount, held.Held);
             Assert.Equal(0, held.Delivered);
             Assert.Empty(protocol.Deliveries);
             var records = await ledger.ListAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Held });
-            Assert.Equal(3, records.Count);
+            Assert.Equal(LogCount, records.Count);
             Assert.All(records, r => Assert.Contains("neither the ledger nor OSDU's storage service holds", r.LastError!, StringComparison.Ordinal));
 
-            Assert.All(records, r => Assert.Contains("dev:master-data--Wellbore:OSDU-DEV-1-", r.LastError!, StringComparison.Ordinal));
+            Assert.All(records, r => Assert.Contains("dev:master-data--Wellbore:NO-", r.LastError!, StringComparison.Ordinal));
 
             // Once storage holds every record they refer to (the wellbores, the units, the curve types), the released
             // records go out.
@@ -233,11 +238,11 @@ public class EndToEndTests : IDisposable
                 };
             }
 
-            Assert.Equal(3, await ledger.ReleaseAsync(runtime.Flow.Id, records.Select(r => r.DeliveryKey).ToList(), Now));
+            Assert.Equal(LogCount, await ledger.ReleaseAsync(runtime.Flow.Id, records.Select(r => r.DeliveryKey).ToList(), Now));
             var sent = await worker.DrainAsync(intake.Submission.SubmissionId);
 
-            Assert.Equal(3, sent.Delivered);
-            Assert.Equal(3, protocol.Deliveries.Count);
+            Assert.Equal(LogCount, sent.Delivered);
+            Assert.Equal(LogCount, protocol.Deliveries.Count);
         }
     }
 
@@ -249,14 +254,14 @@ public class EndToEndTests : IDisposable
         using (runtime)
         {
             var (summary, submissionId) = await RunAsync(runtime, protocol, ledger);
-            Assert.Equal(3, summary.Delivered);
-            Assert.Equal(3, protocol.Deliveries.Count);
+            Assert.Equal(LogCount, summary.Delivered);
+            Assert.Equal(LogCount, protocol.Deliveries.Count);
             Assert.All(protocol.Deliveries, w => Assert.True(w.DeliverMetadata && w.DeliverPayload));
 
             var submission = await ledger.GetSubmissionAsync(submissionId);
             Assert.Equal(SubmissionStatus.Completed, submission!.Status);
-            Assert.Equal(3, submission.Delivered);
-            Assert.Equal(3, submission.Planned);
+            Assert.Equal(LogCount, submission.Delivered);
+            Assert.Equal(LogCount, submission.Planned);
             Assert.Equal(runtime.Flow.Source.Record.Object, submission.SourceObject);
             Assert.Equal(runtime.Flow.Source.Connection, submission.SourceConnection);
 
@@ -265,7 +270,7 @@ public class EndToEndTests : IDisposable
             Assert.NotNull(state.TargetVersion);
             Assert.NotNull(state.MetadataHash);
             Assert.NotNull(state.PayloadHash);
-            Assert.Equal(SampleWellLogs.UpdatedUtc, state.SourceModifiedUtc);
+            Assert.Equal(SampleWellLogs.UpdatedUtc(0), state.SourceModifiedUtc);
             Assert.Equal(SampleEstate.FileName, state.SourceFileName);
             Assert.Equal(1, state.SourceRowNumber);
 
@@ -297,22 +302,22 @@ public class EndToEndTests : IDisposable
         var (runtime, protocol, ledger) = await RuntimeAsync(tables);
         using (runtime)
         {
-            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
             protocol.Deliveries.Clear();
 
             // A column the mapping does not read: the fingerprint moves, the rendered document does not, so nothing is sent.
             _clock.Advance(TimeSpan.FromMinutes(10));
-            SampleEstate.Change(tables.Records[0], "log_run", "1A", Now, SampleWellLogs.UpdatedUtc.AddHours(1));
+            SampleEstate.Change(tables.Records[0], "logging_contractor", "SLB", Now, SampleWellLogs.UpdatedUtc(0).AddHours(1));
             var plan = await runtime.PlanAsync(force: true);
-            var entry = plan.Entries.Single(e => e.SourceKey.EndsWith("L-1001", StringComparison.Ordinal));
+            var entry = plan.Entries.Single(e => e.SourceKey.EndsWith(SampleWellLogs.Logs()[0].LogId, StringComparison.Ordinal));
             Assert.Equal(PlannedAction.Skip, entry.Action);
             Assert.Equal(SkipTier.ContentHash, entry.SkipTier);
 
             // A column the mapping does read: the metadata is sent, and the payload is left alone.
             _clock.Advance(TimeSpan.FromMinutes(10));
-            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc.AddHours(2));
+            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc(0).AddHours(2));
             var metadata = await runtime.PlanAsync(force: true);
-            var changed = metadata.Entries.Single(e => e.SourceKey.EndsWith("L-1001", StringComparison.Ordinal));
+            var changed = metadata.Entries.Single(e => e.SourceKey.EndsWith(SampleWellLogs.Logs()[0].LogId, StringComparison.Ordinal));
             Assert.Equal(PlannedAction.UpdateMetadata, changed.Action);
             Assert.True(changed.DeliverMetadata);
             Assert.False(changed.DeliverPayload);
@@ -333,17 +338,17 @@ public class EndToEndTests : IDisposable
         var (runtime, protocol, ledger) = await RuntimeAsync(tables);
         using (runtime)
         {
-            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
             protocol.Deliveries.Clear();
 
             // The curve values move: the payload hash on the row moves with them, the document does not.
             var log = SampleWellLogs.Logs()[0];
-            var moved = log with { Curves = [log.Curves[0], log.Curves[1] with { First = 60.5 }, .. log.Curves.Skip(2)] };
+            var moved = log.WithValues(log.Columns()[1], value => value is null ? null : value + 10);
             _clock.Advance(TimeSpan.FromMinutes(10));
             await SampleEstate.RewritePayloadAsync(_root, tables.Records[0], moved, Now);
 
             var plan = await runtime.PlanAsync(force: true);
-            var entry = plan.Entries.Single(e => e.SourceKey.EndsWith("L-1001", StringComparison.Ordinal));
+            var entry = plan.Entries.Single(e => e.SourceKey.EndsWith(SampleWellLogs.Logs()[0].LogId, StringComparison.Ordinal));
             Assert.Equal(PlannedAction.UpdatePayload, entry.Action);
 
             var (summary, _) = await RunAsync(runtime, protocol, ledger, force: true);
@@ -359,18 +364,20 @@ public class EndToEndTests : IDisposable
     {
         var tables = await EstateAsync();
         tables.Records[2].Row["wellbore_uwi"] = "OLD-NAME-B";
+        var aliased = "dev:master-data--Wellbore:" + FixedRecordSearchFactory.WellboreId(SampleEstate.Logs()[2].WellboreUwi);
         var searches = new FixedRecordSearchFactory(
-            ("data.FacilityName", "OSDU-DEV-1-A", FixedRecordSearchFactory.Partition + ":master-data--Wellbore:OSDU-DEV-1-A"),
-            ("data.FacilityName", "OSDU-DEV-1-B", FixedRecordSearchFactory.Partition + ":master-data--Wellbore:OSDU-DEV-1-B"),
-            ("data.NameAliases.AliasName", "OLD-NAME-B", FixedRecordSearchFactory.Partition + ":master-data--Wellbore:OSDU-DEV-1-B"));
+        [
+            .. SampleEstate.Logs().Select(l => ("data.FacilityName", l.WellboreUwi, FixedRecordSearchFactory.Partition + ":master-data--Wellbore:" + FixedRecordSearchFactory.WellboreId(l.WellboreUwi))),
+            ("data.NameAliases.AliasName", "OLD-NAME-B", FixedRecordSearchFactory.Partition + ":master-data--Wellbore:" + FixedRecordSearchFactory.WellboreId(SampleEstate.Logs()[2].WellboreUwi)),
+        ]);
         var (runtime, protocol, ledger) = await RuntimeAsync(tables, searches: searches);
         using (runtime)
         {
             var (summary, _) = await RunAsync(runtime, protocol, ledger);
 
-            Assert.Equal(3, summary.Delivered);
+            Assert.Equal(LogCount, summary.Delivered);
             var byAlias = Assert.Single(protocol.Deliveries, w => w.Key == SampleEstate.Key(2));
-            Assert.Equal("dev:master-data--Wellbore:OSDU-DEV-1-B:", byAlias.Document["data"]!["WellboreID"]!.GetValue<string>());
+            Assert.Equal(aliased + ":", byAlias.Document["data"]!["WellboreID"]!.GetValue<string>());
 
             // Every distinct name is asked once, and the one no wellbore is named by is asked again as an alias, after.
             var asked = Assert.Single(searches.Created).Asked.ToList();
@@ -391,14 +398,14 @@ public class EndToEndTests : IDisposable
         using (runtime)
         {
             var (summary, submissionId) = await RunAsync(runtime, protocol, ledger);
-            Assert.Equal(2, summary.Delivered);
+            Assert.Equal(LogCount - 1, summary.Delivered);
             var submission = await ledger.GetSubmissionAsync(submissionId);
             Assert.Equal(1, submission!.Held);
             var held = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(2));
             Assert.Equal(RecordStatus.Held, held!.Status);
             Assert.Contains("no Wellbore on the platform (osdu:wks:master-data--Wellbore:*) matches", held.LastError, StringComparison.Ordinal);
             Assert.Contains("data.FacilityName 'NO 99/9-Z-1' found no record", held.LastError, StringComparison.Ordinal);
-            Assert.Equal("NO 99/9-Z-1 / STAT_COMP / run 1 (L-2001)", held.Label);
+            Assert.Equal("NO 99/9-Z-1 / STAT_COMP / " + SampleEstate.Logs()[2].LogId, held.Label);
             // The held record is traced to the row it was held at.
             Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);
 
@@ -422,7 +429,7 @@ public class EndToEndTests : IDisposable
         var (runtime, protocol, ledger) = await RuntimeAsync(tables);
         using (runtime)
         {
-            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
 
             _clock.Advance(TimeSpan.FromMinutes(10));
             tables.Records[0].DeletedUtc = Now;
@@ -443,7 +450,7 @@ public class EndToEndTests : IDisposable
         var (runtime, protocol, ledger) = await RuntimeAsync(tables);
         using (runtime)
         {
-            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
             protocol.Deliveries.Clear();
 
             // A redelivery of one record's payload, planned as a key-scoped read of exactly that row.
@@ -504,7 +511,7 @@ public class EndToEndTests : IDisposable
             };
 
             var (summary, submissionId) = await RunAsync(runtime, protocol, ledger);
-            Assert.Equal(1, summary.Delivered);
+            Assert.Equal(LogCount - 2, summary.Delivered);
             Assert.Equal(1, summary.Retried);
             Assert.Equal(1, summary.Held);
 
@@ -561,7 +568,7 @@ public class EndToEndTests : IDisposable
         using (runtime)
         {
             var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
-            Assert.Equal(3, intake.Submission.Planned);
+            Assert.Equal(LogCount, intake.Submission.Planned);
 
             // The first delivery blocks until the worker is stopped; the stop arrives while it is in flight.
             var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -593,7 +600,7 @@ public class EndToEndTests : IDisposable
                 ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
                 CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "next-worker") { MaxWait = null };
             var summary = await resumed.DrainAsync(intake.Submission.SubmissionId);
-            Assert.Equal(3, summary.Delivered);
+            Assert.Equal(LogCount, summary.Delivered);
             Assert.Single(await ledger.ListAttemptsAsync(runtime.Flow.Id, interrupted.Key, 10));
         }
     }
@@ -636,15 +643,15 @@ public class EndToEndTests : IDisposable
                 : new VerifyResult(VerifyOutcome.Match, null, null);
             var verifier = new Verifier(ledger, protocol, runtime.Flow, _clock, CompositeDeliveryListener.Empty, Samples.Logger<Verifier>());
             var summary = await verifier.RunAsync(100, null, reconcile: true);
-            Assert.Equal(3, summary.Checked);
+            Assert.Equal(LogCount, summary.Checked);
             Assert.Equal(1, summary.Drifted);
-            Assert.Equal(2, summary.Matched);
+            Assert.Equal(LogCount - 1, summary.Matched);
 
             // Reconcile queued the drifted record for redelivery: the next plan of the scope sends it whole again.
             var plan = await runtime.PlanAsync(force: true);
             var drifted = plan.Entries.Single(e => e.Key == SampleEstate.Key(0));
             Assert.Equal(PlannedAction.UpdateBoth, drifted.Action);
-            Assert.Equal(2, plan.Skips);
+            Assert.Equal(LogCount - 1, plan.Skips);
         }
     }
 
@@ -655,12 +662,12 @@ public class EndToEndTests : IDisposable
         var (runtime, protocol, ledger) = await RuntimeAsync(tables);
         using (runtime)
         {
-            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
             protocol.Deliveries.Clear();
 
             // The row is re-landed with an older business version than the one delivered: a replay, never sent.
             _clock.Advance(TimeSpan.FromMinutes(10));
-            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc.AddHours(-1));
+            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc(0).AddHours(-1));
 
             var plan = await runtime.PlanAsync(force: true);
             var entry = plan.Entries.Single(e => e.Key == SampleEstate.Key(0));
@@ -692,7 +699,7 @@ public class EndToEndTests : IDisposable
           version: 58d6bdbd9d066a06
         description: The wellbore each well log was run in, one record per log row.
         dataset:
-          system: wells
+          system: recall
           key: [dataset.source_project, dataset.log_id]
           label: "{dataset.wellbore_uwi} ({dataset.log_id})"
         parameters:
@@ -740,14 +747,14 @@ public class EndToEndTests : IDisposable
         {
             var (logRun, logSubmission) = await RunAsync(logs, logProtocol, ledger);
             var (wellboreRun, wellboreSubmission) = await RunAsync(wellbores, wellboreProtocol, ledger);
-            Assert.Equal((3, 3), (logRun.Delivered, wellboreRun.Delivered));
+            Assert.Equal((LogCount, LogCount), (logRun.Delivered, wellboreRun.Delivered));
             Assert.All(logProtocol.Deliveries, w => Assert.StartsWith("dev:work-product-component--WellLog:", w.TargetId, StringComparison.Ordinal));
             Assert.All(wellboreProtocol.Deliveries, w => Assert.StartsWith("dev:master-data--Wellbore:", w.TargetId, StringComparison.Ordinal));
             Assert.All(wellboreProtocol.Deliveries, w => Assert.False(w.DeliverPayload));
 
             // One row, one key, two records: each names its own mapping, OSDU id, submission and history, and both name the
             // same ingestion file and row as their origin.
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < LogCount; i++)
             {
                 var key = SampleEstate.Key(i);
                 var log = await ledger.GetRecordAsync(logs.Flow.Id, key);
@@ -764,8 +771,8 @@ public class EndToEndTests : IDisposable
 
             Assert.Equal(logSubmission, Assert.Single(await ledger.ListSubmissionsAsync(logs.Flow.Id, 10)).SubmissionId);
             Assert.Equal(wellboreSubmission, Assert.Single(await ledger.ListSubmissionsAsync(wellbores.Flow.Id, 10)).SubmissionId);
-            Assert.Equal(3, (await ledger.StatsAsync(logs.Flow.Id, Now)).Delivered);
-            Assert.Equal(3, (await ledger.StatsAsync(wellbores.Flow.Id, Now)).Delivered);
+            Assert.Equal(LogCount, (await ledger.StatsAsync(logs.Flow.Id, Now)).Delivered);
+            Assert.Equal(LogCount, (await ledger.StatsAsync(wellbores.Flow.Id, Now)).Delivered);
             Assert.Equal(logSubmission, (await ledger.GetWatermarkAsync(logs.Flow.Id, Planner.ScopeKey(logs.Parameters)))!.SubmissionId);
             Assert.Equal(wellboreSubmission, (await ledger.GetWatermarkAsync(wellbores.Flow.Id, Planner.ScopeKey(wellbores.Parameters)))!.SubmissionId);
 
@@ -774,7 +781,7 @@ public class EndToEndTests : IDisposable
             logProtocol.Deliveries.Clear();
             wellboreProtocol.Deliveries.Clear();
             _clock.Advance(TimeSpan.FromMinutes(10));
-            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc.AddHours(2));
+            SampleEstate.Change(tables.Records[0], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc(0).AddHours(2));
             Assert.Equal(1, (await RunAsync(logs, logProtocol, ledger, force: true)).Work.Delivered);
             Assert.Equal(0, (await RunAsync(wellbores, wellboreProtocol, ledger, force: true)).Work.Processed);
             Assert.Equal(SampleEstate.Key(0), Assert.Single(logProtocol.Deliveries).Key);
@@ -805,7 +812,7 @@ public class EndToEndTests : IDisposable
         using (logs)
         using (copy)
         {
-            Assert.Equal(3, (await RunAsync(logs, logProtocol, ledger)).Work.Delivered);
+            Assert.Equal(LogCount, (await RunAsync(logs, logProtocol, ledger)).Work.Delivered);
 
             // Same mapping, same partition: the copy would write the very records the first flow owns. It sends nothing,
             // and every record it planned is held with the owner named, so the reason is on the record's own page.
@@ -813,14 +820,14 @@ public class EndToEndTests : IDisposable
             Assert.Equal(0, copied.Processed);
             Assert.Empty(copyProtocol.Deliveries);
             var submission = await ledger.GetSubmissionAsync(copySubmission);
-            Assert.Equal((0L, 3L), (submission!.Delivered, submission.Held));
-            for (var i = 0; i < 3; i++)
+            Assert.Equal((0L, (long)LogCount), (submission!.Delivered, submission.Held));
+            for (var i = 0; i < LogCount; i++)
             {
                 var held = await ledger.GetRecordAsync(copy.Flow.Id, SampleEstate.Key(i));
                 Assert.Equal(RecordStatus.Held, held!.Status);
                 Assert.True(held.Blocked);
                 Assert.Null(held.TargetId);
-                Assert.Contains("already claimed by flow 'wells-welllog-03-header-delivery'", held.LastError, StringComparison.Ordinal);
+                Assert.Contains("already claimed by flow 'recall-welllog-03-header-delivery'", held.LastError, StringComparison.Ordinal);
                 Assert.Equal(SampleEstate.FileName, held.PendingSourceFileName);
                 var attempt = Assert.Single(await ledger.ListAttemptsAsync(copy.Flow.Id, SampleEstate.Key(i), 10));
                 Assert.Equal((AttemptOutcome.Held, "render"), (attempt.Outcome, attempt.Phase));
@@ -829,8 +836,8 @@ public class EndToEndTests : IDisposable
 
             // Removing the copy's records never reaches the first flow's OSDU records: the copy wrote nothing.
             copy.Actor = "gui:tahir";
-            var removal = await copy.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, 3).Select(SampleEstate.Key)]), RemovalScope.Everything);
-            Assert.Equal((3, 0), (removal.Skipped, removal.Removed));
+            var removal = await copy.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, LogCount).Select(SampleEstate.Key)]), RemovalScope.Everything);
+            Assert.Equal((LogCount, 0), (removal.Skipped, removal.Removed));
             Assert.Empty(copyProtocol.Deletes);
 
             // Released, the copy plans the records again and meets the same owner: held again, still nothing sent.
@@ -880,17 +887,9 @@ public class EndToEndTests : IDisposable
         }
     }
 
-    /// <summary>The captured gamma ray unit, with the code a mapping matches it by.</summary>
-    private static ReferenceType GammaRayUnit(string code) => new(
-        "UnitOfMeasure", "reference-data--UnitOfMeasure",
-        [
-            new ReferenceItem("dev:reference-data--UnitOfMeasure:gAPI", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["Code"] = ReferenceValue.Of(code),
-                ["ID"] = ReferenceValue.Of(code),
-                ["Name"] = ReferenceValue.Of("API gamma ray unit"),
-            }),
-        ]);
+    /// <summary>The curve unit map's neutron porosity row, spelled the way Recall writes it (petrodb-api's CurveUnit map).</summary>
+    private static ReferenceType RecallUnits(string osduUnit) => LookupCacheTests.Lookup(
+        "RecallUnits", "source_unit", ("V/V", new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { ["osdu_unit"] = osduUnit }));
 
     [Fact]
     public async Task Records_a_cache_change_holds_back_are_counted_as_awaiting_approval_not_as_unchanged()
@@ -899,12 +898,12 @@ public class EndToEndTests : IDisposable
         var (runtime, protocol, ledger) = await RuntimeAsync(tables);
         using (runtime)
         {
-            Assert.Equal(3, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
 
-            // The unit the two gamma ray logs matched by moves, and the change waits for a decision, so their sets are
-            // gated. The third log does not read it.
+            // The unit the two logs with a neutron porosity matched by moves, and the change waits for a decision, so their sets are
+            // gated. The other logs do not read it.
             var impact = await new CacheImpactAnalyzer(ledger, _clock, NullLogger.Instance)
-                .AnalyzeAsync(Samples.SampleCacheScope, GammaRayUnit("gAPI"), GammaRayUnit("gAPI-2"), CacheChangeMode.Approve, "20260908T212727Z", "20260909T000000Z");
+                .AnalyzeAsync(Samples.SampleCacheScope, RecallUnits("v/v"), RecallUnits("v/v-2"), CacheChangeMode.Approve, "20260908T212727Z", "20260909T000000Z");
             Assert.NotEqual(0, impact.Changes);
             Assert.NotEmpty(await ledger.GatedCacheSetsAsync());
 
@@ -919,14 +918,14 @@ public class EndToEndTests : IDisposable
             Assert.All(plan.Entries.Where(e => e.SkipTier == SkipTier.Approval), e => Assert.Equal(PlannedAction.Skip, e.Action));
 
             // The held-back records are not unchanged: their document moved with the cache, and an approval is what
-            // decides whether it is sent. Only the third log is unchanged.
-            Assert.Equal(1, plan.Skips);
+            // decides whether it is sent. The other logs are unchanged.
+            Assert.Equal(LogCount - 2, plan.Skips);
 
             var (summary, submissionId) = await RunAsync(runtime, protocol, ledger, force: true);
             Assert.Equal(0, summary.Processed);
             var submission = await ledger.GetSubmissionAsync(submissionId);
             Assert.Equal(2, submission!.AwaitingApproval);
-            Assert.Equal(1, submission.SkippedUnchanged);
+            Assert.Equal(LogCount - 2, submission.SkippedUnchanged);
             Assert.Equal(0, submission.Delivered);
         }
     }

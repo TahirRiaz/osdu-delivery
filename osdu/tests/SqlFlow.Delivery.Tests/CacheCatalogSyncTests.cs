@@ -18,7 +18,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
 {
     private const string CacheFlow = """
         flowType: cache
-        name: wells-osdu-00-reference-cache
+        name: recall-osdu-00-reference-cache
         source:
           endpoint: https://osdu.example.com
           headers: { data-partition-id: dev }
@@ -148,7 +148,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
     [Fact]
     public async Task A_declaration_that_disagrees_with_another_repository_s_flow_of_the_partition_is_left_out()
     {
-        Write("cache/wells-osdu-00-reference-cache.yaml", CacheFlow);
+        Write("cache/recall-osdu-00-reference-cache.yaml", CacheFlow);
         Assert.Empty(await SyncAsync(Guid.NewGuid()));
 
         var other = Path.Combine(_root, "other");
@@ -164,7 +164,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
 
         var warning = Assert.Single(warnings);
         Assert.Contains(
-            "well-cache.yaml: Wellbore is left out of the cache of partition 'dev', because cache flow 'wells-osdu-00-reference-cache' declares Wellbore as master-data--Wellbore, and 'well-cache' declares it as master-data--Well",
+            "well-cache.yaml: Wellbore is left out of the cache of partition 'dev', because cache flow 'recall-osdu-00-reference-cache' declares Wellbore as master-data--Wellbore, and 'well-cache' declares it as master-data--Well",
             warning,
             StringComparison.Ordinal);
         Assert.Equal(1, result.Invalid);
@@ -231,7 +231,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
     [Fact]
     public async Task What_a_cache_flow_declares_reaches_the_catalog()
     {
-        Write("cache/wells-osdu-00-reference-cache.yaml", CacheFlow);
+        Write("cache/recall-osdu-00-reference-cache.yaml", CacheFlow);
         var repoId = Guid.NewGuid();
         Assert.Empty(await SyncAsync(repoId));
 
@@ -240,7 +240,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
         Assert.Equal(["UnitOfMeasure", "Wellbore"], definitions.Select(d => d.Name));
 
         var wellbore = definitions[1];
-        Assert.Equal("wells-osdu-00-reference-cache", wellbore.FlowName);
+        Assert.Equal("recall-osdu-00-reference-cache", wellbore.FlowName);
         Assert.Equal("dev", wellbore.Scope);
         Assert.Equal("osdu", wellbore.Origin);
         Assert.Null(wellbore.Connection);
@@ -248,7 +248,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
         Assert.Null(wellbore.KeyField);
         Assert.Null(wellbore.DictionaryPath);
         Assert.Equal("https://osdu.example.com", wellbore.Endpoint);
-        Assert.Equal("cache/wells-osdu-00-reference-cache.yaml", wellbore.RelativePath);
+        Assert.Equal("cache/recall-osdu-00-reference-cache.yaml", wellbore.RelativePath);
         Assert.Equal("master-data--Wellbore", wellbore.EntityType);
         Assert.Equal("osdu:wks:master-data--Wellbore:1.0.0", wellbore.Kind);
         Assert.Equal("auto", wellbore.OnChange);
@@ -267,7 +267,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
     [Fact]
     public async Task A_second_sync_leaves_one_row_per_declared_type_and_reads_a_changed_declaration_again()
     {
-        Write("cache/wells-osdu-00-reference-cache.yaml", CacheFlow);
+        Write("cache/recall-osdu-00-reference-cache.yaml", CacheFlow);
         var repoId = Guid.NewGuid();
         await SyncAsync(repoId);
         await SyncAsync(repoId);
@@ -277,7 +277,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
             Assert.Equal(2, await db.DeliveryCacheDefinitions.CountAsync(c => c.RepoId == repoId));
         }
 
-        Write("cache/wells-osdu-00-reference-cache.yaml", CacheFlow.Replace("fields: [data.Code, data.Name]", "fields: [data.Code]", StringComparison.Ordinal));
+        Write("cache/recall-osdu-00-reference-cache.yaml", CacheFlow.Replace("fields: [data.Code, data.Name]", "fields: [data.Code]", StringComparison.Ordinal));
         await SyncAsync(repoId);
 
         await using (var db = _catalog.CreateDbContext())
@@ -291,7 +291,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
     [Fact]
     public async Task Snapshot_files_left_in_a_repository_are_nothing_to_the_sync()
     {
-        Write("cache/wells-osdu-00-reference-cache.yaml", CacheFlow);
+        Write("cache/recall-osdu-00-reference-cache.yaml", CacheFlow);
         Write("snapshots/references/current", "20260101T000000Z");
         Write("snapshots/references/20260101T000000Z/manifest.json", """
             { "version": "20260101T000000Z", "capturedUtc": "2026-01-01T00:00:00Z", "types": ["Wellbore"] }
@@ -310,11 +310,11 @@ public sealed class CacheCatalogSyncTests : IDisposable
     [Fact]
     public async Task A_cache_that_leaves_the_repository_leaves_the_catalog()
     {
-        Write("cache/wells-osdu-00-reference-cache.yaml", CacheFlow);
+        Write("cache/recall-osdu-00-reference-cache.yaml", CacheFlow);
         var repoId = Guid.NewGuid();
         await SyncAsync(repoId);
 
-        File.Delete(Path.Combine(_root, "cache", "wells-osdu-00-reference-cache.yaml"));
+        File.Delete(Path.Combine(_root, "cache", "recall-osdu-00-reference-cache.yaml"));
         await SyncAsync(repoId);
 
         await using var db = _catalog.CreateDbContext();
@@ -369,7 +369,7 @@ public sealed class CacheCatalogSyncTests : IDisposable
 
         var repoId = Guid.NewGuid();
         var warnings = await SyncAsync(repoId);
-        Assert.Contains(warnings, w => w.Contains("cache flow 'wells-osdu-00-reference-cache' is already declared by cache/a.yaml", StringComparison.Ordinal));
+        Assert.Contains(warnings, w => w.Contains("cache flow 'recall-osdu-00-reference-cache' is already declared by cache/a.yaml", StringComparison.Ordinal));
         await using var db = _catalog.CreateDbContext();
         Assert.Equal(2, await db.DeliveryCacheDefinitions.CountAsync(c => c.RepoId == repoId));
     }
@@ -460,11 +460,11 @@ public sealed class CacheCatalogSyncTests : IDisposable
     [Fact]
     public async Task A_cache_another_repository_declares_under_the_same_name_is_reported()
     {
-        Write("cache/wells-osdu-00-reference-cache.yaml", CacheFlow);
+        Write("cache/recall-osdu-00-reference-cache.yaml", CacheFlow);
         Assert.Empty(await SyncAsync(Guid.NewGuid()));
 
         var other = Path.Combine(_root, "other");
-        Write("wells-osdu-00-reference-cache.yaml", CacheFlow, other);
+        Write("recall-osdu-00-reference-cache.yaml", CacheFlow, other);
         var warnings = await SyncAsync(Guid.NewGuid(), other);
         Assert.Contains(warnings, w => w.Contains("also declared by another repository", StringComparison.Ordinal));
     }

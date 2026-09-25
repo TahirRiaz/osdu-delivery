@@ -24,7 +24,10 @@ export const DATASET_COLUMN = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)?$/;
 /** A key under an object with free keys (a tag name): anything but dots, brackets and whitespace. */
 export const KEY_NAME = /^[^.[\]\s]+$/;
 
-export const MODIFIER_KINDS: readonly MappingDraftModifierKind[] = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number"];
+export const MODIFIER_KINDS: readonly MappingDraftModifierKind[] = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number", "id"];
+
+/** What a new id modifier starts from: a reference to a unit of measure whose code is the value. */
+export const ID_TEMPLATE_EXAMPLE = "{param.dataPartition}:reference-data--UnitOfMeasure:{value}:";
 
 /** The separators a number modifier reads before the decimals. */
 export const DECIMAL_SEPARATORS: readonly { value: string; label: string }[] = [
@@ -76,6 +79,8 @@ export function newModifier(kind: MappingDraftModifierKind): MappingDraftModifie
       };
     case "equals":
       return { kind, separator: null, part: null, replacements: null, text: "", decimalSeparator: null, groupSeparator: null };
+    case "id":
+      return { kind, separator: null, part: null, replacements: null, text: ID_TEMPLATE_EXAMPLE, decimalSeparator: null, groupSeparator: null };
     case "number":
       return { kind, separator: null, part: null, replacements: null, text: null, decimalSeparator: ".", groupSeparator: null };
     case "trim":
@@ -305,6 +310,8 @@ export function modifierText(modifier: MappingDraftModifier): string {
       const group = modifier.groupSeparator === null ? "" : `, group ${quoted(modifier.groupSeparator)}`;
       return `number, decimal ${quoted(modifier.decimalSeparator ?? ".")}${group}`;
     }
+    case "id":
+      return `id ${modifier.text ?? ""}`;
     case "trim":
     case "upper":
     case "lower":

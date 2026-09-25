@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -448,9 +448,9 @@ public static class Samples
     internal static void UseSampleEstateReferences()
     {
         Reference("OSDU_DATA_PARTITION", "dev");
-        Reference("OSDU_ACL_OWNER", "data.default.owners@dev.dataservices.energy");
-        Reference("OSDU_ACL_VIEWER", "data.default.viewers@dev.dataservices.energy");
-        Reference("OSDU_LEGAL_TAG", "dev-reference-data-default");
+        Reference("OSDU_ACL_OWNER", "data.welllogsrecall.owners@dev.dataservices.energy");
+        Reference("OSDU_ACL_VIEWER", "data.sdd-well-logs.viewers@dev.dataservices.energy");
+        Reference("OSDU_LEGAL_TAG", "dev-equinor-osdu-reference-default");
 
         static void Reference(string name, string value)
         {
@@ -465,7 +465,7 @@ public static class Samples
 
     public const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
 
-    /// <summary>The kind the sample trajectory mapping renders.</summary>
+    /// <summary>The kind the trajectory fixture mapping renders.</summary>
     public const string WellboreTrajectoryKind = "osdu:wks:work-product-component--WellboreTrajectory:1.3.0";
 
     /// <summary>The connection reference the suites give a flow whose source is the in-memory ingestion tables.</summary>
@@ -478,39 +478,53 @@ public static class Samples
     public static string Root => Path.Combine(AppContext.BaseDirectory, "samples");
 
     /// <summary>
-    /// The wells source: one folder holding its flows, the mappings they pin, the cache they resolve against and the
-    /// drop-off folder the pre-ingestion flows read. A repository is laid out per source, so this is what a sync sees
-    /// as one project.
+    /// The recall source: real Recall well logs, with the flows that land, key and deliver them, the mapping they pin, the
+    /// cache they resolve against and the drop-off folder the pre-ingestion flows read. A repository is laid out per source,
+    /// so this is what a sync sees as one project.
     /// </summary>
-    public static string Source => Path.Combine(Root, "wells");
+    public static string Source => Path.Combine(Root, "recall");
 
     public static string Mappings => Path.Combine(Source, "mappings");
 
     /// <summary>
-    /// The bundled OSDU schemas the sample mappings pin, as a template import reads them. They sit beside the source
+    /// The bundled OSDU schemas the sample mapping pins, as a template import reads them. They sit beside the source
     /// folders rather than inside one, because a template is a catalog object captured from OSDU's schema service, not
     /// a file a repository sync reads; these copies exist so a suite can save templates with no OSDU to capture from.
     /// </summary>
     public static string TemplateFiles => Path.Combine(Root, "templates");
 
-    public static string Flow => Path.Combine(Source, "flows", "wells-welllog-03-header-delivery.yaml");
-
-    /// <summary>The wellbore master-data flow of the sample estate.</summary>
-    public static string WellboreFlowFile => Path.Combine(Source, "flows", "wells-wellbore-03-header-delivery.yaml");
-
-    /// <summary>The sample cache flow: what the sample cache holds.</summary>
-    public static string CacheFlow => Path.Combine(Source, "cache", "wells-osdu-00-reference-cache.yaml");
-
-    /// <summary>The sample lookups cache flow: the lookup tables the sample mappings translate source values through.</summary>
-    public static string LookupsCacheFlow => Path.Combine(Source, "cache", "wells-lookups-00-cache.yaml");
-
     /// <summary>
-    /// The sample cache records, one file per cached type. They sit beside the source folders rather than inside one,
-    /// for the same reason <see cref="TemplateFiles"/> does: a cache lives in the module's database, captured there by
-    /// a run of the flow that defines it, so a repository holds that flow document and nothing else about the cache.
-    /// These files exist so a suite can fill a cache with no OSDU platform to capture from.
+    /// The documents of the kinds the sample estate does not deliver (wellbores, trajectories, documents, several interfaces
+    /// in one flow, a retrieval), which the suites that exercise those routes and features read. Test inputs only: they
+    /// render against the same partition cache as the sample estate, and none of them is an example.
     /// </summary>
-    public static string CacheRecords => Path.Combine(Root, "cache-records");
+    public static string FixtureDocuments => Path.Combine(AppContext.BaseDirectory, "Fixtures", "documents");
+
+    /// <summary>The mappings of <see cref="FixtureDocuments"/>: Wellbore, WellboreTrajectory and Document.</summary>
+    public static string FixtureMappings => Path.Combine(FixtureDocuments, "mappings");
+
+    /// <summary>The schemas the fixture mappings pin, and the ones the schema-version suites compare against.</summary>
+    public static string FixtureTemplateFiles => Path.Combine(AppContext.BaseDirectory, "Fixtures", "templates");
+
+    public static string Flow => Path.Combine(Source, "flows", "recall-welllog-03-header-delivery.yaml");
+
+    /// <summary>The wellbore master-data fixture flow: the storage route, with no payload.</summary>
+    public static string WellboreFlowFile => Path.Combine(FixtureDocuments, "flows", "wells-wellbore-03-header-delivery.yaml");
+
+    /// <summary>The fixture flow that delivers several interfaces (wellbores, well logs, documents) from one source.</summary>
+    public static string InterfacesFlowFile => Path.Combine(FixtureDocuments, "flows", "wells-source-03-interfaces-delivery.yaml");
+
+    /// <summary>The fixture retrieval flow.</summary>
+    public static string RetrievalFlowFile => Path.Combine(FixtureDocuments, "flows", "wells-osdu-04-metadata-retrieval.yaml");
+
+    /// <summary>The sample lookups cache flow: the lookup tables the sample mapping translates source values through.</summary>
+    public static string LookupsCacheFlow => Path.Combine(Source, "cache", "recall-lookups-00-cache.yaml");
+
+    /// <summary>The fixture cache flow: the reference data only the fixture mappings resolve against.</summary>
+    public static string FixtureCacheFlow => Path.Combine(FixtureDocuments, "cache", "fixtures-osdu-00-reference-cache.yaml");
+
+    /// <summary>The cache records of the types only the fixture mappings resolve against.</summary>
+    public static string FixtureCacheRecords => Path.Combine(AppContext.BaseDirectory, "Fixtures", "cache-records");
 
     /// <summary>The source's drop-off folder: the files the pre-ingestion flows read and the payloads the delivery streams.</summary>
     public static string Data => Path.Combine(Source, "data");
@@ -529,11 +543,11 @@ public static class Samples
     /// </summary>
     public const string SamplePartition = "dev";
 
-    /// <summary>The name of the sample cache flow, which fills the cache of <see cref="SampleCacheScope"/>.</summary>
-    public const string SampleCacheFlowName = "wells-osdu-00-reference-cache";
+    /// <summary>The name of the sample lookups cache flow, which fills the cache of <see cref="SampleCacheScope"/> with the lookup tables the sample mapping reads.</summary>
+    public const string SampleLookupsFlowName = "recall-lookups-00-cache";
 
-    /// <summary>The name of the sample lookups cache flow, which holds the lookup tables in the same cache.</summary>
-    public const string SampleLookupsFlowName = "wells-lookups-00-cache";
+    /// <summary>The name of the fixture cache flow, which adds the fixture mappings' reference data to the same cache.</summary>
+    public const string FixtureCacheFlowName = "fixtures-osdu-00-reference-cache";
 
     /// <summary>When the sample cache records were captured: the version label the sample cache is imported under.</summary>
     public static readonly DateTimeOffset SampleCacheCaptured = new(2026, 9, 8, 21, 27, 27, TimeSpan.Zero);
@@ -550,7 +564,7 @@ public static class Samples
         var store = database.Templates();
         ImportSampleTemplatesAsync(store).GetAwaiter().GetResult();
         var version = ImportSampleCacheAsync(database.Caches()).GetAwaiter().GetResult();
-        return (store, new FixedCacheStore(SampleCacheScope, SampleCacheFlowName, version, SampleCacheDeclaration()));
+        return (store, new FixedCacheStore(SampleCacheScope, FixtureCacheFlowName, version, SampleCacheDeclaration()));
     });
 
     /// <summary>Imports the sample templates and cache now, when nothing has asked for them yet.</summary>
@@ -558,15 +572,16 @@ public static class Samples
 
     /// <summary>
     /// What the sample cache flows declare for their partition, as the module's database holds it after a sync: the
-    /// reference data of the reference cache flow, and the lookup tables of the lookups flow with the key and fields a sync
-    /// reads out of each dictionary.
+    /// reference data the fixture mappings resolve against, and the lookup tables of the lookups flow with the key and
+    /// fields a sync reads out of each dictionary. The sample well log mapping builds every reference id it writes from a
+    /// template, so it declares no reference data of its own.
     /// </summary>
     public static CacheDeclaration SampleCacheDeclaration()
     {
         var loader = new DeliveryDocumentLoader();
-        var flow = loader.LoadCache(CacheFlow);
         var lookups = loader.LoadCache(LookupsCacheFlow);
-        var declared = flow.Types.Select(t => new CacheTypeDeclaration(flow.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)).ToList();
+        var fixtures = loader.LoadCache(FixtureCacheFlow);
+        var declared = fixtures.Types.Select(t => new CacheTypeDeclaration(fixtures.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)).ToList();
         foreach (var type in lookups.Types)
         {
             var (key, fields) = type.Origin == CacheOrigin.Dictionary
@@ -653,22 +668,24 @@ public static class Samples
     public static ICacheStore SampleCache => SampleStores.Value.Cache;
 
     /// <summary>
-    /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache, checked
-    /// against what the sample cache flow declares, exactly as 'sqlflow cache import' writes them, over the sample lookup
-    /// tables written a minute before as the lookups flow's refresh writes them; returns the version as loaded back: the
-    /// current one, labelled <see cref="SampleCacheCaptured"/>, which holds both.
+    /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache, over
+    /// the sample lookup tables written a minute before as the lookups flow's refresh writes them; returns the version as
+    /// loaded back: the current one, labelled <see cref="SampleCacheCaptured"/>, which holds both. The sample well log
+    /// mapping reads no reference data from the cache, only the lookup tables, so the fixture mappings' reference data is
+    /// the only reference data this cache holds.
     /// </summary>
     public static async Task<ReferenceSnapshot> ImportSampleCacheAsync(ICacheStore store)
     {
         ArgumentNullException.ThrowIfNull(store);
-        var flow = new DeliveryDocumentLoader().LoadCache(CacheFlow);
         // The estate names its partition as a reference; a cache is keyed by what that resolves to, as a capture and a
         // render both key it.
         var lookups = new SnapshotBuilder(
             store, SampleCacheScope, SampleLookupsFlowName, new TestClock(SampleCacheCaptured.AddMinutes(-1)), Logger<SnapshotBuilder>());
         await lookups.WriteAsync(SampleLookups(), new CacheCapture(null, "tests", "sample dictionaries and curve dictionary"), []);
-        var builder = new SnapshotBuilder(store, SampleCacheScope, flow.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
-        var write = await builder.ImportDirectoryAsync(CacheRecords, flow.Types, new CacheCapture(null, "tests", "sample files"));
+        var fixtures = new DeliveryDocumentLoader().LoadCache(FixtureCacheFlow);
+        var fixtureBuilder = new SnapshotBuilder(
+            store, SampleCacheScope, fixtures.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());
+        var write = await fixtureBuilder.ImportDirectoryAsync(FixtureCacheRecords, fixtures.Types, new CacheCapture(null, "tests", "fixture files"));
         return (await store.LoadAsync(SampleCacheScope, write.Snapshot.Version))!;
     }
 
@@ -708,11 +725,17 @@ public static class Samples
         throw new InvalidOperationException("The render still asked the search something after ten rounds.");
     }
 
-    /// <summary>The sample schema of a kind, read from its bundled file.</summary>
+    /// <summary>The sample schema of a kind, read from its bundled file, or from the fixture schemas for a kind the estate does not deliver.</summary>
     public static SchemaSnapshot SampleTemplate(string kind)
     {
         ArgumentNullException.ThrowIfNull(kind);
-        var file = Path.Combine(TemplateFiles, kind.Replace(':', '_') + ".json");
+        var name = kind.Replace(':', '_') + ".json";
+        var file = Path.Combine(TemplateFiles, name);
+        if (!File.Exists(file))
+        {
+            file = Path.Combine(FixtureTemplateFiles, name);
+        }
+
         return TemplateSources.FromBundledJson(File.ReadAllText(file), kind, new DateTimeOffset(2026, 9, 7, 22, 37, 2, TimeSpan.Zero), file);
     }
 
@@ -1021,13 +1044,23 @@ public sealed class FixedRecordSearchFactory(params (string Field, string Value,
     public const string Partition = "{partition}";
 
     /// <summary>
-    /// The sample wellbores, found by name in whichever partition the flow delivers to: what the sample estate's mappings
-    /// find when they look up the wellbores the sample drops name, the ids the sample cache held before wellbores were
-    /// searched for.
+    /// The wellbores the sample logs belong to, found by name in whichever partition the flow delivers to, plus the two
+    /// fixture wellbores the fixture documents name.
     /// </summary>
     public static FixedRecordSearchFactory SampleWellbores() => new(
+    [
+        .. SampleWellLogs.Logs().Select(l => l.WellboreUwi).Distinct(StringComparer.Ordinal)
+            .Select(uwi => ("data.FacilityName", uwi, Partition + ":master-data--Wellbore:" + WellboreId(uwi))),
         ("data.FacilityName", "OSDU-DEV-1-A", Partition + ":master-data--Wellbore:OSDU-DEV-1-A"),
-        ("data.FacilityName", "OSDU-DEV-1-B", Partition + ":master-data--Wellbore:OSDU-DEV-1-B"));
+        ("data.FacilityName", "OSDU-DEV-1-B", Partition + ":master-data--Wellbore:OSDU-DEV-1-B"),
+    ]);
+
+    /// <summary>The id part the suites give a wellbore of that name: "NO 33/9-C-28 B" is NO-33-9-C-28-B.</summary>
+    public static string WellboreId(string facilityName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(facilityName);
+        return facilityName.Replace(' ', '-').Replace('/', '-');
+    }
 
     public System.Collections.Concurrent.ConcurrentQueue<FixedRecordSearch> Created { get; } = new();
 

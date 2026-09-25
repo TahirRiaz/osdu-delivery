@@ -47,7 +47,7 @@ public sealed class DdmsSourceTests : IDisposable
     private string SourceYaml()
     {
         var root = _root.Replace('\\', '/');
-        var mappings = Samples.Mappings.Replace('\\', '/');
+        var mappings = Samples.FixtureMappings.Replace('\\', '/');
         return ($$"""
             flowType: delivery
             name: surveys
@@ -61,9 +61,9 @@ public sealed class DdmsSourceTests : IDisposable
               mappings: '{{mappings}}'
               parameters:
                 dataPartition: dev
-                aclOwner: data.default.owners@dev.dataservices.energy
-                aclViewer: data.default.viewers@dev.dataservices.energy
-                legalTag: dev-reference-data-default
+                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
+                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
+                legalTag: dev-equinor-osdu-reference-default
             target:
               endpoint: http://localhost
               headers:
@@ -226,7 +226,7 @@ public sealed class DdmsSourceTests : IDisposable
                 [DeliveryKey.Derive("wells", ["NO_15_9", "T-1001"]), DeliveryKey.Derive("wells", ["NO_15_9", "T-1002"])]))
             .Values.Select(r => $"{r.SourceKey}: {r.Status} {r.LastError}");
         Assert.True((surveys.Delivered, surveys.Held) == (1L, 1L), string.Join(" | ", reasons));
-        Assert.Equal(3, logs.Delivered);
+        Assert.Equal(5, logs.Delivered);
 
         // Each record went to the collection serving its entity type, record first and its bulk data after it.
         string Call(FakeHttpHandler.Request c) => c.Method + " " + c.Uri.AbsolutePath;
@@ -239,8 +239,8 @@ public sealed class DdmsSourceTests : IDisposable
                 "GET " + Root + "/ddms/v3/wellboretrajectories/" + surveyId,
             ],
             trajectoryCalls);
-        Assert.Equal(3, handler.Calls.Count(c => Call(c) == "POST " + Root + "/ddms/v3/welllogs"));
-        Assert.Equal(3, handler.Calls.Count(c => c.Method == HttpMethod.Post && c.Uri.AbsolutePath.StartsWith(Root + "/ddms/v3/welllogs/", StringComparison.Ordinal)));
+        Assert.Equal(5, handler.Calls.Count(c => Call(c) == "POST " + Root + "/ddms/v3/welllogs"));
+        Assert.Equal(5, handler.Calls.Count(c => c.Method == HttpMethod.Post && c.Uri.AbsolutePath.StartsWith(Root + "/ddms/v3/welllogs/", StringComparison.Ordinal)));
 
         // The survey's record names the stations its bulk data carries, each typed from the partition's cache.
         var written = JsonNode.Parse(handler.Calls.Single(c => Call(c) == "POST " + Root + "/ddms/v3/wellboretrajectories").Body!)!.AsArray().Single()!;
@@ -263,6 +263,6 @@ public sealed class DdmsSourceTests : IDisposable
         var heldKey = DeliveryKey.Derive("wells", ["NO_15_9", "T-1002"]);
         var held = (await ledger.GetRecordsAsync(trajectoryLedger, [heldKey]))[heldKey];
         Assert.Contains("the bulk column(s) AZI match no data.AvailableTrajectoryStationProperties[].Name", held.LastError, StringComparison.Ordinal);
-        Assert.Equal(3, (await ledger.StatsAsync(FlowId.Of("surveys/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+        Assert.Equal(5, (await ledger.StatsAsync(FlowId.Of("surveys/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
     }
 }

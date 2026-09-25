@@ -1,8 +1,0 @@
-source_project,log_id,curve_ordinal,curve_id,curve_unit,index_unit,index_min,index_max,curve_description,curve_version,business_value
-NO_15_9,L-1001,0,MD,M,M,1000,1004,Measured depth,1,
-NO_15_9,L-1001,1,GR,GAPI,M,1000,1004,Gamma ray,1,HIGH
-NO_15_9,L-1001,2,RHOB,G/CM3,M,1000,1004,Bulk density,1,HIGH
-NO_15_9,L-1002,0,MD,M,M,1010,1012,Measured depth,1,
-NO_15_9,L-1002,1,GR,GAPI,M,1010,1012,Gamma ray,1,MEDIUM
-NO_16_2,L-2001,0,MD,FT,FT,1500,1501.5,Measured depth,1,
-NO_16_2,L-2001,1,NPHI,V/V,FT,1500,1501.5,Neutron porosity,1,MEDIUM

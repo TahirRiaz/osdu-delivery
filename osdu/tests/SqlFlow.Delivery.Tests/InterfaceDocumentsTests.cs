@@ -212,9 +212,9 @@ public sealed class InterfaceDocumentsTests
         Assert.Null(flow.Interface);
         Assert.Null(flow.AdoptedLedger);
         Assert.Null(flow.RouteReason);
-        Assert.Equal("wells-welllog-03-header-delivery", flow.Label);
-        Assert.Equal("wells-welllog-03-header-delivery", flow.LedgerName);
-        Assert.Equal(FlowId.Of("wells-welllog-03-header-delivery"), flow.Id);
+        Assert.Equal("recall-welllog-03-header-delivery", flow.Label);
+        Assert.Equal("recall-welllog-03-header-delivery", flow.LedgerName);
+        Assert.Equal(FlowId.Of("recall-welllog-03-header-delivery"), flow.Id);
         Assert.Same(flow, source.Interface(null));
         Assert.Empty(source.Names);
         Assert.Equal(new FlowFailWhen(), flow.FailWhen);
@@ -231,17 +231,17 @@ public sealed class InterfaceDocumentsTests
     {
         var source = _loader.ParseSource(Source(Wells + """
               logs:
-                ledger: wells-welllog-03-header-delivery
+                ledger: recall-welllog-03-header-delivery
                 record: { object: Petrel.ing.WellLog, key: [uwi, log_id] }
                 mapping: WellLog@1.4.0
             """), "petrel.yaml");
 
         var logs = source.Interface("logs");
-        Assert.Equal("wells-welllog-03-header-delivery", logs.AdoptedLedger);
-        Assert.Equal("wells-welllog-03-header-delivery", logs.LedgerName);
+        Assert.Equal("recall-welllog-03-header-delivery", logs.AdoptedLedger);
+        Assert.Equal("recall-welllog-03-header-delivery", logs.LedgerName);
         Assert.Equal("petrel/logs", logs.Label);
-        Assert.Equal(FlowId.Of("wells-welllog-03-header-delivery"), logs.Id);
-        Assert.Same(logs, source.ByFlowId(FlowId.Of("wells-welllog-03-header-delivery")));
+        Assert.Equal(FlowId.Of("recall-welllog-03-header-delivery"), logs.Id);
+        Assert.Same(logs, source.ByFlowId(FlowId.Of("recall-welllog-03-header-delivery")));
         Assert.Null(source.ByFlowId(FlowId.Of("petrel/logs")));
     }
 
@@ -394,7 +394,18 @@ public sealed class InterfaceDocumentsTests
         var single = File.ReadAllText(Samples.WellboreFlowFile).ReplaceLineEndings("\n").Replace("  concurrency: 8\n", "  concurrency: 8\n  parallelInterfaces: 2\n", StringComparison.Ordinal);
         Assert.Contains("the document declares no interfaces", Assert.Throws<FlowValidationException>(() => _loader.ParseSource(single, "wellbore.yaml")).Message, StringComparison.Ordinal);
 
-        var cache = File.ReadAllText(Samples.CacheFlow).ReplaceLineEndings("\n").Replace("\nreliability:\n", "\nreliability:\n  parallelInterfaces: 2\n", StringComparison.Ordinal);
+        var cache = """
+            flowType: cache
+            name: searched
+            source:
+              endpoint: https://osdu.example.com
+              headers: { data-partition-id: dev }
+            types:
+              - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+                fields: [data.Code, data.Name]
+            reliability:
+              parallelInterfaces: 2
+            """;
         Assert.Contains("this flow declares none", Assert.Throws<FlowValidationException>(() => _loader.ParseCache(cache, "cache.yaml")).Message, StringComparison.Ordinal);
     }
 

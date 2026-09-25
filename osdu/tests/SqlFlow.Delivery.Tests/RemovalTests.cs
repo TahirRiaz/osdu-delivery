@@ -466,14 +466,14 @@ public class RemovalRuntimeTests : IDisposable
         using (runtime)
         {
             var keys = await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100);
-            Assert.Equal(3, keys.Count);
+            Assert.Equal(5, keys.Count);
             protocol.Gone.Add((await ledger.GetRecordAsync(runtime.Flow.Id, keys[0]))!.TargetId!);
             runtime.Actor = "gui:tahir";
 
             var summary = await runtime.RemoveAsync(RemovalSelection.Of(keys), RemovalScope.Everything);
 
-            Assert.Equal(3, summary.Selected);
-            Assert.Equal(2, summary.Removed);
+            Assert.Equal(5, summary.Selected);
+            Assert.Equal(4, summary.Removed);
             Assert.Equal(1, summary.AlreadyGone);
             Assert.Equal(0, summary.Failed);
             Assert.Equal(0, summary.Skipped);
@@ -486,7 +486,7 @@ public class RemovalRuntimeTests : IDisposable
             var activity = (await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "delete" })).Single();
             Assert.Equal("completed", activity.Outcome);
             Assert.Equal("gui:tahir", activity.Actor);
-            Assert.Contains("3 record(s) selected", activity.Summary!, StringComparison.Ordinal);
+            Assert.Contains("5 record(s) selected", activity.Summary!, StringComparison.Ordinal);
         }
     }
 
@@ -499,9 +499,9 @@ public class RemovalRuntimeTests : IDisposable
             var summary = await runtime.RemoveAsync(
                 RemovalSelection.Of(new RecordQuery { Status = RecordStatus.Delivered }), RemovalScope.Record);
 
-            Assert.Equal(3, summary.Selected);
-            Assert.Equal(3, summary.Removed);
-            Assert.Equal(3, protocol.Deletes.Count);
+            Assert.Equal(5, summary.Selected);
+            Assert.Equal(5, summary.Removed);
+            Assert.Equal(5, protocol.Deletes.Count);
             Assert.Empty(await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Delivered }, 100));
         }
     }

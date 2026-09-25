@@ -1,0 +1,8 @@
+{
+  "entityType": "reference-data--LogType",
+  "items": [
+    { "id": "dev:reference-data--LogType:Raw", "Code": "Raw", "Name": "Raw" },
+    { "id": "dev:reference-data--LogType:Interpreted", "Code": "Interpreted", "Name": "Interpreted" },
+    { "id": "dev:reference-data--LogType:Composite", "Code": "Composite", "Name": "Composite" }
+  ]
+}

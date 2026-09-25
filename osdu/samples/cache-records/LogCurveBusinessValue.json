@@ -1,8 +1,9 @@
 {
   "entityType": "reference-data--LogCurveBusinessValue",
   "items": [
-    { "id": "dev:reference-data--LogCurveBusinessValue:High", "Code": "HIGH", "Name": "High" },
-    { "id": "dev:reference-data--LogCurveBusinessValue:Medium", "Code": "MEDIUM", "Name": "Medium" },
-    { "id": "dev:reference-data--LogCurveBusinessValue:Low", "Code": "LOW", "Name": "Low" }
+    { "id": "dev:reference-data--LogCurveBusinessValue:High", "Code": "High", "Name": "High" },
+    { "id": "dev:reference-data--LogCurveBusinessValue:Med", "Code": "Med", "Name": "Medium" },
+    { "id": "dev:reference-data--LogCurveBusinessValue:Low", "Code": "Low", "Name": "Low" },
+    { "id": "dev:reference-data--LogCurveBusinessValue:Undefined", "Code": "Undefined", "Name": "Undefined" }
   ]
 }

@@ -1,0 +1,9 @@
+{
+  "entityType": "reference-data--TechnicalAssuranceType",
+  "items": [
+    { "id": "dev:reference-data--TechnicalAssuranceType:Certified", "Code": "Certified", "Name": "Certified" },
+    { "id": "dev:reference-data--TechnicalAssuranceType:Suitable", "Code": "Suitable", "Name": "Suitable" },
+    { "id": "dev:reference-data--TechnicalAssuranceType:Unsuitable", "Code": "Unsuitable", "Name": "Unsuitable" },
+    { "id": "dev:reference-data--TechnicalAssuranceType:Unevaluated", "Code": "Unevaluated", "Name": "Unevaluated" }
+  ]
+}

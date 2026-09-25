@@ -178,7 +178,7 @@ public class MappingCoverageTests
     {
         foreach (var reference in new[] { "WellLog@1.4.0", "Wellbore@1.0.0" })
         {
-            var mapping = new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load(reference);
+            var mapping = new MappingCatalog(Samples.FixtureMappings, new DeliveryDocumentLoader()).Load(reference);
             var schema = await Samples.SampleTemplates.LoadAsync(mapping.Template);
             Assert.NotNull(schema);
 

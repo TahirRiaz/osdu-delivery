@@ -25,7 +25,7 @@ namespace SqlFlow.ControlPlane.Tests;
 [Collection(SqlServerSuite.Name)]
 public sealed class DeliveryRecordChainApiTests
 {
-    private const string FlowName = "wells-welllog-03-header-delivery";
+    private const string FlowName = "recall-welllog-03-header-delivery";
 
     [Fact]
     public async Task A_record_names_the_runs_that_carried_its_file_through_pre_ingestion_and_ingestion()

@@ -1,2 +1,0 @@
-source_project,survey_id,wellbore_uwi,survey_name,survey_type,survey_version,top_md,base_md,elev_meas_ref,update_date,station_folder,payload_hash,chunk_count
-NO_15_9,T-1001,OSDU-DEV-1-A,GYRO_2026,Gyro,1,1000,1004,23.5 M,2026-09-01 06:45:00,NO_15_9/T-1001,b6cc62a16f6780866d7aa4d5b2515d3e1023eb866de4bc2eb0aa8b3bf447747e,1

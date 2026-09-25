@@ -202,7 +202,16 @@ public sealed class DictionaryTests : IDisposable
         Assert.Contains("needs a kind", Refused(Lookups.Replace("- dictionary: RecallUnits", "- name: Nothing", StringComparison.Ordinal)), StringComparison.Ordinal);
 
         // A flow with no dictionary has everything it needs in the document.
-        var searched = loader.LoadCache(Samples.CacheFlow);
+        var searched = loader.ParseCache("""
+            flowType: cache
+            name: searched
+            source:
+              endpoint: https://osdu.example.com
+              headers: { data-partition-id: dev }
+            types:
+              - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+                fields: [data.Code, data.Name]
+            """, "cache/searched.yaml");
         Assert.False(new CacheFlowDocument { Flow = searched }.RequiresRepoTree);
     }
 

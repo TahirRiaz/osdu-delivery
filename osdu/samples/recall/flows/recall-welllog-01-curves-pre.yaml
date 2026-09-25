@@ -1,0 +1,44 @@
+# Pre-ingestion: the Recall curve metadata files into the pre layer.
+#
+# One row per curve of a log, the index curve MD first, as recall_to_osdu adds it. The curve values themselves are never
+# loaded: they stay in the parquet files under ../data/curves, which the delivery streams to the wellbore DDMS.
+name: recall-welllog-01-curves-pre
+batch: recall
+
+source:
+  type: csv
+  location: ../data/curves-meta
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_SAMPLE_DB}
+  schema: pre
+  table: WellLogCurve
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: log_id, type: varchar(50) }
+    - { name: curve_ordinal, type: int }
+    # The index curve carries no version and no update time, and Recall leaves some curves without a business value: an
+    # empty cell is the absence of one rather than the empty string.
+    - { name: curve_version, expr: "NULLIF(@ColName, '')", type: varchar(50) }
+    - { name: business_value, expr: "NULLIF(@ColName, '')", type: varchar(100) }
+    # Kept as the ISO 8601 text Recall gives; the mapping writes it as the RFC 3339 date-time the template names.
+    - { name: update_date, expr: "NULLIF(@ColName, '')", type: varchar(30) }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: recall-welllog

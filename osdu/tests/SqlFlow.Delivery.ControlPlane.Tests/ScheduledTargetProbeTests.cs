@@ -74,8 +74,8 @@ public sealed class ScheduledTargetProbeTests
         // A list of separators alone would silently probe everything, so it is refused instead.
         Assert.Contains("Pipelines names no flow", Invalid(new TargetProbeOptions { Pipelines = " , ," }), StringComparison.Ordinal);
         Assert.Equal(
-            ["wells-welllog-03-header-delivery", "wells-wellbore-03-header-delivery"],
-            new TargetProbeOptions { Pipelines = " wells-welllog-03-header-delivery , wells-wellbore-03-header-delivery ,wells-welllog-03-header-delivery" }.PipelineNames());
+            ["recall-welllog-03-header-delivery", "wells-wellbore-03-header-delivery"],
+            new TargetProbeOptions { Pipelines = " recall-welllog-03-header-delivery , wells-wellbore-03-header-delivery ,recall-welllog-03-header-delivery" }.PipelineNames());
     }
 
     /// <summary>

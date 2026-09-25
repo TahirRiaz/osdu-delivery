@@ -1,0 +1,31 @@
+# Ingestion: the typed curve view into the keyed child table the delivery flow joins to each log.
+#
+# One row per (source_project, log_id, curve_id). The delivery reads these rows as the child dataset "curves", ordered
+# by curve_ordinal, and renders one item per row into the record's Curves array.
+flowType: ing
+name: recall-welllog-02-curves-ing
+batch: recall
+
+connections:
+  sample: ${env:OSDU_SAMPLE_DB}
+
+source:
+  server: sample
+  object: OsduSample.pre.v_WellLogCurve
+
+target:
+  server: sample
+  object: OsduSample.ing.WellLogCurve
+  identityColumn: RecId
+
+load:
+  keyColumns: [source_project, log_id, curve_id]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: recall-welllog

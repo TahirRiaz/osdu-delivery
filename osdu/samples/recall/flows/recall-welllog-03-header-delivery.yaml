@@ -1,0 +1,97 @@
+# Flow: recall-welllog-03-header-delivery
+#
+# Delivers Recall well logs to the wellbore DDMS as WellLog 1.4.0 records with their curve grids as bulk data: the route
+# recall_to_osdu and petrodb-api take today (POST /welllogs, then the parquet chunk, or a session of chunks), run from the
+# ingestion tables SQLFlow's own pre and ing flows load (recall-welllog-01-*-pre, recall-welllog-02-*-ing). This flow reads
+# what changed there, renders it with the mapping beside it (../mappings) and delivers it. The template it fills lives in
+# the module's database, and so does the cache it reads: the lookup tables ../cache/recall-lookups-00-cache.yaml keeps in
+# the cache of the partition it delivers to (target.headers.data-partition-id). Every other reference the mapping writes
+# is a generated id, so the cache holds no OSDU reference data at all. One flow with a parameter serves every Recall log
+# source.
+flowType: delivery
+name: recall-welllog-03-header-delivery
+batch: recall
+
+parameters:
+  logSource:
+    required: true
+    description: The Recall log source (STAT_COMP, STAT_CPI, STAT_CORE, STAT_ILT, STAT_PLT, STAT_PRESS).
+
+source:
+  # Resolved on the node that runs the flow; never a connection string in the document.
+  connection: ${env:OSDU_SAMPLE_DB}
+  record:
+    object: OsduSample.ing.WellLog
+    key: [source_project, log_id]
+    # The table's identity primary key: the read pages by it and a fan-out cuts its ranges on it.
+    primaryKey: RecId
+    # One flow instance per log source: the predicate the run's parameter fills.
+    scope:
+      log_source: logSource
+  datasets:
+    curves:
+      object: OsduSample.ing.WellLogCurve
+      join:
+        source_project: source_project
+        log_id: log_id
+      orderBy: [curve_ordinal]
+  payloads:
+    # The curve values stay where the export wrote them: the record's row says which folder.
+    curves:
+      root: ../data/curves
+      locationColumn: curve_folder
+      pattern: "chunk_*.parquet"
+      hashColumn: payload_hash
+      chunkCountColumn: chunk_count
+  # When Recall last changed the log. A row modified after the version the ledger holds goes through render and the hash
+  # check again; the same moment is skipped without rendering; an older one is never sent.
+  lastModified: update_date
+  incremental:
+    overlapSeconds: 900
+  # Where the intake writes the rendered documents a drain reads back.
+  work: ../.work/{logSource}
+
+render:
+  mapping: WellLog@1.4.0
+
+change:
+  detect: renderedHash
+  payloadDetect: contentHash
+  onUnchanged: skip
+
+target:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    data-partition-id: ${env:OSDU_DATA_PARTITION}
+  protocol: ddms
+  protocolOptions:
+    payload: curves
+    sessionThresholdChunks: 1
+    preserveDataKeys: [Datasets, DDMSDatasets, ExtensionProperties]
+    # OSDU_URL is the platform root, shared with every other flow kind (cache, retrieval); the wellbore DDMS itself
+    # is deployed under this ingress route below it (the OSDU C# client's service registry), for both the record
+    # write and its curve bulk data (POST .../data, POST/GET .../sessions).
+    ddmsRoot: /api/os-wellbore-ddms
+
+reliability:
+  concurrency: 8
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  skipStatusCodes: [409]
+  timeoutSeconds: 100
+  leaseSeconds: 300
+  batchSize: 50
+
+# Hourly, with logSource STAT_COMP (../schedules.yaml). A verify (drift) run is a schedule of its own in the GUI, or a run
+# with --operation verify.
+schedule: recall-welllog
+
+verify:
+  reconcile: false

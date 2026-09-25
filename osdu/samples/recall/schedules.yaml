@@ -1,0 +1,18 @@
+# The schedules of the recall estate. Every flow of the estate joins one of them with `schedule: <name>`, so a schedule
+# fires its flows as one group in lineage order (pre-ingestion, then ingestion, then what reads the ingestion tables), and
+# "Run now" on the Schedules page (POST /api/v1/schedules/{id}/run) runs the whole chain on demand. A single flow still
+# runs on its own from the Pipelines page or with `sqlflow run <flow>`.
+schedules:
+  # Nightly: the lookup tables land and are keyed (units, curve dictionary), then the lookups cache captures them. Well
+  # before the hourly delivery, so a delivery renders against a cache captured the same day.
+  recall-cache:
+    cron: "30 1 * * *"
+    timezone: Europe/Oslo
+
+  # Hourly: the well log header and curve files land and are keyed, then the delivery sends what changed to the
+  # wellbore DDMS. The delivery flow's one required parameter is the log source it delivers.
+  recall-welllog:
+    cron: "0 * * * *"
+    timezone: Europe/Oslo
+    values:
+      logSource: STAT_COMP

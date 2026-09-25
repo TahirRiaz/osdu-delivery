@@ -1,0 +1,34 @@
+# Ingestion: the typed pre view into the keyed ingestion table the delivery flow reads.
+#
+# The upsert is what gives the delivery its grain: one row per Recall log (source_project, log_id), with SQLFlow's own
+# system columns saying when the row last changed and which file it came from. The delivery windows on UpdatedDate_DW and
+# traces every delivered record back to FileName_DW and RowNumber_DW.
+flowType: ing
+name: recall-welllog-02-header-ing
+batch: recall
+
+connections:
+  sample: ${env:OSDU_SAMPLE_DB}
+
+source:
+  server: sample
+  object: OsduSample.pre.v_WellLog
+
+target:
+  server: sample
+  object: OsduSample.ing.WellLog
+  # The identity primary key every ingestion table carries: the clustered key the other indexes point at, and the
+  # column the delivery pages and fans out by (source.record.primaryKey).
+  identityColumn: RecId
+
+load:
+  keyColumns: [source_project, log_id]
+
+systemColumns:
+  insertedDate: true
+  updatedDate: true
+
+incremental:
+  columns: [FileDate_DW]
+
+schedule: recall-welllog

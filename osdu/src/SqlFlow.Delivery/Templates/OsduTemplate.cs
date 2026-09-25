@@ -271,7 +271,7 @@ public sealed class OsduTemplate
         return names;
     }
 
-    private static IReadOnlyList<string> Relationships(JsonObject raw, JsonObject effective)
+    internal static IReadOnlyList<string> Relationships(JsonObject raw, JsonObject effective)
     {
         var declared = raw["x-osdu-relationship"] as JsonArray ?? effective["x-osdu-relationship"] as JsonArray;
         if (declared is null)

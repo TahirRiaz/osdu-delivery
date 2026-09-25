@@ -67,31 +67,16 @@ internal static class WellLogVersions
     }
 
     /// <summary>
-    /// Imports the sample cache records as the cache of <paramref name="partition"/>, under that partition's ids, as the
-    /// capture of the cache flow <paramref name="flowName"/>, over the sample lookup tables. The files are written under
-    /// <paramref name="root"/>.
+    /// Imports the sample lookup tables as the cache of <paramref name="partition"/>, as the capture of a cache flow named
+    /// <paramref name="flowName"/> + "-lookups". The well log mapping (1.4.0 and 1.5.0 alike) builds every reference id it
+    /// writes from these tables and a template, so they are the only cache content a pipeline on either version reads.
     /// </summary>
-    public static async Task ImportPartitionCacheAsync(ICacheStore caches, string partition, string flowName, string root)
+    public static async Task ImportPartitionCacheAsync(ICacheStore caches, string partition, string flowName)
     {
         ArgumentNullException.ThrowIfNull(caches);
-        var directory = Path.Combine(root, "references-" + partition);
-        Directory.CreateDirectory(directory);
-        foreach (var file in Directory.EnumerateFiles(Samples.CacheRecords, "*.json"))
-        {
-            var text = File.ReadAllText(file);
-            Assert.Contains(Samples.SamplePartition + ":", text, StringComparison.Ordinal);
-            File.WriteAllText(Path.Combine(directory, Path.GetFileName(file)), text.Replace(Samples.SamplePartition + ":", partition + ":", StringComparison.Ordinal));
-        }
-
-        // The lookup tables the mapping translates source spellings through hold no ids, so the partition's copy is the
-        // sample's own, written first as the sample cache writes them.
         var lookups = new SnapshotBuilder(
             caches, partition, flowName + "-lookups", new TestClock(Samples.SampleCacheCaptured.AddMinutes(-1)), Samples.Logger<SnapshotBuilder>());
         await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample lookups for " + partition), []);
-
-        var cacheFlow = new DeliveryDocumentLoader().LoadCache(Samples.CacheFlow);
-        var builder = new SnapshotBuilder(caches, partition, flowName, new TestClock(Samples.SampleCacheCaptured), Samples.Logger<SnapshotBuilder>());
-        await builder.ImportDirectoryAsync(directory, cacheFlow.Types, new CacheCapture(null, "tests", "sample files for " + partition));
     }
 
     /// <summary>
@@ -102,7 +87,7 @@ internal static class WellLogVersions
     private static string NextMappingDocument(string partition)
     {
         var text = File.ReadAllText(Path.Combine(Samples.Mappings, CurrentMapping + ".yaml")).ReplaceLineEndings("\n");
-        text = Replace(text, "# Mapping: Well logs into the WellLog 1.4.0 template", "# Mapping: Well logs into the WellLog 1.5.0 template", 1);
+        text = Replace(text, "# Mapping: Recall well logs into the WellLog 1.4.0 template", "# Mapping: Recall well logs into the WellLog 1.5.0 template", 1);
         text = Replace(text, "\nversion: 1.4.0\n", "\nversion: 1.5.0\n", 1);
         text = Replace(text, $"  kind: {CurrentKind}\n  version: {CurrentTemplateVersion}\n", $"  kind: {NextKind}\n  version: {NextTemplateVersion}\n", 1);
         text = Replace(text, $"\"kind\": \"{CurrentKind}\"", $"\"kind\": \"{NextKind}\"", 2);

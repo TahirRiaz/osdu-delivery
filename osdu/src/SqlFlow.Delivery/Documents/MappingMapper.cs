@@ -294,6 +294,26 @@ internal static partial class MappingMapper
             throw new FlowValidationException($"{where}: modifiers change incoming dataset values, and this entry's findBy reads none; {found} never modified.");
         }
 
+        var ids = modifiers.Count(m => m.Kind == ModifierKind.Id);
+        if (ids > 0 && parsedSource.Resolves)
+        {
+            // A resolved source's modifiers change the value its findBy lines compare, and the source gives the record's id
+            // itself; an id built there would be compared with the cached or searched field, never written.
+            throw new FlowValidationException(
+                $"{where}: the id modifier builds the id an entry writes from a dataset value, and {parsedSource} already gives what it writes; read the value from the dataset, source: dataset.<column>, and build the id from it.");
+        }
+
+        if (ids > 1)
+        {
+            throw new FlowValidationException($"{where}: an entry builds one id, and its modifiers list id {ids} times.");
+        }
+
+        if (ids == 1 && modifiers[^1].Kind != ModifierKind.Id)
+        {
+            // A modifier after the id would change the id it built, into one its template does not describe.
+            throw new FlowValidationException($"{where}: id builds what the entry writes, so it is the last modifier; move {modifiers[^1]} before it.");
+        }
+
         return new MappingEntry
         {
             Index = index,
@@ -397,6 +417,14 @@ internal static partial class MappingMapper
                 if (!parameters.ContainsKey(name))
                 {
                     throw new FlowValidationException($"{source}: {entry.Where} uses {{param.{name}}}, but the mapping declares no parameter '{name}'.");
+                }
+            }
+
+            foreach (var name in entry.Modifiers.Where(m => m.Id is not null).SelectMany(m => m.Id!.Parameters))
+            {
+                if (!parameters.ContainsKey(name))
+                {
+                    throw new FlowValidationException($"{source}: {entry.Where} builds an id from {{param.{name}}}, but the mapping declares no parameter '{name}'.");
                 }
             }
         }
@@ -689,7 +717,7 @@ internal static partial class MappingMapper
     }
 
     /// <summary>The modifiers a mapping entry takes, by the name it writes them with.</summary>
-    internal static readonly IReadOnlyList<string> ModifierNames = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number"];
+    internal static readonly IReadOnlyList<string> ModifierNames = ["trim", "upper", "lower", "split", "replace", "equals", "date", "number", "id"];
 
     /// <summary>The settings a replace takes beside its table: what an unlisted value becomes, and a cached table's fields.</summary>
     internal static readonly IReadOnlyList<string> ReplaceSettings = ["otherwise", "match", "field"];
@@ -720,6 +748,7 @@ internal static partial class MappingMapper
                     "number" => new Modifier { Kind = ModifierKind.Number, DecimalSeparator = Rendering.NumberValues.DecimalPoint },
                     "split" or "equals" => throw new FlowValidationException($"{where}: '{name}' needs settings, such as {Example(name)}."),
                     "replace" => throw new FlowValidationException($"{where}: 'replace' needs a table, such as {Example(name)}."),
+                    "id" => throw new FlowValidationException($"{where}: 'id' needs the template the id is built from, such as {Example(name)}."),
                     _ => throw new FlowValidationException($"{where}: '{name}' is not a modifier. The modifiers are {ModifierList}."),
                 };
 
@@ -740,6 +769,7 @@ internal static partial class MappingMapper
                             : new Modifier { Kind = ModifierKind.Equals, Text = Convert.ToString(settings, CultureInfo.InvariantCulture) },
                         "date" => Date(settings, where),
                         "number" => Number(settings, where),
+                        "id" => Id(settings, where),
                         _ => throw new FlowValidationException($"{where}: '{modifier}' is not a modifier. The modifiers are {ModifierList}."),
                     };
                 }
@@ -764,6 +794,20 @@ internal static partial class MappingMapper
         bool flag => flag ? "true" : "false",
         _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty,
     };
+
+    /// <summary>An id modifier: the template the id is built from, read and checked here, before any row is rendered.</summary>
+    private static Modifier Id(object? settings, string where)
+    {
+        if (settings is not string text)
+        {
+            throw new FlowValidationException(
+                $"{where}: id takes the template the id is built from as text, such as {Example("id")}; quote it, since YAML reads text that starts with '{{' as a map.");
+        }
+
+        return IdTemplate.TryParse(text, out var problem) is { } template
+            ? new Modifier { Kind = ModifierKind.Id, Id = template }
+            : throw new FlowValidationException($"{where}: id '{text}': {problem}.");
+    }
 
     /// <summary>A date modifier: no setting reads ISO 8601, and a format is refused when it could not read a whole date.</summary>
     private static Modifier Date(object? settings, string where)
@@ -959,6 +1003,7 @@ internal static partial class MappingMapper
         "split" => "split: { separator: \",\", part: 1 }",
         "replace" => "replace: { GAPI: gAPI }",
         "number" => "number: { decimal: \",\", group: \" \" }",
+        "id" => "id: \"{param.dataPartition}:reference-data--UnitOfMeasure:{value}:\"",
         _ => "equals: REGULAR",
     };
 

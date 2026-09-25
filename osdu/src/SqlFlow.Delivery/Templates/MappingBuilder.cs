@@ -110,7 +110,8 @@ public sealed record MappingDraftEntry
 public sealed record MappingDraftFind(string Field, string? Column, string? Literal);
 
 /// <summary>
-/// One modifier: trim, upper, lower, split, replace, equals, date or number, with its settings. A replace carries its pairs,
+/// One modifier: trim, upper, lower, split, replace, equals, date, number or id, with its settings; an id carries its template
+/// in <see cref="Text"/>. A replace carries its pairs,
 /// or the cached type it reads its table from in <see cref="Table"/> with the fields it matches on (<see cref="Match"/>)
 /// and replaces by (<see cref="Field"/>), either left out for the table to settle; and what an unlisted value becomes:
 /// <see cref="OtherwiseKind"/> is keep (the default), empty (no value) or text, with the text in <see cref="OtherwiseText"/>.
@@ -367,6 +368,20 @@ public static partial class MappingBuilder
                 ModifierIssue(modifier, target, Error);
             }
 
+            var ids = entry.Modifiers.Count(m => m.Kind == "id");
+            if (ids > 0 && entry.Input != MappingDraftInput.Dataset)
+            {
+                Error($"{target}: the id modifier builds the id an entry writes from a dataset value; choose a dataset column as the input.", target);
+            }
+            else if (ids > 1)
+            {
+                Error($"{target}: an entry builds one id; remove the other id modifiers.", target);
+            }
+            else if (ids == 1 && entry.Modifiers[^1].Kind != "id")
+            {
+                Error($"{target}: id builds what the entry writes, so it is the last modifier; move it to the end.", target);
+            }
+
             if (entry.AppliesWhen is { } condition)
             {
                 if (!DatasetColumnPattern().IsMatch(condition.Column ?? string.Empty))
@@ -535,7 +550,7 @@ public static partial class MappingBuilder
                 m.Separator,
                 m.Part,
                 m.Replacements.Count == 0 ? null : m.Replacements.Select(kv => new MappingDraftReplacement(kv.Key, kv.Value)).ToList(),
-                m.Text,
+                m.Kind == ModifierKind.Id ? m.Id!.Text : m.Text,
                 m.DecimalSeparator,
                 m.GroupSeparator,
                 m.Kind == ModifierKind.Replace ? FallbackKind(m.Otherwise) : null,
@@ -851,6 +866,11 @@ public static partial class MappingBuilder
                 break;
             case "equals":
                 break;
+            case "id" when IdTemplate.TryParse(modifier.Text, out var idProblem) is null:
+                error($"{target}: id: {idProblem}.", target);
+                break;
+            case "id":
+                break;
             default:
                 error($"{target}: '{modifier.Kind}' is not a modifier.", target);
                 break;
@@ -919,6 +939,7 @@ public static partial class MappingBuilder
         "replace" => "replace: { " + string.Join(", ", (modifier.Replacements ?? []).Select(r => FlowScalar(r.From) + ": " + ReplacementText(r.To))) + " }",
         "equals" => "equals: " + Scalar(modifier.Text ?? string.Empty),
         "date" when !string.IsNullOrEmpty(modifier.Text) => "date: " + Scalar(modifier.Text),
+        "id" => "id: " + Quote(modifier.Text ?? string.Empty),
         "number" when modifier.GroupSeparator is not null || modifier.DecimalSeparator is not (null or ".")
             => "number: { decimal: " + FlowScalar(modifier.DecimalSeparator ?? ".") + (modifier.GroupSeparator is null ? string.Empty : ", group: " + FlowScalar(modifier.GroupSeparator)) + " }",
         _ => modifier.Kind,

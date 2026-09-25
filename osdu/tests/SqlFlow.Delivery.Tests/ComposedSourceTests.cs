@@ -47,7 +47,7 @@ public sealed class ComposedSourceTests : IDisposable
     private string SourceYaml()
     {
         var root = _root.Replace('\\', '/');
-        var mappings = Samples.Mappings.Replace('\\', '/');
+        var mappings = Samples.FixtureMappings.Replace('\\', '/');
         return ($$"""
             flowType: delivery
             name: logs
@@ -61,9 +61,9 @@ public sealed class ComposedSourceTests : IDisposable
               mappings: '{{mappings}}'
               parameters:
                 dataPartition: dev
-                aclOwner: data.default.owners@dev.dataservices.energy
-                aclViewer: data.default.viewers@dev.dataservices.energy
-                legalTag: dev-reference-data-default
+                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
+                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
+                legalTag: dev-equinor-osdu-reference-default
             target:
               endpoint: {{FakeOsduPlatform.Endpoint}}
               headers:
@@ -103,10 +103,11 @@ public sealed class ComposedSourceTests : IDisposable
         for (var i = 0; i < logs.Count; i++)
         {
             var log = logs[i];
-            await SampleWellLogs.WriteChunkAsync(Path.Combine(_root, "curves", log.SourceProject, log.LogId), log);
-            var las = Path.Combine(_root, "las", log.SourceProject, log.LogId);
+            await SampleWellLogs.WriteChunkAsync(SampleEstate.PayloadFolder(_root, log), log);
+            // A Recall log id holds a slash, so the LAS file is named for its folder.
+            var las = Path.Combine([_root, "las", .. log.Folder.Split('/')]);
             Directory.CreateDirectory(las);
-            await File.WriteAllTextAsync(Path.Combine(las, log.LogId + ".las"), $"~VERSION INFORMATION\n VERS. 2.0 :\n~WELL INFORMATION\n WELL. {log.WellboreUwi} :\n");
+            await File.WriteAllTextAsync(Path.Combine(las, Path.GetFileName(las) + ".las"), $"~VERSION INFORMATION\n VERS. 2.0 :\n~WELL INFORMATION\n WELL. {log.WellboreUwi} :\n");
             tables.Add(SampleEstate.Record(log, Now, i + 1)
                 .With("las_folder", log.Folder)
                 .With("las_hash", "las-" + log.LogId));
@@ -183,12 +184,12 @@ public sealed class ComposedSourceTests : IDisposable
 
         // Every log: its file uploaded and registered, its record written through the well log collection pointing at
         // the dataset, then its curves.
-        Assert.Equal(3, Delivered(await RunAsync(engine, source)).Delivered);
+        Assert.Equal(5, Delivered(await RunAsync(engine, source)).Delivered);
         Assert.Equal(Probes, Calls(platform, 0).Take(2));
         var first = Sent(platform, 0);
-        Assert.Equal(3, first.Count(c => c == "POST /api/file/v2/files/metadata"));
-        Assert.Equal(3, first.Count(c => c == "POST " + Ddms));
-        Assert.Equal(3, first.Count(c => c.StartsWith("POST " + Ddms + "/", StringComparison.Ordinal) && c.EndsWith("/data", StringComparison.Ordinal)));
+        Assert.Equal(5, first.Count(c => c == "POST /api/file/v2/files/metadata"));
+        Assert.Equal(5, first.Count(c => c == "POST " + Ddms));
+        Assert.Equal(5, first.Count(c => c.StartsWith("POST " + Ddms + "/", StringComparison.Ordinal) && c.EndsWith("/data", StringComparison.Ordinal)));
         Assert.Equal(
             [
                 "GET /api/file/v2/files/uploadURL",
@@ -219,7 +220,7 @@ public sealed class ComposedSourceTests : IDisposable
 
         // One log's curves are rewritten: only its bulk data goes, and the files' hash and dataset stay as they were.
         _clock.Advance(TimeSpan.FromMinutes(10));
-        var moved = logs[1] with { Curves = [logs[1].Curves[0], logs[1].Curves[1] with { First = 60.5 }, .. logs[1].Curves.Skip(2)] };
+        var moved = logs[1].WithValues(logs[1].Columns()[1], value => value is null ? null : value + 10);
         await SampleEstate.RewritePayloadAsync(_root, tables.Records[1], moved, Now);
         mark = platform.Calls.Count;
         Assert.Equal(1, Delivered(await RunAsync(engine, source)).Delivered);

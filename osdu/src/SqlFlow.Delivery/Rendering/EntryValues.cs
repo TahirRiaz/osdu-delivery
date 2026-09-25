@@ -32,7 +32,7 @@ internal static partial class EntryValues
         else if (entry.Source!.Kind == MappingSourceKind.DatasetColumn)
         {
             var column = entry.Source.Column!;
-            if (!TryModify(entry.Modifiers, Read(column, root, item), path, renderer, holds, usages, out raw))
+            if (!TryModify(entry, Read(column, root, item), root, item, renderer, holds, usages, out raw))
             {
                 return null;
             }
@@ -186,10 +186,11 @@ internal static partial class EntryValues
     /// cached table records the rows it read among the render's cache usages.
     /// </summary>
     private static bool TryModify(
-        IReadOnlyList<Modifier> modifiers, object? value, string path, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, out object? result)
+        MappingEntry entry, object? value, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, out object? result)
     {
+        var path = entry.Target.Text;
         result = value;
-        foreach (var modifier in modifiers)
+        foreach (var modifier in entry.Modifiers)
         {
             if (result is null)
             {
@@ -242,6 +243,13 @@ internal static partial class EntryValues
                     }
 
                     result = number;
+                    break;
+                case ModifierKind.Id:
+                    if (!TryBuildId(modifier.Id!, text, entry, root, item, renderer, holds, usages, out result))
+                    {
+                        return false;
+                    }
+
                     break;
                 default:
                     throw new DeliveryException($"{path}: modifier '{modifier.Kind}' is not supported.");
@@ -438,7 +446,7 @@ internal static partial class EntryValues
             }
             else
             {
-                if (!TryModify(entry.Modifiers, Read(find.Column!, root, item), path, renderer, holds, usages, out var modified))
+                if (!TryModify(entry, Read(find.Column!, root, item), root, item, renderer, holds, usages, out var modified))
                 {
                     return null;
                 }
@@ -622,7 +630,7 @@ internal static partial class EntryValues
             }
             else
             {
-                if (!TryModify(entry.Modifiers, Read(find.Column!, root, item), path, renderer, holds, usages, out var modified))
+                if (!TryModify(entry, Read(find.Column!, root, item), root, item, renderer, holds, usages, out var modified))
                 {
                     return null;
                 }
@@ -839,7 +847,12 @@ internal static partial class EntryValues
         }
 
         var scalar = raw is JsonValue value ? Native(value) : raw;
-        if (type == SchemaType.Array && property?.ItemScalarType is { } itemType)
+        if (type == SchemaType.Array && property?.ItemScalarType is SchemaType.Object && raw is JsonObject item)
+        {
+            return new JsonArray(item.DeepClone());
+        }
+
+        if (type == SchemaType.Array && property?.ItemScalarType is { } itemType && itemType != SchemaType.Object)
         {
             var single = Scalar(scalar, itemType, property?.ItemFormat, path, holds);
             return single is null ? null : new JsonArray(single);
@@ -851,7 +864,7 @@ internal static partial class EntryValues
     private static JsonNode? ConvertSet(JsonArray set, SchemaProperty? property, string path, List<string> holds)
     {
         var type = property?.Type ?? SchemaType.Any;
-        if (type is SchemaType.Array && property?.ItemScalarType is { } itemType)
+        if (type is SchemaType.Array && property?.ItemScalarType is { } itemType && itemType != SchemaType.Object)
         {
             var items = new JsonArray();
             foreach (var element in set)

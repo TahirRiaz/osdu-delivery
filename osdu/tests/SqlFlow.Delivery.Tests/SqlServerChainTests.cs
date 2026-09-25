@@ -68,12 +68,12 @@ public class SqlServerChainTests
         // run of a flow is actually in.
         var order = await EnqueueChainAndRunIngestionAsync(estate);
         Assert.Equal(
-            [estate.Rename("wells-welllog-01-curves-pre"), estate.Rename("wells-welllog-01-header-pre")],
+            [estate.Rename("recall-welllog-01-curves-pre"), estate.Rename("recall-welllog-01-header-pre")],
             order.Where(m => m.Wave == 0).Select(m => m.FlowName).OrderBy(n => n, StringComparer.Ordinal).ToList());
         Assert.Equal(estate.DeliveryFlowName, order.Single(m => m.Wave == 2).FlowName);
 
         // What the ingestion flows left is what the delivery reads: one row per logging run, one per curve.
-        Assert.Equal(3, await estate.CountAsync(estate.IngSchema, "WellLog"));
+        Assert.Equal(5, await estate.CountAsync(estate.IngSchema, "WellLog"));
         Assert.Equal(logs.Sum(l => l.Curves.Count), await estate.CountAsync(estate.IngSchema, "WellLogCurve"));
 
         // The first plan over the loaded tables, with nothing delivered yet: every record is new, so every entry creates.
@@ -84,7 +84,7 @@ public class SqlServerChainTests
         {
             runtime.Selection = SourceSelection.Full();
             var plan = await runtime.PlanAsync();
-            Assert.Equal(3, plan.Entries.Count);
+            Assert.Equal(5, plan.Entries.Count);
             Assert.All(plan.Entries, e => Assert.Equal(PlannedAction.Create, e.Action));
             Assert.All(plan.Entries, e => Assert.Equal(LogFile, e.Origin.FileName));
             Assert.All(plan.Entries, e => Assert.Equal(1, e.ChunkCount));
@@ -110,7 +110,7 @@ public class SqlServerChainTests
         // The group's last member, run now that its first plan has been read.
         await estate.DeliverAsync();
 
-        Assert.Equal(3, estate.Protocol.Deliveries.Count);
+        Assert.Equal(5, estate.Protocol.Deliveries.Count);
         Assert.All(estate.Protocol.Deliveries, w => Assert.True(w.DeliverMetadata && w.DeliverPayload));
         // The payload files each record points at were opened and streamed: the fake target reads every chunk it is
         // handed, so a payload source here is a payload the delivery actually sent.
@@ -123,8 +123,8 @@ public class SqlServerChainTests
 
         var submission = await LatestSubmissionAsync(estate);
         Assert.Equal(SubmissionStatus.Completed, submission.Status);
-        Assert.Equal(3, submission.Planned);
-        Assert.Equal(3, submission.Delivered);
+        Assert.Equal(5, submission.Planned);
+        Assert.Equal(5, submission.Delivered);
         Assert.Equal(estate.RecordObject, submission.SourceObject);
 
         // Every delivered record names the file and row it came from, which is the chain's traceability link.
@@ -158,7 +158,7 @@ public class SqlServerChainTests
         await estate.WritePayloadsAsync(logs);
         await estate.RunIngestionChainAsync();
         await estate.DeliverAsync();
-        Assert.Equal(3, estate.Protocol.Deliveries.Count);
+        Assert.Equal(5, estate.Protocol.Deliveries.Count);
         var attemptsBefore = await AttemptCountAsync(estate, logs);
 
         // Nothing new arrived, so the pre flows land nothing, the ingestion flows change no row, and the delivery's
@@ -170,7 +170,7 @@ public class SqlServerChainTests
         Assert.Empty(estate.Protocol.Deliveries);
         Assert.Equal(attemptsBefore, await AttemptCountAsync(estate, logs));
         var stats = await estate.Ledger.StatsAsync(estate.FlowId, DateTime.UtcNow);
-        Assert.Equal(3, stats.Delivered);
+        Assert.Equal(5, stats.Delivered);
     }
 
     /// <summary>Case 3: a changed curve re-plans its own log and nothing else, and the record's origin does not move.</summary>
@@ -184,10 +184,11 @@ public class SqlServerChainTests
         await estate.WritePayloadsAsync(logs);
         await estate.RunIngestionChainAsync();
         await estate.DeliverAsync();
-        Assert.Equal(3, estate.Protocol.Deliveries.Count);
+        Assert.Equal(5, estate.Protocol.Deliveries.Count);
 
         // A second curve file describes one curve of the first log differently. The keyed upsert moves that child row
         // only, and the delivery's candidate query brings in the record its changed child belongs to.
+        var changedCurveId = logs[0].Curves[1].CurveId;
         var changed = logs[0] with
         {
             Curves = [logs[0].Curves[0], logs[0].Curves[1] with { Description = "Gamma ray, corrected" }, logs[0].Curves[2]],
@@ -210,7 +211,7 @@ public class SqlServerChainTests
         // The curve row carries the newer content and the newer change stamp.
         Assert.Equal(
             "Gamma ray, corrected",
-            await CurveValueAsync(estate, "curve_description", logs[0].SourceProject, logs[0].LogId, "GR"));
+            await CurveValueAsync(estate, "curve_description", logs[0].SourceProject, logs[0].LogId, changedCurveId));
     }
 
     /// <summary>Case 4: landing the same rows again changes nothing, because the ingestion checksum leaves them alone.</summary>
@@ -237,7 +238,7 @@ public class SqlServerChainTests
         await estate.DeliverAsync();
 
         Assert.Empty(estate.Protocol.Deliveries);
-        Assert.Equal(3, await estate.CountAsync(estate.IngSchema, "WellLog"));
+        Assert.Equal(5, await estate.CountAsync(estate.IngSchema, "WellLog"));
         Assert.Equal(updatedBefore, await estate.ValueAsync("WellLog", "UpdatedDate_DW", logs[0].SourceProject, logs[0].LogId));
         Assert.Equal(LogFile, await estate.ValueAsync("WellLog", "FileName_DW", logs[0].SourceProject, logs[0].LogId));
         var record = await estate.Ledger.GetRecordAsync(estate.FlowId, logs[0].Key);
@@ -255,7 +256,7 @@ public class SqlServerChainTests
         await estate.WritePayloadsAsync(logs);
         await estate.RunIngestionChainAsync();
         await estate.DeliverAsync();
-        Assert.Equal(3, estate.Protocol.Deliveries.Count);
+        Assert.Equal(5, estate.Protocol.Deliveries.Count);
 
         // A late file carries changed content for one log under an older update_date. The ingestion flow takes it (the
         // content moved, so the row is updated and its change stamp moves with it), and the delivery refuses to send a
@@ -275,7 +276,7 @@ public class SqlServerChainTests
         // The record still holds the version that was delivered, and the stale pass is on its history.
         var record = await estate.Ledger.GetRecordAsync(estate.FlowId, logs[1].Key);
         Assert.Equal(RecordStatus.Delivered, record!.Status);
-        Assert.Equal(SampleWellLogs.UpdatedUtc, record.SourceModifiedUtc);
+        Assert.Equal(logs[1].UpdateDateUtc, record.SourceModifiedUtc);
         Assert.Equal(1, await estate.Ledger.CountAttemptsAsync(submission.SubmissionId, AttemptOutcome.Skipped, AttemptPhases.Stale));
     }
 
@@ -360,7 +361,7 @@ public class SqlServerChainTests
         try
         {
             await WellLogVersions.SaveNextTemplateAsync(new OsduTemplateStore(estate.Context, TimeProvider.System));
-            await WellLogVersions.ImportPartitionCacheAsync(new OsduCacheStore(estate.Context), partition, estate.DeliveryFlowName + "-cache", estate.Root);
+            await WellLogVersions.ImportPartitionCacheAsync(new OsduCacheStore(estate.Context), partition, estate.DeliveryFlowName + "-cache");
 
             // Each push takes a moment, so the pushes a node makes at once overlap.
             estate.Protocol.Before = (_, ct) => Task.Delay(TimeSpan.FromMilliseconds(15), ct);
@@ -653,9 +654,9 @@ public class SqlServerChainTests
             render:
               parameters:
                 dataPartition: dev
-                aclOwner: data.default.owners@dev.dataservices.energy
-                aclViewer: data.default.viewers@dev.dataservices.energy
-                legalTag: dev-reference-data-default
+                aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
+                aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
+                legalTag: dev-equinor-osdu-reference-default
             target:
               endpoint: http://localhost:9/petrodb
               auth:
@@ -691,7 +692,7 @@ public class SqlServerChainTests
     /// <summary>The wellbore rows of a generated estate, one per wellbore.</summary>
     private static IReadOnlyList<IReadOnlyDictionary<string, string?>> GeneratedWellbores(int count)
     {
-        var updated = SampleWellLogs.UpdatedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        var updated = FixtureWellbores.UpdatedUtc.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
         return Enumerable.Range(0, count)
             .Select(i => (IReadOnlyDictionary<string, string?>)new Dictionary<string, string?>(StringComparer.Ordinal)
             {
@@ -780,11 +781,11 @@ public class SqlServerChainTests
             return wave!.Wave;
         }
 
-        var pre = WaveOf("wells-welllog-01-header-pre");
-        var curvesPre = WaveOf("wells-welllog-01-curves-pre");
-        var ing = WaveOf("wells-welllog-02-header-ing");
-        var curvesIng = WaveOf("wells-welllog-02-curves-ing");
-        var delivery = WaveOf("wells-welllog-03-header-delivery");
+        var pre = WaveOf("recall-welllog-01-header-pre");
+        var curvesPre = WaveOf("recall-welllog-01-curves-pre");
+        var ing = WaveOf("recall-welllog-02-header-ing");
+        var curvesIng = WaveOf("recall-welllog-02-curves-ing");
+        var delivery = WaveOf("recall-welllog-03-header-delivery");
 
         Assert.True(pre < ing, $"the pre flow must run before the ingestion flow that reads its view; waves: {Describe(waves)}");
         Assert.True(curvesPre < curvesIng, $"the curve pre flow must run before its ingestion flow; waves: {Describe(waves)}");
@@ -902,7 +903,7 @@ public class SqlServerChainTests
             foreach (var (flowName, _) in queued)
             {
                 var name = shipped[flowName];
-                if (name != "wells-welllog-03-header-delivery")
+                if (name != "recall-welllog-03-header-delivery")
                 {
                     await estate.RunFlowAsync(name);
                 }
@@ -922,11 +923,11 @@ public class SqlServerChainTests
     /// <summary>The chain's members: the flow as the repository names it, its kind, and the wave lineage puts it in.</summary>
     private static IReadOnlyList<(string Name, string Kind, int Wave)> Chain() =>
     [
-        ("wells-welllog-01-header-pre", "file", 0),
-        ("wells-welllog-01-curves-pre", "file", 0),
-        ("wells-welllog-02-header-ing", "ing", 1),
-        ("wells-welllog-02-curves-ing", "ing", 1),
-        ("wells-welllog-03-header-delivery", FlowDefinition.FlowTypeName, 2),
+        ("recall-welllog-01-header-pre", "file", 0),
+        ("recall-welllog-01-curves-pre", "file", 0),
+        ("recall-welllog-02-header-ing", "ing", 1),
+        ("recall-welllog-02-curves-ing", "ing", 1),
+        ("recall-welllog-03-header-delivery", FlowDefinition.FlowTypeName, 2),
     ];
 
     /// <summary>

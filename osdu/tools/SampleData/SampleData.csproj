@@ -5,7 +5,7 @@
     <RootNamespace>SqlFlow.Delivery.Tools.SampleData</RootNamespace>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <IsPackable>false</IsPackable>
-    <Description>Writes the sample estate's data files: the CSV files the pre-ingestion flows read, and the parquet payload chunks the delivery streams.</Description>
+    <Description>Exports the sample estate's data from the Recall tables in Databricks: the CSV files the pre-ingestion flows read, and the parquet payload chunks the delivery streams.</Description>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,9 +13,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- One definition of the sample data, shared with the suites that regenerate and check it. -->
+    <!-- One definition of the sample data, shared with the suites that read it back. -->
     <Compile Include="..\..\tests\SqlFlow.Delivery.Tests\SampleWellLogs.cs" Link="SampleWellLogs.cs" />
     <Compile Include="..\..\tests\SqlFlow.Delivery.Tests\PandasMetadata.cs" Link="PandasMetadata.cs" />
+    <None Update="queries\*.sql" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

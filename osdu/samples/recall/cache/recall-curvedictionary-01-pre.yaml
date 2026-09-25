@@ -1,0 +1,43 @@
+# Pre-ingestion: the curve dictionary file into the pre layer.
+#
+# One row per curve mnemonic, as petrodb-api's curve dictionary gives it (src/PetroDb/Api.Core/Mapping/CurveDictionary.json):
+# the OSDU LogCurveType, LogCurveMainFamily and LogCurveFamily each mnemonic is filed under, written as the code the
+# record's id ends with, and the unit quantity and unit of a curve of that type. This flow lands data/curve-dictionary,
+# recall-curvedictionary-02-ing keys it, and recall-lookups-00-cache captures that table, so the mapping classifies a
+# curve by its mnemonic exactly as petrodb-api does.
+name: recall-curvedictionary-01-pre
+batch: recall
+
+source:
+  type: csv
+  location: data/curve-dictionary
+  options:
+    delimiter: ","
+    header: true
+    srcFile: "*.csv"
+
+target:
+  connection: ${env:OSDU_SAMPLE_DB}
+  schema: pre
+  table: CurveDictionary
+
+schema:
+  evolve: widen
+
+transform:
+  inferTypes: true
+  onConvertError: fail
+  columns:
+    - { name: mnemonic, type: varchar(100) }
+    - { name: unit, expr: "NULLIF(@ColName, '')", type: varchar(50) }
+    # The export writes the word null where an entry has no comment.
+    - { name: comment, expr: "NULLIF(NULLIF(@ColName, ''), 'null')", type: nvarchar(200) }
+
+incremental:
+  dateColumn: FileDate_DW
+  overlapDays: 0
+
+load:
+  mode: append
+
+schedule: recall-cache

@@ -179,7 +179,7 @@ public sealed class InterfaceOrderTests
         var loader = new DeliveryDocumentLoader();
         InterfaceSchema Describe(string name, string mapping, string kind)
         {
-            var definition = loader.LoadMapping(Path.Combine(Samples.Mappings, mapping + ".yaml"));
+            var definition = loader.LoadMapping(Path.Combine(Samples.FixtureMappings, mapping + ".yaml"));
             var template = OsduTemplate.From(Samples.SampleTemplate(kind));
             return InterfaceSchemas.Describe(name, definition, template);
         }

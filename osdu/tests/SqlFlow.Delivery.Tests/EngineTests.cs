@@ -715,7 +715,7 @@ public class DeliverRunScopeTests
         Assert.Equal(RedeliverScope.Metadata, Of(logs, "Record"));
         Assert.Equal(RedeliverScope.Metadata, Of(logs, "Metadata"));
         Assert.Equal(
-            "'wells-welllog-03-header-delivery' is delivered by the ddms route, which sends the record and its bulk data, so a redelivery of 'files' has nothing to send; name one of all, record, bulk, metadata, payload.",
+            "'recall-welllog-03-header-delivery' is delivered by the ddms route, which sends the record and its bulk data, so a redelivery of 'files' has nothing to send; name one of all, record, bulk, metadata, payload.",
             Assert.Throws<DeliveryException>(() => Of(logs, RedeliverScopes.Files)).Message);
 
         // The file route sends the record and its files.
@@ -766,7 +766,7 @@ public class DeliverOutcomeTests
     {
         SubmissionId = Guid.NewGuid(),
         FlowId = Guid.NewGuid(),
-        FlowName = "wells-welllog-03-header-delivery",
+        FlowName = "recall-welllog-03-header-delivery",
         MappingReference = "WellLog@1.4.0",
         RenderContext = "{}",
         SourceObject = Source,

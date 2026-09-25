@@ -1,0 +1,447 @@
+# Mapping: Recall well logs into the WellLog 1.4.0 template (osdu/docs/mapping-templates.md).
+#
+# One record per Recall log, filled the way petrodb-api's RecallToWellLogMapper fills the record recall_to_osdu posts to
+# it (petrodb-api src/PetroDb/Api/Generated/RecallToWellLogMapper/RecallToWellLogMapper.g.cs): the same properties from
+# the same Recall columns, and the same translations. Every reference the record carries is a generated id: the id
+# modifier builds it from the value (translated by the same one-entry maps petrodb-api applies, kept beside the entry
+# that uses them) or from the curve dictionary, so a record needs no reference data captured from OSDU to render, only
+# the lookup tables of recall-lookups-00-cache (RecallUnits, RecallDepthUnits, CurveDictionary). The dataset is the
+# log's header row, and its child dataset "curves" one row per curve, the index curve MD first; the curve values
+# themselves are streamed to the wellbore DDMS as bulk data.
+#
+# Where this differs from petrodb-api: the record id is the delivery key rather than one the DDMS mints, so a log is
+# always the same record; the viewers are the flow's group rather than groups looked up per field and country; and
+# CompanyID is left out, because petrodb-api finds it by searching Organisation records, a template this estate does not
+# pin. Editing this file re-renders every record that uses it, so changes go through `plan` and a canary first.
+documentType: mapping
+name: WellLog
+version: 1.4.0
+template:
+  kind: osdu:wks:work-product-component--WellLog:1.4.0
+  version: 26a3c3441882db4f
+description: Recall well logs (one record per log) with curve metadata; the curve grid is streamed as bulk data.
+
+dataset:
+  system: recall
+  # The delivery key is UUIDv5 over (source system, Recall project, Recall log id): the grain Recall models.
+  key: [dataset.source_project, dataset.log_id]
+  # Display and search only, never in the record: find a wellbore's logs by name in the GUI and the ledger.
+  label: "{dataset.wellbore_uwi} / {dataset.log_source} / {dataset.log_id}"
+  # What an operator holds when they come looking for this record: the ledger indexes each value, so the record is
+  # found by a wellbore name or a Recall log id from the Records page without knowing which flow delivered it.
+  identity: [dataset.wellbore_uwi, dataset.log_id]
+
+parameters:
+  dataPartition:
+    required: true
+    description: The OSDU data partition record ids and references are minted in.
+  aclOwner:
+    required: true
+    description: The entitlements group that owns every record this mapping renders (acl.owners).
+  aclViewer:
+    required: true
+    description: The entitlements group that may read every record this mapping renders (acl.viewers).
+  legalTag:
+    required: true
+    description: The legal tag every record this mapping renders carries (legal.legaltags).
+
+# The wellbore a log belongs to is looked up on the platform as each record needs one, never captured into the cache: a
+# partition holds hundreds of thousands of them. petrodb-api asks for the wellbore whose FacilityName is the log's UWI;
+# a UWI no wellbore is named by is looked for among the wellbores' aliases.
+searches:
+  Wellbore:
+    kind: "osdu:wks:master-data--Wellbore:*"
+    schema:
+      kind: osdu:wks:master-data--Wellbore:1.3.0
+      version: 58d6bdbd9d066a06
+    description: The partition's wellbores, found by name or by one of their aliases.
+
+mappings:
+  # Access and legal: every record carries them. Recall's wellbores are Norwegian (the UWI's first two letters).
+  - target: osdu.acl.owners
+    static: ["{param.aclOwner}"]
+  - target: osdu.acl.viewers
+    static: ["{param.aclViewer}"]
+  - target: osdu.legal.legaltags
+    static: ["{param.legalTag}"]
+  - target: osdu.legal.otherRelevantDataCountries
+    static: [NO]
+  - target: osdu.tags.DeliveredBy
+    static: osdu-delivery
+  - target: osdu.tags.LogStatus
+    source: dataset.log_pass_type
+    modifiers:
+      - split: { separator: ",", part: 1 }
+  - target: osdu.tags.WellLogNativeUID
+    source: dataset.native_uid
+    modifiers:
+      - split: { separator: ",", part: 1 }
+  - target: osdu.tags.SourceProject
+    source: dataset.source_project
+
+  # The log.
+  - target: osdu.data.Name
+    source: dataset.log_source
+    modifiers: [trim]
+  - target: osdu.data.WellboreID
+    source: search.Wellbore.id
+    findBy:
+      - search.Wellbore.data.FacilityName = dataset.wellbore_uwi
+      # Asked only for a name no wellbore carries: a wellbore renamed since Recall recorded the log.
+      - search.Wellbore.data.NameAliases.AliasName = dataset.wellbore_uwi
+  - target: osdu.data.LogRun
+    source: dataset.log_run
+  - target: osdu.data.LogSource
+    source: dataset.recall_log_source
+  - target: osdu.data.LogVersion
+    source: dataset.log_version
+  - target: osdu.data.LogActivity
+    source: dataset.log_pass
+    modifiers:
+      - split: { separator: ",", part: 1 }
+  - target: osdu.data.ActivityType
+    source: dataset.log_service
+  - target: osdu.data.Source
+    source: dataset.creator
+  - target: osdu.data.SamplingStart
+    source: dataset.index_min
+  - target: osdu.data.SamplingStop
+    source: dataset.index_max
+  - target: osdu.data.SamplingInterval
+    source: dataset.index_increment
+  - target: osdu.data.SamplingDomainTypeID
+    source: dataset.index_type
+    modifiers:
+      - replace: { DEPTH: Depth }
+      - id: "{param.dataPartition}:reference-data--WellLogSamplingDomainType:{value}:"
+  - target: osdu.data.WellLogTypeID
+    source: dataset.data_type
+    modifiers:
+      - replace: { INTERPRETED: Interpreted }
+      - id: "{param.dataPartition}:reference-data--LogType:{value}:"
+  - target: osdu.data.ReferenceCurveID
+    static: MD
+  - target: osdu.data.IsRegular
+    source: dataset.depth_coding
+    modifiers:
+      - equals: REGULAR
+  # Every Recall log is delivered unevaluated, as petrodb-api delivers it.
+  - target: osdu.data.TechnicalAssurances
+    static:
+      - TechnicalAssuranceTypeID: "{param.dataPartition}:reference-data--TechnicalAssuranceType:Unevaluated:"
+
+  # The point the depths are measured from: Recall carries the elevation as a value and a unit ("78.4 M").
+  - target: osdu.data.VerticalMeasurement.VerticalMeasurement
+    source: dataset.elev_meas_ref
+    modifiers:
+      - split: { separator: " ", part: 1 }
+  - target: osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID
+    source: dataset.elev_meas_ref
+    modifiers:
+      - split: { separator: " ", part: 2 }
+      - replace: cache.RecallDepthUnits
+      - id: "{param.dataPartition}:reference-data--UnitOfMeasure:{value}:"
+  - target: osdu.data.VerticalMeasurement.VerticalMeasurementTypeID
+    source: dataset.logs_meas_from
+    modifiers:
+      # The partition holds both a KB and a KellyBushing record; petrodb-api's one-entry map files Recall's logs under
+      # KellyBushing, as every log it has delivered is.
+      - replace: { KB: KellyBushing }
+      - id: "{param.dataPartition}:reference-data--VerticalMeasurementType:{value}:"
+
+  # The curves: one item per row of the curves child dataset.
+  - target: osdu.data.Curves
+    source: dataset.curves
+  - target: osdu.data.Curves[].CurveID
+    source: dataset.curves.curve_id
+  - target: osdu.data.Curves[].Mnemonic
+    source: dataset.curves.curve_id
+  - target: osdu.data.Curves[].CurveUnit
+    source: dataset.curves.curve_unit
+    modifiers:
+      # Recall's spelling becomes the partition's unit code (GAPI becomes gAPI, OHMM ohm.m); a spelling the map does not
+      # list is looked for as it is.
+      - replace: cache.RecallUnits
+      - id: "{param.dataPartition}:reference-data--UnitOfMeasure:{value}:"
+  - target: osdu.data.Curves[].DepthUnit
+    source: dataset.curves.index_unit
+    modifiers:
+      - replace: cache.RecallDepthUnits
+      - id: "{param.dataPartition}:reference-data--UnitOfMeasure:{value}:"
+  - target: osdu.data.Curves[].TopDepth
+    source: dataset.curves.index_min
+  - target: osdu.data.Curves[].BaseDepth
+    source: dataset.curves.index_max
+  - target: osdu.data.Curves[].CurveDescription
+    source: dataset.curves.curve_description
+  # The index curve has no version and no update time of its own.
+  - target: osdu.data.Curves[].CurveVersion
+    source: dataset.curves.curve_version
+    required: false
+  - target: osdu.data.Curves[].DateStamp
+    source: dataset.curves.update_date
+    modifiers: [date]
+    required: false
+  - target: osdu.data.Curves[].LogCurveBusinessValueID
+    source: dataset.curves.business_value
+    modifiers:
+      - replace: { HIGH: High }
+      - id: "{param.dataPartition}:reference-data--LogCurveBusinessValue:{value}:"
+    # Recall leaves some curves without a business value, and that is not a reason to hold the log.
+    required: false
+  # What the curve is, from the curve dictionary by its mnemonic: the dictionary gives the code each record's id ends with
+  # (GR is the LogCurveType Equinor-GR, the main family GammaRay and the family Gamma%20Ray). A mnemonic the dictionary
+  # does not list gives none of the three, and the curve goes out without them rather than holding its log.
+  - target: osdu.data.Curves[].LogCurveTypeID
+    source: dataset.curves.curve_id
+    modifiers:
+      - id: "{param.dataPartition}:reference-data--LogCurveType:{cache.CurveDictionary.log_curve_type_id}:"
+    required: false
+  - target: osdu.data.Curves[].LogCurveMainFamilyID
+    source: dataset.curves.curve_id
+    modifiers:
+      - id: "{param.dataPartition}:reference-data--LogCurveMainFamily:{cache.CurveDictionary.log_curve_main_family_id}:"
+    required: false
+  - target: osdu.data.Curves[].LogCurveFamilyID
+    source: dataset.curves.curve_id
+    modifiers:
+      - id: "{param.dataPartition}:reference-data--LogCurveFamily:{cache.CurveDictionary.log_curve_family_id}:"
+    required: false
+
+# Two of the sample logs and the exact record each must render to under the pinned template and cache: the mapping's
+# regression suite, which the preflight gate runs before every render. Their rows are the ones data/ holds.
+fixtures:
+  - name: 12359/1, NO 33/9-C-28 B, a gamma ray without a business value
+    parameters:
+      dataPartition: dev
+      aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
+      aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
+      legalTag: dev-equinor-osdu-reference-default
+    searches:
+      - { search: Wellbore, field: data.FacilityName, value: NO 33/9-C-28 B, id: "dev:master-data--Wellbore:NO-33-9-C-28-B" }
+    record:
+      source_project: NORWAY_WELLDB
+      log_id: 12359/1
+      wellbore_uwi: NO 33/9-C-28 B
+      log_source: STAT_COMP
+      log_run: C
+      recall_log_source: EQUINOR
+      index_type: DEPTH
+      index_unit: M
+      index_min: "2715.6155"
+      index_max: "2741.676"
+      index_increment: "0.1524"
+      depth_coding: REGULAR
+      elev_meas_ref: 78.4 M
+      logs_meas_from: KB
+      creator: RECALL
+      log_service: HYBRID
+      log_version: "1"
+      data_type: INTERPRETED
+      logging_contractor: EQUINOR
+      log_pass: C
+      log_pass_type: FINAL
+      native_uid: 12359/1
+    datasets:
+      curves:
+        - { curve_id: MD, curve_unit: M, index_unit: M, index_min: "2715.6155", index_max: "2741.676", curve_description: Measured depth, business_value: HIGH }
+        - { curve_id: GR, curve_unit: GAPI, index_unit: M, index_min: "2715.6156", index_max: "2739.8472", curve_description: Gamma Ray, curve_version: "1", update_date: "2021-11-15T23:32:06Z" }
+        - { curve_id: RD, curve_unit: OHMM, index_unit: M, index_min: "2717.5968", index_max: "2741.676", curve_description: Deep resistivity, curve_version: "1", business_value: HIGH, update_date: "2021-11-15T23:32:06Z" }
+    expected: |
+      {
+        "id": "dev:work-product-component--WellLog:da57bceaa21e58e48abacec2e63d0267",
+        "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
+        "acl": {
+          "owners": ["data.welllogsrecall.owners@dev.dataservices.energy"],
+          "viewers": ["data.sdd-well-logs.viewers@dev.dataservices.energy"]
+        },
+        "legal": { "legaltags": ["dev-equinor-osdu-reference-default"], "otherRelevantDataCountries": ["NO"] },
+        "tags": { "DeliveredBy": "osdu-delivery", "LogStatus": "FINAL", "WellLogNativeUID": "12359/1", "SourceProject": "NORWAY_WELLDB" },
+        "data": {
+          "Name": "STAT_COMP",
+          "WellboreID": "dev:master-data--Wellbore:NO-33-9-C-28-B:",
+          "LogRun": "C",
+          "LogSource": "EQUINOR",
+          "LogVersion": "1",
+          "LogActivity": "C",
+          "ActivityType": "HYBRID",
+          "Source": "RECALL",
+          "SamplingStart": 2715.6155,
+          "SamplingStop": 2741.676,
+          "SamplingInterval": 0.1524,
+          "SamplingDomainTypeID": "dev:reference-data--WellLogSamplingDomainType:Depth:",
+          "WellLogTypeID": "dev:reference-data--LogType:Interpreted:",
+          "ReferenceCurveID": "MD",
+          "IsRegular": true,
+          "TechnicalAssurances": [
+            { "TechnicalAssuranceTypeID": "dev:reference-data--TechnicalAssuranceType:Unevaluated:" }
+          ],
+          "VerticalMeasurement": {
+            "VerticalMeasurement": 78.4,
+            "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:",
+            "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
+          },
+          "Curves": [
+            {
+              "CurveID": "MD",
+              "Mnemonic": "MD",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "TopDepth": 2715.6155,
+              "BaseDepth": 2741.676,
+              "CurveDescription": "Measured depth",
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+              "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-DEPTH:",
+              "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Reference:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:EQ-Measured%20Depth:"
+            },
+            {
+              "CurveID": "GR",
+              "Mnemonic": "GR",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:gAPI:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "TopDepth": 2715.6156,
+              "BaseDepth": 2739.8472,
+              "CurveDescription": "Gamma Ray",
+              "CurveVersion": "1",
+              "DateStamp": "2021-11-15T23:32:06Z",
+              "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-GR:",
+              "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:GammaRay:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Gamma%20Ray:"
+            },
+            {
+              "CurveID": "RD",
+              "Mnemonic": "RD",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:ohm.m:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "TopDepth": 2717.5968,
+              "BaseDepth": 2741.676,
+              "CurveDescription": "Deep resistivity",
+              "CurveVersion": "1",
+              "DateStamp": "2021-11-15T23:32:06Z",
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+              "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-RD:",
+              "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Resistivity:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Resistivity%20-%20Deep:"
+            }
+          ]
+        }
+      }
+
+  - name: 22494/1, NO 34/10-B-31 AT2, a gamma ray of high business value
+    parameters:
+      dataPartition: dev
+      aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
+      aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
+      legalTag: dev-equinor-osdu-reference-default
+    searches:
+      - { search: Wellbore, field: data.FacilityName, value: NO 34/10-B-31 AT2, id: "dev:master-data--Wellbore:NO-34-10-B-31-AT2" }
+    record:
+      source_project: NORWAY_WELLDB
+      log_id: 22494/1
+      wellbore_uwi: NO 34/10-B-31 AT2
+      log_source: STAT_COMP
+      log_run: C
+      recall_log_source: EQUINOR
+      index_type: DEPTH
+      index_unit: M
+      index_min: "3037.1797"
+      index_max: "3106.8264"
+      index_increment: "0.1524"
+      depth_coding: REGULAR
+      elev_meas_ref: 80.7 M
+      logs_meas_from: KB
+      creator: RECALL
+      log_service: HYBRID
+      log_version: "1"
+      data_type: INTERPRETED
+      logging_contractor: EQUINOR
+      log_pass: C
+      log_pass_type: FINAL
+      native_uid: 22494/1
+    datasets:
+      curves:
+        - { curve_id: MD, curve_unit: M, index_unit: M, index_min: "3037.1797", index_max: "3106.8264", curve_description: Measured depth, business_value: HIGH }
+        - { curve_id: GR, curve_unit: GAPI, index_unit: M, index_min: "3037.6368", index_max: "3106.8264", curve_description: Gamma Ray, curve_version: "1", business_value: HIGH, update_date: "2021-11-22T04:47:27Z" }
+        - { curve_id: RD, curve_unit: OHMM, index_unit: M, index_min: "3037.1796", index_max: "3105.6072", curve_description: Deep resistivity, curve_version: "1", business_value: HIGH, update_date: "2021-11-22T04:47:27Z" }
+    expected: |
+      {
+        "id": "dev:work-product-component--WellLog:ae7733abf48c563595b0179036d7953d",
+        "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
+        "acl": {
+          "owners": ["data.welllogsrecall.owners@dev.dataservices.energy"],
+          "viewers": ["data.sdd-well-logs.viewers@dev.dataservices.energy"]
+        },
+        "legal": { "legaltags": ["dev-equinor-osdu-reference-default"], "otherRelevantDataCountries": ["NO"] },
+        "tags": { "DeliveredBy": "osdu-delivery", "LogStatus": "FINAL", "WellLogNativeUID": "22494/1", "SourceProject": "NORWAY_WELLDB" },
+        "data": {
+          "Name": "STAT_COMP",
+          "WellboreID": "dev:master-data--Wellbore:NO-34-10-B-31-AT2:",
+          "LogRun": "C",
+          "LogSource": "EQUINOR",
+          "LogVersion": "1",
+          "LogActivity": "C",
+          "ActivityType": "HYBRID",
+          "Source": "RECALL",
+          "SamplingStart": 3037.1797,
+          "SamplingStop": 3106.8264,
+          "SamplingInterval": 0.1524,
+          "SamplingDomainTypeID": "dev:reference-data--WellLogSamplingDomainType:Depth:",
+          "WellLogTypeID": "dev:reference-data--LogType:Interpreted:",
+          "ReferenceCurveID": "MD",
+          "IsRegular": true,
+          "TechnicalAssurances": [
+            { "TechnicalAssuranceTypeID": "dev:reference-data--TechnicalAssuranceType:Unevaluated:" }
+          ],
+          "VerticalMeasurement": {
+            "VerticalMeasurement": 80.7,
+            "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:",
+            "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
+          },
+          "Curves": [
+            {
+              "CurveID": "MD",
+              "Mnemonic": "MD",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "TopDepth": 3037.1797,
+              "BaseDepth": 3106.8264,
+              "CurveDescription": "Measured depth",
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+              "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-DEPTH:",
+              "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Reference:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:EQ-Measured%20Depth:"
+            },
+            {
+              "CurveID": "GR",
+              "Mnemonic": "GR",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:gAPI:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "TopDepth": 3037.6368,
+              "BaseDepth": 3106.8264,
+              "CurveDescription": "Gamma Ray",
+              "CurveVersion": "1",
+              "DateStamp": "2021-11-22T04:47:27Z",
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+              "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-GR:",
+              "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:GammaRay:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Gamma%20Ray:"
+            },
+            {
+              "CurveID": "RD",
+              "Mnemonic": "RD",
+              "CurveUnit": "dev:reference-data--UnitOfMeasure:ohm.m:",
+              "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+              "TopDepth": 3037.1796,
+              "BaseDepth": 3105.6072,
+              "CurveDescription": "Deep resistivity",
+              "CurveVersion": "1",
+              "DateStamp": "2021-11-22T04:47:27Z",
+              "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+              "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-RD:",
+              "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Resistivity:",
+              "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Resistivity%20-%20Deep:"
+            }
+          ]
+        }
+      }

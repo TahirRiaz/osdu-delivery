@@ -1,0 +1,7 @@
+{
+  "entityType": "reference-data--WellLogSamplingDomainType",
+  "items": [
+    { "id": "dev:reference-data--WellLogSamplingDomainType:Depth", "Code": "Depth", "Name": "Depth" },
+    { "id": "dev:reference-data--WellLogSamplingDomainType:Time", "Code": "Time", "Name": "Time" }
+  ]
+}

@@ -5,7 +5,7 @@
   "strictKeys": true,
   "generatedFrom": "osdu/docs/documents.md, osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs, MappingMapper.cs and DictionaryMapper.cs",
   "naming": "The loader reads the document with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 69,
+  "keyCount": 70,
   "keys": [
     {
       "path": "documentType",
@@ -214,7 +214,7 @@
       "path": "mappings[].modifiers[]",
       "type": "string or object",
       "required": false,
-      "description": "A modifier: a name (trim, upper, lower, date, number) or one setting (split, replace, equals, date, number) written as a one-key mapping. Only replace takes settings beside it: otherwise, and for a cached table match and field.",
+      "description": "A modifier: a name (trim, upper, lower, date, number) or one setting (split, replace, equals, date, number, id) written as a one-key mapping. Only replace takes settings beside it: otherwise, and for a cached table match and field. An id modifier is the last one.",
       "enumValues": [
         "trim",
         "upper",
@@ -223,7 +223,8 @@
         "replace",
         "equals",
         "date",
-        "number"
+        "number",
+        "id"
       ]
     },
     {
@@ -310,6 +311,12 @@
       "type": "string",
       "required": false,
       "description": "The separator between groups of three digits, when the value is written with one."
+    },
+    {
+      "path": "mappings[].modifiers[].id",
+      "type": "string",
+      "required": false,
+      "description": "Builds the OSDU id the entry writes from a template, quoted: id: \"{param.dataPartition}:reference-data--UnitOfMeasure:{value}:\". Tokens: {value} (the value after the modifiers before it), {dataset.<column>} and {dataset.<child>.<column>} (the row), {cache.<Type>.<field>} (the row of a cached lookup table whose key is the value) and {param.<name>}. Token values are trimmed and percent-encoded, keeping ':' and escapes already there; a token with no value gives no value, so required decides. The template's own text gives the colons: <partition>:<group>--<Entity>:<code>, and a trailing ':' (and a version) for a reference. The id is checked against the variable's pattern and relationship. Only on a dataset source, and always the last modifier."
     },
     {
       "path": "mappings[].appliesWhen",

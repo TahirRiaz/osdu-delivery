@@ -45,10 +45,10 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>The flow documents of the well log chain, by the name they carry in the repository.</summary>
     private static readonly string[] ChainDocuments =
     [
-        "wells-welllog-01-header-pre", "wells-welllog-01-curves-pre", "wells-welllog-02-header-ing", "wells-welllog-02-curves-ing", "wells-welllog-03-header-delivery",
+        "recall-welllog-01-header-pre", "recall-welllog-01-curves-pre", "recall-welllog-02-header-ing", "recall-welllog-02-curves-ing", "recall-welllog-03-header-delivery",
     ];
 
-    /// <summary>The flows that load the wellbore tables, generated for a fixture that asks for them.</summary>
+    /// <summary>The fixture flows that load the wellbore tables, generated for a fixture that asks for them.</summary>
     private static readonly string[] WellboreChainDocuments =
     [
         "wells-wellbore-01-header-pre", "wells-wellbore-01-aliases-pre", "wells-wellbore-02-header-ing", "wells-wellbore-02-aliases-ing",
@@ -173,7 +173,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// <summary>The name a shipped flow of either chain carries in an estate generated with <paramref name="suffix"/>.</summary>
     private static string Rename(string shippedName, string suffix)
         => shippedName
-            .Replace("wells-welllog-03-header-delivery", "rw" + suffix, StringComparison.Ordinal)
+            .Replace("recall-welllog-03-header-delivery", "rw" + suffix, StringComparison.Ordinal)
             .Replace("wells-wellbore-03-header-delivery", "wb" + suffix, StringComparison.Ordinal);
 
     /// <summary>
@@ -250,10 +250,10 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     /// </summary>
     public async Task RunIngestionChainAsync(CancellationToken ct = default)
     {
-        await RunFlowAsync("wells-welllog-01-header-pre", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("wells-welllog-01-curves-pre", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("wells-welllog-02-header-ing", ct: ct).ConfigureAwait(false);
-        await RunFlowAsync("wells-welllog-02-curves-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("recall-welllog-01-header-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("recall-welllog-01-curves-pre", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("recall-welllog-02-header-ing", ct: ct).ConfigureAwait(false);
+        await RunFlowAsync("recall-welllog-02-curves-ing", ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -274,21 +274,21 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(wellbores);
         ArgumentNullException.ThrowIfNull(aliases);
-        await SampleWellLogs.WriteCsvAsync(Path.Combine(Root, "data", "wellbore", "wellbore_20260901.csv"), SampleWellLogs.WellboreColumns, wellbores, ct).ConfigureAwait(false);
-        await SampleWellLogs.WriteCsvAsync(Path.Combine(Root, "data", "wellbore-aliases", "wellbore_aliases_20260901.csv"), SampleWellLogs.AliasColumns, aliases, ct).ConfigureAwait(false);
+        await SampleWellLogs.WriteCsvAsync(Path.Combine(Root, "data", "wellbore", "wellbore_20260901.csv"), FixtureWellbores.WellboreColumns, wellbores, ct).ConfigureAwait(false);
+        await SampleWellLogs.WriteCsvAsync(Path.Combine(Root, "data", "wellbore-aliases", "wellbore_aliases_20260901.csv"), FixtureWellbores.AliasColumns, aliases, ct).ConfigureAwait(false);
     }
 
     /// <summary>Runs the OSDU flow's <c>deliver</c> operation through the document executor, with this run's values.</summary>
     public Task<DocumentRunOutcome> DeliverAsync(Guid? runId = null, CancellationToken ct = default)
         => RunFlowAsync(
-            "wells-welllog-03-header-delivery",
+            "recall-welllog-03-header-delivery",
             new RunParameters { Operation = DeliveryOperations.Deliver, Values = SampleEstate.Values },
             runId ?? Guid.NewGuid(),
             ct);
 
     /// <summary>The OSDU flow as its generated document declares it, loaded through the module's own loader.</summary>
     public FlowDefinition DeliveryFlow()
-        => _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("wells-welllog-03-header-delivery"));
+        => _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("recall-welllog-03-header-delivery"));
 
     /// <summary>Writes the well log metadata file the first pre flow reads; naming a new file lands a new batch of rows.</summary>
     public Task WriteLogFileAsync(string fileName, IReadOnlyList<SampleLog> logs, CancellationToken ct = default)
@@ -322,7 +322,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(logs);
         foreach (var log in logs)
         {
-            await SampleWellLogs.WriteChunkAsync(Path.Combine(Root, "data", "curves", log.SourceProject, log.LogId), log, ct).ConfigureAwait(false);
+            await SampleWellLogs.WriteChunkAsync(SampleEstate.PayloadFolder(Path.Combine(Root, "data"), log), log, ct).ConfigureAwait(false);
         }
     }
 
@@ -548,6 +548,9 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             CopyDirectory(Path.Combine(Samples.Source, part), Path.Combine(root, part));
         }
 
+        // The fixture mappings sit beside the sample's, for the sources whose interfaces deliver wellbores.
+        CopyDirectory(Samples.FixtureMappings, Path.Combine(root, "mappings"));
+
         foreach (var folder in new[] { "welllog", "curves-meta", "curves", "wellbore", "wellbore-aliases" })
         {
             Directory.CreateDirectory(Path.Combine(root, "data", folder));
@@ -558,7 +561,8 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
         {
             // The repository is checked out with whatever line endings the platform writes, so every document is read as
             // one normalized text; the rewrites below are line based and would otherwise match nothing.
-            var shipped = File.ReadAllText(Path.Combine(Samples.Source, "flows", name + ".yaml")).ReplaceLineEndings("\n");
+            var folder = WellboreChainDocuments.Contains(name) ? Path.Combine(Samples.FixtureDocuments, "flows") : Path.Combine(Samples.Source, "flows");
+            var shipped = File.ReadAllText(Path.Combine(folder, name + ".yaml")).ReplaceLineEndings("\n");
             var generated = Generate(shipped, name, databaseName, suffix, variable, fanOut, batchRecords);
             File.WriteAllText(Path.Combine(root, "flows", Rename(name, suffix) + ".yaml"), generated);
         }
@@ -578,7 +582,7 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             text = Replace(text, "\n  schema: pre\n", $"\n  schema: pre_{suffix}\n", name);
         }
 
-        if (name == "wells-welllog-03-header-delivery")
+        if (name == "recall-welllog-03-header-delivery")
         {
             text = Replace(text, ShippedTarget, LocalTarget, name);
             if (fanOut > 0)

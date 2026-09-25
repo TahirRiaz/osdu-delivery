@@ -1062,7 +1062,7 @@ export interface DeliveryBuilderCache {
  */
 export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search";
 
-export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number";
+export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number" | "id";
 
 export type MappingDraftConditionOperator = "is" | "isNot" | "isEmpty" | "isNotEmpty";
 
@@ -1092,8 +1092,8 @@ export type MappingDraftOtherwiseKind = "keep" | "empty" | "text";
 
 /**
  * One modifier with its settings: split takes a separator and a part, replace its pairs (or the cached table it reads them
- * from) and what an unlisted value becomes, equals its text, date an optional format in text, and number its decimal and
- * group separators.
+ * from) and what an unlisted value becomes, equals its text, date an optional format in text, number its decimal and
+ * group separators, and id the template the id is built from, in text.
  */
 export interface MappingDraftModifier {
   kind: MappingDraftModifierKind;

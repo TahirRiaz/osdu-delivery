@@ -71,7 +71,7 @@ public class DeterministicGuidTests
     [Fact]
     public void Flow_id_ignores_case_and_whitespace()
     {
-        Assert.Equal(FlowId.Of("wells-welllog-03-header-delivery"), FlowId.Of(" Wells-WellLog-03-Header-Delivery "));
+        Assert.Equal(FlowId.Of("recall-welllog-03-header-delivery"), FlowId.Of(" Recall-WellLog-03-Header-Delivery "));
         Assert.NotEqual(FlowId.Of("a"), FlowId.Of("b"));
     }
 
@@ -746,6 +746,14 @@ public class MappingRendererTests
     {
         var result = Renderer("  - { target: osdu.data.Days, source: dataset.v, modifiers: [date] }").Render(Valued("2026-09-01T00:00:00Z"));
         Assert.Equal("[\"2026-09-01\"]", Written(result, "Days"));
+    }
+
+    [Fact]
+    public void A_static_list_of_objects_fills_an_array_of_objects_item_for_item()
+    {
+        var result = Renderer("  - { target: osdu.data.Curves, static: [{ CurveID: MD, TopDepth: 0 }, { CurveID: GR }] }").Render(Record());
+        Assert.Empty(result.Holds);
+        Assert.Equal("[{\"CurveID\":\"MD\",\"TopDepth\":0},{\"CurveID\":\"GR\"}]", Written(result, "Curves"));
     }
 
     [Fact]

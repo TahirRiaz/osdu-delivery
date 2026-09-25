@@ -679,12 +679,11 @@ public sealed class OsduCacheStoreTests : IDisposable
         var version = await Samples.ImportSampleCacheAsync(store);
         Assert.Equal("20260908T212727Z", version.Version);
         Assert.Equal(version.Version, await store.CurrentVersionAsync(Samples.SampleCacheScope));
-        // The lookups flow wrote its tables first, and the reference data import added to them: one partition, one cache.
+        // The lookups flow wrote its tables first, and the fixture reference data (the only reference data this
+        // estate's cache holds) added to them: one partition, one cache.
         Assert.Equal(
-            [Samples.SampleCacheFlowName, Samples.SampleLookupsFlowName],
+            [Samples.FixtureCacheFlowName, Samples.SampleLookupsFlowName],
             (await store.ListVersionsAsync(Samples.SampleCacheScope)).Select(v => v.FlowName));
-        Assert.True(version.HasType("UnitOfMeasure"));
-        Assert.True(version.HasType("VerticalMeasurementType"));
         // petrodb-api's translations, loaded from the files in cache/data: the curve unit map, the depth unit map, and the
         // curve dictionary giving each mnemonic the codes of the records it is filed under.
         Assert.Equal("source_unit", version.Type("RecallUnits")!.Key);
@@ -692,7 +691,10 @@ public sealed class OsduCacheStoreTests : IDisposable
         Assert.Equal("ft", version.Type("RecallDepthUnits")!.Value(version.Type("RecallDepthUnits")!.Match("source_unit", "FEET")!, "osdu_unit")!.Text);
         Assert.Equal("Gamma%20Ray", version.Type("CurveDictionary")!.Value(version.Type("CurveDictionary")!.Match("mnemonic", "GR")!, "log_curve_family_id")!.Text);
 
-        // Wellbores are searched for on the platform rather than captured, so the sample cache holds none.
+        // The sample well log mapping builds every reference id it writes from these tables and a template; the only
+        // reference data this cache holds is what the fixture mappings resolve against. Wellbores are searched for on
+        // the platform rather than captured.
+        Assert.True(version.HasType("UnitOfMeasure"));
         Assert.False(version.HasType("Wellbore"));
     }
 }

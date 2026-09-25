@@ -139,7 +139,7 @@ public class MappingShapeTests
     [InlineData("Wellbore@1.0.0.yaml")]
     public void The_shape_of_a_sample_mapping_lays_out_what_its_fixtures_render(string file)
     {
-        var mapping = new DeliveryDocumentLoader().LoadMapping(Path.Combine(Samples.Mappings, file));
+        var mapping = new DeliveryDocumentLoader().LoadMapping(Path.Combine(Samples.FixtureMappings, file));
         var fixture = mapping.Fixtures[0];
         var shape = MappingRenderer.Shape(mapping, Samples.SampleTemplate(mapping.Kind), fixture.Parameters);
 

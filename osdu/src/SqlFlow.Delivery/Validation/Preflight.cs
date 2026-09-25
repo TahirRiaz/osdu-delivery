@@ -216,6 +216,7 @@ public static partial class Preflight
 
         CheckWrittenForm(entry, variable, renderer, issues, name);
         CheckReplaces(entry, references, issues, name);
+        CheckId(entry, variable, references, renderer, issues, name);
 
         if (entry.IsStatic)
         {
@@ -486,6 +487,129 @@ public static partial class Preflight
     }
 
     /// <summary>
+    /// 7c. An id modifier: the variable takes text; each cache token reads a lookup table the cache version holds, at a field
+    /// its rows hold; each parameter has a value; and the id the template builds, with a stand-in for what a row gives, is
+    /// one the variable takes: of an entity type its relationship allows, and matching its pattern.
+    /// </summary>
+    private static void CheckId(MappingEntry entry, TemplateVariable variable, ReferenceSnapshot references, MappingRenderer renderer, List<ValidationIssue> issues, string name)
+    {
+        if (entry.Modifiers.LastOrDefault(m => m.Kind == ModifierKind.Id)?.Id is not { } template)
+        {
+            return;
+        }
+
+        var target = entry.Target.Text;
+        var property = renderer.Schema.Resolve(entry.Target.SchemaPath);
+        var listed = variable.Shape == TemplateVariableShape.ValueList;
+        var written = listed ? variable.ItemType ?? "any" : variable.Type;
+        var format = listed ? property?.ItemFormat : variable.Format;
+        if (written is not ("string" or "any") || format is not null)
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name}: the id modifier gives an OSDU id, written as text, but the template takes {(format is null ? $"a {written}" : $"a {format} string")} at {target}."));
+            return;
+        }
+
+        foreach (var token in template.Tokens.Where(t => t.Kind == IdTokenKind.Cache).DistinctBy(t => t.Text, StringComparer.Ordinal))
+        {
+            CheckIdCacheToken(token, references, issues, name);
+        }
+
+        foreach (var parameter in template.Parameters.Where(p => string.IsNullOrWhiteSpace(renderer.ParameterValue(p))))
+        {
+            issues.Add(ValidationIssue.Error($"{name}: the id {template} reads {{param.{parameter}}}, which the flow supplies no value for."));
+        }
+
+        if (template.EntityType is not { } entityType)
+        {
+            if (variable.Relationships.Count > 0 || variable.Pattern is not null)
+            {
+                issues.Add(ValidationIssue.Warning(
+                    $"{name}: a token writes the entity type of the id {template}, so whether each id is one {target} takes is checked record by record, as it is built."));
+            }
+
+            return;
+        }
+
+        if (variable.Relationships.Count > 0 && !Points(variable.Relationships, entityType))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name}: the id {template} names a {entityType} record, but the template points {target} to {string.Join(" or ", variable.Relationships)}."));
+            return;
+        }
+
+        if (variable.Relationships.Count == 0 && variable.Pattern is null)
+        {
+            issues.Add(ValidationIssue.Warning($"{name} writes an OSDU id, but the template does not mark {target} as a relationship."));
+        }
+
+        if (property is null || IdValues.PatternText(property) is not { } patternText)
+        {
+            return;
+        }
+
+        if (IdValues.Pattern(patternText) is null)
+        {
+            issues.Add(ValidationIssue.Warning(
+                $"{name}: the pattern the template gives {target}, {patternText}, cannot be read as a regular expression, so each id is checked for OSDU's id shape and entity type only."));
+        }
+        else if (IdValues.Sample(template, renderer.ParameterValue) is { } sample && IdValues.Problem(sample, property) is { } problem)
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name}: the id {template} gives ids such as '{sample}', which {target} does not take: {problem}. A reference ends with ':' and, when it pins one, the version."));
+        }
+    }
+
+    /// <summary>A cache token of an id: a lookup table the cache version holds, looked up by its key, at a field its rows hold.</summary>
+    private static void CheckIdCacheToken(IdToken token, ReferenceSnapshot references, List<ValidationIssue> issues, string name)
+    {
+        if (references.Type(token.CacheType!) is not { } type)
+        {
+            var available = references.Types.Select(t => t.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
+            issues.Add(ValidationIssue.Error(
+                $"{name}: the id reads {token}, and cache version '{references.Version}' holds no {token.CacheType}. Cached: {(available.Count == 0 ? "nothing" : string.Join(", ", available))}."));
+            return;
+        }
+
+        if (type.Key is not { } key)
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name}: the id reads {token}, and {type.Name} holds OSDU records ({type.EntityType}), which have no key to look the value up by; a cache token reads a lookup table, "
+                + $"keyed by the value. Turn the value into the field an id needs with a replace before the id, such as replace: cache.{type.Name}, match: Code, field: Code."));
+            return;
+        }
+
+        var field = ReferenceField.Normalize(token.CacheField!);
+        if (field.Equals(ReferenceField.Normalize(key), StringComparison.OrdinalIgnoreCase))
+        {
+            issues.Add(ValidationIssue.Warning($"{name}: the id reads {token}, the key {type.Name} is looked up by, which is the value itself; write {{value}}."));
+            return;
+        }
+
+        if (type.Items.Count == 0)
+        {
+            issues.Add(ValidationIssue.Warning(
+                $"{name}: the id reads {token}, and {type.Name} holds no rows in cache version '{references.Version}', so no record gets an id from it."));
+            return;
+        }
+
+        if (type.Items.All(item => type.Value(item, field) is null))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name}: the id reads {token}, and no {type.Name} row holds '{field}' in cache version '{references.Version}'. Cached: {string.Join(", ", type.FieldNames)}."));
+            return;
+        }
+
+        var several = type.Items.Where(item => type.Value(item, field) is { } value && value.Node is not JsonArray { Count: 0 } && ReplaceTables.SingleText(value) is null)
+            .Select(item => item.Id).ToList();
+        if (several.Count > 0)
+        {
+            issues.Add(ValidationIssue.Warning(
+                $"{name}: {several.Count} {type.Name} row(s) hold several values or an object at '{field}' in cache version '{references.Version}' ({Listed(several)}); a record whose value is one of them is held, since {token} writes one value."));
+        }
+    }
+
+    /// <summary>
     /// 7b. Every replace reading a cached table reads one the cache version holds, on fields it can settle and holds. And
     /// where the replaced value is then found in the cache, as a findBy value, every value a replace can give (inline or
     /// cached) is looked up in the type found, and the ones that find nothing are listed: each is a record a render holds,
@@ -722,9 +846,7 @@ public static partial class Preflight
     }
 
     /// <summary>Whether an entity type (<c>master-data--Wellbore</c>) is one a relationship allows; a group type alone (<c>dataset</c>) allows every entity of the group.</summary>
-    private static bool Points(IReadOnlyList<string> relationships, string entityType)
-        => relationships.Any(r => string.Equals(r, entityType, StringComparison.Ordinal)
-            || (!r.Contains("--", StringComparison.Ordinal) && entityType.StartsWith(r + "--", StringComparison.Ordinal)));
+    private static bool Points(IReadOnlyList<string> relationships, string entityType) => Rendering.IdValues.Allows(relationships, entityType);
 
     private static void CheckColumns(MappingDefinition mapping, IReadOnlyDictionary<string, IReadOnlySet<string>> sourceColumns, List<ValidationIssue> issues, string where)
     {

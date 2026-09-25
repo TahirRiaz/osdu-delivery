@@ -351,6 +351,7 @@ is compared or searched for. Cache values and platform records are OSDU's own an
 | equals | `- equals: REGULAR` | `"REGULAR"` or `"DISCRETE"` | `true` or `false` |
 | date | `- date` or `- date: dd.MM.yyyy` | `"01.09.2026"` | `"2026-09-01T00:00:00Z"`, or `"2026-09-01"` where the template takes a date |
 | number | `- number` or `- number: { decimal: ",", group: " " }` | `"1 234,5"` | `1234.5` |
+| id | `- id: "{param.dataPartition}:reference-data--UnitOfMeasure:{value}:"` | `"m/s"` | `"dev:reference-data--UnitOfMeasure:m%2Fs:"` |
 
 `part` counts from one. A separator of a single space splits on any run of whitespace. `replace` matches the trimmed
 value by the cache's rules (an exact key, then the one key that matches ignoring case); `~` replaces with no value; and
@@ -363,6 +364,13 @@ property's `format` names: a full-date for `date`, and a UTC date-time otherwise
 only and never guesses at a form such as `01/02/2026`; [documents.md](documents.md#date) has the rules. `number` reads
 text written with the separators it is given; how any value becomes a number, an integer in its format's range, or text
 is in [documents.md](documents.md#number).
+
+`id` builds the OSDU id an entry writes, so a mapping generates its references instead of looking each one up. Its
+template, quoted, reads `{value}` (the value after the modifiers before it), `{dataset.<column>}`,
+`{cache.<Type>.<field>}` (the row of a cached lookup table keyed by the value) and `{param.<name>}`; every token's value
+is trimmed and percent-encoded, a token with no value gives no value, so `required` decides, and the id built is checked
+against the variable's pattern and relationship before it is written. It applies to a dataset source and is the last
+modifier; [documents.md](documents.md#id) has the rules.
 
 ### appliesWhen
 
