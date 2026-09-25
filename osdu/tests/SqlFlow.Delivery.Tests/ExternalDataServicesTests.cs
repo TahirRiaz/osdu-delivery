@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
@@ -722,7 +723,7 @@ public sealed class ExternalDataServicesTests
         };
         var parameters = new Dictionary<string, string>(StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = Partition };
         var tables = new MemoryIngestionTables();
-        var planner = new Planner(tables.Open(flow, parameters), Samples.Payloads(), ledger: null, Samples.Logger<Planner>());
+        var planner = new Planner(tables.Open(flow, parameters, NullLoggerFactory.Instance), Samples.Payloads(), ledger: null, Samples.Logger<Planner>());
         var header = new PlanHeader
         {
             Flow = flow,

@@ -14,6 +14,7 @@ using SqlFlow.Delivery.Engine.Worker;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Execution;
@@ -78,7 +79,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         var loggers = new RunLogLoggerFactory(runLogger, events, runId, source.Name);
         var log = loggers.CreateLogger("run");
         var context = _provider.GetRequiredService<EngineContext>()
-            .WithLoggers(loggers)
+            .ForRun(loggers)
             .WithFanOut(options.FanOut is { } fanOut ? new RunFanOutDispatcher(fanOut) : null)
             // The control plane supplies what it holds centrally; the node answers the rest from its own environment.
             .WithSuppliedReferences(payload.References);
@@ -184,6 +185,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             await runtime.CheckRouteAsync(runtime.Mapping.Mapping.Kind, ct).ConfigureAwait(false);
         }
 
+        LogRoute(log, operation, runtime);
         return await GuardedAsync(runtime, operation, token => ExecuteInterfaceAsync(runtime, operation, payload, submission, log, token), ct).ConfigureAwait(false);
     }
 
@@ -466,7 +468,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         {
             if (shown++ < PlanEntriesLogged)
             {
-                log.LogInformation("{Entry}", PlanFormatting.Describe(entry));
+                log.LogInformation(RunTrace.Bounded, "{Entry}", PlanFormatting.Describe(entry));
             }
         }
 
@@ -517,6 +519,15 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
     private static void LogStart(ILogger log, string flow, string operation, string parameters, string actor, Guid runId)
         => log.LogInformation("delivery flow '{Flow}': {Operation} (parameters: {Parameters}) requested by {Actor}, run {RunId}", flow, operation, parameters, actor, runId);
+
+    /// <summary>The route the run delivers by, what it carries there, and why the flow takes it when the flow says.</summary>
+    private static void LogRoute(ILogger log, string operation, FlowRuntime runtime)
+    {
+        var flow = runtime.Flow;
+        var kind = runtime.ReadsSource ? $" of {runtime.Mapping.Mapping.Kind}" : string.Empty;
+        var reason = flow.RouteReason is { } why ? $" ({why})" : string.Empty;
+        log.LogInformation("{Operation}{Kind} by the {Route} route{Reason}.", operation, kind, DeliveryProtocols.Name(flow.Target.Protocol), reason);
+    }
 
     private static void LogSubmission(ILogger log, Guid submissionId, string source)
         => log.LogInformation("working on submission {SubmissionId} of {Source}", submissionId, source);

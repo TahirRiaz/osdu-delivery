@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Documents;
@@ -824,7 +825,7 @@ public sealed class DeliveryRunBoundaryTests : IDisposable
 
     private sealed class UnbuildableProtocolFactory : IProtocolFactory
     {
-        public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+        public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, ILoggerFactory loggers, CancellationToken ct = default)
             => throw new NotSupportedException("the protocol could not be built");
     }
 

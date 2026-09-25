@@ -241,6 +241,9 @@ public sealed class Planner
     private readonly ILedger? _ledger;
     private readonly ILogger<Planner> _logger;
 
+    /// <summary>Set once the mapping's preflight warnings are on the trace, so a run that opens its read twice says them once.</summary>
+    private int _warned;
+
     public Planner(IIngestionSource source, IPayloadFiles payloads, ILedger? ledger, ILogger<Planner> logger)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -284,6 +287,15 @@ public sealed class Planner
         var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, source.Columns, resolved.Renderer.Searches);
         Preflight.ThrowIfFailed(issues, where);
         SourceBindings.Check(flow, resolved.Mapping, source, where);
+
+        // What the preflight let through it still says, on the run that renders with it rather than on a plan run alone.
+        if (Interlocked.Exchange(ref _warned, 1) == 0)
+        {
+            foreach (var issue in issues.Where(i => i.Severity == IssueSeverity.Warning))
+            {
+                _logger.LogWarning("Mapping {Mapping}: {Issue}{Target}", resolved.Mapping.Reference, issue.Message, issue.Target is { } target ? $" ({target})" : string.Empty);
+            }
+        }
 
         var gatedSets = _ledger is null ? [] : (await _ledger.GatedCacheSetsAsync(ct).ConfigureAwait(false)).ToHashSet();
         var header = new PlanHeader

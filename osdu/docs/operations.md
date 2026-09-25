@@ -446,6 +446,40 @@ Pipelines like any other flow.
 
 See [reference/cli/delivery.md](reference/cli/delivery.md).
 
+## What a run's trace says
+
+A delivery run streams what it is doing to its live trace (the GUI's trace panel, `sqlflow trigger --follow`) as it
+does it, and the same lines are its `run.log` and the `events` of its `run.json`. Each line is filed under the step
+that said it:
+
+| Step | What it says |
+| --- | --- |
+| `run` | The run and who asked for it; the mapping, template, cache version and partition it renders with (never the mapping's other parameter values, which can be secret references); the route it delivers by; whether the legal service accepts the mapping's legal tags; the window it reads; its outcome. |
+| `source` | The ingestion table it opened, the window it fixed and how many candidate records are in it; how a fan-out cut them into ranges. |
+| `plan`, `intake` | The mapping's preflight warnings; the tier-0 skip; the submission being planned and how far the planning has got; held records with their reason; the submission's counts. |
+| `deliver` | The batches claimed and finished; how far the run's deliveries have got (`Delivering: <n> of <m> planned record(s) settled after <t> (<rate> a second): ...`), from the run's totals; held, failed and retried records with their reason. |
+| `target`, `search` | What a protocol or the render's search says while it works: a record written again with its bulk link, a session read back, a workflow's status. |
+| `http` | The calls made to OSDU with their status and duration, and each retry: why it is repeated (the status, a timeout, a transport failure) and how long it waits first. |
+
+A run moves millions of records, and every line of its trace is streamed to the GUI and stored in the catalog, so what
+one run writes is bounded by its allowances, never by its size. Every line the engine logs while it serves the run
+passes one gate that applies them, whichever part of the engine logged it:
+
+| Allowance | What the trace carries |
+| --- | --- |
+| The described records | The first 20 records the run sends or holds are described in full: the plan line, `Sending <record> to <id>` with what is sent and what an earlier try already did, each step the target answered and each call made for it (debug), and how it ended (`Delivered <record> as <id> version <n>` with the steps it took, or why it was held, failed or put back for a retry). Nothing is said about any other record on its own. |
+| Each step's lines | Outside the described records, each step writes 100 lines at most (the batch lines, the calls made outside any record, the search lines, what a protocol says). |
+| Problems | The run names 100 warnings at most: held, failed and retried records, drift a verify found, what a protocol warns about. The run's own warnings (`run`: a submission left open, a lease that could not be reclaimed, a member run that failed) take from that step's lines instead, so no number of record problems crowds them out. |
+| Retries | The run names 50 retried calls at most. |
+| Progress | Every 15 seconds for the first two minutes of a run, every minute up to an hour, every five minutes after that: a run of any length says it a bounded number of times, from its totals rather than per batch. |
+
+Errors are always written. When an allowance runs out the trace says so once, so it shows where its lines of that sort
+stop; the progress lines and the submission's counts keep counting what it leaves out. Nothing a trace leaves out is
+lost: every record's attempts, with each step, status and correlation id, are in its history.
+
+A URL on the trace never carries its query string, where a signed upload URL keeps its credential, and every message is
+redacted before it is written.
+
 ## Runbook
 
 | Symptom | Where to look | Action |
@@ -457,7 +491,7 @@ See [reference/cli/delivery.md](reference/cli/delivery.md).
 | Records `waiting` | The Records tab filtered to waiting; the record page says what it waits for | Each refers to a record of the ledger that has not landed. Nothing is charged and nothing is needed: they go out on their own when that record is delivered. When the record they wait for is held or failed, fix that one and release it. To send one as it is, with the reference pointing at nothing until the other lands, use "Send without waiting" on its page. |
 | Records held with `refers to ... which neither the ledger nor OSDU's storage service holds` | The record's last error names the ids and the properties | The flow declares `target.verifyReferences: storage`, and the records it names are in neither the ledger nor OSDU. Deliver them (another flow, another system), or correct the mapping or the source rows, then Release. |
 | Records stuck `delivering` | `Lease` on the record page in the past | A worker stopped mid-delivery. The flow's next deliver run (the recovered run, a re-run of the submission, or `drain`) waits out the lease, recovers it (applying what the stopped worker had sent) and sends the rest; nothing else to do unless a node is wedged. |
-| Records show `delivering` while the run's trace says they were sent | The run's trace: `batch.progress` for the batch | Expected while the batch runs: a worker applies what it sent to the records at each renewal of its lease and when the batch closes, so the records trail the trace by at most one renewal. The attempts are there at once. |
+| Records show `delivering` while the run's trace says they were sent | The run's trace: its progress lines (`Delivering: <n> of <m> planned record(s) settled ...`) | Expected while the batch runs: a worker applies what it sent to the records at each renewal of its lease and when the batch closes, so the records trail the trace by at most one renewal. The attempts are there at once. |
 | A run fails: `source.record.primaryKey` names a column that is not an identity column, or not the table's primary key | The error names the table and what the column lacks, with the statement that adds the key | A table SQLFlow created before its ing flow set `target.identityColumn` has no identity key (or a plain `RecId` column the setting added and nothing fills). Stop the table's loads, drop that plain column, run the `ALTER TABLE ... ADD [RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT ... PRIMARY KEY CLUSTERED` from the message (it rewrites the table), and run again ([documents.md](documents.md#the-identity-primary-key)). |
 | A flow fails to load: `reliability.fanOut` needs `source.record.primaryKey` | The error names the flow file | Name the record table's identity primary key under `source.record.primaryKey`, or set `fanOut: 0`. |
 | A run fails: the source database does not allow snapshot isolation | The error names the database and the statement | Run the `ALTER DATABASE ... SET ALLOW_SNAPSHOT_ISOLATION ON` it names, once, or declare `isolation: readCommitted` on the flow, and run again. Nothing was claimed. |

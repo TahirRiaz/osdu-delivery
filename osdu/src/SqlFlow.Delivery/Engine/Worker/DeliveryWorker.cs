@@ -40,11 +40,13 @@ public sealed record WorkerSummary(long Processed, long Delivered, long Retried,
 /// accepts arrays. While it delivers it writes nothing to the records: it renews its lease's one row and appends what it
 /// learns (every step the target answered, before the delivery goes on, and each try's attempt and outcome) through a
 /// <see cref="LeaseJournal"/>, which writes what its concurrent deliveries hand over together. At every renewal the
-/// lease applies what was appended so far and the worker reports the batch's progress on the run's trace; closing the
+/// lease applies what was appended so far and the worker reports the batch's progress to the listeners; closing the
 /// lease applies the rest and settles the batch. The completion callback (<see cref="IDeliveryListener"/>) fires after
 /// every outcome is written. Any number of workers, on any number of nodes, share the ledger safely: a crashed worker's
 /// lease runs out and the next claim of its flow recovers it, a stopping worker closes its lease at once, and a worker
-/// whose lease was taken over stops sending under it. The run trace carries batch-level lines, never one per record.
+/// whose lease was taken over stops sending under it. The run trace carries batch lines, the progress of each lease, the
+/// first problems of each batch, and, for the records the run's <see cref="RunTrace"/> describes, a line per record, step
+/// and call; never a line per record for the rest.
 /// </summary>
 public sealed class DeliveryWorker
 {
@@ -52,6 +54,9 @@ public sealed class DeliveryWorker
     public static readonly TimeSpan DefaultMaxWait = TimeSpan.FromMinutes(5);
 
     private const int FailuresLoggedPerBatch = 10;
+
+    /// <summary>How often a lease asks the run's trace whether it is time for a progress line.</summary>
+    private static readonly TimeSpan ProgressCheck = TimeSpan.FromSeconds(5);
 
     private readonly ILedger _ledger;
     private readonly IPayloadFiles _payloads;
@@ -82,6 +87,14 @@ public sealed class DeliveryWorker
 
     /// <summary>How often a lease is renewed and checkpointed while the worker delivers: half the lease unless set (tests shorten it).</summary>
     internal TimeSpan? KeepInterval { get; init; }
+
+    /// <summary>
+    /// The trace of the run the worker delivers for, or null outside a run. The records it describes get a line when they
+    /// are sent, one for each step the target answered, and one for how they ended, and their calls to OSDU are named; each
+    /// lease says how far it has got every <see cref="RunTrace.ProgressInterval"/>. Without a trace the worker writes its
+    /// batch lines and the first problems of each batch, and nothing per record.
+    /// </summary>
+    public RunTrace? Trace { get; init; }
 
     /// <summary>
     /// Which records the flow's records wait for (docs/interfaces-design.md section 7): every record of the ledger still to
@@ -169,7 +182,12 @@ public sealed class DeliveryWorker
                 wait = TimeSpan.FromSeconds(1);
             }
 
-            _logger.LogInformation("Nothing is due; waiting {Seconds}s for records in backoff (next at {Next:u}).", (int)wait.TotalSeconds, nextDue.Value);
+            // Waits come as often as records come due, so a run says so at the pace of its progress lines.
+            if (Trace is not { } trace || trace.ProgressDue("backoff", _time.GetUtcNow()))
+            {
+                _logger.LogInformation(RunTrace.Bounded, "Nothing is due; waiting {Seconds}s for records in backoff (next at {Next:u}).", (int)wait.TotalSeconds, nextDue.Value);
+            }
+
             await Task.Delay(wait, _time, ct).ConfigureAwait(false);
         }
 
@@ -250,7 +268,9 @@ public sealed class DeliveryWorker
         using var lost = new CancellationTokenSource();
         using var keeping = new CancellationTokenSource();
         using var sending = CancellationTokenSource.CreateLinkedTokenSource(ct, lost.Token);
-        var keeper = KeepLeaseAsync(lease, journal, records.Count, batch, lost, keeping.Token);
+        var keeper = Task.WhenAll(
+            KeepLeaseAsync(lease, journal, records.Count, batch, lost, keeping.Token),
+            TraceProgressAsync(lease, batch, keeping.Token));
         WorkerSummary summary;
         try
         {
@@ -446,6 +466,29 @@ public sealed class DeliveryWorker
         }, CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Says on the run's trace how far the run's deliveries have got, at the pace the trace sets (<see cref="RunTrace.ProgressDue"/>),
+    /// from the run's totals rather than the lease's: a run of thousands of batches says so a bounded number of times, and a
+    /// batch of slow records (a large bulk upload, a throttled service) still shows the run is at work. Nothing outside a run.
+    /// </summary>
+    private async Task TraceProgressAsync(LeaseState lease, WorkBatchState? batch, CancellationToken ct)
+    {
+        if (Trace is not { } trace)
+        {
+            return;
+        }
+
+        while (!ct.IsCancellationRequested)
+        {
+            await Task.Delay(ProgressCheck, _time, ct).ConfigureAwait(false);
+            var now = _time.GetUtcNow();
+            if (trace.ProgressDue("deliver", now))
+            {
+                _logger.LogInformation(RunTrace.Bounded, "Delivering: {Progress}; working on {What}.", trace.DeliveryProgress(now), Describe(lease, batch));
+            }
+        }
+    }
+
     /// <summary>What a lease's journal has written so far, as a summary.</summary>
     private static WorkerSummary Summarize(LeaseJournal journal)
     {
@@ -477,19 +520,31 @@ public sealed class DeliveryWorker
     {
         var results = new WorkerSummary[loaded.Count];
         var failuresLogged = 0;
+        var failuresLeftOut = 0;
 
-        async Task RecordAsync(int index, RecordCompletion completion, DeliveryEvent evt, WorkerSummary summary, Exception? failure)
+        async Task RecordAsync(int index, RecordCompletion completion, DeliveryEvent evt, WorkerSummary summary, Exception? failure, IReadOnlyList<DeliveryStep> steps)
         {
             // Written whatever happens to the run meanwhile: the try happened, and the ledger says so.
             await journal.OutcomeAsync(completion, evt).ConfigureAwait(false);
             results[index] = summary;
             Observe(completion.Status, evt.Detail, failure);
+            Trace?.Settled(completion.Status, completion.NothingSent);
+            var described = Describes(completion.DeliveryKey);
             if (summary.Held > 0 || summary.Failed > 0 || summary.Retried > 0)
             {
-                if (Interlocked.Increment(ref failuresLogged) <= FailuresLoggedPerBatch)
+                // A record the trace describes always says how it ended; of the rest, the first few of each batch do.
+                if (described || Interlocked.Increment(ref failuresLogged) <= FailuresLoggedPerBatch)
                 {
-                    _logger.LogWarning("{Kind} {SourceKey}: {Detail}", evt.Kind, evt.SourceKey, evt.Detail);
+                    TraceProblem(completion, evt);
                 }
+                else
+                {
+                    Interlocked.Increment(ref failuresLeftOut);
+                }
+            }
+            else if (described)
+            {
+                TraceSettled(completion, evt, steps);
             }
         }
 
@@ -538,9 +593,9 @@ public sealed class DeliveryWorker
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
         var total = results.Aggregate(WorkerSummary.Empty, (acc, r) => acc.Add(r ?? WorkerSummary.Empty));
-        if (failuresLogged > FailuresLoggedPerBatch)
+        if (failuresLeftOut > 0)
         {
-            _logger.LogWarning("{Count} more record(s) were held, failed or scheduled for retry; see the submission's records.", failuresLogged - FailuresLoggedPerBatch);
+            _logger.LogWarning("{Count} more record(s) were held, failed or scheduled for retry; see the submission's records.", failuresLeftOut);
         }
 
         return total;
@@ -580,7 +635,7 @@ public sealed class DeliveryWorker
         List<(int Index, RecordState Record, WorkItem? Item)> group,
         WorkBatchState? batch,
         LeaseJournal journal,
-        Func<int, RecordCompletion, DeliveryEvent, WorkerSummary, Exception?, Task> record,
+        Func<int, RecordCompletion, DeliveryEvent, WorkerSummary, Exception?, IReadOnlyList<DeliveryStep>, Task> record,
         CancellationToken ct)
     {
         var started = _time.GetUtcNow().UtcDateTime;
@@ -594,7 +649,7 @@ public sealed class DeliveryWorker
                 var (completion, evt, summary) = Settle(
                     state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
                     "no pending document on the record; release or redeliver it to plan it again", null, null);
-                await record(index, completion, evt, summary, null).ConfigureAwait(false);
+                await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
                 continue;
             }
 
@@ -606,7 +661,7 @@ public sealed class DeliveryWorker
                     state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
                     $"the record's OSDU id {state.TargetId} is not claimed by this flow (claimed: {state.ClaimedTargetId ?? "none"}), so nothing was sent; redeliver it to plan it again",
                     null, null);
-                await record(index, completion, evt, summary, null).ConfigureAwait(false);
+                await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
                 continue;
             }
 
@@ -618,7 +673,7 @@ public sealed class DeliveryWorker
                 var held = $"the final hash check found OSDU already holding this version (metadata hash {state.PendingMetadataHash ?? "none"}"
                     + (state.PendingPayload ? $", payload hash {state.PendingPayloadHash ?? "none"}" : string.Empty) + "); nothing was sent";
                 var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Delivered, AttemptOutcome.Skipped, AttemptPhases.Unchanged, null, held, null, null, null, promote: true, nothingSent: true);
-                await record(index, completion, evt, summary, null).ConfigureAwait(false);
+                await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
                 continue;
             }
 
@@ -630,7 +685,7 @@ public sealed class DeliveryWorker
             catch (JsonException ex)
             {
                 var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, $"the pending document is not valid JSON: {ex.Message}", null, null);
-                await record(index, completion, evt, summary, null).ConfigureAwait(false);
+                await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
                 continue;
             }
 
@@ -650,7 +705,7 @@ public sealed class DeliveryWorker
                     catch (DeliveryException ex)
                     {
                         var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, ex.Message, null, null);
-                        await record(index, completion, evt, summary, null).ConfigureAwait(false);
+                        await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
                         continue;
                     }
 
@@ -691,6 +746,16 @@ public sealed class DeliveryWorker
             return;
         }
 
+        // The records the run's trace describes say what is being sent before anything is, and what is said and sent for
+        // them is on the trace; a group that holds one of them is described whole, since it sends its records together.
+        // Of any other group, only its problems reach the trace, within the run's allowance.
+        var described = works.Where(w => Describes(w.Record.DeliveryKey)).ToList();
+        using var about = RunTrace.AboutRecords(described.Count > 0);
+        foreach (var (_, state, work) in described)
+        {
+            TraceSending(state, work);
+        }
+
         // One id for the try: every OSDU request the protocol sends for these records carries it, and each attempt names
         // it, so what happened can be followed into the services' own logs.
         using var correlation = OsduCorrelation.Begin();
@@ -727,7 +792,7 @@ public sealed class DeliveryWorker
             var latestSteps = reportedSteps.TryGetValue(state.DeliveryKey.Value, out var reported) ? reported : state.PendingStepJson;
             var outcome = outcomes[i]!;
             var (completion, evt, summary) = Classify(state, batch, started, work, outcome, latestSteps, correlation.Id);
-            await record(index, completion, evt, summary, outcome.Failure).ConfigureAwait(false);
+            await record(index, completion, evt, summary, outcome.Failure, outcome.Steps).ConfigureAwait(false);
         }
     }
 
@@ -772,6 +837,90 @@ public sealed class DeliveryWorker
                 outcomes[i] = DeliveryOutcome.Failed(new RecordHeldException(ReferenceCheck.Describe(references)));
             }
         }
+    }
+
+    /// <summary>Whether the run's trace describes the record; outside a run no record is described.</summary>
+    private bool Describes(DeliveryKey key) => Trace?.Describes(key, _logger) == true;
+
+    /// <summary>A described record, as it is handed to the protocol: what is sent, to which id, and what an earlier try already did.</summary>
+    private void TraceSending(RecordState record, DeliveryWork work)
+    {
+        var what = (work.DeliverMetadata, work.DeliverPayload) switch
+        {
+            (true, true) => "the record and its payload",
+            (true, false) => "the record",
+            _ => "its payload",
+        };
+        if (work.Parts.Count > 0 && work.DeliverPayload)
+        {
+            var parts = work.Parts.Where(work.Sends).Select(p => p.Role).ToList();
+            what += parts.Count == 0 ? " (no part of it changed)" : $" ({string.Join(", ", parts)})";
+        }
+
+        var attempt = record.AttemptCount > 1
+            ? string.Create(CultureInfo.InvariantCulture, $", attempt {record.AttemptCount} of {_flow.Reliability.Retry.Attempts}")
+            : string.Empty;
+        var resuming = work.CompletedSteps.Count > 0
+            ? $", resuming after {string.Join(", ", work.CompletedSteps.Keys)}"
+            : string.Empty;
+        _logger.LogInformation(
+            "Sending {Record} to {TargetId}: {What}{Attempt}{Resuming}.",
+            RunTrace.Record(record.SourceKey, record.Label, record.DeliveryKey), work.TargetId, what, attempt, resuming);
+    }
+
+    /// <summary>How a described record that landed, or that OSDU already held, ended: its id, version and the steps it took.</summary>
+    private void TraceSettled(RecordCompletion completion, DeliveryEvent evt, IReadOnlyList<DeliveryStep> steps)
+    {
+        var record = RunTrace.Record(evt.SourceKey, evt.Label, completion.DeliveryKey);
+        if (evt.Kind == "record.unchanged")
+        {
+            _logger.LogInformation("{Record}: {Detail}.", record, evt.Detail);
+            return;
+        }
+
+        var version = evt.TargetVersion is { } v ? string.Create(CultureInfo.InvariantCulture, $" version {v}") : string.Empty;
+        var took = steps.Count == 0 ? string.Empty : "; " + string.Join("; ", steps.Select(DescribeStep));
+        _logger.LogInformation(
+            "Delivered {Record} as {TargetId}{Version} ({Phase}) in {Elapsed}{Steps}.",
+            record, evt.TargetId, version, evt.Phase, RunTrace.Elapsed(evt.Duration ?? TimeSpan.Zero), took);
+    }
+
+    /// <summary>How a record that was held, failed or put back for a retry ended, with the reason the ledger records.</summary>
+    private void TraceProblem(RecordCompletion completion, DeliveryEvent evt)
+    {
+        var record = RunTrace.Record(evt.SourceKey, evt.Label, completion.DeliveryKey);
+        switch (completion.Status)
+        {
+            case RecordStatus.Pending when completion.NextAttemptUtc is { } next:
+                _logger.LogWarning("{Record} is tried again at {Next:u}: {Detail}", record, next, evt.Detail);
+                break;
+            case RecordStatus.Held:
+                _logger.LogWarning("{Record} is held: {Detail}", record, evt.Detail);
+                break;
+            default:
+                _logger.LogWarning("{Record} failed: {Detail}", record, evt.Detail);
+                break;
+        }
+    }
+
+    /// <summary>One step of an attempt as the trace names it: the status the target answered, how long it took, what it returned.</summary>
+    private static string DescribeStep(DeliveryStep step)
+    {
+        if (step.Resumed)
+        {
+            return $"{step.Name} done by an earlier try";
+        }
+
+        var status = step.Status is { } s ? string.Create(CultureInfo.InvariantCulture, $" HTTP {s}") : string.Empty;
+        var took = RunTrace.Elapsed(step.CompletedUtc - step.StartedUtc);
+        var returned = step.Returned
+            .Where(kv => kv.Key is not ("recordId" or "version"))
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .Select(kv => $"{kv.Key} {kv.Value}")
+            .ToList();
+        var values = returned.Count == 0 ? string.Empty : $", {string.Join(", ", returned)}";
+        var error = step.Error is { } e ? $", {e}" : string.Empty;
+        return HeaderRedaction.RedactMessage($"{step.Name}{status} in {took}{values}{error}");
     }
 
     /// <summary>Reports a record's outcome to the guard: a delivery ends every run of failures, a failure counts in its class.</summary>
@@ -823,7 +972,6 @@ public sealed class DeliveryWorker
                 _ => "none",
             };
             var targetState = JsonMerge.Merge(record.TargetStateJson, JsonMerge.FromValues(outcome.Returned));
-            _logger.LogTrace("Delivered {SourceKey} ({Phase}) as {TargetId} version {Version}.", record.SourceKey, phase, record.TargetId, outcome.TargetVersion);
             return Settle(record, batch, started, RecordStatus.Delivered, AttemptOutcome.Delivered, phase, outcome.TargetVersion, outcome.Detail, null, resultJson, targetState, promote: true);
         }
 
@@ -1109,6 +1257,14 @@ public sealed class DeliveryWorker
         node[step] = ToNode(returned);
         var json = node.ToJsonString();
         reported[key.Value] = json;
+        if (Describes(key))
+        {
+            var values = string.Join(", ", returned.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key} {kv.Value}"));
+            _logger.LogDebug(
+                "{Record}: {Step} done{Values}.",
+                RunTrace.Record(claimed.SourceKey, claimed.Label, key), step, HeaderRedaction.RedactMessage(values.Length == 0 ? string.Empty : $" ({values})"));
+        }
+
         return journal.StepAsync(new RecordStep(key, claimed.LastSubmissionId, reference, json, _time.GetUtcNow().UtcDateTime));
     }
 

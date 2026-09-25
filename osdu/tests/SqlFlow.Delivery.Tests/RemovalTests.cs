@@ -1,6 +1,7 @@
 using System.Data.SqlTypes;
 using System.Net;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Engine;
@@ -570,7 +571,7 @@ internal sealed class FixedProtocolFactory : IProtocolFactory
 
     public FixedProtocolFactory(IDeliveryProtocol protocol) => _protocol = protocol;
 
-    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, ILoggerFactory loggers, CancellationToken ct = default)
         => Task.FromResult(_protocol);
 }
 

@@ -52,7 +52,7 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         // A cache and a retrieval flow name their platform and partition the same way a delivery flow does, so a run
         // of one resolves them from the central configuration the control plane supplied before the node's own.
         var context = _provider.GetRequiredService<EngineContext>()
-            .WithLoggers(loggers)
+            .ForRun(loggers)
             .WithSuppliedReferences(DeliveryRunPayload.Parse(options.Parameters).References);
         var warningSink = options.Echo;
 

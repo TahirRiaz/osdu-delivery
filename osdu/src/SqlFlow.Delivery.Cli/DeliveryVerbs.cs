@@ -275,7 +275,7 @@ internal static class DeliveryVerbs
             ? SourceSelection.Full()
             : SourceSelection.Incremental(watermark.UpdatedThroughUtc.AddSeconds(-flow.Source.Incremental.OverlapSeconds));
 
-        var source = engine.Sources.Open(flow, runtime.Parameters);
+        var source = engine.Sources.Open(flow, runtime.Parameters, engine.Loggers);
         var header = await source.OpenAsync(selection, null, ct).ConfigureAwait(false);
         var columns = new JsonObject();
         foreach (var (dataset, names) in header.Columns.OrderBy(c => c.Key, StringComparer.Ordinal).Take(MaxDatasetsShown + 1))

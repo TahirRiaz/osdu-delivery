@@ -38,7 +38,8 @@ public sealed record EngineContext(
     IFanOutDispatcher? FanOut = null,
     Templates.ITemplateStore? Templates = null,
     ICacheStore? Cache = null,
-    IRecordSearchFactory? Searches = null)
+    IRecordSearchFactory? Searches = null,
+    RunTrace? Trace = null)
 {
     /// <summary>The environment switch that lets a flow target a loopback address (local OSDU emulators, tests).</summary>
     public const string AllowLoopbackVariable = "SQLFLOW_DELIVERY_ALLOW_LOOPBACK";
@@ -51,10 +52,23 @@ public sealed record EngineContext(
     public IFanOutDispatcher Dispatcher => FanOut ?? NoFanOutDispatcher.Instance;
 
     /// <summary>Where a flow's search sources are answered, never null: the platform the flow delivers to, unless composed otherwise.</summary>
-    public IRecordSearchFactory RecordSearches => Searches ?? new PlatformRecordSearchFactory(Loggers);
+    public IRecordSearchFactory RecordSearches => Searches ?? PlatformRecordSearchFactory.Instance;
 
-    /// <summary>A context with a different logger factory: the node swaps in the run log for one run.</summary>
-    public EngineContext WithLoggers(ILoggerFactory loggers) => this with { Loggers = loggers };
+    /// <summary>
+    /// A context for one run: everything the engine logs while it serves the run (the source, the planner, the intake, the
+    /// protocols, the workers, the calls to OSDU) goes to <paramref name="loggers"/>, the run's log and live trace, through
+    /// the gate of a <see cref="RunTrace"/> of its own, which bounds what the run writes whatever its size. A context that
+    /// serves no run has no trace, and writes no line per record or call.
+    /// </summary>
+    public EngineContext ForRun(ILoggerFactory loggers)
+    {
+        ArgumentNullException.ThrowIfNull(loggers);
+        var trace = new RunTrace(Time);
+        return this with { Loggers = new RunTraceGate(loggers, trace), Trace = trace };
+    }
+
+    /// <summary>What watches the calls this context sends to OSDU: the run's trace, or nobody outside a run.</summary>
+    public IHttpObserver? HttpObserver => Trace is { } trace ? new RunHttpTrace(trace, Loggers.CreateLogger<RunHttpTrace>()) : null;
 
     /// <summary>
     /// A context whose references resolve from the central configuration a run carried before they resolve from the
@@ -94,6 +108,9 @@ public sealed class FlowRuntime : IDisposable
 
     /// <summary>Settled submissions whose released records one deliver run sends after its own.</summary>
     private const int SettledSubmissionsPerRun = 10;
+
+    /// <summary>The records waiting to be planned again without a source key that a run names; it counts the rest.</summary>
+    private const int KeylessNamed = 10;
 
     private readonly EngineContext _context;
     private readonly ResolvedMapping? _mapping;
@@ -202,10 +219,16 @@ public sealed class FlowRuntime : IDisposable
         IRecordSearch? search = null;
         try
         {
-            search = context.RecordSearches.Create(flow, target.ClientAsync);
+            search = context.RecordSearches.Create(flow, target.ClientAsync, context.Loggers);
             var resolver = new RenderResolver(mappings, context.Cache, context.Templates, context.Secrets, search);
             var mapping = await resolver.ResolveAsync(flow, ct).ConfigureAwait(false);
-            return new FlowRuntime(context, flow, layout, mappings, values, mapping, target, search);
+            var runtime = new FlowRuntime(context, flow, layout, mappings, values, mapping, target, search);
+            if (context.Trace is not null)
+            {
+                runtime.LogRenderInputs();
+            }
+
+            return runtime;
         }
         catch
         {
@@ -253,11 +276,11 @@ public sealed class FlowRuntime : IDisposable
     }
 
     /// <summary>The flow's ingestion tables, opened once per runtime with the flow's own connection reference.</summary>
-    public IIngestionSource Source => _source ??= _context.Sources.Open(Flow, Parameters);
+    public IIngestionSource Source => _source ??= _context.Sources.Open(Flow, Parameters, _context.Loggers);
 
     public Planner Planner => _planner ??= new Planner(Source, _context.Payloads, _context.Ledger, _context.Loggers.CreateLogger<Planner>());
 
-    public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Stores, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>()) { RunId = RunId };
+    public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Stores, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>()) { RunId = RunId, Trace = _context.Trace };
 
     /// <summary>What this run asks the intake for: its selection, the submission it works on, and a member's slices.</summary>
     public IntakeRequest Request => new(Selection, SubmissionId, Slices);
@@ -311,8 +334,26 @@ public sealed class FlowRuntime : IDisposable
             return _protocol;
         }
 
-        _protocol = await _context.Protocols.CreateAsync(Flow, _target.Http, ct).ConfigureAwait(false);
+        _protocol = await _context.Protocols.CreateAsync(Flow, _target.Http, _context.Loggers, ct).ConfigureAwait(false);
         return _protocol;
+    }
+
+    /// <summary>
+    /// Says on the run's trace what this runtime renders with: the mapping, the template it pins, the cache version it
+    /// reads and the partition it mints ids in. The mapping's other parameter values stay off the trace, since a flow can
+    /// supply a secret reference as one.
+    /// </summary>
+    private void LogRenderInputs()
+    {
+        var resolved = Mapping;
+        var context = resolved.Context;
+        var cache = context.CacheScope is { } scope
+            ? $"the cache of {scope} at version {context.CacheVersion}"
+            : "no cache";
+        _log.LogInformation(
+            "Rendering with mapping {Mapping} (template {Template}) and {Cache}; ids are minted in partition {Partition}.",
+            resolved.Mapping.Reference, resolved.Mapping.Template, cache,
+            context.Parameters.GetValueOrDefault(RenderContext.DataPartitionParameter, "(not supplied)"));
     }
 
     public async Task<DeliveryWorker> WorkerAsync(CancellationToken ct = default)
@@ -320,6 +361,7 @@ public sealed class FlowRuntime : IDisposable
         {
             RunId = RunId,
             Guard = Guard,
+            Trace = _context.Trace,
             Waits = await WaitRulesAsync(ct).ConfigureAwait(false),
             References = await ReferenceCheckAsync(ct).ConfigureAwait(false),
         };
@@ -393,7 +435,10 @@ public sealed class FlowRuntime : IDisposable
     }
 
     public async Task<Verifier> VerifierAsync(CancellationToken ct = default)
-        => new(RequireLedger(), await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<Verifier>());
+        => new(RequireLedger(), await ProtocolAsync(ct).ConfigureAwait(false), Flow, _context.Time, _context.Listener, _context.Loggers.CreateLogger<Verifier>())
+        {
+            Trace = _context.Trace,
+        };
 
     /// <summary>Intake plus drain, fanned out across the fleet when the flow asks for it: the <c>deliver</c> operation.</summary>
     public Task<RunResult> RunAsync(bool force, CancellationToken ct = default)
@@ -410,6 +455,7 @@ public sealed class FlowRuntime : IDisposable
                 {
                     // What the planning could not render counts before anything is sent; a guard it trips cancels the run here.
                     Guard?.Planned(intake.Counts.Held, intake.Counts.Planned);
+                    _context.Trace?.AddPlanned(intake.Counts.Planned);
                     ct.ThrowIfCancellationRequested();
                 }
 
@@ -554,6 +600,7 @@ public sealed class FlowRuntime : IDisposable
         ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
         var ledger = RequireLedger();
         var keys = new List<KeyTuple>();
+        var keyless = 0;
         DeliveryKey? after = null;
         while (keys.Count < max)
         {
@@ -569,7 +616,7 @@ public sealed class FlowRuntime : IDisposable
                 {
                     keys.Add(KeyTuple.FromJson(json));
                 }
-                else
+                else if (keyless++ < KeylessNamed)
                 {
                     _log.LogWarning(
                         "Record {Key} waits to be planned again but the ledger holds no source key for it (it predates the ingestion source); deliver the scope to plan it.",
@@ -578,6 +625,13 @@ public sealed class FlowRuntime : IDisposable
             }
 
             after = page[^1].DeliveryKey;
+        }
+
+        if (keyless > KeylessNamed)
+        {
+            _log.LogWarning(
+                "{Count} more record(s) wait to be planned again with no source key in the ledger; deliver the scope to plan them.",
+                keyless - KeylessNamed);
         }
 
         return keys;
@@ -802,6 +856,7 @@ public sealed class FlowRuntime : IDisposable
                 + string.Join("; ", invalid.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => kv.Key + ": " + kv.Value)));
         }
 
+        _log.LogInformation("The legal service accepts the legal tag(s) the mapping puts on every record ({Tags}).", string.Join(", ", tags));
         _legalTagsChecked = true;
     }
 
@@ -953,10 +1008,10 @@ public sealed class FlowRuntime : IDisposable
             }
 
             var now = _context.Time.GetUtcNow();
-            if (now - lastProgress >= MemberProgress)
+            if (_context.Trace is { } trace ? trace.ProgressDue("members", now) : now - lastProgress >= MemberProgress)
             {
                 lastProgress = now;
-                _log.LogInformation("Waiting for the {What} members: {State}.", what, state);
+                _log.LogInformation(RunTrace.Bounded, "Waiting for the {What} members: {State}.", what, state);
             }
 
             await Task.Delay(MemberPoll, _context.Time, ct).ConfigureAwait(false);

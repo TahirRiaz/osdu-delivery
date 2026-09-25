@@ -28,6 +28,9 @@ public sealed class Verifier
     private readonly IDeliveryListener _listener;
     private readonly ILogger<Verifier> _logger;
 
+    /// <summary>The trace of the run the pass is part of, which paces its progress lines; null outside a run.</summary>
+    public RunTrace? Trace { get; init; }
+
     public Verifier(ILedger ledger, IDeliveryProtocol protocol, FlowDefinition flow, TimeProvider time, IDeliveryListener listener, ILogger<Verifier> logger)
     {
         ArgumentNullException.ThrowIfNull(ledger);
@@ -66,6 +69,9 @@ public sealed class Verifier
         var drifted = 0;
         var missing = 0;
         var errors = 0;
+        var settled = 0;
+        var progressGate = new Lock();
+        var lastProgress = _time.GetUtcNow();
 
         using var gate = new SemaphoreSlim(Math.Max(1, _flow.Reliability.Concurrency));
 
@@ -73,6 +79,10 @@ public sealed class Verifier
         // time, so a pass over a large estate costs a handful of requests rather than one per record. A protocol
         // that cannot batch reports one and this chunks to one, which is the same walk as before.
         var chunks = records.Chunk(Math.Max(1, _protocol.MaxVerifyBatch)).ToList();
+        _logger.LogInformation(
+            "Verifying {Count} delivered record(s) against OSDU in {Reads} read(s) of up to {Batch}, {Concurrency} at a time{Reconcile}.",
+            records.Count, chunks.Count, Math.Max(1, _protocol.MaxVerifyBatch), Math.Max(1, _flow.Reliability.Concurrency),
+            reconcile ? ", reconciling what drifted" : string.Empty);
         var tasks = chunks.Select(async chunk =>
         {
             // The gate covers the read and the ledger writes that follow it, so concurrency bounds what this pass
@@ -99,6 +109,8 @@ public sealed class Verifier
                 {
                     await SettleAsync(chunk[i], results[i], reconcile).ConfigureAwait(false);
                 }
+
+                ReportProgress(Interlocked.Add(ref settled, chunk.Length));
             }
             finally
             {
@@ -120,6 +132,37 @@ public sealed class Verifier
             Detail = summary.ToString() + (reconcile ? " (reconcile on)" : string.Empty),
         }, CancellationToken.None).ConfigureAwait(false);
         return summary;
+
+        // How far the pass has got, at the pace of the run's trace (every progress interval outside a run), so a long
+        // pass shows it is at work.
+        void ReportProgress(int done)
+        {
+            var at = _time.GetUtcNow();
+            if (Trace is { } trace)
+            {
+                if (!trace.ProgressDue("verify", at))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                lock (progressGate)
+                {
+                    if (at - lastProgress < RunTrace.ProgressInterval)
+                    {
+                        return;
+                    }
+
+                    lastProgress = at;
+                }
+            }
+
+            _logger.LogInformation(
+                RunTrace.Bounded,
+                "Verify progress: {Done} of {Count} record(s) checked: {Matched} match, {Drifted} drifted, {Missing} missing, {Errors} could not be read.",
+                done, records.Count, Volatile.Read(ref matched), Volatile.Read(ref drifted), Volatile.Read(ref missing), Volatile.Read(ref errors));
+        }
 
         // What one record's result means for the counters, the ledger and the listener.
         async Task SettleAsync(RecordState record, VerifyResult result, bool reconciling)

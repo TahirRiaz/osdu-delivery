@@ -427,12 +427,13 @@ public sealed class OsduConnection : IDisposable
         FlowReliability reliability,
         ISecretResolver secrets,
         HttpMessageHandler? handler,
-        bool allowLoopback)
+        bool allowLoopback,
+        IHttpObserver? observer)
     {
         Endpoint = endpoint;
         _auth = auth;
         _headers = headers;
-        _http = new HttpRuntime(reliability, secrets, handler: handler, allowLoopback: allowLoopback);
+        _http = new HttpRuntime(reliability, secrets, handler: handler, allowLoopback: allowLoopback, observer: observer);
     }
 
     /// <summary>
@@ -443,6 +444,7 @@ public sealed class OsduConnection : IDisposable
     /// <remarks>
     /// <paramref name="handler"/> replaces the built transport (null builds the configured one) and
     /// <paramref name="allowLoopback"/> lets the URL guard accept a loopback endpoint; both exist for tests.
+    /// <paramref name="observer"/> is told of every call the capture sends, which a cache run puts on its trace.
     /// </remarks>
     /// <exception cref="DeliveryException">The endpoint does not resolve to an absolute http or https URL.</exception>
     public static async Task<OsduConnection> CreateAsync(
@@ -453,6 +455,7 @@ public sealed class OsduConnection : IDisposable
         ISecretResolver secrets,
         HttpMessageHandler? handler = null,
         bool allowLoopback = false,
+        IHttpObserver? observer = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
@@ -474,7 +477,7 @@ public sealed class OsduConnection : IDisposable
             resolvedHeaders[name] = await secrets.ResolveAsync(value, ct).ConfigureAwait(false);
         }
 
-        return new OsduConnection(resolved, auth, resolvedHeaders, reliability, secrets, handler, allowLoopback);
+        return new OsduConnection(resolved, auth, resolvedHeaders, reliability, secrets, handler, allowLoopback, observer);
     }
 
     public string Endpoint { get; }

@@ -1,6 +1,6 @@
 // Vendored from SQLFlow (https://github.com/TahirRiaz/sqlflow-v3, commit ddd4ea12160bda044f75dcad2bbec5099c3a7263)
 // src/SqlFlow.Acquire/Runtime/RetryPolicy.cs. Changes: namespace; configuration record is the flow's FlowRetry;
-// a fixed-backoff option was added.
+// a fixed-backoff option was added; the attempt ceiling is exposed for the executor's observer.
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -53,6 +53,9 @@ public sealed class RetryPolicy
     }
 
     public static bool IsRetryableStatus(int code) => Retryable.Contains(code);
+
+    /// <summary>The most attempts one request that is safe to repeat is given, the first included.</summary>
+    public int MaxAttempts => _config.Attempts;
 
     /// <param name="attempt">1-based attempt that just failed.</param>
     /// <param name="status">The HTTP status, or null for a transport failure (DNS/TCP/TLS/timeout).</param>

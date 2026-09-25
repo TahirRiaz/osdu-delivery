@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
@@ -43,7 +44,7 @@ public sealed class InterfaceProtocols : IProtocolFactory
     /// <summary>Every flow a protocol was built for, in order.</summary>
     public List<string> Built { get; } = [];
 
-    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, ILoggerFactory loggers, CancellationToken ct = default)
     {
         lock (_gate)
         {
@@ -67,11 +68,11 @@ public sealed class MemoryEstate : IIngestionSourceFactory
         return this;
     }
 
-    public IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    public IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values, ILoggerFactory loggers)
     {
         ArgumentNullException.ThrowIfNull(flow);
         return _tables.TryGetValue(flow.Source.Record.Object, out var tables)
-            ? tables.Open(flow, values)
+            ? tables.Open(flow, values, loggers)
             : throw new DeliveryException($"Flow '{flow.Label}': the table {flow.Source.Record.Object} was not found on the source database.");
     }
 }

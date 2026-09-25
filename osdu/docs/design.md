@@ -1127,7 +1127,8 @@ byte range within it. A drain leases a whole batch (its due records under one le
 token), reads the documents by range, and hands the protocol up to
 `protocolOptions.batchSize` records per request where the service takes arrays. While it
 runs, each renewal of its lease applies what it has sent so far and reports the batch's
-progress to the run's trace. A batch that finishes closes with its counts; a stopped
+progress to the delivery listeners, and the run's trace says how far the run's
+deliveries have got, at a pace that slows as the run goes on. A batch that finishes closes with its counts; a stopped
 drain's lease runs out and the next claim of the flow recovers the batch, applying what the
 drain had sent. The submission page lists the batches.
 

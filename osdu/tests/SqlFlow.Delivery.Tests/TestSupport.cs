@@ -332,7 +332,7 @@ public sealed class FakeProtocolFactory : IProtocolFactory
     /// <summary>Stands in for a protocol that cannot be built at all: an unresolved secret, an identity out of reach.</summary>
     public Func<Exception?>? FailWith { get; set; }
 
-    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, ILoggerFactory loggers, CancellationToken ct = default)
         => FailWith?.Invoke() is { } failure ? Task.FromException<IDeliveryProtocol>(failure) : Task.FromResult(_protocol);
 }
 
@@ -345,16 +345,16 @@ public sealed class FakeOsduProtocols(HttpMessageHandler handler) : IProtocolFac
     private readonly List<HttpRuntime> _runtimes = [];
     private readonly object _gate = new();
 
-    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, CancellationToken ct = default)
+    public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, ILoggerFactory loggers, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        var runtime = new HttpRuntime(flow.Reliability, new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
+        var runtime = new HttpRuntime(flow.Reliability, new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true, observer: http.Observer);
         lock (_gate)
         {
             _runtimes.Add(runtime);
         }
 
-        return ProtocolFactory.CreateAsync(flow, runtime, new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance, ct);
+        return ProtocolFactory.CreateAsync(flow, runtime, new SecretResolver([new EnvSecretProvider()]), loggers, ct);
     }
 
     public void Dispose()
@@ -777,7 +777,7 @@ public static class Samples
             ledger,
             time ?? TimeProvider.System,
             NullLoggerFactory.Instance,
-            protocols ?? new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()]), NullLoggerFactory.Instance),
+            protocols ?? new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()])),
             CompositeDeliveryListener.Empty,
             Templates: templates ?? SampleTemplates,
             Cache: cache ?? SampleCache,
@@ -1098,7 +1098,7 @@ public sealed class FixedRecordSearchFactory(params (string Field, string Value,
 
     public System.Collections.Concurrent.ConcurrentQueue<FixedRecordSearch> Created { get; } = new();
 
-    public IRecordSearch Create(FlowDefinition flow, Func<CancellationToken, Task<OsduHttpClient>> target)
+    public IRecordSearch Create(FlowDefinition flow, Func<CancellationToken, Task<OsduHttpClient>> target, ILoggerFactory loggers)
     {
         var declared = flow.Target.Headers.FirstOrDefault(h => h.Key.Equals("data-partition-id", StringComparison.OrdinalIgnoreCase)).Value ?? string.Empty;
         var partition = declared.StartsWith("${env:", StringComparison.Ordinal) && declared.EndsWith('}')

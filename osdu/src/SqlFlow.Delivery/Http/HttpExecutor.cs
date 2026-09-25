@@ -1,9 +1,9 @@
 // Vendored from SQLFlow (https://github.com/TahirRiaz/sqlflow-v3, commit ddd4ea12160bda044f75dcad2bbec5099c3a7263)
 // src/SqlFlow.Acquire/Runtime/HttpExecutor.cs. Changes: namespace, exception types, the charset normalisation and
 // code-page provider were dropped (OSDU speaks UTF-8 JSON), and SendAsync exposes the response headers for
-// non-JSON bodies; redirects are followed here, each hop checked by the URL guard. The request-factory contract is
-// unchanged: a fresh request per attempt (and per redirect), so a StreamContent over a re-opened blob stream retries
-// correctly (design.md section 12.4).
+// non-JSON bodies; redirects are followed here, each hop checked by the URL guard; every attempt and every retry is
+// reported to an optional observer. The request-factory contract is unchanged: a fresh request per attempt (and per
+// redirect), so a StreamContent over a re-opened blob stream retries correctly (design.md section 12.4).
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -48,8 +48,16 @@ public sealed class HttpExecutor
     private readonly UrlGuard _urlGuard;
     private readonly long _maxResponseBytes;
     private readonly TimeProvider _time;
+    private readonly IHttpObserver? _observer;
 
-    public HttpExecutor(HttpClient client, RetryPolicy retry, RateLimiter rateLimiter, UrlGuard urlGuard, long maxResponseBytes, TimeProvider time)
+    /// <param name="client">The client every attempt is sent with.</param>
+    /// <param name="retry">Decides whether and when a failed attempt is repeated.</param>
+    /// <param name="rateLimiter">Paces the attempts to the flow's rate.</param>
+    /// <param name="urlGuard">Checks every URL, and every redirect, against the addresses the deployment reaches.</param>
+    /// <param name="maxResponseBytes">The largest response body read.</param>
+    /// <param name="time">The clock the backoff waits on.</param>
+    /// <param name="observer">Told of every attempt as it ends and of every retry before its wait; null tells nobody.</param>
+    public HttpExecutor(HttpClient client, RetryPolicy retry, RateLimiter rateLimiter, UrlGuard urlGuard, long maxResponseBytes, TimeProvider time, IHttpObserver? observer = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(retry);
@@ -62,6 +70,7 @@ public sealed class HttpExecutor
         _urlGuard = urlGuard;
         _maxResponseBytes = maxResponseBytes;
         _time = time;
+        _observer = observer;
     }
 
     /// <summary>The most redirects one request follows.</summary>
@@ -122,12 +131,17 @@ public sealed class HttpExecutor
             var began = _time.GetTimestamp();
             var result = "error";
             var wait = TimeSpan.Zero;
+
+            // What the observer is told of the attempt: the status that came, or what ended it without one.
+            int? answered = null;
+            string? failure = null;
             try
             {
                 response = await SendFollowingAsync(hops, requestFactory, allowStatuses, ct).ConfigureAwait(false);
                 var request = hops.Current;
                 var status = response.StatusCode;
                 var code = (int)status;
+                answered = code;
                 result = DeliveryMetrics.StatusClass(code);
 
                 if (response.IsSuccessStatusCode || (allowStatuses?.Contains(code) ?? false))
@@ -146,10 +160,11 @@ public sealed class HttpExecutor
                 DeliveryMetrics.RequestRetried(method, host, code.ToString(System.Globalization.CultureInfo.InvariantCulture));
                 wait = decision.Delay;
             }
-            catch (UrlRefusedException)
+            catch (UrlRefusedException ex)
             {
                 // A redirect the guard refused.
                 result = "refused";
+                failure = ex.Message;
                 throw;
             }
             catch (HttpRequestException ex) when (Refusal(ex) is { } refused)
@@ -157,11 +172,13 @@ public sealed class HttpExecutor
                 // The connection would have opened to an address the deployment does not reach: a verdict on the URL,
                 // which no retry changes.
                 result = "refused";
+                failure = refused.Message;
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(refused);
             }
             catch (HttpRequestException ex)
             {
                 result = "transport";
+                failure = $"transport failure: {ex.Message}";
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
@@ -178,6 +195,7 @@ public sealed class HttpExecutor
                 // it is and retry from the factory. The response-size cap throws DeliveryException, so an oversized
                 // body is still permanent.
                 result = "transport";
+                failure = $"the response was cut off: {ex.Message}";
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
@@ -191,6 +209,7 @@ public sealed class HttpExecutor
             {
                 // A per-request timeout (not caller cancellation): treat as a transient transport failure.
                 result = "timeout";
+                failure = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"timed out after {_client.Timeout.TotalSeconds:0}s");
                 var decision = _retry.Next(decisionAttempt, null, null);
                 if (!decision.ShouldRetry)
                 {
@@ -204,15 +223,28 @@ public sealed class HttpExecutor
             {
                 // The caller stopped waiting, even after the status arrived.
                 result = "cancelled";
+                failure ??= "cancelled";
+                throw;
+            }
+            catch (Exception ex) when (answered is null && failure is null)
+            {
+                // Anything else that ended the attempt before a status came (a redirect loop): the observer is told what.
+                failure = ex.Message;
                 throw;
             }
             finally
             {
                 // Released before the wait, so an attempt that is repeated does not hold its connection through the backoff.
                 response?.Dispose();
-                DeliveryMetrics.RequestEnded(method, host, result, _time.GetElapsedTime(began));
+                var elapsed = _time.GetElapsedTime(began);
+                DeliveryMetrics.RequestEnded(method, host, result, elapsed);
+                _observer?.Ended(new HttpAttempt(method, Describe(hops.Current.RequestUri), attempt, answered, Redacted(failure), elapsed));
             }
 
+            _observer?.Retrying(new HttpRetry(
+                method, Describe(hops.Current.RequestUri), attempt, _retry.MaxAttempts,
+                answered is { } retried ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"HTTP {retried}") : Redacted(failure) ?? result,
+                wait));
             await Task.Delay(wait, _time, ct).ConfigureAwait(false);
         }
     }
@@ -353,6 +385,9 @@ public sealed class HttpExecutor
 
         return string.IsNullOrWhiteSpace(id) ? string.Empty : $" (correlation-id {id})";
     }
+
+    /// <summary>What ended an attempt, as the observer is told it: with any credential the text carries redacted.</summary>
+    private static string? Redacted(string? failure) => failure is null ? null : HeaderRedaction.RedactMessage(failure);
 
     /// <summary>The request URL without its query string: a signed upload URL carries its credential there.</summary>
     private static string Describe(Uri? uri)

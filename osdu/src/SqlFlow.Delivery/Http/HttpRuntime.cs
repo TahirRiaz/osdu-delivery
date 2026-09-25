@@ -19,9 +19,10 @@ public sealed class HttpRuntime : IDisposable
     /// <param name="handler">A handler to send through instead of the network (the tests).</param>
     /// <param name="allowLoopback">Whether loopback addresses are reachable.</param>
     /// <param name="privateNetworks">The private ranges the deployment reaches; the ones it lists under <see cref="NetworkPolicy.PrivateNetworksVariable"/> when null.</param>
+    /// <param name="observer">Told of every attempt and retry either executor makes (a run's live trace); null tells nobody.</param>
     public HttpRuntime(
         FlowReliability reliability, ISecretResolver secrets, TimeProvider? time = null, HttpMessageHandler? handler = null, bool allowLoopback = false,
-        IReadOnlyList<IPNetwork>? privateNetworks = null)
+        IReadOnlyList<IPNetwork>? privateNetworks = null, IHttpObserver? observer = null)
     {
         ArgumentNullException.ThrowIfNull(reliability);
         ArgumentNullException.ThrowIfNull(secrets);
@@ -35,14 +36,18 @@ public sealed class HttpRuntime : IDisposable
             ? HttpClientBuilder.Build(reliability, Network)
             : new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(reliability.TimeoutSeconds) };
 
+        Observer = observer;
         Retry = new RetryPolicy(reliability.Retry, clock);
-        Data = new HttpExecutor(_client, Retry, new RateLimiter(reliability.RateLimitRps, clock), new UrlGuard(reliability.UrlAllowlist, Network), reliability.MaxResponseBytes, clock);
-        Auth = new HttpExecutor(_client, Retry, new RateLimiter(0, clock), new UrlGuard([], Network), 1024 * 1024, clock);
+        Data = new HttpExecutor(_client, Retry, new RateLimiter(reliability.RateLimitRps, clock), new UrlGuard(reliability.UrlAllowlist, Network), reliability.MaxResponseBytes, clock, observer);
+        Auth = new HttpExecutor(_client, Retry, new RateLimiter(0, clock), new UrlGuard([], Network), 1024 * 1024, clock, observer);
         AuthResolver = new AuthResolver(secrets, clock);
     }
 
     /// <summary>The addresses this stack reaches.</summary>
     public NetworkPolicy Network { get; }
+
+    /// <summary>What watches the calls this stack sends, when anything does; a stack built beside it can report to the same.</summary>
+    public IHttpObserver? Observer { get; }
 
     /// <summary>
     /// The invoker every request of this flow goes through. The ETP route's WebSocket upgrade is sent with it, so a

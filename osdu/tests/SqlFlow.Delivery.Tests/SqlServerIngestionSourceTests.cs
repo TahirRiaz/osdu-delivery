@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Source;
@@ -50,7 +51,7 @@ public sealed class SqlServerIngestionSourceTests
         var flow = ItemFlow(estate, "Item", pageSize: 250);
 
         // The whole table: eight ranges of the identity, each holding its share give or take one counted range of values.
-        var source = estate.Engine.Sources.Open(flow, NoValues);
+        var source = estate.Engine.Sources.Open(flow, NoValues, NullLoggerFactory.Instance);
         var full = await source.OpenAsync(SourceSelection.Full(), null);
         Assert.Equal((5000L, "RecId"), (full.EstimatedCandidates, full.PrimaryKey));
         var ranges = await source.SliceBoundsAsync(full, 8);
@@ -73,7 +74,7 @@ public sealed class SqlServerIngestionSourceTests
         Assert.Equal(ids, await ReadIdsAsync(source, full, null));
 
         // What changed since the load: a seventh of the rows, cut and read the same way.
-        var changedSource = estate.Engine.Sources.Open(flow, NoValues);
+        var changedSource = estate.Engine.Sources.Open(flow, NoValues, NullLoggerFactory.Instance);
         var changed = await changedSource.OpenAsync(SourceSelection.Incremental(Loaded), null);
         var expected = ids.Where(i => i % 7 == 0).ToList();
         Assert.Equal(expected.Count, changed.EstimatedCandidates);
@@ -88,7 +89,7 @@ public sealed class SqlServerIngestionSourceTests
         Assert.Equal(expected, changedRead.Order());
 
         // Named records are found through the record key and read in identity order.
-        var keysSource = estate.Engine.Sources.Open(flow, NoValues);
+        var keysSource = estate.Engine.Sources.Open(flow, NoValues, NullLoggerFactory.Instance);
         var named = await keysSource.OpenAsync(SourceSelection.ForKeys([KeyTuple.Of("late-000001"), KeyTuple.Of("item-000005"), KeyTuple.Of("item-004001")]), null);
         Assert.Equal(3, named.EstimatedCandidates);
         Assert.Equal([5L, 4001L, 100001L], await ReadIdsAsync(keysSource, named, null));
@@ -125,7 +126,7 @@ public sealed class SqlServerIngestionSourceTests
 
         async Task<string> RefusedAsync(string table)
         {
-            var source = estate.Engine.Sources.Open(ItemFlow(estate, table), NoValues);
+            var source = estate.Engine.Sources.Open(ItemFlow(estate, table), NoValues, NullLoggerFactory.Instance);
             return (await Assert.ThrowsAsync<FlowValidationException>(() => source.OpenAsync(SourceSelection.Full(), null))).Message;
         }
 
@@ -138,7 +139,7 @@ public sealed class SqlServerIngestionSourceTests
         Assert.Contains("has no unique index without a filter", await RefusedAsync("History"), StringComparison.Ordinal);
         Assert.Contains("which is nvarchar(20). A read is paged and cut on an integer identity column", await RefusedAsync("TextId"), StringComparison.Ordinal);
 
-        var good = estate.Engine.Sources.Open(ItemFlow(estate, "Good"), NoValues);
+        var good = estate.Engine.Sources.Open(ItemFlow(estate, "Good"), NoValues, NullLoggerFactory.Instance);
         Assert.Equal("RecId", (await good.OpenAsync(SourceSelection.Full(), null)).PrimaryKey);
         Assert.Equal(0, await CountRangesAsync(good));
     }

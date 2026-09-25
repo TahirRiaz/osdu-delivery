@@ -56,7 +56,7 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         // A cache and a retrieval flow name their platform and partition the same way a delivery flow does, so a run
         // of one resolves them from the central configuration the control plane supplied before the node's own.
         var context = _provider.GetRequiredService<EngineContext>()
-            .WithLoggers(loggers)
+            .ForRun(loggers)
             .WithSuppliedReferences(DeliveryRunPayload.Parse(options.Parameters).References);
         var warningSink = options.Echo;
 
@@ -117,7 +117,7 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
     {
         var forced = RetrievalFlowKind.Forced(parameters);
         var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, parameters.Values);
-        using var http = new HttpRuntime(flow.Reliability, context.Secrets, context.Time, allowLoopback: EngineContext.LoopbackAllowed);
+        using var http = new HttpRuntime(flow.Reliability, context.Secrets, context.Time, allowLoopback: EngineContext.LoopbackAllowed, observer: context.HttpObserver);
         var client = await ProtocolFactory.ClientAsync(http, flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, context.Secrets, ct).ConfigureAwait(false);
         var runner = new RetrievalRunner(flow, values, client, context.Stores, context.Ledger, context.Time, context.Loggers.CreateLogger<RetrievalRunner>());
 

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Rendering;
@@ -83,7 +84,7 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
         return record;
     }
 
-    public IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    public IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values, ILoggerFactory loggers)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(values);

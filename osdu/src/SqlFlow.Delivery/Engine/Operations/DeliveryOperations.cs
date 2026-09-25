@@ -66,7 +66,7 @@ public abstract class DeliveryOperation : IComputeOperation
         var http = new HttpRuntime(flow.Reliability, _context.Secrets, _context.Time, allowLoopback: EngineContext.LoopbackAllowed);
         try
         {
-            var protocol = await _context.Protocols.CreateAsync(flow, http, ct).ConfigureAwait(false);
+            var protocol = await _context.Protocols.CreateAsync(flow, http, _context.Loggers, ct).ConfigureAwait(false);
             return (http, protocol);
         }
         catch

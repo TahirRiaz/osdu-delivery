@@ -432,14 +432,16 @@ recover:    UPDATE Lease SET Owner=@recoverer, ExpiresUtc=@now + 5 min WHERE Tok
   compare-and-swap, so two leases never hold one record, and any number of nodes share the ledger. That is what lets a
   submission's drains spread over the fleet ([design.md](design.md) section 16.4).
 - **Renew.** The worker renews its lease at half its length (at least once a second apart), and at each renewal
-  checkpoints the lease and reports its progress to the run's trace (`batch.progress`: how many of its records are
-  settled so far, by outcome). A renewal that finds the lease taken over stops the worker: it stops sending, applies
+  checkpoints the lease and reports its progress to the delivery listeners (`batch.progress`: how many of its records
+  are settled so far, by outcome). The run's trace says how far the run's deliveries have got, from the run's totals, at a
+  pace that slows as the run goes on. A renewal that finds the lease taken over stops the worker: it stops sending, applies
   what it appended, and leaves the rest to whoever took the lease over. A renewal that fails on a database error is
   tried again until the lease would run out.
 - **Append.** The worker's concurrent deliveries hand their completed steps and ended tries to the lease's journal,
   which writes them with group commit: one write carries whatever was handed over while the previous write was in
   flight, at most 500 entries. A delivery waits until its entry is written, so a completed step is in the ledger
-  before the next step starts, and a try's `record.*` event reaches the run's trace only after its attempt is stored.
+  before the next step starts, and a try's `record.*` event reaches the listeners, and the run's trace its outcome
+  line, only after its attempt is stored.
 - **Apply.** A checkpoint applies the lease's events a thousand records to a transaction, in record order, each record
   taking its latest event. A completion settles the record as the try said (status, backoff, the pending state
   promoted, the target state) and releases it from the lease; a step keeps the step progress on the record while the

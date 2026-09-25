@@ -19,25 +19,22 @@ public interface IRecordSearchFactory
 {
     /// <param name="flow">The flow whose mapping searches.</param>
     /// <param name="target">The flow's target, reached when the first question is asked and not before.</param>
-    IRecordSearch Create(FlowDefinition flow, Func<CancellationToken, Task<OsduHttpClient>> target);
+    /// <param name="loggers">Where the search says what it asked and what came back; for a run, its own log and live trace.</param>
+    IRecordSearch Create(FlowDefinition flow, Func<CancellationToken, Task<OsduHttpClient>> target, ILoggerFactory loggers);
 }
 
 /// <summary>The search a host uses: the OSDU search service of the platform the flow delivers to.</summary>
 public sealed class PlatformRecordSearchFactory : IRecordSearchFactory
 {
-    private readonly ILoggerFactory _loggers;
+    /// <summary>The one factory every context shares; it holds nothing of its own.</summary>
+    public static PlatformRecordSearchFactory Instance { get; } = new();
 
-    public PlatformRecordSearchFactory(ILoggerFactory loggers)
-    {
-        ArgumentNullException.ThrowIfNull(loggers);
-        _loggers = loggers;
-    }
-
-    public IRecordSearch Create(FlowDefinition flow, Func<CancellationToken, Task<OsduHttpClient>> target)
+    public IRecordSearch Create(FlowDefinition flow, Func<CancellationToken, Task<OsduHttpClient>> target, ILoggerFactory loggers)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(target);
-        return new OsduRecordSearch(target, _loggers.CreateLogger<OsduRecordSearch>());
+        ArgumentNullException.ThrowIfNull(loggers);
+        return new OsduRecordSearch(target, loggers.CreateLogger<OsduRecordSearch>());
     }
 }
 

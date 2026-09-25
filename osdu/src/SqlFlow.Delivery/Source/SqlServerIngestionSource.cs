@@ -17,21 +17,19 @@ namespace SqlFlow.Delivery.Source;
 public sealed class SqlServerIngestionSourceFactory : IIngestionSourceFactory
 {
     private readonly ISecretResolver _secrets;
-    private readonly ILoggerFactory _loggers;
 
-    public SqlServerIngestionSourceFactory(ISecretResolver secrets, ILoggerFactory loggers)
+    public SqlServerIngestionSourceFactory(ISecretResolver secrets)
     {
         ArgumentNullException.ThrowIfNull(secrets);
-        ArgumentNullException.ThrowIfNull(loggers);
         _secrets = secrets;
-        _loggers = loggers;
     }
 
-    public IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    public IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values, ILoggerFactory loggers)
     {
         ArgumentNullException.ThrowIfNull(flow);
         ArgumentNullException.ThrowIfNull(values);
-        return new SqlServerIngestionSource(flow, values, _secrets, _loggers.CreateLogger<SqlServerIngestionSource>());
+        ArgumentNullException.ThrowIfNull(loggers);
+        return new SqlServerIngestionSource(flow, values, _secrets, loggers.CreateLogger<SqlServerIngestionSource>());
     }
 }
 

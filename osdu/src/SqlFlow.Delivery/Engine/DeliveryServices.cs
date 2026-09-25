@@ -51,9 +51,9 @@ public static class DeliveryServices
             sp.GetServices<IFileStore>(), sp.GetServices<IFileWriter>(), sp.GetServices<IFileReader>()));
         services.TryAddSingleton<IPayloadFiles>(sp => new StoragePayloadFiles(sp.GetRequiredService<FileStoreRegistry>()));
 
-        // The ingestion tables a flow reads, opened on the node with the flow's own connection reference.
-        services.TryAddSingleton<IIngestionSourceFactory>(sp => new SqlServerIngestionSourceFactory(
-            sp.GetRequiredService<ISecretResolver>(), sp.GetRequiredService<ILoggerFactory>()));
+        // The ingestion tables a flow reads, opened on the node with the flow's own connection reference and logging to
+        // whoever opens them: a run's own log and live trace.
+        services.TryAddSingleton<IIngestionSourceFactory>(sp => new SqlServerIngestionSourceFactory(sp.GetRequiredService<ISecretResolver>()));
 
         // Documents: the delivery loader behind the platform's envelope probe.
         services.AddSingleton<DeliveryDocumentLoader>();
@@ -75,8 +75,8 @@ public static class DeliveryServices
 
         // Protocols and the completion callback. The logging listener is always on; hosts add their own (a live
         // feed, metrics, a webhook) by registering more IDeliveryListener instances.
-        services.TryAddSingleton<IProtocolFactory>(sp => new DefaultProtocolFactory(sp.GetRequiredService<ISecretResolver>(), sp.GetRequiredService<ILoggerFactory>()));
-        services.TryAddSingleton<IRecordSearchFactory>(sp => new PlatformRecordSearchFactory(sp.GetRequiredService<ILoggerFactory>()));
+        services.TryAddSingleton<IProtocolFactory>(sp => new DefaultProtocolFactory(sp.GetRequiredService<ISecretResolver>()));
+        services.TryAddSingleton<IRecordSearchFactory>(PlatformRecordSearchFactory.Instance);
         services.AddSingleton<IDeliveryListener, LoggingDeliveryListener>();
 
         services.AddSingleton(sp => new EngineContext(

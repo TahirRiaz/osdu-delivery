@@ -34,7 +34,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
     {
         var values = FlowParameters.Resolve(flow, ReadValues(payload));
         var key = await ResolveKeyAsync(flow, payload, ct).ConfigureAwait(false);
-        var source = Context.Sources.Open(flow, values);
+        var source = Context.Sources.Open(flow, values, Context.Loggers);
         var header = await source.OpenAsync(SourceSelection.ForKeys([key.Key]), null, ct).ConfigureAwait(false);
         if (header.MissingKeys.Count > 0)
         {

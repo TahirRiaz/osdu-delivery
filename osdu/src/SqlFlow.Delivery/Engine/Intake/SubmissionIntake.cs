@@ -59,7 +59,8 @@ public sealed record PreparedIntake(SubmissionState Submission, PlanHeader Heade
 /// </summary>
 public sealed class SubmissionIntake
 {
-    private static readonly TimeSpan ProgressInterval = TimeSpan.FromSeconds(15);
+    /// <summary>The held records of one read the trace names with their reason; the submission counts the rest.</summary>
+    private const int HoldsLogged = 20;
 
     /// <summary>Batch numbers per fan-out slice namespace.</summary>
     public const int BatchesPerPartition = 1_000_000;
@@ -76,6 +77,12 @@ public sealed class SubmissionIntake
 
     /// <summary>The platform run the intake happens in, stamped on the pending work it writes.</summary>
     public Guid? RunId { get; init; }
+
+    /// <summary>
+    /// The trace of the run the intake plans for, or null outside a run. What the intake plans for a record the trace
+    /// describes is on it, as a plan run shows it; so is how far the planning has got.
+    /// </summary>
+    public RunTrace? Trace { get; init; }
 
     public SubmissionIntake(ILedger ledger, Planner planner, FileStoreRegistry stores, TimeProvider time, IDeliveryListener listener, ILogger<SubmissionIntake> logger)
     {
@@ -341,7 +348,15 @@ public sealed class SubmissionIntake
         long conflicted = 0;
         var held = new List<RecordState>();
         var untrackedLogged = 0;
+        var holdsLogged = 0;
         var lastProgress = _time.GetUtcNow();
+        _logger.LogInformation(
+            "Planning submission {SubmissionId}: {What}, {Workers} render batch(es) of {Records} at a time, {BatchRecords} record(s) to a work batch.",
+            submission.SubmissionId,
+            range is null
+                ? string.Create(CultureInfo.InvariantCulture, $"{header.Source.EstimatedCandidates} candidate record(s) of {flow.Source.Record.Object}")
+                : string.Create(CultureInfo.InvariantCulture, $"key slice {range.Value.Slice} of {flow.Source.Record.Object}"),
+            flow.Reliability.EffectiveRenderParallelism, Planner.RenderBatch, batchRecords);
 
         try
         {
@@ -382,6 +397,11 @@ public sealed class SubmissionIntake
                         break;
 
                     case PlannedAction.Hold:
+                        if (Describes(entry.Key.Value) || holdsLogged++ < HoldsLogged)
+                        {
+                            _logger.LogWarning("{Record} is held: {Reason}", RunTrace.Record(entry.SourceKey, entry.Label, entry.Key.Value), Http.HeaderRedaction.RedactMessage(entry.Reason));
+                        }
+
                         held.Add(HeldState(flow, submission, entry, header.Mapping));
                         if (held.Count >= Planner.RenderBatch)
                         {
@@ -394,6 +414,11 @@ public sealed class SubmissionIntake
                         if (!entry.IsDelivery)
                         {
                             break;
+                        }
+
+                        if (Describes(entry.Key.Value))
+                        {
+                            _logger.LogInformation("{Entry}", PlanFormatting.Describe(entry));
                         }
 
                         writer ??= await WorkBatchWriter.OpenAsync(_stores, workRoot, submission.SubmissionId, nextBatch, ct).ConfigureAwait(false);
@@ -422,11 +447,12 @@ public sealed class SubmissionIntake
                         break;
                 }
 
+                // Paced by the run's trace, which slows as the run goes on; outside a run, every progress interval.
                 var nowUtc = _time.GetUtcNow();
-                if (nowUtc - lastProgress >= ProgressInterval)
+                if (Trace is { } trace ? trace.ProgressDue("intake", nowUtc) : nowUtc - lastProgress >= RunTrace.ProgressInterval)
                 {
                     lastProgress = nowUtc;
-                    _logger.LogInformation("Intake progress: {Summary}; {Batches} batch(es) written.", summary, batches);
+                    _logger.LogInformation(RunTrace.Bounded, "Intake progress: {Summary}; {Batches} batch(es) written.", summary, batches);
                 }
             }
 
@@ -467,6 +493,12 @@ public sealed class SubmissionIntake
 
         return new IntakeCounts(summary.Records, staged, summary.Skips, summary.Holds + conflicted, summary.Blocked, summary.Untracked, batches, summary.Stale + refused, summary.AwaitingApproval);
     }
+
+    /// <summary>
+    /// Whether the run's trace describes the record the intake plans. Only a record the intake sends or holds asks, so the
+    /// records a run describes are the ones it does something with, not the unchanged ones it reads past.
+    /// </summary>
+    private bool Describes(DeliveryKey key) => Trace?.Describes(key, _logger) == true;
 
     /// <summary>What the ledger is told about one skipped plan entry.</summary>
     private SkippedRecord Skipped(PlanEntry entry, string renderContext) => new()

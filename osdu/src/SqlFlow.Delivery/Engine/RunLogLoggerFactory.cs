@@ -71,7 +71,12 @@ public sealed class RunLogLoggerFactory : ILoggerFactory
         });
     }
 
-    private static string StepName(string category)
+    /// <summary>
+    /// The step a logger's lines are filed under: what the engine is doing (planning, the intake, delivering, a call to
+    /// OSDU) rather than the class that said it. Every protocol, and the ETP session one of them runs, speaks for the
+    /// target.
+    /// </summary>
+    internal static string StepName(string category)
     {
         var name = category.Length == 0 ? "engine" : category[(category.LastIndexOf('.') + 1)..];
         return name switch
@@ -82,6 +87,10 @@ public sealed class RunLogLoggerFactory : ILoggerFactory
             "Verifier" => "verify",
             "SqlServerIngestionSource" => "source",
             "LoggingDeliveryListener" => "record",
+            "RunHttpTrace" => "http",
+            "OsduRecordSearch" => "search",
+            "EtpSession" => "target",
+            _ when name.EndsWith("Protocol", StringComparison.Ordinal) => "target",
             _ => name.Length == 0 ? "engine" : char.ToLowerInvariant(name[0]) + name[1..],
         };
     }

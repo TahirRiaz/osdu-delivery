@@ -223,7 +223,8 @@ public sealed class CacheRefresher
         => OsduConnection.CreateAsync(
             flow.Source.Endpoint ?? throw new DeliveryException(
                 $"Cache flow '{flow.Name}' declares a type searched on OSDU and no source.endpoint to search it on."),
-            flow.Source.Auth, flow.Source.Headers, flow.Reliability, _context.Secrets, allowLoopback: EngineContext.LoopbackAllowed, ct: ct);
+            flow.Source.Auth, flow.Source.Headers, flow.Reliability, _context.Secrets, allowLoopback: EngineContext.LoopbackAllowed,
+            observer: _context.HttpObserver, ct: ct);
 
     private static string ModeText(CacheChangeMode mode) => mode == CacheChangeMode.Auto ? "auto" : "approve";
 }

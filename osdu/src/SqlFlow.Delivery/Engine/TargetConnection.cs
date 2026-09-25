@@ -35,7 +35,7 @@ internal sealed class TargetConnection : IDisposable
             lock (_gate)
             {
                 ObjectDisposedException.ThrowIf(_disposed, this);
-                return _http ??= new HttpRuntime(_flow.Reliability, _context.Secrets, _context.Time, allowLoopback: EngineContext.LoopbackAllowed);
+                return _http ??= NewHttp();
             }
         }
     }
@@ -51,7 +51,7 @@ internal sealed class TargetConnection : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             pending = _client ??= ProtocolFactory.ClientAsync(
-                _http ??= new HttpRuntime(_flow.Reliability, _context.Secrets, _context.Time, allowLoopback: EngineContext.LoopbackAllowed),
+                _http ??= NewHttp(),
                 _flow.Target.Endpoint,
                 _flow.Target.Auth,
                 _flow.Target.Headers,
@@ -76,6 +76,10 @@ internal sealed class TargetConnection : IDisposable
             throw;
         }
     }
+
+    /// <summary>The stack every call to the target goes through, watched by the run's trace when the context serves a run.</summary>
+    private HttpRuntime NewHttp()
+        => new(_flow.Reliability, _context.Secrets, _context.Time, allowLoopback: EngineContext.LoopbackAllowed, observer: _context.HttpObserver);
 
     public void Dispose()
     {

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 
@@ -184,8 +185,12 @@ public sealed record SourceHeader
 /// </summary>
 public interface IIngestionSourceFactory
 {
-    /// <summary>The source for one flow and one run's parameter values; the values fill the scope predicate.</summary>
-    IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values);
+    /// <summary>
+    /// The source for one flow and one run's parameter values; the values fill the scope predicate. What the source says
+    /// about its read (the window it fixed, the candidates it found, a page it read again) goes to
+    /// <paramref name="loggers"/>, which for a run are the run's own log and live trace.
+    /// </summary>
+    IIngestionSource Open(FlowDefinition flow, IReadOnlyDictionary<string, string> values, ILoggerFactory loggers);
 }
 
 /// <summary>
