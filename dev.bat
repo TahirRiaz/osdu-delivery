@@ -52,6 +52,31 @@ call :stopport 5173 "GUI"
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'dotnet.exe','SqlFlow.Delivery.ControlPlane.Host.exe' -and $_.CommandLine -like '*SqlFlow.Delivery.ControlPlane.Host*' } | ForEach-Object { Write-Host ('Stopping previous control plane (pid ' + $_.ProcessId + ') ...'); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 taskkill /f /t /fi "WINDOWTITLE eq OSDU Delivery GUI*" >nul 2>&1
 
+REM --- .NET SDK on PATH ---
+REM A runtime-only Program Files install shadows a per-user SDK (user PATH comes after system PATH),
+REM so fall back to the per-user installs, prepended so they win. 'dotnet --version' honours global.json.
+REM 'neq 0', not 'errorlevel 1': the host's "no SDK" exit code is negative.
+dotnet --version >nul 2>&1
+if %errorlevel% neq 0 (
+    if exist "%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe" (
+        set "DOTNET_ROOT=%LOCALAPPDATA%\Microsoft\dotnet"
+        set "PATH=%LOCALAPPDATA%\Microsoft\dotnet;%PATH%"
+    )
+)
+dotnet --version >nul 2>&1
+if %errorlevel% neq 0 (
+    if exist "%USERPROFILE%\.dotnet\dotnet.exe" (
+        set "DOTNET_ROOT=%USERPROFILE%\.dotnet"
+        set "PATH=%USERPROFILE%\.dotnet;%PATH%"
+    )
+)
+dotnet --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [X] No .NET SDK matching global.json was found. Install it from https://aka.ms/dotnet/download
+    echo     ^(winget install Microsoft.DotNet.SDK.9^), then start dev.bat again.
+    exit /b 1
+)
+
 REM --- Azure login is what routes Key Vault and storage to the cloud ---
 REM 'call' is REQUIRED: az on Windows is az.cmd, and invoking a .cmd from a .bat without 'call'
 REM transfers control and never comes back, so the rest of this script silently never runs.
@@ -159,6 +184,14 @@ REM it would steal due syncs from the deployed control plane and execute them wi
 REM filesystem, credentials, and code version. Dev instances therefore never participate; use the
 REM deployed estate's "sync now" (or the CLI's db sync against a local folder) instead.
 set "ControlPlane__ManagedSync__Enabled=false"
+REM 'dotnet run' takes the project directory as its content root, where there is no appsettings.json
+REM (SQLFlow's, with the framework categories at Warning, reaches only a built host's OUTPUT folder
+REM through the project reference). So every request and every EF Core command logs at Information
+REM here unless these two are set; do not "fix" this by adding an appsettings.json to the host project,
+REM that would replace the platform's file in the output and change what the deployed containers run
+REM with (see HANDOVER.md).
+set "Logging__LogLevel__Microsoft.AspNetCore=Warning"
+set "Logging__LogLevel__Microsoft.EntityFrameworkCore=Warning"
 dotnet run --project osdu\hosts\SqlFlow.Delivery.ControlPlane.Host --urls http://localhost:5000
 
 endlocal
