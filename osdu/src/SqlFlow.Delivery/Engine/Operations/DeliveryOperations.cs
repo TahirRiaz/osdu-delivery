@@ -82,6 +82,28 @@ public abstract class DeliveryOperation : IComputeOperation
     protected static string Actor(ComputeTaskPayload payload)
         => payload.Argument("actor") ?? "unknown";
 
+    /// <summary>
+    /// The flow parameter values the task carries in <c>values</c> (a JSON object of strings), which fill the record scope's
+    /// predicate when the operation reads the ingestion tables; none when it carries none.
+    /// </summary>
+    protected static IReadOnlyDictionary<string, string> Values(ComputeTaskPayload payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        if (payload.Argument("values") is not { } json)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+        catch (JsonException ex)
+        {
+            throw new SqlFlowException($"The task's 'values' argument is not a JSON object of strings: {ex.Message}", ex);
+        }
+    }
+
     private static string ResolveFlowFile(ComputeTaskPayload payload)
     {
         var file = payload.Argument("flowFile");

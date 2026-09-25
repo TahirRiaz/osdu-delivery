@@ -50,7 +50,7 @@ public sealed class DeliveryModuleTests
         Assert.Contains(CacheDefinition.FlowTypeName, kinds);
         Assert.Equal(3, executors.Count);
         Assert.Equal(
-            ["delivery-delete", "delivery-probe", "delivery-read", "delivery-source"],
+            ["delivery-delete", "delivery-preview", "delivery-probe", "delivery-read", "delivery-source"],
             operations.Order(StringComparer.Ordinal).ToList());
     }
 

@@ -10,7 +10,7 @@ namespace SqlFlow.Delivery.Cli;
 /// <summary>
 /// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval and cache flow kinds (so SQLFlow's own
 /// <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
-/// module's database, and the module's own verbs: <c>check</c>, <c>fixtures</c>, <c>records</c>, <c>config</c>,
+/// module's database, and the module's own verbs: <c>check</c>, <c>preview</c>, <c>fixtures</c>, <c>records</c>, <c>config</c>,
 /// <c>cache</c> and <c>template</c>.
 /// </summary>
 /// <remarks>
@@ -40,6 +40,21 @@ public sealed class DeliveryCliModule : ICliModule
         {
             Flags = ["--connect"],
             ValueOptions = ["--interface"],
+        },
+        new CliVerb(
+            "preview",
+            [
+                "sqlflow preview  <flow.yaml> [--interface <name>] [--key <key>] [--set k=v] [--out <file.json>]",
+                "                                   Render one record as a delivery would, and send nothing: the scope's",
+                "                                   first record, or the one --key names (a delivery key, an OSDU id the",
+                "                                   ledger holds, a source key, or a JSON array of the key's parts). Says what",
+                "                                   the next run would do with it, and shows the document, the files it would",
+                "                                   upload and the requests the route would make (needs --db). --out writes",
+                "                                   the whole preview as JSON.",
+            ],
+            DeliveryPreviewVerbs.PreviewAsync)
+        {
+            ValueOptions = ["--interface", "--key", "--out"],
         },
         new CliVerb(
             "fixtures",

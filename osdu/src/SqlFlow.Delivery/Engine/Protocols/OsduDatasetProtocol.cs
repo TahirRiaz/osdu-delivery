@@ -54,8 +54,17 @@ public sealed class OsduDatasetProtocol : IDeliveryProtocol
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, DatasetService.MaxRecords);
 
     /// <summary>The id of the dataset a record of a non-dataset kind keeps its files in.</summary>
-    public string DatasetIdFor(string targetId)
-        => WorkflowValues.DerivedDatasetId(targetId, TargetId.EntityTypeFromKind(_options.DatasetKind), FilesSuffix);
+    public string DatasetIdFor(string targetId) => DatasetIdFor(_options, targetId);
+
+    /// <summary>
+    /// The id of the dataset a record of a non-dataset kind keeps its files in on a route with <paramref name="options"/>:
+    /// derived from the record's id and the route's dataset kind, so it is the same on every delivery and known before one.
+    /// </summary>
+    public static string DatasetIdFor(ProtocolOptions options, string targetId)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return WorkflowValues.DerivedDatasetId(targetId, TargetId.EntityTypeFromKind(options.DatasetKind), FilesSuffix);
+    }
 
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {

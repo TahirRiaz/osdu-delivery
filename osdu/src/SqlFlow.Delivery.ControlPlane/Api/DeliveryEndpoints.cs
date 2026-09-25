@@ -53,7 +53,19 @@ public sealed record DeliveryInterfaceDto(
     string? Interface, Guid FlowId, string Ledger, string Route, string? RouteReason, string Mapping, string? Kind, string RecordObject,
     IReadOnlyList<string> After, DeliveryFlowStatsDto Stats,
     int Wave = 1, IReadOnlyList<DeliveryInterfaceWaitDto>? WaitsFor = null, IReadOnlyList<DeliveryInterfaceWaitDto>? NotWaitedFor = null,
-    string? OrderProblem = null);
+    string? OrderProblem = null, IReadOnlyList<DeliveryParameterDto>? Parameters = null, IReadOnlyList<string>? KeyColumns = null);
+
+/// <summary>A parameter the flow declares, whose value fills its record scope: its name, whether a value is required, its default.</summary>
+public sealed record DeliveryParameterDto(string Name, bool Required, string? Default, string? Description);
+
+/// <summary>
+/// A preview of one record of a flow: the record's key, or none for the scope's first record, and the flow parameter values
+/// the scope is read with (the declared defaults fill what is not given).
+/// </summary>
+public sealed record DeliveryPreviewRequest(string? Key, IReadOnlyDictionary<string, string>? Values);
+
+/// <summary>A read of one OSDU record through a flow's route and credentials, by its id (a version or a trailing colon is dropped).</summary>
+public sealed record DeliveryReadRequest(string? TargetId);
 
 /// <summary>One interface another waits for, or does not wait for, with where that comes from (<c>after</c> or <c>schema</c>) and why.</summary>
 public sealed record DeliveryInterfaceWaitDto(string Interface, string Origin, string Why);
@@ -386,6 +398,9 @@ public static class DeliveryEndpoints
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/verify", VerifyRecordAsync).WithName("VerifyDeliveryRecord");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/read", ReadRecordAsync).WithName("ReadDeliveryRecordBack");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/source", ReadSourceAsync).WithName("ReadDeliveryRecordSource");
+        delivery.MapPost("/records/{flowId:guid}/{key:guid}/preview", PreviewRecordAsync).WithName("PreviewDeliveryRecord");
+        delivery.MapPost("/flows/{pipelineId:guid}/preview", PreviewAsync).WithName("PreviewDeliveryFlowRecord");
+        delivery.MapPost("/flows/{pipelineId:guid}/osdu/read", ReadTargetAsync).WithName("ReadDeliveryOsduRecord");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove/preview", PreviewRemovalAsync).WithName("PreviewDeliveryRemoval");
@@ -458,7 +473,9 @@ public static class DeliveryEndpoints
                 order.WaveOf(name),
                 order.WaitsFor(name).Select(d => Wait(d, d.DependsOn)).ToList(),
                 order.NotWaitedFor.Where(d => string.Equals(d.Interface, name, StringComparison.OrdinalIgnoreCase)).Select(d => Wait(d, d.DependsOn)).ToList(),
-                orderProblem));
+                orderProblem,
+                flow.Parameters.Select(p => new DeliveryParameterDto(p.Key, p.Value.Required, p.Value.Default, p.Value.Description)).ToList(),
+                flow.Source.Record.Key));
         }
 
         return TypedResults.Ok<IReadOnlyList<DeliveryInterfaceDto>>(result);
@@ -1439,6 +1456,151 @@ public static class DeliveryEndpoints
         return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName,
             new Dictionary<string, string>(StringComparer.Ordinal) { ["deliveryKey"] = key.ToString("D") }, user, ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// One record of a flow rendered on a node as a delivery would render it, with nothing sent: the scope's first record,
+    /// or the one the request's key names. The key and the parameter values are checked here, so a request a node would
+    /// refuse is a 400 rather than a task that fails; whether the key names a row is the node's to find, in the flow's own
+    /// ingestion tables, and is an answer rather than a failure.
+    /// </summary>
+    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> PreviewAsync(
+        Guid pipelineId, DeliveryPreviewRequest? request, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents,
+        IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        var arguments = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (request?.Key?.Trim() is { Length: > 0 } key)
+        {
+            if (key.Length > ComputeTaskPayload.MaxArgumentLength)
+            {
+                return Invalid($"The key is {key.Length} characters long; a key a preview reads is at most {ComputeTaskPayload.MaxArgumentLength}.");
+            }
+
+            if (key.Any(char.IsControl))
+            {
+                return Invalid("The key holds a control character (a tab, a line break); name one record, on one line.");
+            }
+
+            arguments["key"] = key;
+        }
+
+        var values = request?.Values ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        if (ParameterProblem(flow.Flow, values) is { } refused)
+        {
+            return Invalid(refused);
+        }
+
+        if (values.Count > 0)
+        {
+            var json = JsonSerializer.Serialize(values);
+            if (json.Length > ComputeTaskPayload.MaxArgumentLength)
+            {
+                return Invalid($"The parameter values are {json.Length} characters as JSON; a preview carries at most {ComputeTaskPayload.MaxArgumentLength}.");
+            }
+
+            arguments["values"] = json;
+        }
+
+        return await EnqueueOperationAsync(db, dispatcher, flow, PreviewRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Why the parameter values cannot read the flow's scope, or null when they can: a name the flow does not declare, or a
+    /// required parameter without a default that is given no value.
+    /// </summary>
+    private static string? ParameterProblem(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    {
+        var undeclared = values.Keys.Where(name => !flow.Parameters.ContainsKey(name)).ToList();
+        if (undeclared.Count > 0)
+        {
+            var declared = flow.Parameters.Count == 0 ? "it declares none" : $"it declares {string.Join(", ", flow.Parameters.Keys)}";
+            return $"The flow declares no parameter {string.Join(", ", undeclared.Select(n => $"'{n}'"))}; {declared}.";
+        }
+
+        var missing = flow.Parameters
+            .Where(p => p.Value.Required && p.Value.Default is null && (!values.TryGetValue(p.Key, out var given) || string.IsNullOrWhiteSpace(given)))
+            .Select(p => p.Key)
+            .ToList();
+        return missing.Count == 0 ? null : $"The flow's scope needs a value for {string.Join(", ", missing)}, which it declares required and gives no default.";
+    }
+
+    /// <summary>
+    /// The record a record page shows, rendered on a node from its current source row as a delivery would render it now,
+    /// with nothing sent: what the page compares with what OSDU holds. The row is read in the scope the record was last
+    /// planned under, as the source row read reads it.
+    /// </summary>
+    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> PreviewRecordAsync(
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        if (flow is null || record is null)
+        {
+            return problem!;
+        }
+
+        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["key"] = key.ToString("D") };
+        if (record.LastSubmissionId is { } lastId
+            && await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) is { ParametersJson.Length: > 2 } last)
+        {
+            if (last.ParametersJson.Length > ComputeTaskPayload.MaxArgumentLength)
+            {
+                return TypedResults.Problem(
+                    detail: $"The scope the record was last planned under is {last.ParametersJson.Length} characters as JSON, more than the {ComputeTaskPayload.MaxArgumentLength} a node task carries; preview it from the flow's Preview tab with its values.",
+                    statusCode: StatusCodes.Status409Conflict, title: "Scope too large to preview");
+            }
+
+            arguments["values"] = last.ParametersJson;
+        }
+
+        return await EnqueueOperationAsync(db, dispatcher, flow, PreviewRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The longest OSDU id a read takes; storage ids are far shorter, and a longer text is not one.</summary>
+    private const int MaxTargetIdLength = 1024;
+
+    /// <summary>
+    /// One OSDU record read on a node through a flow's route and credentials, by its id: a record a document refers to, which
+    /// the ledger may never have delivered. The id may carry a version or the trailing colon of a reference; the read is of
+    /// the record, at its latest version. Nothing is written.
+    /// </summary>
+    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadTargetAsync(
+        Guid pipelineId, DeliveryReadRequest? request, [FromQuery(Name = "interface")] string? interfaceName, CatalogDbContext db, DeliveryDocumentLoader documents,
+        IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var asked = request?.TargetId?.Trim();
+        if (string.IsNullOrEmpty(asked))
+        {
+            return Invalid("Name the OSDU id to read.");
+        }
+
+        if (asked.Length > MaxTargetIdLength)
+        {
+            return Invalid($"The id is {asked.Length} characters long; an OSDU id is at most {MaxTargetIdLength}.");
+        }
+
+        if (!TargetId.IsRecordReference(asked) || asked.Any(char.IsControl))
+        {
+            return Invalid($"'{asked}' is not an OSDU record id: a partition, an entity type such as master-data--Wellbore, and a unique part, separated by colons.");
+        }
+
+        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        return await EnqueueOperationAsync(
+            db, dispatcher, flow, ReadRecordOperation.OperationName,
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["targetId"] = TargetId.WithoutVersion(asked) }, user, ct).ConfigureAwait(false);
+    }
+
+    private static ProblemHttpResult Invalid(string detail)
+        => TypedResults.Problem(detail: detail, statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
 
     /// <summary>
     /// One record's removal. It is the many-record path with a selection of one, so a single delete and a bulk

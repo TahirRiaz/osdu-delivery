@@ -97,13 +97,14 @@ public static class DeliveryServices
             sp.GetRequiredService<IRecordSearchFactory>()));
 
         // Execution: the run executors behind the platform's document executor, and the ad-hoc compute operations
-        // a node runs for the control plane (target probe, record read-back, source row read-back and removal).
+        // a node runs for the control plane (target probe, record read-back, source row read-back, record preview and removal).
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, CacheExecutor>();
         services.AddSingleton<IComputeOperation, ProbeTargetOperation>();
         services.AddSingleton<IComputeOperation, ReadRecordOperation>();
         services.AddSingleton<IComputeOperation, ReadSourceRowOperation>();
+        services.AddSingleton<IComputeOperation, PreviewRecordOperation>();
         services.AddSingleton<IComputeOperation, DeleteRecordOperation>();
 
         return services;

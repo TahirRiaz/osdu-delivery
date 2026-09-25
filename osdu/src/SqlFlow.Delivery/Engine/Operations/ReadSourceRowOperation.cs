@@ -1,10 +1,9 @@
-using System.Text.Json;
 using SqlFlow.Core;
 using SqlFlow.Core.Compute;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Preview;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
-using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Source;
 
 namespace SqlFlow.Delivery.Engine.Operations;
@@ -32,7 +31,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
 
     protected override async Task<object> RunAsync(FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
-        var values = FlowParameters.Resolve(flow, ReadValues(payload));
+        var values = FlowParameters.Resolve(flow, Values(payload));
         var key = await ResolveKeyAsync(flow, payload, ct).ConfigureAwait(false);
         var source = Context.Sources.Open(flow, values, Context.Loggers);
         var header = await source.OpenAsync(SourceSelection.ForKeys([key.Key]), null, ct).ConfigureAwait(false);
@@ -70,15 +69,8 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
                 deliveryKey = key.DeliveryKey,
                 sourceKey = key.Key.Values,
                 found = true,
-                record = Row(record.Row),
-                datasets = record.Scopes.ToDictionary(
-                    s => s.Key,
-                    s => new
-                    {
-                        rows = s.Value.Take(MaxChildRows).Select(Row).ToList(),
-                        total = s.Value.Count,
-                        truncated = s.Value.Count > MaxChildRows,
-                    }),
+                record = SourceRowView.Columns(record.Row),
+                datasets = SourceRowView.Datasets(record, MaxChildRows),
                 origin = new { file = record.Origin.FileName, row = record.Origin.RowNumber, updatedUtc = record.Origin.UpdatedUtc },
                 fingerprint = record.Version.Fingerprint,
                 deletedUtc = record.DeletedUtc,
@@ -112,24 +104,4 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
             ?? throw new SqlFlowException($"Record {key} carries no source key, so the row it came from cannot be looked up; deliver the flow once to record it.");
         return (KeyTuple.FromJson(stored), key.Value);
     }
-
-    private static IReadOnlyDictionary<string, string> ReadValues(ComputeTaskPayload payload)
-    {
-        if (payload.Argument("values") is not { } json)
-        {
-            return new Dictionary<string, string>(StringComparer.Ordinal);
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new Dictionary<string, string>(StringComparer.Ordinal);
-        }
-        catch (JsonException ex)
-        {
-            throw new SqlFlowException($"The task's 'values' argument is not a JSON object of strings: {ex.Message}", ex);
-        }
-    }
-
-    private static IReadOnlyDictionary<string, string?> Row(SourceRow row)
-        => row.Columns.ToDictionary(c => c, row.GetString, StringComparer.Ordinal);
 }
