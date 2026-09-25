@@ -13,6 +13,22 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A record can be previewed before it is sent, and read as OSDU holds it.** A delivery flow's new Preview tab
+  renders one record on a node exactly as a delivery would, and sends nothing: the first record of the scope, or the one
+  a key names (a source key as the Records page shows it, a delivery key, an OSDU id the ledger holds, or the key's
+  parts, a part holding a slash included), with the flow's parameters asked for as it declares them. It shows what the
+  next run would do with the record and why, the document as the route sends it (on the file, manifest and composed
+  routes with a placeholder for each dataset id the File service mints, on the dataset route with the id derived from
+  the record's), the route's requests in order, the payload files with each parquet file's rows and columns from its
+  footer, the records the document refers to, and the record's source rows; it downloads as JSON. The same preview is
+  `sqlflow preview <flow.yaml> [--key <key>]`, and `POST /api/v1/delivery/flows/{pipelineId}/preview`. A record's page
+  gains an In OSDU tab (the record as OSDU holds it, read through its flow's route: its version, who changed it, its
+  access and legal tags, the document, and every record it refers to, readable in turn through
+  `POST /api/v1/delivery/flows/{pipelineId}/osdu/read`) and a Compare tab (what OSDU holds beside what a delivery would
+  send now, side by side and path by path, OSDU's own fields set aside). Every records list carries In OSDU on each row
+  with an OSDU id. A preview writes nothing to OSDU, the ledger or the work location, and a record of any size answers
+  within a node task's bounds.
+
 - **A mapping computes values and decides conditions with expressions.** `$expr` gives a property a value computed
   from the row (`$expr: coalesce(log_name, log_source)`), `$when` is now an expression giving true or false
   (`$when: depth_coding = "REGULAR" and not empty(index_increment)`), and a `$forEach` node's new `$where` keeps the

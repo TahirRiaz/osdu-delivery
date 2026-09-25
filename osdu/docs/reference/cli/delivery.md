@@ -1,4 +1,4 @@
-# sqlflow check, fixtures, cache, template, and the OSDU run options
+# sqlflow check, preview, fixtures, cache, template, and the OSDU run options
 
 ## check
 
@@ -42,6 +42,35 @@ each reference left out of a cycle. Interfaces that wait for each other in a way
 `--json` the answer is the flow's name, its `order`, and an `interfaces` array holding one object per interface, each
 with its `interface`, `ledger`, `route` (`name` and `reason`), `after`, `wave`, `waitsFor` and `notWaitedFor` (each an
 `interface`, its `origin`, `after` or `schema`, and `why`) beside the facts above.
+
+## preview
+
+```text
+sqlflow preview <flow.yaml> [--interface <name>] [--key <key>] [--set name=value]... [--out <file.json>] [--db <ref>] [--json]
+```
+
+Renders one record as a delivery would render it, and sends nothing: the same preview a delivery flow's Preview tab
+shows ([operations.md](../../operations.md#previewing-a-record)). It opens the flow's ingestion tables on this machine,
+through the flow's own connection reference, renders with the template and the cache version `check` reads, and asks
+the platform's search only what the mapping's searches ask a run. Nothing is written: not OSDU, not the ledger, not the
+work location. It needs `--db <ref>` or `SQLFLOW_CATALOG_DB`, as `check` does.
+
+Without `--key` it previews the first record of the scope in key order, passing over rows that cannot render (marked
+deleted, a key part empty, held by the source) and naming them. `--key` names a record the way an operator holds it: a
+source key as the ledger shows it (`recall:NORWAY_WELLDB/12359/1`, the system's prefix optional), its parts as `a | b`
+or as a JSON array (`'["NORWAY_WELLDB", "12359/1"]'`), a delivery key, or an OSDU id the ledger holds. A key that names
+no row ends the command with 1 and says why. `--set` fills the flow's parameters, the declared defaults filling the rest.
+
+The text answer names the record, how it was picked, the file and row it came from, the mapping, kind and cache
+version, the route, what the next run would do with it and why (`next run    skip (fingerprint): source version,
+payload hash and render context unchanged`), what the ledger holds for it and whether the document is the one it holds,
+the document's id, size and hash, why a delivery would hold it, the records it refers to, the payload files (with each
+parquet file's rows and columns from its footer), the route's requests in order, and then the document itself as the
+route sends it, with a line naming each placeholder where the platform gives a value (a dataset id the File service
+mints). `--json` prints the preview as JSON; `--out` writes it to a file, whatever the size of its document.
+
+A source that declares interfaces is previewed one interface at a time, each with its own first record; `--interface`
+previews one, and a key needs it, since a key names a record of one interface.
 
 ## fixtures
 
@@ -198,5 +227,5 @@ the flow, the current version and what each type's search matches.
 ## Exit codes
 
 `check`, `cache` and `template` exit 0 on success and 1 on a failure, which prints one `ERROR` line naming the
-problem. `fixtures update` exits 1 as well when any fixture was skipped, after writing the others, so a script never
+problem. `preview` exits 1 as well when no record was found to preview, after saying why. `fixtures update` exits 1 as well when any fixture was skipped, after writing the others, so a script never
 takes a partial update for a complete one. `run` exits 0 when the run succeeded and 1 when it failed; Ctrl+C exits 130.

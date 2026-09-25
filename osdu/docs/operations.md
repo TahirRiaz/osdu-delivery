@@ -97,7 +97,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | Route | Scope | Purpose |
 | --- | --- | --- |
 | `GET /flows/{pipelineId}/stats` | read | Record counts by state, drift, the last 24 hours, the last submission. For a source with several interfaces, the counts of every interface added up (`interfaces` says how many, `flowId` is empty), or one interface's with `?interface=`. |
-| `GET /flows/{pipelineId}/interfaces` | read | The flow's interfaces in document order: each one's name, ledger identity (`flowId`) and the name it is derived from (`ledger`), route and why (`route`, `routeReason`), mapping, the kind the mapping fills as the last sync read it, record table, what the document declares it waits for (`after`), its counts, and the order a run takes: its `wave`, `waitsFor` and `notWaitedFor` (each an interface with `origin`, `after` or `schema`, and `why`). When the order cannot be worked out (a mapping the repository's sync did not read, a template the catalog does not hold, interfaces that wait for each other), `orderProblem` says why and the order shown is `after:` alone. A flow in the single form lists one entry with no name. |
+| `GET /flows/{pipelineId}/interfaces` | read | The flow's interfaces in document order: each one's name, ledger identity (`flowId`) and the name it is derived from (`ledger`), route and why (`route`, `routeReason`), mapping, the kind the mapping fills as the last sync read it, record table, what the document declares it waits for (`after`), its counts, and the order a run takes: its `wave`, `waitsFor` and `notWaitedFor` (each an interface with `origin`, `after` or `schema`, and `why`). When the order cannot be worked out (a mapping the repository's sync did not read, a template the catalog does not hold, interfaces that wait for each other), `orderProblem` says why and the order shown is `after:` alone. Each entry also lists the `parameters` the flow declares (`name`, `required`, `default`, `description`), whose values fill its record scope, and the record table's `keyColumns` in the order a key's parts are named: what the Preview tab asks for. A flow in the single form lists one entry with no name. |
 | `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId` (the records the submission last planned), `deliveredBy` (the records it delivered, which stay its own however many submissions touch them afterwards), `runId` (the records that run touched, through its attempts), `drifted`. |
 | `GET /records?search=&status=&flowId=` | read | One record from anywhere, across every flow: `search` is a delivery key, or the start of any value the record is known by (an identity the mapping declares, the source key or one of its columns, a word of the label, the OSDU id or its own part, the ingestion file). Paged; each hit carries the values that matched and what each is. `flowId` narrows it to one flow's ledger identity (one of `GET /records/flows`); without a term it is that flow's recency listing. It seeks `osdu.RecordIdentity` (by `[FlowId, Token]` for one flow), so it answers at production volume and counts no further than its candidate bound. |
 | `GET /records/flows` | read | The flows the lookup can be narrowed to: one entry per ledger identity the synced repositories name that holds at least one record (`flowId`), with its `pipelineId`, `flowName` and `interface` (null for the single form), named as a hit names them and ordered by flow, then interface. An interface that has delivered nothing yet, and a ledger no synced pipeline holds, are left out. Whether an identity holds a record is one index seek each, whatever the ledger's size. |
@@ -140,19 +140,22 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /records/{flowId}/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope`: `all`, `record`, or `files`, `bulk` or `workflow` as the record's route sends them, a part the route does not send being refused with 400; on the fileAndDdms, manifestAndDdms and workflow routes a part is sent alone, the others staying as OSDU holds them; `metadata` names the record and `payload` every part; `run` true queues a deliver run scoped to the record, which reads it from the ingestion tables by key under its last submission's parameter values, marks it with that scope and sends it); queue a verify run scoped to it. |
 | `POST /records/{flowId}/{key}/source` | operate | Queue a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its system columns, its child datasets, and the origin file and row. Nothing is planned or delivered; poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{flowId}/{key}/read` | operate | Queue a read-back, on a node, of the OSDU record the flow's record claimed; a record that never queued a document has none to read. |
+| `POST /flows/{pipelineId}/preview` | operate | Queue a preview of one record on a node ([Previewing a record](#previewing-a-record)): `key` names it (a delivery key, an OSDU id the ledger holds, a source key as the Records page shows it, or a JSON array of the key's parts), or is left out for the first record of the scope; `values` fill the flow's parameters, the declared defaults filling the rest. The record is rendered as a delivery would render it and nothing is sent or written. An undeclared parameter, a required one without a value, a key with a control character or over 4,000 characters, and values over 4,000 characters as JSON are refused with 400 before anything is queued. Poll `GET /api/v1/compute/tasks/{taskId}`: a key that names no row is an answer (`found` false with the `reason`), not a failure. |
+| `POST /records/{flowId}/{key}/preview` | operate | The same preview for one record of the ledger, read in the scope it was last planned under: what the record renders to now, which its page compares with what OSDU holds. |
+| `POST /flows/{pipelineId}/osdu/read` | operate | Queue a read of any OSDU record by `targetId`, on a node, through the flow's route and credentials: a record a document refers to, which the ledger may never have delivered. A version or the trailing colon of a reference is dropped, and the record is read at its latest version. An id that is not `partition:group--Entity:unique` is refused with 400. Nothing is written. |
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
 | `POST /ledger/prune` | admin | The ledger's retention pass at one cut-off (`olderThanDays`): ages out attempts older than it, keeping the latest of every record, and clears the captured run log of the activities older than it that have finished. No row of the audit trail is deleted. Answers what it took ([Retention and backup](#retention-and-backup)). |
 
 A route under `/flows/{pipelineId}` that acts on records (`records`, `target`, `submissions`, `release`, `probe`,
-`records/remove` and its preview, and `GET /activities?pipelineId=`) works on one interface of the flow. A flow in the
+`preview`, `osdu/read`, `records/remove` and its preview, and `GET /activities?pipelineId=`) works on one interface of the flow. A flow in the
 single form, or a source of one interface, needs no name. For a source of several, the request names the interface
 with `?interface=<name>`: without it the answer is 400 (`Interface required`, listing the interfaces), and a name the
 flow does not declare is 404 (`No such interface`). A record's own routes need no name, because the ledger identity in
 their path is the interface's; the record's answer names its `interface`, and so do a submission's and a target's. A
-task a route queues for a node (a probe, a read-back, a source read, a removal) carries the interface, and the node
-acts through that interface alone.
+task a route queues for a node (a probe, a read-back, a read by id, a source read, a preview, a removal) carries the
+interface, and the node acts through that interface alone.
 
 A run carries its `operation` (`deliver`, `plan`, `intake`, `drain`, `verify` or `replan`) and the flow's `values` on
 the platform's trigger (`POST /api/v1/runs`), with the kind's own arguments in the run payload: `force` (lift the
@@ -275,6 +278,46 @@ The `record` and `everything` scopes mark the record deleted and blocked here; `
 because OSDU still holds it at the version the ledger knows. The task result carries the counts and up to 200
 per-record outcomes (failures first); every record's outcome is in its own attempt regardless.
 
+## Previewing a record
+
+A preview answers "what would this flow send for this record?" before anything is sent. It renders one record on a
+node exactly as a delivery renders it: the same planner, the mapping the flow pins, the template it pins and the
+partition's current cache version, and the platform's search asked only what the mapping's searches ask a run. Nothing
+is written anywhere: not OSDU, not the ledger, not the work location. It is not a run, so it is not in the run history;
+it is a node task, like a read-back, because only a node holds the flow's connection to its ingestion tables.
+
+- **Which record.** The first record of the scope in key order, or the one a key names. A key is what an operator
+  holds: a source key as the Records page shows it (`recall:NORWAY_WELLDB/12359/1`, or just `NORWAY_WELLDB/12359/1`),
+  its parts as `a | b` or as a JSON array (`["NORWAY_WELLDB", "12359/1"]`), a delivery key, or an OSDU id the ledger
+  holds. A part may hold a slash itself (a Recall log id does): every way the text splits into the key's parts is tried,
+  the ledger first, then the table, and a text that reads as two different rows asks for the JSON form. The first
+  record passes over rows that cannot render (marked deleted, a key part empty, held by the source) and names them, up
+  to 1,000; a key names its row whatever it holds. The flow's parameters fill the scope, the declared defaults filling
+  what is not given.
+- **What it answers.** What the next run would do with the record against the ledger (create, update, skip as
+  unchanged, hold, blocked) and why, and whether the document rendered now is the one the ledger holds. The document
+  itself is rendered as a first delivery would render it, so a record a run would skip as unchanged still shows its
+  document. Where the route adds to the document, the preview shows it as the route sends it: on the file, manifest and
+  composed routes `data.Datasets` lists a placeholder for each dataset id the File service mints when a file is
+  registered (`<dataset id the File service returns for chunk_0.parquet>:`), and on the dataset route the id derived
+  from the record's own. The requests the route makes follow in order, with the paths the flow's options give, and the
+  body of a file registration as it is built from the record. Then the files the record's payload would upload, with
+  each parquet file's rows and columns read from its footer (the first ten), the records the document refers to with
+  the ledger's record of each, the searches the render made, the preflight's warnings, and the record's rows as the
+  ingestion tables hold them.
+- **Bounds.** Child rows are shown to 100 per dataset and values to 4,000 characters; payload files to 50 per part; a
+  document over 2,000,000 characters is described by its size and hash and left out. A node's answer stays under the
+  8,000,000 characters a task result holds, leaving out the child rows, then the document, then the record row if it
+  must, and saying so. `sqlflow preview --out` writes a preview whole.
+- **What it does not do.** It sends nothing, so what a DDMS would answer, and the values it keeps on the record (a bulk
+  data link), are not in it; the route's steps say where those come from.
+
+A record's page compares the other way round: its **Compare** tab renders the record afresh from its current source
+row and reads what OSDU holds, both on a node, and shows the two side by side with OSDU's own fields (`version`,
+`createUser`, `createTime`, `modifyUser`, `modifyTime`) set aside, keys in order, and a placeholder named as a value
+the platform gives rather than as a change. The ledger keeps what it sent as a hash, not as the document, so the
+comparison is with what the record renders to now.
+
 ## The GUI
 
 Everything this product adds sits in one navigation group, **OSDU**, straight after the platform's Operate group:
@@ -317,6 +360,13 @@ Pipelines like any other flow.
   or at the whole filtered set. A run page links here filtered to the records that run touched, and a submission's
   page links here twice: to the records it last planned (`?submission=`, which a later submission moves on) and to
   the records it delivered (`?delivered=`, which stay its own however many submissions touch them afterwards).
+  The **Preview** tab renders one record as a delivery would and sends nothing ([Previewing a record](#previewing-a-record)):
+  the first record of the scope, or the one a key names, with an input for each parameter the flow declares (a
+  required one without a default must be filled before Preview enables). The answer shows what the next run would do
+  with the record, the document as the route sends it (or as the mapping renders it), the route's requests in order,
+  the payload files, the records it refers to and its source rows, and downloads as JSON. Every records list, a
+  flow's and the Records page's, carries **In OSDU** on each row the ledger has an OSDU id for, which opens the record's
+  page reading it from OSDU.
 - **A record's page**: the answers an operator arrives with first, as a journey across the whole chain. The strip
   reads in the order the estate moves a row: **pre-ingestion** (the run that landed the file), **ingestion** (the run
   that loaded it into the table the delivery flow reads), then received, planned, dispatched, landed, verified and
@@ -331,7 +381,12 @@ Pipelines like any other flow.
   timeline, each with the rows it handled and a link to its run and flow. Then custody state, hashes, versions, the received-from file and row,
   the pending document, the render context; the history of attempts and interventions as tables; Verify, Redeliver,
   Read back, Source row (the record's rows as the ingestion tables hold them now, read on a node), Release and
-  Remove from OSDU.
+  Remove from OSDU. The **In OSDU** tab shows the record as OSDU holds it, read on a node through the flow's route
+  (Read back opens it): OSDU's own fields (version, who created and last changed it and when), its viewers, owners and
+  legal tags, the document, and every OSDU record it refers to, each of which is read in turn, through the same route,
+  and opens beneath it (a link followed from further up closes what was opened below it). A page opened with
+  `?tab=osdu` reads the record at once. The **Compare** tab shows what OSDU holds beside what a delivery would send now,
+  as a side-by-side comparison and a list of the paths that differ.
 - **The removal dialog**: one surface for both. It names the target first (endpoint as declared, data partition,
   protocol, auth) because that is which OSDU the records are about to leave, then the three scopes side by side
   with what each destroys, whether it can be undone, what the ledger will do, and the exact call it makes. The
@@ -434,6 +489,7 @@ Pipelines like any other flow.
 | --- | --- |
 | `sqlflow validate <flow.yaml>` | The platform's document validation (the CI gate for a folder). |
 | `sqlflow check <flow.yaml> [--interface <name>] [--connect] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the flow, its mappings, its templates and its payload roots. With `--connect` it opens the flow's source connection on this machine and reports the tables, their columns, the key types, the system columns, the current watermark window and the candidate counts. A source is checked one interface at a time, each with its route, its ledger, its wave, what it waits for and why, and the references it does not wait for, after a first line giving the order the interfaces run in; `--interface` checks one. Interfaces that wait for each other in a way nothing cuts fail the check, naming them. With `--json`, a source answers `flow`, `order` and one object per interface (with `wave`, `waitsFor` and `notWaitedFor`). |
+| `sqlflow preview <flow.yaml> [--interface <name>] [--key <key>] [--set name=value]... [--out <file.json>] [--db <ref>] [--json]` | One record rendered as a delivery would render it, and nothing sent ([Previewing a record](#previewing-a-record)): the first record of the scope, or the one `--key` names. It says what the next run would do with the record, lists the payload files and the route's requests, and prints the document as the route sends it. A source is previewed one interface at a time, each with its own first record; a key names a record of one interface, so it needs `--interface`. `--out` writes the whole preview as JSON, however large its document. Ends with 1 when no record was found. |
 | `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|intake\|drain\|replan\|retrieve\|refresh] [--set name=value]... [--payload <json>\|@<file>] [--db <ref>]` | A run on the workstation. The payload carries the delivery kind's arguments (`force`, `submissionId`, `recordKeys`, `redeliver`, `interface`, `interfaces`; [The API](#the-api)). A delivery flow's runs need the module database connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition and so needs it. |
 | `sqlflow records list <flow.yaml> [--interface <name>] [--search <term>] [--contains] [--status <status>] [--max <n>] [--db <ref>] [--json]` | The interface's records from the ledger: the delivery key, the status, the source key, the OSDU id and version, what a waiting record waits for, and the last error of each. A source is read one interface at a time, and says which interfaces it has when it is not told. |
 | `sqlflow records show <flow.yaml> --key <delivery key \| source key> [--interface <name>] [--attempts <n>] [--db <ref>] [--json]` | One record and every try it took: the custody state and where the row came from, then each attempt with its outcome, what it delivered, how long it took, the steps it ran with what the target answered, and the error that stopped it. The source key finds the record as surely as the delivery key, because that is what an operator holds. |
