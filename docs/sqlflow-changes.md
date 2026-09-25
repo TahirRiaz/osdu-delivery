@@ -114,3 +114,6 @@ Each of these lets a host add something of its own without SQLFlow knowing what 
 When SQLFlow is pulled in again (`git subtree pull --prefix=sqlflow --squash B:/SQLFlowV3 main`), a conflict can only
 arise in the files that carry the points above. Resolve it keeping both SQLFlow's change and the extension point, then
 run `tools/check-vendored-sqlflow.sh`, build the solution clean, and run SQLFlow's suites and this project's.
+
+Fixes made in this project's copies of SQLFlow code, which leave `sqlflow/` untouched but apply to it just the same,
+are listed in [sqlflow-upstream-candidates.md](sqlflow-upstream-candidates.md).
