@@ -366,8 +366,11 @@ public sealed record ReplaceFallback(ReplaceFallbackKind Kind, string? Text = nu
 /// <summary>One mapping entry: a template variable and where its value comes from.</summary>
 public sealed partial record MappingEntry
 {
-    /// <summary>The entry's position under <c>mappings</c>, for messages.</summary>
+    /// <summary>The entry's position in the record tree, in document order.</summary>
     public required int Index { get; init; }
+
+    /// <summary>Where the document writes the entry (<c>record.data.Curves.item.CurveUnit</c>), for messages.</summary>
+    public string? Location { get; init; }
 
     public required TemplatePath Target { get; init; }
 
@@ -395,8 +398,8 @@ public sealed partial record MappingEntry
 
     public bool IsRepeater => Source?.Kind == MappingSourceKind.DatasetRows;
 
-    /// <summary>How messages name the entry.</summary>
-    public string Where => $"mappings[{Index}] ({Target.Text})";
+    /// <summary>How messages name the entry: where the document writes it, or its template variable.</summary>
+    public string Where => Location ?? Target.Text;
 
     /// <summary>Every dataset column the entry reads: its source, its findBy values, its condition and the tokens of an id it builds.</summary>
     public IEnumerable<DatasetColumn> Columns

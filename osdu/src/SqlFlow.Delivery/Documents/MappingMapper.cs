@@ -9,19 +9,19 @@ using SqlFlow.Delivery.Templates;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// Reads a mapping document (docs/delivery/mapping-templates.md) into a <see cref="MappingDefinition"/>. Everything
-/// that can be checked without the template is checked here, each error naming the file and the entry: the header, every
-/// entry's input, sources, findBy lines, modifiers and conditions, repeaters, and the envelope lists.
+/// Reads a mapping document (docs/mapping-templates.md) into a <see cref="MappingDefinition"/>. Everything that can be
+/// checked without the template is checked here, each error naming the file and where in it: the header, every node of
+/// the record tree with its value, findBy lines, modifiers and condition, the forEach arrays, and the envelope lists.
 /// </summary>
 internal static partial class MappingMapper
 {
-    /// <summary>The access list and legal block targets every mapping gives as static lists.</summary>
-    private static readonly (string Target, string Name)[] EnvelopeTargets =
+    /// <summary>The access list and legal block targets every mapping gives as literal lists, and where the record writes them.</summary>
+    private static readonly (string Target, string Name, string Location)[] EnvelopeTargets =
     [
-        ("osdu.acl.owners", "owners"),
-        ("osdu.acl.viewers", "viewers"),
-        ("osdu.legal.legaltags", "legal tags"),
-        ("osdu.legal.otherRelevantDataCountries", "countries"),
+        ("osdu.acl.owners", "owners", "record.acl.owners"),
+        ("osdu.acl.viewers", "viewers", "record.acl.viewers"),
+        ("osdu.legal.legaltags", "legal tags", "record.legal.legaltags"),
+        ("osdu.legal.otherRelevantDataCountries", "countries", "record.legal.otherRelevantDataCountries"),
     ];
 
     public static MappingDefinition Map(MappingYaml y, string source)
@@ -46,25 +46,18 @@ internal static partial class MappingMapper
         var dataset = y.Dataset ?? throw FlowMapper.Missing("dataset", source);
         var declaredKey = dataset.Key is { Count: > 0 } k
             ? k
-            : throw new FlowValidationException($"{source}: dataset.key must name at least one column, such as dataset.log_id.");
-        var key = declaredKey.Select((column, i) => RootColumn(column, $"dataset.key[{i}]", source)).ToList();
+            : throw new FlowValidationException($"{source}: dataset.key must name at least one column, such as key: [log_id].");
+        var key = declaredKey.Select((column, i) => KeyColumn(column, $"dataset.key[{i}]", source)).ToList();
         if (key.Distinct(StringComparer.OrdinalIgnoreCase).Count() != key.Count)
         {
             throw new FlowValidationException($"{source}: dataset.key names a column more than once.");
         }
 
-        var label = string.IsNullOrWhiteSpace(dataset.Label) ? null : dataset.Label.Trim();
-        if (label is not null)
-        {
-            foreach (Match token in LabelToken().Matches(label))
-            {
-                RootColumn(token.Groups["column"].Value, "dataset.label", source);
-            }
-        }
+        var label = string.IsNullOrWhiteSpace(dataset.Label) ? null : LabelColumns(dataset.Label.Trim(), source);
 
         // The columns an operator holds a record by, indexed by the ledger for the lookup: the dataset's own columns,
         // like the key, and each named once.
-        var identity = (dataset.Identity ?? []).Select((column, i) => RootColumn(column, $"dataset.identity[{i}]", source)).ToList();
+        var identity = (dataset.Identity ?? []).Select((column, i) => KeyColumn(column, $"dataset.identity[{i}]", source)).ToList();
         if (identity.Distinct(StringComparer.OrdinalIgnoreCase).Count() != identity.Count)
         {
             throw new FlowValidationException($"{source}: dataset.identity names a column more than once.");
@@ -80,16 +73,14 @@ internal static partial class MappingMapper
                 $"{source}: the mapping must declare the '{Snapshots.RenderContext.DataPartitionParameter}' parameter; record ids and references are minted in that partition.");
         }
 
-        // What each search.<name> source searches. Declared once here rather than on every entry, so two entries
-        // resolving against the same set cannot disagree about the kind they search or the schema it is read by.
+        // What each search: <name> node searches. Declared once here rather than on every node, so two nodes resolving
+        // against the same set cannot disagree about the kind they search or the schema it is read by.
         var searches = (y.Searches ?? []).ToDictionary(
             kv => kv.Key,
             kv => ParseSearch(kv.Key, kv.Value, source),
             StringComparer.Ordinal);
 
-        var written = y.Mappings is { Count: > 0 } m ? m : throw new FlowValidationException($"{source}: 'mappings' must list at least one entry.");
-        var parsed = written.Select((entry, i) => ParseEntry(entry, i, source)).ToList();
-        var entries = ResolveRepeaters(parsed, source);
+        var entries = ReadRecord(y.Record, source);
         Validate(entries, parameters, source);
         ValidateSearches(entries, searches, source);
 
@@ -114,7 +105,7 @@ internal static partial class MappingMapper
             Fixtures = (y.Fixtures ?? []).Select((f, i) => new MappingFixture
             {
                 Name = FlowMapper.Require(f.Name, $"fixtures[{i}].name", source),
-                Record = f.Record ?? throw FlowMapper.Missing($"fixtures[{i}].record", source),
+                Record = f.Row ?? throw FlowMapper.Missing($"fixtures[{i}].row", source),
                 Datasets = (f.Datasets ?? []).ToDictionary(
                     kv => kv.Key,
                     kv => (IReadOnlyList<IReadOnlyDictionary<string, string?>>)(kv.Value ?? []).Select(r => (IReadOnlyDictionary<string, string?>)r).ToList(),
@@ -225,142 +216,6 @@ internal static partial class MappingMapper
         }
     }
 
-    private static MappingEntry ParseEntry(MappingEntryYaml y, int index, string source)
-    {
-        if (!TemplatePath.TryParse(y.Target, out var target, out var targetError))
-        {
-            throw new FlowValidationException($"{source}: mappings[{index}]: {targetError}.");
-        }
-
-        var where = $"{source}: mappings[{index}] ({target!.Text})";
-        var hasSource = !string.IsNullOrWhiteSpace(y.Source);
-        if (hasSource == y.HasStatic)
-        {
-            throw new FlowValidationException(hasSource
-                ? $"{where} declares both 'source' and 'static'; an entry takes its value from one of them."
-                : $"{where} declares neither 'source' nor 'static'; say where the value comes from, such as source: dataset.column.");
-        }
-
-        if (y.HasStatic)
-        {
-            var value = StaticValue(y.Static, where)
-                ?? throw new FlowValidationException($"{where}: 'static' has no value. Leave the variable out by removing the entry.");
-            if (y.FindBy is not null || y.Modifiers is not null || y.Required is not null || y.IgnoreSeparators is not null)
-            {
-                throw new FlowValidationException(
-                    $"{where}: a static entry takes only 'appliesWhen' and 'description' besides its value; 'findBy', 'modifiers', 'required' and 'ignoreSeparators' belong to entries that read the dataset or the cache.");
-            }
-
-            return new MappingEntry
-            {
-                Index = index,
-                Target = target,
-                Static = value,
-                AppliesWhen = y.AppliesWhen is null ? null : Condition(y.AppliesWhen, where),
-                Description = y.Description,
-            };
-        }
-
-        var parsedSource = Source(y.Source!.Trim(), where);
-        if (parsedSource.Kind == MappingSourceKind.Search && !parsedSource.ReadsRecordId)
-        {
-            // A search asks the platform for the id of the record that matches and nothing else, so an answer is one id
-            // whatever the mapping reads. What else a record needs comes from the dataset, the cache or a static value.
-            throw new FlowValidationException(
-                $"{where}: {parsedSource} reads '{parsedSource.CacheField}' of the record a search finds, and a search returns only the record's id; write search.{parsedSource.CacheType}.id.");
-        }
-
-        if (!parsedSource.Resolves && y.FindBy is not null)
-        {
-            throw new FlowValidationException($"{where}: 'findBy' only applies to a cache or a search source; {parsedSource} reads the dataset.");
-        }
-
-        if (parsedSource.Kind != MappingSourceKind.Cache && y.IgnoreSeparators is not null)
-        {
-            throw new FlowValidationException($"{where}: 'ignoreSeparators' loosens how a value is matched against the cache, so it only applies to a cache source.");
-        }
-
-        var findBy = parsedSource.Resolves ? FindByLines(y.FindBy, parsedSource.CacheType!, where, parsedSource.Prefix) : [];
-        if (parsedSource.Resolves && findBy.Count == 0)
-        {
-            throw new FlowValidationException(
-                $"{where}: a {parsedSource.Prefix} source needs 'findBy', which says which record to read, such as findBy: {parsedSource.Prefix}.{parsedSource.CacheType}.Code = dataset.column.");
-        }
-
-        var modifiers = (y.Modifiers ?? []).Select((modifier, i) => ParseModifier(modifier, $"{where} modifiers[{i}]")).ToList();
-        if (modifiers.Count > 0 && parsedSource.Resolves && findBy.All(f => f.Column is null))
-        {
-            var found = parsedSource.Kind == MappingSourceKind.Search ? "what a search finds is" : "cache values are";
-            throw new FlowValidationException($"{where}: modifiers change incoming dataset values, and this entry's findBy reads none; {found} never modified.");
-        }
-
-        var ids = modifiers.Count(m => m.Kind == ModifierKind.Id);
-        if (ids > 0 && parsedSource.Resolves)
-        {
-            // A resolved source's modifiers change the value its findBy lines compare, and the source gives the record's id
-            // itself; an id built there would be compared with the cached or searched field, never written.
-            throw new FlowValidationException(
-                $"{where}: the id modifier builds the id an entry writes from a dataset value, and {parsedSource} already gives what it writes; read the value from the dataset, source: dataset.<column>, and build the id from it.");
-        }
-
-        if (ids > 1)
-        {
-            throw new FlowValidationException($"{where}: an entry builds one id, and its modifiers list id {ids} times.");
-        }
-
-        if (ids == 1 && modifiers[^1].Kind != ModifierKind.Id)
-        {
-            // A modifier after the id would change the id it built, into one its template does not describe.
-            throw new FlowValidationException($"{where}: id builds what the entry writes, so it is the last modifier; move {modifiers[^1]} before it.");
-        }
-
-        return new MappingEntry
-        {
-            Index = index,
-            Target = target,
-            Source = parsedSource,
-            FindBy = findBy,
-            Modifiers = modifiers,
-            AppliesWhen = y.AppliesWhen is null ? null : Condition(y.AppliesWhen, where),
-            Required = y.Required ?? true,
-            IgnoreSeparators = y.IgnoreSeparators ?? false,
-            Description = y.Description,
-        };
-    }
-
-    /// <summary>
-    /// A two-part dataset source (<c>dataset.curves</c>) on a target other entries step into (<c>osdu.data.Curves[].CurveID</c>)
-    /// is a repeater; everywhere else it is a column of the dataset's row.
-    /// </summary>
-    private static List<MappingEntry> ResolveRepeaters(List<MappingEntry> entries, string source)
-    {
-        var steppedInto = entries.Select(e => e.Target.Repeater).OfType<TemplatePath>().ToHashSet();
-        var resolved = new List<MappingEntry>(entries.Count);
-        foreach (var entry in entries)
-        {
-            if (!steppedInto.Contains(entry.Target))
-            {
-                resolved.Add(entry);
-                continue;
-            }
-
-            if (entry.Source is not { Kind: MappingSourceKind.DatasetColumn, Column: { Child: null } column })
-            {
-                throw new FlowValidationException(
-                    $"{source}: {entry.Where}: other entries fill properties inside {entry.Target.Text}[], so this entry is its repeater, and a repeater's source names a child dataset, such as source: dataset.curves.");
-            }
-
-            if (entry.Modifiers.Count > 0)
-            {
-                throw new FlowValidationException($"{source}: {entry.Where}: a repeater only names the child dataset whose rows become the array's items; it takes no modifiers.");
-            }
-
-            resolved.Add(entry with { Source = new MappingSource { Kind = MappingSourceKind.DatasetRows, Child = column.Column } });
-        }
-
-        return resolved;
-    }
-
     private static void Validate(List<MappingEntry> entries, IReadOnlyDictionary<string, MappingParameter> parameters, string source)
     {
         var seen = new Dictionary<TemplatePath, MappingEntry>();
@@ -368,7 +223,7 @@ internal static partial class MappingMapper
         {
             if (!seen.TryAdd(entry.Target, entry))
             {
-                throw new FlowValidationException($"{source}: {entry.Where} fills the same variable as mappings[{seen[entry.Target].Index}]; each variable has one entry.");
+                throw new FlowValidationException($"{source}: {entry.Where} fills {entry.Target.Text}, as {seen[entry.Target].Where} does; each variable is filled once.");
             }
         }
 
@@ -381,7 +236,7 @@ internal static partial class MappingMapper
                 if (!repeaters.TryGetValue(array, out var repeater))
                 {
                     throw new FlowValidationException(
-                        $"{source}: {entry.Where} fills a property inside {array.Text}[], but no entry repeats {array.Text}; add one with target {array.Text} and source dataset.<child dataset>.");
+                        $"{source}: {entry.Where} fills a property inside the items of {array.Text}, but nothing repeats {array.Text}; lay it out under a {ForEachKey} node.");
                 }
 
                 child = repeater.Source!.Child;
@@ -389,7 +244,7 @@ internal static partial class MappingMapper
 
             if (entry.IsRepeater && entry.AppliesWhen?.Column.Child is not null)
             {
-                throw new FlowValidationException($"{source}: {entry.Where}: a repeater's appliesWhen decides for the whole array, so it reads the dataset's own row, not {entry.AppliesWhen.Column}.");
+                throw new FlowValidationException($"{source}: {entry.Where}: a {ForEachKey} node's {WhenKey} decides for the whole array, so it reads the dataset's own row, not {entry.AppliesWhen.Column}.");
             }
 
             foreach (var column in entry.Columns)
@@ -399,16 +254,10 @@ internal static partial class MappingMapper
                     continue;
                 }
 
-                if (child is null)
+                if (child is null || !string.Equals(column.Child, child, StringComparison.OrdinalIgnoreCase))
                 {
                     throw new FlowValidationException(
-                        $"{source}: {entry.Where} reads {column}, a column of child dataset '{column.Child}', but only an entry inside a repeater (a target with []) reads child rows.");
-                }
-
-                if (!string.Equals(column.Child, child, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new FlowValidationException(
-                        $"{source}: {entry.Where} is inside the repeater over dataset.{child}, so it reads dataset.{child}.<column>, not {column}.");
+                        $"{source}: {entry.Where} reads a column of child dataset '{column.Child}', which only a node under the {ForEachKey} over {column.Child} reads.");
                 }
             }
 
@@ -439,7 +288,7 @@ internal static partial class MappingMapper
             if (entries.FirstOrDefault(e => EnvelopeTargets.Any(t => t.Target == e.Target.Text)) is { } envelope)
             {
                 throw new FlowValidationException(
-                    $"{source}: {envelope.Where} fills {envelope.Target.Text}, and {kind} is a row of a DSPDM business object, which has no access or legal block. Remove the entry.");
+                    $"{source}: {envelope.Where} fills {envelope.Target.Text}, and {kind} is a row of a DSPDM business object, which has no access or legal block. Remove the property.");
             }
 
             // The row is its data block: each attribute of the business object is a property of data, and nothing else is sent.
@@ -447,26 +296,26 @@ internal static partial class MappingMapper
             {
                 throw new FlowValidationException(
                     $"{source}: {outside.Where} fills {outside.Target.Text}, and {kind} is a row of a DSPDM business object, whose attributes are the properties of "
-                    + $"{TemplatePath.Prefix}.data ({TemplatePath.Prefix}.data.UWI). Fill an attribute, or remove the entry.");
+                    + "record.data (record.data.UWI). Fill an attribute, or remove the property.");
             }
 
             return new MappingEnvelope([], [], [], []);
         }
 
         var lists = new List<IReadOnlyList<string>>();
-        foreach (var (target, name) in EnvelopeTargets)
+        foreach (var (target, name, location) in EnvelopeTargets)
         {
             var entry = entries.FirstOrDefault(e => e.Target.Text == target)
-                ?? throw new FlowValidationException($"{source}: every OSDU record carries {name}, so the mapping needs an entry with target {target} and a static list.");
+                ?? throw new FlowValidationException($"{source}: every OSDU record carries {name}, so the mapping lays out {location} as a list of at least one text value.");
             if (entry.Static is not JsonArray array || array.Count == 0
                 || array.Any(v => v is not JsonValue value || !value.TryGetValue<string>(out var text) || string.IsNullOrWhiteSpace(text)))
             {
-                throw new FlowValidationException($"{source}: {entry.Where} must be a static list of at least one text value, such as static: [value].");
+                throw new FlowValidationException($"{source}: {entry.Where} must be a literal list of at least one text value, such as [value].");
             }
 
             if (entry.AppliesWhen is not null)
             {
-                throw new FlowValidationException($"{source}: {entry.Where} applies to every record, so it takes no appliesWhen.");
+                throw new FlowValidationException($"{source}: {entry.Where} applies to every record, so it takes no {WhenKey}.");
             }
 
             var values = array.Select(v => v!.GetValue<string>().Trim()).ToList();
@@ -484,47 +333,21 @@ internal static partial class MappingMapper
         return new MappingEnvelope(lists[0], lists[1], lists[2], lists[3]);
     }
 
-    private static MappingSource Source(string text, string where)
+    /// <summary>A column of the dataset's own row as the header names it: the column's name alone, such as log_id.</summary>
+    private static string KeyColumn(string text, string key, string source)
+        => text?.Trim() is { } name && NamePattern().IsMatch(name)
+            ? name
+            : throw new FlowValidationException($"{source}: {key} names '{text}'; it names a column of the dataset's own row as it is, such as log_id.");
+
+    /// <summary>
+    /// The label with each token read as a column of the dataset's own row (<c>{wellbore_uwi}</c>), kept as the loaded model
+    /// reads it (<c>{dataset.wellbore_uwi}</c>).
+    /// </summary>
+    private static string LabelColumns(string label, string source) => IdToken().Replace(label, token =>
     {
-        var parts = text.Split('.');
-        if (parts[0] == DatasetColumn.Prefix)
-        {
-            if (parts.Length is < 2 or > 3 || parts.Skip(1).Any(p => !NamePattern().IsMatch(p)))
-            {
-                throw new FlowValidationException(
-                    $"{where}: source '{text}' must be dataset.<column>, dataset.<child dataset>.<column>, or dataset.<child dataset> on a repeated array.");
-            }
-
-            return new MappingSource
-            {
-                Kind = MappingSourceKind.DatasetColumn,
-                Column = parts.Length == 2 ? new DatasetColumn(null, parts[1]) : new DatasetColumn(parts[1], parts[2]),
-            };
-        }
-
-        if (parts[0] == MappingSource.CachePrefix)
-        {
-            if (parts.Length < 3 || !NamePattern().IsMatch(parts[1]) || parts.Skip(2).Any(p => !FieldPattern().IsMatch(p)))
-            {
-                throw new FlowValidationException($"{where}: source '{text}' must be cache.<type>.<field>, such as cache.UnitOfMeasure.id.");
-            }
-
-            return new MappingSource { Kind = MappingSourceKind.Cache, CacheType = parts[1], CacheField = string.Join('.', parts.Skip(2)) };
-        }
-
-        if (parts[0] == MappingSource.SearchPrefix)
-        {
-            if (parts.Length < 3 || !NamePattern().IsMatch(parts[1]) || parts.Skip(2).Any(p => !FieldPattern().IsMatch(p)))
-            {
-                throw new FlowValidationException($"{where}: source '{text}' must be search.<name>.<field>, such as search.Wellbore.id.");
-            }
-
-            return new MappingSource { Kind = MappingSourceKind.Search, CacheType = parts[1], CacheField = string.Join('.', parts.Skip(2)) };
-        }
-
-        throw new FlowValidationException(
-            $"{where}: source '{text}' must start with 'dataset.' (the incoming dataset), 'cache.' (the partition's cache) or 'search.' (a record found on the platform as the render needs it); a fixed value is written with 'static'.");
-    }
+        var column = Column(token.Groups["token"].Value, TreeScope.Root, $"{source}: dataset.label token {token.Value}");
+        return "{" + column + "}";
+    });
 
     /// <summary>The part of a record a search compares: its data, as the schema of the kind searched describes it.</summary>
     private const string SearchDataPrefix = "data.";
@@ -596,8 +419,8 @@ internal static partial class MappingMapper
     }
 
     /// <summary>
-    /// Every <c>search.&lt;name&gt;</c> an entry reads names a set the mapping declares, and every set declared is read
-    /// by something. A name that is not declared would otherwise fail at render, one row at a time, against a platform.
+    /// Every search a node reads names a set the mapping declares, and every set declared is read by something. A name that
+    /// is not declared would otherwise fail at render, one row at a time, against a platform.
     /// </summary>
     private static void ValidateSearches(
         IReadOnlyList<MappingEntry> entries, IReadOnlyDictionary<string, MappingSearch> searches, string source)
@@ -609,8 +432,8 @@ internal static partial class MappingMapper
             {
                 throw new FlowValidationException(
                     searches.Count == 0
-                        ? $"{source}: {entry.Target.Text} reads search.{name}, and the mapping declares no searches; add a 'searches' block naming the kind each one looks in."
-                        : $"{source}: {entry.Target.Text} reads search.{name}, which the mapping does not declare; it declares {string.Join(", ", searches.Keys.Order(StringComparer.Ordinal))}.");
+                        ? $"{source}: {entry.Where} searches {name}, and the mapping declares no searches; add a 'searches' block naming the kind each one looks in."
+                        : $"{source}: {entry.Where} searches {name}, which the mapping does not declare; it declares {string.Join(", ", searches.Keys.Order(StringComparer.Ordinal))}.");
             }
         }
 
@@ -619,7 +442,7 @@ internal static partial class MappingMapper
         foreach (var shared in searches.Values.GroupBy(s => s.Kind, StringComparer.Ordinal).Where(g => g.Count() > 1))
         {
             throw new FlowValidationException(
-                $"{source}: searches {string.Join(" and ", shared.Select(s => $"'{s.Name}'").Order(StringComparer.Ordinal))} both look in {shared.Key}; declare it once and have every entry that looks there read it.");
+                $"{source}: searches {string.Join(" and ", shared.Select(s => $"'{s.Name}'").Order(StringComparer.Ordinal))} both look in {shared.Key}; declare it once and have every node that looks there read it.");
         }
 
         var read = entries.Where(e => e.Source?.Kind == MappingSourceKind.Search).Select(e => e.Source!.CacheType!).ToHashSet(StringComparer.Ordinal);
@@ -628,92 +451,6 @@ internal static partial class MappingMapper
             throw new FlowValidationException(
                 $"{source}: search '{unread}' is declared and nothing reads it; a search costs a call to the platform for every value it is asked about, so one nothing reads is a mistake rather than spare capacity.");
         }
-    }
-
-    private static List<FindBy> FindByLines(object? value, string type, string where, string prefix)
-    {
-        List<string> lines = value switch
-        {
-            null => [],
-            string one => [one],
-            IEnumerable<object> many => many.Select(line => line as string
-                ?? throw new FlowValidationException($"{where}: each findBy line is text, such as {prefix}.{type}.Code = dataset.column.")).ToList(),
-            _ => throw new FlowValidationException($"{where}: findBy is one line or a list of lines, such as {prefix}.{type}.Code = dataset.column."),
-        };
-
-        var result = new List<FindBy>(lines.Count);
-        foreach (var line in lines)
-        {
-            var match = FindByPattern().Match(line);
-            if (!match.Success)
-            {
-                throw new FlowValidationException($"{where}: findBy '{line}' must read {prefix}.<name>.<field> = dataset.<column>, or = 'text' for a fixed text.");
-            }
-
-            if (!string.Equals(match.Groups["prefix"].Value, prefix, StringComparison.Ordinal)
-                || !string.Equals(match.Groups["type"].Value, type, StringComparison.Ordinal))
-            {
-                throw new FlowValidationException(
-                    $"{where}: findBy '{line}' compares {match.Groups["prefix"].Value}.{match.Groups["type"].Value}, but the entry reads {prefix}.{type}; findBy selects a record of the set the entry reads.");
-            }
-
-            var field = match.Groups["field"].Value;
-            if (field.Split('.').Any(p => !FieldPattern().IsMatch(p)))
-            {
-                throw new FlowValidationException($"{where}: findBy '{line}' names an invalid field '{field}'.");
-            }
-
-            // A search compares a property of the records' data, named the way a query names it: unquoted, so only
-            // letters, digits and underscores, and never the record's own metadata, which the indexer maps apart from
-            // the schema and a lookup has no business comparing.
-            if (prefix == MappingSource.SearchPrefix
-                && (!field.StartsWith(SearchDataPrefix, StringComparison.Ordinal) || !OsduPath.IsPath(field)))
-            {
-                throw new FlowValidationException(
-                    $"{where}: findBy '{line}' compares '{field}', and a search compares a property under data, named by dotted names of letters, digits and underscores, such as {prefix}.{type}.data.FacilityName.");
-            }
-
-            var operand = match.Groups["operand"].Value.Trim();
-            if (Quoted(operand) is { } literal)
-            {
-                if (literal.Length == 0)
-                {
-                    throw new FlowValidationException($"{where}: findBy '{line}' compares with empty text.");
-                }
-
-                result.Add(new FindBy(type, field, null, literal) { Prefix = prefix });
-                continue;
-            }
-
-            result.Add(new FindBy(type, field, Column(operand, $"{where}: findBy '{line}'"), null) { Prefix = prefix });
-        }
-
-        return result;
-    }
-
-    private static EntryCondition Condition(string text, string where)
-    {
-        var match = ConditionPattern().Match(text.Trim());
-        if (!match.Success)
-        {
-            throw new FlowValidationException($"{where}: appliesWhen '{text}' must read dataset.<column> is <text>, is not <text>, is empty, or is not empty.");
-        }
-
-        var column = Column(match.Groups["column"].Value, $"{where}: appliesWhen '{text}'");
-        var negated = match.Groups["not"].Success;
-        var rest = match.Groups["rest"].Value.Trim();
-        if (rest == "empty")
-        {
-            return new EntryCondition(column, negated ? ConditionOperator.IsNotEmpty : ConditionOperator.IsEmpty, null);
-        }
-
-        var value = Quoted(rest) ?? rest;
-        if (value.Length == 0)
-        {
-            throw new FlowValidationException($"{where}: appliesWhen '{text}' compares with empty text; write 'is empty' instead.");
-        }
-
-        return new EntryCondition(column, negated ? ConditionOperator.IsNot : ConditionOperator.Is, value);
     }
 
     /// <summary>The modifiers a mapping entry takes, by the name it writes them with.</summary>
@@ -1007,25 +744,6 @@ internal static partial class MappingMapper
         _ => "equals: REGULAR",
     };
 
-    private static DatasetColumn Column(string text, string where)
-    {
-        var parts = text.Trim().Split('.');
-        if (parts[0] != DatasetColumn.Prefix || parts.Length is < 2 or > 3 || parts.Skip(1).Any(p => !NamePattern().IsMatch(p)))
-        {
-            throw new FlowValidationException($"{where}: '{text}' must be dataset.<column> or dataset.<child dataset>.<column>.");
-        }
-
-        return parts.Length == 2 ? new DatasetColumn(null, parts[1]) : new DatasetColumn(parts[1], parts[2]);
-    }
-
-    private static string RootColumn(string text, string key, string source)
-    {
-        var column = Column(text, $"{source}: {key}");
-        return column.Child is null
-            ? column.Column
-            : throw new FlowValidationException($"{source}: {key} names {column}, a column of a child dataset; it reads the dataset's own row, such as dataset.log_id.");
-    }
-
     private static string? Quoted(string text)
         => text.Length >= 2 && ((text[0] == '\'' && text[^1] == '\'') || (text[0] == '"' && text[^1] == '"')) ? text[1..^1] : null;
 
@@ -1067,10 +785,10 @@ internal static partial class MappingMapper
     [GeneratedRegex(@"^[A-Za-z0-9_\-\$]+$")]
     private static partial Regex FieldPattern();
 
-    [GeneratedRegex(@"^\s*(?<prefix>cache|search)\.(?<type>[A-Za-z0-9_\-]+)\.(?<field>[^=\s]+)\s*=\s*(?<operand>.+?)\s*$")]
+    [GeneratedRegex(@"^\s*(?<field>[^=\s]+)\s*=\s*(?<operand>.+?)\s*$")]
     private static partial Regex FindByPattern();
 
-    [GeneratedRegex(@"^(?<column>dataset\.\S+)\s+is\s+(?<not>not\s+)?(?<rest>.+)$")]
+    [GeneratedRegex(@"^(?<column>\S+)\s+is\s+(?<not>not\s+)?(?<rest>.+)$")]
     private static partial Regex ConditionPattern();
 
     [GeneratedRegex(@"\{(?<column>dataset\.[A-Za-z0-9_\-\.]+)\}")]

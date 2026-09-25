@@ -782,10 +782,15 @@ internal sealed class MappingYaml
 
     public Dictionary<string, MappingParameterYaml>? Parameters { get; set; }
 
-    /// <summary>What each <c>search.&lt;name&gt;</c> source searches, by the name entries write it as.</summary>
+    /// <summary>What each <c>search: &lt;name&gt;</c> node searches, by the name nodes write it as.</summary>
     public Dictionary<string, MappingSearchYaml>? Searches { get; set; }
 
-    public List<MappingEntryYaml>? Mappings { get; set; }
+    /// <summary>
+    /// The record the mapping renders, laid out as the record is: <c>acl</c>, <c>legal</c>, <c>tags</c>, <c>data</c> and
+    /// the properties below them, each a literal, a value node or a <c>forEach</c> array (docs/mapping-templates.md).
+    /// Read as the author wrote it and parsed node by node, since its keys are the template's property names.
+    /// </summary>
+    public Dictionary<string, object?>? Record { get; set; }
 
     public List<MappingFixtureYaml>? Fixtures { get; set; }
 }
@@ -834,49 +839,12 @@ internal sealed class MappingDatasetYaml
     public List<string>? Identity { get; set; }
 }
 
-internal sealed class MappingEntryYaml
-{
-    private object? _static;
-
-    public string? Target { get; set; }
-
-    public string? Source { get; set; }
-
-    /// <summary>The static value in whatever YAML shape it was written: a scalar, a list or a mapping.</summary>
-    public object? Static
-    {
-        get => _static;
-        set
-        {
-            _static = value;
-            HasStatic = true;
-        }
-    }
-
-    /// <summary>True when the document wrote a <c>static</c> key, even with an empty value.</summary>
-    [YamlDotNet.Serialization.YamlIgnore]
-    public bool HasStatic { get; private set; }
-
-    /// <summary>One findBy line, or a list of them.</summary>
-    public object? FindBy { get; set; }
-
-    /// <summary>Each modifier is a name (<c>trim</c>) or a one-key mapping (<c>split: { separator: ",", part: 1 }</c>).</summary>
-    public List<object>? Modifiers { get; set; }
-
-    public string? AppliesWhen { get; set; }
-
-    public bool? Required { get; set; }
-
-    public bool? IgnoreSeparators { get; set; }
-
-    public string? Description { get; set; }
-}
-
 internal sealed class MappingFixtureYaml
 {
     public string? Name { get; set; }
 
-    public Dictionary<string, string?>? Record { get; set; }
+    /// <summary>The dataset's row the fixture renders.</summary>
+    public Dictionary<string, string?>? Row { get; set; }
 
     public Dictionary<string, List<Dictionary<string, string?>>>? Datasets { get; set; }
 
