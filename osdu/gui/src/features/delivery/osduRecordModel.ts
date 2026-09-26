@@ -208,6 +208,15 @@ export function idParts(id: string): { partition: string; group: string; type: s
   };
 }
 
+/**
+ * Whether the unique part of an id was minted by a machine, a hash of 32 hex digits or a GUID, and so names nothing a
+ * reader knows. A wellbore's `NO-33-9-C-28-B` or a reference value's `Equinor:NPHI` reads as a name; `5596f42c...`
+ * does not.
+ */
+export function isMintedUnique(unique: string): boolean {
+  return /^[0-9a-f]{32}$/i.test(unique) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(unique);
+}
+
 /** One step of a path as a crumb shows it: a key, or an item's position in its list. */
 export interface PathSegment {
   key: string;

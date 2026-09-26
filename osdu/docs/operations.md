@@ -402,12 +402,15 @@ Pipelines like any other flow.
     the render context.
   - **In OSDU**: the record as OSDU holds it, read on a node through the flow's route, in an **inspector** of fixed
     height, so a record of ten thousand values is read the way a file tree is, never as one tall page.
-    - **One location bar** says where the reader is, and nothing below it repeats it: the record, named by the type
-      and unique part of its id (the whole id and kind on hover), then the path inside it. A record opened from a link
-      continues the same path, so it reads from the first record through the value that named the next to where the
-      reader is now: `WellLog 5596f... > data > WellboreID > Wellbore NO-15-5-7-AT2 > data`. Any crumb steps back, and
-      a record stepped back to is as the reader left it. The bar also holds the view (Fields or JSON), the **version
-      picker** and the page's read controls.
+    - **One location bar** says where the reader is, and nothing below it repeats it. It has a row of its own across
+      the inspector, and a path longer than the row wraps onto a further line rather than clipping. The page's own
+      record is named by its type alone, as the page names it above (the whole id and kind on hover), then the path
+      inside it. A record opened from a link continues the same path, named by its type and, where its id reads as a
+      name, the unique part of it; an id minted as a hash or a GUID gives the type alone. So it reads from the first
+      record through the value that named the next to where the reader is now:
+      `WellLog > data > WellboreID > Wellbore NO-15-5-7-AT2 > data`. Any crumb steps back, and a record stepped back
+      to is as the reader left it. The row below holds the view (Fields or JSON) and the **version picker** on the
+      left, and the page's read controls on the right.
     - **The version picker** shows the version in view, marked latest or older (amber), with a check when it is the
       version this flow delivered; its menu lists every version OSDU keeps, newest first. A picked version is read on
       a node and replaces the record in place, the outline and the place in it kept. **Compare with latest** then

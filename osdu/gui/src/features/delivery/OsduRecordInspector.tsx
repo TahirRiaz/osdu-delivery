@@ -31,7 +31,7 @@ import {
   canonicalText, differences, downloadJson, fileNameOf, shortValue, withoutOsduFields, withoutVersion, type DifferenceKind, type JsonDifference,
 } from "./osduDocument";
 import {
-  branchPaths, buildModel, describeBranch, documentNode, isReferenceNode, loadLayout, matching, pathSegments, saveLayout, trail,
+  branchPaths, buildModel, describeBranch, documentNode, idParts, isMintedUnique, isReferenceNode, loadLayout, matching, pathSegments, saveLayout, trail,
   type RecordModel, type RecordNode,
 } from "./osduRecordModel";
 import { RecordName } from "./RecordName";
@@ -298,34 +298,56 @@ function CrumbSeparator() {
   return <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/50" aria-hidden="true" />;
 }
 
-/** One step of the location as a crumb: the current step in full weight, an earlier one a step back to it. */
+/**
+ * One step of the location, kept on one line with the separator that leads to it, so a path longer than the bar wraps
+ * between steps and a wrapped line opens on its separator. A step wider than the whole bar clips rather than spills.
+ */
+function CrumbStep({ first = false, children }: { first?: boolean; children: ReactNode }) {
+  return (
+    <span className="inline-flex min-w-0 max-w-full items-center gap-x-1">
+      {!first && <CrumbSeparator />}
+      {children}
+    </span>
+  );
+}
+
+/** One key of the path as a crumb: the current step in full weight, an earlier one a step back to it. */
 function Crumb({ label, mono = true, current = false, onClick, title }: { label: ReactNode; mono?: boolean; current?: boolean; onClick?: () => void; title?: string }) {
-  const face = cn("shrink-0", mono && "font-mono");
+  const face = cn("min-w-0 truncate", mono && "font-mono");
   return current || onClick === undefined
     ? <span className={cn(face, current ? "font-medium text-foreground" : "text-muted-foreground")} title={title} aria-current={current ? "location" : undefined}>{label}</span>
     : <button type="button" className={cn(face, "rounded-sm text-muted-foreground hover:text-foreground hover:underline")} onClick={onClick} title={title}>{label}</button>;
 }
 
 /**
+ * Whether a crumb names a record by its type alone. The first record is the page's own, which the page already names
+ * above the inspector, and an id minted by a machine says nothing a reader knows; either would only take the path's
+ * room. A linked record whose id reads as a name (a wellbore's, a reference value's) keeps it, as nothing else names it.
+ */
+function namedByType(id: string, level: number): boolean {
+  return level === 0 || isMintedUnique(idParts(id).unique);
+}
+
+/**
  * The records before the current one on the trail, each named once and followed by the path of the value that led on
  * from it, so the location reads as one path across records: log, data, WellboreID, then the wellbore. Any step of
- * an earlier record goes back to it, as it was left.
+ * an earlier record goes back to it, as it was left. The current record follows as the next step.
  */
 function PriorCrumbs({ prior, onBack }: { prior: PriorCrumb[]; onBack: (level: number) => void }) {
   return (
     <>
       {prior.map((crumb) => (
         <span key={crumb.level} className="contents">
-          <button type="button" className="min-w-0 max-w-[200px] rounded-sm text-muted-foreground [flex-shrink:4] hover:text-foreground hover:underline" onClick={() => onBack(crumb.level)} title={`Back to ${crumb.id}`}>
-            <RecordName id={crumb.id} />
-          </button>
+          <CrumbStep first={crumb.level === 0}>
+            <button type="button" className="min-w-0 max-w-full rounded-sm text-muted-foreground hover:text-foreground hover:underline" onClick={() => onBack(crumb.level)} title={`Back to ${crumb.id}`}>
+              <RecordName id={crumb.id} typeOnly={namedByType(crumb.id, crumb.level)} />
+            </button>
+          </CrumbStep>
           {crumb.from !== null && pathSegments(crumb.from).map((segment, index) => (
-            <span key={index} className="contents">
-              <CrumbSeparator />
+            <CrumbStep key={index}>
               <Crumb label={segment.index ? `[${segment.key}]` : segment.key} onClick={() => onBack(crumb.level)} title={`Back to ${crumb.id}, where ${crumb.from} named the next record`} />
-            </span>
+            </CrumbStep>
           ))}
-          <CrumbSeparator />
         </span>
       ))}
     </>
@@ -333,26 +355,38 @@ function PriorCrumbs({ prior, onBack }: { prior: PriorCrumb[]; onBack: (level: n
 }
 
 /**
- * The one bar that says where the reader is and holds what acts on it: a step back while a linked record is open, the
- * location from the first record to the branch in view, and on the right the view, the version, and the page's own
- * controls over the read. Nothing below it repeats the record's name or its place.
+ * The inspector's header, which says where the reader is and holds what acts on it. The location has a row of its own
+ * across the whole width: a step back while a linked record is open, then the path from the first record to the branch
+ * in view, wrapping onto a further line rather than clipping when it is longer than the row. Below it, the view on the
+ * left (Fields or JSON, the version) and the page's own controls over the read on the right. Nothing below the header
+ * repeats the record's name or its place.
  */
-function LocationBar({ level, onBack, location, controls }: {
+function LocationBar({ level, onBack, location, view, controls }: {
   level: number;
   onBack: (level: number) => void;
-  /** The crumbs, from the first record to where the reader is. */
+  /** The crumbs, from the first record to where the reader is, each a `CrumbStep`. */
   location: ReactNode;
+  /** How the record is shown: the view and the version in it. */
+  view?: ReactNode;
+  /** The page's own controls over the read. */
   controls?: ReactNode;
 }) {
   return (
-    <div className="flex min-h-11 items-center gap-x-3 border-b px-2 py-1.5">
-      {level > 0 && (
-        <IconAction label="Back to the record before" icon={<ArrowLeft />} variant="ghost" className="size-7 shrink-0" onClick={() => onBack(level - 1)} data-testid="osdu-linked-close" />
+    <div className="flex flex-col border-b">
+      <div className="flex min-h-10 items-start gap-x-2 px-2 py-2">
+        {level > 0 && (
+          <IconAction label="Back to the record before" icon={<ArrowLeft />} variant="ghost" className="-my-0.5 size-6 shrink-0" onClick={() => onBack(level - 1)} data-testid="osdu-linked-close" />
+        )}
+        <nav className={cn("flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-1 text-[12px] leading-5", level === 0 && "pl-1")} aria-label="Where in OSDU" data-testid="osdu-trail">
+          {location}
+        </nav>
+      </div>
+      {(view !== undefined || controls !== undefined) && (
+        <div className="flex flex-wrap items-center gap-1.5 px-2 pb-2">
+          {view}
+          {controls !== undefined && <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">{controls}</div>}
+        </div>
       )}
-      <nav className={cn("flex min-w-0 flex-1 flex-nowrap items-center gap-x-1 overflow-hidden whitespace-nowrap text-[12px]", level === 0 && "pl-1")} aria-label="Where in OSDU" data-testid="osdu-trail">
-        {location}
-      </nav>
-      {controls !== undefined && <div className="ml-auto flex shrink-0 items-center gap-1.5">{controls}</div>}
     </div>
   );
 }
@@ -917,34 +951,38 @@ function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack
   const isTable = node !== undefined && node.kind === "array" && node.children.length > 0 && node.children.every((child) => child.kind === "object");
   const crumbs = node === undefined ? [] : trail(model, node.path);
 
+  // The copy of the path rides on the last step, so a wrapped location never leaves it alone on a line.
+  const copyPath = node === undefined ? null : <CopyButton iconOnly label="Copy the path" text={node.path} testId="copy-osdu-path" />;
   const location = (
     <>
       <PriorCrumbs prior={prior} onBack={onBack} />
-      <button
-        type="button"
-        className={cn("min-w-0 max-w-[280px] shrink rounded-sm hover:underline", selected === RECORD ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
-        onClick={() => select(RECORD)}
-        title="The record's system fields"
-        data-testid="osdu-crumb-record"
-      >
-        <RecordName id={read.targetId} kind={kind} className="font-medium" />
-      </button>
+      <CrumbStep first={prior.length === 0}>
+        <button
+          type="button"
+          className={cn("min-w-0 max-w-full rounded-sm hover:underline", selected === RECORD ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
+          onClick={() => select(RECORD)}
+          title="The record's system fields"
+          data-testid="osdu-crumb-record"
+        >
+          <RecordName id={read.targetId} kind={kind} typeOnly={namedByType(read.targetId, level)} className="font-medium" />
+        </button>
+      </CrumbStep>
       {node === undefined
-        ? selected !== RECORD && <><CrumbSeparator /><Crumb label={VIEW_NAMES[selected]} mono={false} current /></>
+        ? selected !== RECORD && <CrumbStep><Crumb label={VIEW_NAMES[selected]} mono={false} current /></CrumbStep>
         : crumbs.map((crumb, index) => {
           const isItem = model.byPath.get(crumb.parent)?.kind === "array";
+          const last = index === crumbs.length - 1;
           return (
-            <span key={crumb.path} className="contents">
-              <CrumbSeparator />
-              <Crumb label={isItem ? `[${crumb.key}]` : crumb.key} current={index === crumbs.length - 1} onClick={() => select(crumb.path)} />
-            </span>
+            <CrumbStep key={crumb.path}>
+              <Crumb label={isItem ? `[${crumb.key}]` : crumb.key} current={last} onClick={() => select(crumb.path)} />
+              {last && copyPath}
+            </CrumbStep>
           );
         })}
-      {node !== undefined && <span className="shrink-0"><CopyButton iconOnly label="Copy the path" text={node.path} testId="copy-osdu-path" /></span>}
     </>
   );
 
-  const controls = (
+  const view = (
     <>
       {node !== undefined && (
         <ToggleGroup type="single" value={mode} onValueChange={(value) => { if (value === "fields" || value === "json") { setMode(value); } }} variant="outline" size="sm" data-testid="osdu-view-mode">
@@ -960,7 +998,11 @@ function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack
         </Button>
       )}
       {pickedFailure !== null && <span className="max-w-[240px] truncate text-[11px] text-destructive" title={pickedFailure} data-testid="osdu-version-error">{pickedFailure}</span>}
-      <span className="mx-0.5 h-5 w-px bg-border" aria-hidden="true" />
+    </>
+  );
+
+  const controls = (
+    <>
       {actions}
       <IconAction label="Download the record as JSON" icon={<Download />} variant="ghost" className="size-7" onClick={() => downloadJson(fileNameOf("osdu", read.targetId, shownVersion === null ? null : String(shownVersion)), record)} data-testid="osdu-record-download" />
     </>
@@ -968,7 +1010,7 @@ function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="osdu-record">
-      <LocationBar level={level} onBack={onBack} location={location} controls={controls} />
+      <LocationBar level={level} onBack={onBack} location={location} view={view} controls={controls} />
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
         <ResizablePanel defaultSize={260} minSize={200} maxSize="45" className="flex min-h-0 flex-col">
           <div className="flex items-center gap-1 border-b p-2">
@@ -1118,7 +1160,12 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
           <LocationBar
             level={level}
             onBack={onBack}
-            location={<><PriorCrumbs prior={prior} onBack={onBack} /><RecordName id={entry.id} className="font-medium" /></>}
+            location={(
+              <>
+                <PriorCrumbs prior={prior} onBack={onBack} />
+                <CrumbStep first={prior.length === 0}><RecordName id={entry.id} typeOnly={namedByType(entry.id, level)} className="font-medium" /></CrumbStep>
+              </>
+            )}
             controls={actions}
           />
           {message}
