@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpenCheck, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { AppWindow, BookOpenCheck, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,8 @@ import { deliveryApi, type DeliveryRecordLink, type DeliveryRecordRef, type Deli
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CorrelationError } from "@/components/CorrelationError";
 import { DataTable, type Column } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { IconAction } from "@/components/IconAction";
 import { IdChip } from "@/components/IdChip";
 import { Page } from "@/components/Page";
 import { TruncatedText } from "@/components/TruncatedText";
@@ -161,7 +163,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     onError: (error) => { setConfirm(null); fail(error); },
   });
   const readBack = useMutation({
-    mutationFn: () => deliveryApi.read(ref),
+    mutationFn: (version: number | void) => deliveryApi.read(ref, version === undefined ? undefined : version),
     onSuccess: (accepted) => { setOsduTaskId(accepted.taskId); setTab("osdu"); },
     onError: fail,
   });
@@ -288,26 +290,39 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         </TabsContent>
         <TabsContent value="osdu">
           <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => readBack.mutate()}
                 disabled={busy || !canActOnTarget || !canOperate || (osduTaskId !== null && !isTerminalTask(osduTask.data))}
-                title={canOperate ? "Read the record as OSDU holds it now, through its flow's route" : "A read runs on a node, which takes the operate scope."}
+                title={canOperate ? "Reads the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written." : "A read runs on a node, which takes the operate scope."}
                 data-testid="record-osdu-read"
               >
                 <BookOpenCheck />
                 {osduTaskId === null ? "Read from OSDU" : "Read again"}
               </Button>
-              <p className="text-[12px] text-muted-foreground">
-                {canActOnTarget
-                  ? "Reads the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written."
+              <IconAction
+                label="Open this view in a window of its own"
+                icon={<AppWindow />}
+                variant="outline"
+                className="ml-auto size-8"
+                onClick={() => window.open(`${window.location.origin}${window.location.pathname}?tab=osdu`, "_blank", "popup=yes,width=1280,height=900")}
+                data-testid="record-osdu-popout"
+              />
+            </div>
+            {osduTaskId === null && (
+              <EmptyState
+                icon={<BookOpenCheck />}
+                title={canActOnTarget ? "Not read yet" : record.status === "deleted" ? "Removed from OSDU" : "No OSDU id yet"}
+                description={canActOnTarget
+                  ? "Read from OSDU shows the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written."
                   : record.status === "deleted"
                     ? "The record was removed from OSDU, so there is nothing of this flow's to read there."
-                    : "The record has no OSDU id yet: it has not been planned for delivery."}
-              </p>
-            </div>
+                    : "The record has not been planned for delivery, so OSDU holds nothing of it."}
+                data-testid="record-osdu-empty"
+              />
+            )}
             {osduTaskId !== null && (osduTask.isError
               ? <ProblemView error={osduTask.error} testId="record-osdu-error" />
               : (
@@ -317,6 +332,8 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
                   interfaceName={detail.interface ?? null}
                   task={osduTask.data}
                   label="Reading the record from OSDU through its flow's route"
+                  onReadVersion={canActOnTarget && canOperate ? (version) => readBack.mutate(version) : undefined}
+                  ledgerVersion={record.targetVersion}
                 />
               ))}
           </div>

@@ -265,6 +265,12 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
         => _manifest.ReadAsync(targetId, ct);
 
+    public Task<IReadOnlyList<long>?> VersionsAsync(string targetId, CancellationToken ct = default)
+        => _manifest.VersionsAsync(targetId, ct);
+
+    public Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
+        => _manifest.ReadVersionAsync(targetId, version, ct);
+
     /// <summary>The Workflow service and every DDMS the flow reaches; the target is reachable when all of them answer.</summary>
     public async Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
     {

@@ -326,6 +326,21 @@ public interface IDeliveryProtocol
     Task<JsonObject?> ReadAsync(string targetId, IReadOnlyDictionary<string, string>? targetState, CancellationToken ct)
         => ReadAsync(targetId, ct);
 
+    /// <summary>
+    /// The versions the target keeps of one record, newest first, or null when the target keeps no version list for it
+    /// (a DDMS, a historian, a store that overwrites in place). The storage service answers it for every record it holds,
+    /// so a protocol whose records live there lists them; the others say null, which the page reads as "no history".
+    /// </summary>
+    Task<IReadOnlyList<long>?> VersionsAsync(string targetId, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlyList<long>?>(null);
+
+    /// <summary>
+    /// The record as the target held it at one of its versions, or null when the target has no such version. A protocol
+    /// whose target keeps no version list (see <see cref="VersionsAsync"/>) refuses, since there is nothing to read at.
+    /// </summary>
+    Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
+        => throw new DeliveryException($"The target keeps no version history for {targetId}, so there is no version {version.ToString(System.Globalization.CultureInfo.InvariantCulture)} to read.");
+
     /// <summary>A reachability and credential check against the service's info endpoint, under the flow's auth.</summary>
     Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default);
 }

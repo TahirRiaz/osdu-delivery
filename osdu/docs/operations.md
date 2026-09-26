@@ -397,9 +397,17 @@ Pipelines like any other flow.
     landed, the fingerprints (metadata hash, payload hash, source fingerprint) the ledger decides "changed" by, and
     the render context.
   - **In OSDU**: the record as OSDU holds it, read on a node through the flow's route: OSDU's own fields (version, who
-    created and last changed it and when), its viewers, owners and legal tags, the document, and every OSDU record it
-    refers to, each of which is read in turn, through the same route, and opens beneath it (a link followed from
-    further up closes what was opened below it). A page opened with `?tab=osdu` reads the record at once.
+    created and last changed it and when), its viewers, owners and legal tags; the **versions** OSDU keeps of it,
+    newest first, with the latest and the one this flow's ledger holds as delivered marked, each a click that reads
+    the record as it was then (a target that keeps no version list, such as a DDMS, says so); and the record as a
+    tree: `data` open, every object and array folding (a long array shows its first hundred and the rest on a click),
+    a search that marks the fields and values it matches where they stand and opens the branches leading to them, or
+    keeps only the matches on a switch; expand and collapse everything; and the raw JSON a click away. The branches a
+    reader opens are remembered in the browser for the record's kind, so the next record of that kind opens the same
+    way. Every value that names another OSDU record is a link where it stands, with a button that reads that record in
+    turn, through the same route; it opens beneath with its own versions, and a link followed from further up closes
+    what was opened below it. **Open in a window** puts the same view in a browser window of its own. A page opened
+    with `?tab=osdu` reads the record at once.
   - **Compare**: what OSDU holds beside what a delivery would send now, as a side-by-side comparison and a list of
     the paths that differ.
   - **References**: the OSDU ids the waiting document refers to, and the records of the ledger waiting for this one.

@@ -225,6 +225,12 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
         => RecordWriter.ReadAsync(_client, _options.VerifyPath ?? DefaultVerifyPath, targetId, ct);
 
+    public Task<IReadOnlyList<long>?> VersionsAsync(string targetId, CancellationToken ct = default)
+        => RecordWriter.VersionsAsync(_client, _options.VerifyPath ?? DefaultVerifyPath, targetId, ct);
+
+    public Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
+        => RecordWriter.ReadVersionAsync(_client, _options.VerifyPath ?? DefaultVerifyPath, targetId, version, ct);
+
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? DefaultProbePath, ct);
 
@@ -610,6 +616,76 @@ internal static class RecordWriter
 
         return JsonNode.Parse(result.Body) as JsonObject
             ?? throw new DeliveryException($"{url.AbsolutePath}: the target answered with something other than a JSON record.");
+    }
+
+    /// <summary>
+    /// The storage service keeps a record's version list beside its record path (openapi storage v2,
+    /// <c>GET /records/versions/{id}</c> next to <c>GET /records/{id}</c>), so the list's path is derived from the flow's
+    /// read path and follows it wherever the flow points its reads. Null when the read path is not the storage record
+    /// path: no other service has the endpoint.
+    /// </summary>
+    public static string? VersionsPath(string verifyPath)
+    {
+        ArgumentNullException.ThrowIfNull(verifyPath);
+        const string RecordSegment = "/records/{id}";
+        return verifyPath.EndsWith(RecordSegment, StringComparison.Ordinal)
+            ? string.Concat(verifyPath.AsSpan(0, verifyPath.Length - RecordSegment.Length), "/records/versions/{id}")
+            : null;
+    }
+
+    /// <summary>
+    /// The versions the storage service keeps of one record, newest first: null when the flow's read path is not the
+    /// storage service's (there is then no list to ask for), and empty when the service holds no such record (404).
+    /// </summary>
+    public static async Task<IReadOnlyList<long>?> VersionsAsync(OsduHttpClient client, string verifyPath, string targetId, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        if (VersionsPath(verifyPath) is not { } path)
+        {
+            return null;
+        }
+
+        var url = client.Url(path, targetId);
+        var result = await client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
+        if ((int)result.Status == 404)
+        {
+            return [];
+        }
+
+        if (JsonNode.Parse(result.Body) is not JsonObject root || root["versions"] is not JsonArray listed)
+        {
+            throw new DeliveryException($"{url.AbsolutePath}: the target answered with something other than a version list.");
+        }
+
+        var versions = new List<long>(listed.Count);
+        foreach (var node in listed)
+        {
+            if (node is JsonValue value && value.TryGetValue<long>(out var version))
+            {
+                versions.Add(version);
+            }
+            else
+            {
+                throw new DeliveryException($"{url.AbsolutePath}: the version list holds '{node?.ToJsonString()}', which is not a version number.");
+            }
+        }
+
+        versions.Sort((a, b) => b.CompareTo(a));
+        return versions;
+    }
+
+    /// <summary>The record as the storage service held it at one version (openapi storage v2, <c>GET /records/{id}/{version}</c>); null on 404.</summary>
+    public static Task<JsonObject?> ReadVersionAsync(OsduHttpClient client, string verifyPath, string targetId, long version, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        var url = client.Url(verifyPath + "/{version}", new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["id"] = targetId,
+            ["version"] = version.ToString(CultureInfo.InvariantCulture),
+        });
+        return ReadAsync(client, url, ct);
     }
 
     /// <summary>

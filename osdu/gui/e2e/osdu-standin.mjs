@@ -113,6 +113,19 @@ function readRecord(id) {
 
 /** A record read: storage's (GET /api/storage/v2/records/{id}) or a wellbore DDMS collection's (GET .../ddms/v3/{collection}/{id}). */
 const RECORD_READ = /^\/api\/(?:storage\/v2\/records|os-wellbore-ddms\/ddms\/v3\/[A-Za-z]+)\/([^/]+)$/;
+/** The version list beside a record (GET /api/storage/v2/records/versions/{id}); this stand-in keeps one version per record. */
+const RECORD_VERSIONS = /^\/api\/storage\/v2\/records\/versions\/([^/]+)$/;
+/** A record at one version (GET /api/storage/v2/records/{id}/{version}); only the version held answers. */
+const RECORD_AT_VERSION = /^\/api\/storage\/v2\/records\/([^/]+)\/(\d+)$/;
+
+/** The id a storage path names, decoded; null when it cannot be. */
+function decodeId(encoded) {
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
+}
 
 const server = createServer((request, response) => {
   const path = new URL(request.url ?? "/", "http://stand-in").pathname;
@@ -143,6 +156,32 @@ const server = createServer((request, response) => {
         .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the record: ${error instanceof Error ? error.message : String(error)}` }));
       return;
     }
+  }
+
+  const versions = request.method === "GET" ? RECORD_VERSIONS.exec(path) : null;
+  if (versions !== null) {
+    const id = decodeId(versions[1]);
+    const record = id === null ? null : readRecord(id);
+    if (record === null) {
+      send(response, 404, { code: 404, reason: "Record not found", message: `The e2e OSDU stand-in holds no record ${id ?? path}.` });
+    } else {
+      send(response, 200, { recordId: withoutVersion(id), versions: [record.version] });
+    }
+
+    return;
+  }
+
+  const atVersion = request.method === "GET" ? RECORD_AT_VERSION.exec(path) : null;
+  if (atVersion !== null) {
+    const id = decodeId(atVersion[1]);
+    const record = id === null ? null : readRecord(id);
+    if (record === null || String(record.version) !== atVersion[2]) {
+      send(response, 404, { code: 404, reason: "Record version not found", message: `The e2e OSDU stand-in holds no version ${atVersion[2]} of ${id ?? path}.` });
+    } else {
+      send(response, 200, record);
+    }
+
+    return;
   }
 
   const reading = request.method === "GET" ? RECORD_READ.exec(path) : null;

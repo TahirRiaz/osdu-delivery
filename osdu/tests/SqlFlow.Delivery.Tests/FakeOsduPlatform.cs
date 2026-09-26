@@ -552,9 +552,29 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
             return new HttpResponseMessage(HttpStatusCode.NoContent);
         }
 
+        // The version list beside the record (openapi storage v2, GET /records/versions/{id}): this fake keeps one version
+        // per record, the one its last put gave it, so the list is that version alone.
+        if (operation.StartsWith("records/versions/", StringComparison.Ordinal) && method == "GET")
+        {
+            var id = operation["records/versions/".Length..];
+            return Records.TryGetValue(id, out var versioned) && !Removed.Contains(id)
+                ? Json(HttpStatusCode.OK, new JsonObject { ["recordId"] = id, ["versions"] = new JsonArray(JsonValue.Create(versioned["version"]!.GetValue<long>())) })
+                : Error(HttpStatusCode.NotFound, "Record not found");
+        }
+
         if (operation.StartsWith("records/", StringComparison.Ordinal))
         {
             var rest = operation["records/".Length..];
+            // A record at one version (GET /records/{id}/{version}): only the version this fake holds answers.
+            var slash = rest.LastIndexOf('/');
+            if (method == "GET" && slash > 0 && long.TryParse(rest[(slash + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var atVersion))
+            {
+                var id = rest[..slash];
+                return Records.TryGetValue(id, out var held) && !Removed.Contains(id) && held["version"]!.GetValue<long>() == atVersion
+                    ? Json(HttpStatusCode.OK, held.DeepClone())
+                    : Error(HttpStatusCode.NotFound, "Record version not found");
+            }
+
             if (rest.EndsWith(":delete", StringComparison.Ordinal) && method == "POST")
             {
                 var id = rest[..^":delete".Length];

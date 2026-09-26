@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
@@ -162,8 +163,9 @@ public sealed class ProbeTargetOperation : DeliveryOperation
 }
 
 /// <summary>
-/// <c>delivery-read</c>: the record as OSDU holds it right now, for a record's detail page. Takes the ledger's
-/// <c>deliveryKey</c> (resolved to the target id) or a <c>targetId</c> directly.
+/// <c>delivery-read</c>: the record as OSDU holds it right now, for a record's detail page, with the versions the
+/// target keeps of it. Takes the ledger's <c>deliveryKey</c> (resolved to the target id) or a <c>targetId</c> directly,
+/// and a <c>version</c> to read the record as it was at that version instead of its latest.
 /// </summary>
 public sealed class ReadRecordOperation : DeliveryOperation
 {
@@ -179,6 +181,17 @@ public sealed class ReadRecordOperation : DeliveryOperation
     protected override async Task<object> RunAsync(FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
         var targetId = payload.Argument("targetId");
+        long? version = null;
+        if (payload.Argument("version") is { } versionText)
+        {
+            if (!long.TryParse(versionText, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0)
+            {
+                throw new SqlFlowException($"'{versionText}' is not a record version: a positive whole number.");
+            }
+
+            version = parsed;
+        }
+
         Guid? deliveryKey = null;
         IReadOnlyDictionary<string, string>? targetState = null;
         if (targetId is null)
@@ -206,7 +219,23 @@ public sealed class ReadRecordOperation : DeliveryOperation
         using var correlation = Http.OsduCorrelation.Begin();
         using (http)
         {
-            JsonObject? document = await protocol.ReadAsync(targetId, targetState, ct).ConfigureAwait(false);
+            JsonObject? document = version is null
+                ? await protocol.ReadAsync(targetId, targetState, ct).ConfigureAwait(false)
+                : await protocol.ReadVersionAsync(targetId, version.Value, ct).ConfigureAwait(false);
+
+            // The version list is the record's history, read beside the record. A target that refuses the list still
+            // answered with the record, so the refusal is reported with it rather than failing the read.
+            IReadOnlyList<long>? versions = null;
+            string? historyError = null;
+            try
+            {
+                versions = await protocol.VersionsAsync(targetId, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is DeliveryException or HttpRequestException && !ct.IsCancellationRequested)
+            {
+                historyError = Http.HeaderRedaction.RedactMessage(ex.Message);
+            }
+
             return new
             {
                 flow = flow.Label,
@@ -215,6 +244,9 @@ public sealed class ReadRecordOperation : DeliveryOperation
                 correlationId = correlation.Id,
                 found = document is not null,
                 version = document is null ? null : RecordWriter.ParseVersion(Json.JsonPathReader.SelectValue(JsonSerializer.SerializeToElement(document), "version")),
+                readVersion = version,
+                versions,
+                historyError,
                 record = document,
                 readUtc = Context.Time.GetUtcNow().UtcDateTime,
             };

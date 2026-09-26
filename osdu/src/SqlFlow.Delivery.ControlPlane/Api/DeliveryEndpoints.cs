@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
@@ -64,8 +65,11 @@ public sealed record DeliveryParameterDto(string Name, bool Required, string? De
 /// </summary>
 public sealed record DeliveryPreviewRequest(string? Key, IReadOnlyDictionary<string, string>? Values);
 
-/// <summary>A read of one OSDU record through a flow's route and credentials, by its id (a version or a trailing colon is dropped).</summary>
-public sealed record DeliveryReadRequest(string? TargetId);
+/// <summary>
+/// A read of one OSDU record through a flow's route and credentials, by its id (a version or a trailing colon is dropped),
+/// at its latest version or at the one <c>Version</c> names. A record's own read names no id: the ledger's record says which.
+/// </summary>
+public sealed record DeliveryReadRequest(string? TargetId, long? Version = null);
 
 /// <summary>One interface another waits for, or does not wait for, with where that comes from (<c>after</c> or <c>schema</c>) and why.</summary>
 public sealed record DeliveryInterfaceWaitDto(string Interface, string Origin, string Why);
@@ -1445,16 +1449,34 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadRecordAsync(
-        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid flowId, Guid key, DeliveryReadRequest? request, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
+        if (InvalidVersion(request) is { } invalid)
+        {
+            return invalid;
+        }
+
         var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
         {
             return problem!;
         }
 
-        return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName,
-            new Dictionary<string, string>(StringComparer.Ordinal) { ["deliveryKey"] = key.ToString("D") }, user, ct).ConfigureAwait(false);
+        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["deliveryKey"] = key.ToString("D") };
+        WithVersion(arguments, request);
+        return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>A version to read at is a positive whole number; the storage service numbers versions from one.</summary>
+    private static ProblemHttpResult? InvalidVersion(DeliveryReadRequest? request)
+        => request?.Version is { } version && version <= 0 ? Invalid($"{version.ToString(CultureInfo.InvariantCulture)} is not a record version: a positive whole number.") : null;
+
+    private static void WithVersion(Dictionary<string, string> arguments, DeliveryReadRequest? request)
+    {
+        if (request?.Version is { } version)
+        {
+            arguments["version"] = version.ToString(CultureInfo.InvariantCulture);
+        }
     }
 
     /// <summary>
@@ -1588,15 +1610,20 @@ public static class DeliveryEndpoints
             return Invalid($"'{asked}' is not an OSDU record id: a partition, an entity type such as master-data--Wellbore, and a unique part, separated by colons.");
         }
 
+        if (InvalidVersion(request) is { } invalid)
+        {
+            return invalid;
+        }
+
         var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
         }
 
-        return await EnqueueOperationAsync(
-            db, dispatcher, flow, ReadRecordOperation.OperationName,
-            new Dictionary<string, string>(StringComparer.Ordinal) { ["targetId"] = TargetId.WithoutVersion(asked) }, user, ct).ConfigureAwait(false);
+        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["targetId"] = TargetId.WithoutVersion(asked) };
+        WithVersion(arguments, request);
+        return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
     }
 
     private static ProblemHttpResult Invalid(string detail)

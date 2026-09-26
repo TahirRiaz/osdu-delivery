@@ -975,7 +975,14 @@ export interface DeliveryOsduRead {
   targetId: string;
   correlationId?: string | null;
   found: boolean;
+  /** The version of the document read (its own `version` field). */
   version?: number | null;
+  /** The version the read was asked for; absent for a read of the latest. */
+  readVersion?: number | null;
+  /** Every version the target keeps of the record, newest first; null for a target that keeps no version list. */
+  versions?: number[] | null;
+  /** Why the version list could not be read, when the record itself could. */
+  historyError?: string | null;
   record?: Record<string, unknown> | null;
   readUtc: string;
 }
@@ -1660,8 +1667,9 @@ export const deliveryApi = {
     post<DeliveryRedeliverResult>(`${recordApiPath(record)}/redeliver`, { scope, run }),
   /** Queues a verify run scoped to this record. */
   verify: (record: DeliveryRecordRef) => post<DeliveryRunAccepted>(`${recordApiPath(record)}/verify`),
-  /** Queues a read-back of the record as its flow wrote it to OSDU; poll the task for the document. */
-  read: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/read`),
+  /** Queues a read-back of the record as its flow wrote it to OSDU, at its latest version or at `version`; poll the task for the document. */
+  read: (record: DeliveryRecordRef, version?: number) =>
+    post<ComputeTaskAccepted>(`${recordApiPath(record)}/read`, version === undefined ? undefined : { version }),
   /**
    * Queues a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its
    * system columns, its child datasets, and the origin file and row the ingestion tables record. Poll the task.
@@ -1677,8 +1685,8 @@ export const deliveryApi = {
   /** Queues a preview of this record, rendered from its current source row as a delivery would render it now. */
   previewRecord: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/preview`),
   /** Queues a read of any OSDU record by id, through the flow's route and credentials. Poll the task. */
-  readOsdu: (pipelineId: string, targetId: string, interfaceName?: string | null) =>
-    post<ComputeTaskAccepted>(flowPath(pipelineId, "/osdu/read", interfaceName), { targetId }),
+  readOsdu: (pipelineId: string, targetId: string, interfaceName?: string | null, version?: number) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/osdu/read", interfaceName), version === undefined ? { targetId } : { targetId, version }),
   /** Where the flow's records live, and which call each removal scope makes against them. */
   target: (pipelineId: string, interfaceName?: string | null) =>
     get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`, interfaceName ? { interface: interfaceName } : {}),

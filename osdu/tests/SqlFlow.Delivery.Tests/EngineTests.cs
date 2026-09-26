@@ -485,6 +485,45 @@ public class ProtocolTests
     }
 
     [Fact]
+    public async Task Record_protocol_lists_a_records_versions_and_reads_one_of_them()
+    {
+        const string id = "dev:work-product-component--WellLog:abc";
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Get, "/records/versions/" + id, HttpStatusCode.OK, """{"recordId":"dev:work-product-component--WellLog:abc","versions":[7,9,8]}""")
+            .On(HttpMethod.Get, "/records/versions/gone", HttpStatusCode.NotFound, null)
+            .On(HttpMethod.Get, "/records/" + id + "/7", HttpStatusCode.OK, """{"id":"dev:work-product-component--WellLog:abc","version":7,"data":{"Name":"old"}}""")
+            .On(HttpMethod.Get, "/records/" + id + "/6", HttpStatusCode.NotFound, null);
+        var (client, _, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduRecordProtocol(client, new ProtocolOptions());
+
+            // Newest first, whatever order the service lists them in; a record the service does not hold has none.
+            Assert.Equal(new long[] { 9, 8, 7 }, await protocol.VersionsAsync(id));
+            Assert.Empty((await protocol.VersionsAsync("gone"))!);
+
+            // A version reads the record as it was then; a version the service never gave is nothing, not a failure.
+            Assert.Equal("old", (await protocol.ReadVersionAsync(id, 7))!["data"]!["Name"]!.GetValue<string>());
+            Assert.Null(await protocol.ReadVersionAsync(id, 6));
+            Assert.EndsWith("/api/storage/v2/records/versions/" + id, handler.Calls.First(c => c.Uri.AbsolutePath.Contains("versions", StringComparison.Ordinal)).Uri.AbsolutePath, StringComparison.Ordinal);
+
+            // The list sits beside the storage record path only: a flow that reads its records elsewhere has no history to ask for.
+            var elsewhere = new OsduRecordProtocol(client, new ProtocolOptions { VerifyPath = "/api/custom/{id}" });
+            Assert.Null(await elsewhere.VersionsAsync(id));
+        }
+
+        // A protocol whose target keeps no version list says so, and refuses a read at a version rather than guessing.
+        var (client2, _, runtime2) = Client(new FakeHttpHandler());
+        using (runtime2)
+        {
+            IDeliveryProtocol ddms = new OsduDdmsProtocol(client2, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
+            Assert.Null(await ddms.VersionsAsync(id));
+            var refused = await Assert.ThrowsAsync<DeliveryException>(() => ddms.ReadVersionAsync(id, 7));
+            Assert.Contains("keeps no version history", refused.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task A_record_write_asks_storage_to_skip_duplicates_only_when_the_flow_opts_in()
     {
         // Opted in, skipdupes is sent, and a record the service names under skippedRecordIds settles on the version

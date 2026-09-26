@@ -113,14 +113,21 @@ test.describe.serial("record preview and OSDU read", () => {
 
     await adminPage.getByTestId("record-osdu-read").click();
     await expect(adminPage.getByTestId("osdu-record")).toBeVisible({ timeout: 60_000 });
-    await expect(adminPage.getByTestId("osdu-record-version")).toContainText("version");
     await expect(adminPage.getByTestId("osdu-record-viewers")).toContainText(E2E.osdu.OSDU_ACL_VIEWER);
     await expect(adminPage.getByTestId("osdu-record-json")).toContainText("held by the stand-in", { timeout: 30_000 });
 
-    // The wellbore it refers to is read in turn, through the same flow's route, and opens beneath it.
-    const links = adminPage.getByTestId("osdu-record-links");
-    await expect(links).toContainText(`master-data--Wellbore:${LOG_WELLBORE}`);
-    await links.getByTestId("osdu-link-read").first().click();
+    // The versions OSDU keeps of it ride with the read: the stand-in keeps one, which is the latest and the one shown,
+    // so it is marked rather than offered to read.
+    const versions = adminPage.getByTestId("osdu-record-versions");
+    await expect(versions).toContainText("latest");
+    await expect(versions.getByTestId("osdu-record-version")).toHaveAttribute("data-state", "active");
+    await expect(versions.getByTestId("osdu-version")).toHaveCount(0);
+
+    // The wellbore it refers to is a link where it stands in the record, read in turn through the same flow's route,
+    // and opens beneath it.
+    const link = adminPage.getByTestId("osdu-record-link").first();
+    await expect(link).toContainText(`master-data--Wellbore:${LOG_WELLBORE}`);
+    await link.getByTestId("osdu-link-read").click();
     const linked = adminPage.getByTestId("osdu-linked");
     await expect(linked).toBeVisible();
     await expect(linked.getByTestId("osdu-record-json")).toContainText("FacilityName", { timeout: 60_000 });

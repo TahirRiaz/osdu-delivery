@@ -355,6 +355,12 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
         => RecordWriter.ReadAsync(_client, _options.VerifyPath ?? OsduRecordProtocol.DefaultVerifyPath, targetId, ct);
 
+    public Task<IReadOnlyList<long>?> VersionsAsync(string targetId, CancellationToken ct = default)
+        => RecordWriter.VersionsAsync(_client, _options.VerifyPath ?? OsduRecordProtocol.DefaultVerifyPath, targetId, ct);
+
+    public Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
+        => RecordWriter.ReadVersionAsync(_client, _options.VerifyPath ?? OsduRecordProtocol.DefaultVerifyPath, targetId, version, ct);
+
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? DefaultProbePath, ct);
 

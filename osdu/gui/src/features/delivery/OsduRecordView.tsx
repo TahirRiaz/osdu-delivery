@@ -1,21 +1,20 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { BookOpenCheck, Download, Link2, SearchX, X } from "lucide-react";
+import { Download, Eye, Globe, History, Scale, SearchX, UserRoundCog, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import { isApiError } from "@/api/client";
 import type { ComputeTask } from "@/api/types";
-import { CodeView } from "@/components/CodeView";
-import { DataTable, type Column } from "@/components/DataTable";
-import { DetailPair } from "@/components/DetailPair";
-import { IdChip } from "@/components/IdChip";
+import { IconAction } from "@/components/IconAction";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import { deliveryApi, type DeliveryOsduRead } from "../../api/delivery";
-import { downloadJson, fileNameOf, recordReferences, type RecordReferenceAt } from "./osduDocument";
+import { downloadJson, fileNameOf } from "./osduDocument";
+import { OsduRecordTree } from "./OsduRecordTree";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
@@ -30,28 +29,119 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : null;
 }
 
-/** A list of short values as badges, or a dash. */
-function Values({ values, testId }: { values: string[]; testId?: string }) {
-  return values.length === 0
-    ? <span className="text-muted-foreground">-</span>
-    : (
-      <span className="inline-flex flex-wrap gap-1" data-testid={testId}>
-        {values.map((value) => <Badge key={value} variant="outline" className="font-mono text-[11px]">{value}</Badge>)}
+/** A list of short values as chips, each carrying the glyph and hover title that say what it is; nothing when there are none. */
+function Values({ values, icon: Icon, what, testId }: { values: string[]; icon: LucideIcon; what: string; testId?: string }) {
+  if (values.length === 0) {
+    return null;
+  }
+
+  return (
+    <span className="inline-flex flex-wrap gap-1" data-testid={testId}>
+      {values.map((value) => (
+        <Badge key={value} variant="outline" className="gap-1 font-mono text-[11px] font-normal" title={what}>
+          <Icon className="size-3 text-muted-foreground" />
+          {value}
+        </Badge>
+      ))}
+    </span>
+  );
+}
+
+/** How many versions show before the older ones wait behind a button. */
+const VERSIONS_SHOWN = 12;
+
+/**
+ * The record's history as the target keeps it: every version, newest first, each a click away, with the one being
+ * shown, the latest, and the one this flow's ledger holds as delivered marked. A target that keeps no version list
+ * says so in one line; a list that could not be read says why.
+ */
+function RecordVersions({ read, ledgerVersion, onReadVersion }: {
+  read: DeliveryOsduRead;
+  ledgerVersion: number | null;
+  onReadVersion?: (version: number) => void;
+}) {
+  const [all, setAll] = useState(false);
+  const versions = read.versions ?? null;
+  if (versions === null) {
+    return read.historyError
+      ? <p className="text-[12px] text-muted-foreground" data-testid="osdu-history-error">{`The version list could not be read: ${read.historyError}`}</p>
+      : <p className="text-[12px] text-muted-foreground" data-testid="osdu-no-history">This target keeps no version list for its records, so the record is read at its latest alone.</p>;
+  }
+
+  const shown = read.readVersion ?? read.version ?? null;
+  const latest = versions[0] ?? null;
+  const listed = all ? versions : versions.slice(0, VERSIONS_SHOWN);
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5" data-testid="osdu-record-versions">
+      <span className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground" title="Every version OSDU keeps of this record, newest first; each reads the record as it was then">
+        <History className="size-3.5" />
+        {versions.length === 0 ? "No versions" : `${versions.length} version${versions.length === 1 ? "" : "s"}`}
       </span>
-    );
+      {listed.map((version) => {
+        const current = version === shown;
+        const marks = [version === latest ? "latest" : null, version === ledgerVersion ? "delivered by this flow" : null].filter((mark): mark is string => mark !== null);
+        const title = current ? "The version shown" : "Read the record as it was at this version";
+        return (
+          <span key={version} className="inline-flex items-center gap-1">
+            {current
+              ? (
+                <span className="inline-flex h-7 items-center rounded-md bg-primary/15 px-2.5 font-mono text-[11px] font-semibold tabular-nums text-primary ring-1 ring-inset ring-primary/40" title={title} data-testid="osdu-record-version" data-state="active">
+                  {version}
+                </span>
+              )
+              : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 font-mono text-[11px] tabular-nums"
+                  onClick={() => onReadVersion?.(version)}
+                  disabled={onReadVersion === undefined}
+                  title={title}
+                  data-testid="osdu-version"
+                >
+                  {version}
+                </Button>
+              )}
+            {marks.map((mark) => (
+              <span key={mark} className={cn("text-[10px] uppercase tracking-wide", mark === "latest" ? "text-muted-foreground" : "text-success")}>{mark}</span>
+            ))}
+          </span>
+        );
+      })}
+      {versions.length > VERSIONS_SHOWN && (
+        <Button variant="ghost" size="sm" className="h-7" onClick={() => setAll((was) => !was)} data-testid="osdu-versions-more">
+          {all ? "Fewer" : `${versions.length - VERSIONS_SHOWN} older`}
+        </Button>
+      )}
+      {shown !== null && latest !== null && shown !== latest && (
+        <Badge variant="secondary" className="bg-warning/15 text-warning" data-testid="osdu-version-older">
+          {`showing version ${shown}, not the latest`}
+        </Badge>
+      )}
+      {ledgerVersion !== null && versions.length > 0 && !versions.includes(ledgerVersion) && (
+        <p className="text-[12px] text-warning" data-testid="osdu-version-missing">
+          {`The ledger holds version ${ledgerVersion} as delivered by this flow, and OSDU no longer lists it.`}
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**
  * A record as OSDU holds it: OSDU's own fields (its version, who created and last changed it, and when), its access and
- * legal tags, the document itself, and the records it refers to, each of which can be read in turn. A read that found
- * nothing says so, with the id it looked for.
+ * legal tags, the versions it keeps, and the document as a tree with the records it refers to readable where they
+ * stand. A read that found nothing says so, with the id it looked for.
  */
-export function OsduRecordView({ read, onOpenLink, opening }: {
+export function OsduRecordView({ read, onOpenLink, opening, onReadVersion, ledgerVersion }: {
   read: DeliveryOsduRead;
   /** Reads a record the document refers to; absent where links are not followed. */
   onOpenLink?: (id: string) => void;
   /** The linked record being read now, whose button shows it. */
   opening?: string | null;
+  /** Reads this same record at one of the versions the target keeps; absent where a version cannot be asked for. */
+  onReadVersion?: (version: number) => void;
+  /** The version the ledger holds as delivered by this flow, marked in the version list. */
+  ledgerVersion?: number | null;
 }) {
   if (!read.found || !read.record) {
     return (
@@ -73,87 +163,97 @@ export function OsduRecordView({ read, onOpenLink, opening }: {
   const record = read.record;
   const acl = (record.acl ?? {}) as Record<string, unknown>;
   const legal = (record.legal ?? {}) as Record<string, unknown>;
-  const links = recordReferences(record, read.targetId);
-  const linkColumns: Column<RecordReferenceAt>[] = [
-    { id: "id", header: "OSDU id", fill: true, render: (row) => <TruncatedText text={row.id} mono maxWidth={460} copy copyTestId="copy-osdu-link" /> },
-    { id: "paths", header: "Where", render: (row) => <TruncatedText text={row.paths.join(", ")} mono maxWidth={300} /> },
-    ...(onOpenLink === undefined ? [] : [{
-      id: "open",
-      header: "",
-      render: (row: RecordReferenceAt) => (
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7"
-          onClick={(event) => { event.stopPropagation(); onOpenLink(row.id); }}
-          disabled={opening === row.id}
-          data-testid="osdu-link-read"
-        >
-          <BookOpenCheck />
-          Read
-        </Button>
-      ),
-    }]),
-  ];
+  const kind = text(record.kind);
+  const created = text(record.createTime);
+  const modified = text(record.modifyTime);
 
   return (
-    <div className="flex flex-col gap-3" data-testid="osdu-record">
-      <div className="flex flex-wrap items-center gap-2">
-        <IdChip label="osdu" value={read.targetId} display={read.targetId} testId="osdu-record-id" copyTestId="copy-osdu-record-id" />
-        {read.version !== null && read.version !== undefined && <Badge variant="outline" className="font-mono" data-testid="osdu-record-version">{`version ${read.version}`}</Badge>}
-        <Button
-          variant="outline"
-          size="sm"
-          className="ml-auto"
-          onClick={() => downloadJson(fileNameOf("osdu", read.targetId), record)}
-          data-testid="osdu-record-download"
-        >
-          <Download />
-          Download JSON
-        </Button>
-      </div>
-      <div className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
-        <DetailPair label="Kind"><TruncatedText text={text(record.kind)} mono maxWidth={320} /></DetailPair>
-        <DetailPair label="Created">
-          <span className="inline-flex flex-wrap items-baseline gap-1">
-            <RelativeTime value={text(record.createTime)} absolute />
-            {text(record.createUser) && <span className="text-[12px] text-muted-foreground">{`by ${text(record.createUser)}`}</span>}
+    <Card className="gap-0 rounded-lg p-0" data-testid="osdu-record">
+      {/* Who the record is in OSDU: its kind, and who wrote it when. One quiet line each; the id is in the page's header. */}
+      <div className="flex flex-col gap-2.5 px-4 pt-3 pb-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <TruncatedText text={kind} mono maxWidth={520} copy className="text-[13px] font-medium text-foreground" title="Kind" />
+          <span className="text-[12px] text-muted-foreground" data-testid="osdu-record-provenance">
+            {created !== null && (
+              <span>
+                {"created "}
+                <RelativeTime value={created} absolute />
+                {text(record.createUser) && <span>{` by ${text(record.createUser)}`}</span>}
+              </span>
+            )}
+            {created !== null && modified !== null && <span>{" · "}</span>}
+            {modified !== null && (
+              <span>
+                {"last modified "}
+                <RelativeTime value={modified} absolute />
+                {text(record.modifyUser) && <span>{` by ${text(record.modifyUser)}`}</span>}
+              </span>
+            )}
           </span>
-        </DetailPair>
-        <DetailPair label="Last modified">
-          <span className="inline-flex flex-wrap items-baseline gap-1">
-            <RelativeTime value={text(record.modifyTime)} absolute />
-            {text(record.modifyUser) && <span className="text-[12px] text-muted-foreground">{`by ${text(record.modifyUser)}`}</span>}
-          </span>
-        </DetailPair>
-        <DetailPair label="Viewers"><Values values={texts(acl.viewers)} testId="osdu-record-viewers" /></DetailPair>
-        <DetailPair label="Owners"><Values values={texts(acl.owners)} testId="osdu-record-owners" /></DetailPair>
-        <DetailPair label="Legal tags"><Values values={texts(legal.legaltags)} testId="osdu-record-legal" /></DetailPair>
-        <DetailPair label="Countries"><Values values={texts(legal.otherRelevantDataCountries)} /></DetailPair>
-        <DetailPair label="Read"><RelativeTime value={read.readUtc} absolute /></DetailPair>
-        <DetailPair label="Correlation id"><TruncatedText text={read.correlationId ?? null} mono maxWidth={260} copy={Boolean(read.correlationId)} /></DetailPair>
+        </div>
+        <AccessRow acl={acl} legal={legal} />
+        <RecordVersions read={read} ledgerVersion={ledgerVersion ?? null} onReadVersion={onReadVersion} />
       </div>
-      <CodeView value={JSON.stringify(record, null, 2)} language="json" height={420} data-testid="osdu-record-json" />
-      <div className="flex flex-col gap-1">
-        <h3 className="flex items-center gap-1 text-[13px] font-medium"><Link2 className="size-4" />Records it refers to</h3>
-        <DataTable
-          columns={linkColumns}
-          rows={links}
-          rowKey={(row) => row.id}
-          emptyMessage="The record refers to no other OSDU record."
-          data-testid="osdu-record-links"
+      <div className="border-t px-4 py-3">
+        <OsduRecordTree
+          record={record}
+          ownId={read.targetId}
+          onOpenLink={onOpenLink}
+          opening={opening}
+          actions={(
+            <IconAction
+              label="Download the record as JSON"
+              icon={<Download />}
+              variant="outline"
+              className="size-8"
+              onClick={() => downloadJson(fileNameOf("osdu", read.targetId), record)}
+              data-testid="osdu-record-download"
+            />
+          )}
         />
       </div>
+      {/* The read's own diagnostics: when it happened and the correlation id its requests carried, for whoever reads OSDU's logs. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t px-4 py-2 text-[11px] text-muted-foreground">
+        <span>{"read "}<RelativeTime value={read.readUtc} absolute /></span>
+        {read.correlationId && (
+          <span className="inline-flex items-center gap-1">
+            correlation
+            <TruncatedText text={read.correlationId} mono maxWidth={300} copy className="text-[11px]" />
+          </span>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+/** The one way access and legal reach a reader: a chip per group and tag, each with the glyph that says what it is. */
+function AccessRow({ acl, legal }: { acl: Record<string, unknown>; legal: Record<string, unknown> }) {
+  const viewers = texts(acl.viewers);
+  const owners = texts(acl.owners);
+  const tags = texts(legal.legaltags);
+  const countries = texts(legal.otherRelevantDataCountries);
+  if (viewers.length + owners.length + tags.length + countries.length === 0) {
+    return <span className="text-[12px] text-muted-foreground">No access groups or legal tags on the record.</span>;
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5" data-testid="osdu-record-access">
+      <Values values={viewers} icon={Eye} what="viewer group" testId="osdu-record-viewers" />
+      <Values values={owners} icon={UserRoundCog} what="owner group" testId="osdu-record-owners" />
+      <Values values={tags} icon={Scale} what="legal tag" testId="osdu-record-legal" />
+      <Values values={countries} icon={Globe} what="relevant country" />
     </div>
   );
 }
 
 /** What a read of an OSDU record came to: in progress, failed, or the record, with the reads it opened beneath it. */
-export function OsduReadResult({ task, label, onOpenLink, opening }: {
+export function OsduReadResult({ task, label, onOpenLink, opening, onReadVersion, ledgerVersion }: {
   task: ComputeTask | undefined;
   label: string;
   onOpenLink?: (id: string) => void;
   opening?: string | null;
+  onReadVersion?: (version: number) => void;
+  ledgerVersion?: number | null;
 }) {
   if (task === undefined || !isTerminalTask(task)) {
     return <TaskProgress label={label} task={task} testId="osdu-read-progress" />;
@@ -168,16 +268,18 @@ export function OsduReadResult({ task, label, onOpenLink, opening }: {
     );
   }
 
-  return <OsduRecordView read={task.result as DeliveryOsduRead} onOpenLink={onOpenLink} opening={opening} />;
+  return <OsduRecordView read={task.result as DeliveryOsduRead} onOpenLink={onOpenLink} opening={opening} onReadVersion={onReadVersion} ledgerVersion={ledgerVersion} />;
 }
 
 /** One linked record read in turn: its own task, polled to its end, and the records it refers to, readable in their turn. */
-function LinkedRead({ id, taskId, onOpenLink, opening, onClose }: {
+function LinkedRead({ id, taskId, onOpenLink, opening, onClose, onReadVersion }: {
   id: string;
   taskId: string;
   onOpenLink: (id: string) => void;
   opening: string | null;
   onClose: () => void;
+  /** Reads this linked record again at one of its versions, in its own place in the chain. */
+  onReadVersion: (version: number) => void;
 }) {
   const task = useComputeTask(taskId);
   return (
@@ -189,7 +291,7 @@ function LinkedRead({ id, taskId, onOpenLink, opening, onClose }: {
           <X />
         </Button>
       </div>
-      {task.isError ? <ProblemView error={task.error} /> : <OsduReadResult task={task.data} label="Reading the linked record through the flow's route" onOpenLink={onOpenLink} opening={opening} />}
+      {task.isError ? <ProblemView error={task.error} /> : <OsduReadResult task={task.data} label="Reading the linked record through the flow's route" onOpenLink={onOpenLink} opening={opening} onReadVersion={onReadVersion} />}
     </Card>
   );
 }
@@ -199,16 +301,20 @@ function LinkedRead({ id, taskId, onOpenLink, opening, onClose }: {
  * through the same flow's route and credentials, on a node, and opens it below the one it was found in. Following a link
  * from further up closes what was opened below it.
  */
-export function OsduRecordPanel({ pipelineId, interfaceName, task, label }: {
+export function OsduRecordPanel({ pipelineId, interfaceName, task, label, onReadVersion, ledgerVersion }: {
   pipelineId: string | null;
   interfaceName: string | null;
   task: ComputeTask | undefined;
   label: string;
+  /** Reads the page's own record again at one of its versions; absent where it cannot be asked for. */
+  onReadVersion?: (version: number) => void;
+  /** The version the ledger holds as delivered by this flow, marked in the record's version list. */
+  ledgerVersion?: number | null;
 }) {
   const [chain, setChain] = useState<{ id: string; taskId: string }[]>([]);
   const [opening, setOpening] = useState<{ id: string; level: number } | null>(null);
   const open = useMutation({
-    mutationFn: ({ id }: { id: string; level: number }) => deliveryApi.readOsdu(pipelineId!, id, interfaceName),
+    mutationFn: ({ id, version }: { id: string; level: number; version?: number }) => deliveryApi.readOsdu(pipelineId!, id, interfaceName, version),
     onMutate: (asked) => setOpening(asked),
     // A link followed from a level replaces what was opened below it; the oldest reads close past the chain's length.
     onSuccess: (accepted, asked) => setChain((was) => [...was.slice(0, asked.level), { id: asked.id, taskId: accepted.taskId }].slice(-MAX_CHAIN)),
@@ -219,7 +325,7 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, label }: {
 
   return (
     <div className="flex flex-col gap-3" data-testid="osdu-panel">
-      <OsduReadResult task={task} label={label} onOpenLink={openFrom(0)} opening={opening?.level === 0 ? opening.id : null} />
+      <OsduReadResult task={task} label={label} onOpenLink={openFrom(0)} opening={opening?.level === 0 ? opening.id : null} onReadVersion={onReadVersion} ledgerVersion={ledgerVersion} />
       {chain.map((link, index) => (
         <LinkedRead
           key={link.taskId}
@@ -228,6 +334,8 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, label }: {
           onOpenLink={(id) => open.mutate({ id, level: index + 1 })}
           opening={opening?.level === index + 1 ? opening.id : null}
           onClose={() => setChain((was) => was.slice(0, index))}
+          // A version of a linked record takes that record's own place in the chain, and closes what was opened below it.
+          onReadVersion={(version) => open.mutate({ id: link.id, level: index, version })}
         />
       ))}
     </div>

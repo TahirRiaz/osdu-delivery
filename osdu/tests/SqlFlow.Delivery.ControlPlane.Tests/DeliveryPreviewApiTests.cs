@@ -173,6 +173,20 @@ public sealed class DeliveryPreviewApiTests
             Assert.Equal("dev:master-data--Wellbore:NO-33-9-C-28-B", read.Argument("targetId"));
             var versioned = await QueuedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B:1712345678901234" });
             Assert.Equal("dev:master-data--Wellbore:NO-33-9-C-28-B", versioned.Argument("targetId"));
+            Assert.Null(versioned.Argument("version"));
+
+            // A version to read at rides beside the id, and a record's own read takes one too; a version that is not
+            // one is refused before anything is queued.
+            var atVersion = await QueuedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B", version = 1712345678901234L });
+            Assert.Equal("1712345678901234", atVersion.Argument("version"));
+            await RefusedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B", version = 0 }, "is not a record version");
+            var recordReadPath = $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/read";
+            var recordRead = await QueuedAsync(client, token, recordReadPath, new { version = 3 });
+            Assert.Equal("delivery-read", recordRead.Operation);
+            Assert.Equal(key.Value.ToString("D"), recordRead.Argument("deliveryKey"));
+            Assert.Equal("3", recordRead.Argument("version"));
+            Assert.Null((await QueuedAsync(client, token, recordReadPath, null)).Argument("version"));
+            await RefusedAsync(client, token, recordReadPath, new { version = -1 }, "is not a record version");
 
             await RefusedAsync(client, token, readPath, new { targetId = "" }, "Name the OSDU id to read");
             await RefusedAsync(client, token, readPath, new { targetId = "NO 33/9-C-28 B" }, "is not an OSDU record id");

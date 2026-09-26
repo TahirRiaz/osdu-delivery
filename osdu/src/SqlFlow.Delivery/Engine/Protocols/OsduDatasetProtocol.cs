@@ -298,6 +298,12 @@ public sealed class OsduDatasetProtocol : IDeliveryProtocol
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
         => _records.ReadAsync(targetId, ct);
 
+    public Task<IReadOnlyList<long>?> VersionsAsync(string targetId, CancellationToken ct = default)
+        => _records.VersionsAsync(targetId, ct);
+
+    public Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
+        => _records.ReadVersionAsync(targetId, version, ct);
+
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? DatasetService.DefaultProbePath, ct);
 

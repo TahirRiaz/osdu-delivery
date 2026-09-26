@@ -802,6 +802,12 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
         => _records.ReadAsync(targetId, ct);
 
+    public Task<IReadOnlyList<long>?> VersionsAsync(string targetId, CancellationToken ct = default)
+        => _records.VersionsAsync(targetId, ct);
+
+    public Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
+        => _records.ReadVersionAsync(targetId, version, ct);
+
     /// <summary>
     /// The Workflow service, and every workflow the route runs as this partition registers it (openapi workflow v1, GET
     /// workflow/{workflow_name}): names are deployment configuration (section 1.4), so a name the partition does not
