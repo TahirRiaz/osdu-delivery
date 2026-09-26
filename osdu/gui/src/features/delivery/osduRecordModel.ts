@@ -184,3 +184,26 @@ export function trail(model: RecordModel, path: string): RecordNode[] {
 
   return crumbs;
 }
+
+/**
+ * The three parts of an OSDU record id, `partition:group--Type:unique` (the storage service's id pattern, with the
+ * data definitions naming the middle part `group--Type`): the unique part is what a reader knows the record by, and
+ * the type says what it is. A version on the end is not part of the id.
+ */
+export function idParts(id: string): { partition: string; group: string; type: string; unique: string } {
+  const bare = withoutVersion(id);
+  const first = bare.indexOf(":");
+  const second = first < 0 ? -1 : bare.indexOf(":", first + 1);
+  if (first < 0 || second < 0) {
+    return { partition: "", group: "", type: "", unique: bare };
+  }
+
+  const entity = bare.slice(first + 1, second);
+  const dashes = entity.indexOf("--");
+  return {
+    partition: bare.slice(0, first),
+    group: dashes < 0 ? "" : entity.slice(0, dashes),
+    type: dashes < 0 ? entity : entity.slice(dashes + 2),
+    unique: bare.slice(second + 1),
+  };
+}

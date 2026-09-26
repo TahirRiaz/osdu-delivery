@@ -398,11 +398,18 @@ Pipelines like any other flow.
     the render context.
   - **In OSDU**: the record as OSDU holds it, read on a node through the flow's route, in an **inspector** of fixed
     height so a record of ten thousand values is read the way a file tree is, never as one tall page. Its header
-    names the kind and the **versions** OSDU keeps of the record, newest first, with the latest and the one this flow's
-    ledger holds as delivered marked, each a click that reads the record as it was then (a target that keeps no
-    version list, such as a DDMS, says so). On the left, an **outline** that never moves: About (the envelope: id,
-    kind, who wrote it and when, viewers, owners, legal tags, and the read's correlation id), then the record's
-    sections and the objects within them with their sizes, then Linked records. On the right, **one level at a time**
+    names the record by the unique part of its id with its type beside it (the whole id and kind on hover), and holds
+    the **version picker**: the version in view, with every version OSDU keeps of the record a pick away, newest
+    first, the latest and the one this flow's ledger holds as delivered marked (a target that keeps no version list,
+    such as a DDMS, says so). A picked version is read on a node and replaces the record in place, the outline and
+    the place in it kept; **Compare with latest** then opens, in a dialog of its own, what changed between that
+    version and the latest: how many values changed, were added or removed since, the two side by side with the
+    unchanged stretches folded away, and every changed value with its path. On the left, an **outline** that never
+    moves, in the order OSDU lays a
+    record out: **Record** (its system fields: id, kind, version, who created and last modified it and when, and the
+    read's correlation id), **Access & legal** (viewers, owners, legal tags, countries, legal status), then the
+    record's own blocks by OSDU's names (`data`, `meta`, `tags`, `ancestry`) and the objects within them with their
+    sizes, then **Linked records**. On the right, **one level at a time**
     under a breadcrumb: an object as rows of field and value, a nested object as a step into it, an array of items as
     a table with a row per item and a column per shared field, each row a step into its item; long lists show their
     first hundred and the rest on a click; any level shows as JSON on a switch, and the whole record downloads. A

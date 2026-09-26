@@ -1,31 +1,41 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
+import { useMutation } from "@tanstack/react-query";
 import {
-  BookOpenCheck, Braces, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, Eye, Globe, History, Info, Link2,
-  ListTree, Scale, SearchX, UserRoundCog, X, type LucideIcon,
+  BookOpenCheck, Braces, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, Eye, GitCompare, Globe,
+  History, Link2, ListTree, Loader2, Scale, SearchX, UserRoundCog, X, type LucideIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
-import type { ComputeTask } from "@/api/types";
+import { isApiError } from "@/api/client";
+import type { ComputeTask, ComputeTaskAccepted } from "@/api/types";
 import { CodeView } from "@/components/CodeView";
 import { CopyButton } from "@/components/CopyButton";
 import { DataTable, type Column } from "@/components/DataTable";
+import { DiffView } from "@/components/DiffView";
 import { EmptyState } from "@/components/EmptyState";
 import { IconAction } from "@/components/IconAction";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import type { DeliveryOsduRead } from "../../api/delivery";
-import { downloadJson, fileNameOf, withoutVersion } from "./osduDocument";
 import {
-  branchPaths, buildModel, describeBranch, isReferenceNode, loadLayout, matching, saveLayout, trail,
+  canonicalText, differences, downloadJson, fileNameOf, shortValue, withoutOsduFields, withoutVersion, type DifferenceKind, type JsonDifference,
+} from "./osduDocument";
+import {
+  branchPaths, buildModel, describeBranch, idParts, isReferenceNode, loadLayout, matching, saveLayout, trail,
   type RecordModel, type RecordNode,
 } from "./osduRecordModel";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
-import { isTerminalTask } from "./useComputeTask";
+import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
 /** How many rows of one branch show before the rest wait behind a button, so a curve list of thousands stays usable. */
 const PAGE = 100;
@@ -33,11 +43,9 @@ const PAGE = 100;
 /** How many columns a table of items shows; the rest of an item's fields are a click into the item away. */
 const TABLE_COLUMNS = 8;
 
-/** How many versions show before the older ones wait behind a button. */
-const VERSIONS_SHOWN = 10;
-
-/** The two views the detail pane has that are not a branch of the record. */
-const ABOUT = "about";
+/** The views the detail pane has that are not a block of the record: its system fields, its access and legal, its links. */
+const RECORD = "record";
+const ACCESS = "access";
 const LINKS = "links";
 
 /** One record open in the inspector: the read that fetched it, as it stands. */
@@ -56,10 +64,15 @@ function texts(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-/** An OSDU id as a crumb names it: its entity type and unique part, without the partition. */
-function shortId(id: string): string {
-  const parts = withoutVersion(id).split(":");
-  return parts.length >= 3 ? parts.slice(1).join(":") : id;
+/** A record named as a crumb: its unique part in full weight, its type before it in a whisper, the whole id on hover. */
+function RecordName({ id, kind, className }: { id: string; kind?: string | null; className?: string }) {
+  const parts = idParts(id);
+  return (
+    <span className={cn("inline-flex min-w-0 items-baseline gap-1", className)} title={kind ? `${id}\n${kind}` : id}>
+      {parts.type !== "" && <span className="shrink-0 text-[11px] text-muted-foreground">{parts.type}</span>}
+      <span className="truncate font-mono">{parts.unique}</span>
+    </span>
+  );
 }
 
 /** Text with every occurrence of the search term marked, so a match shows where it is rather than only that it is. */
@@ -106,71 +119,64 @@ function Chips({ values, icon: Icon, what, testId }: { values: string[]; icon: L
 }
 
 /**
- * The record's history as the target keeps it: every version, newest first, each a click away, with the one being
- * shown, the latest, and the one this flow's ledger holds as delivered marked. A target that keeps no version list
- * says so in one line; a list that could not be read says why.
+ * The record's history as one control: the version in view, with every version OSDU keeps of the record a pick away,
+ * newest first, the latest and the one this flow's ledger holds as delivered marked. A target that keeps no version
+ * list says so in one line; a list that could not be read says why.
  */
-function RecordVersions({ read, ledgerVersion, onReadVersion }: {
+function VersionPicker({ read, shown, ledgerVersion, loading, onPick }: {
   read: DeliveryOsduRead;
+  /** The version in view, which a pick replaces. */
+  shown: number | null;
   ledgerVersion: number | null;
-  onReadVersion?: (version: number) => void;
+  /** Whether a picked version is still being read. */
+  loading: boolean;
+  onPick?: (version: number) => void;
 }) {
-  const [all, setAll] = useState(false);
   const versions = read.versions ?? null;
   if (versions === null) {
     return read.historyError
       ? <span className="text-[12px] text-muted-foreground" data-testid="osdu-history-error">{`The version list could not be read: ${read.historyError}`}</span>
-      : <span className="text-[12px] text-muted-foreground" data-testid="osdu-no-history">This target keeps no version list, so the record is read at its latest alone.</span>;
+      : <span className="text-[12px] text-muted-foreground" data-testid="osdu-no-history">No version list: this target reads at its latest alone.</span>;
   }
 
-  const shown = read.readVersion ?? read.version ?? null;
   const latest = versions[0] ?? null;
-  const listed = all ? versions : versions.slice(0, VERSIONS_SHOWN);
+  const marksOf = (version: number) => [version === latest ? "latest" : null, version === ledgerVersion ? "delivered by this flow" : null].filter((mark): mark is string => mark !== null);
+  const older = versions.length - 1;
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5" data-testid="osdu-record-versions">
-      <span className="inline-flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground" title="Every version OSDU keeps of this record, newest first; each reads the record as it was then">
-        <History className="size-3.5" />
-        {versions.length === 0 ? "No versions" : `${versions.length} version${versions.length === 1 ? "" : "s"}`}
-      </span>
-      {listed.map((version) => {
-        const current = version === shown;
-        const marks = [version === latest ? "latest" : null, version === ledgerVersion ? "delivered by this flow" : null].filter((mark): mark is string => mark !== null);
-        const title = current ? "The version shown" : "Read the record as it was at this version";
-        return (
-          <span key={version} className="inline-flex items-center gap-1">
-            {current
-              ? (
-                <span className="inline-flex h-7 items-center rounded-md bg-primary/15 px-2.5 font-mono text-[11px] font-semibold tabular-nums text-primary ring-1 ring-inset ring-primary/40" title={title} data-testid="osdu-record-version" data-state="active">
-                  {version}
-                </span>
-              )
-              : (
-                <Button variant="outline" size="sm" className="h-7 font-mono text-[11px] tabular-nums" onClick={() => onReadVersion?.(version)} disabled={onReadVersion === undefined} title={title} data-testid="osdu-version">
-                  {version}
-                </Button>
-              )}
-            {marks.map((mark) => (
-              <span key={mark} className={cn("text-[10px] uppercase tracking-wide", mark === "latest" ? "text-muted-foreground" : "text-success")}>{mark}</span>
+    <span className="inline-flex flex-wrap items-center gap-2" data-testid="osdu-record-versions">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm" className="h-7 gap-1.5 font-normal" disabled={onPick === undefined || versions.length === 0} title="Every version OSDU keeps of this record, newest first; pick one to see the record as it was then" data-testid="osdu-record-version" data-state={shown !== null ? "active" : undefined}>
+            {loading ? <Loader2 className="animate-spin" /> : <History />}
+            {shown === null
+              ? <span className="text-muted-foreground">{versions.length === 0 ? "No versions" : "Version"}</span>
+              : <span className="font-mono text-[11px] tabular-nums">{shown}</span>}
+            {shown !== null && marksOf(shown).map((mark) => <span key={mark} className={cn("text-[10px] uppercase tracking-wide", mark === "latest" ? "text-muted-foreground" : "text-success")}>{mark}</span>)}
+            {older > 0 && <span className="text-[11px] text-muted-foreground">{`+${older}`}</span>}
+            <ChevronDown className="size-3.5 text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="max-h-80 overflow-y-auto" data-testid="osdu-version-menu">
+          <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{`${versions.length} version${versions.length === 1 ? "" : "s"} in OSDU, newest first`}</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuRadioGroup value={shown === null ? "" : String(shown)} onValueChange={(value) => onPick?.(Number(value))}>
+            {versions.map((version) => (
+              <DropdownMenuRadioItem key={version} value={String(version)} className="gap-2 font-mono text-[12px] tabular-nums" data-testid="osdu-version">
+                {version}
+                {marksOf(version).map((mark) => <span key={mark} className={cn("font-sans text-[10px] uppercase tracking-wide", mark === "latest" ? "text-muted-foreground" : "text-success")}>{mark}</span>)}
+              </DropdownMenuRadioItem>
             ))}
-          </span>
-        );
-      })}
-      {versions.length > VERSIONS_SHOWN && (
-        <Button variant="ghost" size="sm" className="h-7" onClick={() => setAll((was) => !was)} data-testid="osdu-versions-more">
-          {all ? "Fewer" : `${versions.length - VERSIONS_SHOWN} older`}
-        </Button>
-      )}
-      {shown !== null && latest !== null && shown !== latest && (
-        <Badge variant="secondary" className="bg-warning/15 text-warning" data-testid="osdu-version-older">{`showing version ${shown}, not the latest`}</Badge>
-      )}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
       {ledgerVersion !== null && versions.length > 0 && !versions.includes(ledgerVersion) && (
         <span className="text-[12px] text-warning" data-testid="osdu-version-missing">{`The ledger holds version ${ledgerVersion} as delivered by this flow, and OSDU no longer lists it.`}</span>
       )}
-    </div>
+    </span>
   );
 }
 
-/** A reference to another OSDU record, as a link with its copy and the button that reads it in turn. */
+/** A reference to another OSDU record, as a link with its copy and the button that opens it in the inspector. */
 function ReferenceLink({ value, ownId, onOpenLink, opening, term }: { value: string; ownId: string | null; onOpenLink?: (id: string) => void; opening?: string | null; term: string }) {
   const id = withoutVersion(value);
   const self = ownId !== null && id === withoutVersion(ownId);
@@ -224,9 +230,10 @@ function Leaf({ node, term, ownId, onOpenLink, opening, compact = false }: {
 }
 
 /** One row of the outline: a branch of the record, or one of the two views that are not a branch. */
-function OutlineRow({ depth, selected, open, onToggle, onSelect, icon: Icon, label, detail, hits, testId }: {
+function OutlineRow({ depth, selected, open, onToggle, onSelect, label, mono = false, detail, hits, testId }: {
   depth: number; selected: boolean; open?: boolean; onToggle?: () => void; onSelect: () => void;
-  icon?: LucideIcon; label: ReactNode; detail?: string; hits?: number; testId?: string;
+  label: ReactNode; /** A label that is one of the record's own keys, set in the mono face as keys are everywhere else. */ mono?: boolean;
+  detail?: string; hits?: number; testId?: string;
 }) {
   return (
     <div
@@ -243,8 +250,7 @@ function OutlineRow({ depth, selected, open, onToggle, onSelect, icon: Icon, lab
         )
         : <span className="size-4 shrink-0" aria-hidden="true" />}
       <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 text-left" onClick={onSelect}>
-        {Icon !== undefined && <Icon className="size-3.5 shrink-0 text-muted-foreground" />}
-        <span className={cn("truncate", Icon === undefined && "font-mono")}>{label}</span>
+        <span className={cn("truncate", mono && "font-mono")}>{label}</span>
         {detail !== undefined && <span className="shrink-0 text-[11px] text-muted-foreground">{detail}</span>}
         {hits !== undefined && hits > 0 && <span className="ml-auto shrink-0 rounded-full bg-warning/25 px-1.5 text-[10px] font-medium tabular-nums">{hits}</span>}
       </button>
@@ -252,11 +258,18 @@ function OutlineRow({ depth, selected, open, onToggle, onSelect, icon: Icon, lab
   );
 }
 
+/** A caption over a group of outline rows, in the workbench's own navigation voice. */
+function OutlineGroup({ label }: { label: string }) {
+  return <div className="px-2 pt-2 pb-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{label}</div>;
+}
+
 /** The crumbs above the detail pane: the record, then each branch down to the one shown, each a step back up. */
-function Crumbs({ record, crumbs, onSelect }: { record: string; crumbs: RecordNode[]; onSelect: (path: string) => void }) {
+function Crumbs({ id, kind, crumbs, onSelect }: { id: string; kind: string | null; crumbs: RecordNode[]; onSelect: (path: string) => void }) {
   return (
     <nav className="flex min-w-0 flex-wrap items-center gap-1 text-[12px]" aria-label="Where in the record" data-testid="osdu-crumbs">
-      <button type="button" className="truncate text-muted-foreground hover:text-foreground hover:underline" onClick={() => onSelect(ABOUT)}>{record}</button>
+      <button type="button" className="min-w-0 max-w-[320px] text-muted-foreground hover:text-foreground hover:underline" onClick={() => onSelect(RECORD)}>
+        <RecordName id={id} kind={kind} />
+      </button>
       {crumbs.map((crumb, index) => (
         <span key={crumb.path} className="flex items-center gap-1">
           <ChevronRight className="size-3.5 text-muted-foreground/60" />
@@ -269,32 +282,10 @@ function Crumbs({ record, crumbs, onSelect }: { record: string; crumbs: RecordNo
   );
 }
 
-/** The record's envelope: what it is, who wrote it, who may see it, and what the read itself was. */
-function AboutView({ read, record }: { read: DeliveryOsduRead; record: Record<string, unknown> }) {
-  const acl = (record.acl ?? {}) as Record<string, unknown>;
-  const legal = (record.legal ?? {}) as Record<string, unknown>;
-  const rows: { label: string; value: ReactNode }[] = [
-    { label: "Id", value: <TruncatedText text={read.targetId} mono maxWidth={560} copy /> },
-    { label: "Kind", value: <TruncatedText text={text(record.kind)} mono maxWidth={560} copy /> },
-    { label: "Version", value: <span className="font-mono text-[12px] tabular-nums">{text(record.version) ?? "-"}</span> },
-    {
-      label: "Created",
-      value: <span className="text-[12px]"><RelativeTime value={text(record.createTime)} absolute />{text(record.createUser) && <span className="text-muted-foreground">{` by ${text(record.createUser)}`}</span>}</span>,
-    },
-    {
-      label: "Last modified",
-      value: <span className="text-[12px]"><RelativeTime value={text(record.modifyTime)} absolute />{text(record.modifyUser) && <span className="text-muted-foreground">{` by ${text(record.modifyUser)}`}</span>}</span>,
-    },
-    { label: "Viewers", value: <Chips values={texts(acl.viewers)} icon={Eye} what="viewer group" testId="osdu-record-viewers" /> },
-    { label: "Owners", value: <Chips values={texts(acl.owners)} icon={UserRoundCog} what="owner group" testId="osdu-record-owners" /> },
-    { label: "Legal tags", value: <Chips values={texts(legal.legaltags)} icon={Scale} what="legal tag" testId="osdu-record-legal" /> },
-    { label: "Countries", value: <Chips values={texts(legal.otherRelevantDataCountries)} icon={Globe} what="relevant country" /> },
-    { label: "Legal status", value: <span className="text-[12px]">{text(legal.status) ?? "-"}</span> },
-    { label: "Read", value: <span className="text-[12px]"><RelativeTime value={read.readUtc} absolute />{` through ${read.flow}`}</span> },
-    { label: "Correlation id", value: <TruncatedText text={read.correlationId ?? null} mono maxWidth={360} copy={Boolean(read.correlationId)} /> },
-  ];
+/** Rows of caption and value, the way the two envelope views read. */
+function CaptionRows({ rows, testId }: { rows: { label: string; value: ReactNode }[]; testId: string }) {
   return (
-    <div className="flex flex-col" data-testid="osdu-about">
+    <div className="flex flex-col" data-testid={testId}>
       {rows.map((row) => (
         <div key={row.label} className="flex min-w-0 items-baseline gap-3 border-b px-3 py-1.5 last:border-b-0">
           <span className="w-32 shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{row.label}</span>
@@ -302,6 +293,48 @@ function AboutView({ read, record }: { read: DeliveryOsduRead; record: Record<st
         </div>
       ))}
     </div>
+  );
+}
+
+/** The record's system fields, as OSDU keeps them on every record: what it is, which version, who wrote it and when; and what the read itself was. */
+function RecordView({ read, record }: { read: DeliveryOsduRead; record: Record<string, unknown> }) {
+  return (
+    <CaptionRows
+      testId="osdu-record-fields"
+      rows={[
+        { label: "Id", value: <TruncatedText text={read.targetId} mono maxWidth={560} copy /> },
+        { label: "Kind", value: <TruncatedText text={text(record.kind)} mono maxWidth={560} copy /> },
+        { label: "Version", value: <span className="font-mono text-[12px] tabular-nums">{text(record.version) ?? "-"}</span> },
+        {
+          label: "Created",
+          value: <span className="text-[12px]"><RelativeTime value={text(record.createTime)} absolute />{text(record.createUser) && <span className="text-muted-foreground">{` by ${text(record.createUser)}`}</span>}</span>,
+        },
+        {
+          label: "Last modified",
+          value: <span className="text-[12px]"><RelativeTime value={text(record.modifyTime)} absolute />{text(record.modifyUser) && <span className="text-muted-foreground">{` by ${text(record.modifyUser)}`}</span>}</span>,
+        },
+        { label: "Read", value: <span className="text-[12px]"><RelativeTime value={read.readUtc} absolute />{` through ${read.flow}`}</span> },
+        { label: "Correlation id", value: <TruncatedText text={read.correlationId ?? null} mono maxWidth={360} copy={Boolean(read.correlationId)} /> },
+      ]}
+    />
+  );
+}
+
+/** The record's access and legal, as OSDU's `acl` and `legal` blocks hold them: who may see and own it, and under which legal tags. */
+function AccessView({ record }: { record: Record<string, unknown> }) {
+  const acl = (record.acl ?? {}) as Record<string, unknown>;
+  const legal = (record.legal ?? {}) as Record<string, unknown>;
+  return (
+    <CaptionRows
+      testId="osdu-access"
+      rows={[
+        { label: "Viewers", value: <Chips values={texts(acl.viewers)} icon={Eye} what="viewer group" testId="osdu-record-viewers" /> },
+        { label: "Owners", value: <Chips values={texts(acl.owners)} icon={UserRoundCog} what="owner group" testId="osdu-record-owners" /> },
+        { label: "Legal tags", value: <Chips values={texts(legal.legaltags)} icon={Scale} what="legal tag" testId="osdu-record-legal" /> },
+        { label: "Countries", value: <Chips values={texts(legal.otherRelevantDataCountries)} icon={Globe} what="relevant country" /> },
+        { label: "Legal status", value: <span className="text-[12px]">{text(legal.status) ?? "-"}</span> },
+      ]}
+    />
   );
 }
 
@@ -424,29 +457,117 @@ function ItemTable({ node, term, hits, ownId, onOpenLink, opening, onSelect, sho
   );
 }
 
+const CHANGE_LABELS: Record<DifferenceKind, string> = {
+  changed: "changed",
+  onlyInOsdu: "added since",
+  onlyInPreview: "removed since",
+  placeholder: "changed",
+};
+
+const CHANGE_TONES: Record<DifferenceKind, string> = {
+  changed: "bg-info/12 text-info",
+  onlyInOsdu: "bg-success/15 text-success",
+  onlyInPreview: "bg-warning/15 text-warning",
+  placeholder: "bg-info/12 text-info",
+};
+
+/**
+ * What changed between a picked version and the latest: the count of each kind of change, the two documents side by
+ * side with the unchanged stretches folded away, and every changed value with its path, so a reader sees at once
+ * what a later delivery (or someone else) did to the record.
+ */
+function CompareView({ latest, latestVersion, picked, pickedVersion }: {
+  latest: Record<string, unknown>; latestVersion: number | null; picked: Record<string, unknown>; pickedVersion: number;
+}) {
+  const compared = useMemo(() => {
+    const then = withoutOsduFields(picked);
+    const now = withoutOsduFields(latest);
+    // The picked version is the earlier text and the latest the later, so "added since" reads as the record grew.
+    return { ...differences(now, then), original: canonicalText(then), modified: canonicalText(now) };
+  }, [latest, picked]);
+  const columns: Column<JsonDifference>[] = [
+    { id: "path", header: "Path", render: (row) => <span className="font-mono text-[12px] break-all">{row.path || "(the record)"}</span> },
+    { id: "kind", header: "", render: (row) => <Badge variant="secondary" className={CHANGE_TONES[row.kind]}>{CHANGE_LABELS[row.kind]}</Badge> },
+    { id: "then", header: `Version ${pickedVersion}`, fill: true, render: (row) => <TruncatedText text={row.preview === undefined ? null : shortValue(row.preview)} mono maxWidth={360} /> },
+    { id: "now", header: latestVersion === null ? "Latest" : `Latest (${latestVersion})`, fill: true, render: (row) => <TruncatedText text={row.osdu === undefined ? null : shortValue(row.osdu)} mono maxWidth={360} /> },
+  ];
+  return (
+    <div className="flex min-h-0 flex-col gap-3" data-testid="osdu-version-compare">
+      <div className="flex flex-wrap items-center gap-2 text-[13px]" data-testid="osdu-version-compare-counts">
+        {compared.items.length === 0
+          ? <Badge variant="secondary" className="bg-success/15 text-success">Nothing changed between the two versions</Badge>
+          : (["changed", "onlyInOsdu", "onlyInPreview"] as DifferenceKind[]).map((kind) => {
+            const count = compared.items.filter((item) => item.kind === kind || (kind === "changed" && item.kind === "placeholder")).length;
+            return count === 0 ? null : <Badge key={kind} variant="secondary" className={CHANGE_TONES[kind]}>{`${count} ${CHANGE_LABELS[kind]}`}</Badge>;
+          })}
+        {compared.truncated && <span className="text-muted-foreground">(the first {compared.items.length} differences)</span>}
+      </div>
+      <DiffView
+        original={compared.original}
+        modified={compared.modified}
+        language="json"
+        height={440}
+        foldUnchanged
+        sideLabels={{ original: `Version ${pickedVersion}`, modified: latestVersion === null ? "Latest" : `Latest (${latestVersion})` }}
+        data-testid="osdu-version-diff"
+      />
+      {compared.items.length > 0 && (
+        <DataTable columns={columns} rows={compared.items} rowKey={(row) => `${row.kind}|${row.path}`} emptyMessage="No differences." data-testid="osdu-version-differences" />
+      )}
+    </div>
+  );
+}
+
 /**
  * One record as an inspector: an outline of its branches on the left that never moves, and on the right one level of
  * it at a time under a breadcrumb, so a record of ten thousand values is read the way a file tree is, never as one
  * tall page. A search counts its matches on every branch of the outline and marks them in the detail; an array of
  * items is a table with a row per item; every value that names another record is a link that opens that record here.
+ * A picked version replaces the record in place, with the outline and the place in it kept, and compares to the latest.
  */
-function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onReadVersion, opening }: {
-  read: DeliveryOsduRead;
-  record: Record<string, unknown>;
+function RecordInspector({ read, level, ledgerVersion, onOpenLink, readVersion, opening }: {
+  /** The read of the record at its latest. */
+  read: DeliveryOsduRead & { record: Record<string, unknown> };
   level: number;
   ledgerVersion: number | null;
   onOpenLink?: (id: string) => void;
-  onReadVersion?: (version: number) => void;
+  /** Queues a read of this record at one of its versions; absent where it cannot be asked for. */
+  readVersion?: (version: number) => Promise<ComputeTaskAccepted>;
   opening?: string | null;
 }) {
+  const [picked, setPicked] = useState<{ version: number; taskId: string } | null>(null);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const pickedTask = useComputeTask(picked?.taskId ?? null);
+  const pick = useMutation({
+    mutationFn: (version: number) => readVersion!(version),
+    onSuccess: (accepted, version) => setPicked({ version, taskId: accepted.taskId }),
+    onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
+  });
+  const latestVersion = read.readVersion ?? read.version ?? null;
+  const pickedRead = picked !== null && isTerminalTask(pickedTask.data) && pickedTask.data?.status === "succeeded"
+    ? (pickedTask.data.result as DeliveryOsduRead | null)
+    : null;
+  const pickedRecord = pickedRead?.found === true && pickedRead.record ? pickedRead.record : null;
+  const pickedFailure = picked !== null && isTerminalTask(pickedTask.data)
+    ? (pickedTask.data?.status !== "succeeded" ? (pickedTask.data?.error ?? "the read did not answer") : pickedRecord === null ? `OSDU holds no version ${picked.version} of the record` : null)
+    : pickedTask.isError ? String(pickedTask.error) : null;
+  const pickedLoading = pick.isPending || (picked !== null && !isTerminalTask(pickedTask.data) && !pickedTask.isError);
+  // The record in view: the picked version once it has arrived, the latest until then and when the pick is the latest.
+  const showingPicked = pickedRecord !== null && picked !== null && picked.version !== latestVersion;
+  const shownRead = showingPicked && pickedRead !== null ? pickedRead : read;
+  const record = showingPicked ? pickedRecord : read.record;
+  const shownVersion = showingPicked ? picked.version : latestVersion;
+
   const kind = text(record.kind);
   const model = useMemo(() => buildModel(record, read.targetId), [record, read.targetId]);
-  const [selected, setSelected] = useState<string>(() => (model.sections.length > 0 ? model.sections[0].path : ABOUT));
+  const [chosen, setChosen] = useState<string>(() => (model.sections.length > 0 ? model.sections[0].path : RECORD));
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => loadLayout(kind));
   const [search, setSearch] = useState("");
   const [asJson, setAsJson] = useState(false);
   const [shownCounts, setShownCounts] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [matchAt, setMatchAt] = useState(0);
+  // A version may lack the branch chosen in another: the record's first section stands in, and the choice is kept.
+  const selected = chosen === RECORD || chosen === ACCESS || chosen === LINKS || model.byPath.has(chosen) ? chosen : (model.sections[0]?.path ?? RECORD);
   const term = search.trim().toLowerCase();
   const found = useMemo(() => (term === "" ? null : matching(model, term)), [model, term]);
   const hits = found?.hits ?? new Set<string>();
@@ -468,11 +589,10 @@ function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onRea
     remember(next);
   };
   const select = (path: string) => {
-    setSelected(path);
+    setChosen(path);
     setAsJson(false);
     // Selecting a branch opens the way to it in the outline, so what is shown is always in view on the left.
-    const node = model.byPath.get(path);
-    if (node !== undefined) {
+    if (model.byPath.has(path)) {
       const next = new Set(expanded);
       for (const crumb of trail(model, path)) {
         if (crumb.kind !== "leaf") {
@@ -495,6 +615,13 @@ function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onRea
     }
 
     setMatchAt(at + 1);
+  };
+  const pickVersion = (version: number) => {
+    if (version === latestVersion) {
+      setPicked(null);
+    } else if (picked?.version !== version) {
+      pick.mutate(version);
+    }
   };
 
   const renderOutline = (node: RecordNode, depth: number): ReactNode => {
@@ -520,6 +647,7 @@ function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onRea
           onToggle={branches.length > 0 ? () => toggle(node.path) : undefined}
           onSelect={() => select(node.path)}
           label={node.key}
+          mono
           detail={describeBranch(node)}
           hits={holding}
           testId="osdu-outline-branch"
@@ -533,19 +661,23 @@ function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onRea
   const shown = node === undefined ? 0 : Math.min(node.children.length, shownCounts.get(node.path) ?? PAGE);
   const showMore = () => { if (node !== undefined) { setShownCounts((current) => new Map(current).set(node.path, node.children.length)); } };
   const isTable = node !== undefined && node.kind === "array" && node.children.length > 0 && node.children.every((child) => child.kind === "object");
-  const recordName = kind !== null ? shortId(kind) : shortId(read.targetId);
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="osdu-record">
-      <div className="flex items-start gap-3 border-b px-3 py-2">
-        <span className="inline-flex shrink-0 items-center gap-1.5 pt-1">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b px-3 py-2">
+        <span className="inline-flex min-w-0 items-center gap-1.5">
           {level > 0 && <Badge variant="secondary" className="text-[10px]">linked</Badge>}
-          <TruncatedText text={kind ?? read.targetId} mono maxWidth={360} copy className="text-[12px] font-medium text-foreground" title="Kind" />
+          <RecordName id={read.targetId} kind={kind} className="max-w-[420px] text-[13px] font-medium" />
         </span>
-        <div className="min-w-0 flex-1 pt-0.5">
-          <RecordVersions read={read} ledgerVersion={level === 0 ? ledgerVersion : null} onReadVersion={onReadVersion} />
-        </div>
-        <IconAction label="Download the record as JSON" icon={<Download />} variant="ghost" className="size-7 shrink-0" onClick={() => downloadJson(fileNameOf("osdu", read.targetId), record)} data-testid="osdu-record-download" />
+        <VersionPicker read={read} shown={shownVersion} ledgerVersion={level === 0 ? ledgerVersion : null} loading={pickedLoading} onPick={readVersion === undefined ? undefined : pickVersion} />
+        {showingPicked && picked !== null && (
+          <Button variant="outline" size="sm" className="h-7" onClick={() => setCompareOpen(true)} title="What changed between this version and the latest" data-testid="osdu-version-compare-toggle">
+            <GitCompare />
+            Compare with latest
+          </Button>
+        )}
+        {pickedFailure !== null && <span className="text-[12px] text-destructive" data-testid="osdu-version-error">{pickedFailure}</span>}
+        <IconAction label="Download the record as JSON" icon={<Download />} variant="ghost" className="ml-auto size-7 shrink-0" onClick={() => downloadJson(fileNameOf("osdu", read.targetId, shownVersion === null ? null : String(shownVersion)), record)} data-testid="osdu-record-download" />
       </div>
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
         <ResizablePanel defaultSize={280} minSize={200} maxSize="45" className="flex min-h-0 flex-col">
@@ -559,9 +691,13 @@ function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onRea
             </div>
           )}
           <div className="min-h-0 flex-1 overflow-y-auto p-1" data-testid="osdu-outline">
-            <OutlineRow depth={0} selected={selected === ABOUT} onSelect={() => select(ABOUT)} icon={Info} label="About" testId="osdu-outline-about" />
+            <OutlineGroup label="Record" />
+            <OutlineRow depth={0} selected={selected === RECORD} onSelect={() => select(RECORD)} label="System fields" testId="osdu-outline-record" />
+            <OutlineRow depth={0} selected={selected === ACCESS} onSelect={() => select(ACCESS)} label="Access & legal" testId="osdu-outline-access" />
+            <OutlineGroup label="Content" />
             {model.sections.map((section) => renderOutline(section, 0))}
-            <OutlineRow depth={0} selected={selected === LINKS} onSelect={() => select(LINKS)} icon={Link2} label="Linked records" detail={`${model.references.length}`} testId="osdu-outline-links" />
+            <OutlineGroup label="References" />
+            <OutlineRow depth={0} selected={selected === LINKS} onSelect={() => select(LINKS)} label="Linked records" detail={`${model.references.length}`} testId="osdu-outline-links" />
           </div>
           <div className="flex items-center gap-1 border-t p-1">
             <IconAction label="Unfold every branch" icon={<ChevronsUpDown />} variant="ghost" className="size-7" onClick={() => remember(branchPaths(model.sections))} data-testid="osdu-tree-expand" />
@@ -571,11 +707,14 @@ function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onRea
         <ResizableHandle />
         <ResizablePanel className="flex min-h-0 flex-col">
           <div className="flex items-center gap-2 border-b px-3 py-1.5">
-            {selected === ABOUT
-              ? <span className="text-[12px] font-medium">About this record</span>
-              : selected === LINKS
-                ? <span className="text-[12px] font-medium">Linked records</span>
-                : <Crumbs record={recordName} crumbs={node === undefined ? [] : trail(model, node.path)} onSelect={select} />}
+            {selected === RECORD
+                ? <span className="text-[12px] font-medium">System fields</span>
+                : selected === ACCESS
+                  ? <span className="text-[12px] font-medium">Access &amp; legal</span>
+                  : selected === LINKS
+                    ? <span className="text-[12px] font-medium">Linked records</span>
+                    : <Crumbs id={read.targetId} kind={kind} crumbs={node === undefined ? [] : trail(model, node.path)} onSelect={select} />}
+            {showingPicked && <Badge variant="secondary" className="bg-warning/15 text-warning" data-testid="osdu-version-older">{`as of version ${picked.version}`}</Badge>}
             {node !== undefined && (
               <span className="ml-auto flex items-center gap-1">
                 <CopyButton iconOnly label="Copy the path" text={node.path} testId="copy-osdu-path" />
@@ -584,22 +723,40 @@ function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onRea
             )}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto" data-testid="osdu-record-json">
-            {selected === ABOUT
-              ? <AboutView read={read} record={record} />
-              : selected === LINKS
-                ? <LinksView model={model} onOpenLink={onOpenLink} opening={opening} onSelect={select} />
-                : node === undefined
-                  ? <EmptyState title="Nothing selected" description="Pick a branch of the record on the left." />
-                  : asJson
-                    ? <div className="p-2"><CodeView value={JSON.stringify(node.value, null, 2)} language="json" height={520} /></div>
-                    : node.children.length === 0
-                      ? <EmptyState title={node.kind === "array" ? "An empty list" : "An empty object"} />
-                      : isTable
-                        ? <ItemTable node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} />
-                        : <FieldRows node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} />}
+            {selected === RECORD
+                ? <RecordView read={shownRead} record={record} />
+                : selected === ACCESS
+                  ? <AccessView record={record} />
+                  : selected === LINKS
+                  ? <LinksView model={model} onOpenLink={onOpenLink} opening={opening} onSelect={select} />
+                  : node === undefined
+                    ? <EmptyState title="Nothing selected" description="Pick a branch of the record on the left." />
+                    : asJson
+                      ? <div className="p-2"><CodeView value={JSON.stringify(node.value, null, 2)} language="json" height={520} /></div>
+                      : node.children.length === 0
+                        ? <EmptyState title={node.kind === "array" ? "An empty list" : "An empty object"} />
+                        : isTable
+                          ? <ItemTable node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} />
+                          : <FieldRows node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} />}
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
+      {showingPicked && picked !== null && (
+        <Dialog open={compareOpen} onOpenChange={setCompareOpen}>
+          <DialogContent className="flex max-h-[90vh] flex-col gap-3 overflow-hidden sm:max-w-6xl" data-testid="osdu-version-compare-dialog">
+            <DialogHeader>
+              <DialogTitle>{`Version ${picked.version} compared with the latest`}</DialogTitle>
+              <DialogDescription>
+                <RecordName id={read.targetId} kind={kind} />
+                {": what a later delivery, or someone else, changed on the record since this version."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <CompareView latest={read.record} latestVersion={latestVersion} picked={record} pickedVersion={picked.version} />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   );
 }
@@ -609,14 +766,14 @@ function RecordInspector({ read, record, level, ledgerVersion, onOpenLink, onRea
  * before: a trail across records, not a stack of them. The last is shown; a crumb steps back to an earlier one and
  * closes what was opened from it.
  */
-export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, onReadVersion, onBack }: {
+export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, readVersion, onBack }: {
   entries: InspectorEntry[];
   ledgerVersion?: number | null;
   opening?: string | null;
   /** Opens a record a link in the shown record names, after it in the trail. */
   onOpenLink?: (id: string) => void;
-  /** Reads the shown record again at one of its versions, in its place in the trail. */
-  onReadVersion?: (version: number) => void;
+  /** Queues a read of the shown record at one of its versions; absent where it cannot be asked for. */
+  readVersion?: (version: number) => Promise<ComputeTaskAccepted>;
   /** Steps back to the entry at `level`, closing everything opened after it. */
   onBack: (level: number) => void;
 }) {
@@ -655,12 +812,11 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
     body = (
       <RecordInspector
         key={`${current.task?.taskId ?? current.id}`}
-        read={read}
-        record={read.record}
+        read={{ ...read, record: read.record }}
         level={level}
         ledgerVersion={ledgerVersion ?? null}
         onOpenLink={onOpenLink}
-        onReadVersion={onReadVersion}
+        readVersion={readVersion}
         opening={opening}
       />
     );
@@ -671,11 +827,15 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
       {entries.length > 1 && (
         <nav className="flex flex-wrap items-center gap-1 text-[12px]" aria-label="Records opened" data-testid="osdu-trail">
           {entries.map((entry, index) => (
-            <span key={`${index}-${entry.id}`} className="flex items-center gap-1">
-              {index > 0 && <ChevronRight className="size-3.5 text-muted-foreground/60" />}
+            <span key={`${index}-${entry.id}`} className="flex min-w-0 items-center gap-1">
+              {index > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted-foreground/60" />}
               {index === level
-                ? <span className="max-w-[360px] truncate font-mono font-medium" title={entry.id}>{shortId(entry.id)}</span>
-                : <button type="button" className="max-w-[360px] truncate font-mono text-muted-foreground hover:text-foreground hover:underline" onClick={() => onBack(index)} title={`Back to ${entry.id}`}>{shortId(entry.id)}</button>}
+                ? <RecordName id={entry.id} className="max-w-[360px] font-medium" />
+                : (
+                  <button type="button" className="min-w-0 max-w-[360px] text-muted-foreground hover:text-foreground hover:underline" onClick={() => onBack(index)}>
+                    <RecordName id={entry.id} />
+                  </button>
+                )}
             </span>
           ))}
           <IconAction label="Close this linked record" icon={<X />} variant="ghost" className="ml-1 size-6" onClick={() => onBack(level - 1)} data-testid="osdu-linked-close" />

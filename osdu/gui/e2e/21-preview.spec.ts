@@ -113,18 +113,19 @@ test.describe.serial("record preview and OSDU read", () => {
 
     await adminPage.getByTestId("record-osdu-read").click();
     await expect(adminPage.getByTestId("osdu-record")).toBeVisible({ timeout: 60_000 });
-    // The inspector opens on the record's data; its envelope (access, legal, who wrote it) is the About view.
+    // The inspector opens on the record's data; who may see it is the Access & legal view of the outline.
     await expect(adminPage.getByTestId("osdu-record-json")).toContainText("held by the stand-in", { timeout: 30_000 });
-    await adminPage.getByTestId("osdu-outline-about").click();
+    await adminPage.getByTestId("osdu-outline-access").click();
     await expect(adminPage.getByTestId("osdu-record-viewers")).toContainText(E2E.osdu.OSDU_ACL_VIEWER);
     await adminPage.getByTestId("osdu-outline-branch").first().click();
 
-    // The versions OSDU keeps of it ride with the read: the stand-in keeps one, which is the latest and the one shown,
-    // so it is marked rather than offered to read.
+    // The versions OSDU keeps of it ride with the read: the stand-in keeps one, which is the latest and the one in
+    // view, so the picker names it as such and offers nothing older.
     const versions = adminPage.getByTestId("osdu-record-versions");
-    await expect(versions).toContainText("latest");
-    await expect(versions.getByTestId("osdu-record-version")).toHaveAttribute("data-state", "active");
-    await expect(versions.getByTestId("osdu-version")).toHaveCount(0);
+    await expect(versions.getByTestId("osdu-record-version")).toContainText("latest");
+    await versions.getByTestId("osdu-record-version").click();
+    await expect(adminPage.getByTestId("osdu-version")).toHaveCount(1);
+    await adminPage.keyboard.press("Escape");
 
     // The wellbore it refers to is a link where it stands in the record, read in turn through the same flow's route,
     // and takes the inspector's place after it on the trail; closing it steps back to the log.

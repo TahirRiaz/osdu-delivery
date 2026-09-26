@@ -163,7 +163,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     onError: (error) => { setConfirm(null); fail(error); },
   });
   const readBack = useMutation({
-    mutationFn: (version: number | void) => deliveryApi.read(ref, version === undefined ? undefined : version),
+    mutationFn: () => deliveryApi.read(ref),
     onSuccess: (accepted) => { setOsduTaskId(accepted.taskId); setTab("osdu"); },
     onError: fail,
   });
@@ -332,7 +332,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
                   interfaceName={detail.interface ?? null}
                   task={osduTask.data}
                   targetId={record.targetId ?? record.deliveryKey}
-                  onReadVersion={canActOnTarget && canOperate ? (version) => readBack.mutate(version) : undefined}
+                  readRootVersion={canActOnTarget && canOperate ? (version) => deliveryApi.read(ref, version) : undefined}
                   ledgerVersion={record.targetVersion}
                 />
               ))}
