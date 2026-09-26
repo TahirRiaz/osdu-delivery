@@ -4,8 +4,8 @@ import type { SearchCategory, SearchHit } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { Mono } from "@/components/Mono";
 import { RelativeTime } from "@/components/RelativeTime";
-import { TruncatedText } from "@/components/TruncatedText";
 import { deliveryRecordRoute, type DeliveryRecordHit } from "../../api/delivery";
+import { RecordName } from "./RecordName";
 
 function isRecordHit(value: unknown): value is DeliveryRecordHit {
   if (value === null || typeof value !== "object") {
@@ -41,7 +41,7 @@ const recordColumns: Column<DeliveryRecordHit>[] = [
   },
   { id: "flow", header: "Flow", render: (row) => <Mono>{row.flowName ?? "-"}</Mono> },
   { id: "status", header: "Status", render: (row) => <Badge variant="secondary">{row.status}</Badge> },
-  { id: "target", header: "OSDU id", render: (row) => <TruncatedText text={row.targetId} mono maxWidth={300} /> },
+  { id: "target", header: "OSDU id", render: (row) => (row.targetId === null ? <span className="text-muted-foreground">-</span> : <RecordName id={row.targetId} copy className="max-w-[300px] text-[12px]" copyTestId="copy-search-hit-target" />) },
   { id: "delivered", header: "Delivered", render: (row) => <RelativeTime value={row.lastDeliveredUtc} /> },
   { id: "key", header: "Delivery key", render: (row) => <Mono>{row.deliveryKey}</Mono> },
 ];

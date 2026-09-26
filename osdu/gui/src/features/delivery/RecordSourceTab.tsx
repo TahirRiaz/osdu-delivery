@@ -3,10 +3,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { ComputeTask } from "@/api/types";
 import { CodeView } from "@/components/CodeView";
-import { DetailPair } from "@/components/DetailPair";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import type { DeliveryRecord } from "../../api/delivery";
+import { Fact, FactGrid, NoFact } from "./Facts";
 import { prettyJson } from "./prettyJson";
 import { TaskResultCard } from "./TaskResultCard";
 
@@ -16,6 +16,22 @@ function SectionHeading({ title, description }: { title: string; description?: s
       <h3 className="text-[13px] font-medium">{title}</h3>
       {description !== undefined && <span className="text-[12px] text-muted-foreground">{description}</span>}
     </div>
+  );
+}
+
+/** An ingestion file and the row in it, on one line, the file clipped at its cell and copyable whole. */
+function FileRow({ file, row, copyTestId, testId }: { file: string | null; row: number | null; copyTestId?: string; testId?: string }) {
+  if (file === null) {
+    return <NoFact>not recorded</NoFact>;
+  }
+
+  // Two tracks, the file's sized by the cell rather than by its content, so the file clips there and the row number
+  // keeps its place after it: a content-sized wrapper would size to the whole file name and run out of the cell.
+  return (
+    <span className="grid max-w-full items-baseline gap-x-1 [grid-template-columns:minmax(0,max-content)_auto]" data-testid={testId}>
+      <TruncatedText text={file} mono maxWidth={360} copy copyTestId={copyTestId} title="Ingestion file" />
+      {row !== null && <span className="text-muted-foreground">row <span className="font-mono">{row}</span></span>}
+    </span>
   );
 }
 
@@ -50,41 +66,23 @@ export function RecordSourceTab({ record, canRead, reading, onRead, task }: {
 
   return (
     <div className="flex flex-col gap-3">
-      <Card className="gap-3 rounded-lg p-3">
+      <Card className="gap-2 rounded-lg p-3">
         <SectionHeading title="Where the row came from" description="the file and row the ledger records against every delivered version" />
-        <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
-          <DetailPair label="Source key"><TruncatedText text={record.sourceKey} mono maxWidth={260} copy copyTestId="copy-record-source-key" /></DetailPair>
-          <DetailPair label="Delivery key"><TruncatedText text={record.deliveryKey} mono maxWidth={200} copy copyTestId="copy-record-key" /></DetailPair>
-          <DetailPair label="Ingestion file">
-            {file === null
-              ? <span className="text-muted-foreground">not recorded</span>
-              : (
-                <span className="flex min-w-0 flex-wrap items-baseline gap-1" data-testid="record-origin">
-                  <TruncatedText text={file} mono maxWidth={240} copy copyTestId="copy-record-origin" />
-                  {row !== null && <span className="text-[12px] text-muted-foreground">row <span className="font-mono">{row}</span></span>}
-                </span>
-              )}
-          </DetailPair>
-          <DetailPair label="Row received"><RelativeTime value={record.sourceUpdatedUtc ?? record.pendingSourceUpdatedUtc} /></DetailPair>
-          <DetailPair label="Source last modified"><RelativeTime value={record.sourceModifiedUtc} /></DetailPair>
-          <DetailPair label="Mapping">{record.mappingName}</DetailPair>
-        </div>
+        <FactGrid>
+          <Fact label="Source key"><TruncatedText text={record.sourceKey} mono maxWidth={360} copy copyTestId="copy-record-source-key" title="Source key" /></Fact>
+          <Fact label="Delivery key"><TruncatedText text={record.deliveryKey} mono maxWidth={360} copy copyTestId="copy-record-key" title="Delivery key" /></Fact>
+          <Fact label="Mapping">{record.mappingName}</Fact>
+          <Fact label="Ingestion file"><FileRow file={file} row={row} copyTestId="copy-record-origin" testId="record-origin" /></Fact>
+          <Fact label="Row received"><RelativeTime value={record.sourceUpdatedUtc ?? record.pendingSourceUpdatedUtc} /></Fact>
+          <Fact label="Source modified"><RelativeTime value={record.sourceModifiedUtc} /></Fact>
+        </FactGrid>
         {newerRow && (
-          <div className="flex flex-col gap-2 rounded-md border border-info/40 p-3" data-testid="record-newer-row">
+          <div className="flex flex-col gap-1.5 rounded-md border border-info/40 px-3 py-2" data-testid="record-newer-row">
             <SectionHeading title="A newer row is waiting" description="the version the waiting document is built from" />
-            <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
-              <DetailPair label="Ingestion file">
-                {record.pendingSourceFileName === null
-                  ? <span className="text-muted-foreground">not recorded</span>
-                  : (
-                    <span className="flex min-w-0 flex-wrap items-baseline gap-1">
-                      <TruncatedText text={record.pendingSourceFileName} mono maxWidth={240} copy />
-                      {record.pendingSourceRowNumber !== null && <span className="text-[12px] text-muted-foreground">row <span className="font-mono">{record.pendingSourceRowNumber}</span></span>}
-                    </span>
-                  )}
-              </DetailPair>
-              <DetailPair label="Row received"><RelativeTime value={record.pendingSourceUpdatedUtc} /></DetailPair>
-            </div>
+            <FactGrid>
+              <Fact label="Ingestion file"><FileRow file={record.pendingSourceFileName} row={record.pendingSourceRowNumber} /></Fact>
+              <Fact label="Row received"><RelativeTime value={record.pendingSourceUpdatedUtc} /></Fact>
+            </FactGrid>
           </div>
         )}
         {record.sourceKeyJson !== null && (
@@ -95,7 +93,7 @@ export function RecordSourceTab({ record, canRead, reading, onRead, task }: {
         )}
       </Card>
 
-      <Card className="gap-3 rounded-lg p-3">
+      <Card className="gap-2 rounded-lg p-3">
         <SectionHeading title="As the ingestion tables hold it now" description="read on a node with the flow's own connection; nothing is written" />
         <div>
           <Button variant="outline" size="sm" onClick={onRead} disabled={!canRead || reading} data-testid="record-read-source">

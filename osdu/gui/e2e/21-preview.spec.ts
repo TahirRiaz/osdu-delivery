@@ -48,7 +48,7 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(result).toBeVisible({ timeout: 60_000 });
     await expect(adminPage.getByTestId("preview-asked")).toContainText("the first record of the scope");
     await expect(adminPage.getByTestId("preview-action")).toBeVisible();
-    await expect(adminPage.getByTestId("preview-target")).toContainText("work-product-component--WellLog");
+    await expect(adminPage.getByTestId("preview-target")).toHaveAttribute("data-value", /work-product-component--WellLog/);
     await expect(adminPage.getByTestId("preview-document")).toContainText("work-product-component--WellLog", { timeout: 30_000 });
 
     // The route's requests in order, and the parquet chunk the well log's bulk data is, measured by its footer.
@@ -61,7 +61,8 @@ test.describe.serial("record preview and OSDU read", () => {
     // What the document refers to: the wellbore the render found by searching the platform, and the reference data the
     // cache gave it, none of them records of this ledger.
     await adminPage.getByTestId("preview-tab-references").click();
-    await expect(adminPage.getByTestId("preview-references")).toContainText(/master-data--Wellbore:NO-[0-9A-Z-]+data\.WellboreID/);
+    // The reference is named by its type and unique part; the whole id is on hover and on copy.
+    await expect(adminPage.getByTestId("preview-references")).toContainText(/Wellbore\s?NO-[0-9A-Z-]+\s?data\.WellboreID/);
     await expect(adminPage.getByTestId("preview-references")).toContainText("not a record of the ledger");
 
     // A key as the Records page shows it names that record, though its log id holds a slash.
@@ -94,7 +95,8 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(adminPage.getByTestId("osdu-not-found")).toBeVisible({ timeout: 60_000 });
 
     // Once OSDU holds the record, the read shows it: its version, its access, and the wellbore it refers to.
-    const chip = await adminPage.getByTestId("record-target").textContent();
+    // The chip shows the id's type and unique part; the whole id rides on it as data, for the copy and for this.
+    const chip = await adminPage.getByTestId("record-target").getAttribute("data-value");
     const targetId = /(\S+:work-product-component--WellLog:[0-9a-f]{32})/.exec(chip ?? "")?.[1];
     expect(targetId, `the record page names the OSDU id: ${chip}`).toBeDefined();
     const partition = targetId!.split(":")[0];

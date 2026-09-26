@@ -373,7 +373,11 @@ Pipelines like any other flow.
   try; waiting, with the record it waits for; being delivered under a lease, or a lease that ran out; a rendered
   document waiting to go, with its work batch; blocked; removed), so a delivered record with nothing wrong has no
   situation line at all; and the operations: Verify, Redeliver, Release (while blocked), Send without waiting (while
-  waiting) and Remove from OSDU. The **milestones** strip under it is four cells in the order the estate moves a row:
+  waiting) and Remove from OSDU. An OSDU id is long and its start repeats down a whole flow, so everywhere the GUI names
+  one (the header chip, the timeline, the references, the records and search tables, the preview) it shows the type and
+  the unique part alone, clipped to the room it has, with the whole id and kind on hover and a copy beside it that hands
+  the id over verbatim; the facts a tab lists (worker, correlation id, hashes, files, paths) sit one to a line beside
+  their captions, each clipped at its cell with the same hover and copy. The **milestones** strip under it is four cells in the order the estate moves a row:
   **pre-ingestion** (the run that landed the file), **ingestion** (when the row reached the table the delivery flow
   reads, and the run that loaded it), **landed** (when, as which version; until then how many tries and how many
   failed) and **verified** (when, what it found), with **removed** added for a record that was. The two chain stages
@@ -417,8 +421,9 @@ Pipelines like any other flow.
     from match to match. The branches a reader opens are remembered in the browser for the record's kind. Every value
     that names another OSDU record is a link where it stands, with a button that opens that record in the same
     inspector, read through the same route, after it on a **trail** of records (log, then the wellbore it names, then
-    the well that names); a crumb of the trail steps back and closes what was opened after it. **Open in a window**
-    puts the same view in a browser window of its own. A page opened with `?tab=osdu` reads the record at once.
+    the well that names); a crumb of the trail steps back and closes what was opened after it. **Read again** and
+    **Open in a window** (the same view in a browser window of its own) sit on the inspector's header row; before a
+    read, **Read from OSDU** heads the tab on its own. A page opened with `?tab=osdu` reads the record at once.
   - **Compare**: what OSDU holds beside what a delivery would send now, as a side-by-side comparison and a list of
     the paths that differ.
   - **References**: the OSDU ids the waiting document refers to, and the records of the ledger waiting for this one.

@@ -18,13 +18,13 @@ import { EmptyState } from "@/components/EmptyState";
 import { IconAction } from "@/components/IconAction";
 import { IdChip } from "@/components/IdChip";
 import { Page } from "@/components/Page";
-import { TruncatedText } from "@/components/TruncatedText";
 import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { BlockedBadge, RecordStatusBadge } from "./DeliveryBadges";
 import { OsduRecordPanel } from "./OsduRecordView";
 import { RecordCompare } from "./RecordCompare";
 import { RecordDocumentTab } from "./RecordDocumentTab";
 import { RecordJourney, RecordMilestones } from "./RecordJourney";
+import { RecordName } from "./RecordName";
 import { RecordLink, RecordSituation } from "./RecordSituation";
 import { RecordSourceTab } from "./RecordSourceTab";
 import { RemovalDialog } from "./RemovalDialog";
@@ -50,7 +50,7 @@ function tabFromParam(value: string | null): RecordTab {
 }
 
 const referenceColumns: Column<DeliveryRecordReference>[] = [
-  { id: "id", header: "OSDU id", fill: true, render: (row) => <TruncatedText text={row.id} mono maxWidth={520} /> },
+  { id: "id", header: "OSDU id", fill: true, render: (row) => <RecordName id={row.id} copy className="max-w-[420px] text-[12px]" testId="record-reference" copyTestId="copy-record-reference" /> },
   { id: "property", header: "Property", render: (row) => <span className="font-mono text-[12px]">{row.property}</span> },
 ];
 
@@ -207,10 +207,35 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const references = record.references ?? [];
   const waiters = detail.waitedOnBy ?? [];
   const flowLabel = detail.flowName === null ? undefined : detail.interface ? `${detail.flowName} / ${detail.interface}` : detail.flowName;
+  // The read's controls: on their own above the empty state, and on the inspector's header row once there is a read.
+  const osduActions = (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-7"
+        onClick={() => readBack.mutate()}
+        disabled={busy || !canActOnTarget || !canOperate || (osduTaskId !== null && !isTerminalTask(osduTask.data))}
+        title={canOperate ? "Reads the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written." : "A read runs on a node, which takes the operate scope."}
+        data-testid="record-osdu-read"
+      >
+        <BookOpenCheck />
+        {osduTaskId === null ? "Read from OSDU" : "Read again"}
+      </Button>
+      <IconAction
+        label="Open this view in a window of its own"
+        icon={<AppWindow />}
+        variant="ghost"
+        className="size-7"
+        onClick={() => window.open(`${window.location.origin}${window.location.pathname}?tab=osdu`, "_blank", "popup=yes,width=1280,height=900")}
+        data-testid="record-osdu-popout"
+      />
+    </>
+  );
 
   return (
     <Page data-testid="page-delivery-record">
-      <Card className="gap-3 rounded-lg p-4" data-testid="record-header">
+      <Card className="gap-2 rounded-lg p-3" data-testid="record-header">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="min-w-0 break-words text-lg font-semibold leading-7">{record.label ?? record.sourceKey}</h1>
           <RecordStatusBadge status={record.status} />
@@ -250,7 +275,15 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          {record.targetId && <IdChip label="osdu" value={record.targetId} display={record.targetId} testId="record-target" copyTestId="copy-record-target" />}
+          {record.targetId && (
+            <IdChip
+              label="osdu"
+              value={record.targetId}
+              display={<RecordName id={record.targetId} className="max-w-[260px]" />}
+              testId="record-target"
+              copyTestId="copy-record-target"
+            />
+          )}
           {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={flowLabel} to={`/pipelines/${detail.pipelineId}`} testId="record-pipeline-link" copyTestId="copy-record-pipeline" />}
           {record.lastSubmissionId && <IdChip label="submission" value={record.lastSubmissionId} to={`/delivery/submissions/${record.lastSubmissionId}`} testId="record-submission-link" copyTestId="copy-record-submission" />}
         </div>
@@ -289,28 +322,8 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           <RecordDocumentTab record={record} />
         </TabsContent>
         <TabsContent value="osdu">
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => readBack.mutate()}
-                disabled={busy || !canActOnTarget || !canOperate || (osduTaskId !== null && !isTerminalTask(osduTask.data))}
-                title={canOperate ? "Reads the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written." : "A read runs on a node, which takes the operate scope."}
-                data-testid="record-osdu-read"
-              >
-                <BookOpenCheck />
-                {osduTaskId === null ? "Read from OSDU" : "Read again"}
-              </Button>
-              <IconAction
-                label="Open this view in a window of its own"
-                icon={<AppWindow />}
-                variant="outline"
-                className="ml-auto size-8"
-                onClick={() => window.open(`${window.location.origin}${window.location.pathname}?tab=osdu`, "_blank", "popup=yes,width=1280,height=900")}
-                data-testid="record-osdu-popout"
-              />
-            </div>
+          <div className="flex flex-col gap-2">
+            {osduTaskId === null && <div className="flex flex-wrap items-center gap-1">{osduActions}</div>}
             {osduTaskId === null && (
               <EmptyState
                 icon={<BookOpenCheck />}
@@ -334,6 +347,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
                   targetId={record.targetId ?? record.deliveryKey}
                   readRootVersion={canActOnTarget && canOperate ? (version) => deliveryApi.read(ref, version) : undefined}
                   ledgerVersion={record.targetVersion}
+                  actions={osduActions}
                 />
               ))}
           </div>
@@ -346,7 +360,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           />
         </TabsContent>
         <TabsContent value="references">
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1">
               <h3 className="text-[13px] font-medium">What the document refers to</h3>
               <p className="text-[12px] text-muted-foreground">

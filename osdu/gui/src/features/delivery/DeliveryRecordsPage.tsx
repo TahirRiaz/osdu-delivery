@@ -18,6 +18,7 @@ import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { RecordStatusBadge } from "./DeliveryBadges";
 import { OpenInOsduLink } from "./OpenInOsduLink";
+import { RecordName } from "./RecordName";
 
 const ALL = "all";
 
@@ -93,7 +94,7 @@ const restColumns: Column<DeliveryRecordHit>[] = [
   {
     id: "target",
     header: "OSDU id",
-    render: (row) => <TruncatedText text={row.targetId} mono maxWidth={300} copy={row.targetId !== null} copyTestId="copy-hit-target" />,
+    render: (row) => (row.targetId === null ? <span className="text-muted-foreground">-</span> : <RecordName id={row.targetId} copy className="max-w-[300px] text-[12px]" copyTestId="copy-hit-target" />),
   },
   { id: "delivered", header: "Delivered", render: (row) => <RelativeTime value={row.lastDeliveredUtc} /> },
   { id: "updated", header: "Updated", render: (row) => <RelativeTime value={row.updatedUtc} /> },

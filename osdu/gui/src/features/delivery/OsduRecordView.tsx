@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQueries } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { isApiError } from "@/api/client";
@@ -16,7 +16,7 @@ const MAX_TRAIL = 8;
  * one inspector, the last one in view; stepping back along the trail closes what was opened after that point. A
  * version of any record on the trail is read into the inspector in place, without disturbing the trail.
  */
-export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, readRootVersion, ledgerVersion }: {
+export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, readRootVersion, ledgerVersion, actions }: {
   pipelineId: string | null;
   interfaceName: string | null;
   /** The page's own read, as it stands. */
@@ -27,6 +27,8 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, rea
   readRootVersion?: (version: number) => Promise<ComputeTaskAccepted>;
   /** The version the ledger holds as delivered by this flow, marked in the page record's version list. */
   ledgerVersion?: number | null;
+  /** The page's own controls over the read, shown on the inspector's header row. */
+  actions?: ReactNode;
 }) {
   const [trail, setTrail] = useState<{ id: string; taskId: string }[]>([]);
   const [opening, setOpening] = useState<string | null>(null);
@@ -58,6 +60,7 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, rea
         ? readRootVersion
         : canOpen ? (version) => deliveryApi.readOsdu(pipelineId, shownId, interfaceName, version) : undefined}
       onBack={(to) => setTrail((was) => was.slice(0, to))}
+      actions={actions}
     />
   );
 }

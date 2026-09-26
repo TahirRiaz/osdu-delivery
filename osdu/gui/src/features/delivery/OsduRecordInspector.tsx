@@ -31,9 +31,10 @@ import {
   canonicalText, differences, downloadJson, fileNameOf, shortValue, withoutOsduFields, withoutVersion, type DifferenceKind, type JsonDifference,
 } from "./osduDocument";
 import {
-  branchPaths, buildModel, describeBranch, idParts, isReferenceNode, loadLayout, matching, saveLayout, trail,
+  branchPaths, buildModel, describeBranch, isReferenceNode, loadLayout, matching, saveLayout, trail,
   type RecordModel, type RecordNode,
 } from "./osduRecordModel";
+import { RecordName } from "./RecordName";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
@@ -62,17 +63,6 @@ function text(value: unknown): string | null {
 
 function texts(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-/** A record named as a crumb: its unique part in full weight, its type before it in a whisper, the whole id on hover. */
-function RecordName({ id, kind, className }: { id: string; kind?: string | null; className?: string }) {
-  const parts = idParts(id);
-  return (
-    <span className={cn("inline-flex min-w-0 items-baseline gap-1", className)} title={kind ? `${id}\n${kind}` : id}>
-      {parts.type !== "" && <span className="shrink-0 text-[11px] text-muted-foreground">{parts.type}</span>}
-      <span className="truncate font-mono">{parts.unique}</span>
-    </span>
-  );
 }
 
 /** Text with every occurrence of the search term marked, so a match shows where it is rather than only that it is. */
@@ -302,8 +292,8 @@ function RecordView({ read, record }: { read: DeliveryOsduRead; record: Record<s
     <CaptionRows
       testId="osdu-record-fields"
       rows={[
-        { label: "Id", value: <TruncatedText text={read.targetId} mono maxWidth={560} copy /> },
-        { label: "Kind", value: <TruncatedText text={text(record.kind)} mono maxWidth={560} copy /> },
+        { label: "Id", value: <TruncatedText text={read.targetId} mono maxWidth={560} copy title="OSDU id" /> },
+        { label: "Kind", value: <TruncatedText text={text(record.kind)} mono maxWidth={560} copy title="Kind" /> },
         { label: "Version", value: <span className="font-mono text-[12px] tabular-nums">{text(record.version) ?? "-"}</span> },
         {
           label: "Created",
@@ -525,7 +515,7 @@ function CompareView({ latest, latestVersion, picked, pickedVersion }: {
  * items is a table with a row per item; every value that names another record is a link that opens that record here.
  * A picked version replaces the record in place, with the outline and the place in it kept, and compares to the latest.
  */
-function RecordInspector({ read, level, ledgerVersion, onOpenLink, readVersion, opening }: {
+function RecordInspector({ read, level, ledgerVersion, onOpenLink, readVersion, opening, actions }: {
   /** The read of the record at its latest. */
   read: DeliveryOsduRead & { record: Record<string, unknown> };
   level: number;
@@ -534,6 +524,8 @@ function RecordInspector({ read, level, ledgerVersion, onOpenLink, readVersion, 
   /** Queues a read of this record at one of its versions; absent where it cannot be asked for. */
   readVersion?: (version: number) => Promise<ComputeTaskAccepted>;
   opening?: string | null;
+  /** The page's own controls over the read (read again, open in a window), kept on the inspector's header row. */
+  actions?: ReactNode;
 }) {
   const [picked, setPicked] = useState<{ version: number; taskId: string } | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -677,7 +669,10 @@ function RecordInspector({ read, level, ledgerVersion, onOpenLink, readVersion, 
           </Button>
         )}
         {pickedFailure !== null && <span className="text-[12px] text-destructive" data-testid="osdu-version-error">{pickedFailure}</span>}
-        <IconAction label="Download the record as JSON" icon={<Download />} variant="ghost" className="ml-auto size-7 shrink-0" onClick={() => downloadJson(fileNameOf("osdu", read.targetId, shownVersion === null ? null : String(shownVersion)), record)} data-testid="osdu-record-download" />
+        <span className="ml-auto inline-flex shrink-0 items-center gap-1">
+          {actions}
+          <IconAction label="Download the record as JSON" icon={<Download />} variant="ghost" className="size-7" onClick={() => downloadJson(fileNameOf("osdu", read.targetId, shownVersion === null ? null : String(shownVersion)), record)} data-testid="osdu-record-download" />
+        </span>
       </div>
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
         <ResizablePanel defaultSize={280} minSize={200} maxSize="45" className="flex min-h-0 flex-col">
@@ -766,7 +761,7 @@ function RecordInspector({ read, level, ledgerVersion, onOpenLink, readVersion, 
  * before: a trail across records, not a stack of them. The last is shown; a crumb steps back to an earlier one and
  * closes what was opened from it.
  */
-export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, readVersion, onBack }: {
+export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, readVersion, onBack, actions }: {
   entries: InspectorEntry[];
   ledgerVersion?: number | null;
   opening?: string | null;
@@ -776,12 +771,15 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
   readVersion?: (version: number) => Promise<ComputeTaskAccepted>;
   /** Steps back to the entry at `level`, closing everything opened after it. */
   onBack: (level: number) => void;
+  /** The page's own controls over the read, shown on the inspector's header row, or above a read that has no record to show. */
+  actions?: ReactNode;
 }) {
   const level = entries.length - 1;
   const current = entries[level];
   const read = isTerminalTask(current.task) && current.task?.status === "succeeded" ? (current.task.result as DeliveryOsduRead | null) : null;
 
   let body: ReactNode;
+  let inspector = false;
   if (current.error !== undefined) {
     body = <div className="p-3"><ProblemView error={current.error} /></div>;
   } else if (!isTerminalTask(current.task)) {
@@ -799,7 +797,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
         <SearchX />
         <AlertTitle>OSDU holds no record under this id</AlertTitle>
         <AlertDescription>
-          <span className="font-mono text-[12px] break-all">{read.targetId}</span>
+          <RecordName id={read.targetId} copy className="text-[12px]" />
           <span className="text-[12px] text-muted-foreground">
             {`Read through ${read.flow}`}
             {read.correlationId ? `, correlation id ${read.correlationId}` : ""}
@@ -809,6 +807,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
       </Alert>
     );
   } else {
+    inspector = true;
     body = (
       <RecordInspector
         key={`${current.task?.taskId ?? current.id}`}
@@ -818,6 +817,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
         onOpenLink={onOpenLink}
         readVersion={readVersion}
         opening={opening}
+        actions={actions}
       />
     );
   }
@@ -841,7 +841,10 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
           <IconAction label="Close this linked record" icon={<X />} variant="ghost" className="ml-1 size-6" onClick={() => onBack(level - 1)} data-testid="osdu-linked-close" />
         </nav>
       )}
-      <Card className={cn("flex h-[72vh] min-h-[520px] flex-col gap-0 overflow-hidden rounded-lg p-0", read !== null && !read.found && "h-auto min-h-0")} data-testid={level > 0 ? "osdu-linked" : undefined}>
+      <Card className={cn("flex h-[72vh] min-h-[520px] flex-col gap-0 overflow-hidden rounded-lg p-0", !inspector && "h-auto min-h-0")} data-testid={level > 0 ? "osdu-linked" : undefined}>
+        {!inspector && actions !== undefined && (
+          <div className="flex items-center justify-end gap-1 border-b px-3 py-1.5">{actions}</div>
+        )}
         {body}
       </Card>
     </div>

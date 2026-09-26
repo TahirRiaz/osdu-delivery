@@ -25,6 +25,7 @@ import {
   type DeliveryRecordPreview,
 } from "../../api/delivery";
 import { RecordStatusBadge } from "./DeliveryBadges";
+import { RecordName } from "./RecordName";
 import { downloadJson, envelopeFirst, fileNameOf, formatBytes } from "./osduDocument";
 
 const ACTION_LABELS: Record<DeliveryPreviewAction, string> = {
@@ -70,12 +71,12 @@ const searchColumns: Column<DeliveryPreviewSearch>[] = [
   { id: "field", header: "Field", render: (row) => <span className="font-mono text-[12px]">{row.field}</span> },
   { id: "value", header: "Value", render: (row) => <TruncatedText text={row.value} maxWidth={200} /> },
   { id: "outcome", header: "Outcome", render: (row) => <Badge variant="outline">{row.outcome}</Badge> },
-  { id: "id", header: "Found", fill: true, render: (row) => <TruncatedText text={row.id ?? null} mono maxWidth={420} copy={row.id !== null && row.id !== undefined} /> },
+  { id: "id", header: "Found", fill: true, render: (row) => (row.id === null || row.id === undefined ? <span className="text-muted-foreground">-</span> : <RecordName id={row.id} copy className="max-w-[420px] text-[12px]" copyTestId="copy-preview-found" />) },
 ];
 
 function referenceColumns(): Column<DeliveryPreviewReference>[] {
   return [
-    { id: "id", header: "OSDU id", fill: true, render: (row) => <TruncatedText text={row.id} mono maxWidth={480} copy copyTestId="copy-preview-reference" /> },
+    { id: "id", header: "OSDU id", fill: true, render: (row) => <RecordName id={row.id} copy className="max-w-[420px] text-[12px]" copyTestId="copy-preview-reference" /> },
     { id: "property", header: "Property", render: (row) => <span className="font-mono text-[12px]">{row.property}</span> },
     {
       id: "holder",
@@ -240,7 +241,7 @@ export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview 
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          {document?.targetId && <IdChip label="osdu" value={document.targetId} display={document.targetId} testId="preview-target" copyTestId="copy-preview-target" />}
+          {document?.targetId && <IdChip label="osdu" value={document.targetId} display={<RecordName id={document.targetId} className="max-w-[260px]" />} testId="preview-target" copyTestId="copy-preview-target" />}
           {source.deliveryKey && <IdChip label="key" value={source.deliveryKey} testId="preview-delivery-key" copyTestId="copy-preview-delivery-key" />}
         </div>
         <div className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">

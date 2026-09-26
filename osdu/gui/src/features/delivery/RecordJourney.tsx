@@ -10,7 +10,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { CodeView } from "@/components/CodeView";
-import { DetailPair } from "@/components/DetailPair";
 import { EmptyState } from "@/components/EmptyState";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
@@ -18,7 +17,9 @@ import { TruncatedText } from "@/components/TruncatedText";
 import type {
   DeliveryActivity, DeliveryAttempt, DeliveryAttemptResult, DeliveryChainStage, DeliveryRecord, DeliveryRecordChain,
 } from "../../api/delivery";
+import { Fact, FactGrid, NoFact } from "./Facts";
 import { prettyJson } from "./prettyJson";
+import { RecordName } from "./RecordName";
 
 type Tone = "success" | "destructive" | "warning" | "info" | "muted";
 
@@ -64,26 +65,38 @@ function Mono({ children }: { children: ReactNode }) {
  * on, revealed in full on hover, and handed over by its copy button, so a timeline entry stays one line whatever the
  * estate names things.
  */
-function LongValue({ value, width = 320, copy = true }: { value: string; width?: number; copy?: boolean }) {
+function LongValue({ value, width = 320, copy = true, title }: { value: string; width?: number; copy?: boolean; title?: string }) {
   // The wrapper carries the cap as a definite width: the clipped span's own cap is relative to its container, which
   // counts for nothing while the line is being measured, so without the wrapper the line would be laid out as if
-  // the whole value were showing and leave a blank stretch after the ellipsis.
+  // the whole value were showing and leave a blank stretch after the ellipsis. The line itself bounds the cap, so a
+  // value in a cell narrower than the cap clips at the cell instead of running under its neighbour.
   return (
-    <span className="inline-flex min-w-0 max-w-full" style={{ maxWidth: width }}>
-      <TruncatedText text={value} mono maxWidth={width} copy={copy} />
+    <span className="inline-flex min-w-0 max-w-full" style={{ maxWidth: `min(100%, ${width}px)` }}>
+      <TruncatedText text={value} mono maxWidth={width} copy={copy} title={title} />
     </span>
   );
 }
 
-function Origin({ file, row }: { file: string | null; row: number | null }) {
+function Origin({ file, row, inCell = false }: { file: string | null; row: number | null; inCell?: boolean }) {
   if (file === null) {
     return <span>the ingestion table (the file is not recorded)</span>;
   }
 
+  if (inCell) {
+    // Two tracks, the file's sized by the cell rather than by its content, so the file clips there and the row number
+    // keeps its place after it: a content-sized wrapper would size to the whole file name and run out of the cell.
+    return (
+      <span className="grid max-w-full items-baseline gap-x-1 [grid-template-columns:minmax(0,max-content)_auto]">
+        <TruncatedText text={file} mono maxWidth={360} copy title="File" />
+        {row !== null && <span>{"row "}<Mono>{row}</Mono></span>}
+      </span>
+    );
+  }
+
   return (
-    <span>
-      <LongValue value={file} width={280} />
-      {row !== null && <span>{" row "}<Mono>{row}</Mono></span>}
+    <span className="inline-flex min-w-0 max-w-full items-baseline gap-1">
+      <LongValue value={file} width={280} title="File" />
+      {row !== null && <span className="shrink-0">{"row "}<Mono>{row}</Mono></span>}
     </span>
   );
 }
@@ -113,15 +126,6 @@ function Summary({ parts }: { parts: ReactNode[] }) {
           inline the part would size to the whole unclipped string and leave a blank stretch after the ellipsis. */}
       {shown.map((part, index) => <span key={index} className="inline-flex max-w-full flex-wrap items-baseline gap-x-1">{part}</span>)}
     </span>
-  );
-}
-
-/** The facts an opened entry reveals, on the same caption-over-value grid the detail headers use. */
-function Facts({ children }: { children: ReactNode }) {
-  return (
-    <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(170px,1fr))]">
-      {children}
-    </div>
   );
 }
 
@@ -252,16 +256,15 @@ function chainEvents(chain: DeliveryRecordChain | undefined): JourneyEvent[] {
       error: stage.error,
       note: null,
       more: (
-        <Facts>
-          <DetailPair label="Flow"><RouterLink to={`/pipelines/${stage.pipelineId}`} className="text-primary hover:underline">{stage.flowName}</RouterLink></DetailPair>
-          <DetailPair label="Run status"><Mono>{stage.status}</Mono></DetailPair>
-          <DetailPair label="Wave"><Mono>{stage.wave}</Mono></DetailPair>
-          <DetailPair label="Found by">{stage.matchedBy === "table" ? "the table it was writing when the row was stamped" : "the file it processed"}</DetailPair>
-          <DetailPair label="File"><LongValue value={stage.fileName} width={260} /></DetailPair>
-          {stage.filePath !== null && <DetailPair label="Path"><LongValue value={stage.filePath} width={260} /></DetailPair>}
-          {stage.sizeBytes > 0 && <DetailPair label="Size"><Mono>{fileSize(stage.sizeBytes)}</Mono></DetailPair>}
-          {stage.fileModifiedUtc !== null && <DetailPair label="File modified"><RelativeTime value={stage.fileModifiedUtc} /></DetailPair>}
-        </Facts>
+        <FactGrid>
+          <Fact label="Flow"><RouterLink to={`/pipelines/${stage.pipelineId}`} className="text-primary hover:underline">{stage.flowName}</RouterLink></Fact>
+          <Fact label="Run status"><Mono>{stage.status}</Mono>{" "}<span className="text-muted-foreground">wave</span>{" "}<Mono>{stage.wave}</Mono></Fact>
+          <Fact label="Found by">{stage.matchedBy === "table" ? "the table it was writing when the row was stamped" : "the file it processed"}</Fact>
+          <Fact label="File"><TruncatedText text={stage.fileName} mono maxWidth={360} copy title="File" /></Fact>
+          {stage.filePath !== null && <Fact label="Path"><TruncatedText text={stage.filePath} mono maxWidth={360} copy title="Path" /></Fact>}
+          {stage.sizeBytes > 0 && <Fact label="Size"><Mono>{fileSize(stage.sizeBytes)}</Mono></Fact>}
+          {stage.fileModifiedUtc !== null && <Fact label="File modified"><RelativeTime value={stage.fileModifiedUtc} /></Fact>}
+        </FactGrid>
       ),
       tone,
       icon,
@@ -291,25 +294,18 @@ function attemptEvent(attempt: DeliveryAttempt): JourneyEvent {
     error: attempt.error,
     note: attempt.result?.detail ?? null,
     more: (
-      <div className="flex flex-col gap-3">
-        <Facts>
-          <DetailPair label="Worker"><LongValue value={attempt.worker} width={220} copy={false} /></DetailPair>
-          <DetailPair label="Correlation id">{correlationId !== undefined ? <LongValue value={correlationId} width={220} /> : "-"}</DetailPair>
-          <DetailPair label="Work batch"><Mono>{attempt.workBatch ?? "-"}</Mono></DetailPair>
-          <DetailPair label="OSDU version"><Mono>{attempt.targetVersion ?? "-"}</Mono></DetailPair>
-          <DetailPair label="Completed"><RelativeTime value={attempt.completedUtc} /></DetailPair>
-          <DetailPair label="Built from"><Origin file={attempt.sourceFileName} row={attempt.sourceRowNumber} /></DetailPair>
-          <DetailPair label="Row received"><RelativeTime value={attempt.sourceUpdatedUtc} /></DetailPair>
-          <DetailPair label="Metadata hash">{attempt.metadataHash !== null ? <LongValue value={attempt.metadataHash} width={170} /> : "-"}</DetailPair>
-          <DetailPair label="Payload hash">{attempt.payloadHash !== null ? <LongValue value={attempt.payloadHash} width={170} /> : "-"}</DetailPair>
-        </Facts>
-        {steps.length > 0 && (
-          <div className="flex flex-col gap-1">
-            <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Steps</div>
-            <AttemptSteps result={attempt.result} />
-          </div>
-        )}
-      </div>
+      <FactGrid>
+        <Fact label="Worker"><TruncatedText text={attempt.worker} mono maxWidth={360} title="Worker" /></Fact>
+        <Fact label="Correlation id">{correlationId !== undefined ? <TruncatedText text={correlationId} mono maxWidth={360} copy title="Correlation id" /> : <NoFact />}</Fact>
+        <Fact label="Work batch">{attempt.workBatch !== null ? <Mono>{attempt.workBatch}</Mono> : <NoFact />}</Fact>
+        <Fact label="OSDU version">{attempt.targetVersion !== null ? <Mono>{attempt.targetVersion}</Mono> : <NoFact />}</Fact>
+        <Fact label="Completed"><RelativeTime value={attempt.completedUtc} /></Fact>
+        <Fact label="Built from"><Origin file={attempt.sourceFileName} row={attempt.sourceRowNumber} inCell /></Fact>
+        <Fact label="Row received"><RelativeTime value={attempt.sourceUpdatedUtc} /></Fact>
+        <Fact label="Metadata hash">{attempt.metadataHash !== null ? <TruncatedText text={attempt.metadataHash} mono maxWidth={360} copy title="Metadata hash" /> : <NoFact />}</Fact>
+        <Fact label="Payload hash">{attempt.payloadHash !== null ? <TruncatedText text={attempt.payloadHash} mono maxWidth={360} copy title="Payload hash" /> : <NoFact />}</Fact>
+        {steps.length > 0 && <Fact label="Steps" wide><AttemptSteps result={attempt.result} /></Fact>}
+      </FactGrid>
     ),
     tone: shape.tone,
     icon: shape.icon,
@@ -337,18 +333,15 @@ function activityEvent(activity: DeliveryActivity): JourneyEvent {
     note: null,
     more: hasMore
       ? (
-        <div className="flex flex-col gap-3">
-          <Facts>
-            <DetailPair label="Ended">{activity.completedUtc !== null ? <RelativeTime value={activity.completedUtc} /> : "still running"}</DetailPair>
-            <DetailPair label="Flow">{activity.flowName}</DetailPair>
-          </Facts>
+        <FactGrid>
+          <Fact label="Ended">{activity.completedUtc !== null ? <RelativeTime value={activity.completedUtc} /> : "still running"}</Fact>
+          <Fact label="Flow">{activity.flowName}</Fact>
           {activity.parametersJson !== null && (
-            <div className="flex flex-col gap-1">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Parameters</div>
-              <CodeView value={storedJson(activity.parametersJson)} language="json" height={140} />
-            </div>
+            <Fact label="Parameters" wide>
+              <CodeView value={storedJson(activity.parametersJson)} language="json" height={120} />
+            </Fact>
           )}
-        </div>
+        </FactGrid>
       )
       : null,
     tone,
@@ -414,7 +407,7 @@ function buildEvents(
     at: record.createdUtc,
     title: "Planned: the record entered the ledger",
     summary: [
-      record.targetId !== null ? <span key="t">claimed the OSDU id <LongValue value={record.targetId} /></span> : "no OSDU id claimed yet",
+      record.targetId !== null ? <span key="t">claimed the OSDU id <RecordName id={record.targetId} copy className="max-w-[320px]" /></span> : "no OSDU id claimed yet",
       `mapping ${record.mappingName}`,
     ],
     error: null,
@@ -464,7 +457,7 @@ function buildEvents(
       id: "waiting",
       at: record.updatedUtc,
       title: "Waiting for a record it refers to",
-      summary: [record.waitingFor !== null && <LongValue key="w" value={record.waitingFor} />],
+      summary: [record.waitingFor !== null && <RecordName key="w" id={record.waitingFor} copy className="max-w-[320px]" />],
       error: null,
       note: record.lastError,
       more: null,
@@ -637,7 +630,7 @@ export function RecordJourney({ record, attempts, activities, chain }: {
   });
 
   return (
-    <Card className="gap-3 rounded-lg p-3" data-testid="record-journey">
+    <Card className="gap-2 rounded-lg p-3" data-testid="record-journey">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <ToggleGroup
           type="single"
@@ -706,7 +699,7 @@ export function RecordJourney({ record, attempts, activities, chain }: {
                       {event.error !== null && <span className="text-[12px] text-destructive" data-testid="journey-attempt-error">{event.error}</span>}
                       {event.note !== null && <span className="text-[12px] text-muted-foreground">{event.note}</span>}
                       {open && event.more !== null && (
-                        <div className="mt-2 rounded-md border bg-muted/30 p-3" data-testid="journey-event-detail">
+                        <div className="mt-1.5 rounded-md border bg-muted/30 px-3 py-2" data-testid="journey-event-detail">
                           {event.more}
                         </div>
                       )}
