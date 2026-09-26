@@ -331,7 +331,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
                   pipelineId={detail.pipelineId}
                   interfaceName={detail.interface ?? null}
                   task={osduTask.data}
-                  label="Reading the record from OSDU through its flow's route"
+                  targetId={record.targetId ?? record.deliveryKey}
                   onReadVersion={canActOnTarget && canOperate ? (version) => readBack.mutate(version) : undefined}
                   ledgerVersion={record.targetVersion}
                 />
