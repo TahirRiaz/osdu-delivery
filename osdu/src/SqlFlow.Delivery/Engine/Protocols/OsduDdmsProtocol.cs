@@ -100,9 +100,26 @@ public sealed class OsduDdmsProtocol : IDeliveryProtocol
 
     public Task<JsonObject?> ReadAsync(string targetId, CancellationToken ct = default)
     {
+        if (_routing.StorageReadPath(targetId) is { } storage)
+        {
+            return RecordWriter.ReadAsync(_client, storage, targetId, ct);
+        }
+
         var paths = _routing.ForRecord(targetId);
         return ShapeOf(paths).ReadAsync(paths, targetId, ct);
     }
+
+    /// <summary>The storage service's version list for a record no DDMS the flow reaches serves; null for a DDMS's record, whose DDMS keeps none.</summary>
+    public Task<IReadOnlyList<long>?> VersionsAsync(string targetId, CancellationToken ct = default)
+        => _routing.StorageReadPath(targetId) is { } storage
+            ? RecordWriter.VersionsAsync(_client, storage, targetId, ct)
+            : Task.FromResult<IReadOnlyList<long>?>(null);
+
+    /// <summary>A record no DDMS the flow reaches serves, as the storage service held it at <paramref name="version"/>.</summary>
+    public Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
+        => _routing.StorageReadPath(targetId) is { } storage
+            ? RecordWriter.ReadVersionAsync(_client, storage, targetId, version, ct)
+            : throw new DeliveryException($"The target keeps no version history for {targetId}, so there is no version {version.ToString(CultureInfo.InvariantCulture)} to read.");
 
     /// <summary>
     /// Asks each DDMS the flow reaches for its service description, as its shape describes itself (<c>GET /about</c> of

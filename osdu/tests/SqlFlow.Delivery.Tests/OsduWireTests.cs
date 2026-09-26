@@ -388,6 +388,41 @@ public class WellboreDdmsRootTests
     }
 
     [Fact]
+    public async Task A_record_no_ddms_serves_is_read_with_its_versions_from_storage_under_the_platform_root()
+    {
+        const string Linked = "dev:reference-data--WellLogSamplingDomainType:Depth";
+        var handler = new FakeHttpHandler()
+            .On(HttpMethod.Get, "/api/storage/v2/records/" + Linked, HttpStatusCode.OK, """{"id":"dev:reference-data--WellLogSamplingDomainType:Depth","version":7}""")
+            .On(HttpMethod.Get, "/api/storage/v2/records/versions/" + Linked, HttpStatusCode.OK, """{"recordId":"x","versions":[3,7]}""")
+            .On(HttpMethod.Get, "/api/storage/v2/records/" + Linked + "/3", HttpStatusCode.OK, """{"id":"x","version":3}""");
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduDdmsProtocol(client, PlatformRoot, Samples.Logger<OsduDdmsProtocol>());
+
+            Assert.Equal(7, (int?)(await protocol.ReadAsync(Linked))?["version"]);
+            Assert.Equal([7L, 3L], await protocol.VersionsAsync(Linked));
+            Assert.Equal(3, (int?)(await protocol.ReadVersionAsync(Linked, 3))?["version"]);
+            Assert.Null(await protocol.VersionsAsync(RecordId));
+        }
+    }
+
+    [Fact]
+    public async Task A_record_no_ddms_serves_is_not_read_when_the_endpoint_is_the_ddms_itself()
+    {
+        var handler = new FakeHttpHandler();
+        var (client, runtime) = Client(handler);
+        using (runtime)
+        {
+            var protocol = new OsduDdmsProtocol(client, new ProtocolOptions(), Samples.Logger<OsduDdmsProtocol>());
+
+            var ex = await Assert.ThrowsAsync<DeliveryException>(() => protocol.ReadAsync("dev:reference-data--WellLogSamplingDomainType:Depth"));
+            Assert.Contains("no DDMS this flow reaches serves reference-data--WellLogSamplingDomainType", ex.Message, StringComparison.Ordinal);
+            Assert.Empty(handler.Calls);
+        }
+    }
+
+    [Fact]
     public async Task The_history_purge_resolves_to_storage_under_the_platform_root()
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Delete, "/api/storage/v2/records/" + RecordId + "/versions", HttpStatusCode.NoContent, null);

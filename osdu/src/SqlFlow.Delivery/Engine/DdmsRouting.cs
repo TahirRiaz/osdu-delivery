@@ -253,6 +253,20 @@ public sealed class DdmsRouting
         return null;
     }
 
+    /// <summary>
+    /// Where the record <paramref name="targetId"/> is read when no DDMS the flow reaches serves its type (a reference-data
+    /// or master-data record a delivered one links to): the storage service, which holds every OSDU record, under a platform
+    /// endpoint. Null when a DDMS serves the type, may serve it once its registration is read, the flow names its own paths,
+    /// or the endpoint is a DDMS itself.
+    /// </summary>
+    public string? StorageReadPath(string targetId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        return PlatformEndpoint && !NamesPaths && Unread.Count == 0 && EntityTypeOf(targetId) is { } entityType && Find(entityType) is null
+            ? OsduRecordProtocol.DefaultVerifyPath
+            : null;
+    }
+
     /// <summary>The entity type an OSDU record id names (<c>{partition}:{entityType}:{key}</c>), or null when it names none.</summary>
     public static string? EntityTypeOf(string targetId)
     {
