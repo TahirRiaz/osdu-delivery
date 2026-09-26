@@ -1,6 +1,6 @@
 import { isRecordReference, withoutVersion } from "./osduDocument";
 
-/** The fields OSDU's envelope carries on every record: shown as the record's "About", kept out of its data. */
+/** The fields OSDU's envelope carries on every record: shown under System fields and Access & legal, kept out of its content. */
 export const ENVELOPE_KEYS = new Set(["id", "kind", "version", "acl", "legal", "createUser", "createTime", "modifyUser", "modifyTime"]);
 
 /** Where a reader's layout for a kind is kept between records, and how many opened paths it may hold. */
@@ -69,7 +69,7 @@ export function isReferenceNode(node: RecordNode): node is RecordNode & { value:
 
 /**
  * The record's sections in the order a reader wants them: `data` first, since that is the record; then whatever else
- * the record carries (meta, ancestry, tags); the envelope fields are not sections, the "About" view shows them.
+ * the record carries (meta, ancestry, tags); the envelope fields are not sections, System fields and Access & legal show them.
  */
 export function buildModel(record: Record<string, unknown>, ownId: string | null): RecordModel {
   const byPath = new Map<string, RecordNode>();
