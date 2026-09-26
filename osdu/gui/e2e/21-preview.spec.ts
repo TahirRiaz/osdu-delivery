@@ -119,7 +119,12 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(adminPage.getByTestId("osdu-record-json")).toContainText("held by the stand-in", { timeout: 30_000 });
     await adminPage.getByTestId("osdu-outline-access").click();
     await expect(adminPage.getByTestId("osdu-record-viewers")).toContainText(E2E.osdu.OSDU_ACL_VIEWER);
-    await adminPage.getByTestId("osdu-outline-branch").first().click();
+    // The full document is the whole record as OSDU returned it, envelope and all, and a key in it steps to its branch.
+    await adminPage.getByTestId("osdu-outline-document").click();
+    await expect(adminPage.getByTestId("osdu-json")).toContainText("e2e-stand-in");
+    await adminPage.getByTestId("osdu-json").getByTestId("osdu-json-key").filter({ hasText: "data" }).first().click();
+    await expect(adminPage.getByTestId("osdu-trail")).toContainText("data");
+    await adminPage.getByTestId("osdu-mode-fields").click();
 
     // The versions OSDU keeps of it ride with the read: the stand-in keeps one, which is the latest and the one in
     // view, so the picker names it as such and offers nothing older.
@@ -131,14 +136,17 @@ test.describe.serial("record preview and OSDU read", () => {
 
     // The wellbore it refers to is a link where it stands in the record, read in turn through the same flow's route,
     // and takes the inspector's place after it on the trail; closing it steps back to the log.
+    // The link is the record's name itself: a click opens it here, and the one location bar then reads as one path
+    // from the log, through the value that named the wellbore, to the wellbore.
     const link = adminPage.getByTestId("osdu-record-link").first();
-    await expect(link).toContainText(`master-data--Wellbore:${LOG_WELLBORE}`);
+    await expect(link).toHaveAttribute("data-value", new RegExp(`master-data--Wellbore:${LOG_WELLBORE}`));
     await link.getByTestId("osdu-link-read").click();
     const linked = adminPage.getByTestId("osdu-linked");
     await expect(linked).toBeVisible();
     await expect(linked.getByTestId("osdu-record-json")).toContainText("FacilityName", { timeout: 60_000 });
-    await expect(adminPage.getByTestId("osdu-trail")).toContainText(`master-data--Wellbore:${LOG_WELLBORE}`);
-    await adminPage.getByTestId("osdu-linked-close").click();
+    await expect(linked.getByTestId("osdu-trail")).toContainText("WellboreID");
+    await expect(linked.getByTestId("osdu-trail")).toContainText(LOG_WELLBORE);
+    await linked.getByTestId("osdu-linked-close").click();
     await expect(linked).toHaveCount(0);
     await expect(adminPage.getByTestId("osdu-record-json")).toContainText("held by the stand-in");
 

@@ -30,35 +30,43 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, rea
   /** The page's own controls over the read, shown on the inspector's header row. */
   actions?: ReactNode;
 }) {
-  const [trail, setTrail] = useState<{ id: string; taskId: string }[]>([]);
+  const [trail, setTrail] = useState<{ id: string; taskId: string; from: string }[]>([]);
   const [opening, setOpening] = useState<string | null>(null);
   const reads = useQueries({ queries: trail.map((link) => computeTaskQuery(link.taskId)) });
   const open = useMutation({
-    mutationFn: ({ id }: { id: string; level: number }) => deliveryApi.readOsdu(pipelineId!, id, interfaceName),
+    mutationFn: ({ id }: { id: string; level: number; from: string }) => deliveryApi.readOsdu(pipelineId!, id, interfaceName),
     onMutate: (asked) => setOpening(asked.id),
-    // A record opened from level N takes place N+1 and closes everything after it.
-    onSuccess: (accepted, asked) => setTrail((was) => [...was.slice(0, asked.level), { id: asked.id, taskId: accepted.taskId }].slice(-MAX_TRAIL)),
+    // A record opened from the one at level N takes place N+1 and closes everything that was after it. The trail is
+    // bounded: past its length the request is refused rather than the first records quietly dropped.
+    onSuccess: (accepted, asked) => setTrail((was) => [...was.slice(0, asked.level), { id: asked.id, taskId: accepted.taskId, from: asked.from }]),
     onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
     onSettled: () => setOpening(null),
   });
 
   const entries: InspectorEntry[] = [
     { id: targetId, task },
-    ...trail.map((link, index) => ({ id: link.id, task: reads[index]?.data, error: reads[index]?.error ?? undefined })),
+    ...trail.map((link, index) => ({ id: link.id, task: reads[index]?.data, error: reads[index]?.error ?? undefined, from: link.from })),
   ];
-  const level = entries.length - 1;
   const canOpen = pipelineId !== null;
-  const shownId = entries[level].id;
 
   return (
     <OsduRecordInspector
       entries={entries}
       ledgerVersion={ledgerVersion}
       opening={opening}
-      onOpenLink={canOpen ? (id) => open.mutate({ id, level }) : undefined}
-      readVersion={level === 0
+      onOpenLink={canOpen
+        ? (level, id, from) => {
+          if (level + 1 >= MAX_TRAIL) {
+            toast.error(`Up to ${MAX_TRAIL} records open one from the other; step back along the trail to follow this one.`);
+            return;
+          }
+
+          open.mutate({ id, level, from });
+        }
+        : undefined}
+      readVersionAt={(level) => (level === 0
         ? readRootVersion
-        : canOpen ? (version) => deliveryApi.readOsdu(pipelineId, shownId, interfaceName, version) : undefined}
+        : canOpen ? (version) => deliveryApi.readOsdu(pipelineId, entries[level].id, interfaceName, version) : undefined)}
       onBack={(to) => setTrail((was) => was.slice(0, to))}
       actions={actions}
     />

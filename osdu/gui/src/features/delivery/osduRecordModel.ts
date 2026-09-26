@@ -207,3 +207,36 @@ export function idParts(id: string): { partition: string; group: string; type: s
     unique: bare.slice(second + 1),
   };
 }
+
+/** One step of a path as a crumb shows it: a key, or an item's position in its list. */
+export interface PathSegment {
+  key: string;
+  /** Whether the step is an item of a list, shown as its position rather than as a key. */
+  index: boolean;
+}
+
+/** The steps of a path as `childPath` writes it: `data.Curves[3].CurveUnit` is data, Curves, [3], CurveUnit. */
+export function pathSegments(path: string): PathSegment[] {
+  const segments: PathSegment[] = [];
+  for (const part of path.split(".")) {
+    const bracket = part.indexOf("[");
+    const key = bracket < 0 ? part : part.slice(0, bracket);
+    if (key !== "") {
+      segments.push({ key, index: false });
+    }
+
+    for (const match of part.slice(bracket < 0 ? part.length : bracket).matchAll(/\[(\d+)\]/g)) {
+      segments.push({ key: match[1], index: true });
+    }
+  }
+
+  return segments;
+}
+
+/**
+ * The whole record as one branch, envelope and all, in the order OSDU returned its keys: what the Full document view
+ * shows. Its paths are the record's own (`data.Curves[3]`), so a step from it lands on the same branch the outline shows.
+ */
+export function documentNode(record: Record<string, unknown>): RecordNode {
+  return build("", record, "", "", new Map<string, RecordNode>());
+}

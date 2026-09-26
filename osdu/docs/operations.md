@@ -401,29 +401,33 @@ Pipelines like any other flow.
     landed, the fingerprints (metadata hash, payload hash, source fingerprint) the ledger decides "changed" by, and
     the render context.
   - **In OSDU**: the record as OSDU holds it, read on a node through the flow's route, in an **inspector** of fixed
-    height so a record of ten thousand values is read the way a file tree is, never as one tall page. Its header
-    names the record by the unique part of its id with its type beside it (the whole id and kind on hover), and holds
-    the **version picker**: the version in view, with every version OSDU keeps of the record a pick away, newest
-    first, the latest and the one this flow's ledger holds as delivered marked (a target that keeps no version list,
-    such as a DDMS, says so). A picked version is read on a node and replaces the record in place, the outline and
-    the place in it kept; **Compare with latest** then opens, in a dialog of its own, what changed between that
-    version and the latest: how many values changed, were added or removed since, the two side by side with the
-    unchanged stretches folded away, and every changed value with its path. On the left, an **outline** that never
-    moves, in the order OSDU lays a
-    record out: **Record** (its system fields: id, kind, version, who created and last modified it and when, and the
-    read's correlation id), **Access & legal** (viewers, owners, legal tags, countries, legal status), then the
-    record's own blocks by OSDU's names (`data`, `meta`, `tags`, `ancestry`) and the objects within them with their
-    sizes, then **Linked records**. On the right, **one level at a time**
-    under a breadcrumb: an object as rows of field and value, a nested object as a step into it, an array of items as
-    a table with a row per item and a column per shared field, each row a step into its item; long lists show their
-    first hundred and the rest on a click; any level shows as JSON on a switch, and the whole record downloads. A
-    search counts its matches on every branch of the outline, marks them where they stand in the detail, and steps
-    from match to match. The branches a reader opens are remembered in the browser for the record's kind. Every value
-    that names another OSDU record is a link where it stands, with a button that opens that record in the same
-    inspector, read through the same route, after it on a **trail** of records (log, then the wellbore it names, then
-    the well that names); a crumb of the trail steps back and closes what was opened after it. **Read again** and
-    **Open in a window** (the same view in a browser window of its own) sit on the inspector's header row; before a
-    read, **Read from OSDU** heads the tab on its own. A page opened with `?tab=osdu` reads the record at once.
+    height, so a record of ten thousand values is read the way a file tree is, never as one tall page.
+    - **One location bar** says where the reader is, and nothing below it repeats it: the record, named by the type
+      and unique part of its id (the whole id and kind on hover), then the path inside it. A record opened from a link
+      continues the same path, so it reads from the first record through the value that named the next to where the
+      reader is now: `WellLog 5596f... > data > WellboreID > Wellbore NO-15-5-7-AT2 > data`. Any crumb steps back, and
+      a record stepped back to is as the reader left it. The bar also holds the view (Fields or JSON), the **version
+      picker** and the page's read controls.
+    - **The version picker** shows the version in view, marked latest or older (amber), with a check when it is the
+      version this flow delivered; its menu lists every version OSDU keeps, newest first. A picked version is read on
+      a node and replaces the record in place, the outline and the place in it kept. **Compare with latest** then
+      opens, in a dialog of its own, what changed since that version: counts of values changed, added and removed,
+      the two side by side with the unchanged stretches folded away, and every changed value with its path. A target
+      that keeps no version list, such as a DDMS, says so.
+    - **The outline** on the left never moves. Record: **Full document** (the whole record, envelope and all, as OSDU
+      returned it), **System fields** (id, kind, version, who created and last modified it and when, the read's
+      correlation id) and **Access & legal** (viewers, owners, legal tags, countries, legal status). Content: the
+      record's own blocks by OSDU's names (`data`, `meta`, `tags`, `ancestry`) and the objects within them, with
+      their sizes. References: **Linked records**, every record the document names, with where it names them.
+    - **The detail** on the right shows one level at a time. As **Fields**, an object is rows of field and value, a
+      nested object a step into it, and a list of items a table with a row per item and a column per shared field,
+      each row a step into its item. As **JSON**, the branch folds at every object and list, a key that holds a
+      branch steps into it, and a list's item opens from its brace. Long lists show their first hundred and the rest
+      on a click. In both, a value that names another OSDU record is itself the link: a click opens that record in
+      the inspector, read through the same route, and the copy beside it yields the id.
+    - **Search** counts its matches on every branch of the outline, marks them where they stand, and steps from match
+      to match. The branches a reader opens are remembered in the browser for the record's kind. **Open in a window**
+      puts the same view in a browser window of its own, and a page opened with `?tab=osdu` reads the record at once.
   - **Compare**: what OSDU holds beside what a delivery would send now, as a side-by-side comparison and a list of
     the paths that differ.
   - **References**: the OSDU ids the waiting document refers to, and the records of the ledger waiting for this one.
