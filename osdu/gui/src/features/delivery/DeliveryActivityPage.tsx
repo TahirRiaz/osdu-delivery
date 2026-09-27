@@ -61,17 +61,17 @@ export default function DeliveryActivityPage() {
         return (
         <span className="inline-flex gap-2">
           {record && (
-            <button type="button" className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(record.route); }}>
+            <button type="button" className="cursor-pointer font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(record.route); }}>
               record {record.key.slice(0, 8)}
             </button>
           )}
           {row.submissionId && (
-            <button type="button" className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/delivery/submissions/${row.submissionId}`); }}>
+            <button type="button" className="cursor-pointer font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/delivery/submissions/${row.submissionId}`); }}>
               submission {row.submissionId.slice(0, 8)}
             </button>
           )}
           {row.runId && (
-            <button type="button" className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/runs/${row.runId}`); }}>
+            <button type="button" className="cursor-pointer font-mono text-[12px] text-primary hover:underline" onClick={(event) => { event.stopPropagation(); navigate(`/runs/${row.runId}`); }}>
               run {row.runId.slice(0, 8)}
             </button>
           )}

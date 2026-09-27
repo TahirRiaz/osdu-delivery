@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
-  ArrowLeft, ChevronDown, CircleCheck, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, Eye, GitCompare, Globe, History, Link2,
+  ArrowLeft, ChevronDown, CircleCheck, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, Eye, GitCompare, Globe, History,
   Loader2, Scale, SearchX, UserRoundCog, type LucideIcon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -31,8 +31,8 @@ import {
   canonicalText, differences, downloadJson, fileNameOf, shortValue, withoutOsduFields, withoutVersion, type DifferenceKind, type JsonDifference,
 } from "./osduDocument";
 import {
-  branchPaths, buildModel, CONTENT_SECTION, describeBranch, documentNode, idParts, isMintedUnique, isReferenceNode, loadLayout, locationSegments, matching,
-  saveLayout, trail, type RecordModel, type RecordNode,
+  branchPaths, buildModel, CONTENT_SECTION, describeBranch, documentNode, idParts, isMintedUnique, isReferenceNode, loadLayout, matching, saveLayout, trail,
+  type RecordModel, type RecordNode,
 } from "./osduRecordModel";
 import { RecordName } from "./RecordName";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
@@ -70,8 +70,8 @@ export interface InspectorEntry {
   from?: string | null;
 }
 
-/** A record earlier on the trail, as the location bar names it: which record, where the link to the next was, and its place. */
-interface PriorCrumb {
+/** The record a linked one was opened from, as the way back names it: which record, where in it the link stood, and its place. */
+interface EarlierRecord {
   id: string;
   from: string | null;
   level: number;
@@ -217,13 +217,13 @@ function ReferenceLink({ value, path, ownId, onOpenLink, opening, term, classNam
         ? (
           <button
             type="button"
-            className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-sm text-primary underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1 rounded-sm text-primary underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-wait"
             onClick={(event) => { event.stopPropagation(); onOpenLink(id, path); }}
             disabled={opening === id}
             title="Open this record here"
             data-testid="osdu-link-read"
           >
-            {opening === id ? <Loader2 className="size-3.5 shrink-0 animate-spin" /> : <Link2 className="size-3.5 shrink-0" />}
+            {opening === id && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
             {name}
           </button>
         )
@@ -316,7 +316,7 @@ function Crumb({ label, mono = true, current = false, onClick, title }: { label:
   const face = cn("min-w-0 truncate", mono && "font-mono");
   return current || onClick === undefined
     ? <span className={cn(face, current ? "font-medium text-foreground" : "text-muted-foreground")} title={title} aria-current={current ? "location" : undefined}>{label}</span>
-    : <button type="button" className={cn(face, "rounded-sm text-muted-foreground hover:text-foreground hover:underline")} onClick={onClick} title={title}>{label}</button>;
+    : <button type="button" className={cn(face, "cursor-pointer rounded-sm text-muted-foreground hover:text-foreground hover:underline")} onClick={onClick} title={title}>{label}</button>;
 }
 
 /**
@@ -329,42 +329,39 @@ function namedByType(id: string, level: number): boolean {
 }
 
 /**
- * The records before the current one on the trail, each named once and followed by the path of the value that led on
- * from it, so the location reads as one path across records: log, WellboreID, then the wellbore. Any step of
- * an earlier record goes back to it, as it was left. The current record follows as the next step.
+ * The way back while a linked record is open: the record it was opened from, named as a crumb names it, and a click
+ * returns to that record as it was left. Where in it the link stood is on hover, so the location names only the record
+ * in view and the path inside it.
  */
-function PriorCrumbs({ prior, onBack }: { prior: PriorCrumb[]; onBack: (level: number) => void }) {
+function BackLink({ back, onBack }: { back: EarlierRecord; onBack: (level: number) => void }) {
+  const parts = idParts(back.id);
+  const label = parts.type === "" ? parts.unique : namedByType(back.id, back.level) ? parts.type : `${parts.type} ${parts.unique}`;
   return (
-    <>
-      {prior.map((crumb) => (
-        <span key={crumb.level} className="contents">
-          <CrumbStep first={crumb.level === 0}>
-            <button type="button" className="min-w-0 max-w-full rounded-sm text-muted-foreground hover:text-foreground hover:underline" onClick={() => onBack(crumb.level)} title={`Back to ${crumb.id}`}>
-              <RecordName id={crumb.id} typeOnly={namedByType(crumb.id, crumb.level)} />
-            </button>
-          </CrumbStep>
-          {crumb.from !== null && locationSegments(crumb.from).map((segment, index) => (
-            <CrumbStep key={index}>
-              <Crumb label={segment.index ? `[${segment.key}]` : segment.key} onClick={() => onBack(crumb.level)} title={`Back to ${crumb.id}, where ${crumb.from} named the next record`} />
-            </CrumbStep>
-          ))}
-        </span>
-      ))}
-    </>
+    <button
+      type="button"
+      className="inline-flex min-w-0 max-w-[40%] shrink-0 cursor-pointer items-center gap-1 rounded-sm text-[12px] leading-5 text-muted-foreground hover:text-foreground"
+      onClick={() => onBack(back.level)}
+      title={back.from === null ? `Back to ${back.id}` : `Back to ${back.id}, where ${back.from} names this record`}
+      data-testid="osdu-linked-close"
+    >
+      <ArrowLeft className="size-3.5 shrink-0" />
+      <span className="min-w-0 truncate">{label}</span>
+    </button>
   );
 }
 
 /**
  * The inspector's header, which says where the reader is and holds what acts on it. The location has a row of its own
- * across the whole width: a step back while a linked record is open, then the path from the first record to the branch
- * in view, wrapping onto a further line rather than clipping when it is longer than the row. Below it, the view on the
- * left (Fields or JSON, the version) and the page's own controls over the read on the right. Nothing below the header
- * repeats the record's name or its place.
+ * across the whole width: the way back while a linked record is open, then the record in view and the path inside it
+ * to the branch shown, wrapping onto a further line rather than clipping when it is longer than the row. Below it, the
+ * view on the left (Fields or JSON, the version) and the page's own controls over the read on the right. Nothing below
+ * the header repeats the record's name or its place.
  */
-function LocationBar({ level, onBack, location, view, controls }: {
-  level: number;
+function LocationBar({ back, onBack, location, view, controls }: {
+  /** The record this one was opened from; null for the page's own record. */
+  back: EarlierRecord | null;
   onBack: (level: number) => void;
-  /** The crumbs, from the first record to where the reader is, each a `CrumbStep`. */
+  /** The record in view and the path inside it, each a `CrumbStep`. */
   location: ReactNode;
   /** How the record is shown: the view and the version in it. */
   view?: ReactNode;
@@ -373,11 +370,14 @@ function LocationBar({ level, onBack, location, view, controls }: {
 }) {
   return (
     <div className="flex flex-col border-b">
-      <div className="flex min-h-10 items-start gap-x-2 px-2 py-2">
-        {level > 0 && (
-          <IconAction label="Back to the record before" icon={<ArrowLeft />} variant="ghost" className="-my-0.5 size-6 shrink-0" onClick={() => onBack(level - 1)} data-testid="osdu-linked-close" />
+      <div className={cn("flex min-h-10 items-start gap-x-2 py-2 pr-2", back === null ? "pl-3" : "pl-2")}>
+        {back !== null && (
+          <>
+            <BackLink back={back} onBack={onBack} />
+            <span className="mt-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+          </>
         )}
-        <nav className={cn("flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-1 text-[12px] leading-5", level === 0 && "pl-1")} aria-label="Where in OSDU" data-testid="osdu-trail">
+        <nav className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-1 text-[12px] leading-5" aria-label="Where in OSDU" data-testid="osdu-trail">
           {location}
         </nav>
       </div>
@@ -461,7 +461,7 @@ function LinksView({ model, ownId, onOpenLink, opening, onSelect }: { model: Rec
           <span className="flex shrink-0 flex-wrap justify-end gap-x-2 text-[11px] text-muted-foreground">
             {reference.paths.map((path) => {
               const holder = model.byPath.get(path)?.parent ?? "";
-              return <button key={path} type="button" className="font-mono hover:text-foreground hover:underline" onClick={() => onSelect(holder === "" ? path : holder)} title="Go to where the record names it">{path}</button>;
+              return <button key={path} type="button" className="cursor-pointer font-mono hover:text-foreground hover:underline" onClick={() => onSelect(holder === "" ? path : holder)} title="Go to where the record names it">{path}</button>;
             })}
           </span>
         </div>
@@ -486,7 +486,7 @@ function FieldRows({ node, term, hits, ownId, onOpenLink, opening, onSelect, sho
             {child.kind === "leaf"
               ? <Leaf node={child} term={term} ownId={ownId} onOpenLink={onOpenLink} opening={opening} />
               : (
-                <button type="button" className="inline-flex items-center gap-1 text-[12px] text-primary hover:underline" onClick={() => onSelect(child.path)} data-testid="osdu-drill">
+                <button type="button" className="inline-flex cursor-pointer items-center gap-1 text-[12px] text-primary hover:underline" onClick={() => onSelect(child.path)} data-testid="osdu-drill">
                   {describeBranch(child)}
                   <ChevronRight className="size-3.5" />
                 </button>
@@ -616,7 +616,7 @@ function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect }: {
           <span className="text-foreground">&quot;</span>
           {onOpenLink !== undefined && !self
             ? (
-              <button type="button" className="text-left text-primary underline-offset-2 hover:underline" onClick={() => onOpenLink(id, leaf.path)} disabled={opening === id} title="Open this record here" data-testid="osdu-json-link">
+              <button type="button" className="cursor-pointer text-left text-primary underline-offset-2 hover:underline disabled:cursor-wait" onClick={() => onOpenLink(id, leaf.path)} disabled={opening === id} title="Open this record here" data-testid="osdu-json-link">
                 <Highlight text={leaf.value} term={term} />
               </button>
             )
@@ -649,7 +649,7 @@ function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect }: {
         ? <span className="text-muted-foreground">&quot;<Highlight text={current.key} term={term} />&quot;<span className={PUNCTUATION}>: </span></span>
         : (
           <span>
-            <button type="button" className="text-muted-foreground hover:text-primary hover:underline" onClick={() => onSelect(current.path)} title={`Go to ${current.path}`} data-testid="osdu-json-key">
+            <button type="button" className="cursor-pointer text-muted-foreground hover:text-primary hover:underline" onClick={() => onSelect(current.path)} title={`Go to ${current.path}`} data-testid="osdu-json-key">
               &quot;<Highlight text={current.key} term={term} />&quot;
             </button>
             <span className={PUNCTUATION}>: </span>
@@ -664,7 +664,7 @@ function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect }: {
     const [open, close] = current.kind === "array" ? ["[", "]"] : ["{", "}"];
     // An item of a list has no key to step into it by, so its opening brace does that work.
     const opener = keyOf === null && depth > 0
-      ? <button type="button" className={cn(PUNCTUATION, "hover:text-primary")} onClick={() => onSelect(current.path)} title={`Go to ${current.path}`}>{open}</button>
+      ? <button type="button" className={cn(PUNCTUATION, "cursor-pointer hover:text-primary")} onClick={() => onSelect(current.path)} title={`Go to ${current.path}`}>{open}</button>
       : <span className={PUNCTUATION}>{open}</span>;
     if (current.children.length === 0) {
       line(current.path, depth, <>{label}<span className={PUNCTUATION}>{open}{close}</span>{comma}</>, undefined, hit);
@@ -694,7 +694,7 @@ function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect }: {
     if (limit < current.children.length) {
       lines.push(
         <div key={`${current.path}:more`} style={{ paddingLeft: (depth + 1) * 16 + 16 }}>
-          <button type="button" className="text-[11px] text-primary hover:underline" onClick={() => setShownItems((was) => new Map(was).set(current.path, current.children.length))} data-testid="osdu-json-more">
+          <button type="button" className="cursor-pointer text-[11px] text-primary hover:underline" onClick={() => setShownItems((was) => new Map(was).set(current.path, current.children.length))} data-testid="osdu-json-more">
             {`${current.children.length - limit} more items`}
           </button>
         </div>,
@@ -796,15 +796,16 @@ function outlineRowFor(model: RecordModel, path: string): string {
 /**
  * One record as an inspector: an outline of its branches on the left that never moves, and on the right one level of
  * it at a time, as fields or as JSON, so a record of ten thousand values is read the way a file tree is, never as one
- * tall page. Where the reader is lives in one place, the location bar, from the first record on the trail to the
- * branch in view. A picked version replaces the record in place, with the outline and the place in it kept.
+ * tall page. Where the reader is lives in one place, the location bar: the record and the branch in view, with the way
+ * back to the record it was opened from. A picked version replaces the record in place, with the outline and the place
+ * in it kept.
  */
-function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack, readVersion, opening, actions }: {
+function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack, readVersion, opening, actions }: {
   /** The read of the record at its latest. */
   read: DeliveryOsduRead & { record: Record<string, unknown> };
   level: number;
-  /** The records before this one on the trail. */
-  prior: PriorCrumb[];
+  /** The record this one was opened from; null for the page's own record. */
+  back: EarlierRecord | null;
   ledgerVersion: number | null;
   onOpenLink?: OpenLink;
   onBack: (level: number) => void;
@@ -957,11 +958,10 @@ function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack
   const copyPath = node === undefined ? null : <CopyButton iconOnly label="Copy the path" text={node.path} testId="copy-osdu-path" />;
   const location = (
     <>
-      <PriorCrumbs prior={prior} onBack={onBack} />
-      <CrumbStep first={prior.length === 0}>
+      <CrumbStep first>
         <button
           type="button"
-          className={cn("min-w-0 max-w-full rounded-sm hover:underline", atContent ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
+          className={cn("min-w-0 max-w-full cursor-pointer rounded-sm hover:underline", atContent ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
           onClick={() => select(model.sections[0]?.path ?? RECORD)}
           title="The record's content"
           aria-current={atContent ? "location" : undefined}
@@ -1013,7 +1013,7 @@ function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="osdu-record">
-      <LocationBar level={level} onBack={onBack} location={location} view={view} controls={controls} />
+      <LocationBar back={back} onBack={onBack} location={location} view={view} controls={controls} />
       <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
         <ResizablePanel defaultSize={260} minSize={200} maxSize="45" className="flex min-h-0 flex-col">
           <div className="flex items-center gap-1 border-b p-2">
@@ -1087,8 +1087,8 @@ function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack
 /**
  * The records open in the inspector, the first read from the page and each next one opened from a link in the one
  * before: a trail across records, not a stack of them. Every record on the trail stays as the reader left it, and
- * the last is shown; a step back along the location bar returns to an earlier one as it was and closes what was opened
- * after it.
+ * the last is shown; the way back on the location bar returns to the record before, as it was, and closes what was
+ * opened after it.
  */
 export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, readVersionAt, onBack, actions }: {
   entries: InspectorEntry[];
@@ -1106,7 +1106,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
   const shownLevel = entries.length - 1;
 
   const body = (entry: InspectorEntry, level: number): { content: ReactNode; inspector: boolean } => {
-    const prior: PriorCrumb[] = entries.slice(0, level).map((earlier, index) => ({ id: earlier.id, from: entries[index + 1]?.from ?? null, level: index }));
+    const back: EarlierRecord | null = level === 0 ? null : { id: entries[level - 1].id, from: entry.from ?? null, level: level - 1 };
     const read = isTerminalTask(entry.task) && entry.task?.status === "succeeded" ? (entry.task.result as DeliveryOsduRead | null) : null;
     if (read !== null && read.found && read.record) {
       return {
@@ -1115,7 +1115,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
           <RecordInspector
             read={{ ...read, record: read.record }}
             level={level}
-            prior={prior}
+            back={back}
             ledgerVersion={ledgerVersion ?? null}
             onOpenLink={onOpenLink === undefined ? undefined : (id, from) => onOpenLink(level, id, from)}
             onBack={onBack}
@@ -1161,14 +1161,9 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
       content: (
         <>
           <LocationBar
-            level={level}
+            back={back}
             onBack={onBack}
-            location={(
-              <>
-                <PriorCrumbs prior={prior} onBack={onBack} />
-                <CrumbStep first={prior.length === 0}><RecordName id={entry.id} typeOnly={namedByType(entry.id, level)} className="font-medium" /></CrumbStep>
-              </>
-            )}
+            location={<CrumbStep first><RecordName id={entry.id} typeOnly={namedByType(entry.id, level)} className="font-medium" /></CrumbStep>}
             controls={actions}
           />
           {message}

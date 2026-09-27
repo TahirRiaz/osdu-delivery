@@ -678,7 +678,7 @@ export function RecordJourney({ record, attempts, activities, chain }: {
                           ? (
                             <button
                               type="button"
-                              className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-left hover:underline"
+                              className="flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-2 text-left hover:underline"
                               onClick={() => toggle(event.id)}
                               aria-expanded={open}
                               data-testid="journey-event-toggle"

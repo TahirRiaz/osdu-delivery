@@ -408,12 +408,12 @@ Pipelines like any other flow.
       inside it. The record's name stands for its content, the `data` block every record keeps it in, so a path inside
       it follows the name without a `data` step, while the other sections (`meta`, `tags`, `ancestry`) and the views
       (System fields, Full document, Access & legal, Linked records) are named steps; the copy beside the last step
-      yields the full path. A record opened from a link continues the same path, named by its type and, where its id
-      reads as a name, the unique part of it; an id minted as a hash or a GUID gives the type alone. So it reads from
-      the first record through the value that named the next to where the reader is now:
-      `WellLog > WellboreID > Wellbore NO-15-5-7-AT2 > NameAliases > [0]`. Any crumb steps back, and a record
-      stepped back to is as the reader left it. The row below holds the view (Fields or JSON) and the **version picker** on the
-      left, and the page's read controls on the right.
+      yields the full path. A record opened from a link shows its own path alone, named by its type and, where its id
+      reads as a name, the unique part of it (an id minted as a hash or a GUID gives the type alone), after one way
+      back that names the record it was opened from: `<- WellLog | Wellbore NO-15-5-7-AT2 > NameAliases > [0]`. The
+      way back says on hover where that record named this one, and returns to it as the reader left it. The row below
+      holds the view (Fields or JSON) and the **version picker** on the left, and the page's read controls on the
+      right.
     - **The version picker** shows the version in view, marked latest or older (amber), with a check when it is the
       version this flow delivered; its menu lists every version OSDU keeps, newest first. A picked version is read on
       a node and replaces the record in place, the outline and the place in it kept. **Compare with latest** then
@@ -429,8 +429,8 @@ Pipelines like any other flow.
       nested object a step into it, and a list of items a table with a row per item and a column per shared field,
       each row a step into its item. As **JSON**, the branch folds at every object and list, a key that holds a
       branch steps into it, and a list's item opens from its brace. Long lists show their first hundred and the rest
-      on a click. In both, a value that names another OSDU record is itself the link: a click opens that record in
-      the inspector, read through the same route, and the copy beside it yields the id.
+      on a click. In both, a value that names another OSDU record is itself the link, with no icon beside it: a click
+      opens that record in the inspector, read through the same route, and the copy beside it yields the id.
     - **Search** counts its matches on every branch of the outline, marks them where they stand, and steps from match
       to match. The branches a reader opens are remembered in the browser for the record's kind. **Open in a window**
       puts the same view in a browser window of its own, and a page opened with `?tab=osdu` reads the record at once.

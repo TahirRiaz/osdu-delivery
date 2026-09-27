@@ -223,34 +223,6 @@ export function isMintedUnique(unique: string): boolean {
   return /^[0-9a-f]{32}$/i.test(unique) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(unique);
 }
 
-/** One step of a path as a crumb shows it: a key, or an item's position in its list. */
-export interface PathSegment {
-  key: string;
-  /** Whether the step is an item of a list, shown as its position rather than as a key. */
-  index: boolean;
-}
-
-/**
- * The steps of a path as `childPath` writes it, as the location shows them: `data.Curves[3].CurveUnit` is Curves, [3],
- * CurveUnit, the content section being implicit in the record's name; `meta[0].name` is meta, [0], name.
- */
-export function locationSegments(path: string): PathSegment[] {
-  const segments: PathSegment[] = [];
-  for (const part of path.split(".")) {
-    const bracket = part.indexOf("[");
-    const key = bracket < 0 ? part : part.slice(0, bracket);
-    if (key !== "") {
-      segments.push({ key, index: false });
-    }
-
-    for (const match of part.slice(bracket < 0 ? part.length : bracket).matchAll(/\[(\d+)\]/g)) {
-      segments.push({ key: match[1], index: true });
-    }
-  }
-
-  return segments.length > 0 && !segments[0].index && segments[0].key === CONTENT_SECTION ? segments.slice(1) : segments;
-}
-
 /**
  * The whole record as one branch, envelope and all, in the order OSDU returned its keys: what the Full document view
  * shows. Its paths are the record's own (`data.Curves[3]`), so a step from it lands on the same branch the outline shows.

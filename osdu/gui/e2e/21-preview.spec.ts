@@ -138,16 +138,18 @@ test.describe.serial("record preview and OSDU read", () => {
 
     // The wellbore it refers to is a link where it stands in the record, read in turn through the same flow's route,
     // and takes the inspector's place after it on the trail; closing it steps back to the log.
-    // The link is the record's name itself: a click opens it here, and the one location bar then reads as one path
-    // from the log, through the value that named the wellbore, to the wellbore.
+    // The link is the record's name itself: a click opens it here, and the location bar then names the wellbore alone,
+    // with the way back to the log, which says on hover where the log named it.
     const link = adminPage.getByTestId("osdu-record-link").first();
     await expect(link).toHaveAttribute("data-value", new RegExp(`master-data--Wellbore:${LOG_WELLBORE}`));
     await link.getByTestId("osdu-link-read").click();
     const linked = adminPage.getByTestId("osdu-linked");
     await expect(linked).toBeVisible();
     await expect(linked.getByTestId("osdu-record-json")).toContainText("FacilityName", { timeout: 60_000 });
-    await expect(linked.getByTestId("osdu-trail")).toContainText("WellboreID");
     await expect(linked.getByTestId("osdu-trail")).toContainText(LOG_WELLBORE);
+    await expect(linked.getByTestId("osdu-trail")).not.toContainText("WellboreID");
+    await expect(linked.getByTestId("osdu-linked-close")).toHaveText("WellLog");
+    await expect(linked.getByTestId("osdu-linked-close")).toHaveAttribute("title", /data\.WellboreID names this record/);
     await linked.getByTestId("osdu-linked-close").click();
     await expect(linked).toHaveCount(0);
     await expect(adminPage.getByTestId("osdu-record-json")).toContainText("held by the stand-in");
