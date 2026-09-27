@@ -99,7 +99,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/stats` | read | Record counts by state, drift, the last 24 hours, the last submission. For a source with several interfaces, the counts of every interface added up (`interfaces` says how many, `flowId` is empty), or one interface's with `?interface=`. |
 | `GET /flows/{pipelineId}/interfaces` | read | The flow's interfaces in document order: each one's name, ledger identity (`flowId`) and the name it is derived from (`ledger`), route and why (`route`, `routeReason`), mapping, the kind the mapping fills as the last sync read it, record table, what the document declares it waits for (`after`), its counts, and the order a run takes: its `wave`, `waitsFor` and `notWaitedFor` (each an interface with `origin`, `after` or `schema`, and `why`). When the order cannot be worked out (a mapping the repository's sync did not read, a template the catalog does not hold, interfaces that wait for each other), `orderProblem` says why and the order shown is `after:` alone. Each entry also lists the `parameters` the flow declares (`name`, `required`, `default`, `description`), whose values fill its record scope, and the record table's `keyColumns` in the order a key's parts are named: what the Preview tab asks for. A flow in the single form lists one entry with no name. |
 | `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId` (the records the submission last planned), `deliveredBy` (the records it delivered, which stay its own however many submissions touch them afterwards), `runId` (the records that run touched, through its attempts), `drifted`. |
-| `GET /records?search=&status=&flowId=` | read | One record from anywhere, across every flow: `search` is a delivery key, or the start of any value the record is known by (an identity the mapping declares, the source key or one of its columns, a word of the label, the OSDU id or its own part, the ingestion file). Paged; each hit carries the values that matched and what each is. `flowId` narrows it to one flow's ledger identity (one of `GET /records/flows`); without a term it is that flow's recency listing. It seeks `osdu.RecordIdentity` (by `[FlowId, Token]` for one flow), so it answers at production volume and counts no further than its candidate bound. |
+| `GET /records?search=&status=&flowId=` | read | One record from anywhere, across every flow: `search` is a delivery key, or the start of any value the record is known by (an identity the mapping declares, the source key or one of its columns, a word of the label, the OSDU id or its own part, the ingestion file). Paged; each hit carries the values that matched and what each is, and the ingestion file and row the record's newest version came from (the queued version's while work waits). `flowId` narrows it to one flow's ledger identity (one of `GET /records/flows`); without a term it is that flow's recency listing. It seeks `osdu.RecordIdentity` (by `[FlowId, Token]` for one flow), so it answers at production volume and counts no further than its candidate bound. |
 | `GET /records/flows` | read | The flows the lookup can be narrowed to: one entry per ledger identity the synced repositories name that holds at least one record (`flowId`), with its `pipelineId`, `flowName` and `interface` (null for the single form), named as a hit names them and ordered by flow, then interface. An interface that has delivered nothing yet, and a ledger no synced pipeline holds, are left out. Whether an identity holds a record is one index seek each, whatever the ledger's size. |
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, the path each removal scope calls, and the method the record scope calls its path with (`recordMethod`: `POST`, or `DELETE` for a DDMS's own removal). On the ddms route the paths are those of the collection serving the kind the flow's synced mapping renders, and `ddms` says which collection of which DDMS that is (null on the other routes); a scope the flow cannot route reads `(not routable: ...)`, and one its DDMS refuses (the Well Delivery DDMS's history scope) `(refused: ...)`; neither is offered. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
@@ -333,9 +333,15 @@ Pipelines like any other flow.
   value a record is known by lists the records that start with it, across every flow: a wellbore id or a well name the
   mapping declares in `dataset.identity`, the source key or one of its key columns, a word of the label, the OSDU id
   or its own part, and the ingestion file the record came from. A delivery key lands on that record. Every row of a
-  search says which of the record's values matched, and what that value is; the recency listing leaves that column
-  out, because nothing was typed for a value to match. A flow picker narrows either to one flow, a source that
-  delivers several interfaces offering one choice per interface. One route serves both
+  search says, under the record, which of its values matched, and what each value is on hover; the recency listing
+  shows none, because nothing was typed for a value to match. A flow picker narrows either to one flow, a source that
+  delivers several interfaces offering one choice per interface. **A row shows what an operator reads it by, whole,
+  and the rest in a few characters**, so the grid fits its panel instead of scrolling sideways: the status; the record,
+  its label with the source key and the ingestion file and row its newest version came from under it, wrapping rather
+  than clipping; the flow that delivers it, named in full; when the record last changed, which orders the list, with
+  when it last landed in OSDU under it; and last its OSDU type, which links to what OSDU holds, the whole id on hover
+  and a copy beside it. The delivery key and the id's hash are not shown: they name nothing an operator knows. The
+  delivery key is in the address of the record's page, which a row opens. One route serves both
   (`GET /api/v1/delivery/records?search=&status=&flowId=`): with a term it is the ledger's identity index, the same
   lookup the combined search reads, one seek per term (of `IX_RecordIdentity_FlowId_Token` for one flow, so other flows
   sharing the prefix cannot use up the candidate bound); with none it is the recency index (`IX_Record_UpdatedUtc`,
@@ -365,8 +371,11 @@ Pipelines like any other flow.
   required one without a default must be filled before Preview enables). The answer shows what the next run would do
   with the record, the document as the route sends it (or as the mapping renders it), the route's requests in order,
   the payload files, the records it refers to and its source rows, and downloads as JSON. Every records list, a
-  flow's and the Records page's, carries **In OSDU** on each row the ledger has an OSDU id for, which opens the record's
-  page reading it from OSDU.
+  flow's and the Records page's, ends with the OSDU type of each record the ledger has an OSDU id for, and the type is
+  the link that opens the record's page reading it from OSDU (a deleted record keeps its type and copy, without the
+  link). A flow's list shows the record whole with the file it came from and its last error under it, and when it was
+  delivered in a few characters; the OSDU version, sixteen digits that repeat the delivery time, is on the record's In
+  OSDU tab.
 - **A record's page**: three layers, each fact in one place, and as little as answers the question. The **header** is
   who the record is and where it stands: its label, custody state and blocked flag; its OSDU id, flow and last
   submission as chips; the **situation** its state calls for and no other (held or failed with the error and the next

@@ -27,7 +27,7 @@ import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { InterfacePicker } from "./InterfacePicker";
-import { OpenInOsduLink } from "./OpenInOsduLink";
+import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./RecordCells";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
@@ -37,21 +37,30 @@ const ALL = "all";
 /** The URL filters that name records of one interface, which another interface's view drops. */
 const SCOPED_TO_INTERFACE = ["submission", "delivered", "run"] as const;
 
+/** The file and row a record's newest version came from: the queued version's while work waits, as the lookup names it. */
+function originOf(row: DeliveryRecord): RecordOrigin {
+  return row.pendingSourceFileName !== null
+    ? { fileName: row.pendingSourceFileName, rowNumber: row.pendingSourceRowNumber }
+    : { fileName: row.sourceFileName, rowNumber: row.sourceRowNumber };
+}
+
 const recordColumns: Column<DeliveryRecord>[] = [
   { id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status} /> },
+  // The record whole, with the file it came from and its last error under it; everything beside it is compact, so the
+  // grid fits its panel, and OSDU comes last. The OSDU version is on the record's In OSDU tab: in a row it is sixteen
+  // digits that repeat the delivery time.
   {
     id: "label",
     header: "Record",
-    render: (row) => (
-      <div className="flex min-w-0 flex-col">
-        <span className="truncate font-medium">{row.label ?? row.sourceKey}</span>
-        {row.label !== null && <span className="truncate font-mono text-[11px] text-muted-foreground">{row.sourceKey}</span>}
-      </div>
-    ),
+    fill: true,
+    floor: 220,
+    render: (row) => <RecordIdentity label={row.label} sourceKey={row.sourceKey} origin={originOf(row)} error={row.lastError} />,
   },
-  { id: "target", header: "OSDU id", render: (row) => <TruncatedText text={row.targetId} mono maxWidth={260} /> },
-  { id: "version", header: "Version", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.targetVersion ?? "-"}</span> },
-  { id: "delivered", header: "Delivered", render: (row) => <RelativeTime value={row.lastDeliveredUtc} /> },
+  {
+    id: "delivered",
+    header: "Delivered",
+    render: (row) => <CompactTime value={row.lastDeliveredUtc} caption="Delivered" absent="not yet" className="text-[12px]" />,
+  },
   { id: "verify", header: "Verify", render: (row) => <VerifyOutcomeBadge outcome={row.lastVerifyOutcome} /> },
   { id: "attempts", header: "Attempts", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.attemptCount}</span> },
   {
@@ -64,8 +73,7 @@ const recordColumns: Column<DeliveryRecord>[] = [
       </span>
     ),
   },
-  { id: "error", header: "Last error", render: (row) => <TruncatedText text={row.lastError} maxWidth={320} /> },
-  { id: "osdu", header: "", render: (row) => (row.targetId !== null && row.status !== "deleted" ? <OpenInOsduLink record={row} /> : null) },
+  { id: "target", header: "OSDU", render: (row) => <OsduTarget record={row} /> },
 ];
 
 /** The flow's stats strip, its submissions, and its searchable records, with the flow-level interventions. */

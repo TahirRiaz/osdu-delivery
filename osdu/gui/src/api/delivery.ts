@@ -246,6 +246,9 @@ export interface DeliveryRecordHit {
   interface?: string | null;
   /** The record's own values the term matched, and what each is; absent when the term was a delivery key. */
   matched?: DeliveryRecordMatch[] | null;
+  /** The ingestion file and row the record's newest version came from: the queued version's while work waits. */
+  sourceFileName?: string | null;
+  sourceRowNumber?: number | null;
 }
 
 /** One value of a record a lookup matched: the value as it was read, and what it is (identity, key, label, osdu, file). */

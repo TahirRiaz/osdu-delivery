@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { History } from "lucide-react";
+import { CloudUpload, History, TextSearch } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -13,12 +13,9 @@ import { FilterCombobox, type FilterOption } from "@/components/FilterCombobox";
 import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { PagedTable } from "@/components/PagedTable";
-import { RelativeTime } from "@/components/RelativeTime";
 import { SearchInput } from "@/components/SearchInput";
-import { TruncatedText } from "@/components/TruncatedText";
 import { RecordStatusBadge } from "./DeliveryBadges";
-import { OpenInOsduLink } from "./OpenInOsduLink";
-import { RecordName } from "./RecordName";
+import { CompactTime, OsduTarget, RecordIdentity } from "./RecordCells";
 
 const ALL = "all";
 
@@ -42,69 +39,91 @@ const statusColumn: Column<DeliveryRecordHit> = {
   id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status as DeliveryRecordStatus} />,
 };
 
-const recordColumn: Column<DeliveryRecordHit> = {
+/**
+ * Why a row is a hit, under the record it explains: the values the term matched, each captioned by what it is on hover.
+ * Only a search has them, so the recency listing shows none.
+ */
+function MatchedValues({ matched }: { matched: DeliveryRecordHit["matched"] }) {
+  if (!matched || matched.length === 0) {
+    return null;
+  }
+
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1" data-testid="lookup-matched">
+      <TextSearch className="size-3 shrink-0 text-muted-foreground" aria-label="Matched" />
+      {matched.map((match) => (
+        <Badge key={`${match.kind}:${match.value}`} variant="outline" className="max-w-full truncate font-mono text-[10px]" title={MATCH_KINDS[match.kind] ?? match.kind}>
+          {match.value}
+        </Badge>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * The record as the operator knows it, whole, with the ingestion file and row it came from: the one column that takes
+ * the width the others leave.
+ */
+const recordColumn = (searching: boolean): Column<DeliveryRecordHit> => ({
   id: "record",
   header: "Record",
   fill: true,
   floor: 200,
   render: (row) => (
-    // A label and a key are both as long as the estate made them: clipped to the column, each readable in full on hover.
-    <div className="flex min-w-0 flex-col">
-      <TruncatedText text={row.label ?? row.sourceKey} maxWidth={420} title="Record" className="font-medium" />
-      {row.label !== null && <TruncatedText text={row.sourceKey} mono maxWidth={420} title="Source key" className="text-[11px] text-muted-foreground" />}
+    <div className="flex min-w-0 flex-col gap-0.5 whitespace-normal">
+      <RecordIdentity label={row.label} sourceKey={row.sourceKey} origin={{ fileName: row.sourceFileName ?? null, rowNumber: row.sourceRowNumber ?? null }} />
+      {searching && <MatchedValues matched={row.matched} />}
+    </div>
+  ),
+});
+
+/**
+ * The flow that delivers the record, named in full: which pipeline delivered a record is what an operator reads a row
+ * by, next to the record itself. A source's interfaces share the flow's name, so an interface is named under it.
+ */
+const flowColumn: Column<DeliveryRecordHit> = {
+  id: "flow",
+  header: "Flow",
+  render: (row) => (
+    row.flowName === null
+      ? <span className="text-[12px] text-muted-foreground" title={row.flowId}>no longer synced</span>
+      : (
+        <div className="flex flex-col">
+          <span className="font-mono text-[12px]">{row.flowName}</span>
+          {row.interface && <Badge variant="outline" className="w-fit font-mono text-[10px]">{row.interface}</Badge>}
+        </div>
+      )
+  ),
+};
+
+/** Where the record stands in OSDU, last: the row's way to what OSDU holds. */
+const osduColumn: Column<DeliveryRecordHit> = {
+  id: "osdu", header: "OSDU", render: (row) => <OsduTarget record={row} copyTestId="copy-hit-target" />,
+};
+
+/** The instant the listing is ordered by, and under it the one that matters most: when the record last landed in OSDU. */
+const whenColumn: Column<DeliveryRecordHit> = {
+  id: "when",
+  header: "When",
+  render: (row) => (
+    <div className="flex flex-col text-[12px]">
+      <CompactTime value={row.updatedUtc} caption="Updated" icon={History} />
+      <CompactTime value={row.lastDeliveredUtc} caption="Delivered" icon={CloudUpload} absent="not yet" className="text-muted-foreground" />
     </div>
   ),
 };
 
-/** Why a row is a hit: only a search has one, so the recency listing leaves the column out rather than showing it empty. */
-const matchedColumn: Column<DeliveryRecordHit> = {
-  id: "matched",
-  header: "Matched",
-  render: (row) => {
-    const matched = row.matched ?? [];
-    return matched.length === 0
-      ? <span className="text-muted-foreground">-</span>
-      : (
-        <span className="inline-flex flex-wrap gap-1" data-testid="lookup-matched">
-          {matched.map((match) => (
-            <Badge key={`${match.kind}:${match.value}`} variant="outline" className="font-mono text-[10px]" title={MATCH_KINDS[match.kind] ?? match.kind}>
-              {match.value}
-            </Badge>
-          ))}
-        </span>
-      );
-  },
-};
-
-const restColumns: Column<DeliveryRecordHit>[] = [
-  {
-    id: "flow",
-    header: "Flow",
-    render: (row) => (
-      row.flowName === null
-        ? <span className="text-[12px] text-muted-foreground" title={row.flowId}>no longer synced</span>
-        : (
-          <div className="flex min-w-0 flex-col">
-            <span className="truncate font-mono text-[12px]">{row.flowName}</span>
-            {row.interface && <Badge variant="outline" className="w-fit font-mono text-[10px]">{row.interface}</Badge>}
-          </div>
-        )
-    ),
-  },
-  {
-    id: "target",
-    header: "OSDU id",
-    render: (row) => (row.targetId === null ? <span className="text-muted-foreground">-</span> : <RecordName id={row.targetId} copy className="max-w-[300px] text-[12px]" copyTestId="copy-hit-target" />),
-  },
-  { id: "delivered", header: "Delivered", render: (row) => <RelativeTime value={row.lastDeliveredUtc} /> },
-  { id: "updated", header: "Updated", render: (row) => <RelativeTime value={row.updatedUtc} /> },
-  { id: "key", header: "Delivery key", render: (row) => <TruncatedText text={row.deliveryKey} mono maxWidth={140} copy copyTestId="copy-hit-key" /> },
-  { id: "osdu", header: "", render: (row) => (row.targetId !== null && row.status !== "deleted" ? <OpenInOsduLink record={row} /> : null) },
+/**
+ * The columns of a search, and of the recency listing. The record and its flow are shown whole, and a search's matched
+ * values ride under the record; the rest is a few characters each, so the grid fits its panel instead of scrolling.
+ */
+const columnsFor = (searching: boolean): Column<DeliveryRecordHit>[] => [
+  statusColumn,
+  recordColumn(searching),
+  flowColumn,
+  whenColumn,
+  osduColumn,
 ];
-
-/** The columns of a search, and the columns of the recency listing, which has nothing matched to explain. */
-const columnsFor = (searching: boolean): Column<DeliveryRecordHit>[] =>
-  searching ? [statusColumn, recordColumn, matchedColumn, ...restColumns] : [statusColumn, recordColumn, ...restColumns];
 
 /** How often the recency listing refreshes itself: a page left open is a view of what is arriving now. */
 const RECENT_POLL_MS = 10_000;

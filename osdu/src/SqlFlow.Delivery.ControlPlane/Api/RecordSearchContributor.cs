@@ -8,12 +8,13 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 
 /// <summary>
 /// One delivery record a search found: where it belongs (the flow's pipeline and, for a source, the interface), how it is
-/// identified, and its custody state.
+/// identified, its custody state, and the ingestion file and row its newest version came from (the queued version's
+/// while work waits, the delivered one's otherwise), which is how an operator who holds a file recognises a record.
 /// </summary>
 public sealed record DeliveryRecordHitDto(
     Guid DeliveryKey, Guid FlowId, string? FlowName, Guid? PipelineId, string SourceKey, string? Label, string? TargetId,
     string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc, string? Interface = null,
-    IReadOnlyList<DeliveryRecordMatchDto>? Matched = null);
+    IReadOnlyList<DeliveryRecordMatchDto>? Matched = null, string? SourceFileName = null, long? SourceRowNumber = null);
 
 /// <summary>
 /// One value of a record that the term matched, and what that value is (an identity the mapping declares, a key value,
@@ -94,11 +95,14 @@ internal static class DeliveryRecordHits
     public static DeliveryRecordHitDto Describe(RecordState record, LedgerPipeline? found, IReadOnlyList<DeliveryRecordMatchDto>? matched = null)
     {
         ArgumentNullException.ThrowIfNull(record);
+        var origin = record.PendingSourceFileName is not null ? record.PendingOrigin : record.Origin;
         return new DeliveryRecordHitDto(
             record.DeliveryKey.Value, record.FlowId, found?.Pipeline.Name, found?.Pipeline.Id, record.SourceKey,
             record.Label, record.TargetId, record.Status.ToString().ToLowerInvariant(), record.LastDeliveredUtc, record.UpdatedUtc,
             found is { Interface.Length: > 0 } ? found.Interface : null,
-            matched is { Count: > 0 } ? matched : null);
+            matched is { Count: > 0 } ? matched : null,
+            origin.FileName,
+            origin.RowNumber);
     }
 
     /// <summary>How a hit names where it belongs: the pipeline, and the interface of a source.</summary>

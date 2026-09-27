@@ -100,6 +100,14 @@ public sealed class DeliveryRecordLookupApiTests
             Assert.Equal("delivered", hitA.GetProperty("status").GetString());
             Assert.Equal($"dev:master-data--Wellbore:{marker}-A", hitA.GetProperty("targetId").GetString());
 
+            // Each hit names the ingestion file and row its newest version came from: the delivered version's for a
+            // record that landed, and the one a held record was left at, which never landed.
+            Assert.Equal(marker + "_wellbores.csv", hitA.GetProperty("sourceFileName").GetString());
+            Assert.Equal(3, hitA.GetProperty("sourceRowNumber").GetInt64());
+            var hitHeld = Assert.Single(hits, h => h.GetProperty("deliveryKey").GetGuid() == held.Value);
+            Assert.Equal(marker + "_wellbores.csv", hitHeld.GetProperty("sourceFileName").GetString());
+            Assert.Equal(4, hitHeld.GetProperty("sourceRowNumber").GetInt64());
+
             // The OSDU id, the ingestion file name and the delivery key itself find a record too. A file finds every
             // record built from it, landed or not: an operator asking "what came out of this file" means all of them,
             // and the held one is exactly what they are looking for.
