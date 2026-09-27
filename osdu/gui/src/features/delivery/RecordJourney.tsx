@@ -3,7 +3,7 @@ import { Link as RouterLink } from "react-router-dom";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   ArchiveRestore, CheckCircle2, ChevronRight, CircleDashed, CircleDot, Database, DatabaseZap, Eraser, FileInput, FilePen,
-  FileQuestion, FileX2, Hourglass, Layers, Loader, PauseCircle, RefreshCw, ScanSearch, Send, ShieldCheck, Trash2, XCircle,
+  FileQuestion, FileX2, Layers, PauseCircle, RefreshCw, ScanSearch, ShieldCheck, Trash2, XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -107,16 +107,6 @@ interface Chapter {
   trigger: string;
   entries: Entry[];
   outcome: Outcome;
-}
-
-/** Where the record stands now: the last row of its story, and the outcome of a chapter nothing has settled yet. */
-interface Now {
-  title: string;
-  tone: Tone;
-  icon: LucideIcon;
-  lane: Lane;
-  facts: ReactNode[];
-  error: string | null;
 }
 
 function Mono({ children }: { children: ReactNode }) {
@@ -599,12 +589,6 @@ function statusText(refusal: Refusal): string {
   return `HTTP ${refusal.status}${refusal.reason !== "" ? ` ${refusal.reason}` : ""}`;
 }
 
-/** An error as a reader takes it in: what OSDU answered and what it said, or the error as stored when it was no answer. */
-function shortError(error: string | null): string | null {
-  const refusal = refusalOf(error);
-  return refusal === null || refusal.method === null ? error : `${statusText(refusal)}${refusal.answer !== null ? `: ${refusal.answer}` : ""}`;
-}
-
 function attemptShape(attempt: DeliveryAttempt, refusal: Refusal | null, reached: boolean): {
   title: string; tone: Tone; icon: LucideIcon; then: Outcome | null; outcome: Outcome | null;
 } {
@@ -971,78 +955,39 @@ function verifiedEntry(record: DeliveryRecord, at: string): Entry {
   };
 }
 
-/** Where the record stands now, from its ledger row. */
-function nowOf(record: DeliveryRecord): Now {
-  const updated = <span key="u">updated <RelativeTime value={record.updatedUtc} /></span>;
-  const blocked = record.blocked && "blocked until someone releases it";
+/**
+ * Where the record stands, in the words of a chapter's outcome, and whether work on it is in flight (a document queued
+ * or being sent, a wait on a record it refers to): what the latest chapter says when nothing in it has settled yet, or
+ * when something since has set the record going again.
+ */
+function standingOf(record: DeliveryRecord): { outcome: Outcome; inFlight: boolean } {
   switch (record.status) {
     case "delivered":
-      return {
-        title: "Delivered",
-        tone: "success",
-        icon: CheckCircle2,
-        lane: "osdu",
-        facts: [
-          record.targetVersion !== null && <span key="v">OSDU holds <Mono>{`version ${record.targetVersion}`}</Mono></span>,
-          record.lastVerifiedUtc !== null && <span key="c">last verified <RelativeTime value={record.lastVerifiedUtc} />{record.lastVerifyOutcome !== null && `: ${record.lastVerifyOutcome}`}</span>,
-          updated,
-        ],
-        error: null,
-      };
+      return { outcome: { text: "Delivered", tone: "success" }, inFlight: false };
     case "pending":
       return record.hasPendingDocument
-        ? {
-          title: "Queued to send",
-          tone: "info",
-          icon: Send,
-          lane: "ledger",
-          facts: [
-            record.nextAttemptUtc !== null && <span key="n">next try <RelativeTime value={record.nextAttemptUtc} /></span>,
-            record.workBatch !== null && `work batch ${record.workBatch}`,
-            <SubmissionRef key="s" submissionId={record.lastSubmissionId} />,
-            updated,
-          ],
-          error: shortError(record.lastError),
-        }
-        : {
-          title: record.planRequestedUtc !== null ? "Waiting for the next run to pick it up" : "Pending",
-          tone: "info",
-          icon: Hourglass,
-          lane: "ledger",
-          facts: [record.planRequestedUtc !== null && <span key="p">asked <RelativeTime value={record.planRequestedUtc} /></span>, updated],
-          error: shortError(record.lastError),
-        };
+        ? { outcome: { text: "Queued to send", tone: "info" }, inFlight: true }
+        : { outcome: { text: record.planRequestedUtc !== null ? "Waiting for the next run" : "Pending", tone: "info" }, inFlight: true };
     case "delivering":
-      return {
-        title: "Being delivered",
-        tone: "info",
-        icon: Loader,
-        lane: "osdu",
-        facts: [record.leaseExpiresUtc !== null && <span key="l">lease runs out <RelativeTime value={record.leaseExpiresUtc} /></span>, updated],
-        error: null,
-      };
+      return { outcome: { text: "Being delivered", tone: "info" }, inFlight: true };
     case "waiting":
-      return {
-        title: "Waiting for a record it refers to",
-        tone: "info",
-        icon: Hourglass,
-        lane: "ledger",
-        facts: [record.waitingFor !== null && <RecordName key="w" id={record.waitingFor} copy className="max-w-[320px]" />, updated],
-        error: null,
-      };
+      return { outcome: { text: "Waiting for a record it refers to", tone: "info" }, inFlight: true };
     case "held":
-      return { title: "Held", tone: "warning", icon: PauseCircle, lane: "ledger", facts: [blocked, updated], error: shortError(record.lastError) };
+      return { outcome: { text: "Held", tone: "warning" }, inFlight: false };
     case "failed":
-      return { title: "Failed", tone: "destructive", icon: XCircle, lane: "ledger", facts: [blocked, updated], error: shortError(record.lastError) };
+      return { outcome: { text: "Failed", tone: "destructive" }, inFlight: false };
     case "deleted":
-      return { title: "Removed", tone: "muted", icon: Trash2, lane: "osdu", facts: [blocked, updated], error: null };
+      return { outcome: { text: "Removed", tone: "muted" }, inFlight: false };
     default:
-      return { title: record.status, tone: "muted", icon: CircleDashed, lane: "ledger", facts: [updated], error: shortError(record.lastError) };
+      return { outcome: { text: record.status, tone: "muted" }, inFlight: false };
   }
 }
 
-/** How a chapter ended: its last settled step, a verified delivery as both, or, for the latest, where the record stands. */
-function settle(entries: Entry[], latest: boolean, now: Now): Outcome {
+/**
+ * How a chapter ended: its last settled step, a verified delivery as both. The latest chapter says where the record
+ * stands instead while work on it is in flight, or when nothing in it has settled yet.
+ */
+function settle(entries: Entry[], latest: boolean, standing: { outcome: Outcome; inFlight: boolean }): Outcome {
   const settled = entries.reduce<Outcome | null>((outcome, entry) => {
     if (entry.outcome === null) {
       return outcome;
@@ -1053,12 +998,15 @@ function settle(entries: Entry[], latest: boolean, now: Now): Outcome {
       : entry.outcome;
   }, null);
 
-  return settled ?? (latest ? { text: now.title, tone: now.tone } : { text: "Nothing sent", tone: "muted" });
+  if (latest && (standing.inFlight || settled === null)) {
+    return standing.outcome;
+  }
+
+  return settled ?? { text: "Nothing sent", tone: "muted" };
 }
 
 interface Story {
   chapters: Chapter[];
-  now: Now;
   syncs: DeliveryActivity[];
   table: string;
 }
@@ -1100,25 +1048,25 @@ function buildStory(
   });
 
   const chapters: Chapter[] = [];
-  const now = nowOf(record);
+  const standing = standingOf(record);
   for (const entry of foldRepeats(entries)) {
     const current = chapters.at(-1);
     const onlyTriggers = current !== undefined && current.entries.every((e) => e.trigger !== null);
     if (current === undefined || (entry.trigger !== null && !onlyTriggers)) {
-      chapters.push({ number: chapters.length + 1, trigger: entry.trigger ?? entry.title, entries: [entry], outcome: { text: now.title, tone: now.tone } });
+      chapters.push({ number: chapters.length + 1, trigger: entry.trigger ?? entry.title, entries: [entry], outcome: standing.outcome });
     } else {
       current.entries.push(entry);
     }
   }
 
   chapters.forEach((chapter, index) => {
-    chapter.outcome = settle(chapter.entries, index === chapters.length - 1, now);
+    chapter.outcome = settle(chapter.entries, index === chapters.length - 1, standing);
   });
 
   const syncs = activities
     .filter((a) => a.kind === "sync")
     .sort((a, b) => parseUtc(b.startedUtc).getTime() - parseUtc(a.startedUtc).getTime());
-  return { chapters, now, syncs, table: ingestionTableName(chain?.sourceTable ?? null) };
+  return { chapters, syncs, table: ingestionTableName(chain?.sourceTable ?? null) };
 }
 
 /**
@@ -1450,25 +1398,6 @@ function ChapterRow({ chapter, count, from }: { chapter: Chapter; count: number;
   );
 }
 
-function NowRow({ now, last }: { now: Now; last: boolean }) {
-  const Icon = now.icon;
-  return (
-    <li className={ROW} data-testid="journey-now">
-      <div className={cn("pr-2.5 pt-[6px] text-right text-[11px] font-semibold uppercase tracking-wide", TONE_TEXT[now.tone])}>Now</div>
-      <RailCell lane={now.lane} from={null} last={last}>
-        <RailNode lane={now.lane} tone={now.tone} size={26} className="ring-4 ring-muted">
-          <Icon className="size-3.5" />
-        </RailNode>
-      </RailCell>
-      <div className="flex min-w-0 flex-col gap-0.5 pb-3 pl-1 pt-1">
-        <span className="flex items-center gap-1.5"><span className="size-3.5 shrink-0" aria-hidden="true" /><span className="text-[13.5px] font-semibold">{now.title}</span></span>
-        <FactLine parts={now.facts} />
-        {now.error !== null && <span className="text-[12px] text-destructive">{now.error}</span>}
-      </div>
-    </li>
-  );
-}
-
 /** The syncs that read the row's history from the ingestion table into the ledger: bookkeeping of the timeline itself. */
 function SyncLine({ syncs, table }: { syncs: DeliveryActivity[]; table: string }) {
   if (syncs.length === 0) {
@@ -1497,7 +1426,6 @@ function SyncLine({ syncs, table }: { syncs: DeliveryActivity[]; table: string }
 }
 
 type Row =
-  | { kind: "now" }
   | { kind: "chapter"; chapter: Chapter }
   | { kind: "entry"; entry: Entry; day: string | null };
 
@@ -1507,9 +1435,10 @@ type Row =
  * steps sit on the rail's three lanes, the row's ingestion table, the ledger and OSDU, with a path between them. Times
  * share one column. A step someone asked for names who asked and how many records the request named. Every entry opens
  * to the rest known about it (the runs a change came from, the steps a try took and what they answered, a request's
- * parameters). Where the record stands now heads the list, and the syncs that read the row's history into the ledger
- * sit under it. The list takes the rest of the page and scrolls inside it, so its filter stays in view, and narrows to
- * one lane, or to the steps someone asked for.
+ * parameters). The last thing that happened heads the list; where the record stands is the page header's and the
+ * milestones' to say, and the latest chapter's band says it while work on the record is in flight. The syncs that read
+ * the row's history into the ledger sit under the list. The list takes the rest of the page and scrolls inside it, so
+ * its filter stays in view, and narrows to one lane, or to the steps someone asked for.
  */
 export function RecordJourney({ record, attempts, activities, chain }: {
   record: DeliveryRecord;
@@ -1534,7 +1463,7 @@ export function RecordJourney({ record, attempts, activities, chain }: {
       return [];
     }
 
-    const list: Row[] = filter === "all" ? [{ kind: "now" }] : [];
+    const list: Row[] = [];
     for (const chapter of [...story.chapters].reverse()) {
       const shown = chapter.entries.filter((entry) => matches(entry, filter)).reverse();
       if (shown.length === 0) {
@@ -1576,10 +1505,6 @@ export function RecordJourney({ record, attempts, activities, chain }: {
   if (story !== null) {
     rows.forEach((row, index) => {
       switch (row.kind) {
-        case "now":
-          listed.push(<NowRow key="now" now={story.now} last={index === lastNode} />);
-          from = story.now.lane;
-          break;
         case "chapter":
           listed.push(<ChapterRow key={`chapter-${row.chapter.number}`} chapter={row.chapter} count={story.chapters.length} from={from} />);
           break;

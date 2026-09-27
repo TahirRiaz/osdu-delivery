@@ -57,14 +57,15 @@ test.describe.serial("record trace", () => {
     await expect(adminPage).toHaveURL(/status=pending/);
     await expect(rows.first()).toContainText("NORWAY_WELLDB", { timeout: 30_000 });
 
-    // A row opens the record, whose timeline starts with where it stands now, the queued document, and tells the one
-    // chapter it has lived so far: its row arrived, the ledger picked it up and reserved its OSDU id, nothing was sent.
+    // A row opens the record, whose timeline tells the one chapter it has lived so far: its row arrived, the ledger
+    // picked it up and reserved its OSDU id, and the document waits to be sent. Nothing was sent, and no row of the
+    // timeline stands for its current state, which the header and the milestones say.
     await rows.first().click();
     await expect(adminPage.getByTestId("page-delivery-record")).toBeVisible();
     await expect(adminPage.getByTestId("record-journey")).toBeVisible();
     await expect(adminPage.getByTestId("record-milestones")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("milestone-landed")).toContainText("not yet");
-    await expect(adminPage.getByTestId("journey-now")).toContainText("Queued to send");
+    await expect(adminPage.getByTestId("journey-now")).toHaveCount(0);
     await expect(adminPage.getByTestId("journey-planned")).toBeVisible();
     await expect(adminPage.getByTestId("journey-planned")).toContainText("Picked up for delivery");
     await expect(adminPage.getByTestId("journey-planned")).toContainText("OSDU id reserved for this flow");

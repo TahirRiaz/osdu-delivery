@@ -424,7 +424,10 @@ Pipelines like any other flow.
     the record's own story and nothing else: its row's arrival in the ingestion table with the landing that brought
     its file in, every later change of the row and its deletion, when the ledger picked it up, what the ledger decided
     (a hold, a change that rendered what was delivered, an older version), every try with what OSDU answered, and
-    every request someone made of it. **Where it stands now** heads the list.
+    every request someone made of it. The last thing that happened heads the list. Where the record stands is the
+    header's and the milestones' to say, not a row of the timeline, so a delivered record's current state never reads
+    as one more delivery; while work on the record is in flight (queued, being sent, waiting for a record it refers
+    to), the latest chapter's band says so.
     - **Chapters.** The story is cut where something set the record moving: its row arrived, changed or was deleted,
       or someone asked for a redelivery, a release or a removal. Each chapter opens with a band naming what started
       it and how it ended (delivered, delivered and verified, held because OSDU refused it, nothing to send, queued),
