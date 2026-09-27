@@ -526,8 +526,12 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(adminPage.getByRole("option").filter({ hasText: "RecallUnits" })).toBeVisible();
     await expect(adminPage.getByRole("option").filter({ hasText: "key mnemonic" })).toBeVisible();
     await adminPage.keyboard.press("Escape");
-    await adminPage.keyboard.press("Escape");
+
+    // Cancel leaves the alternative as it was and returns to the entry, which Cancel leaves as it was too.
+    await alternative.getByTestId("mapping-builder-entry-cancel").click();
     await expect(alternative).toHaveCount(0);
-    await adminPage.keyboard.press("Escape");
+    await expect(adminPage.getByTestId("mapping-builder-entry-alternative-0")).toContainText("replace from $cache.RecallUnits");
+    await adminPage.getByTestId("mapping-builder-entry-cancel").click();
+    await expect(adminPage.getByTestId("mapping-builder-entry-editor")).toHaveCount(0);
   });
 });
