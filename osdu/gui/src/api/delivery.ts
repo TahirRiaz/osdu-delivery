@@ -1036,7 +1036,7 @@ export interface DeliveryRecordFilter {
 }
 
 /**
- * Which records of a flow a sync from source reads: those `keys` names, every one `filter` matches (resolved when the sync
+ * Which records of a flow a timeline sync reads: those `keys` names, every one `filter` matches (resolved when the sync
  * is queued; `expected` is the count the operator was shown, and the sync is refused when the filter no longer resolves to
  * it), or, with neither, every record of the flow's interface.
  */

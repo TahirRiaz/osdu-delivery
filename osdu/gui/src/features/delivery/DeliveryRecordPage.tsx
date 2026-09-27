@@ -141,7 +141,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const sync = useMutation({
     mutationFn: () => deliveryApi.syncRecord(ref),
     onSuccess: (accepted) => {
-      toast.success("Sync from source queued.", { action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) } });
+      toast.success("Timeline sync queued.", { action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) } });
       refresh();
     },
     onError: fail,
@@ -233,7 +233,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               data-testid="record-sync"
             >
               <RefreshCw />
-              Sync from source
+              Sync timeline
             </Button>
             <Button variant="outline" size="sm" onClick={() => verify.mutate()} disabled={busy || !canActOnTarget} title="Queue a verify run scoped to this record: compares what OSDU holds against the ledger" data-testid="record-verify">
               <ShieldCheck />

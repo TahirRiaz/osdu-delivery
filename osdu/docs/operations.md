@@ -137,8 +137,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /records/{flowId}/{key}/cache` | read | What one record read out of the cache when it was rendered: the partition, the cached item, the path and the value. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
 | `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
-| `POST /flows/{pipelineId}/sync` | operate | Queue a sync from source of the interface's records ([Syncing the ledger with the source](#syncing-the-ledger-with-the-source)): the ones `keys` names, every one `filter` matches (resolved when queued, at most 1,000, the most a run names; refused with 409 when it no longer matches `expected`), or, with neither, every record. Answers the run to follow. Nothing reaches OSDU. |
-| `POST /records/{flowId}/{key}/sync` | operate | Queue a sync from source of one record: a run that reads its row by its stored key and consolidates the ledger with it. |
+| `POST /flows/{pipelineId}/sync` | operate | Queue a timeline sync of the interface's records ([Syncing the ledger with the source](#syncing-the-ledger-with-the-source)): the ones `keys` names, every one `filter` matches (resolved when queued, at most 1,000, the most a run names; refused with 409 when it no longer matches `expected`), or, with neither, every record. Answers the run to follow. Nothing reaches OSDU. |
+| `POST /records/{flowId}/{key}/sync` | operate | Queue a timeline sync of one record: a run that reads its row by its stored key and consolidates the ledger with it. |
 | `POST /records/{flowId}/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope`: `all`, `record`, or `files`, `bulk` or `workflow` as the record's route sends them, a part the route does not send being refused with 400; on the fileAndDdms, manifestAndDdms and workflow routes a part is sent alone, the others staying as OSDU holds them; `metadata` names the record and `payload` every part; `run` true queues a deliver run scoped to the record, which reads it from the ingestion tables by key under its last submission's parameter values, marks it with that scope and sends it); queue a verify run scoped to it. |
 | `POST /records/{flowId}/{key}/source` | operate | Queue a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its system columns, its child datasets, and the origin file and row. Nothing is planned or delivered; poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{flowId}/{key}/read` | operate | Queue a read-back, on a node, of the OSDU record the flow's record claimed; a record that never queued a document has none to read. |
@@ -282,8 +282,8 @@ per-record outcomes (failures first); every record's outcome is in its own attem
 
 ## Syncing the ledger with the source
 
-A sync from source consolidates the ledger with the ingestion tables, for one record (its page), for the records
-ticked or filtered on a flow's Records tab, or for every record of an interface. It is a `sync` run of the flow on a
+A timeline sync consolidates the ledger with the ingestion tables, for one record (**Sync timeline** on its page), for
+the records ticked or filtered on a flow's Records tab, or for every record of an interface (**Sync timelines**). It is a `sync` run of the flow on a
 node, recorded as an activity with who asked for it, and it renders nothing and sends nothing to OSDU. Each record's
 row is read by the key tuple the ledger stored, in the scope its last submission ran with, a page of 1,000 records at a
 time, and compared with what the ledger holds:
@@ -377,7 +377,7 @@ Pipelines like any other flow.
   longer by what it was. A mapping declares which of its dataset's columns are identities; without a declaration a
   record is still found by its key, label, OSDU id and file. Records a ledger held before the index existed are
   filled in by a background pass, a page at a time, which repeats every few hours and costs nothing once done.
-- **A flow's page** (Pipelines): the Delivery tab (stats, probe the target, release blocked, sync from source),
+- **A flow's page** (Pipelines): the Delivery tab (stats, probe the target, release blocked, sync timelines),
   the Records tab (search and filters, every row opens the record), the Submissions tab, which says for each
   submission which selection it read. **A source that delivers several interfaces is read one interface at a time**,
   because each has a ledger of its own: the page carries an interface picker whose choice travels in the URL (so a
@@ -385,7 +385,7 @@ Pipelines like any other flow.
   order a run takes them, with each one's route, what it waits for and its counts, and the probe, the release and
   every removal act on the interface that is showing. The counts at the top of the Delivery tab are the source's.
   A flow in the single form has one interface and no picker. Rows tick: a selection
-  bar offers "select all N matching", Sync from source and Remove from OSDU, so a sync or a removal can be aimed at
+  bar offers "select all N matching", Sync timelines and Remove from OSDU, so a sync or a removal can be aimed at
   exactly the ticked rows or at the whole filtered set; Sync all from source above the list reads every record. A run page links here filtered to the records that run touched, and a submission's
   page links here twice: to the records it last planned (`?submission=`, which a later submission moves on) and to
   the records it delivered (`?delivered=`, which stay its own however many submissions touch them afterwards).
@@ -406,7 +406,7 @@ Pipelines like any other flow.
   document waiting to go, with its work batch and the steps an earlier try of it completed; blocked; removed; and the
   records waiting for this one, the first five named and the rest a click away, a warning while this record failed, is
   held or is blocked, since it keeps them waiting), so a delivered record with nothing wrong has no situation line at
-  all; and the operations: Sync from source, Verify, Redeliver, Release (while blocked), Send without
+  all; and the operations: Sync timeline, Verify, Redeliver, Release (while blocked), Send without
   waiting (while waiting) and Remove from OSDU. An OSDU id is long and its start repeats down a whole flow, so everywhere the GUI names
   one (the header chip, the timeline, the records and search tables, the preview) it shows the type and
   the unique part alone, clipped to the room it has, with the whole id and kind on hover and a copy beside it that hands
@@ -639,7 +639,7 @@ redacted before it is written.
 | --- | --- | --- |
 | Submission `failed` with a validation message | The submission page; the run's trace | Fix the documents or the source rows, then run the flow again. |
 | A record-scoped run plans nothing: the ingestion tables hold no row for its key | The run's trace names the record table and the key | Look at the pre and ingestion runs that load that table; a run scoped to the record reads it by key once they have loaded it. |
-| The ledger disagrees with the ingestion tables (records without an arrival, a row changed or deleted that no run planned, a row gone from the table) | A record's Timeline tab; the flow's Records tab | Sync from source, for the record, the selection or the whole interface. It sends nothing; the flow's next run plans what it asked for. |
+| The ledger disagrees with the ingestion tables (records without an arrival, a row changed or deleted that no run planned, a row gone from the table) | A record's Timeline tab; the flow's Records tab | Sync timeline for the record, or Sync timelines for the selection or the whole interface. It sends nothing; the flow's next run plans what it asked for. |
 | Records `held` | The Records tab filtered to held | Read the last error. Fix the data (reference miss, empty key) or the mapping; then Release (one record, or all blocked). |
 | Records `failed` | The record's page: the situation line under its header, and the failed dispatches on its Timeline tab | The retry budget is spent; the last error is redacted but specific. Release after fixing the cause. |
 | Records `waiting` | The Records tab filtered to waiting; the record page says what it waits for | Each refers to a record of the ledger that has not landed. Nothing is charged and nothing is needed: they go out on their own when that record is delivered. When the record they wait for is held or failed, fix that one and release it. To send one as it is, with the reference pointing at nothing until the other lands, use "Send without waiting" on its page. |

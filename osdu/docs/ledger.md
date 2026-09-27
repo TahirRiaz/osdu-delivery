@@ -127,7 +127,7 @@ history holds every change of its row:
 | `held`, `source-deleted` | The ingestion table marked the record row deleted. `SourceDeletedUtc` is the moment it did. |
 | `skipped`, `identical` | The ingestion table changed the row since the version the ledger stands at, delivered or queued, and it renders the document OSDU holds or the one already queued. The record's origin moves to the new row with its fingerprint, so a later plan that renders the same row again (a cache or mapping rollout) writes nothing. |
 | `skipped`, `stale` | The row is older than the version the record holds ([Record lifecycle](#record-lifecycle)). |
-| `skipped`, `source-missing` | Written by a sync from source (worker `sync`): the row is gone from the ingestion table, or outside the record's scope. Written once; the record keeps its status. |
+| `skipped`, `source-missing` | Written by a timeline sync (worker `sync`): the row is gone from the ingestion table, or outside the record's scope. Written once; the record keeps its status. |
 
 An attempt's result names the `correlationId` every OSDU request of that try carried in the `correlation-id` header,
 so the attempt can be found in the services' own logs (a removal names the id its chunk's calls carried, with what OSDU

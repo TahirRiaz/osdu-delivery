@@ -13,8 +13,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
-- **Sync from source consolidates the ledger with the ingestion tables.** A button on a record's page, on a flow's
-  Delivery tab, above its Records list and in its selection bar reads the records' rows from the ingestion tables (one
+- **Sync timeline consolidates the ledger with the ingestion tables.** A button on a record's page (Sync timeline), on
+  a flow's Delivery tab, above its Records list and in its selection bar (Sync timelines) reads the records' rows from the ingestion tables (one
   record, the ticked or filtered ones, or every record of an interface) and consolidates the ledger with them: an
   arrival it lacks is written, a row that changed or was marked deleted without any run planning it is asked to be
   planned by the flow's next run, a row gone from the table is put on its record's history as `skipped` /

@@ -188,7 +188,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
         clearSelection();
       }
 
-      toast.success("Sync from source queued.", { action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) } });
+      toast.success("Timeline sync queued.", { action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) } });
     },
     onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
@@ -236,7 +236,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             </Button>
             <Button variant="outline" size="sm" onClick={() => syncSource.mutate(undefined)} disabled={!canSync || syncSource.isPending} title={syncTitle} data-testid="delivery-sync-all">
               <RefreshCw />
-              Sync from source
+              Sync timelines
             </Button>
           </div>
           {s === undefined ? (
@@ -392,7 +392,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                   data-testid="delivery-sync-selected"
                 >
                   <RefreshCw />
-                  Sync from source
+                  Sync timelines
                 </Button>
                 <Button
                   variant="destructive-outline"
