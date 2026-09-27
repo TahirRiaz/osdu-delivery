@@ -2,7 +2,7 @@ namespace SqlFlow.Delivery.Snapshots;
 
 /// <summary>Who and what wrote a cache version, kept on the version so a cached value can be traced to the capture that produced it.</summary>
 /// <param name="RunId">The platform run that captured the version; null for an import from files.</param>
-/// <param name="CapturedBy">Who asked: the run's trigger (manual:&lt;user&gt;, schedule:&lt;name&gt;), or cli:&lt;user&gt;.</param>
+/// <param name="CapturedBy">Who asked: the run's requester (a person, or schedule:&lt;name&gt;), or cli:&lt;user&gt;@&lt;machine&gt; for an import from the CLI.</param>
 /// <param name="Origin">Where the content came from: the OSDU endpoint reference searched, or the directory imported.</param>
 public sealed record CacheCapture(Guid? RunId, string CapturedBy, string Origin);
 

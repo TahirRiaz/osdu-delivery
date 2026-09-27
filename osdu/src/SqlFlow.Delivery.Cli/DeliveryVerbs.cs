@@ -413,7 +413,7 @@ internal static class DeliveryVerbs
                     cache.SourcePath ?? cache.Name);
                 var builder = new SnapshotBuilder(store, importScope, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
                 var write = await builder.ImportDirectoryAsync(
-                    full, cache.Types, new CacheCapture(null, "cli:" + Environment.UserName, $"files under {full}"), ct).ConfigureAwait(false);
+                    full, cache.Types, new CacheCapture(null, RunActors.LocalAccount(), $"files under {full}"), ct).ConfigureAwait(false);
                 var records = write.Snapshot.Types.Sum(t => t.Items.Count);
                 if (context.Json)
                 {
@@ -472,7 +472,7 @@ internal static class DeliveryVerbs
         var verb = context.Arguments.Positional(1)?.ToLowerInvariant() ?? string.Empty;
         var store = engine.Templates
             ?? throw new FlowValidationException("Templates live in the module's database. Run 'sqlflow template' with --db <conn-ref>, or set the catalog variable.");
-        var actor = "cli:" + Environment.UserName;
+        var actor = RunActors.LocalAccount();
 
         switch (verb)
         {
