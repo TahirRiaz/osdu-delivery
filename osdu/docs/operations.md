@@ -417,8 +417,8 @@ Pipelines like any other flow.
   come from the record's changes (`GET /api/v1/delivery/records/{flowId}/{key}/chain`): the versions of its row the
   ledger recorded, each proved by the runs the platform recorded, so a run that is not recorded says so rather than
   being guessed. Then the **tabs**, one question each:
-  - **Timeline**: what happened to this record, newest first, in a box of fixed height that scrolls, so a record with
-    hundreds of tries does not push the page down. It is the record's own story and nothing else: its row's arrival in
+  - **Timeline**: what happened to this record, newest first, in a box that takes the rest of the page and scrolls
+    inside it, so a record with hundreds of tries keeps its filter in view and the page does not grow with it. It is the record's own story and nothing else: its row's arrival in
     the ingestion table with the landing that brought its file in, every later change of the row and its deletion,
     when it entered the ledger and what the ledger decided (a hold, a change that rendered what OSDU already holds, an
     older version), every operation against OSDU with what OSDU answered, every intervention with who asked for it,

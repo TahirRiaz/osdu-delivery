@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   ArchiveRestore, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Database, DatabaseZap, Eraser, FileInput, FilePen,
@@ -715,6 +715,66 @@ export function RecordMilestones({ record, attempts, chain }: {
   return <SummaryStrip cells={milestones(record, attempts, chain)} minCellWidth={160} data-testid="record-milestones" />;
 }
 
+/** The lowest the timeline's list goes, so a small window still shows a useful stretch of it and the page scrolls. */
+const MIN_LIST_HEIGHT = 320;
+
+/** The nearest ancestor that scrolls vertically (the workbench's content pane), or null when the window scrolls. */
+function scrollingAncestor(node: HTMLElement): HTMLElement | null {
+  for (let parent = node.parentElement; parent !== null; parent = parent.parentElement) {
+    const overflow = getComputedStyle(parent).overflowY;
+    if (overflow === "auto" || overflow === "scroll") {
+      return parent;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * The most a list may grow to so that it, and what its card holds under it, ends at the bottom of the pane the page
+ * scrolls in: the rest of the page, whatever the header above it and the window hold. It is measured before paint,
+ * from the list's place in the pane's content rather than on screen, so it holds while the page scrolls, and again
+ * whenever the pane or anything in it changes size. A short list stays short; a long one fills the page and scrolls.
+ */
+function useFillHeight(): { cardRef: (node: HTMLDivElement | null) => void; listRef: (node: HTMLOListElement | null) => void; maxHeight: number | null } {
+  const [card, setCard] = useState<HTMLDivElement | null>(null);
+  const [list, setList] = useState<HTMLOListElement | null>(null);
+  const [maxHeight, setMaxHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (card === null || list === null) {
+      return;
+    }
+
+    const pane = scrollingAncestor(card);
+    const measure = () => {
+      const paneTop = pane === null ? 0 : pane.getBoundingClientRect().top;
+      const paneHeight = pane === null ? window.innerHeight : pane.clientHeight;
+      const scrolled = pane === null ? window.scrollY : pane.scrollTop;
+      const padding = pane === null ? 0 : Number.parseFloat(getComputedStyle(pane).paddingBottom) || 0;
+      const listBox = list.getBoundingClientRect();
+      const cardBottom = card.getBoundingClientRect().bottom;
+      const top = listBox.top - paneTop + scrolled;
+      // What the card holds under the list, and what the page keeps under the card (its own padding, anything after it).
+      const below = cardBottom - listBox.bottom;
+      const contentBottom = Math.max(cardBottom, ...Array.from((pane ?? document.body).children, (child) => child.getBoundingClientRect().bottom));
+      const after = contentBottom - cardBottom;
+      setMaxHeight(Math.max(MIN_LIST_HEIGHT, Math.floor(paneHeight - top - below - after - padding)));
+    };
+    measure();
+
+    // The pane resizes with the window; what the pane holds resizes when the header above the list grows or shrinks.
+    const observer = new ResizeObserver(measure);
+    observer.observe(pane ?? document.documentElement);
+    for (const child of Array.from((pane ?? document.body).children)) {
+      observer.observe(child);
+    }
+
+    return () => observer.disconnect();
+  }, [card, list]);
+
+  return { cardRef: setCard, listRef: setList, maxHeight };
+}
+
 function laneMatches(event: JourneyEvent, filter: LaneFilter): boolean {
   return filter === "all" || event.lane === filter;
 }
@@ -729,8 +789,9 @@ const EMPTY: Record<Exclude<LaneFilter, "all">, { title: string; description: st
  * The record's story, newest first, from the ledger and the changes of its row: how its row arrived and changed in the
  * ingestion table, what the ledger decided, every operation against OSDU and what OSDU answered, and every
  * intervention with who asked for it. Each entry is one line with the facts that place it; the rest (the runs a change
- * came from, the steps a try took, an intervention's parameters) opens under the entry. The list scrolls inside a
- * bounded box, and narrows to the row's changes, to what was done against OSDU, or to the interventions alone.
+ * came from, the steps a try took, an intervention's parameters) opens under the entry. The list takes the rest of the
+ * page and scrolls inside it, so its filter stays in view, and narrows to the row's changes, to what was done against
+ * OSDU, or to the interventions alone.
  */
 export function RecordJourney({ record, attempts, activities, chain }: {
   record: DeliveryRecord;
@@ -741,6 +802,7 @@ export function RecordJourney({ record, attempts, activities, chain }: {
 }) {
   const [filter, setFilter] = useState<LaneFilter>("all");
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  const { cardRef, listRef, maxHeight } = useFillHeight();
   const loaded = attempts !== undefined && activities !== undefined;
   const events = useMemo(
     () => (loaded ? buildEvents(record, attempts, activities, chain) : []),
@@ -760,7 +822,7 @@ export function RecordJourney({ record, attempts, activities, chain }: {
   });
 
   return (
-    <Card className="gap-2 rounded-lg p-3" data-testid="record-journey">
+    <Card ref={cardRef} className="gap-2 rounded-lg p-3" data-testid="record-journey">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <ToggleGroup
           type="single"
@@ -789,7 +851,12 @@ export function RecordJourney({ record, attempts, activities, chain }: {
             />
           )
           : (
-            <ol className="flex max-h-[520px] flex-col overflow-y-auto pr-1" data-testid="record-journey-events">
+            <ol
+              ref={listRef}
+              className="flex flex-col overflow-y-auto pr-1"
+              style={{ maxHeight: maxHeight ?? MIN_LIST_HEIGHT }}
+              data-testid="record-journey-events"
+            >
               {listed.map((event, index) => {
                 const Icon = event.icon;
                 const last = index === listed.length - 1;
