@@ -68,19 +68,22 @@ Everything the platform already reads ([environment-variables.md](environment-va
    that fills the partition the delivery flow delivers to (the `data-partition-id` both declare, `dev` in the
    sample) appears as a pipeline of kind `cache`, and the partition's cache on the OSDU cache page, with no version yet.
 5. Capture the cache: run the cache flow with the refresh operation (Refresh now on the OSDU cache page, the Trigger
-   run dialog on its pipeline, or `sqlflow run cache/recall-lookups-00-cache.yaml --db <ref>` on a workstation), then
-   check the delivery flow against its template and the cache version it now reads:
+   run dialog on its pipeline, or `sqlflow run cache/recall-lookups-00-cache.yaml --db <ref>` and
+   `sqlflow run cache/recall-reference-00-cache.yaml --db <ref>` on a workstation), then check the delivery flow against
+   its template and the cache version it now reads:
 
    ```bash
    sqlflow check flows/recall-welllog-03-header-delivery.yaml --set logSource=STAT_COMP --db <ref>
    ```
 
-   A cache flow of OSDU types searches the endpoint it declares, with its own credentials, and merges what it found into
-   the cache of its partition; a cache flow of lookup tables, as the sample's is, reads the ingestion tables its pre and
-   ing flows load, so those run first (the sample's `recall-cache` schedule runs the three in that order). Either writes
+   A cache flow of OSDU types, as the sample's reference flow is, searches the endpoint it declares, with its own
+   credentials, and merges what it found into the cache of its partition; a cache flow of lookup tables, as the sample's
+   lookups flow is, reads the ingestion tables its pre and ing flows load, so those run first (the sample's
+   `recall-cache` schedule runs the three in that order). `--operation plan` counts what each OSDU type's search
+   matches before anything is captured. Either writes
    the cache's first version into the catalog, and the newest version is always the current one. Without access to OSDU,
    `sqlflow cache import <cache flow> --from-dir <dir> --db <ref>` merges type files into the partition's cache instead
-   (`osdu/samples/cache-records` holds reference data samples for mappings that read OSDU types from the cache).
+   (`osdu/samples/cache-records` holds made-up reference data for the sample reference flow's nine types).
    `sqlflow cache list dev --db <ref>` lists the versions. The cache flow's schedule keeps the cache refreshed ahead of
    the deliveries.
 6. Load the ingestion tables and plan before anything touches OSDU: run the pre-ingestion flow and then the

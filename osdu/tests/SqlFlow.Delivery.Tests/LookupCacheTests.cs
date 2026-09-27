@@ -339,6 +339,46 @@ public sealed class LookupCacheTests : IDisposable
     }
 
     [Fact]
+    public void One_cache_flow_combines_types_searched_on_osdu_with_tables_read_from_the_database_and_dictionaries()
+    {
+        // The platform is reached for the kind, the database for the table, and the repository for the dictionary: one
+        // flow, one refresh, one version of the partition's cache holding all three, read by a mapping the same way.
+        var flow = new Documents.DeliveryDocumentLoader().ParseCache("""
+            flowType: cache
+            name: recall-combined-00-cache
+            source:
+              endpoint: ${env:OSDU_URL}
+              connection: ${env:OSDU_DATA_DB}
+              auth:
+                type: oauth2ClientCredentials
+                secondarySecretRef: ${env:OSDU_CLIENT_ID}
+                secretRef: ${env:OSDU_CLIENT_SECRET}
+                token: { url: "${env:OSDU_TOKEN_URL}" }
+              headers: { data-partition-id: dev }
+            types:
+              - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+                fields: [data.Code, data.Name, data.ID]
+              - table: OsduData.arc.CacheRecallUnits
+                name: RecallUnits
+                key: source_unit
+                fields: [osdu_unit]
+              - dictionary: CurveClasses
+            """, "cache/combined.yaml");
+
+        Assert.Equal("${env:OSDU_URL}", flow.Source.Endpoint);
+        Assert.Equal("${env:OSDU_DATA_DB}", flow.Source.Connection);
+        Assert.Equal(
+            [(CacheOrigin.Osdu, "reference-data--UnitOfMeasure"), (CacheOrigin.Table, "lookup--RecallUnits"), (CacheOrigin.Dictionary, "lookup--CurveClasses")],
+            flow.Types.Select(t => (t.Origin, t.EntityType)));
+        var references = flow.CredentialReferences().Select(r => r.Key).ToList();
+        Assert.Contains("source.endpoint", references);
+        Assert.Contains("source.connection", references);
+        Assert.Contains("source.auth.secretRef", references);
+        var read = Assert.Single(new Documents.CacheFlowDocument { Flow = flow }.DeclaredObjects);
+        Assert.Equal(("OsduData", "arc", "CacheRecallUnits"), (read.Database, read.Schema, read.Name));
+    }
+
+    [Fact]
     public void A_lookup_table_json_carries_its_key_between_entity_type_and_items()
     {
         var json = Pairs("RecallUnits", ("M", "m")).ToJson();

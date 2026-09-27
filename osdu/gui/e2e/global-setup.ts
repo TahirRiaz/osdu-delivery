@@ -95,6 +95,14 @@ export default function globalSetup(): void {
     withoutSchedule(readFileSync(join(fixtureDocuments, "cache", `${CACHE}.yaml`), "utf8"), CACHE),
   );
 
+  // The partition's reference data the well log mapping checks every id it builds against, searched on OSDU by the
+  // sample's reference cache flow. The suite never refreshes it either, so the seed imports the sample records
+  // (`REFERENCE_RECORDS`) as that flow's capture.
+  writeFileSync(
+    join(sourceDir, "cache", `${REFERENCE}.yaml`),
+    withoutSchedule(readFileSync(join(samplesDir, "cache", `${REFERENCE}.yaml`), "utf8"), REFERENCE),
+  );
+
   // The lookup tables the mappings translate source spellings through (the unit maps and the curve dictionary) fill the
   // same partition's cache from the ingestion tables their flows load from cache/data, so nothing of them reaches OSDU and
   // the seed refreshes them for real. The tables live in the sample database, like every other ingestion table of the estate.
@@ -156,6 +164,16 @@ export const CACHE_RECORDS = join("tests", "SqlFlow.Delivery.Tests", "Fixtures",
 
 /** The cache flow holding the lookup tables in the same partition's cache: `<SOURCE>/cache/<LOOKUPS>.yaml`. */
 export const LOOKUPS = "recall-lookups-00-cache";
+
+/**
+ * The cache flow capturing the partition's reference data from OSDU into the same cache, which every id the well log
+ * mapping builds is checked against: `<SOURCE>/cache/<REFERENCE>.yaml`, whose capture the seed imports from
+ * `REFERENCE_RECORDS`.
+ */
+export const REFERENCE = "recall-reference-00-cache";
+
+/** The records the seed imports as the reference flow's capture, relative to the OSDU module's folder. */
+export const REFERENCE_RECORDS = join("samples", "cache-records");
 
 /** The delivery flow the specs run: the sample's well log delivery, with the logSource its one required parameter. */
 export const DELIVERY_FLOW = "recall-welllog-03-header-delivery";

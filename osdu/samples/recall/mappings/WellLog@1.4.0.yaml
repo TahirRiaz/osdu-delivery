@@ -5,8 +5,10 @@
 # the same Recall columns, and the same translations. Every reference the record carries is a generated id: the ref
 # modifier builds it from the value, as a reference to the record of the type the property points to (after the same
 # one-entry maps petrodb-api applies, kept beside the property that uses them), and the id modifier builds it from the
-# curve dictionary, so a record needs no reference data captured from OSDU to render, only the lookup tables of
-# recall-lookups-00-cache (RecallUnits, RecallDepthUnits, CurveDictionary). The dataset is the
+# curve dictionary, both translating through the lookup tables of recall-lookups-00-cache (RecallUnits, RecallDepthUnits,
+# CurveDictionary). Every id built is then looked up among the partition's reference data recall-reference-00-cache
+# captures from OSDU, as petrodb-api looks a unit up in its OSDU unit cache: an id naming no record the partition holds
+# holds the log, or leaves an optional property out, instead of reaching OSDU as a reference to nothing. The dataset is the
 # log's header row, and its child dataset "curves" one row per curve, the index curve MD first; the curve values
 # themselves are streamed to the wellbore DDMS as bulk data.
 #

@@ -520,6 +520,15 @@ public static class Samples
     /// <summary>The sample lookups cache flow: the lookup tables the sample mapping translates source values through.</summary>
     public static string LookupsCacheFlow => Path.Combine(Source, "cache", "recall-lookups-00-cache.yaml");
 
+    /// <summary>The sample reference cache flow: the OSDU reference data the ids the sample mapping builds are checked against.</summary>
+    public static string ReferenceCacheFlow => Path.Combine(Source, "cache", "recall-reference-00-cache.yaml");
+
+    /// <summary>
+    /// The records of the types the sample reference cache flow captures, as a refresh of it would find them: the sample
+    /// estate's stand-in for its partition's reference data (<c>osdu/samples/cache-records</c>).
+    /// </summary>
+    public static string SampleCacheRecords => Path.Combine(Root, "cache-records");
+
     /// <summary>The fixture cache flow: the reference data only the fixture mappings resolve against.</summary>
     public static string FixtureCacheFlow => Path.Combine(FixtureDocuments, "cache", "fixtures-osdu-00-reference-cache.yaml");
 
@@ -545,6 +554,9 @@ public static class Samples
 
     /// <summary>The name of the sample lookups cache flow, which fills the cache of <see cref="SampleCacheScope"/> with the lookup tables the sample mapping reads.</summary>
     public const string SampleLookupsFlowName = "recall-lookups-00-cache";
+
+    /// <summary>The name of the sample reference cache flow, which fills the same cache with the reference data the sample mapping's ids name.</summary>
+    public const string SampleReferenceFlowName = "recall-reference-00-cache";
 
     /// <summary>The name of the fixture cache flow, which adds the fixture mappings' reference data to the same cache.</summary>
     public const string FixtureCacheFlowName = "fixtures-osdu-00-reference-cache";
@@ -572,16 +584,18 @@ public static class Samples
 
     /// <summary>
     /// What the sample cache flows declare for their partition, as the module's database holds it after a sync: the
-    /// reference data the fixture mappings resolve against, and the lookup tables of the lookups flow with the key and
-    /// fields a sync reads out of each dictionary. The sample well log mapping builds every reference id it writes from a
-    /// template, so it declares no reference data of its own.
+    /// reference data the sample reference flow captures and the fixture mappings resolve against, and the lookup tables of
+    /// the lookups flow with the key and fields a sync reads out of each dictionary.
     /// </summary>
     public static CacheDeclaration SampleCacheDeclaration()
     {
         var loader = new DeliveryDocumentLoader();
         var lookups = loader.LoadCache(LookupsCacheFlow);
         var fixtures = loader.LoadCache(FixtureCacheFlow);
-        var declared = fixtures.Types.Select(t => new CacheTypeDeclaration(fixtures.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)).ToList();
+        var reference = loader.LoadCache(ReferenceCacheFlow);
+        var declared = fixtures.Types.Select(t => new CacheTypeDeclaration(fixtures.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange))
+            .Concat(reference.Types.Select(t => new CacheTypeDeclaration(reference.Name, t.Name, t.EntityType, t.Kind, t.Query, t.Fields, t.OnChange)))
+            .ToList();
         foreach (var type in lookups.Types)
         {
             var (key, fields) = type.Origin == CacheOrigin.Dictionary
@@ -668,11 +682,11 @@ public static class Samples
     public static ICacheStore SampleCache => SampleStores.Value.Cache;
 
     /// <summary>
-    /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache, over
-    /// the sample lookup tables written a minute before as the lookups flow's refresh writes them; returns the version as
-    /// loaded back: the current one, labelled <see cref="SampleCacheCaptured"/>, which holds both. The sample well log
-    /// mapping reads no reference data from the cache, only the lookup tables, so the fixture mappings' reference data is
-    /// the only reference data this cache holds.
+    /// Imports the sample cache records into <paramref name="store"/> as a version of the sample partition's cache: the
+    /// sample lookup tables written a minute before as the lookups flow's refresh writes them, the sample reference data
+    /// half a minute later as the reference flow's refresh would capture it, and the fixture mappings' reference data last;
+    /// returns the version as loaded back: the current one, labelled <see cref="SampleCacheCaptured"/>, which holds all
+    /// three.
     /// </summary>
     public static async Task<ReferenceSnapshot> ImportSampleCacheAsync(ICacheStore store)
     {
@@ -682,6 +696,10 @@ public static class Samples
         var lookups = new SnapshotBuilder(
             store, SampleCacheScope, SampleLookupsFlowName, new TestClock(SampleCacheCaptured.AddMinutes(-1)), Logger<SnapshotBuilder>());
         await lookups.WriteAsync(SampleLookups(), new CacheCapture(null, "tests", "sample dictionaries and curve dictionary"), []);
+        var reference = new DeliveryDocumentLoader().LoadCache(ReferenceCacheFlow);
+        var referenceBuilder = new SnapshotBuilder(
+            store, SampleCacheScope, reference.Name, new TestClock(SampleCacheCaptured.AddSeconds(-30)), Logger<SnapshotBuilder>());
+        await referenceBuilder.ImportDirectoryAsync(SampleCacheRecords, reference.Types, new CacheCapture(null, "tests", "sample reference files"));
         var fixtures = new DeliveryDocumentLoader().LoadCache(FixtureCacheFlow);
         var fixtureBuilder = new SnapshotBuilder(
             store, SampleCacheScope, fixtures.Name, new TestClock(SampleCacheCaptured), Logger<SnapshotBuilder>());

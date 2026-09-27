@@ -4,10 +4,11 @@
 # recall_to_osdu and petrodb-api take today (POST /welllogs, then the parquet chunk, or a session of chunks), run from the
 # ingestion tables SQLFlow's own pre and ing flows load (recall-welllog-01-*-pre, recall-welllog-02-*-ing). This flow reads
 # what changed there, renders it with the mapping beside it (../mappings) and delivers it. The template it fills lives in
-# the module's database, and so does the cache it reads: the lookup tables ../cache/recall-lookups-00-cache.yaml keeps in
-# the cache of the partition it delivers to (target.headers.data-partition-id). Every other reference the mapping writes
-# is a generated id, so the cache holds no OSDU reference data at all. One flow with a parameter serves every Recall log
-# source.
+# the module's database, and so does the cache it reads, the one of the partition it delivers to
+# (target.headers.data-partition-id): the lookup tables ../cache/recall-lookups-00-cache.yaml keeps there, which every
+# reference the mapping writes is generated from, and the partition's reference data ../cache/recall-reference-00-cache.yaml
+# captures from OSDU, which every generated reference has to name a record of. One flow with a parameter serves every
+# Recall log source.
 flowType: delivery
 name: recall-welllog-03-header-delivery
 batch: recall

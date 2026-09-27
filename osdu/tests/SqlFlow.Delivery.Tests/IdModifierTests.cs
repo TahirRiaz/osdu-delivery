@@ -13,8 +13,8 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// The id modifier: an OSDU id built from a template of the entry's value, the row's columns, a cached lookup table's
-/// fields and the mapping's parameters, encoded and checked against what the template gives the variable, and never
-/// written half-built.
+/// fields and the mapping's parameters, encoded and checked against what the template gives the variable and, where the
+/// cache holds records of the entity type it names, against those records, and never written half-built.
 /// </summary>
 public sealed class IdModifierTests
 {
@@ -34,8 +34,19 @@ public sealed class IdModifierTests
 
     private static ReferenceSnapshot Cache(params ReferenceType[] types) => new("refs-1", T0, TestSchema.References().Types.Concat(types));
 
+    /// <summary>
+    /// A cache holding <paramref name="types"/> alone: no reference data of the types the ids these tests build name, so
+    /// each id is written as it was built and the tests read what the template does, not what a partition holds.
+    /// </summary>
+    private static ReferenceSnapshot Uncached(params ReferenceType[] types) => new("refs-1", T0, types);
+
     private static MappingRenderer Renderer(string entries, ReferenceSnapshot? cache = null)
-        => new(TestSchema.Mapping(entries), TestSchema.Build(), cache ?? Cache(CurveClasses()), TestSchema.Context());
+        => new(TestSchema.Mapping(entries), TestSchema.Build(), cache ?? Uncached(CurveClasses()), TestSchema.Context());
+
+    private static ReferenceType Units(params string[] ids) => new(
+        "UnitOfMeasure",
+        "reference-data--UnitOfMeasure",
+        ids.Select(id => ReferenceItem.FromText(id, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Code"] = id.Split(':')[2] })));
 
     private static SourceRecord Record(params (string Column, string? Value)[] columns)
     {
@@ -216,6 +227,65 @@ public sealed class IdModifierTests
             "'dev:master-data--UnitOfMeasure:m:' is the id of a master-data--UnitOfMeasure record, and the template points the variable to reference-data--UnitOfMeasure",
             Assert.Single(wrong.Holds),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_built_id_names_a_record_the_cache_holds_of_its_entity_type_or_no_reference_is_written()
+    {
+        // The cache holds the units m and ft, as a capture of the partition's UnitOfMeasure records would.
+        var required = Renderer(Entry("Unit", "      - ref"), Cache(CurveClasses()));
+
+        var m = required.Render(Record(("unit", "m")));
+        Assert.False(m.IsHeld, string.Join("; ", m.Holds));
+        Assert.Equal("dev:reference-data--UnitOfMeasure:m:", Data(m, "Unit"));
+        Assert.Contains(new CacheUsage("UnitOfMeasure", "dev:reference-data--UnitOfMeasure:m", "id", "dev:reference-data--UnitOfMeasure:m", CacheUsageKind.Match), m.CacheUsages);
+
+        // A code the partition holds no record of: the reference would point at nothing, so a required entry holds the
+        // record with the reason. Ids that differ only by case are different records, so the id is looked for exactly.
+        var upper = required.Render(Record(("unit", "M")));
+        Assert.True(upper.IsHeld);
+        Assert.Equal(
+            "osdu.data.Unit: the id {$param.dataPartition}:reference-data--UnitOfMeasure:{$value}: gives dev:reference-data--UnitOfMeasure:M:, and version refs-1 of the cache of partition 'dev' holds no such reference-data--UnitOfMeasure record in UnitOfMeasure, so the reference would point at nothing",
+            Assert.Single(upper.Holds));
+
+        // A value that already is an id is looked for the same way: one of another partition's names no record this one holds.
+        Assert.Equal("dev:reference-data--UnitOfMeasure:ft:", Data(required.Render(Record(("unit", "dev:reference-data--UnitOfMeasure:ft"))), "Unit"));
+        Assert.True(required.Render(Record(("unit", "osdu:reference-data--UnitOfMeasure:m:"))).IsHeld);
+
+        // An optional entry leaves the variable out instead, and the record goes without it.
+        var optional = Renderer(Entry("Unit", "      - ref", extra: "    $required: false"), Cache(CurveClasses())).Render(Record(("unit", "g/cm3")));
+        Assert.False(optional.IsHeld, string.Join("; ", optional.Holds));
+        Assert.Null(Data(optional, "Unit"));
+
+        // A cache holding no record of the entity type an id names answers nothing about it: the id is written as built.
+        var family = Renderer(Entry("Symbol", "      - id: \"{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveClasses.curve_family}:\""), Cache(CurveClasses()))
+            .Render(Record(("unit", "GR")));
+        Assert.False(family.IsHeld, string.Join("; ", family.Holds));
+        Assert.Equal("dev:reference-data--LogCurveFamily:Gamma%20Ray:", Data(family, "Symbol"));
+    }
+
+    [Fact]
+    public void A_built_id_is_looked_for_by_the_record_it_names_whatever_its_version_or_the_colons_in_its_code()
+    {
+        // A version after the last colon names a version of the record the cache holds.
+        var wellbore = Renderer(
+            Entry("WellboreID", "      - id: \"{$param.dataPartition}:master-data--Wellbore:{$value}:{version}\"", "uwi"),
+            Cache(CurveClasses()));
+        Assert.Equal("dev:master-data--Wellbore:abc:3", Data(wellbore.Render(Record(("uwi", "abc"), ("version", "3"))), "WellboreID"));
+        Assert.Contains("holds no such master-data--Wellbore record in Wellbore", Assert.Single(wellbore.Render(Record(("uwi", "abd"), ("version", "3"))).Holds), StringComparison.Ordinal);
+
+        // A code that carries colons of its own names the record the id leaves out only its closing colon from.
+        var crs = Renderer(Entry("Unit", $"      - id: {UnitId}"), Uncached(Units("dev:reference-data--UnitOfMeasure:Projected:EPSG::23031")));
+        Assert.Equal("dev:reference-data--UnitOfMeasure:Projected:EPSG::23031:", Data(crs.Render(Record(("unit", "Projected:EPSG::23031"))), "Unit"));
+        Assert.True(crs.Render(Record(("unit", "Projected:EPSG::4326"))).IsHeld);
+
+        // A partition can hold a stray record whose id ends in a colon beside the record itself (dev holds degC: beside
+        // degC); the id built names the record itself, found by its exact id, so the stray one decides nothing.
+        var stray = Renderer(Entry("Unit", "      - ref"), Uncached(Units("dev:reference-data--UnitOfMeasure:degC", "dev:reference-data--UnitOfMeasure:degC:")));
+        var degC = stray.Render(Record(("unit", "degC")));
+        Assert.False(degC.IsHeld, string.Join("; ", degC.Holds));
+        Assert.Equal("dev:reference-data--UnitOfMeasure:degC:", Data(degC, "Unit"));
+        Assert.Contains(new CacheUsage("UnitOfMeasure", "dev:reference-data--UnitOfMeasure:degC", "id", "dev:reference-data--UnitOfMeasure:degC", CacheUsageKind.Match), degC.CacheUsages);
     }
 
     [Fact]

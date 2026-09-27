@@ -13,6 +13,28 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A built reference has to name a record the partition holds.** Where the version of the cache a render reads holds
+  records of the entity type an `id` or `ref` modifier builds, captured from the partition by a cache flow, the id has
+  to name one of them, looked up by its exact id. One that names none holds the record when the entry is required and
+  leaves the property out when it is optional, with the id and the types looked in as the reason, instead of reaching
+  OSDU as a reference to nothing; a record found is a dependency of the render, so a later version that drops it reaches
+  the record. A version holding no record of that entity type answers nothing, so a mapping whose cache holds no
+  reference data renders as before. This is petrodb-api's OSDU unit cache (units matched against the partition's
+  UnitOfMeasure records), widened to every reference a mapping builds. Looking the id up rather than a code finds a
+  record whatever its code says (dev holds `LogCurveType:Equinor-RW` with the code `Equionr:RW`, and
+  `LogCurveFamily:EQ-CPI%20Qual%20Flag` with `EQ-CPI Quality Flag`), and a stray record beside it decides nothing (dev
+  holds `UnitOfMeasure:degC:` beside `UnitOfMeasure:degC`).
+- **The sample estate captures its partition's reference data from OSDU.** `recall/cache/recall-reference-00-cache.yaml`
+  searches the nine reference types a Recall well log points to (UnitOfMeasure, VerticalMeasurementType,
+  WellLogSamplingDomainType, LogType, LogCurveBusinessValue, TechnicalAssuranceType, LogCurveType, LogCurveMainFamily,
+  LogCurveFamily) with the delivery flow's own endpoint, credentials and partition, beside the lookup tables
+  `recall-lookups-00-cache` reads from the database: the WellLog mapping translates a Recall value through a table and
+  the id it builds is checked against the captured records. On dev it captures 47,330 records (43,423 of them curve
+  types) in about 20 seconds, and the five sample logs render unchanged against it. The suites import
+  `osdu/samples/cache-records` as its capture, and the GUI end-to-end seed does too.
+- **One cache flow may combine types from OSDU, the database and the repository.** A flow declaring a `kind`, a `table`
+  and a `dictionary` loads with both its `endpoint` and its `connection`, and one refresh captures all three into one
+  version of the partition's cache; a test now pins it.
 - **Sync timeline consolidates the ledger with the ingestion tables.** A button on a record's page (Sync timeline), on
   a flow's Delivery tab, above its Records list and in its selection bar (Sync timelines) reads the records' rows from the ingestion tables (one
   record, the ticked or filtered ones, or every record of an interface) and consolidates the ledger with them: an

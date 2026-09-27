@@ -10,11 +10,14 @@ internal static partial class EntryValues
     /// Builds the id an id modifier's template describes from the value the modifiers before it gave: each token's value,
     /// trimmed and percent-encoded (<see cref="IdValues.Encode"/>), in its place, then the whole checked against OSDU's id
     /// shape and what the template gives the variable (<see cref="IdValues.Problem"/>). A value that already is an OSDU id
-    /// names its record and is written as it is, when the template reads it and builds ids of its entity type.
+    /// names its record and is written as it is, when the template reads it and builds ids of its entity type. Where the
+    /// cache version the render reads holds records of the entity type the id names, the id has to name one of them
+    /// (<see cref="Resolves"/>).
     /// </summary>
     /// <remarks>
     /// A token with no value leaves no id to write: a required entry holds the record, naming the token, and an optional one
-    /// leaves the variable out; a half-built id is never written. A parameter the flow gives no value, a cached lookup the
+    /// leaves the variable out; a half-built id is never written. An id naming a record the cache does not hold is treated
+    /// the same way, as a cache miss is. A parameter the flow gives no value, a cached lookup the
     /// cache version cannot answer for certain, text that is not valid Unicode and an id the check refuses hold the record
     /// whatever the required flag says: each is a mistake in the mapping or its data, not a value that is simply absent.
     /// </remarks>
@@ -114,8 +117,76 @@ internal static partial class EntryValues
             return false;
         }
 
+        if (!Resolves(id, template, entry, renderer, usages, out var unheld))
+        {
+            // A reference to a record the partition does not hold would reach OSDU pointing at nothing, so it is never
+            // written: a required entry holds the record with the reason, and an optional one leaves the variable out.
+            if (entry.Required)
+            {
+                holds.Add(unheld!);
+                return false;
+            }
+
+            return true;
+        }
+
         result = id;
         return true;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="id"/> names a record the cache version the render reads holds, where that version holds
+    /// records of the entity type the id names at all: the reference data a cache flow captured from the partition, which
+    /// is what the partition holds. A version holding none of that entity type answers nothing, and the id is written as it
+    /// was built. A record found is recorded among the render's dependencies, so a later version that drops or changes it
+    /// reaches this record. False, with the reason, when the version holds records of the entity type and not this one.
+    /// </summary>
+    /// <remarks>
+    /// The record is looked up by its id, exactly: OSDU ids that differ only by case are different records, and the id a
+    /// template builds is the one written, so the lookup asks for no other. An id whose code itself carries colons and that
+    /// ends in a version cannot be told apart from its version by its text, so it is not looked up.
+    /// </remarks>
+    private static bool Resolves(string id, IdTemplate template, MappingEntry entry, MappingRenderer renderer, List<CacheUsage> usages, out string? missing)
+    {
+        missing = null;
+        if (Named(id) is not { } reference)
+        {
+            return true;
+        }
+
+        var holding = CachedReferences.Holding(renderer.References, reference.EntityType);
+        if (holding.Count == 0)
+        {
+            return true;
+        }
+
+        if (CachedReferences.Find(holding, reference) is { } found)
+        {
+            usages.Add(new CacheUsage(found.Type.Name, found.Item.Id, "id", found.Item.Id, CacheUsageKind.Match));
+            return true;
+        }
+
+        missing =
+            $"{entry.Target.Text}: the id {template} gives {id}, and {CacheLabel(renderer.Context)} holds no such {reference.EntityType} record in {string.Join(", ", holding.Select(t => t.Name))}, so the reference would point at nothing";
+        return false;
+    }
+
+    /// <summary>
+    /// The record an id names: parsed as a relationship is (<see cref="CachedReferences.Parse"/>), or, for a code that
+    /// carries colons of its own, the id without the colon a reference to the latest version ends in. Null when neither
+    /// tells the record apart from a version.
+    /// </summary>
+    private static CachedReference? Named(string id)
+    {
+        if (CachedReferences.Parse(id) is { } parsed)
+        {
+            return parsed;
+        }
+
+        var parts = id.Split(':');
+        return id.EndsWith(':') && parts.Length >= 4 && parts[1].Contains("--", StringComparison.Ordinal)
+            ? new CachedReference(id[..^1], parts[1])
+            : null;
     }
 
     /// <summary>

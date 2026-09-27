@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core;
 using SqlFlow.Core.Model;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Snapshots;
@@ -679,10 +680,10 @@ public sealed class OsduCacheStoreTests : IDisposable
         var version = await Samples.ImportSampleCacheAsync(store);
         Assert.Equal("20260908T212727Z", version.Version);
         Assert.Equal(version.Version, await store.CurrentVersionAsync(Samples.SampleCacheScope));
-        // The lookups flow wrote its tables first, and the fixture reference data (the only reference data this
-        // estate's cache holds) added to them: one partition, one cache.
+        // The lookups flow wrote its tables first, the reference flow added the partition's reference data, and the
+        // fixture mappings' reference data joined them: one partition, one cache, newest version first.
         Assert.Equal(
-            [Samples.FixtureCacheFlowName, Samples.SampleLookupsFlowName],
+            [Samples.FixtureCacheFlowName, Samples.SampleReferenceFlowName, Samples.SampleLookupsFlowName],
             (await store.ListVersionsAsync(Samples.SampleCacheScope)).Select(v => v.FlowName));
         // petrodb-api's translations, loaded from the files in cache/data: the curve unit map, the depth unit map, and the
         // curve dictionary giving each mnemonic the codes of the records it is filed under.
@@ -691,10 +692,16 @@ public sealed class OsduCacheStoreTests : IDisposable
         Assert.Equal("ft", version.Type("RecallDepthUnits")!.Value(version.Type("RecallDepthUnits")!.Match("source_unit", "FEET")!, "osdu_unit")!.Text);
         Assert.Equal("Gamma%20Ray", version.Type("CurveDictionary")!.Value(version.Type("CurveDictionary")!.Match("mnemonic", "GR")!, "log_curve_family_id")!.Text);
 
-        // The sample well log mapping builds every reference id it writes from these tables and a template; the only
-        // reference data this cache holds is what the fixture mappings resolve against. Wellbores are searched for on
-        // the platform rather than captured.
-        Assert.True(version.HasType("UnitOfMeasure"));
+        // The sample well log mapping builds every reference id it writes from these tables and a template, and each id
+        // names a record of the reference data the reference flow captured. Wellbores are searched for on the platform
+        // rather than captured.
+        foreach (var type in new DeliveryDocumentLoader().LoadCache(Samples.ReferenceCacheFlow).Types)
+        {
+            Assert.True(version.HasType(type.Name), type.Name);
+        }
+
+        Assert.NotNull(version.Type("UnitOfMeasure")!.ById("dev:reference-data--UnitOfMeasure:gAPI"));
+        Assert.NotNull(version.Type("LogCurveFamily")!.ById("dev:reference-data--LogCurveFamily:Gamma%20Ray"));
         Assert.False(version.HasType("Wellbore"));
     }
 }

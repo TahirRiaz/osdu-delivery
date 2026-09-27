@@ -56,9 +56,13 @@ test.describe.serial("lineage", () => {
     expect(wellbore!.writers).toBe(2);
     expect(wellbore!.readers).toBeGreaterThanOrEqual(2);
 
+    // Two cache flows capture the partition's units: the fixture reference flow and the sample's reference flow, whose
+    // declarations of the type agree, so the cache holds one UnitOfMeasure type both write.
     const units = named(CACHE_SYSTEM, "UnitOfMeasure");
     expect(units).toBeDefined();
-    expect([units!.namespace, units!.group, units!.writers]).toEqual([PARTITION, "cache", 1]);
+    expect([units!.namespace, units!.group, units!.writers]).toEqual([PARTITION, "cache", 2]);
+    const families = named(CACHE_SYSTEM, "LogCurveFamily");
+    expect([families?.namespace, families?.group, families?.writers]).toEqual([PARTITION, "cache", 1]);
 
     // The lookup tables sit in the same partition's cache, written by the lookups flow and read by the well log mapping,
     // which translates through them.

@@ -3,7 +3,8 @@
 # "Run now" on the Schedules page (POST /api/v1/schedules/{id}/run) runs the whole chain on demand. A single flow still
 # runs on its own from the Pipelines page or with `sqlflow run <flow>`.
 schedules:
-  # Nightly: the lookup tables land and are keyed (units, curve dictionary), then the lookups cache captures them. Well
+  # Nightly: the lookup tables land and are keyed (units, curve dictionary), then the lookups cache captures them, and
+  # the reference cache captures the partition's reference data from OSDU. Well
   # before the hourly delivery, so a delivery renders against a cache captured the same day.
   recall-cache:
     cron: "30 1 * * *"

@@ -393,8 +393,12 @@ template, quoted, reads `{$value}` (the value after the modifiers before it), `{
 reads), `{$dataset.<column>}` (a column of the dataset's own row), `{$cache.<Type>.<field>}` (the row of a cached lookup
 table keyed by the value) and `{$param.<name>}`; a bare name is always a column. Every token's value is trimmed and
 percent-encoded, a token with no value gives no value, so `$required` decides, and the id built is checked against the
-variable's pattern and relationship before it is written. It applies to a `$from` or an `$expr` node and is the last
-modifier; [documents.md](documents.md#id) has the rules.
+variable's pattern and relationship before it is written. Where the version of the cache the render reads holds records
+of the entity type the id names, captured from the partition by a cache flow, the id has to name one of them, looked up
+by its exact id: an id the partition holds no record for would reach OSDU as a reference to nothing, so `$required`
+decides as for a cache miss, and a record found is a dependency of the render, so a later version that drops it reaches
+the record. A version holding no record of that entity type answers nothing, and the id is written as built. It applies
+to a `$from` or an `$expr` node and is the last modifier; [documents.md](documents.md#id) has the rules.
 
 `ref` is the id modifier for the common case: a reference to the record whose code is the value, of the entity type the
 property points to, in the flow's partition. `- ref` writes `{$param.dataPartition}:<group>--<Entity>:{$value}:` for
@@ -499,6 +503,7 @@ $expr: '"Run " & log_run'
 | --- | --- | --- |
 | The value (a column, or what `$expr` gives) is empty after modifiers | Record held | Property left out |
 | The cache has no matching record | Record held | Property left out |
+| An `id` or `ref` builds an id of an entity type the cache holds, and the cache holds no record under that id | Record held | Property left out |
 | The cache has several matching records | Record held | Record held |
 | No record on the platform matches a search, on any line | Record held | Property left out |
 | Several records on the platform match, the query is refused, or a value could not be searched for and nothing was found | Record held | Record held |

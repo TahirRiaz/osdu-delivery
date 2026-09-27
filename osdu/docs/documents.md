@@ -1103,9 +1103,14 @@ schedule:
   cron: "0 2 * * *"
 ```
 
-The sample estate (`osdu/samples/recall`) has no such flow: its WellLog mapping builds every reference it writes with the
-`ref` and `id` modifiers and searches the platform for the wellbore, so the only cache it reads is the lookup tables
-its own cache flow, `recall/cache/recall-lookups-00-cache.yaml`, captures ([Dictionary](#dictionary)).
+The sample estate (`osdu/samples/recall`) has one, `recall/cache/recall-reference-00-cache.yaml`, capturing the nine
+reference types a Recall well log points to. Its WellLog mapping builds every reference it writes with the `ref` and
+`id` modifiers, from the lookup tables its other cache flow, `recall/cache/recall-lookups-00-cache.yaml`, captures
+([Dictionary](#dictionary)), and each id it builds has to name one of the records this flow captured ([id](#id)); it
+searches the platform for the wellbore. A type's `query` narrows a kind to the records a mapping reads, but only where
+their values say which those are: the ids a mapping builds are looked up by the record they name, and a record's code
+need not match its id (dev holds `LogCurveType:Equinor-RW`, whose code does not start with `Equinor-`), so the sample
+flow keeps every LogCurveType the partition holds, tens of thousands of them, rather than lose one its dictionary names.
 
 | Key | Meaning |
 | --- | --- |
@@ -1690,9 +1695,21 @@ percent-escape already in the value is kept, so nothing is encoded twice, and an
 already is an OSDU id names its record and is written as it is, with the version separator added, when the template
 reads `{$value}`; one of another entity type than the template builds holds the record.
 
+The id is then looked for in the version of the partition's cache the render reads, when that version holds records of
+the entity type it names: reference data a cache flow captured from the partition, such as the sample estate's
+`recall-reference-00-cache`. It has to name one of them, by its exact id (ids that differ only by case are different
+records), because a reference to a record the partition does not hold reaches OSDU pointing at nothing; the record it
+names is a dependency of the render, so a later version that drops or changes it reaches the record. Looking the id up,
+rather than a code, finds a record whatever its `Code` says (dev holds `LogCurveFamily:EQ-CPI%20Qual%20Flag` with the code
+`EQ-CPI Quality Flag`), and a stray record beside it decides nothing (dev holds `UnitOfMeasure:degC:` beside
+`UnitOfMeasure:degC`). A version holding no record of that entity type answers nothing about it, and the id is written as
+built, as it is for a mapping that reads no cache at all. An id whose code carries colons of its own and that ends in a
+version is not looked up, since its text does not say where the code ends.
+
 | Situation | `$required: true` (default) | `$required: false` |
 | --- | --- | --- |
 | The value is empty, or a token has no value (an empty column, a key the lookup table does not list, a row with nothing in the field) | Record held, naming the tokens | Property left out |
+| The cache version holds records of the entity type the id names, and none under this id | Record held, naming the id and the types looked in | Property left out |
 | A parameter the flow gives no value, a type the cache version does not hold or that holds OSDU records, a value two rows answer to only once case is ignored with different values, a row holding several values in the field, text that is not valid Unicode | Record held | Record held |
 | The id built is not OSDU's id shape, does not match the pattern the template gives the variable, or names an entity type its relationship does not allow | Record held | Record held |
 

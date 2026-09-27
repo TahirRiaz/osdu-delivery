@@ -157,19 +157,23 @@ internal static class SampleEstate
     }
 
     /// <summary>
-    /// Merges the sample lookup tables into the cache of the sample partition in the module's database, exactly as the
-    /// lookups flow's refresh writes them. The well log mapping builds every reference id it writes from these tables and
-    /// a template, so they are the only cache content the well log flow reads. A database that already holds the same
-    /// content keeps its current version.
+    /// Merges the sample lookup tables and the sample reference data into the cache of the sample partition in the
+    /// module's database, exactly as the lookups flow's refresh writes the tables and the reference flow's refresh would
+    /// capture the records. The well log mapping builds every reference id it writes from these tables and a template, and
+    /// each id names one of those records. A database that already holds the same content keeps its current version.
     /// </summary>
     public static async Task SaveCacheAsync(string connectionString)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         await MigrateModuleAsync(connectionString);
-        var flow = new DeliveryDocumentLoader().LoadCache(Path.Combine(SourceRoot(), "cache", "recall-lookups-00-cache.yaml"));
+        var loader = new DeliveryDocumentLoader();
+        var flow = loader.LoadCache(Path.Combine(SourceRoot(), "cache", "recall-lookups-00-cache.yaml"));
         var store = new OsduCacheStore(() => Context(connectionString));
         var lookups = new SnapshotBuilder(store, flow.Scope, flow.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
         await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample unit maps and curve dictionary"), []);
+        var reference = loader.LoadCache(Path.Combine(SourceRoot(), "cache", "recall-reference-00-cache.yaml"));
+        var references = new SnapshotBuilder(store, reference.Scope, reference.Name, TimeProvider.System, NullLogger<SnapshotBuilder>.Instance);
+        await references.ImportDirectoryAsync(Path.Combine(Locate(), "cache-records"), reference.Types, new CacheCapture(null, "tests", "sample reference files"));
     }
 
     /// <summary>A context over the module's schema in the catalog database the suite was given.</summary>

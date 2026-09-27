@@ -1,0 +1,72 @@
+# Cache flow: recall-reference-00-cache
+#
+# The OSDU reference data the WellLog mapping resolves its references against, captured from the partition itself: the
+# records of every reference type a Recall well log points to. The mapping finds each reference in this cache by its code
+# and writes the id of the record it found, so a log goes out only with references to records the partition holds, and a
+# value the partition has no record for holds the log with the reason, instead of reaching OSDU as a reference to nothing.
+#
+# This is petrodb-api's unit of measure cache (Api/Common/Cache, filled from OSDU search and matched on ID, Code and Name),
+# widened to every reference type the record writes. The translations the platform does not hold (Recall's unit
+# spellings and the curve dictionary) stay lookup tables, in recall-lookups-00-cache: the mapping translates a Recall
+# value through them first and then finds the record here. Both flows fill the cache of the same partition.
+#
+# The platform, the credentials and the partition are the ones the delivery flow delivers with, so the cache holds what
+# the delivering identity can see in the partition it delivers to.
+flowType: cache
+name: recall-reference-00-cache
+batch: recall
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  headers:
+    data-partition-id: ${env:OSDU_DATA_PARTITION}
+
+types:
+  # CurveUnit, DepthUnit and VerticalMeasurementUnitOfMeasureID, after the unit tables translate Recall's spelling. Found
+  # by Code, then Name, then ID, the fields petrodb-api matches a unit on.
+  - kind: "osdu:wks:reference-data--UnitOfMeasure:*"
+    name: UnitOfMeasure
+    fields: [data.Code, data.Name, data.ID]
+  # VerticalMeasurementTypeID: KB, filed under KellyBushing as petrodb-api files it.
+  - kind: "osdu:wks:reference-data--VerticalMeasurementType:*"
+    name: VerticalMeasurementType
+    fields: [data.Code, data.Name]
+  # SamplingDomainTypeID: DEPTH.
+  - kind: "osdu:wks:reference-data--WellLogSamplingDomainType:*"
+    name: WellLogSamplingDomainType
+    fields: [data.Code, data.Name]
+  # WellLogTypeID: INTERPRETED.
+  - kind: "osdu:wks:reference-data--LogType:*"
+    name: LogType
+    fields: [data.Code, data.Name]
+  # A curve's LogCurveBusinessValueID: HIGH.
+  - kind: "osdu:wks:reference-data--LogCurveBusinessValue:*"
+    name: LogCurveBusinessValue
+    fields: [data.Code, data.Name]
+  # TechnicalAssuranceTypeID: every log is Unevaluated.
+  - kind: "osdu:wks:reference-data--TechnicalAssuranceType:*"
+    name: TechnicalAssuranceType
+    fields: [data.Code, data.Name]
+  # A curve's LogCurveTypeID, LogCurveMainFamilyID and LogCurveFamilyID, by the codes the curve dictionary gives its
+  # mnemonic. The partition holds tens of thousands of curve types, every vendor's, and all of them are kept: an id is
+  # looked up by the record it names, and a record's own code need not match its id (Equinor-RW's does not start with
+  # Equinor-), so no query on its values could narrow the capture without losing a record the dictionary names.
+  - kind: "osdu:wks:reference-data--LogCurveType:*"
+    name: LogCurveType
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--LogCurveMainFamily:*"
+    name: LogCurveMainFamily
+    fields: [data.Code, data.Name]
+  - kind: "osdu:wks:reference-data--LogCurveFamily:*"
+    name: LogCurveFamily
+    fields: [data.Code, data.Name]
+
+schedule: recall-cache
