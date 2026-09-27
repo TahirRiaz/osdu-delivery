@@ -2027,6 +2027,7 @@ public sealed partial class OsduLedger : ILedger
         Snapshots.CacheUsageKind.Match => "match",
         Snapshots.CacheUsageKind.Empty => "empty",
         Snapshots.CacheUsageKind.Unlisted => "unlisted",
+        Snapshots.CacheUsageKind.Unverified => "unverified",
         _ => "value",
     };
 
@@ -2034,6 +2035,7 @@ public sealed partial class OsduLedger : ILedger
         => kind.Equals("match", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Match
             : kind.Equals("empty", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Empty
             : kind.Equals("unlisted", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Unlisted
+            : kind.Equals("unverified", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Unverified
             : Snapshots.CacheUsageKind.Value;
 
     private static List<long> ParseSets(string setIds)

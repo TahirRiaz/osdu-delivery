@@ -773,10 +773,15 @@ public sealed class Planner
     /// <summary>
     /// How many rounds of questions a batch can need: two per findBy line of the search entry with the most, since a render
     /// asks a search entry's lines one at a time, and a line that finds nothing exactly may ask again regardless of case
-    /// where the partition keeps a lowercased copy of text. Each round answers what the one before it asked.
+    /// where the partition keeps a lowercased copy of text. A $coalesce node asks its searching alternatives one after
+    /// another, so it counts the lines of all of them. Each round answers what the one before it asked.
     /// </summary>
     private static int SearchRounds(MappingDefinition mapping)
-        => 2 * mapping.Entries.Where(e => e.Source?.Kind == MappingSourceKind.Search).Select(e => e.FindBy.Count).DefaultIfEmpty(1).Max();
+        => 2 * mapping.Entries
+            .Select(e => e.ValueNodes.Where(node => node.Source?.Kind == MappingSourceKind.Search).Sum(node => node.FindBy.Count))
+            .Where(lines => lines > 0)
+            .DefaultIfEmpty(1)
+            .Max();
 
     /// <summary>The distinct questions a batch's records wait on, in the order they were first asked.</summary>
     private sealed class Questions

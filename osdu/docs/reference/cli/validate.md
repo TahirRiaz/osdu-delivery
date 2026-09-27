@@ -57,7 +57,9 @@ document declaring an unknown `flowType` fails naming the kinds the host knows.
   meant), a property name that is a path, and a key written twice in one map are refused.
 - A value node reads its value one way: `$from` (a column of the row it is in, or `$dataset.<column>`), `$value`,
   `$cache: <Type>.<field>` or `$search: <name>`. `$cache` and `$search` need `$findBy`; `$findBy` and
-  `$ignoreSeparators` are refused on any other node.
+  `$ignoreSeparators` are refused on any other node, and `$unverified` on a node that builds no id with `id` or `ref`.
+- A `$coalesce` node lists two or more alternatives, each a value node; an alternative takes no `$when`, `$required` or
+  `$description` (they are the node's), is no `$forEach` or `$coalesce`, and nothing follows a literal alternative.
 - The modifiers are `trim`, `upper`, `lower`, `date`, `number`, `split`, `replace`, `equals` and `id`, each with
   its own rules; an id template's tokens are `{$value}`, `{<column>}`, `{$dataset.<column>}`,
   `{$cache.<Type>.<field>}` and `{$param.<name>}`, and `id` is the last modifier.

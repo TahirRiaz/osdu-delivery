@@ -12,6 +12,7 @@ const SOURCE_LABEL: Record<MappingDraftInput, string> = {
   Static: "Static value",
   Search: "Record found by searching the platform",
   Expression: "Computed by the expression",
+  Coalesce: "The first of these that gives a value",
 };
 
 /** One end of the pipeline: where the value comes from, or the property it lands on. */
@@ -77,7 +78,21 @@ export function EntryDetail({ row, target = true }: { row: PropertyRow; target?:
         </p>
       )}
 
-      <Node label={SOURCE_LABEL[row.input]} value={row.sourceValue} testId="delivery-mapping-property-detail-source">
+      <Node
+        label={SOURCE_LABEL[row.input]}
+        value={row.input === "Coalesce" ? `${row.alternatives.length} alternatives, tried in order` : row.sourceValue}
+        testId="delivery-mapping-property-detail-source"
+      >
+        {row.input === "Coalesce" && (
+          <ol className="mt-2 flex flex-col gap-0.5 border-t pt-2" data-testid="delivery-mapping-property-detail-alternatives">
+            {row.alternatives.map((text, index) => (
+              <li key={`${index}-${text}`} className="font-mono text-[12px] break-all">
+                <span className="mr-1.5 text-muted-foreground">{index + 1}</span>
+                {text}
+              </li>
+            ))}
+          </ol>
+        )}
         {lookupSteps && (
           <div className="mt-2 border-t pt-2" data-testid="delivery-mapping-property-detail-lookup">
             <p className="text-[11px] text-muted-foreground">

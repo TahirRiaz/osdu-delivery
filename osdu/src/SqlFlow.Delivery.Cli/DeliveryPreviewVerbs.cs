@@ -131,6 +131,18 @@ internal static class DeliveryPreviewVerbs
             {
                 writer.WriteLine($"    held        {hold}");
             }
+
+            foreach (var choice in document.Choices)
+            {
+                var values = choice.Values == 1 ? string.Empty : string.Create(CultureInfo.InvariantCulture, $", {choice.Values:N0} values");
+                var unverified = choice.Unverified ? ", unverified" : string.Empty;
+                writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"    coalesce    {choice.Target} from alternative {choice.Alternative} of {choice.Of}: {choice.Origin}{values}{unverified}"));
+            }
+
+            foreach (var id in document.Unverified)
+            {
+                writer.WriteLine($"    unverified  {id}: the cache holds no such record");
+            }
         }
 
         foreach (var reference in preview.References)

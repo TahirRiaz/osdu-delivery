@@ -30,6 +30,12 @@ public enum MappingDraftInput
 
     /// <summary>A value an expression computes from the row (<c>$expr</c>).</summary>
     Expression,
+
+    /// <summary>
+    /// The first of several alternatives that gives a value (<c>$coalesce</c>): each a dataset column, an expression, the
+    /// cache, a search or a fixed value of its own, tried in order.
+    /// </summary>
+    Coalesce,
 }
 
 /// <summary>
@@ -115,6 +121,18 @@ public sealed record MappingDraftEntry
     public bool Required { get; init; } = true;
 
     public bool IgnoreSeparators { get; init; }
+
+    /// <summary>
+    /// For an entry that builds an id with id or ref (<c>$unverified</c>): the id is written even when the cache holds
+    /// records of its entity type and not this one, and recorded as an unverified reference.
+    /// </summary>
+    public bool Unverified { get; init; }
+
+    /// <summary>
+    /// For a coalesce input: the alternatives, in the order they are tried, each an entry of its own input with its own
+    /// findBy, modifiers and flags. Their target, condition, required flag and description are the entry's, not theirs.
+    /// </summary>
+    public IReadOnlyList<MappingDraftEntry> Alternatives { get; init; } = [];
 
     /// <summary>For a static input: the value as JSON text.</summary>
     public string? Static { get; init; }
@@ -335,113 +353,20 @@ public static partial class MappingBuilder
             var scope = layout.Scopes.GetValueOrDefault(index);
             switch (entry.Input)
             {
-                case MappingDraftInput.Dataset when !DatasetColumnPattern().IsMatch(entry.Column ?? string.Empty):
-                    Error($"{target}: choose the dataset column the value comes from.", target);
-                    break;
-                case MappingDraftInput.Dataset:
-                    ScopeIssue(entry.Column!, scope, target, Error);
-                    break;
                 case MappingDraftInput.Repeat when !ColumnName().IsMatch(entry.Child ?? string.Empty):
                     Error($"{target}: choose the child dataset whose rows become the items.", target);
                     break;
                 case MappingDraftInput.Repeat when layout.EmptyRepeats.Contains(index):
                     Error($"{target}: add an entry for each property an item takes from its row, such as {target}[].Name.", target);
                     break;
-                case MappingDraftInput.Cache:
-                    if (!ColumnName().IsMatch(entry.CacheType ?? string.Empty) || !FieldPath().IsMatch(entry.CacheField ?? string.Empty))
-                    {
-                        Error($"{target}: choose the cached type and the field to read.", target);
-                    }
-
-                    if (entry.FindBy.Count == 0)
-                    {
-                        Error($"{target}: say which cached record to read with at least one findBy line.", target);
-                    }
-
-                    foreach (var find in entry.FindBy)
-                    {
-                        if (!FieldPath().IsMatch(find.Field ?? string.Empty) || find.Field!.StartsWith(Marker, StringComparison.Ordinal))
-                        {
-                            Error($"{target}: a findBy line needs the cached field it compares.", target);
-                        }
-                        else if (string.IsNullOrWhiteSpace(find.Literal) && !DatasetColumnPattern().IsMatch(find.Column ?? string.Empty))
-                        {
-                            Error($"{target}: findBy {find.Field} needs the dataset column, or a fixed text, it must equal.", target);
-                        }
-                        else if (string.IsNullOrWhiteSpace(find.Literal))
-                        {
-                            ScopeIssue(find.Column!, scope, target, Error);
-                        }
-                    }
-
+                case MappingDraftInput.Repeat:
                     break;
-                case MappingDraftInput.Search:
-                    if (!draft.Searches.Any(s => string.Equals(s.Name, entry.CacheType, StringComparison.Ordinal)))
-                    {
-                        Error($"{target}: choose one of the mapping's searches to look in.", target);
-                    }
-
-                    if (!string.Equals(entry.CacheField, "id", StringComparison.Ordinal))
-                    {
-                        Error($"{target}: a search reads the id of the record it finds.", target);
-                    }
-
-                    if (entry.FindBy.Count == 0)
-                    {
-                        Error($"{target}: say which record to find with at least one findBy line.", target);
-                    }
-
-                    foreach (var find in entry.FindBy)
-                    {
-                        if (!(find.Field ?? string.Empty).StartsWith("data.", StringComparison.Ordinal) || !Search.OsduPath.IsPath(find.Field))
-                        {
-                            Error($"{target}: a findBy line compares a property under data, such as data.FacilityName.", target);
-                        }
-                        else if (string.IsNullOrWhiteSpace(find.Literal) && !DatasetColumnPattern().IsMatch(find.Column ?? string.Empty))
-                        {
-                            Error($"{target}: findBy {find.Field} needs the dataset column, or a fixed text, it must equal.", target);
-                        }
-                        else if (string.IsNullOrWhiteSpace(find.Literal))
-                        {
-                            ScopeIssue(find.Column!, scope, target, Error);
-                        }
-                    }
-
+                case MappingDraftInput.Coalesce:
+                    CoalesceIssues(draft, entry, target, scope, Error);
                     break;
-                case MappingDraftInput.Static:
-                    StaticIssue(entry, target, Error);
+                default:
+                    ValueIssues(draft, entry, target, target, scope, Error);
                     break;
-                case MappingDraftInput.Expression:
-                    if (string.IsNullOrWhiteSpace(entry.Expression))
-                    {
-                        Error($"{target}: write the expression the value is computed with, such as coalesce(log_name, log_source).", target);
-                    }
-                    else if (MappingMapper.ReadExpression(entry.Expression.Trim(), MappingMapper.ExprKey, scope, out var expressionProblem) is null)
-                    {
-                        Error($"{target}: {expressionProblem}", target);
-                    }
-
-                    break;
-            }
-
-            foreach (var modifier in entry.Modifiers)
-            {
-                ModifierIssue(modifier, scope, target, Error);
-            }
-
-            // id and ref both build the id an entry writes, so the same rules hold for either.
-            var builders = entry.Modifiers.Where(m => m.Kind is "id" or "ref").ToList();
-            if (builders.Count > 0 && entry.Input is not (MappingDraftInput.Dataset or MappingDraftInput.Expression))
-            {
-                Error($"{target}: the {builders[0].Kind} modifier builds the id an entry writes from a dataset value; choose a dataset column or an expression as the input.", target);
-            }
-            else if (builders.Count > 1)
-            {
-                Error($"{target}: an entry builds one id, and this one lists {string.Join(" and ", builders.Select(m => m.Kind))}; keep one.", target);
-            }
-            else if (builders.Count == 1 && entry.Modifiers[^1].Kind is not ("id" or "ref"))
-            {
-                Error($"{target}: {builders[0].Kind} builds what the entry writes, so it is the last modifier; move it to the end.", target);
             }
 
             // A repeat's own condition decides for the whole array, so it reads the row the array is in; its $where reads each child row.
@@ -467,6 +392,154 @@ public static partial class MappingBuilder
 
         return issues;
     }
+
+    /// <summary>
+    /// What a coalesce entry lacks: two alternatives or more, each one value of its own input that is complete as an entry
+    /// of that input would be, and a fixed value only as the last, since it always gives a value.
+    /// </summary>
+    private static void CoalesceIssues(MappingDraft draft, MappingDraftEntry entry, string target, string? scope, Action<string, string?> error)
+    {
+        if (entry.Alternatives.Count < 2)
+        {
+            error($"{target}: {MappingMapper.CoalesceKey} takes the first of two or more alternatives that gives a value; add an alternative, or choose one input.", target);
+        }
+
+        for (var i = 0; i < entry.Alternatives.Count; i++)
+        {
+            var alternative = entry.Alternatives[i];
+            var name = $"{target} alternative {i + 1}";
+            if (alternative.Input is MappingDraftInput.Repeat or MappingDraftInput.Coalesce)
+            {
+                error($"{name}: an alternative reads one value; choose a dataset column, an expression, the cache, a search or a fixed value.", target);
+                continue;
+            }
+
+            if (i > 0 && entry.Alternatives[i - 1].Input == MappingDraftInput.Static)
+            {
+                error($"{name} is never tried: the fixed value before it always gives a value. Make the fixed value the last alternative.", target);
+            }
+
+            ValueIssues(draft, alternative, name, target, scope, error);
+        }
+    }
+
+    /// <summary>
+    /// What one value lacks, as an entry of its own or as one alternative of a coalesce entry (<paramref name="name"/> says
+    /// which): its input, its modifiers, and the id it builds.
+    /// </summary>
+    private static void ValueIssues(MappingDraft draft, MappingDraftEntry entry, string name, string target, string? scope, Action<string, string?> error)
+    {
+        switch (entry.Input)
+        {
+            case MappingDraftInput.Dataset when !DatasetColumnPattern().IsMatch(entry.Column ?? string.Empty):
+                error($"{name}: choose the dataset column the value comes from.", target);
+                break;
+            case MappingDraftInput.Dataset:
+                ScopeIssue(entry.Column!, scope, name, error);
+                break;
+            case MappingDraftInput.Cache:
+                if (!ColumnName().IsMatch(entry.CacheType ?? string.Empty) || !FieldPath().IsMatch(entry.CacheField ?? string.Empty))
+                {
+                    error($"{name}: choose the cached type and the field to read.", target);
+                }
+
+                if (entry.FindBy.Count == 0)
+                {
+                    error($"{name}: say which cached record to read with at least one findBy line.", target);
+                }
+
+                foreach (var find in entry.FindBy)
+                {
+                    if (!FieldPath().IsMatch(find.Field ?? string.Empty) || find.Field!.StartsWith(Marker, StringComparison.Ordinal))
+                    {
+                        error($"{name}: a findBy line needs the cached field it compares.", target);
+                    }
+                    else if (string.IsNullOrWhiteSpace(find.Literal) && !DatasetColumnPattern().IsMatch(find.Column ?? string.Empty))
+                    {
+                        error($"{name}: findBy {find.Field} needs the dataset column, or a fixed text, it must equal.", target);
+                    }
+                    else if (string.IsNullOrWhiteSpace(find.Literal))
+                    {
+                        ScopeIssue(find.Column!, scope, name, error);
+                    }
+                }
+
+                break;
+            case MappingDraftInput.Search:
+                if (!draft.Searches.Any(s => string.Equals(s.Name, entry.CacheType, StringComparison.Ordinal)))
+                {
+                    error($"{name}: choose one of the mapping's searches to look in.", target);
+                }
+
+                if (!string.Equals(entry.CacheField, "id", StringComparison.Ordinal))
+                {
+                    error($"{name}: a search reads the id of the record it finds.", target);
+                }
+
+                if (entry.FindBy.Count == 0)
+                {
+                    error($"{name}: say which record to find with at least one findBy line.", target);
+                }
+
+                foreach (var find in entry.FindBy)
+                {
+                    if (!(find.Field ?? string.Empty).StartsWith("data.", StringComparison.Ordinal) || !Search.OsduPath.IsPath(find.Field))
+                    {
+                        error($"{name}: a findBy line compares a property under data, such as data.FacilityName.", target);
+                    }
+                    else if (string.IsNullOrWhiteSpace(find.Literal) && !DatasetColumnPattern().IsMatch(find.Column ?? string.Empty))
+                    {
+                        error($"{name}: findBy {find.Field} needs the dataset column, or a fixed text, it must equal.", target);
+                    }
+                    else if (string.IsNullOrWhiteSpace(find.Literal))
+                    {
+                        ScopeIssue(find.Column!, scope, name, error);
+                    }
+                }
+
+                break;
+            case MappingDraftInput.Static:
+                StaticIssue(entry, name, error);
+                break;
+            case MappingDraftInput.Expression:
+                if (string.IsNullOrWhiteSpace(entry.Expression))
+                {
+                    error($"{name}: write the expression the value is computed with, such as coalesce(log_name, log_source).", target);
+                }
+                else if (MappingMapper.ReadExpression(entry.Expression.Trim(), MappingMapper.ExprKey, scope, out var expressionProblem) is null)
+                {
+                    error($"{name}: {expressionProblem}", target);
+                }
+
+                break;
+        }
+
+        foreach (var modifier in entry.Modifiers)
+        {
+            ModifierIssue(modifier, scope, name, error);
+        }
+
+        // id and ref both build the id an entry writes, so the same rules hold for either.
+        var builders = entry.Modifiers.Where(m => m.Kind is "id" or "ref").ToList();
+        if (builders.Count > 0 && entry.Input is not (MappingDraftInput.Dataset or MappingDraftInput.Expression))
+        {
+            error($"{name}: the {builders[0].Kind} modifier builds the id an entry writes from a dataset value; choose a dataset column or an expression as the input.", target);
+        }
+        else if (builders.Count > 1)
+        {
+            error($"{name}: an entry builds one id, and this one lists {string.Join(" and ", builders.Select(m => m.Kind))}; keep one.", target);
+        }
+        else if (builders.Count == 1 && entry.Modifiers[^1].Kind is not ("id" or "ref"))
+        {
+            error($"{name}: {builders[0].Kind} builds what the entry writes, so it is the last modifier; move it to the end.", target);
+        }
+
+        if (entry.Unverified && builders.Count == 0)
+        {
+            error($"{name}: {MappingMapper.UnverifiedKey} lets an id built with id or ref go out when the cache holds no record under it, and this one builds no id.", target);
+        }
+    }
+
 
     /// <summary>
     /// The draft written as a mapping document, in the documented style: the header, then the record tree, each entry at
@@ -614,6 +687,27 @@ public static partial class MappingBuilder
 
     private static MappingDraftEntry Draft(MappingEntry entry)
     {
+        if (entry.IsCoalesce)
+        {
+            // The node's settings stay with the entry, and each alternative is drafted as a value of its own without them.
+            return new MappingDraftEntry
+            {
+                Target = entry.Target.Text,
+                Input = MappingDraftInput.Coalesce,
+                Alternatives = entry.ValueNodes
+                    .Select(node => DraftNode(node with { Alternatives = [], AppliesWhen = null, Required = true, Description = null }))
+                    .ToList(),
+                When = entry.AppliesWhen?.Text,
+                Required = entry.Required,
+                Description = entry.Description,
+            };
+        }
+
+        return DraftNode(entry);
+    }
+
+    private static MappingDraftEntry DraftNode(MappingEntry entry)
+    {
         var source = entry.Source;
         return new MappingDraftEntry
         {
@@ -656,6 +750,7 @@ public static partial class MappingBuilder
             Where = entry.RowFilter?.Text,
             Required = entry.Required,
             IgnoreSeparators = entry.IgnoreSeparators,
+            Unverified = entry.Unverified,
             Static = entry.Static?.ToJsonString(),
             Description = entry.Description,
         };
@@ -831,6 +926,20 @@ public static partial class MappingBuilder
             return;
         }
 
+        if (entry.Input == MappingDraftInput.Coalesce)
+        {
+            // The alternatives in the order they are tried, each a node of its own; the node's settings decide for all of them.
+            line(key + ":");
+            line(inner + MappingMapper.CoalesceKey + ":");
+            foreach (var alternative in entry.Alternatives)
+            {
+                WriteAlternative(alternative, indent + 4, scope, line);
+            }
+
+            WriteSettings(entry, inner, line);
+            return;
+        }
+
         if (entry.Input == MappingDraftInput.Expression)
         {
             // Always the block form: an expression reads best on a line of its own, and a flow mapping would need it quoted.
@@ -849,7 +958,7 @@ public static partial class MappingBuilder
         };
 
         var bare = entry.FindBy.Count == 0 && entry.Modifiers.Count == 0 && string.IsNullOrWhiteSpace(entry.When) && entry.Required
-            && !(entry.Input == MappingDraftInput.Cache && entry.IgnoreSeparators) && string.IsNullOrWhiteSpace(entry.Description);
+            && !(entry.Input == MappingDraftInput.Cache && entry.IgnoreSeparators) && !entry.Unverified && string.IsNullOrWhiteSpace(entry.Description);
         if (bare)
         {
             line(key + ": { " + sourceKey + ": " + FlowScalar(read) + " }");
@@ -877,6 +986,78 @@ public static partial class MappingBuilder
 
         WriteModifiers(entry, inner, line);
         WriteSettings(entry, inner, line);
+    }
+
+    /// <summary>
+    /// One alternative of a coalesce entry, as an item of its <c>$coalesce</c> list at <paramref name="indent"/>: written as a
+    /// node of its own is, with the item's dash in place of its key, and a fixed value always under <c>$value</c>, since a
+    /// bare value in the list would not be a node. What only the whole node takes is never written here.
+    /// </summary>
+    private static void WriteAlternative(MappingDraftEntry alternative, int indent, string? scope, Action<string> line)
+    {
+        var dash = new string(' ', indent) + "- ";
+        var own = alternative with { When = null, Required = true, Description = null };
+        if (own.Input == MappingDraftInput.Static)
+        {
+            WriteLiteralAlternative(own, indent, line);
+            return;
+        }
+
+        var written = new List<string>();
+        var key = new string(' ', indent) + "-";
+        WriteNode(key, new TreeSlot { Entry = own }, indent, scope, written.Add);
+        if (written[0].StartsWith(key + ": ", StringComparison.Ordinal))
+        {
+            // The one-line form: the node itself is the item.
+            line(dash + written[0][(key.Length + 2)..]);
+            return;
+        }
+
+        // The block form: the node's first key moves up beside the dash, and the rest keep their place under it.
+        line(dash + written[1].TrimStart());
+        foreach (var text in written.Skip(2))
+        {
+            line(text);
+        }
+    }
+
+    /// <summary>A fixed value as the last alternative of a coalesce entry: <c>- $value: ...</c>, an object or a list of them under it.</summary>
+    private static void WriteLiteralAlternative(MappingDraftEntry alternative, int indent, Action<string> line)
+    {
+        JsonNode? node;
+        try
+        {
+            node = string.IsNullOrWhiteSpace(alternative.Static) ? null : JsonNode.Parse(alternative.Static);
+        }
+        catch (JsonException)
+        {
+            node = JsonValue.Create(alternative.Static ?? string.Empty);
+        }
+
+        var dash = new string(' ', indent) + "- " + MappingMapper.ValueKey + ":";
+        switch (node)
+        {
+            case null:
+                line(dash + " \"\"");
+                break;
+            case JsonObject { Count: 0 }:
+                line(dash + " {}");
+                break;
+            case JsonObject obj:
+                line(dash);
+                WriteObject(obj, indent + 4, escape: false, line);
+                break;
+            case JsonArray array when array.All(item => item is JsonValue):
+                line(dash + " [" + string.Join(", ", array.Select(item => ValueText((JsonValue)item!, flow: true))) + "]");
+                break;
+            case JsonArray array:
+                line(dash);
+                WriteArray(array, indent + 4, escape: false, line);
+                break;
+            case JsonValue value:
+                line(dash + " " + ValueText(value, flow: false));
+                break;
+        }
     }
 
     private static void WriteModifiers(MappingDraftEntry entry, string inner, Action<string> line)
@@ -914,6 +1095,11 @@ public static partial class MappingBuilder
         if (entry.Input == MappingDraftInput.Cache && entry.IgnoreSeparators)
         {
             line(inner + MappingMapper.IgnoreSeparatorsKey + ": true");
+        }
+
+        if (entry.Unverified)
+        {
+            line(inner + MappingMapper.UnverifiedKey + ": true");
         }
 
         if (!string.IsNullOrWhiteSpace(entry.Description))

@@ -269,10 +269,15 @@ public sealed class DeliveryTemplateApiTests
             Assert.Empty(parsed.Issues);
             Assert.NotNull(parsed.Draft);
 
-            // A replace reading a cached table opens with the table, and nothing the table settles: RecallUnits names its key
-            // and its one field, so the draft leaves both out, and a spelling it does not list is kept as it is. The ref after
-            // it writes the translated unit as the reference to that unit.
-            var unitModifiers = Assert.Single(parsed.Draft.Entries, e => e.Target == "osdu.data.Curves[].CurveUnit").Modifiers;
+            // A curve's unit is a coalesce, opened as its alternatives in order: the unit table, the partition's own units, and
+            // the table's translation unverified. A replace reading a cached table opens with the table, and nothing the table
+            // settles: RecallUnits names its key and its one field, so the draft leaves both out, and a spelling it does not
+            // list is kept as it is. The ref after it writes the translated unit as the reference to that unit.
+            var curveUnit = Assert.Single(parsed.Draft.Entries, e => e.Target == "osdu.data.Curves[].CurveUnit");
+            Assert.Equal(MappingDraftInput.Coalesce, curveUnit.Input);
+            Assert.Equal([MappingDraftInput.Dataset, MappingDraftInput.Cache, MappingDraftInput.Dataset], curveUnit.Alternatives.Select(a => a.Input));
+            Assert.Equal([false, false, true], curveUnit.Alternatives.Select(a => a.Unverified));
+            var unitModifiers = curveUnit.Alternatives[0].Modifiers;
             Assert.Equal(["replace", "ref"], unitModifiers.Select(m => m.Kind));
             var unit = unitModifiers[0];
             Assert.Equal(("RecallUnits", (string?)null, (string?)null, "keep"), (unit.Table, unit.Match, unit.Field, unit.OtherwiseKind));
@@ -294,14 +299,14 @@ public sealed class DeliveryTemplateApiTests
             var checkedSample = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = parsed.Draft, parameters }));
             Assert.True(checkedSample.Valid, string.Join(Environment.NewLine, checkedSample.Issues.Select(i => i.Message)));
             Assert.Contains("    WellboreID:\n      $search: Wellbore\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
-            Assert.Contains("            - replace: $cache.RecallUnits\n            - ref\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
+            Assert.Contains("          $coalesce:\n            - $from: curve_unit\n              $modifiers:\n                - replace: $cache.RecallUnits\n                - ref\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
             Assert.Contains("            - id: \"{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveDictionary.log_curve_family_id}:\"\n", checkedSample.Yaml.ReplaceLineEndings("\n"), StringComparison.Ordinal);
 
             // A cached table the partition's cache does not hold is refused by the check, naming what it does hold.
             var missingTable = parsed.Draft with
             {
                 Entries = parsed.Draft.Entries.Select(e => e.Target == "osdu.data.Curves[].CurveUnit"
-                    ? e with { Modifiers = [e.Modifiers[0] with { Table = "NoSuchUnits" }] }
+                    ? e with { Alternatives = [e.Alternatives[0] with { Modifiers = [e.Alternatives[0].Modifiers[0] with { Table = "NoSuchUnits" }] }, .. e.Alternatives.Skip(1)] }
                     : e).ToList(),
             };
             var missing = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope, draft = missingTable, parameters }));

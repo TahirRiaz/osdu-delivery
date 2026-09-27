@@ -210,6 +210,18 @@ public static partial class Preflight
             return;
         }
 
+        // A $coalesce node fills its variable with whichever alternative gives a value, so each alternative is checked as a
+        // node of its own against the variable, and named by where it is written.
+        foreach (var node in entry.ValueNodes)
+        {
+            // The node itself is checked without its alternatives, whose expressions it would otherwise count as its own.
+            CheckValueNode(ReferenceEquals(node, entry) ? entry with { Alternatives = [] } : node, variable, references, renderer, issues, ReferenceEquals(node, entry) ? name : $"{where}: {node.Where}");
+        }
+    }
+
+    /// <summary>The checks of one value node against the variable it fills: a node of its own, or one alternative of a <c>$coalesce</c>.</summary>
+    private static void CheckValueNode(MappingEntry entry, TemplateVariable variable, ReferenceSnapshot references, MappingRenderer renderer, List<ValidationIssue> issues, string name)
+    {
         var shapeProblem = ShapeProblem(entry, variable);
         if (shapeProblem is not null)
         {

@@ -67,9 +67,10 @@ internal static class WellLogVersions
     }
 
     /// <summary>
-    /// Imports the sample lookup tables as the cache of <paramref name="partition"/>, as the capture of a cache flow named
-    /// <paramref name="flowName"/> + "-lookups". The well log mapping (1.4.0 and 1.5.0 alike) builds every reference id it
-    /// writes from these tables and a template, so they are the only cache content a pipeline on either version reads.
+    /// Imports the sample lookup tables and the sample reference data as the cache of <paramref name="partition"/>, as the
+    /// captures of cache flows named <paramref name="flowName"/> + "-lookups" and + "-reference". The well log mapping
+    /// (1.4.0 and 1.5.0 alike) builds every reference id it writes from the tables, and finds each in the reference data or
+    /// among the partition's units, so they are the cache content a pipeline on either version reads.
     /// </summary>
     public static async Task ImportPartitionCacheAsync(ICacheStore caches, string partition, string flowName)
     {
@@ -77,6 +78,28 @@ internal static class WellLogVersions
         var lookups = new SnapshotBuilder(
             caches, partition, flowName + "-lookups", new TestClock(Samples.SampleCacheCaptured.AddMinutes(-1)), Samples.Logger<SnapshotBuilder>());
         await lookups.WriteAsync(Samples.SampleLookups(), new CacheCapture(null, "tests", "sample lookups for " + partition), []);
+
+        // The sample records carry the sample partition's ids; the partition under test holds the same codes under its own.
+        var reference = new DeliveryDocumentLoader().LoadCache(Samples.ReferenceCacheFlow);
+        var folder = Directory.CreateTempSubdirectory("osdu-reference-records-");
+        try
+        {
+            foreach (var file in Directory.GetFiles(Samples.SampleCacheRecords, "*.json"))
+            {
+                var text = await File.ReadAllTextAsync(file);
+                await File.WriteAllTextAsync(
+                    Path.Combine(folder.FullName, Path.GetFileName(file)),
+                    text.Replace($"\"{Samples.SamplePartition}:", $"\"{partition}:", StringComparison.Ordinal));
+            }
+
+            var references = new SnapshotBuilder(
+                caches, partition, flowName + "-reference", new TestClock(Samples.SampleCacheCaptured.AddSeconds(-30)), Samples.Logger<SnapshotBuilder>());
+            await references.ImportDirectoryAsync(folder.FullName, reference.Types, new CacheCapture(null, "tests", "sample reference data for " + partition));
+        }
+        finally
+        {
+            folder.Delete(recursive: true);
+        }
     }
 
     /// <summary>

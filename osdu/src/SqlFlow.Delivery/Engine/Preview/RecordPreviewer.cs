@@ -481,6 +481,15 @@ public sealed class RecordPreviewer
                 .Select(s => new PreviewSearch(s.Kind, s.Field, s.Value, s.Outcome.ToString().ToLowerInvariant(), s.Id))
                 .ToList(),
             CacheValues = render.CacheUsages.Count,
+            Choices = render.Choices
+                .Select(c => new PreviewChoice(c.Target, c.Alternative, c.Of, c.Origin, c.Values, c.Unverified))
+                .ToList(),
+            Unverified = render.CacheUsages
+                .Where(u => u.Kind == SqlFlow.Delivery.Snapshots.CacheUsageKind.Unverified)
+                .Select(u => u.Value)
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToList(),
         };
     }
 

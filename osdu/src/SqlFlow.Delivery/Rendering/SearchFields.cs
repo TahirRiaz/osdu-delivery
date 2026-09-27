@@ -60,6 +60,7 @@ public sealed class ResolvedSearches
 
             var fields = new Dictionary<string, OsduField>(StringComparer.Ordinal);
             var compared = mapping.Entries
+                .SelectMany(e => e.ValueNodes)
                 .Where(e => e.Source?.Kind == MappingSourceKind.Search && string.Equals(e.Source.CacheType, name, StringComparison.Ordinal))
                 .SelectMany(e => e.FindBy.Select(f => (Entry: e, f.Field)));
             foreach (var (entry, path) in compared)

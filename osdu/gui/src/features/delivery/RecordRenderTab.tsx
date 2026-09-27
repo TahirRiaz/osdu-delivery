@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import type { DeliveryOsduRead, DeliveryPreviewInputs, DeliveryRecord, DeliveryRecordPreview } from "../../api/delivery";
 import { Fact, FactGrid, NoFact } from "./Facts";
 import { canonicalText, differences, envelopeFirst, withoutOsduFields, type DifferenceKind } from "./osduDocument";
-import { PreviewActionBadge, PreviewSearches } from "./RecordPreviewView";
+import { PreviewActionBadge, PreviewChoices, PreviewSearches } from "./RecordPreviewView";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
@@ -322,6 +322,7 @@ function RenderResult({ tasks }: { tasks: RenderTasks }) {
           <PreviewSearches searches={document.searches} testId="record-render-searches" />
         </div>
       )}
+      {document !== null && <PreviewChoices choices={document.choices} unverified={document.unverified} testId="record-render-coalesce" />}
     </div>
   );
 }

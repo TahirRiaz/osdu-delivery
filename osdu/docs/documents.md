@@ -1396,6 +1396,7 @@ and no column is either. A property is one of four nodes:
 | A literal | `ReferenceCurveID: MD`, `otherRelevantDataCountries: [NO]` | The value as it is written: text, a number, a boolean, or a list. Its text reads a parameter as `{$param.<name>}` and nothing else. |
 | An object | `VerticalMeasurement:` and the properties it holds | Each property it holds, as that property's node writes it. |
 | A value node | `Name: { $from: log_source, $modifiers: [trim] }` | One value, read with `$from`, `$expr`, `$value`, `$cache` or `$search`, with the settings beside it (below). |
+| A `$coalesce` node | `Name: { $coalesce: [ { $from: log_name }, { $from: log_source } ] }` | The value of the first of its alternatives that gives one, each a value node of its own ([mapping-templates.md](mapping-templates.md#coalesce)). |
 | A `$forEach` node | `Curves: { $forEach: curves, $item: { CurveID: { $from: curve_id } } }` | An array with one item per row of a child dataset, each item laid out under `$item`. |
 
 A map holding any key that starts with `$` is a node of the language, and all of its keys start with `$`: a map that
@@ -1418,7 +1419,13 @@ A value node reads its value with one of these, and takes the settings after it:
 | `$when` | A condition, an [expression](#expressions) giving true or false: when the property applies to a row. When it does not, the property is left out for that row. |
 | `$required` | What an empty value does: `true` (the default) holds the record, `false` leaves the property out. |
 | `$ignoreSeparators` | With `$cache`: a last matching attempt with punctuation and spacing folded away. |
+| `$unverified` | With an `id` or `ref` modifier: the id is written even when the cache holds records of its entity type and not this one, recorded as an unverified reference ([id](#id)). |
 | `$description` | Free text. |
+
+A `$coalesce` node takes `$coalesce:`, a list of two or more value nodes tried in order, each with its own `$findBy`,
+`$modifiers`, `$ignoreSeparators` and `$unverified`, and `$when`, `$required` and `$description` beside the list, which
+decide for all of them. The first alternative that gives a value is written; one that gives nothing passes to the next,
+one that meets a mistake holds the record, and a literal can only be the last ([Coalesce](mapping-templates.md#coalesce)).
 
 A `$forEach` node takes `$forEach: <child dataset>`, `$item` with the properties each row fills, `$where`, and `$when`,
 `$required` and `$description`. `$where` is a condition each child row must hold to become an item, read against that
@@ -1704,7 +1711,9 @@ rather than a code, finds a record whatever its `Code` says (dev holds `LogCurve
 `EQ-CPI Quality Flag`), and a stray record beside it decides nothing (dev holds `UnitOfMeasure:degC:` beside
 `UnitOfMeasure:degC`). A version holding no record of that entity type answers nothing about it, and the id is written as
 built, as it is for a mapping that reads no cache at all. An id whose code carries colons of its own and that ends in a
-version is not looked up, since its text does not say where the code ends.
+version is not looked up, since its text does not say where the code ends. A node that says `$unverified: true` writes an
+id the cache holds no record under all the same, recorded among the render's dependencies as an unverified reference;
+when a later refresh holds the record, the change is tagged `found` and the record is built again against it.
 
 | Situation | `$required: true` (default) | `$required: false` |
 | --- | --- | --- |

@@ -660,7 +660,10 @@ public sealed record UpdateTag
 
     public required string Path { get; init; }
 
-    /// <summary>changed, removed, unmatched, or listed (a lookup table now lists a key records looked up and found no row under).</summary>
+    /// <summary>
+    /// changed, removed, unmatched, listed (a lookup table now lists a key records looked up and found no row under), or
+    /// found (the cache now holds a record records reference as an unverified id).
+    /// </summary>
     public required string Change { get; init; }
 
     public string? OldValue { get; init; }
@@ -704,6 +707,7 @@ public sealed record UpdateTag
     {
         "removed" => $"{TypeName} '{ItemId}' is no longer in the cache (it held {Path} = '{OldValue}')",
         "unmatched" => $"{TypeName} '{ItemId}' no longer matches by {Path} = '{OldValue}'",
+        "found" => $"{TypeName} now holds '{ItemId}', which delivered records reference as an unverified id",
         "listed" => NewValue is null
             ? $"{TypeName} now lists '{OldValue}' as '{ItemId}', which gives no {Path}"
             : $"{TypeName} now lists '{OldValue}' as '{ItemId}', giving {Path} = '{NewValue}'",

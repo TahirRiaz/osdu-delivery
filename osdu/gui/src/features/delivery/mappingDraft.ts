@@ -66,6 +66,8 @@ export function emptyEntry(target: string, input: MappingDraftInput): MappingDra
     where: null,
     required: true,
     ignoreSeparators: false,
+    unverified: false,
+    alternatives: [],
     static: null,
     description: null,
     prefilled: false,
@@ -110,7 +112,7 @@ export function inputsFor(variable: Pick<DeliveryTemplateVariable, "shape" | "pa
   switch (variable.shape) {
     case "Value":
     case "ValueList":
-      return ["Dataset", "Expression", "Cache", "Search", "Static"];
+      return ["Dataset", "Expression", "Cache", "Search", "Static", "Coalesce"];
     case "GroupList":
       return ["Repeat", "Static"];
     case "Group":
@@ -178,6 +180,8 @@ export function entrySummary(entry: MappingDraftEntry): string {
       return entry.expression ?? "";
     case "Static":
       return `static ${entry.static ?? ""}`;
+    case "Coalesce":
+      return entry.alternatives.map(entrySummary).join(", else ");
   }
 }
 
@@ -191,6 +195,14 @@ export function looksUp(entry: Pick<MappingDraftEntry, "input">): boolean {
  * to it, and when it applies. `dataset.facility_name | trim`, `search.Wellbore.id by data.FacilityName = dataset.wellbore_uwi`.
  */
 export function entryText(entry: MappingDraftEntry): string {
+  if (entry.input === "Coalesce") {
+    // Each alternative as a line of its own would read, in the order they are tried; the condition is the node's.
+    return [
+      entry.alternatives.map(alternativeText).join(", else "),
+      entry.when === null ? "" : `when ${entry.when}`,
+    ].filter((part) => part !== "").join(" ");
+  }
+
   const lookup = lookupText(entry);
   return [
     entrySummary(entry),
@@ -198,6 +210,11 @@ export function entryText(entry: MappingDraftEntry): string {
     entry.modifiers.length === 0 ? "" : `| ${entry.modifiers.map(modifierText).join(" | ")}`,
     entry.when === null ? "" : `when ${entry.when}`,
   ].filter((part) => part !== "").join(" ");
+}
+
+/** One alternative of a coalesce entry on one line: what it reads, looks up and does, and whether it may go out unverified. */
+export function alternativeText(alternative: MappingDraftEntry): string {
+  return entryText(alternative) + (alternative.unverified ? " (unverified)" : "");
 }
 
 /** One property the mapping fills: where the value comes from, what is done to it, and the target it is written to. */
@@ -213,6 +230,8 @@ export interface PropertyRow {
   lookup: string;
   /** One line per findBy, naming the record set and the field compared, for the property's own view. */
   lookupDetail: string[];
+  /** Coalesce: each alternative on one line, in the order they are tried; empty for any other entry. */
+  alternatives: string[];
   /** The modifiers in order, one line each; empty for a value taken as it stands. */
   modifiers: string[];
   /** The modifier kinds in order, which is what a row has room for: `split, replace`. */
@@ -250,6 +269,7 @@ export function propertyRow(entry: MappingDraftEntry): PropertyRow {
       : entry.input === "Static" ? entry.static ?? "" : source,
     lookup,
     lookupDetail: lookupLines(entry),
+    alternatives: entry.input === "Coalesce" ? entry.alternatives.map(alternativeText) : [],
     modifiers,
     modifierKinds: entry.modifiers.map((modifier) => (isCachedReplace(modifier) ? "replace from cache" : modifier.kind)).join(", "),
     condition,
@@ -388,7 +408,8 @@ export function lookupText(entry: MappingDraftEntry): string {
 export function knownColumns(draft: MappingDraft): { columns: string[]; children: string[] } {
   const columns = new Set<string>(draft.key);
   const children = new Set<string>();
-  for (const entry of draft.entries) {
+  // A coalesce entry reads through its alternatives, which name columns as any entry does.
+  for (const entry of draft.entries.flatMap((candidate) => [candidate, ...candidate.alternatives])) {
     if (entry.column !== null && entry.column !== "") {
       columns.add(entry.column);
     }

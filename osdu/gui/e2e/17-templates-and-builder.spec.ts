@@ -421,13 +421,17 @@ test.describe.serial("templates and the mapping builder", () => {
       .toContainText("search.Wellbore.data.FacilityName = dataset.wellbore_uwi");
     await expect(entry.getByTestId("delivery-mapping-property-detail-lookup"))
       .toContainText("search.Wellbore.data.NameAliases.AliasName = dataset.wellbore_uwi");
-    // The unit of the vertical measurement is read from its column, translated through the depth unit map the
-    // partition's cache holds (not a list in the mapping), and written as the reference to that unit.
+    // The unit of the vertical measurement is the first of three alternatives that gives one: its column translated
+    // through the depth unit map the partition's cache holds (not a list in the mapping) as a unit the partition holds,
+    // else the partition's own units, else the translation written unverified.
     await properties.getByTestId("templates-view-variable-osdu.data.VerticalMeasurement.VerticalMeasurementUnitOfMeasureID").click();
-    await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("dataset.elev_meas_ref");
-    // The steps are numbered in the order they run: the unit split out, translated, then written as the reference.
-    const modifiers = entry.getByTestId("delivery-mapping-property-detail-modifiers");
-    await expect(modifiers).toHaveText(/^1split on ' ', part 2\s*2replace from \$cache\.RecallDepthUnits\s*3ref$/);
+    await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("The first of these that gives a value");
+    await expect(entry.getByTestId("delivery-mapping-property-detail-source")).toContainText("3 alternatives, tried in order");
+    const alternatives = entry.getByTestId("delivery-mapping-property-detail-alternatives").getByRole("listitem");
+    await expect(alternatives).toHaveCount(3);
+    await expect(alternatives.nth(0)).toContainText("dataset.elev_meas_ref | split on ' ', part 2 | replace from $cache.RecallDepthUnits | ref");
+    await expect(alternatives.nth(1)).toContainText("cache.UnitOfMeasure.id by ID/Code/Name = dataset.elev_meas_ref");
+    await expect(alternatives.nth(2)).toContainText("(unverified)");
 
     // The search reads what fills a variable too, so a source column answers with every variable it reaches: the
     // vertical measurement, and the unit that measurement is found by.
@@ -493,25 +497,37 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(adminPage.getByTestId("mapping-builder-valid")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("mapping-builder-propose")).toBeEnabled();
 
-    // A replace reading a cached table opens as one: the table, and the key it matches on and the field it replaces by,
-    // both of which the table settles, so the draft leaves them out. A spelling the table does not list is left as it is.
+    // A curve's unit is a coalesce: it opens as the first value of its alternatives, listed in the order they are tried.
     await rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.Curves[].CurveUnit").click();
     await expect(adminPage.getByTestId("mapping-builder-entry-target")).toHaveText("osdu.data.Curves[].CurveUnit");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-source-cache-0")).toHaveAttribute("data-state", "on");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText("RecallUnits");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-match-0")).toContainText("the table's key");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("the table's only field");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("osdu_unit");
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-otherwise-0")).toContainText("is left as it is");
+    await expect(adminPage.getByTestId("mapping-builder-entry-input-coalesce")).toHaveAttribute("data-state", "on");
+    await expect(adminPage.getByTestId("mapping-builder-entry-alternatives").getByTestId(/^mapping-builder-entry-alternative-\d+$/)).toHaveCount(3);
+    await expect(adminPage.getByTestId("mapping-builder-entry-alternative-2")).toContainText("(unverified)");
+
+    // Each alternative is edited as an input of its own. A replace reading a cached table opens as one: the table, and the
+    // key it matches on and the field it replaces by, both of which the table settles, so the draft leaves them out. A
+    // spelling the table does not list is left as it is.
+    await adminPage.getByTestId("mapping-builder-entry-alternative-edit-0").click();
+    const alternative = adminPage.getByTestId("mapping-builder-alternative-editor");
+    await expect(alternative.getByTestId("mapping-builder-entry-target")).toHaveText("osdu.data.Curves[].CurveUnit, alternative 1");
+    await expect(alternative.getByTestId("mapping-builder-entry-input-coalesce")).toHaveCount(0);
+    await expect(alternative.getByTestId("mapping-builder-entry-modifier-source-cache-0")).toHaveAttribute("data-state", "on");
+    await expect(alternative.getByTestId("mapping-builder-entry-modifier-table-0")).toContainText("RecallUnits");
+    await expect(alternative.getByTestId("mapping-builder-entry-modifier-match-0")).toContainText("the table's key");
+    await expect(alternative.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("the table's only field");
+    await expect(alternative.getByTestId("mapping-builder-entry-modifier-field-0")).toContainText("osdu_unit");
+    await expect(alternative.getByTestId("mapping-builder-entry-modifier-otherwise-0")).toContainText("is left as it is");
 
     // Switching to values listed in the mapping leaves the table behind; switching back offers the partition's lookup tables.
-    await adminPage.getByTestId("mapping-builder-entry-modifier-source-pairs-0").click();
-    await expect(adminPage.getByTestId("mapping-builder-entry-modifier-from-0-0")).toBeVisible();
-    await adminPage.getByTestId("mapping-builder-entry-modifier-source-cache-0").click();
-    await adminPage.getByTestId("mapping-builder-entry-modifier-table-0").click();
+    await alternative.getByTestId("mapping-builder-entry-modifier-source-pairs-0").click();
+    await expect(alternative.getByTestId("mapping-builder-entry-modifier-from-0-0")).toBeVisible();
+    await alternative.getByTestId("mapping-builder-entry-modifier-source-cache-0").click();
+    await alternative.getByTestId("mapping-builder-entry-modifier-table-0").click();
     await expect(adminPage.getByRole("option").filter({ hasText: "RecallUnits" })).toBeVisible();
     await expect(adminPage.getByRole("option").filter({ hasText: "key mnemonic" })).toBeVisible();
     await adminPage.keyboard.press("Escape");
+    await adminPage.keyboard.press("Escape");
+    await expect(alternative).toHaveCount(0);
     await adminPage.keyboard.press("Escape");
   });
 });

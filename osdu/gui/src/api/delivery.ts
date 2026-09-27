@@ -601,8 +601,8 @@ export interface DeliveryCacheUse {
   itemId: string;
   path: string;
   /**
-   * match (what it resolved by), value (what went into the document), empty (a field read that held nothing) or unlisted
-   * (a key a lookup table listed no row under).
+   * match (what it resolved by), value (what went into the document), empty (a field read that held nothing), unlisted
+   * (a key a lookup table listed no row under) or unverified (an id written without a record the cache holds).
    */
   kind: string;
   value: string;
@@ -923,6 +923,26 @@ export interface DeliveryPreviewDocument {
   omitted?: string | null;
   searches: DeliveryPreviewSearch[];
   cacheValues: number;
+  /** Which alternative each $coalesce node of the mapping took the value it wrote from. */
+  choices: DeliveryPreviewChoice[];
+  /** References the document carries that name no record the cache holds, written because the mapping says $unverified. */
+  unverified: string[];
+}
+
+/** The alternative of a $coalesce node that gave the value it wrote. */
+export interface DeliveryPreviewChoice {
+  /** The variable the node fills. */
+  target: string;
+  /** Which alternative gave it, counting from one in the order they are tried. */
+  alternative: number;
+  /** How many alternatives the node lists. */
+  of: number;
+  /** Where that alternative reads its value. */
+  origin: string;
+  /** How many values it gave: one, or one per item of a repeated array that took it. */
+  values: number;
+  /** True when a value it gave is a reference to a record the cache does not hold. */
+  unverified: boolean;
 }
 
 /** The record of the ledger delivered to a referenced id. */
@@ -1332,9 +1352,10 @@ export interface DeliveryBuilderCache {
 
 /**
  * Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, a fixed value, the
- * id of a record found by searching the platform, or a value an expression computes from the row.
+ * id of a record found by searching the platform, a value an expression computes from the row, or the first of several
+ * alternatives that gives a value ($coalesce).
  */
-export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search" | "Expression";
+export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search" | "Expression" | "Coalesce";
 
 export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number" | "id" | "ref";
 
@@ -1411,6 +1432,16 @@ export interface MappingDraftEntry {
   where: string | null;
   required: boolean;
   ignoreSeparators: boolean;
+  /**
+   * An entry that builds an id with id or ref ($unverified): the id is written even when the cache holds records of its
+   * entity type and not this one, and recorded as an unverified reference.
+   */
+  unverified: boolean;
+  /**
+   * Coalesce: the alternatives in the order they are tried, each an entry of its own input; their target, condition,
+   * required flag and description are this entry's.
+   */
+  alternatives: MappingDraftEntry[];
   /** Static: the value as JSON text, such as "[\"a\"]", "\"MD\"", "5" or "true". */
   static: string | null;
   description: string | null;

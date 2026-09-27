@@ -17,12 +17,17 @@ internal static partial class EntryValues
 {
     /// <summary>The value of <paramref name="entry"/> for the row, converted to its variable's type, or null when the variable is left out.</summary>
     public static JsonNode? Evaluate(
-        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, SearchTrail searched)
+        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, RenderTrail searched)
     {
         var path = entry.Target.Text;
         if (entry.AppliesWhen is { } condition && !Applies(condition, root, item, renderer, holds, path))
         {
             return null;
+        }
+
+        if (entry.IsCoalesce)
+        {
+            return Coalesced(entry, root, item, renderer, holds, usages, searched);
         }
 
         object? raw;
@@ -84,6 +89,82 @@ internal static partial class EntryValues
     }
 
     /// <summary>
+    /// The value of a <c>$coalesce</c> node: the first of its alternatives that gives one, each tried as an optional node
+    /// of its own. An alternative that gives nothing (an empty column, no record in the cache, a key its table does not
+    /// list, an id the partition holds no record under) passes to the next. One that meets a mistake (a date that is not a
+    /// date, a value several records answer to) holds the record as it would on its own, since what it would have given
+    /// is unknown, not absent. One still waiting for a search stops the node there, and the render finishes once the
+    /// answer is in, so a later alternative never stands in for an earlier one that has not been asked yet. What every
+    /// alternative tried read from the cache is recorded, so a later version that would let an earlier one give a value
+    /// reaches the record. When none gives one, the node's required flag decides, naming why each gave nothing.
+    /// </summary>
+    private static JsonNode? Coalesced(
+        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, RenderTrail searched)
+    {
+        var alternatives = Alternatives(entry);
+        for (var i = 0; i < alternatives.Count; i++)
+        {
+            var mistakes = new List<string>();
+            var waiting = searched.Unanswered.Count;
+            var read = usages.Count;
+            var value = Evaluate(alternatives[i], root, item, renderer, mistakes, usages, searched);
+            if (mistakes.Count > 0)
+            {
+                holds.AddRange(mistakes);
+                return null;
+            }
+
+            if (searched.Unanswered.Count > waiting)
+            {
+                return null;
+            }
+
+            if (value is not null)
+            {
+                var unverified = usages.Skip(read).Any(u => u.Kind == CacheUsageKind.Unverified);
+                // The origin names what the alternative reads; whether the id it wrote was unverified is the choice's own flag.
+                searched.Choose(entry.Target.Text, i + 1, alternatives.Count, Origin(alternatives[i] with { Unverified = false }), unverified);
+                return value;
+            }
+        }
+
+        if (entry.Required)
+        {
+            var path = entry.Target.Text;
+            var reasons = new List<string>(alternatives.Count);
+            for (var i = 0; i < alternatives.Count; i++)
+            {
+                // Asked again as a required node, each alternative says why it gave nothing; what it reads is already known.
+                var said = new List<string>();
+                Evaluate(alternatives[i] with { Required = true }, root, item, renderer, said, [], new RenderTrail());
+                reasons.Add($"{i + 1}. {(said.Count > 0 ? Reason(said[0], path) : "gives no value")}");
+            }
+
+            holds.Add($"{path}: none of the {alternatives.Count} alternatives of $coalesce gives a value, and the entry is required: {string.Join("; ", reasons)}");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// A <c>$coalesce</c> node's alternatives as nodes of their own, in order: the entry itself without the node's settings,
+    /// then the rest. Each is optional, so an alternative that gives nothing passes to the next.
+    /// </summary>
+    internal static IReadOnlyList<MappingEntry> Alternatives(MappingEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        return [entry with { Alternatives = [], AppliesWhen = null, Required = false, Location = null }, .. entry.Alternatives];
+    }
+
+    /// <summary>What an alternative said about why it gave nothing, without the target it names and the required clause it adds.</summary>
+    private static string Reason(string said, string path)
+    {
+        var reason = said.StartsWith(path + ": ", StringComparison.Ordinal) ? said[(path.Length + 2)..] : said;
+        const string Required = ", and the entry is required";
+        return reason.EndsWith(Required, StringComparison.Ordinal) ? reason[..^Required.Length] : reason;
+    }
+
+    /// <summary>
     /// The value of <paramref name="entry"/> in a record's shape, without a row: a static value converted exactly as a
     /// render converts it, or a placeholder naming the type the template gives the variable and where the value comes from
     /// (a list of one where the variable is a list of values). A value that could not be written whatever the row, a single
@@ -118,7 +199,7 @@ internal static partial class EntryValues
         }
 
         // An object, or a list of objects: a cached field can carry one whole, and a dataset column never can.
-        if (entry.Source!.Kind == MappingSourceKind.Cache)
+        if (entry.ValueNodes.Any(node => node.Source?.Kind == MappingSourceKind.Cache))
         {
             return JsonValue.Create(Placeholder(entry, Name(type)));
         }
@@ -127,16 +208,31 @@ internal static partial class EntryValues
         return null;
     }
 
-    /// <summary>A placeholder for a value read from a row or the cache: <c>&lt;number from dataset.depth | trim, optional&gt;</c>.</summary>
+    /// <summary>
+    /// A placeholder for a value read from a row or the cache: <c>&lt;number from dataset.depth | trim, optional&gt;</c>, and
+    /// for a <c>$coalesce</c> node its alternatives in order: <c>&lt;string from dataset.log_name, else dataset.log_source&gt;</c>.
+    /// </summary>
     private static string Placeholder(MappingEntry entry, string type)
     {
-        var source = entry.Source!;
-        var origin = source.Resolves
-            ? entry.FindBy.Count == 0 ? source.ToString() : $"{source} by {FindText(entry)}"
-            : entry.Modifiers.Count == 0 ? source.ToString() : $"{source} | {ModifierText(entry.Modifiers)}";
+        var origin = string.Join(", else ", entry.ValueNodes.Select(Origin));
         var optional = entry.Required ? string.Empty : ", optional";
         var when = entry.AppliesWhen is { } condition ? $", when {condition}" : string.Empty;
         return $"<{type} from {origin}{optional}{when}>";
+    }
+
+    /// <summary>Where one value node reads its value, as a placeholder names it; a literal alternative is its text.</summary>
+    private static string Origin(MappingEntry node)
+    {
+        if (node.Static is { } literal)
+        {
+            return literal.ToJsonString();
+        }
+
+        var source = node.Source!;
+        var origin = source.Resolves
+            ? node.FindBy.Count == 0 ? source.ToString() : $"{source} by {FindText(node)}"
+            : node.Modifiers.Count == 0 ? source.ToString() : $"{source} | {ModifierText(node.Modifiers)}";
+        return node.Unverified ? origin + " (unverified)" : origin;
     }
 
     /// <summary>
@@ -467,7 +563,7 @@ internal static partial class EntryValues
     /// line asked for and found nothing for is a clean miss, which an optional entry leaves out as a cache miss does.
     /// </remarks>
     private static object? Searched(
-        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, SearchTrail searched)
+        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, RenderTrail searched)
     {
         var path = entry.Target.Text;
         var name = entry.Source!.CacheType!;

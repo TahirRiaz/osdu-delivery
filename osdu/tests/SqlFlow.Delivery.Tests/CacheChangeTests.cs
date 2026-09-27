@@ -277,6 +277,33 @@ public sealed class CacheChangeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_record_a_delivered_record_references_unverified_is_tagged_found_once_the_cache_holds_it()
+    {
+        // The records wrote the reference to psia without the cache holding it ($unverified), and read the metre as well.
+        const string Psia = "dev:reference-data--UnitOfMeasure:psia";
+        await DeliveredAsync(2,
+            new CacheUsage("UnitOfMeasure", Psia, "id", Psia + ":", CacheUsageKind.Unverified),
+            Reads("Name", "metre"));
+
+        // A capture that brings in another unit, and leaves the metre as it was, reaches none of them.
+        await AnalyzeAsync(Units("metre"), With(Units("metre"), "dev:reference-data--UnitOfMeasure:bar"), CacheChangeMode.Approve);
+        Assert.Empty(await Ledger.ListTagsAsync("pending", 10, 0));
+
+        // One that brings in psia verifies the reference they carry, and the records are built again against it.
+        var result = await AnalyzeAsync(Units("metre"), With(Units("metre"), Psia), CacheChangeMode.Approve);
+        Assert.Equal(1, result.Changes);
+        var tag = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+        Assert.Equal("found", tag.Change);
+        Assert.Equal(Psia, tag.ItemId);
+        Assert.Equal(Psia + ":", tag.OldValue);
+        Assert.Equal(2, tag.AffectedRecords);
+        Assert.Contains("which delivered records reference as an unverified id", tag.Describe(), StringComparison.Ordinal);
+
+        static ReferenceType With(ReferenceType units, string id) => new(units.Name, units.EntityType, units.Items.Append(
+            new ReferenceItem(id, new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase) { ["Code"] = ReferenceValue.Of(id.Split(':')[2]) })));
+    }
+
+    [Fact]
     public async Task A_cached_record_that_disappears_is_tagged_removed()
     {
         await DeliveredAsync(1, Reads("Name", "metre"));

@@ -167,11 +167,12 @@ public sealed class LineageTests : IDisposable
         Assert.Equal(
             "osdu-type/${env:OSDU_DATA_PARTITION}/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0",
             Datasets(lineage, LineageRelation.Writes));
-        // The units and the curve dictionary come out of the partition's cache; the wellbores are searched for on the
-        // platform, so the flow reads the wellbore kind itself and is ordered after whatever delivers wellbores there.
+        // The unit tables, the curve dictionary and the partition's units (which a unit is found among when the table does
+        // not translate it) come out of the partition's cache; the wellbores are searched for on the platform, so the flow
+        // reads the wellbore kind itself and is ordered after whatever delivers wellbores there.
         Assert.Equal(
             "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/CurveDictionary, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallDepthUnits, "
-            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallUnits, "
+            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallUnits, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, "
             + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         var written = lineage.Datasets.Single(d => d.Relation == LineageRelation.Writes);

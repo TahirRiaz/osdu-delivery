@@ -259,7 +259,22 @@ public sealed record PreviewDocument
 
     /// <summary>How many values the render read from the cache.</summary>
     public int CacheValues { get; init; }
+
+    /// <summary>Which alternative each <c>$coalesce</c> node of the mapping took the value it wrote from.</summary>
+    public IReadOnlyList<PreviewChoice> Choices { get; init; } = [];
+
+    /// <summary>
+    /// The references the document carries that name no record the cache holds, written because the mapping says
+    /// <c>$unverified</c> where they are built.
+    /// </summary>
+    public IReadOnlyList<string> Unverified { get; init; } = [];
 }
+
+/// <summary>
+/// The alternative of a <c>$coalesce</c> node that gave the value it wrote: which one of how many, where it reads, how many
+/// values it gave (one per item of a repeated array), and whether one of them is an unverified reference.
+/// </summary>
+public sealed record PreviewChoice(string Target, int Alternative, int Of, string Origin, int Values, bool Unverified);
 
 /// <summary>A value of the sent document that the platform gives when the record is sent: where it is, and what it stands for.</summary>
 public sealed record PreviewPlaceholder(string Path, string StandsFor);

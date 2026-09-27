@@ -139,7 +139,9 @@ internal static partial class EntryValues
     /// records of the entity type the id names at all: the reference data a cache flow captured from the partition, which
     /// is what the partition holds. A version holding none of that entity type answers nothing, and the id is written as it
     /// was built. A record found is recorded among the render's dependencies, so a later version that drops or changes it
-    /// reaches this record. False, with the reason, when the version holds records of the entity type and not this one.
+    /// reaches this record. False, with the reason, when the version holds records of the entity type and not this one,
+    /// unless the node lets an unverified id go out (<see cref="MappingEntry.Unverified"/>): then the id is written and
+    /// recorded as unverified.
     /// </summary>
     /// <remarks>
     /// The record is looked up by its id, exactly: OSDU ids that differ only by case are different records, and the id a
@@ -163,6 +165,19 @@ internal static partial class EntryValues
         if (CachedReferences.Find(holding, reference) is { } found)
         {
             usages.Add(new CacheUsage(found.Type.Name, found.Item.Id, "id", found.Item.Id, CacheUsageKind.Match));
+            return true;
+        }
+
+        if (entry.Unverified)
+        {
+            // The node lets the id go out without its record ($unverified): the render notes, in every type that would hold
+            // the record, the id it wrote without finding it there, so a capture that brings the record in reaches this
+            // record, and the ledger shows the reference was unverified when it was written.
+            foreach (var type in holding)
+            {
+                usages.Add(new CacheUsage(type.Name, reference.Id, "id", id, CacheUsageKind.Unverified));
+            }
+
             return true;
         }
 

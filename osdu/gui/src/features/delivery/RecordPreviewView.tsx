@@ -16,6 +16,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import {
   deliveryRecordRoute,
   type DeliveryPreviewAction,
+  type DeliveryPreviewChoice,
   type DeliveryPreviewDecision,
   type DeliveryPreviewFile,
   type DeliveryPreviewPayloadPart,
@@ -77,6 +78,51 @@ const searchColumns: Column<DeliveryPreviewSearch>[] = [
 /** The searches a render made, one row each: what it asked the platform and what it found. */
 export function PreviewSearches({ searches, testId }: { searches: DeliveryPreviewSearch[]; testId: string }) {
   return <DataTable columns={searchColumns} rows={searches} rowKey={(row) => `${row.kind}|${row.field}|${row.value}`} emptyMessage="No searches." data-testid={testId} />;
+}
+
+const choiceColumns: Column<DeliveryPreviewChoice>[] = [
+  { id: "target", header: "Property", render: (row) => <TruncatedText text={row.target} mono maxWidth={320} /> },
+  { id: "alternative", header: "Taken from", render: (row) => <span className="whitespace-nowrap text-[12px]">{`alternative ${row.alternative} of ${row.of}`}</span> },
+  { id: "origin", header: "Reads", fill: true, render: (row) => <TruncatedText text={row.origin} mono maxWidth={520} /> },
+  {
+    id: "values",
+    header: "Values",
+    render: (row) => (
+      <span className="inline-flex items-center gap-1.5 text-[12px]">
+        {row.values.toLocaleString()}
+        {row.unverified && <Badge variant="outline" className="border-warning/40 text-warning" title="A value it gave is a reference to a record the cache does not hold, written because the mapping says $unverified">unverified</Badge>}
+      </span>
+    ),
+  },
+];
+
+/**
+ * Where each $coalesce node of the mapping took its value from, and the references written without a record the cache
+ * holds: what makes a record as complete as its sources allow, and what of it is not verified against the partition.
+ */
+export function PreviewChoices({ choices, unverified, testId }: { choices: DeliveryPreviewChoice[]; unverified: string[]; testId: string }) {
+  if (choices.length === 0 && unverified.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex flex-col gap-2" data-testid={testId}>
+      {choices.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <h3 className="text-[13px] font-medium">Where each $coalesce took its value</h3>
+          <DataTable columns={choiceColumns} rows={choices} rowKey={(row) => `${row.target}|${row.alternative}`} emptyMessage="No $coalesce node gave a value." data-testid={`${testId}-choices`} />
+        </div>
+      )}
+      {unverified.length > 0 && (
+        <div className="flex flex-col gap-1" data-testid={`${testId}-unverified`}>
+          <h3 className="text-[13px] font-medium">References written without a record the cache holds</h3>
+          <ul className="flex flex-col gap-1 text-[12px]">
+            {unverified.map((id) => <li key={id}><RecordName id={id} copy className="max-w-[520px] text-[12px]" copyTestId="copy-preview-unverified" /></li>)}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function referenceColumns(): Column<DeliveryPreviewReference>[] {
@@ -386,6 +432,7 @@ export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview 
                   <PreviewSearches searches={document.searches} testId="preview-searches" />
                 </div>
               )}
+              <PreviewChoices choices={document.choices} unverified={document.unverified} testId="preview-coalesce" />
             </div>
           )}
         </TabsContent>

@@ -13,6 +13,27 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **`$coalesce`: a property taken from the first of several sources that gives a value.** A `$coalesce` node lists two
+  or more alternatives, each a value node of its own (a column, an expression, a cached record, a search or a literal
+  default, with its own `$findBy`, `$modifiers`, `$ignoreSeparators` and `$unverified`), tried in order; `$when`,
+  `$required` and `$description` beside the list decide for all of them. A miss passes to the next alternative, a
+  mistake (a date that is not a date, a value several records answer to) holds the record, a search not answered yet
+  stops the node until it is, and a literal can only be the last. When none gives a value, a required node holds the
+  record naming why each gave nothing. What every alternative tried read from the cache is recorded, so a later cache
+  version that would let an earlier one give a value reaches the record. The preflight checks each alternative and names
+  it (`record.data.Unit.$coalesce[1]`), the mapping builder edits it as "First value of" with each alternative an input
+  of its own, and the record's Render tab, the preview and `sqlflow preview` say which alternative gave each value.
+- **`$unverified`: an id written without a record the cache holds, where the mapping says so.** On a node that builds an
+  id with `id` or `ref`, `$unverified: true` writes the id even when the cache holds records of its entity type and not
+  this one. The render records it as an unverified reference (cache usage kind `unverified`), the preview lists the
+  references a record carries unverified, and a later refresh that holds the record tags the change `found`, so the
+  record is built again against it.
+- **The recall WellLog mapping combines the partition's reference data with the database's tables.** Its units are a
+  `$coalesce`: the Recall spelling through the unit table as a unit the partition holds, else the partition's own units
+  by ID, Code or Name as petrodb-api matches a unit, else the table's translation unverified; the curve dictionary's type
+  and family codes go out `$unverified`. The five sample logs render unchanged; on dev, a curve in psia or mD/mD, or a
+  curve type the partition does not hold yet, now goes out with an unverified reference instead of holding its log or
+  going without it.
 - **A built reference has to name a record the partition holds.** Where the version of the cache a render reads holds
   records of the entity type an `id` or `ref` modifier builds, captured from the partition by a cache flow, the id has
   to name one of them, looked up by its exact id. One that names none holds the record when the entry is required and

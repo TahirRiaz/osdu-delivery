@@ -22,6 +22,13 @@ public enum CacheUsageKind
     /// comes to list the key, the document changes.
     /// </summary>
     Unlisted,
+
+    /// <summary>
+    /// An id a node built and wrote although the cache held records of its entity type and not this one, because the node
+    /// lets an unverified reference go out (<c>$unverified</c>). The item is the record id, the path <c>id</c> and the value
+    /// the id as written. If a later version holds the record, the reference is verified, and the record is built again.
+    /// </summary>
+    Unverified,
 }
 
 /// <summary>

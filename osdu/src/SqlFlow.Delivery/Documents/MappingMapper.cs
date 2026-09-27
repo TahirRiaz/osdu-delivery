@@ -183,6 +183,7 @@ internal static partial class MappingMapper
 
             var field = y!.Field?.Trim();
             var compared = entries
+                .SelectMany(e => e.ValueNodes)
                 .Where(e => e.Source?.Kind == MappingSourceKind.Search && string.Equals(e.Source.CacheType, name, StringComparison.Ordinal))
                 .SelectMany(e => e.FindBy.Select(f => f.Field))
                 .ToHashSet(StringComparer.Ordinal);
@@ -303,7 +304,7 @@ internal static partial class MappingMapper
                 }
             }
 
-            foreach (var name in StaticTexts(entry.Static).SelectMany(MappingEntry.ParameterNames))
+            foreach (var name in entry.ValueNodes.SelectMany(node => StaticTexts(node.Static)).SelectMany(MappingEntry.ParameterNames))
             {
                 if (!parameters.ContainsKey(name))
                 {
@@ -319,7 +320,7 @@ internal static partial class MappingMapper
                 }
             }
 
-            foreach (var name in entry.Modifiers.Where(m => m.Id is not null).SelectMany(m => m.Id!.Parameters))
+            foreach (var name in entry.ValueNodes.SelectMany(node => node.Modifiers).Where(m => m.Id is not null).SelectMany(m => m.Id!.Parameters))
             {
                 if (!parameters.ContainsKey(name))
                 {
@@ -475,7 +476,9 @@ internal static partial class MappingMapper
     private static void ValidateSearches(
         IReadOnlyList<MappingEntry> entries, IReadOnlyDictionary<string, MappingSearch> searches, string source)
     {
-        foreach (var entry in entries.Where(e => e.Source?.Kind == MappingSourceKind.Search))
+        // A search an alternative of a $coalesce node reads is read like any other.
+        var searching = entries.SelectMany(e => e.ValueNodes).Where(e => e.Source?.Kind == MappingSourceKind.Search).ToList();
+        foreach (var entry in searching)
         {
             var name = entry.Source!.CacheType!;
             if (!searches.ContainsKey(name))
@@ -495,7 +498,7 @@ internal static partial class MappingMapper
                 $"{source}: searches {string.Join(" and ", shared.Select(s => $"'{s.Name}'").Order(StringComparer.Ordinal))} both look in {shared.Key}; declare it once and have every node that looks there read it.");
         }
 
-        var read = entries.Where(e => e.Source?.Kind == MappingSourceKind.Search).Select(e => e.Source!.CacheType!).ToHashSet(StringComparer.Ordinal);
+        var read = searching.Select(e => e.Source!.CacheType!).ToHashSet(StringComparer.Ordinal);
         foreach (var unread in searches.Keys.Where(k => !read.Contains(k)).Order(StringComparer.Ordinal))
         {
             throw new FlowValidationException(

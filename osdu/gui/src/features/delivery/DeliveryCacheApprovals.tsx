@@ -39,6 +39,7 @@ const changeTone: Record<string, string> = {
   removed: "bg-destructive/15 text-destructive",
   unmatched: "bg-warning/15 text-warning",
   listed: "bg-info/15 text-info",
+  found: "bg-success/15 text-success",
 };
 
 /** What each kind of change means for the records built from the cached value, as the detail panel says it. */
@@ -47,6 +48,7 @@ const changeMeaning: Record<string, string> = {
   removed: "The cached record delivered records were built from is no longer in the cache.",
   unmatched: "The value delivered records found this cached record by no longer matches it.",
   listed: "The lookup table now lists a key delivered records looked up and found no row under, so they were built without what the row gives.",
+  found: "The cache now holds a record delivered records reference as an unverified id: they were built without finding it, and are built again against it.",
 };
 
 /**
@@ -74,7 +76,8 @@ function useDecideTags(onDecided?: () => void) {
  * key a lookup table now lists, the key the records looked up, and what its row gives them.
  */
 function ValueChange({ row, maxWidth }: { row: DeliveryUpdateTag; maxWidth: number }) {
-  const listed = row.change === "listed";
+  // A newly listed key and a newly found record did not replace a value: what they had is kept, not struck through.
+  const listed = row.change === "listed" || row.change === "found";
   return (
     <span className="inline-flex items-center gap-1.5 font-mono text-[12px]">
       {row.oldValue === null

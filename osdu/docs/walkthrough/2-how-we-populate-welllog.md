@@ -156,26 +156,29 @@ column name under `$item` reads the curve's row. Thirteen of the twenty-one prop
 | --- | --- | --- | --- | --- |
 | `CurveID` | Mapped | `$from: curve_id` | none | `"GR"` |
 | `Mnemonic` | Mapped | `$from: curve_id` | none | `"GR"` |
-| `CurveUnit` | Mapped | `$from: curve_unit` | `replace: $cache.RecallUnits`, then `ref`. A spelling the table does not list is kept as it is. | `"dev:reference-data--UnitOfMeasure:gAPI:"` |
-| `DepthUnit` | Mapped | `$from: index_unit` | `replace: $cache.RecallDepthUnits`, then `ref` | `"dev:reference-data--UnitOfMeasure:m:"` |
+| `CurveUnit` | Mapped | `$coalesce` of three alternatives on `curve_unit` | 1. `replace: $cache.RecallUnits`, then `ref`, a unit the partition holds (a spelling the table does not list is kept as it is); 2. the partition's `UnitOfMeasure` by ID, Code or Name; 3. alternative 1 again with `$unverified: true` | `"dev:reference-data--UnitOfMeasure:gAPI:"` |
+| `DepthUnit` | Mapped | `$coalesce` of three alternatives on `index_unit` | As `CurveUnit`, through `$cache.RecallDepthUnits` | `"dev:reference-data--UnitOfMeasure:m:"` |
 | `TopDepth` | Mapped | `$from: index_min`, the curve's own | none | `2715.6156` |
 | `BaseDepth` | Mapped | `$from: index_max`, the curve's own | none | `2739.8472` |
 | `CurveDescription` | Mapped | `$from: curve_description` | none | `"Gamma Ray"` |
 | `CurveVersion` | Mapped | `$from: curve_version`, with `$required: false`, since the index curve has no version | none | `"1"` |
 | `DateStamp` | Mapped | `$from: update_date`, with `$required: false`, since the index curve has no update time | `date` | `"2021-11-15T23:32:06Z"` |
 | `LogCurveBusinessValueID` | Mapped | `$from: business_value`, with `$required: false`, so a curve without a business value goes out without the property rather than holding its log | `replace: { HIGH: High }`, then `ref` | left out: this curve has no business value |
-| `LogCurveTypeID` | Mapped | `$from: curve_id`, with `$required: false` | `id: "{$param.dataPartition}:reference-data--LogCurveType:{$cache.CurveDictionary.log_curve_type_id}:"` | `"dev:reference-data--LogCurveType:Equinor-GR:"` |
-| `LogCurveMainFamilyID` | Mapped | `$from: curve_id`, with `$required: false` | `id: "{$param.dataPartition}:reference-data--LogCurveMainFamily:{$cache.CurveDictionary.log_curve_main_family_id}:"` | `"dev:reference-data--LogCurveMainFamily:GammaRay:"` |
-| `LogCurveFamilyID` | Mapped | `$from: curve_id`, with `$required: false` | `id: "{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveDictionary.log_curve_family_id}:"` | `"dev:reference-data--LogCurveFamily:Gamma%20Ray:"` |
+| `LogCurveTypeID` | Mapped | `$from: curve_id`, with `$required: false` and `$unverified: true` | `id: "{$param.dataPartition}:reference-data--LogCurveType:{$cache.CurveDictionary.log_curve_type_id}:"` | `"dev:reference-data--LogCurveType:Equinor-GR:"` |
+| `LogCurveMainFamilyID` | Mapped | `$from: curve_id`, with `$required: false` and `$unverified: true` | `id: "{$param.dataPartition}:reference-data--LogCurveMainFamily:{$cache.CurveDictionary.log_curve_main_family_id}:"` | `"dev:reference-data--LogCurveMainFamily:GammaRay:"` |
+| `LogCurveFamilyID` | Mapped | `$from: curve_id`, with `$required: false` and `$unverified: true` | `id: "{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveDictionary.log_curve_family_id}:"` | `"dev:reference-data--LogCurveFamily:Gamma%20Ray:"` |
 
 The other eight are not filled: `CurveQuality`, `CurveSampleTypeID`, `DepthCoding`, `Interpolate`, `InterpreterName`,
 `IsProcessed`, `NullValue` and `NumberOfColumns`.
 
 The schema says `TopDepth` and `BaseDepth` take their unit from `DepthUnit`, so each curve's depths declare their unit.
 
-The `CurveUnit` property reads the `RecallUnits` lookup table, which holds petrodb-api's unit map as rows keyed by the
-Recall spelling. For `GAPI` the replace finds this row, and `ref` writes its unit as the reference to that
-`UnitOfMeasure`:
+The `CurveUnit` property is a `$coalesce`: the first of its alternatives that gives a value is written. The first reads
+the `RecallUnits` lookup table, which holds petrodb-api's unit map as rows keyed by the Recall spelling. For `GAPI` the
+replace finds this row, and `ref` writes its unit as the reference to that `UnitOfMeasure`, which the partition's
+reference data holds. A spelling the table does not translate into a unit the partition holds passes to the second
+alternative, the partition's own units found by ID, Code or Name, and then to the third, which writes the table's
+translation all the same, recorded as an unverified reference:
 
 ```text
 source_unit,osdu_unit
@@ -201,7 +204,7 @@ and one from `logs_meas_from`, the point the depths are measured from.
 | Property | Status | Entry | Modifiers | 12359/1 |
 | --- | --- | --- | --- | --- |
 | `VerticalMeasurement` | Mapped | `$from: elev_meas_ref`, converted to a number | `split: { separator: " ", part: 1 }`, where a single space splits on any run of whitespace | `78.4` |
-| `VerticalMeasurementUnitOfMeasureID` | Mapped | `$from: elev_meas_ref` | `split: { separator: " ", part: 2 }`, then `replace: $cache.RecallDepthUnits`, then `ref` | `"dev:reference-data--UnitOfMeasure:m:"` |
+| `VerticalMeasurementUnitOfMeasureID` | Mapped | `$coalesce` of three alternatives on `elev_meas_ref` | Each first takes `split: { separator: " ", part: 2 }`; then as `DepthUnit` | `"dev:reference-data--UnitOfMeasure:m:"` |
 | `VerticalMeasurementTypeID` | Mapped | `$from: logs_meas_from` | `replace: { KB: KellyBushing }`, then `ref`. The partition holds both a `KB` and a `KellyBushing` record, and petrodb-api files Recall's logs under `KellyBushing`. | `"dev:reference-data--VerticalMeasurementType:KellyBushing:"` |
 
 The other nine are not filled: `EffectiveDateTime`, `TerminationDateTime`, `VerticalCRSID`,

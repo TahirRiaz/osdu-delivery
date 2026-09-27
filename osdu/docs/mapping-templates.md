@@ -182,13 +182,14 @@ record:
 
 **Every word of the mapping language starts with `$`, and every other key is a property of the record.** A template's
 property is therefore never read as the language, whatever it is called (a template may well declare a property called
-`Source`, `Value` or `Description`), and a column never is either. A property is one of four nodes:
+`Source`, `Value` or `Description`), and a column never is either. A property is one of five nodes:
 
 | Node | Written as | Writes |
 | --- | --- | --- |
 | A literal | `ReferenceCurveID: MD`, `otherRelevantDataCountries: [NO]` | The value as it is written: text, a number, a boolean or a list. `{$param.<name>}` tokens in its text are replaced with the flow's parameter values. |
 | An object | `VerticalMeasurement:` and the properties it holds | Each property it holds. |
 | A value node | `Name: { $from: log_source, $modifiers: [trim] }` | One value, read with `$from`, `$expr`, `$value`, `$cache` or `$search`, and the settings beside it. |
+| A `$coalesce` node | `Name: { $coalesce: [ { $from: log_name }, { $from: log_source } ] }` | The value of the first of its alternatives that gives one, each a value node of its own. See [Coalesce](#coalesce). |
 | A `$forEach` node | `Curves: { $forEach: curves, $item: { ... } }` | An array with one item per row of a child dataset, each laid out under `$item`. |
 
 A map holding any `$` key is a node, and all of its keys start with `$`: mixing the language's words with the record's
@@ -202,11 +203,13 @@ properties in one map is refused, and so is a word the language does not have, n
 | `$value` | A literal with settings: a string, a number, a boolean, a list or an object, written verbatim. It takes only `$when` and `$description` beside it. |
 | `$cache` | `<Type>.id`, the OSDU id of the cached record `$findBy` selects, in the reference form OSDU relationships use (ending in `:`); or `<Type>.<field>`, a field of that record, such as `Name` or `NameAliases.AliasName`. |
 | `$search` | `<name>`, the OSDU id of the one record a search of the platform finds by `$findBy`, in the same reference form. See [Searches](#searches). |
+| `$coalesce` | A list of two or more value nodes, tried in order: the first that gives a value is written. See [Coalesce](#coalesce). |
 | `$findBy` | With `$cache` or `$search`: which record to read. |
 | `$modifiers` | Changes to an incoming dataset value, applied top to bottom. |
 | `$when` | A [condition](#expressions): when the property applies to a row. When it does not, the property is left out for that row. |
 | `$required` | What happens when the value is empty. Default `true`. |
 | `$ignoreSeparators` | With `$cache`: a last matching attempt with punctuation and spacing folded away, for names. |
+| `$unverified` | With an `id` or `ref` modifier: write the id even when the cache holds records of its entity type and not this one, recorded as an unverified reference. See [Coalesce](#coalesce). |
 | `$description` | Free text. |
 
 A `$forEach` node takes `$forEach: <child dataset>` and `$item`, which lays out the properties each row fills;
@@ -219,6 +222,64 @@ holding value nodes; the tree has the syntax for them and the loader refuses the
 Each property the tree writes is a template variable, named by its path in the record: `record.data.Curves.$item.CurveID`
 fills `osdu.data.Curves[].CurveID`. Messages name a node by where the document writes it, and the builder, the coverage
 view and the preflight name the variable it fills.
+
+### Coalesce
+
+A property is often best taken from one place and, where that gives nothing, from another: a column, else another
+column; the partition's OSDU record, else the translation a table the database fills gives; a lookup, else a default.
+A `$coalesce` node lists its alternatives in the order they are tried, each a value node of its own with its own
+`$findBy`, `$modifiers`, `$ignoreSeparators` and `$unverified`, and writes the first that gives a value, so the record
+is as complete as its sources allow:
+
+```yaml
+CurveUnit:
+  $coalesce:
+    - $from: curve_unit                  # 1. the source's spelling through the unit table, as a unit the partition holds
+      $modifiers:
+        - replace: $cache.RecallUnits
+        - ref
+    - $cache: UnitOfMeasure.id           # 2. the partition's own unit records, by ID, Code or Name
+      $findBy:
+        - ID = curve_unit
+        - Code = curve_unit
+        - Name = curve_unit
+    - $from: curve_unit                  # 3. the table's translation all the same, as an unverified reference
+      $unverified: true
+      $modifiers:
+        - replace: $cache.RecallUnits
+        - ref
+Name:
+  $coalesce:
+    - $from: log_name
+    - $from: log_source
+      $modifiers: [upper]
+    - $value: unnamed                    # a literal is the last alternative: the value when none of the others gives one
+  $description: The log's own name, else its source.
+```
+
+- **A miss passes to the next alternative**: an empty value, no cached record, a key a lookup table does not list, a
+  search that finds nothing, or an id the partition's cache holds no record under.
+- **A mistake holds the record**, as the alternative would on its own: a date that is not a date, a value several
+  records answer to, a search the platform refuses. What it would have given is unknown rather than absent, so a later
+  alternative never stands in for it.
+- **A search not asked yet stops the node** until the answer is in, so a later alternative never stands in for an
+  earlier one the platform has not been asked.
+- **`$when`, `$required` and `$description` are written beside `$coalesce`** and decide for all of the alternatives.
+  When none gives a value, `$required` decides, and a held record names why each gave nothing. A `$coalesce` whose last
+  alternative is a literal fills its property on every row.
+- An alternative reads one value: it is not a `$forEach` or a `$coalesce`, and a literal can only be the last.
+- **What every alternative tried read from the cache is recorded**, so a later cache version that would let an earlier
+  alternative give a value reaches the record. Which alternative gave each value is shown with the record's render (the
+  record page's Render tab, the preview, `sqlflow preview`); it follows from the row, the mapping version and the cache
+  version the ledger records.
+
+**`$unverified: true`** on a node that builds an id with `id` or `ref`, an alternative or a node of its own, writes the id
+even when the cache holds records of its entity type and not this one: a reference to a record the partition does not
+hold yet, which the node says it accepts. The render records it as an unverified reference in the record's cache
+dependencies, and when a later refresh of the cache holds the record, the change is tagged `found` and the record is
+built again against it. Without it such an id is a cache miss. Use it where the source is the authority for the code
+and the partition only lags behind, such as a curve dictionary's type codes, and never where a code the partition does
+not hold means the value is wrong.
 
 ### findBy
 
@@ -503,7 +564,8 @@ $expr: '"Run " & log_run'
 | --- | --- | --- |
 | The value (a column, or what `$expr` gives) is empty after modifiers | Record held | Property left out |
 | The cache has no matching record | Record held | Property left out |
-| An `id` or `ref` builds an id of an entity type the cache holds, and the cache holds no record under that id | Record held | Property left out |
+| An `id` or `ref` builds an id of an entity type the cache holds, and the cache holds no record under that id | Record held (unless `$unverified`) | Property left out (unless `$unverified`) |
+| No alternative of a `$coalesce` gives a value | Record held, naming why each gave nothing | Property left out |
 | The cache has several matching records | Record held | Record held |
 | No record on the platform matches a search, on any line | Record held | Property left out |
 | Several records on the platform match, the query is refused, or a value could not be searched for and nothing was found | Record held | Record held |
@@ -698,8 +760,10 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
 3. **Entries are prefilled from the cache.** Every variable that points to an entity type the picked partition's cache
    holds gets a cache entry, written `$cache: <Type>.id` with a `$findBy` on the type's first cached field. The person
    completes the incoming side.
-4. For each variable the person chooses dataset, repeater, cache, search (once the mapping declares a search) or
-   static, and adds modifiers, a condition and the required flag. What they type in a fixed value, an id template or
+4. For each variable the person chooses dataset, repeater, cache, search (once the mapping declares a search),
+   static or "first value of" (a `$coalesce`, whose alternatives are each edited as an input of their own and ordered in
+   the list), and adds modifiers, a condition and the required flag; a value that builds an id can be let out
+   unverified. What they type in a fixed value, an id template or
    the label is written in the mapping language as the document reads it (`{$param.name}`, `{$value}`, `{column}`).
 5. The page shows the resulting YAML, laid out as the record tree with every entry at the place its variable has in the
    record, checks it against the template and the current version of the picked partition's cache, and either copies

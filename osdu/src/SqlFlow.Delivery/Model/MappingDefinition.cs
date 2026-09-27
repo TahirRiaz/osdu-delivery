@@ -49,7 +49,7 @@ public sealed record MappingDefinition
     public IReadOnlyList<string> CacheTypesRead()
     {
         var types = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in Entries)
+        foreach (var entry in Entries.SelectMany(e => e.ValueNodes))
         {
             if (entry.Source is { Kind: MappingSourceKind.Cache, CacheType: { } type })
             {
@@ -419,7 +419,31 @@ public sealed partial record MappingEntry
     /// <summary>For a cache source: a last matching attempt with punctuation and spacing folded away, for names.</summary>
     public bool IgnoreSeparators { get; init; }
 
+    /// <summary>
+    /// For a node that builds an id with id or ref (<c>$unverified: true</c>): the id is written even when the cache the
+    /// render reads holds records of its entity type and not this one. The render records it as an unverified reference,
+    /// so a later capture that finds the record reaches the record built from it. Without it, such an id is a cache miss.
+    /// </summary>
+    public bool Unverified { get; init; }
+
+    /// <summary>
+    /// For a <c>$coalesce</c> node: the alternatives after the first, tried in order while the ones before them give no
+    /// value. The entry itself is the first alternative: its source, findBy, modifiers and flags are that alternative's,
+    /// and its target, <c>$when</c>, <c>$required</c> and description are the node's, which decide for all of them. Each
+    /// alternative has the node's target and no condition or required flag of its own. Empty for any other node.
+    /// </summary>
+    public IReadOnlyList<MappingEntry> Alternatives { get; init; } = [];
+
     public string? Description { get; init; }
+
+    /// <summary>True for a <c>$coalesce</c> node: one whose value is the first of its alternatives that gives one.</summary>
+    public bool IsCoalesce => Alternatives.Count > 0;
+
+    /// <summary>
+    /// The value nodes the entry reads its value with: the entry itself, then its alternatives for a <c>$coalesce</c> node.
+    /// Anything that asks what an entry reads (columns, cached types, searches, the ids it builds) asks each of them.
+    /// </summary>
+    public IEnumerable<MappingEntry> ValueNodes => Alternatives.Count == 0 ? [this] : [this, .. Alternatives];
 
     public bool IsStatic => Source is null;
 
@@ -447,42 +471,54 @@ public sealed partial record MappingEntry
             {
                 yield return filter;
             }
+
+            foreach (var alternative in Alternatives)
+            {
+                foreach (var expression in alternative.Expressions)
+                {
+                    yield return expression;
+                }
+            }
         }
     }
 
     /// <summary>
     /// Every dataset column the entry reads: the column its source reads, those its expressions read, its findBy values
-    /// and the tokens of an id it builds.
+    /// and the tokens of an id it builds, and for a <c>$coalesce</c> node those of every alternative.
     /// </summary>
     public IEnumerable<DatasetColumn> Columns
     {
         get
         {
-            if (Source?.Column is { } column)
-            {
-                yield return column;
-            }
-
+            // The expressions include the alternatives' own, so their columns come through here once.
             foreach (var expressionColumn in Expressions.SelectMany(e => e.Columns))
             {
                 yield return expressionColumn;
             }
 
-            foreach (var find in FindBy)
+            foreach (var node in ValueNodes)
             {
-                if (find.Column is { } findColumn)
+                if (node.Source?.Column is { } column)
                 {
-                    yield return findColumn;
+                    yield return column;
                 }
-            }
 
-            foreach (var modifier in Modifiers)
-            {
-                if (modifier.Id is { } id)
+                foreach (var find in node.FindBy)
                 {
-                    foreach (var idColumn in id.Columns)
+                    if (find.Column is { } findColumn)
                     {
-                        yield return idColumn;
+                        yield return findColumn;
+                    }
+                }
+
+                foreach (var modifier in node.Modifiers)
+                {
+                    if (modifier.Id is { } id)
+                    {
+                        foreach (var idColumn in id.Columns)
+                        {
+                            yield return idColumn;
+                        }
                     }
                 }
             }

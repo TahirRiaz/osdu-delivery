@@ -28,7 +28,7 @@ public sealed class MappingRenderer
     private readonly IReadOnlyList<string>? _owned;
     private readonly ResolvedSearches _searches;
     private readonly IRecordSearch _search;
-    private readonly IReadOnlyDictionary<int, (IdTemplate? Template, string? Problem)> _referenceTemplates;
+    private readonly IReadOnlyDictionary<(int Index, string? EntityType), (IdTemplate? Template, string? Problem)> _referenceTemplates;
 
     /// <param name="mapping">The mapping rendered.</param>
     /// <param name="schema">The template the mapping pins.</param>
@@ -94,9 +94,13 @@ public sealed class MappingRenderer
         _requiredData = schema.RequiredAt("data");
         _recordEntries = mapping.Entries.Where(e => !e.IsRepeater && !e.Target.IsRepeated).ToList();
         _repeaters = mapping.Entries.Where(e => e.IsRepeater).Select(r => (r, (IReadOnlyList<MappingEntry>)mapping.ItemEntries(r).ToList())).ToList();
+        // A ref resolves by the variable it fills and the entity type it names, so every alternative of a $coalesce node
+        // that writes one shares the node's variable and is told apart by what it names.
         _referenceTemplates = mapping.Entries
-            .Where(e => e.Modifiers.Any(m => m.Kind == ModifierKind.Ref))
-            .ToDictionary(e => e.Index, e => ResolveReference(e, e.Modifiers.Last(m => m.Kind == ModifierKind.Ref), schema));
+            .SelectMany(e => e.ValueNodes.Select(node => (Entry: e, Ref: node.Modifiers.LastOrDefault(m => m.Kind == ModifierKind.Ref))))
+            .Where(r => r.Ref is not null)
+            .DistinctBy(r => (r.Entry.Index, r.Ref!.EntityType))
+            .ToDictionary(r => (r.Entry.Index, r.Ref!.EntityType), r => ResolveReference(r.Entry, r.Ref!, schema));
 
         // A DSPDM business object row lists the attributes its mapping fills, which are the ones a save may clear.
         _owned = DspdmKinds.Is(mapping.Kind)
@@ -244,8 +248,9 @@ public sealed class MappingRenderer
         var holds = new List<string>();
         var usages = new List<CacheUsage>();
 
-        // What this render asks of the platform is its own: the plan renders on several threads over one renderer.
-        var searched = new SearchTrail();
+        // What this render asks of the platform, and the alternatives it takes, are its own: the plan renders on several
+        // threads over one renderer.
+        var searched = new RenderTrail();
 
         var key = DeriveKey(record.Row, out var keyValues);
         var sourceKey = SourceKey.Display(_mapping.Dataset.System, keyValues);
@@ -297,6 +302,7 @@ public sealed class MappingRenderer
             CacheUsages = Distinct(usages),
             SearchUsages = searched.Used,
             Unanswered = searched.Unanswered,
+            Choices = searched.Chosen,
         };
     }
 
@@ -339,7 +345,8 @@ public sealed class MappingRenderer
     /// </summary>
     internal IdTemplate? ReferenceTemplate(MappingEntry entry, out string? problem)
     {
-        if (_referenceTemplates.TryGetValue(entry.Index, out var resolved))
+        var reference = entry.Modifiers.LastOrDefault(m => m.Kind == ModifierKind.Ref);
+        if (reference is not null && _referenceTemplates.TryGetValue((entry.Index, reference.EntityType), out var resolved))
         {
             problem = resolved.Problem;
             return resolved.Template;
@@ -524,7 +531,7 @@ public sealed class MappingRenderer
     }
 
     /// <summary>A source record's values, as a delivery renders them.</summary>
-    private sealed class RowValues(MappingRenderer renderer, SourceRecord record, List<string> holds, List<CacheUsage> usages, SearchTrail searched) : IRecordValues
+    private sealed class RowValues(MappingRenderer renderer, SourceRecord record, List<string> holds, List<CacheUsage> usages, RenderTrail searched) : IRecordValues
     {
         public JsonNode? Value(MappingEntry entry, SourceRow? item) => EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages, searched);
 
@@ -557,6 +564,17 @@ public sealed class MappingRenderer
         }
     }
 }
+
+/// <summary>
+/// The alternative of a <c>$coalesce</c> node that gave the value it wrote.
+/// </summary>
+/// <param name="Target">The variable the node fills.</param>
+/// <param name="Alternative">Which alternative gave it, counting from one in the order they are tried.</param>
+/// <param name="Of">How many alternatives the node lists.</param>
+/// <param name="Origin">Where that alternative reads its value, as a record's shape names it.</param>
+/// <param name="Values">How many values it gave: one, or one per item of a repeated array that took it.</param>
+/// <param name="Unverified">True when a value it gave is an id the cache holds no record under, written because the alternative says <c>$unverified</c>.</param>
+public sealed record CoalesceChoice(string Target, int Alternative, int Of, string Origin, int Values, bool Unverified);
 
 /// <summary>The outcome of rendering one record.</summary>
 public sealed record RenderResult
@@ -593,6 +611,13 @@ public sealed record RenderResult
 
     /// <summary>True when the render could not finish because the platform has not been asked yet.</summary>
     public bool IsIncomplete => Unanswered.Count > 0;
+
+    /// <summary>
+    /// Which alternative each <c>$coalesce</c> node took the value it wrote from. It is not part of the document, which the
+    /// ledger hashes, and follows from the same row, mapping version and cache version, so rendering the record again from
+    /// what the ledger records tells it again.
+    /// </summary>
+    public IReadOnlyList<CoalesceChoice> Choices { get; init; } = [];
 
     public bool IsHeld => Holds.Count > 0 || Key is null;
 }

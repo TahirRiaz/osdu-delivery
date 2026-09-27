@@ -39,6 +39,8 @@ internal static partial class MappingMapper
     internal const string RequiredKey = "$required";
     internal const string IgnoreSeparatorsKey = "$ignoreSeparators";
     internal const string DescriptionKey = "$description";
+    internal const string CoalesceKey = "$coalesce";
+    internal const string UnverifiedKey = "$unverified";
 
     /// <summary>How a column of the dataset's own row is named from anywhere in the tree: <c>$dataset.log_id</c>.</summary>
     internal const string DatasetReference = Marker + DatasetColumn.Prefix;
@@ -47,17 +49,20 @@ internal static partial class MappingMapper
     internal const string CacheReference = Marker + MappingSource.CachePrefix;
 
     /// <summary>The keys a value node reads its value with; naming one of them makes a map a value node.</summary>
-    internal static readonly IReadOnlyList<string> SourceKeys = [FromKey, ExprKey, ValueKey, CacheKey, SearchKey];
+    internal static readonly IReadOnlyList<string> SourceKeys = [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, CoalesceKey];
 
     /// <summary>The settings a value node takes beside the key it reads its value with.</summary>
-    internal static readonly IReadOnlyList<string> ValueSettings = [FindByKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, DescriptionKey];
+    internal static readonly IReadOnlyList<string> ValueSettings = [FindByKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, DescriptionKey];
+
+    /// <summary>The settings a <c>$coalesce</c> node takes beside its alternatives: those that decide for all of them.</summary>
+    internal static readonly IReadOnlyList<string> CoalesceSettings = [WhenKey, RequiredKey, DescriptionKey];
 
     /// <summary>The settings a <c>$forEach</c> node takes beside the child dataset it repeats.</summary>
     internal static readonly IReadOnlyList<string> RepeatSettings = [ItemKey, WhereKey, WhenKey, RequiredKey, DescriptionKey];
 
     /// <summary>Every word of the mapping language a key of the record tree can be.</summary>
     internal static readonly IReadOnlyList<string> NodeKeys =
-        [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, ForEachKey, ItemKey, WhereKey, FindByKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, DescriptionKey];
+        [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, CoalesceKey, ForEachKey, ItemKey, WhereKey, FindByKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, DescriptionKey];
 
     /// <summary>The value keys, as a message lists them.</summary>
     private static string SourceList => string.Join(", ", SourceKeys.Take(SourceKeys.Count - 1)) + " or " + SourceKeys[^1];
@@ -288,16 +293,21 @@ internal static partial class MappingMapper
             throw new FlowValidationException($"{at} reads its value with {string.Join(" and ", named)}; a node reads one of {SourceList}.");
         }
 
+        if (named[0] == CoalesceKey)
+        {
+            return Coalesce(map, path, location, scope, index, source);
+        }
+
         var target = Target(path, at);
         var description = Text(map, DescriptionKey, at);
         var condition = Has(map, WhenKey) ? Condition(Get(map, WhenKey), WhenKey, scope, at) : null;
 
         if (named[0] == ValueKey)
         {
-            if (new[] { FindByKey, ModifiersKey, RequiredKey, IgnoreSeparatorsKey }.Any(key => Has(map, key)))
+            if (new[] { FindByKey, ModifiersKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey }.Any(key => Has(map, key)))
             {
                 throw new FlowValidationException(
-                    $"{at}: a literal {ValueKey} takes only {WhenKey} and {DescriptionKey} beside it; {FindByKey}, {ModifiersKey}, {RequiredKey} and {IgnoreSeparatorsKey} belong to a node that reads the dataset, the cache or a search.");
+                    $"{at}: a literal {ValueKey} takes only {WhenKey} and {DescriptionKey} beside it; {FindByKey}, {ModifiersKey}, {RequiredKey}, {IgnoreSeparatorsKey} and {UnverifiedKey} belong to a node that reads the dataset, the cache or a search.");
             }
 
             var literal = StaticValue(Get(map, ValueKey), at)
@@ -370,6 +380,13 @@ internal static partial class MappingMapper
             throw new FlowValidationException($"{at}: {Word(builders[0])} builds what the node writes, so it is the last modifier; move {modifiers[^1]} before it.");
         }
 
+        var unverified = Flag(map, UnverifiedKey, at) ?? false;
+        if (unverified && builders.Count == 0)
+        {
+            throw new FlowValidationException(
+                $"{at}: {UnverifiedKey} lets an id the node builds with id or ref go out when the cache holds no record under it, and this node builds no id; build one, or remove {UnverifiedKey}.");
+        }
+
         return new MappingEntry
         {
             Index = index,
@@ -381,7 +398,91 @@ internal static partial class MappingMapper
             AppliesWhen = condition,
             Required = Flag(map, RequiredKey, at) ?? true,
             IgnoreSeparators = Flag(map, IgnoreSeparatorsKey, at) ?? false,
+            Unverified = unverified,
             Description = description,
+        };
+    }
+
+    /// <summary>
+    /// A <c>$coalesce</c> node: its alternatives, in order, each a value node of its own (a column, an expression, the
+    /// cache, a search or a literal, with its own findBy and modifiers); the node's value is the first of them that gives
+    /// one. The node's <c>$when</c>, <c>$required</c> and description decide for all of them, so an alternative takes none
+    /// of them. The entry returned is the first alternative, carrying the node's settings and the rest of the alternatives.
+    /// </summary>
+    private static MappingEntry Coalesce(IDictionary<object, object> map, IReadOnlyList<string> path, string location, TreeScope scope, int index, string source)
+    {
+        var at = $"{source}: {location}";
+        const string Example = $"{CoalesceKey}: [ {{ {FromKey}: log_name }}, {{ {FromKey}: log_source }} ]";
+        foreach (var key in map.Keys.Select(KeyText))
+        {
+            if (key == CoalesceKey || CoalesceSettings.Contains(key))
+            {
+                continue;
+            }
+
+            throw new FlowValidationException(ValueSettings.Contains(key)
+                ? $"{at}: {key} belongs to one of the alternatives {CoalesceKey} lists, each of which reads its own value; move it into the alternative it is for."
+                : $"{at}: a {CoalesceKey} node takes {CoalesceKey}, then {SettingList(CoalesceSettings)}, not '{key}'.");
+        }
+
+        var listed = Get(map, CoalesceKey) switch
+        {
+            IDictionary<object, object> => null,
+            IEnumerable<object> items => items.ToList(),
+            _ => null,
+        } ?? throw new FlowValidationException(
+            $"{at}: {CoalesceKey} lists the alternatives the value is taken from, in order, each a node of its own, such as {Example}.");
+        if (listed.Count < 2)
+        {
+            throw new FlowValidationException(
+                $"{at}: {CoalesceKey} lists {listed.Count} alternative{(listed.Count == 1 ? string.Empty : "s")}, and it takes the first of two or more that gives a value; one alternative is a node of its own, written without {CoalesceKey}.");
+        }
+
+        var alternatives = new List<MappingEntry>(listed.Count);
+        for (var i = 0; i < listed.Count; i++)
+        {
+            var alternativeLocation = $"{location}.{CoalesceKey}[{i}]";
+            var alternativeAt = $"{source}: {alternativeLocation}";
+            if (listed[i] is not IDictionary<object, object> { Count: > 0 } alternative
+                || !alternative.Keys.Select(KeyText).Any(key => SourceKeys.Contains(key) || key == ForEachKey))
+            {
+                throw new FlowValidationException(
+                    $"{alternativeAt} is not a node: each alternative of {CoalesceKey} reads one value with {string.Join(", ", SourceKeys.Where(k => k != CoalesceKey))}, such as {{ {FromKey}: log_name }}.");
+            }
+
+            _ = IsNode(alternative, alternativeAt);
+            if (Has(alternative, CoalesceKey))
+            {
+                throw new FlowValidationException($"{alternativeAt} lists alternatives of its own; write every alternative in the one {CoalesceKey} list, in the order they are tried.");
+            }
+
+            if (Has(alternative, ForEachKey) || Has(alternative, ItemKey))
+            {
+                throw new FlowValidationException($"{alternativeAt} repeats rows with {ForEachKey}, and an alternative of {CoalesceKey} reads one value.");
+            }
+
+            foreach (var setting in CoalesceSettings.Where(setting => Has(alternative, setting)))
+            {
+                throw new FlowValidationException(
+                    $"{alternativeAt}: {setting} decides for the whole {CoalesceKey} node; write it beside {CoalesceKey}, not in one of its alternatives.");
+            }
+
+            if (alternatives.Count > 0 && alternatives[^1].Static is not null)
+            {
+                throw new FlowValidationException(
+                    $"{alternativeAt} is never tried: the literal before it always gives a value. A literal is the last alternative, the value taken when none of the others gives one.");
+            }
+
+            alternatives.Add(Value(alternative, path, alternativeLocation, scope, index, source) with { Required = false });
+        }
+
+        return alternatives[0] with
+        {
+            Location = location,
+            Alternatives = alternatives.Skip(1).ToList(),
+            AppliesWhen = Has(map, WhenKey) ? Condition(Get(map, WhenKey), WhenKey, scope, at) : null,
+            Required = Flag(map, RequiredKey, at) ?? true,
+            Description = Text(map, DescriptionKey, at),
         };
     }
 

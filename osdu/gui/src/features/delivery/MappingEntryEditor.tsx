@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, CircleAlert, OctagonAlert, Plus, TriangleAlert, X } from "lucide-react";
+import { ArrowDown, ArrowUp, CircleAlert, OctagonAlert, Pencil, Plus, TriangleAlert, X } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,7 +19,7 @@ import type {
 } from "../../api/delivery";
 import { isLookupEntityType } from "./cacheFormat";
 import {
-  cachedReplaceFields, DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, ID_MODIFIER_KINDS, ID_TEMPLATE_EXAMPLE, inputsFor, isCachedReplace, KEY_NAME, knownColumns, MODIFIER_KINDS,
+  alternativeText, cachedReplaceFields, DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, ID_MODIFIER_KINDS, ID_TEMPLATE_EXAMPLE, inputsFor, isCachedReplace, KEY_NAME, knownColumns, MODIFIER_KINDS,
   newModifier, NO_GROUP, parseJson, repeaterOf, staticModeFor,
   type StaticMode,
 } from "./mappingDraft";
@@ -47,6 +47,7 @@ const CHOICE_LABELS: Record<Choice, string> = {
   Static: "Static value",
   Search: "Platform search",
   Expression: "Expression",
+  Coalesce: "First value of",
 };
 
 /** One findBy line as the form edits it: the cached field, and a dataset column or a fixed text. */
@@ -516,17 +517,31 @@ interface EntryFormProps {
   issues: MappingDraftIssue[];
   onSave: (target: string, entry: MappingDraftEntry | null) => void;
   onClose: () => void;
+  /**
+   * Set when the form edits one alternative of a coalesce entry, which it names ("alternative 2"): one value of its own
+   * input, without what only the whole entry decides (its condition, whether it is required, its description).
+   */
+  alternativeLabel?: string;
 }
 
-function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: EntryFormProps) {
+/** The alternative the nested editor edits: its place in the list (the end for a new one), and a number per opening. */
+interface EditedAlternative {
+  index: number;
+  entry: MappingDraftEntry | null;
+  session: number;
+}
+
+function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alternativeLabel }: EntryFormProps) {
   const ids = useId();
   const { variable, entry, keyHolder, outside } = target;
   const known = useMemo(() => knownColumns(draft), [draft]);
+  const isAlternative = alternativeLabel !== undefined;
 
   const searches = draft.searches;
   const offered: MappingDraftInput[] = outside !== null ? ["Dataset", "Expression", "Repeat", "Cache", "Search", "Static"] : inputsFor(variable);
-  // A search is offered once the mapping declares one to look in; the searches block says which kinds it looks in.
-  const allowed = offered.filter((input) => input !== "Search" || searches.length > 0);
+  // A search is offered once the mapping declares one to look in; the searches block says which kinds it looks in. An
+  // alternative reads one value, so it is neither a repeat nor a coalesce of its own.
+  const allowed = offered.filter((input) => (input !== "Search" || searches.length > 0) && (!isAlternative || (input !== "Repeat" && input !== "Coalesce")));
   if (entry !== null && !allowed.includes(entry.input)) {
     allowed.push(entry.input);
   }
@@ -534,7 +549,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
   const typedMode = staticModeFor(variable, null);
   const initialStatic = entry?.input === "Static" ? entry.static : null;
 
-  const [choice, setChoice] = useState<Choice>(entry?.input ?? (keyHolder !== null ? allowed[0] : "None"));
+  const [choice, setChoice] = useState<Choice>(entry?.input ?? (keyHolder !== null || isAlternative ? allowed[0] : "None"));
   const [keyName, setKeyName] = useState("");
   const [column, setColumn] = useState(entry?.column ?? "");
   const [child, setChild] = useState(entry?.child ?? "");
@@ -553,6 +568,10 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
   const [where, setWhere] = useState(entry?.where ?? "");
   const [required, setRequired] = useState(entry?.required ?? true);
   const [description, setDescription] = useState(entry?.description ?? "");
+  const [unverified, setUnverified] = useState(entry?.unverified ?? false);
+  const [alternatives, setAlternatives] = useState<MappingDraftEntry[]>(entry?.alternatives ?? []);
+  const [editing, setEditing] = useState<EditedAlternative | null>(null);
+  const [openings, setOpenings] = useState(0);
   const [jsonMode, setJsonMode] = useState(() => typedMode === "json" || staticModeFor(variable, initialStatic) === "json");
   const [staticState, setStaticState] = useState<StaticState>(() => seedStatic(variable, initialStatic));
 
@@ -586,6 +605,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
     .filter((field) => field !== ""))]
     .map((field) => ({ value: field, group: "Compared by this search's entries" }));
   const lookup = choice === "Cache" || choice === "Search";
+  const buildsId = modifiers.some((modifier) => ID_MODIFIER_KINDS.includes(modifier.kind));
 
   let keyError: string | null = null;
   if (keyHolder !== null) {
@@ -603,9 +623,59 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
   const columnsList = `${ids}-columns`;
   const childrenList = `${ids}-children`;
 
+  /**
+   * The entry the form holds for an input, as Save writes it. An alternative keeps nothing only the whole entry decides,
+   * and a coalesce entry carries its alternatives under its own target.
+   */
+  const build = (kind: MappingDraftInput): MappingDraftEntry => {
+    const looks = kind === "Cache" || kind === "Search";
+    return {
+      ...(entry ?? emptyEntry(newTarget, kind)),
+      target: newTarget,
+      input: kind,
+      column: kind === "Dataset" ? bare(column) : null,
+      child: kind === "Repeat" ? bare(child) : null,
+      cacheType: looks ? cacheType.trim() : null,
+      cacheField: kind === "Cache" ? cacheField.trim() : kind === "Search" ? "id" : null,
+      findBy: looks
+        ? findBy.map((line) => (line.mode === "text"
+          ? { field: line.field.trim(), column: null, literal: line.value }
+          : { field: line.field.trim(), column: bare(line.value), literal: null }))
+        : [],
+      modifiers: kind === "Dataset" || kind === "Expression" || looks
+        ? modifiers.map((modifier) => (modifier.kind === "date" && (modifier.text ?? "").trim() === "" ? { ...modifier, text: null } : modifier))
+        : [],
+      expression: kind === "Expression" ? expression.trim() : null,
+      when: !isAlternative && conditionOn && condition.trim() !== "" ? condition.trim() : null,
+      where: kind === "Repeat" && whereOn && where.trim() !== "" ? where.trim() : null,
+      required: kind === "Static" || isAlternative ? true : required,
+      ignoreSeparators: kind === "Cache" && ignoreSeparators,
+      unverified: (kind === "Dataset" || kind === "Expression") && buildsId && unverified,
+      alternatives: kind === "Coalesce" ? alternatives.map((alternative) => ({ ...alternative, target: newTarget })) : [],
+      static: kind === "Static" ? staticResult.json : null,
+      description: !isAlternative && description.trim() !== "" ? description.trim() : null,
+      prefilled: false,
+    };
+  };
+
+  const openAlternative = (index: number, alternative: MappingDraftEntry | null) => {
+    const session = openings + 1;
+    setOpenings(session);
+    setEditing({ index, entry: alternative, session });
+  };
+
   const choose = (next: Choice) => {
     const previous = choice;
     setChoice(next);
+    if (next === "Coalesce") {
+      // What the form already reads becomes the first alternative, so turning an entry into a coalesce keeps it.
+      if (alternatives.length === 0 && previous !== "None" && previous !== "Repeat" && previous !== "Coalesce") {
+        setAlternatives([{ ...build(previous), when: null, required: true, description: null }]);
+      }
+
+      return;
+    }
+
     if (next === "Search") {
       // A search reads the id of the record it finds, in one of the searches the mapping declares. The lines of a cache
       // lookup name cached fields, not the properties a search compares, so they do not carry over.
@@ -667,32 +737,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
       return;
     }
 
-    const next: MappingDraftEntry = {
-      ...(entry ?? emptyEntry(newTarget, choice)),
-      target: newTarget,
-      input: choice,
-      column: choice === "Dataset" ? bare(column) : null,
-      child: choice === "Repeat" ? bare(child) : null,
-      cacheType: lookup ? cacheType.trim() : null,
-      cacheField: choice === "Cache" ? cacheField.trim() : choice === "Search" ? "id" : null,
-      findBy: lookup
-        ? findBy.map((line) => (line.mode === "text"
-          ? { field: line.field.trim(), column: null, literal: line.value }
-          : { field: line.field.trim(), column: bare(line.value), literal: null }))
-        : [],
-      modifiers: choice === "Dataset" || choice === "Expression" || lookup
-        ? modifiers.map((modifier) => (modifier.kind === "date" && (modifier.text ?? "").trim() === "" ? { ...modifier, text: null } : modifier))
-        : [],
-      expression: choice === "Expression" ? expression.trim() : null,
-      when: conditionOn && condition.trim() !== "" ? condition.trim() : null,
-      where: choice === "Repeat" && whereOn && where.trim() !== "" ? where.trim() : null,
-      required: choice === "Static" ? true : required,
-      ignoreSeparators: choice === "Cache" && ignoreSeparators,
-      static: choice === "Static" ? staticResult.json : null,
-      description: description.trim() === "" ? null : description.trim(),
-      prefilled: false,
-    };
-    onSave(newTarget, next);
+    onSave(newTarget, build(choice));
   };
 
   const facts = [
@@ -707,7 +752,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
     <>
       <SheetHeader>
         <SheetTitle className="break-all pr-6 font-mono text-[14px]" data-testid="mapping-builder-entry-target">
-          {keyHolder !== null ? `${keyHolder.path}.<key>` : variable.path}
+          {keyHolder !== null ? `${keyHolder.path}.<key>` : isAlternative ? `${variable.path}, ${alternativeLabel}` : variable.path}
         </SheetTitle>
         <SheetDescription>{facts.join(", ")}.</SheetDescription>
       </SheetHeader>
@@ -765,7 +810,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
             className="flex-wrap"
             data-testid="mapping-builder-entry-input"
           >
-            {keyHolder === null && (
+            {keyHolder === null && !isAlternative && (
               <ToggleGroupItem value="None" data-testid="mapping-builder-entry-input-none">{CHOICE_LABELS.None}</ToggleGroupItem>
             )}
             {allowed.map((input) => (
@@ -781,6 +826,46 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
             </p>
           )}
         </Section>
+
+        {choice === "Coalesce" && (
+          <Section
+            title="Alternatives"
+            hint="Tried in order, and the first that gives a value is written: one that gives nothing (an empty column, no cached record, an id the partition holds no record under) passes to the next, and one that meets a mistake, such as a date that is not a date, holds the record. A static value can only be the last, the value when none of the others gives one."
+            action={(
+              <Button variant="outline" size="xs" onClick={() => openAlternative(alternatives.length, null)} data-testid="mapping-builder-entry-alternative-add">
+                <Plus />
+                Add an alternative
+              </Button>
+            )}
+            testId="mapping-builder-entry-alternatives"
+          >
+            {alternatives.length < 2 && (
+              <p className="text-xs text-destructive">Add at least two alternatives; one alternative is an input of its own.</p>
+            )}
+            {alternatives.map((alternative, index) => (
+              <div
+                key={index}
+                className="flex items-center gap-1 rounded-md border border-border p-2"
+                data-testid={`mapping-builder-entry-alternative-${index}`}
+              >
+                <span className="w-5 shrink-0 text-xs text-muted-foreground">{index + 1}</span>
+                <span className="min-w-0 flex-1 break-all font-mono text-[12px]">{alternativeText(alternative)}</span>
+                <IconAction label="Edit this alternative" onClick={() => openAlternative(index, alternative)} testId={`mapping-builder-entry-alternative-edit-${index}`}>
+                  <Pencil />
+                </IconAction>
+                <IconAction label="Move up" onClick={() => setAlternatives((current) => move(current, index, -1))} disabled={index === 0} testId={`mapping-builder-entry-alternative-up-${index}`}>
+                  <ArrowUp />
+                </IconAction>
+                <IconAction label="Move down" onClick={() => setAlternatives((current) => move(current, index, 1))} disabled={index === alternatives.length - 1} testId={`mapping-builder-entry-alternative-down-${index}`}>
+                  <ArrowDown />
+                </IconAction>
+                <IconAction label="Remove this alternative" onClick={() => setAlternatives((current) => current.filter((_, i) => i !== index))} testId={`mapping-builder-entry-alternative-remove-${index}`}>
+                  <X />
+                </IconAction>
+              </div>
+            ))}
+          </Section>
+        )}
 
         {choice === "Dataset" && (
           <Section
@@ -1220,10 +1305,16 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
                 )}
               </div>
             ))}
+            {(choice === "Dataset" || choice === "Expression") && buildsId && (
+              <Label className="flex items-center gap-2 text-[13px] font-normal">
+                <Switch checked={unverified} onCheckedChange={setUnverified} data-testid="mapping-builder-entry-unverified" />
+                Write the id even when the cache holds no such record, recorded as unverified
+              </Label>
+            )}
           </Section>
         )}
 
-        {choice !== "None" && (
+        {choice !== "None" && !isAlternative && (
           <Section
             title="When it applies"
             hint={choice === "Repeat"
@@ -1246,12 +1337,14 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
           </Section>
         )}
 
-        {choice !== "None" && choice !== "Static" && (
+        {choice !== "None" && choice !== "Static" && !isAlternative && (
           <Section
             title="Required"
             hint={variable.required
               ? "The template requires this variable, so its entry has to stay required."
-              : "Off leaves the variable out when the value is empty or the cache has no match, instead of holding the record."}
+              : choice === "Coalesce"
+                ? "Off leaves the variable out when no alternative gives a value, instead of holding the record."
+                : "Off leaves the variable out when the value is empty or the cache has no match, instead of holding the record."}
           >
             <Label className="flex items-center gap-2 text-[13px] font-normal">
               <Switch checked={required} onCheckedChange={setRequired} data-testid="mapping-builder-entry-required" />
@@ -1260,7 +1353,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
           </Section>
         )}
 
-        {choice !== "None" && (
+        {choice !== "None" && !isAlternative && (
           <Section title="Description">
             <Input
               className="h-8"
@@ -1278,9 +1371,33 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose }: Entry
         )}
         <Button variant="ghost" size="sm" onClick={onClose} data-testid="mapping-builder-entry-cancel">Cancel</Button>
         <Button size="sm" onClick={save} disabled={error !== null} data-testid="mapping-builder-entry-save">
-          {choice === "None" && entry !== null ? "Remove entry" : "Save entry"}
+          {isAlternative ? "Save alternative" : choice === "None" && entry !== null ? "Remove entry" : "Save entry"}
         </Button>
       </SheetFooter>
+      {/* One alternative of the coalesce, edited as an input of its own over the entry's form. */}
+      <Sheet open={editing !== null} onOpenChange={(open) => { if (!open) { setEditing(null); } }}>
+        <SheetContent className="w-full gap-0 sm:max-w-2xl" data-testid="mapping-builder-alternative-editor">
+          {editing !== null && (
+            <EntryForm
+              key={editing.session}
+              target={{ variable, entry: editing.entry, keyHolder: null, outside: null, session: editing.session }}
+              draft={draft}
+              cacheTypes={cacheTypes}
+              issues={[]}
+              alternativeLabel={`alternative ${editing.index + 1}`}
+              onSave={(_, value) => {
+                if (value !== null) {
+                  const at = editing.index;
+                  setAlternatives((current) => (at < current.length ? current.map((old, i) => (i === at ? value : old)) : [...current, value]));
+                }
+
+                setEditing(null);
+              }}
+              onClose={() => setEditing(null)}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
     </>
   );
 }

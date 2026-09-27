@@ -51,12 +51,14 @@ public sealed class CacheImpactAnalyzer
         var after = current.Items.ToDictionary(i => i.Id, i => i, StringComparer.Ordinal);
 
         // Only the items that actually moved are worth asking the ledger about, and, for a lookup table, the keys it lists
-        // now and did not before: a record that looked one of them up found no row, and was built without it.
+        // now and did not before: a record that looked one of them up found no row, and was built without it. For a type
+        // of OSDU records, the records it holds now and did not before: a record that wrote an id of one of them as an
+        // unverified reference was built without finding it.
         var moved = before.Keys.Where(id => !after.ContainsKey(id) || Differs(previous, before[id], current, after[id])).ToList();
-        var listed = current.IsLookup
-            ? after.Keys.Where(id => !before.ContainsKey(id)).Select(CacheUsage.ListingKey).Distinct(StringComparer.Ordinal).ToList()
-            : [];
-        if (moved.Count == 0 && listed.Count == 0)
+        var added = after.Keys.Where(id => !before.ContainsKey(id)).ToList();
+        var listed = current.IsLookup ? added.Select(CacheUsage.ListingKey).Distinct(StringComparer.Ordinal).ToList() : [];
+        var found = current.IsLookup ? [] : added;
+        if (moved.Count == 0 && listed.Count == 0 && found.Count == 0)
         {
             return new CacheImpactResult(current.Name, 0, 0, 0, 0);
         }
@@ -67,7 +69,7 @@ public sealed class CacheImpactAnalyzer
         if (moved.Count > 0)
         {
             holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, moved, ct).ConfigureAwait(false))
-                .Where(use => use.Kind != CacheUsageKind.Unlisted));
+                .Where(use => use.Kind is not (CacheUsageKind.Unlisted or CacheUsageKind.Unverified)));
         }
 
         if (listed.Count > 0)
@@ -76,7 +78,13 @@ public sealed class CacheImpactAnalyzer
                 .Where(use => use.Kind == CacheUsageKind.Unlisted));
         }
 
-        var changedItems = moved.Count + listed.Count;
+        if (found.Count > 0)
+        {
+            holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, found, ct).ConfigureAwait(false))
+                .Where(use => use.Kind == CacheUsageKind.Unverified));
+        }
+
+        var changedItems = moved.Count + listed.Count + found.Count;
         if (holders.Count == 0)
         {
             _logger.LogInformation(
@@ -158,6 +166,13 @@ public sealed class CacheImpactAnalyzer
             return found.IsCaseAmbiguous ? ("listed", null, found.CaseVariants[0].Id) : null;
         }
 
+        if (use.Kind == CacheUsageKind.Unverified)
+        {
+            // An id written without its record: the type holds the record now, so the reference the record carries names
+            // a record the partition holds, and the record is built again against it.
+            return item is null ? null : ("found", use.ValueText, item.Id);
+        }
+
         if (use.Kind == CacheUsageKind.Empty)
         {
             // The document was built without a value here: it changes only when the path now gives one. A cached record
@@ -208,7 +223,7 @@ public sealed class CacheImpactAnalyzer
             return null;
         }
 
-        if (sample.Kind is CacheUsageKind.Match or CacheUsageKind.Unlisted)
+        if (sample.Kind is CacheUsageKind.Match or CacheUsageKind.Unlisted or CacheUsageKind.Unverified)
         {
             return string.Join(", ", uses.Select(u => u.ValueText).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase));
         }
