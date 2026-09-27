@@ -1273,6 +1273,109 @@ public sealed partial class OsduLedger : ILedger
             .ToList();
     }
 
+    public async Task<IReadOnlyList<RecordState>> ListRecordsAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default)
+    {
+        return await ReadAsync(
+            async db =>
+            {
+                var query = db.DeliveryRecords.Where(r => r.FlowId == flowId);
+                if (after is { } cursor)
+                {
+                    var from = cursor.Value;
+                    query = query.Where(r => r.DeliveryKey.CompareTo(from) > 0);
+                }
+
+                return ToStates(await ReadLeasedAsync(db, query.OrderBy(r => r.DeliveryKey).Take(Math.Clamp(max, 1, 10_000)), ct).ConfigureAwait(false));
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyDictionary<DeliveryKey, AttemptRecord>> LatestAttemptsAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        var result = new Dictionary<DeliveryKey, AttemptRecord>();
+        foreach (var chunk in keys.Select(k => k.Value).Distinct().Chunk(ChunkSize))
+        {
+            // The newest attempt of each record, ranked by the database over (FlowId, DeliveryKey, StartedUtc): a record
+            // tried many times costs its own rows of the index, not a read of every attempt into memory.
+            var rows = await ReadAsync(
+                db => db.DeliveryAttempts
+                    .Where(a => a.FlowId == flowId && chunk.Contains(a.DeliveryKey))
+                    .GroupBy(a => a.DeliveryKey)
+                    .Select(g => g.OrderByDescending(a => a.StartedUtc).ThenByDescending(a => a.AttemptId).First())
+                    .ToListAsync(ct),
+                ct).ConfigureAwait(false);
+            foreach (var row in rows)
+            {
+                result[new DeliveryKey(row.DeliveryKey)] = ToRecord(row);
+            }
+        }
+
+        return result;
+    }
+
+    public async Task<SourceSyncApplied> ApplySourceSyncAsync(Guid flowId, IReadOnlyList<SourceSyncFinding> findings, Guid? runId, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(findings);
+        var now = Now;
+        var arrivals = 0;
+        var plans = 0;
+        var notFound = 0;
+        await using var db = Open();
+        foreach (var chunk in findings.Chunk(ChunkSize))
+        {
+            var keys = chunk.Select(f => f.DeliveryKey.Value).ToArray();
+            var entities = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            foreach (var finding in chunk)
+            {
+                if (!entities.TryGetValue(finding.DeliveryKey.Value, out var entity))
+                {
+                    throw new DeliveryException($"Record {finding.DeliveryKey} is not in the ledger, but a sync only ever reads the rows of records the ledger holds.");
+                }
+
+                // The arrival is a fact of the row, not a decision about the record: it is written as read.
+                if (finding.InsertedUtc is { } inserted && entity.SourceInsertedUtc != inserted)
+                {
+                    entity.SourceInsertedUtc = inserted;
+                    arrivals++;
+                }
+
+                // A change the ledger never saw is decided by a plan, as every change is: the flow's next run reads the
+                // row by its key. The record's state moves, so the record says when.
+                if (finding.RequestPlan && entity.PlanRequestedUtc is null)
+                {
+                    entity.PlanRequestedUtc = now;
+                    entity.UpdatedUtc = now;
+                    plans++;
+                }
+
+                if (finding.NotFound is { } reason)
+                {
+                    db.DeliveryAttempts.Add(new DeliveryAttempt
+                    {
+                        FlowId = flowId,
+                        DeliveryKey = entity.DeliveryKey,
+                        RunId = runId,
+                        Worker = "sync",
+                        StartedUtc = now,
+                        CompletedUtc = now,
+                        Outcome = StatusText.Of(AttemptOutcome.Skipped),
+                        Phase = AttemptPhases.SourceMissing,
+                        ResultJson = AttemptResult.WithDetail(null, Truncate(reason, 2000)),
+                        SourceFileName = Truncate(finding.Origin.FileName, DeliveryModel.MaxSourceFileNameLength),
+                        SourceRowNumber = finding.Origin.RowNumber,
+                        SourceUpdatedUtc = finding.Origin.UpdatedUtc,
+                    });
+                    notFound++;
+                }
+            }
+
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+
+        return new SourceSyncApplied(arrivals, plans, notFound);
+    }
+
     public async Task<IReadOnlyList<AttemptRecord>> ListAttemptsForSubmissionAsync(Guid submissionId, int max, CancellationToken ct = default)
     {
         var rows = await ReadAsync(

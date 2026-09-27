@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Intake;
@@ -476,6 +477,116 @@ public class EndToEndTests : IDisposable
             await RunAsync(runtime, protocol, ledger, force: true);
             Assert.Single(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(1), 10), a => a.Phase == AttemptPhases.Identical);
             Assert.Empty(protocol.Deliveries);
+        }
+    }
+
+    [Fact]
+    public async Task A_sync_consolidates_the_ledger_with_the_ingestion_tables_and_sends_nothing()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+            var flowId = runtime.Flow.Id;
+
+            // A ledger from before it kept arrivals, and three changes no plan saw: a row that changed, a row the
+            // ingestion flow's key match marked deleted, and a row deleted from the table outright.
+            await using (var db = _db.CreateDbContext())
+            {
+                await db.DeliveryRecords.Where(r => r.FlowId == flowId).ExecuteUpdateAsync(s => s.SetProperty(r => r.SourceInsertedUtc, (DateTime?)null));
+            }
+
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            SampleEstate.Change(tables.Records[1], "creator", "HAL", Now, SampleWellLogs.UpdatedUtc(1).AddHours(2));
+            tables.Records[2].DeletedUtc = Now;
+            var gone = tables.Records[3];
+            tables.Records.Remove(gone);
+
+            var synced = await runtime.SyncAsync(null);
+
+            // Nothing reached OSDU. Every row found gave the ledger its arrival; the changed and the deleted row are asked
+            // to be planned by the next run; the row that is gone is on its record's history, which keeps its status.
+            Assert.Empty(protocol.Deliveries);
+            Assert.Equal(
+                (LogCount, LogCount - 1, 1, 1, 2, 1, 1),
+                (synced.Checked, synced.ArrivalsRecorded, synced.ChangedUnseen, synced.DeletedUnseen, synced.PlansRequested, synced.NotFound, synced.NotFoundRecorded));
+            Assert.Equal([(await ledger.GetRecordAsync(flowId, SampleEstate.Key(3)))!.SourceKey], synced.NotFoundSample);
+            var arrived = tables.Records[0].InsertedUtc;
+            for (var i = 0; i < LogCount; i++)
+            {
+                var record = await ledger.GetRecordAsync(flowId, SampleEstate.Key(i));
+                Assert.Equal(i == 3 ? null : arrived, record!.SourceInsertedUtc);
+                Assert.Equal(i is 1 or 2, record.PlanRequestedUtc is not null);
+                Assert.Equal(RecordStatus.Delivered, record.Status);
+            }
+
+            var missing = Assert.Single(await ledger.ListAttemptsAsync(flowId, SampleEstate.Key(3), 10), a => a.Phase == AttemptPhases.SourceMissing);
+            Assert.Equal((AttemptOutcome.Skipped, "sync"), (missing.Outcome, missing.Worker));
+            Assert.Contains("did not find the row in the ingestion table", missing.ResultJson, StringComparison.Ordinal);
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = flowId }), a => a.Kind == "sync");
+            Assert.Equal("completed", activity.Outcome);
+            Assert.Contains("1 not found in the ingestion table", activity.Summary, StringComparison.Ordinal);
+
+            // Synced again, nothing new is written: the arrivals are in, the plans are asked for, the gone row is reported.
+            var again = await runtime.SyncAsync(null);
+            Assert.Equal(
+                (LogCount - 3, 0, 0, 1, 0),
+                (again.InAgreement, again.ArrivalsRecorded, again.PlansRequested, again.NotFound, again.NotFoundRecorded));
+            Assert.Single(await ledger.ListAttemptsAsync(flowId, SampleEstate.Key(3), 10), a => a.Phase == AttemptPhases.SourceMissing);
+
+            // The next run plans what the sync asked for, by key, as every run takes the records the ledger asked for:
+            // the changed row is delivered, and the deleted row is held as deleted.
+            var requested = await ledger.ListPlanRequestedAsync(flowId, null, 10);
+            Assert.Equal(new[] { SampleEstate.Key(1), SampleEstate.Key(2) }.ToHashSet(), requested.Select(r => r.DeliveryKey).ToHashSet());
+            runtime.Selection = SourceSelection.ForKeys([.. requested.Select(r => KeyTuple.FromJson(r.SourceKeyJson!))]);
+            Assert.Equal(1, (await RunAsync(runtime, protocol, ledger, force: true)).Work.Delivered);
+            Assert.Equal(SampleEstate.Key(1), Assert.Single(protocol.Deliveries).Key);
+            Assert.Equal(RecordStatus.Held, (await ledger.GetRecordAsync(flowId, SampleEstate.Key(2)))!.Status);
+
+            // The ledger now agrees with every row there is; a row restored in the source is counted for a release.
+            var settled = await runtime.SyncAsync(null);
+            Assert.Equal((LogCount - 1, 0, 1), (settled.InAgreement, settled.PlansRequested, settled.NotFound));
+            tables.Records[2].DeletedUtc = null;
+            Assert.Equal(1, (await runtime.SyncAsync(null)).Restored);
+        }
+    }
+
+    [Fact]
+    public async Task A_sync_of_one_record_reads_its_row_in_the_scope_the_record_was_planned_under()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+            await using (var db = _db.CreateDbContext())
+            {
+                await db.DeliveryRecords.Where(r => r.FlowId == runtime.Flow.Id).ExecuteUpdateAsync(s => s.SetProperty(r => r.SourceInsertedUtc, (DateTime?)null));
+            }
+
+            // A sync run whose own values name another log source, on the target runtime a sync runs on, still reads the
+            // record in the scope its last plan ran with: the submission that planned it recorded the values.
+            var engine = Samples.Engine(ledger, _clock, sources: tables);
+            var elsewhere = new Dictionary<string, string>(StringComparer.Ordinal) { ["logSource"] = "ELSEWHERE" };
+            using var other = FlowRuntime.ForTarget(engine, runtime.Flow, elsewhere);
+            other.Actor = "gui:tahir";
+            var synced = await other.SyncAsync([SampleEstate.Key(0)]);
+
+            Assert.Equal((1, 1, 0, 0), (synced.Checked, synced.ArrivalsRecorded, synced.NotFound, synced.NotInLedger));
+            Assert.Equal(tables.Records[0].InsertedUtc, (await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0)))!.SourceInsertedUtc);
+            Assert.Null((await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1)))!.SourceInsertedUtc);
+            Assert.Empty(protocol.Deliveries);
+
+            // One record's sync is on that record's own history, with who asked for it.
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id }), a => a.Kind == "sync");
+            Assert.Equal((SampleEstate.Key(0).Value, "gui:tahir"), (activity.DeliveryKey, activity.Actor));
+
+            // A key the ledger does not hold is named as such, and nothing is read for it.
+            var unknown = await other.SyncAsync([new DeliveryKey(Guid.NewGuid())]);
+            Assert.Equal((0, 1), (unknown.Checked, unknown.NotInLedger));
         }
     }
 

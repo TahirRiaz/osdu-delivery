@@ -2,8 +2,8 @@ import { useMemo, useState, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
   ArchiveRestore, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Database, DatabaseZap, Eraser, FileInput, FilePen,
-  FileX2, Hourglass, PauseCircle, RotateCcw, ScanSearch, Send, ShieldCheck, Trash2, Unlock, UserRoundCog, XCircle,
-  type LucideIcon,
+  FileQuestion, FileX2, Hourglass, PauseCircle, RefreshCw, RotateCcw, ScanSearch, Send, ShieldCheck, Trash2, Unlock,
+  UserRoundCog, XCircle, type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -397,7 +397,9 @@ function attemptShape(attempt: DeliveryAttempt): { title: string; tone: Tone; ic
         ? { title: "Held back: a deleted row is never delivered", tone: "warning", icon: PauseCircle }
         : { title: isOsduOperation(attempt) ? "Held back: OSDU refused it" : "Held back", tone: "warning", icon: PauseCircle };
     case "skipped":
-      return attempt.phase === "identical"
+      return attempt.phase === "source-missing"
+        ? { title: "Not found in the ingestion table: the row is gone, and the record keeps its status", tone: "warning", icon: FileQuestion }
+        : attempt.phase === "identical"
         ? { title: "Nothing to send: the changed row renders what OSDU holds", tone: "muted", icon: CircleDashed }
         : attempt.phase === "unchanged"
           ? { title: "Nothing to send: OSDU already holds this version", tone: "muted", icon: CircleDashed }
@@ -417,6 +419,7 @@ const ACTIVITY_TITLES: Record<string, { title: string; icon: LucideIcon }> = {
   release: { title: "Released back to pending", icon: Unlock },
   redeliver: { title: "Redelivery asked for", icon: RotateCcw },
   verify: { title: "Verify against OSDU", icon: ShieldCheck },
+  sync: { title: "Synced from source", icon: RefreshCw },
   delete: { title: "Removal asked for", icon: Trash2 },
 };
 
@@ -463,7 +466,8 @@ function attemptEvent(attempt: DeliveryAttempt): JourneyEvent {
     tone: shape.tone,
     icon: shape.icon,
     order: 3,
-    lane: osdu ? "osdu" : "ledger",
+    // A row a sync did not find is a fact of the source, like the row's other changes.
+    lane: osdu ? "osdu" : attempt.phase === "source-missing" ? "source" : "ledger",
     testId: `journey-attempt-${attempt.outcome}`,
   };
 }

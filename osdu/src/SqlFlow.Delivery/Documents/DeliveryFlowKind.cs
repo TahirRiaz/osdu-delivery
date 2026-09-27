@@ -64,6 +64,7 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
         new(DeliveryOperations.Drain, "Drain", "Deliver the work batches a submission already planned.", WritesTarget: true),
         new(DeliveryOperations.Verify, "Verify", "Compare what OSDU holds with what the ledger recorded, and optionally queue redelivery of drift.", WritesTarget: false),
         new(DeliveryOperations.Replan, "Replan", "Read every row of the scope again and deliver what renders differently now.", WritesTarget: true),
+        new(DeliveryOperations.Sync, "Sync from source", "Read the ledger's records from the ingestion tables and consolidate the ledger: record what it lacks, flag rows that changed unseen for the next run, report rows that are gone. Sends nothing.", WritesTarget: false),
     ];
 
     public string FlowType => FlowDefinition.FlowTypeName;

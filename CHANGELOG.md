@@ -13,6 +13,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Sync from source consolidates the ledger with the ingestion tables.** A button on a record's page, on a flow's
+  Delivery tab, above its Records list and in its selection bar reads the records' rows from the ingestion tables (one
+  record, the ticked or filtered ones, or every record of an interface) and consolidates the ledger with them: an
+  arrival it lacks is written, a row that changed or was marked deleted without any run planning it is asked to be
+  planned by the flow's next run, a row gone from the table is put on its record's history as `skipped` /
+  `source-missing` (once, the record keeping its status), and a deleted-row hold whose row came back is counted for
+  release. It is a `sync` run of the flow, recorded as an activity with who asked, and it renders nothing and sends
+  nothing to OSDU. Each row is read by the key the ledger stored, in the scope its last submission ran with, a page of
+  1,000 records at a time. `POST /api/v1/delivery/records/{flowId}/{key}/sync` and
+  `POST /api/v1/delivery/flows/{pipelineId}/sync` (`keys`, `filter` or neither) queue it.
 - **The ledger keeps every change of a record's row, and when the row arrived.** A record keeps when the ingestion
   table first inserted its row (`InsertedDate_DW`, `source.systemColumns.inserted`, opted out of with `~`), which later
   changes never move. A row the ingestion table changed that renders the document OSDU already holds, or the one already

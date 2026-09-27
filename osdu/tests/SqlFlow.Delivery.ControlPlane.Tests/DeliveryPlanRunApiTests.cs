@@ -12,7 +12,9 @@ using SqlFlow.Core.Identity;
 using SqlFlow.Delivery.ControlPlane;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Tests;
 using Xunit;
@@ -110,6 +112,137 @@ public sealed class DeliveryPlanRunApiTests
         }
         finally
         {
+            await estate.CleanupAsync(cs);
+        }
+    }
+
+    /// <summary>
+    /// A sync runs on a node as a run of the flow: one record's reads its row by the key the ledger stored and records its
+    /// arrival; a flow's, named by key, puts a row that is gone on its record's history. Nothing reaches OSDU, and a
+    /// selection that names its records two ways, or matches none, is refused before anything is queued.
+    /// </summary>
+    [Fact]
+    public async Task A_sync_from_source_runs_on_a_node_and_consolidates_the_ledger_with_the_row()
+    {
+        var cs = OsduTestServer.Require();
+        var estate = await Estate.SeedAsync(cs);
+        var stamped = new DateTime(2026, 9, 1, 6, 30, 0, DateTimeKind.Utc);
+        var arrived = stamped.AddDays(-1);
+        var tables = new MemoryIngestionTables();
+        tables.Add(new MemoryRecord
+        {
+            Row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["RecId"] = 1L,
+                ["facility_name"] = "OSDU-DEV-1-A",
+                ["facility_description"] = "Sample wellbore A",
+                ["facility_id"] = "srn:master-data/Wellbore:A",
+                ["update_date"] = stamped,
+            },
+            UpdatedUtc = stamped,
+            InsertedUtc = arrived,
+            FileName = "wellbore_20260901.csv",
+            RowNumber = 1,
+        });
+        var flowId = FlowId.Of(SampleEstate.WellboreFlowName);
+        var present = new DeliveryKey(Guid.NewGuid());
+        var gone = new DeliveryKey(Guid.NewGuid());
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+
+        try
+        {
+            RecordState Staged(DeliveryKey key, string name) => new()
+            {
+                DeliveryKey = key,
+                FlowId = flowId,
+                SourceKey = "wells:" + name,
+                SourceKeyJson = $$"""["{{name}}"]""",
+                MappingName = SampleEstate.WellboreMapping,
+                Status = RecordStatus.Pending,
+                PendingSourceFileName = "wellbore_20260901.csv",
+                PendingSourceRowNumber = 1,
+                PendingSourceUpdatedUtc = stamped,
+                PendingDocumentRef = "1:0:10",
+                PendingMetadata = true,
+            };
+            await ledger.UpsertPendingAsync(flowId, [Staged(present, "OSDU-DEV-1-A"), Staged(gone, "OSDU-DEV-9-Z")]);
+
+            await SampleEstate.SaveTemplatesAsync(cs);
+            await using var factory = new ControlPlaneAppFactory()
+                .WithCatalog(cs)
+                .WithModules(new DeliveryControlPlaneModule())
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+                .WithServices(services => services.AddSingleton<IIngestionSourceFactory>(tables));
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            async Task<Guid> QueuedAsync(HttpResponseMessage response)
+            {
+                Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+                var accepted = await response.Content.ReadFromJsonAsync<DeliveryRunAccepted>();
+                Assert.NotNull(accepted);
+                return accepted.RunId;
+            }
+
+            async Task SucceededAsync(Guid runId)
+            {
+                string? status = null;
+                string? error = null;
+                for (var attempt = 0; attempt < 160 && status is not ("succeeded" or "failed" or "cancelled"); attempt++)
+                {
+                    await Task.Delay(250);
+                    using var detail = await client.SendAsync(Authorized(HttpMethod.Get, $"/api/v1/runs/{runId:D}", token));
+                    if (detail.StatusCode == HttpStatusCode.OK)
+                    {
+                        using var document = JsonDocument.Parse(await detail.Content.ReadAsStringAsync());
+                        status = document.RootElement.GetProperty("status").GetString();
+                        error = document.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+                    }
+                }
+
+                Assert.True(status == "succeeded", $"the sync run ended '{status}': {error}{Environment.NewLine}{string.Join(Environment.NewLine, factory.Logs.TakeLast(40))}");
+            }
+
+            // One record: its row is read by its stored key, and the ledger takes in when it arrived.
+            using (var one = await client.SendAsync(Authorized(HttpMethod.Post, $"/api/v1/delivery/records/{flowId:D}/{present.Value:D}/sync", token)))
+            {
+                await SucceededAsync(await QueuedAsync(one));
+            }
+
+            Assert.Equal(arrived, (await ledger.GetRecordAsync(flowId, present))!.SourceInsertedUtc);
+            Assert.Empty(await ledger.ListAttemptsAsync(flowId, present, 10));
+
+            // A flow's sync of the records it names: the row that is gone is on its record's history.
+            var pipelineId = CatalogIdentity.Pipeline(estate.RepoId, SampleEstate.WellboreFlowName);
+            using (var named = await client.SendAsync(Authorized(HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/sync", token, new { keys = new[] { gone.Value } })))
+            {
+                await SucceededAsync(await QueuedAsync(named));
+            }
+
+            var missing = Assert.Single(await ledger.ListAttemptsAsync(flowId, gone, 10));
+            Assert.Equal((AttemptOutcome.Skipped, AttemptPhases.SourceMissing), (missing.Outcome, missing.Phase));
+            Assert.Equal(RecordStatus.Pending, (await ledger.GetRecordAsync(flowId, gone))!.Status);
+
+            // A selection names its records one way, and one that matches nothing queues nothing.
+            using (var both = await client.SendAsync(Authorized(HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/sync", token, new { keys = new[] { gone.Value }, filter = new { status = "pending" } })))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, both.StatusCode);
+            }
+
+            using (var none = await client.SendAsync(Authorized(HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/sync", token, new { filter = new { status = "failed" } })))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, none.StatusCode);
+            }
+        }
+        finally
+        {
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                await osdu.DeliveryAttempts.Where(a => a.FlowId == flowId).ExecuteDeleteAsync();
+                await osdu.DeliveryRecordIdentities.Where(i => i.FlowId == flowId).ExecuteDeleteAsync();
+                await osdu.DeliveryRecords.Where(r => r.FlowId == flowId).ExecuteDeleteAsync();
+            }
+
             await estate.CleanupAsync(cs);
         }
     }

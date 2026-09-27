@@ -104,7 +104,9 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
     || effectiveOperation === "intake" || effectiveOperation === "replan";
   const takesSubmission = deliveryKind
     && (effectiveOperation === "deliver" || effectiveOperation === "intake" || effectiveOperation === "drain");
-  const takesRecordScope = deliveryKind && (effectiveOperation === "deliver" || effectiveOperation === "verify");
+  const takesRecordScope = deliveryKind && (effectiveOperation === "deliver" || effectiveOperation === "verify" || effectiveOperation === "sync");
+  // A drain delivers what a submission planned and a sync reads every row it is given: neither has a gate to force.
+  const takesForce = !(deliveryKind && (effectiveOperation === "drain" || effectiveOperation === "sync"));
   const recordKeys = useMemo(() => lines(recordKeysText), [recordKeysText]);
   const takesRedeliver = takesRecordScope && effectiveOperation === "deliver" && recordKeys.length > 0;
   const takesInterfaces = deliveryKind && effectiveOperation !== null;
@@ -127,7 +129,7 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
               : null);
 
     const payload: Record<string, unknown> = { ...carried };
-    if (force) {
+    if (takesForce && force) {
       payload.force = true;
     }
 
@@ -153,7 +155,7 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
       error,
     };
   }, [
-    carried, force, interfaceNames, recordKeys, redeliver, submissionId, takesInterfaces, takesRecordScope,
+    carried, force, interfaceNames, recordKeys, redeliver, submissionId, takesForce, takesInterfaces, takesRecordScope,
     takesRedeliver, takesSubmission, takesValues, valuesText,
   ]);
 
@@ -163,15 +165,17 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
 
   return (
     <div className="flex flex-col gap-3" data-testid="trigger-kind-fields">
-      <div className="flex flex-col gap-1">
-        <Label className="flex items-center gap-2 text-[13px] font-normal">
-          <Switch checked={force} onCheckedChange={setForce} data-testid="trigger-force" />
-          Force
-        </Label>
-        <p className="pl-10 text-xs text-muted-foreground">
-          {FORCE_HINTS[flowKind] ?? "Run past the change gates that would otherwise skip work."}
-        </p>
-      </div>
+      {takesForce && (
+        <div className="flex flex-col gap-1">
+          <Label className="flex items-center gap-2 text-[13px] font-normal">
+            <Switch checked={force} onCheckedChange={setForce} data-testid="trigger-force" />
+            Force
+          </Label>
+          <p className="pl-10 text-xs text-muted-foreground">
+            {FORCE_HINTS[flowKind] ?? "Run past the change gates that would otherwise skip work."}
+          </p>
+        </div>
+      )}
       {takesValues && (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-values`}>Flow parameters</Label>
@@ -210,7 +214,7 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
       {takesRecordScope && (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-records`}>
-            {effectiveOperation === "verify" ? "Verify only these records" : "Redeliver these records"}
+            {effectiveOperation === "verify" ? "Verify only these records" : effectiveOperation === "sync" ? "Sync only these records" : "Redeliver these records"}
           </Label>
           <Textarea
             id={`${idPrefix}-records`}
@@ -223,7 +227,9 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
           <p className="text-xs text-muted-foreground">
             {effectiveOperation === "verify"
               ? "Delivery keys to check; empty verifies the flow's delivered records."
-              : "Delivery keys to send again regardless of what OSDU holds; empty delivers what changed."}
+              : effectiveOperation === "sync"
+                ? "Delivery keys whose rows to read from the ingestion tables (at most 1,000); empty syncs every record."
+                : "Delivery keys to send again regardless of what OSDU holds; empty delivers what changed."}
           </p>
         </div>
       )}

@@ -32,6 +32,13 @@ public static class DeliveryOperations
     /// <summary>Read every row of the scope again and deliver what renders differently now.</summary>
     public const string Replan = "replan";
 
+    /// <summary>
+    /// Read the rows of the ledger's records from the ingestion tables and consolidate the ledger with them: record what
+    /// it lacks of a row, ask for the records whose rows changed unseen to be planned again, and report the rows that are
+    /// gone. Nothing is rendered and nothing reaches OSDU.
+    /// </summary>
+    public const string Sync = "sync";
+
     /// <summary>Capture a cache flow's types into its partition's cache: the cache kind's default.</summary>
     public const string Refresh = "refresh";
 
@@ -405,6 +412,12 @@ public sealed record DeliveryRunPayload
             case DeliveryOperations.Verify:
                 Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a verify reads the ledger's delivered records, not a submission");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a verify sends nothing");
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                break;
+            case DeliveryOperations.Sync:
+                Refuse(Force, ForceProperty, operation, "a sync passes no gate: it reads every row it is given");
+                Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a sync reads the rows of the ledger's records, not a submission's");
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "a sync sends nothing");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 break;
             case DeliveryOperations.Replan:

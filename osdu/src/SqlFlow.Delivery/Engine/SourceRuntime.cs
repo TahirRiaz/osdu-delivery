@@ -292,7 +292,7 @@ public sealed class SourceRuntime
                 {
                     var runtime = readsSource
                         ? await FlowRuntime.CreateAsync(context, flow, Values, ct).ConfigureAwait(false)
-                        : FlowRuntime.ForTarget(context, flow);
+                        : FlowRuntime.ForTarget(context, flow, Values);
                     runtime.Actor = Actor;
                     runtime.RunId = RunId;
                     runtime.ActivityLog = ActivityLog;
@@ -315,7 +315,7 @@ public sealed class SourceRuntime
                 }
             }
 
-            if (operation != DeliveryOperations.Plan)
+            if (DeliveryExecutor.ReachesTarget(operation))
             {
                 await CheckTargetsAsync(runtimes, findings, ct).ConfigureAwait(false);
             }

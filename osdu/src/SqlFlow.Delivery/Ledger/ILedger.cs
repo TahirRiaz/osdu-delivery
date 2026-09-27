@@ -66,6 +66,12 @@ public static class AttemptPhases
 
     /// <summary>A held attempt: the ingestion table marked the record row deleted, and a deleted row is never delivered.</summary>
     public const string SourceDeleted = "source-deleted";
+
+    /// <summary>
+    /// A skipped attempt a sync writes: the record's row is not in the ingestion table, or not in the scope the record was
+    /// planned under. The record keeps its status: what OSDU holds is removed only by a removal someone asks for.
+    /// </summary>
+    public const string SourceMissing = "source-missing";
 }
 
 public enum VerifyOutcome
@@ -75,6 +81,27 @@ public enum VerifyOutcome
     Missing,
     Error,
 }
+
+/// <summary>What a sync found of one record's row that the ledger has to take in.</summary>
+public sealed record SourceSyncFinding
+{
+    public required DeliveryKey DeliveryKey { get; init; }
+
+    /// <summary>When the ingestion table first inserted the row, for a record whose ledger holds another moment or none.</summary>
+    public DateTime? InsertedUtc { get; init; }
+
+    /// <summary>The row changed, or was marked deleted, since the version the ledger stands at: the flow's next run plans it.</summary>
+    public bool RequestPlan { get; init; }
+
+    /// <summary>Why the row was not found (gone from the table, or out of the record's scope), for the attempt that says so.</summary>
+    public string? NotFound { get; init; }
+
+    /// <summary>The origin the ledger last recorded for the row, which the attempt of a row not found names.</summary>
+    public RecordOrigin Origin { get; init; }
+}
+
+/// <summary>What the ledger wrote of a sync's findings: arrivals set, plans newly requested, rows reported not found.</summary>
+public sealed record SourceSyncApplied(int Arrivals, int PlansRequested, int NotFound);
 
 /// <summary>
 /// A version of a record's ingestion row as its attempts recorded it: its origin, when the ingestion table marked the row
@@ -1286,6 +1313,23 @@ public interface ILedger
     /// most <paramref name="max"/>. The record's own delivered and queued origins are on the record.
     /// </summary>
     Task<IReadOnlyList<RecordOriginSeen>> ListOriginsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default);
+
+    /// <summary>
+    /// One flow's records in delivery-key order after <paramref name="after"/>, at most <paramref name="max"/>: what a
+    /// sync of every record pages through, one seek of the record's key a page.
+    /// </summary>
+    Task<IReadOnlyList<RecordState>> ListRecordsAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default);
+
+    /// <summary>The newest attempt of each of the flow's records named; a record that has none is not in the answer.</summary>
+    Task<IReadOnlyDictionary<DeliveryKey, AttemptRecord>> LatestAttemptsAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, CancellationToken ct = default);
+
+    /// <summary>
+    /// Takes in what a sync found of the flow's records' rows: each arrival the ledger lacks or holds otherwise, a request
+    /// to plan each record whose row changed or was marked deleted unseen, and an attempt
+    /// (<see cref="AttemptPhases.SourceMissing"/>) for each record whose row is gone. A record keeps its status, and one
+    /// already asked to be planned keeps the moment it was asked.
+    /// </summary>
+    Task<SourceSyncApplied> ApplySourceSyncAsync(Guid flowId, IReadOnlyList<SourceSyncFinding> findings, Guid? runId, CancellationToken ct = default);
 
     /// <summary>The attempts a submission produced, newest first: the submission view.</summary>
     Task<IReadOnlyList<AttemptRecord>> ListAttemptsForSubmissionAsync(Guid submissionId, int max, CancellationToken ct = default);

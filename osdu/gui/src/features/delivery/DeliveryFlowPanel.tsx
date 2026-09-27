@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Radar, Trash2, Unlock } from "lucide-react";
+import { Radar, RefreshCw, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { isApiError } from "@/api/client";
 import {
   DELIVERY_RECORD_STATUSES, deliveryApi, deliveryRecordRoute,
   type DeliveryInterface, type DeliveryRecord, type DeliveryRecordFilter, type DeliveryRecordStatus, type DeliverySubmission,
+  type DeliverySyncRequest,
 } from "../../api/delivery";
 import { CodeView } from "@/components/CodeView";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -178,6 +179,25 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     },
   });
 
+  // A sync reads the records' rows from the ingestion tables and consolidates the ledger with them; it sends nothing to
+  // OSDU, so it asks for no confirmation. Its run says what it found; the lists poll, and pick up what it wrote.
+  const syncSource = useMutation({
+    mutationFn: (request: DeliverySyncRequest | undefined) => deliveryApi.syncFlow(pipelineId, interfaceName, request),
+    onSuccess: (accepted, request) => {
+      if (request !== undefined) {
+        clearSelection();
+      }
+
+      toast.success("Sync from source queued.", { action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) } });
+    },
+    onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
+  });
+  // A flow's sync reads one interface's ledger: the single form's, or the interface picked.
+  const canSync = !many || interfaceName !== null;
+  const syncTitle = canSync
+    ? "Read every record's row from the ingestion table and consolidate the ledger with it: arrivals, changes the ledger never saw (planned by the next run), rows that are gone. Nothing is sent to OSDU."
+    : "Pick an interface: a sync reads one interface's records.";
+
   if (stats.isError) {
     return isApiError(stats.error)
       ? <CorrelationError error={stats.error} />
@@ -213,6 +233,10 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             <Button variant="outline" size="sm" onClick={() => setReleaseOpen(true)} disabled={blocked === 0} data-testid="delivery-release-all">
               <Unlock />
               Release blocked ({blocked})
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => syncSource.mutate(undefined)} disabled={!canSync || syncSource.isPending} title={syncTitle} data-testid="delivery-sync-all">
+              <RefreshCw />
+              Sync from source
             </Button>
           </div>
           {s === undefined ? (
@@ -324,6 +348,10 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 run {runFilter.slice(0, 8)}: clear
               </Button>
             )}
+            <Button variant="outline" size="sm" className="ml-auto h-8" onClick={() => syncSource.mutate(undefined)} disabled={!canSync || syncSource.isPending} title={syncTitle} data-testid="delivery-records-sync-all">
+              <RefreshCw />
+              Sync all from source
+            </Button>
           </FilterBar>
           <PagedTable
             queryKey={["delivery", "records", pipelineId, interfaceName, search, status, drifted, contains, submissionFilter, deliveredFilter, runFilter]}
@@ -355,9 +383,21 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                   Clear
                 </Button>
                 <Button
-                  variant="destructive-outline"
+                  variant="outline"
                   size="sm"
                   className="ml-auto h-7"
+                  onClick={() => syncSource.mutate(syncRequestFor(allMatching, filter, matched, selected))}
+                  disabled={!canSync || syncSource.isPending}
+                  title="Read the selected records' rows from the ingestion table and consolidate the ledger with them. Nothing is sent to OSDU."
+                  data-testid="delivery-sync-selected"
+                >
+                  <RefreshCw />
+                  Sync from source
+                </Button>
+                <Button
+                  variant="destructive-outline"
+                  size="sm"
+                  className="h-7"
                   onClick={() => setRemoveOpen(true)}
                   data-testid="delivery-remove-selected"
                 >
@@ -427,6 +467,21 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
  * itself with the count that was shown, so the removal covers records no page ever rendered and the API can
  * refuse it if that count has moved.
  */
+/**
+ * What a sync of the selection reads: the ticked records, every record the filter matches, or, for all matching an empty
+ * filter, every record of the interface, which the sync pages itself rather than naming each.
+ */
+function syncRequestFor(
+  allMatching: boolean, filter: DeliveryRecordFilter, matched: number, selected: ReadonlySet<string>,
+): DeliverySyncRequest | undefined {
+  if (!allMatching) {
+    return { keys: [...selected] };
+  }
+
+  const narrowed = Object.values(filter).some((value) => value !== undefined);
+  return narrowed ? { filter, expected: matched } : undefined;
+}
+
 function selectionFor(
   allMatching: boolean, filter: DeliveryRecordFilter, matched: number, selected: ReadonlySet<string>,
 ): RemovalSelection {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AppWindow, BookOpenCheck, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { AppWindow, BookOpenCheck, RefreshCw, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -143,6 +143,16 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     onSuccess: (accepted) => { toast.success("Verify run queued."); navigate(`/runs/${accepted.runId}`); },
     onError: fail,
   });
+  // A sync reads the record's row from its ingestion table and consolidates the ledger with it; it sends nothing, so it
+  // stays on the page, and the page reads the record again as the run lands.
+  const sync = useMutation({
+    mutationFn: () => deliveryApi.syncRecord(ref),
+    onSuccess: (accepted) => {
+      toast.success("Sync from source queued.", { action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) } });
+      refresh();
+    },
+    onError: fail,
+  });
   const redeliver = useMutation({
     mutationFn: () => deliveryApi.redeliver(ref, "all", true),
     onSuccess: (result) => {
@@ -203,7 +213,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   }
 
   const record = detail.record;
-  const busy = verify.isPending || redeliver.isPending || release.isPending || readBack.isPending || readSource.isPending;
+  const busy = verify.isPending || sync.isPending || redeliver.isPending || release.isPending || readBack.isPending || readSource.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   const references = record.references ?? [];
   const waiters = detail.waitedOnBy ?? [];
@@ -243,6 +253,19 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           {record.blocked && <BlockedBadge />}
           <div className="grow" />
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => sync.mutate()}
+              disabled={busy || detail.pipelineId === null || !canOperate}
+              title={canOperate
+                ? "Read the record's row from its ingestion table and consolidate the ledger with it: its arrival, a change the ledger never saw (planned by the next run), a row that is gone. Nothing is sent to OSDU."
+                : "A sync runs on a node, which takes the operate scope."}
+              data-testid="record-sync"
+            >
+              <RefreshCw />
+              Sync from source
+            </Button>
             <Button variant="outline" size="sm" onClick={() => verify.mutate()} disabled={busy || !canActOnTarget} title="Queue a verify run scoped to this record: compares what OSDU holds against the ledger" data-testid="record-verify">
               <ShieldCheck />
               Verify

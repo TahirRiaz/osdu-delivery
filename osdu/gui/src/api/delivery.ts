@@ -1031,6 +1031,17 @@ export interface DeliveryRecordFilter {
 }
 
 /**
+ * Which records of a flow a sync from source reads: those `keys` names, every one `filter` matches (resolved when the sync
+ * is queued; `expected` is the count the operator was shown, and the sync is refused when the filter no longer resolves to
+ * it), or, with neither, every record of the flow's interface.
+ */
+export interface DeliverySyncRequest {
+  keys?: string[];
+  filter?: DeliveryRecordFilter;
+  expected?: number;
+}
+
+/**
  * A removal of one or many records. The records are named by `keys` or by `filter` (every record it matches),
  * never both. `expected` is the count the operator was shown: the API refuses the removal when the filter no
  * longer resolves to it, rather than running against a set that changed underneath them.
@@ -1698,6 +1709,15 @@ export const deliveryApi = {
     post<DeliveryRedeliverResult>(`${recordApiPath(record)}/redeliver`, { scope, run }),
   /** Queues a verify run scoped to this record. */
   verify: (record: DeliveryRecordRef) => post<DeliveryRunAccepted>(`${recordApiPath(record)}/verify`),
+  /**
+   * Queues a sync run for this record: its row is read from the ingestion table and the ledger consolidated with it (its
+   * arrival recorded, a change it never saw asked to be planned by the next run, a row that is gone put on its history).
+   * Nothing is sent to OSDU.
+   */
+  syncRecord: (record: DeliveryRecordRef) => post<DeliveryRunAccepted>(`${recordApiPath(record)}/sync`),
+  /** Queues the same sync for records of the flow's interface: those the request names, or every one without a request. */
+  syncFlow: (pipelineId: string, interfaceName?: string | null, request?: DeliverySyncRequest) =>
+    post<DeliveryRunAccepted>(flowPath(pipelineId, "/sync", interfaceName), request ?? {}),
   /** Queues a read-back of the record as its flow wrote it to OSDU, at its latest version or at `version`; poll the task for the document. */
   read: (record: DeliveryRecordRef, version?: number) =>
     post<ComputeTaskAccepted>(`${recordApiPath(record)}/read`, version === undefined ? undefined : { version }),

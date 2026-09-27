@@ -176,7 +176,7 @@ history says exactly what was asked:
 
 | Flow kind | Operations | Default |
 | --- | --- | --- |
-| `delivery` | `deliver` (read the changed records, plan against the ledger, deliver what changed), `plan` (render and compare, report what would be delivered, change nothing), `intake` (plan into work batches without delivering), `drain` (deliver the pending batches without re-reading the source), `verify` (read delivered records back from OSDU and compare versions) | `deliver` |
+| `delivery` | `deliver` (read the changed records, plan against the ledger, deliver what changed), `plan` (render and compare, report what would be delivered, change nothing), `intake` (plan into work batches without delivering), `drain` (deliver the pending batches without re-reading the source), `verify` (read delivered records back from OSDU and compare versions), `sync` (read the records' rows from the ingestion tables and consolidate the ledger with them; sends nothing) | `deliver` |
 | `retrieval` | `retrieve`, `plan` | `retrieve` |
 | `cache` | `refresh` (capture every declared type and merge it into the partition's cache), `plan` (count what each type's search matches, write nothing) | `refresh` |
 
@@ -194,9 +194,9 @@ rather than half-applied.
 
 | Field | Meaning | Operations |
 | --- | --- | --- |
-| `force` | `true` lifts the whole-run gates (the tier 0 skip and an already completed submission); each record's own hashes still decide what is sent. | all but `drain` |
-| `submissionId` | The submission the run works on: a re-run, or a fan-out member's share. | all but `verify` and `replan` |
-| `recordKeys` | The delivery keys (UUIDs) the run is scoped to, at most 1,000, each once. Not with `submissionId`. | `deliver`, `plan`, `intake`, `verify` |
+| `force` | `true` lifts the whole-run gates (the tier 0 skip and an already completed submission); each record's own hashes still decide what is sent. | all but `drain` and `sync` |
+| `submissionId` | The submission the run works on: a re-run, or a fan-out member's share. | all but `verify`, `replan` and `sync` |
+| `recordKeys` | The delivery keys (UUIDs) the run is scoped to, at most 1,000, each once. Not with `submissionId`. | `deliver`, `plan`, `intake`, `verify`, `sync` |
 | `redeliver` | What a run scoped to `recordKeys` sends again: `all` (the default), `record` (the record document; its datasets and bulk data keep what OSDU holds), `files` (uploaded and registered again, on the file, dataset, manifest and composed routes, and the workflow route with files), `bulk` (a new version of the bulk data, on the ddms and composed routes) or `workflow` (the workflow route's stages run again). On the composed and workflow routes the named part goes alone. `metadata` names the record and `payload` every part. A part the route does not send fails the run. | `deliver` |
 | `slices` | The key slices of `submissionId` a fan-out intake member plans (indexes 0 to 1023, each once). | `intake` |
 | `interface` | The one interface of a source the run works on. A run on records or slices of a source with several interfaces has to name it. | all |

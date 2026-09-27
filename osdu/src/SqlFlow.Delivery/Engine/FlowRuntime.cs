@@ -243,14 +243,14 @@ public sealed class FlowRuntime : IDisposable
     /// release, redeliver, probe, drain): no parameters are required and no mapping is resolved, so they work for a
     /// flow whose parameters are unknown or whose mapping could not render right now.
     /// </summary>
-    public static FlowRuntime ForTarget(EngineContext context, FlowDefinition flow)
+    public static FlowRuntime ForTarget(EngineContext context, FlowDefinition flow, IReadOnlyDictionary<string, string>? values = null)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(flow);
         var layout = DeliveryLayout.Resolve(flow);
         return new FlowRuntime(
             context, flow, layout, new MappingCatalog(layout.MappingsDirectory, context.Documents),
-            new Dictionary<string, string>(StringComparer.Ordinal), null, new TargetConnection(context, flow), null);
+            values ?? new Dictionary<string, string>(StringComparer.Ordinal), null, new TargetConnection(context, flow), null);
     }
 
     /// <summary>
@@ -559,6 +559,20 @@ public sealed class FlowRuntime : IDisposable
         {
             var verifier = await VerifierAsync(ct).ConfigureAwait(false);
             var summary = await verifier.RunAsync(max, notVerifiedWithin, reconcile, keys, ct).ConfigureAwait(false);
+            return (summary, summary.ToString(), (Guid?)null);
+        }, ct);
+
+    /// <summary>
+    /// Consolidates the ledger with the ingestion tables for <paramref name="keys"/>, or for every record of the flow when
+    /// it is null (<see cref="SourceSync"/>): each row read by its stored key in the scope its record was planned under,
+    /// its arrival recorded, a change the ledger never saw asked to be planned by the next run, and a row that is gone
+    /// put on its record's history. Nothing is rendered and nothing reaches OSDU.
+    /// </summary>
+    public Task<SourceSyncSummary> SyncAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
+        => TrackAsync("sync", new { keys = keys?.Select(k => k.ToString()).ToList() }, keys is { Count: 1 } ? keys[0] : null, async () =>
+        {
+            var sync = new SourceSync(_context, Flow, RequireLedger(), Parameters, RunId, _context.Loggers.CreateLogger<SourceSync>());
+            var summary = await sync.RunAsync(keys, ct).ConfigureAwait(false);
             return (summary, summary.ToString(), (Guid?)null);
         }, ct);
 

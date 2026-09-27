@@ -135,6 +135,10 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     internal static bool ReadsSource(string operation)
         => operation is DeliveryOperations.Deliver or DeliveryOperations.Plan or DeliveryOperations.Intake or DeliveryOperations.Replan;
 
+    /// <summary>True for the operations that reach the flow's OSDU target, whose service and credentials a preflight checks.</summary>
+    internal static bool ReachesTarget(string operation)
+        => operation is not (DeliveryOperations.Plan or DeliveryOperations.Sync);
+
     /// <summary>True for the operations that deliver records, which a failure guard watches.</summary>
     internal static bool Delivers(string operation)
         => operation is DeliveryOperations.Deliver or DeliveryOperations.Replan or DeliveryOperations.Drain;
@@ -171,11 +175,12 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         }
 
         // Deliver, plan, intake and replan read the ingestion tables and render; verify and drain only touch the target
-        // and the ledger, so they need neither the flow's parameters nor its render inputs.
+        // and the ledger, and a sync reads rows it never renders, so none of them needs the flow's render inputs. A sync
+        // reads a record no submission names in the run's own scope, so every runtime carries the run's values.
         var interfaceContext = flow.Interface is null ? context : context.ForInterface(flow.Interface);
         using var runtime = ReadsSource(operation)
             ? await FlowRuntime.CreateAsync(interfaceContext, flow, values, ct).ConfigureAwait(false)
-            : FlowRuntime.ForTarget(interfaceContext, flow);
+            : FlowRuntime.ForTarget(interfaceContext, flow, values);
         runtime.Actor = actor;
         runtime.RunId = runId;
         runtime.ActivityLog = runLogger.Render;
@@ -323,6 +328,11 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
             case DeliveryOperations.Plan:
                 return await PlanAsync(runtime, force, source, selection, log, ct).ConfigureAwait(false);
+
+            case DeliveryOperations.Sync:
+                var synced = await runtime.SyncAsync(keys.Count == 0 ? null : keys, ct).ConfigureAwait(false);
+                LogOutcome(log, $"sync: {synced}");
+                return SyncRunOutcome.From(operation, synced);
 
             case DeliveryOperations.Verify:
                 var reconcile = flow.Verify.Reconcile;
@@ -489,7 +499,8 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             summary.Stale, summary.Holds, summary.Blocked, summary.Untracked, header.Slices, header.SkippedWholeRun, header.SkipReason, issues);
     }
 
-    private static IReadOnlyDictionary<string, string> ParseValues(string? json)
+    /// <summary>The flow parameter values a submission recorded as JSON; none when it recorded none.</summary>
+    internal static IReadOnlyDictionary<string, string> ParseValues(string? json)
     {
         if (string.IsNullOrWhiteSpace(json))
         {
@@ -702,6 +713,24 @@ public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Pro
 
 /// <summary>The <c>result</c> of a verify run.</summary>
 public sealed record VerifyRunOutcome(string Operation, int Checked, int Matched, int Drifted, int Missing, int Errors, bool Reconcile);
+
+/// <summary>
+/// The <c>result</c> of a sync run: what it compared, what it consolidated, and the first source keys of the rows it did not
+/// find (<see cref="SourceSyncSummary"/>).
+/// </summary>
+public sealed record SyncRunOutcome(
+    string Operation, int Checked, int InAgreement, int ArrivalsRecorded, int ChangedUnseen, int DeletedUnseen, int PlansRequested,
+    int Restored, int NotFound, int NotFoundRecorded, int FoundAgain, int WithoutKey, int NotInLedger, IReadOnlyList<string> NotFoundSample)
+{
+    public static SyncRunOutcome From(string operation, SourceSyncSummary summary)
+    {
+        ArgumentNullException.ThrowIfNull(summary);
+        return new SyncRunOutcome(
+            operation, summary.Checked, summary.InAgreement, summary.ArrivalsRecorded, summary.ChangedUnseen, summary.DeletedUnseen,
+            summary.PlansRequested, summary.Restored, summary.NotFound, summary.NotFoundRecorded, summary.FoundAgain, summary.WithoutKey,
+            summary.NotInLedger, summary.NotFoundSample);
+    }
+}
 
 /// <summary>The <c>result</c> of a run that failed before producing an outcome.</summary>
 public sealed record OperationFailure(string Operation, string Error);
