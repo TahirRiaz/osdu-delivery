@@ -4,8 +4,9 @@ import LoginPage from "./auth/LoginPage";
 import { TopProgressBar } from "./components/TopProgressBar";
 import { RequireAuth, RequireScope } from "./auth/RequireAuth";
 import AppShell from "./layout/AppShell";
+import WindowFrame from "./layout/WindowFrame";
 import { lazyRoute } from "./lib/lazyRoute";
-import { moduleRoutes } from "./modules/registry";
+import { moduleRoutes, type ModuleRouteFrame } from "./modules/registry";
 
 // Feature pages are lazy so heavy dependencies (Monaco, React Flow, Recharts) load with their page, not at boot.
 const DashboardPage = lazyRoute("DashboardPage", () => import("./features/dashboard/DashboardPage"));
@@ -44,11 +45,38 @@ function LineageGraphRedirect() {
   return <Navigate to={`/lineage${search}`} replace />;
 }
 
+/** The routes of the pages the registered modules add in one frame, each behind the scope it asks for. */
+function moduleRouteElements(frame: ModuleRouteFrame) {
+  return moduleRoutes(frame).map(({ path, component: ModulePage, requiredScope }) => (
+    <Route
+      key={path}
+      path={path}
+      element={requiredScope === undefined
+        ? <ModulePage />
+        : (
+          <RequireScope scope={requiredScope}>
+            <ModulePage />
+          </RequireScope>
+        )}
+    />
+  ));
+}
+
 export default function App() {
   return (
     <Suspense fallback={<TopProgressBar />}>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        {/* The pages a module opens in a window of their own: signed in, with nothing of the workbench around them. */}
+        <Route
+          element={(
+            <RequireAuth>
+              <WindowFrame />
+            </RequireAuth>
+          )}
+        >
+          {moduleRouteElements("window")}
+        </Route>
         <Route
           element={(
             <RequireAuth>
@@ -108,19 +136,7 @@ export default function App() {
             )}
           />
           {/* The pages this build's GUI modules add (none in SQLFlow's own build), inside the workbench like every page. */}
-          {moduleRoutes().map(({ path, component: ModulePage, requiredScope }) => (
-            <Route
-              key={path}
-              path={path}
-              element={requiredScope === undefined
-                ? <ModulePage />
-                : (
-                  <RequireScope scope={requiredScope}>
-                    <ModulePage />
-                  </RequireScope>
-                )}
-            />
-          ))}
+          {moduleRouteElements("workbench")}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
