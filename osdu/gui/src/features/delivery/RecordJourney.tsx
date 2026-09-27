@@ -1,21 +1,24 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import {
-  CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Database, Eraser, FileInput, Hourglass, Inbox, PauseCircle,
-  RotateCcw, ScanSearch, Send, ShieldCheck, Trash2, Unlock, UserRoundCog, XCircle, type LucideIcon,
+  ArchiveRestore, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Database, DatabaseZap, Eraser, FileInput, FilePen,
+  FileX2, Hourglass, PauseCircle, RotateCcw, ScanSearch, Send, ShieldCheck, Trash2, Unlock, UserRoundCog, XCircle,
+  type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
+import { parseUtc } from "@/lib/time";
 import { CodeView } from "@/components/CodeView";
 import { EmptyState } from "@/components/EmptyState";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
 import { TruncatedText } from "@/components/TruncatedText";
 import type {
-  DeliveryActivity, DeliveryAttempt, DeliveryAttemptResult, DeliveryChainStage, DeliveryRecord, DeliveryRecordChain,
+  DeliveryActivity, DeliveryAttempt, DeliveryAttemptResult, DeliveryChainLanding, DeliveryChainRun, DeliveryRecord,
+  DeliveryRecordChain, DeliverySourceChange, DeliverySourceChangeKind,
 } from "../../api/delivery";
 import { Fact, FactGrid, NoFact } from "./Facts";
 import { prettyJson } from "./prettyJson";
@@ -23,26 +26,29 @@ import { RecordName } from "./RecordName";
 
 type Tone = "success" | "destructive" | "warning" | "info" | "muted";
 
-/** Which of the record's stories an event belongs to, so the timeline can be narrowed to one of them. */
-type Lane = "chain" | "dispatch" | "intervention" | "state";
-type LaneFilter = "all" | "dispatch" | "intervention";
+/**
+ * Which of the record's stories an event belongs to, so the timeline can be narrowed to one of them: the changes of its
+ * row in the ingestion table, what the ledger decided about it, what was done against OSDU, and who intervened.
+ */
+type Lane = "source" | "ledger" | "osdu" | "intervention";
+type LaneFilter = "all" | "source" | "osdu" | "intervention";
 
-/** One thing that happened to the record, as the ledger holds it: when, what, the facts that place it, and the rest. */
+/** One thing that happened to the record: when, what, the facts that place it, and the rest. */
 interface JourneyEvent {
   id: string;
   at: string;
   title: string;
-  /** The facts that place the event, kept to one line: phase, duration, the run and submission it belongs to. */
+  /** The facts that place the event, kept to one line: the file and row, the run and submission it belongs to. */
   summary: ReactNode[];
   /** What went wrong, when something did; shown under the summary in the destructive colour. */
   error: string | null;
-  /** A note the event carries that is not an error (what the target answered, a stage's own remark). */
+  /** A note the event carries that is not an error (what the target answered, why nothing was sent). */
   note: string | null;
-  /** Everything else the ledger holds about the event, revealed when the entry is opened. */
+  /** Everything else known about the event, revealed when the entry is opened. */
   more: ReactNode | null;
   tone: Tone;
   icon: LucideIcon;
-  /** Events the ledger dates alike (an attempt's start and the completion it wrote) keep their order by this. */
+  /** Events dated alike (a landing and the load it fed, an attempt's start and its completion) keep their order by this. */
   order: number;
   lane: Lane;
   testId: string;
@@ -113,6 +119,10 @@ function SubmissionRef({ submissionId }: { submissionId: string | null }) {
     : <RouterLink to={`/delivery/submissions/${submissionId}`} className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => event.stopPropagation()}>submission {submissionId.slice(0, 8)}</RouterLink>;
 }
 
+function FlowRef({ run }: { run: DeliveryChainRun }) {
+  return <RouterLink to={`/pipelines/${run.pipelineId}`} className="text-primary hover:underline" onClick={(event) => event.stopPropagation()}>{run.flowName}</RouterLink>;
+}
+
 /** The pieces of an event's summary line, separated so a missing one leaves no dangling separator. */
 function Summary({ parts }: { parts: ReactNode[] }) {
   const shown = parts.filter((part) => part !== null && part !== undefined && part !== false);
@@ -155,32 +165,13 @@ export function AttemptSteps({ result }: { result: DeliveryAttemptResult | null 
   );
 }
 
-const ATTEMPT_TITLES: Record<DeliveryAttempt["outcome"], { title: (a: DeliveryAttempt) => string; tone: Tone; icon: LucideIcon }> = {
-  delivered: {
-    title: (a) => (a.targetVersion !== null ? `Dispatched and landed as version ${a.targetVersion}` : "Dispatched and landed"),
-    tone: "success",
-    icon: CheckCircle2,
-  },
-  failed: { title: () => "Dispatched and failed", tone: "destructive", icon: XCircle },
-  held: { title: () => "Held back", tone: "warning", icon: PauseCircle },
-  skipped: {
-    title: (a) => (a.phase === "unchanged" ? "Nothing to send: OSDU already holds this version" : a.phase === "stale" ? "Skipped: the source carried an older version" : "Skipped"),
-    tone: "muted",
-    icon: CircleDashed,
-  },
-  deleted: { title: () => "Removed from OSDU", tone: "muted", icon: Trash2 },
-  historypurged: { title: () => "Earlier versions purged in OSDU", tone: "warning", icon: Eraser },
-};
+/** How long something took, from two moments the ledger or the catalog recorded. */
+function between(from: string | null, to: string): string | null {
+  if (from === null) {
+    return null;
+  }
 
-const ACTIVITY_TITLES: Record<string, { title: string; icon: LucideIcon }> = {
-  release: { title: "Released back to pending", icon: Unlock },
-  redeliver: { title: "Redelivery asked for", icon: RotateCcw },
-  verify: { title: "Verify against OSDU", icon: ShieldCheck },
-  delete: { title: "Removal asked for", icon: Trash2 },
-};
-
-function attemptDuration(attempt: DeliveryAttempt): string | null {
-  const ms = Date.parse(attempt.completedUtc) - Date.parse(attempt.startedUtc);
+  const ms = parseUtc(to).getTime() - parseUtc(from).getTime();
   if (!Number.isFinite(ms) || ms < 0) {
     return null;
   }
@@ -188,7 +179,7 @@ function attemptDuration(attempt: DeliveryAttempt): string | null {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
-/** How long a run took, for a chain stage's summary line. */
+/** How long a run took, for a run's line. */
 function runDuration(seconds: number | null): string | null {
   if (seconds === null || !Number.isFinite(seconds)) {
     return null;
@@ -209,12 +200,6 @@ function fileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** The stage's icon and tone: where in the chain it is, and whether that run ended well. */
-function chainShape(stage: DeliveryChainStage): { icon: LucideIcon; tone: Tone } {
-  const tone: Tone = stage.success ? "success" : stage.status === "running" || stage.status === "queued" ? "info" : "destructive";
-  return { icon: stage.stage === "ingestion" ? Database : FileInput, tone };
-}
-
 /** JSON the ledger stored as text, pretty-printed when it parses and shown as it is when it does not. */
 function storedJson(text: string): string {
   try {
@@ -224,73 +209,240 @@ function storedJson(text: string): string {
   }
 }
 
+/** The ingestion table as an operator names it: its schema and table, without brackets or the database. */
+function ingestionTableName(sourceTable: string | null): string {
+  if (sourceTable === null) {
+    return "the ingestion table";
+  }
+
+  const parts = sourceTable.split(".").map((part) => part.trim().replace(/^\[/, "").replace(/\]$/, "")).filter((part) => part !== "");
+  return parts.length === 0 ? sourceTable : parts.slice(-2).join(".");
+}
+
+/** Whether a change is the row's arrival as far as the ledger knows it: its insert, a reinsert, or its earliest version. */
+function isArrival(change: DeliverySourceChange): boolean {
+  return change.kind === "loaded" || change.kind === "reloaded" || change.kind === "earliest";
+}
+
+const CHANGE_SHAPES: Record<DeliverySourceChangeKind, { title: (table: string) => string; what: (table: string) => string; icon: LucideIcon; tone: Tone }> = {
+  loaded: {
+    title: (table) => `Loaded into ${table}`,
+    what: (table) => `The ingestion flow inserted the row into ${table} (its InsertedDate_DW): the record's arrival. A later run that loads the row unchanged leaves it as it is, and is no part of this history.`,
+    icon: DatabaseZap,
+    tone: "info",
+  },
+  reloaded: {
+    title: (table) => `Loaded into ${table} again`,
+    what: (table) => `The ingestion flow inserted the row into ${table} again after earlier versions of it: the row was deleted from the table and loaded anew.`,
+    icon: ArchiveRestore,
+    tone: "info",
+  },
+  earliest: {
+    title: (table) => `In ${table}: the earliest version the ledger holds`,
+    what: () => "The ledger does not know when the row first reached the table: the table carries no InsertedDate_DW, or no plan has read the row since the ledger began keeping it. This is the earliest version of the row it recorded; whether it was the row's insert or a later change cannot be told.",
+    icon: Database,
+    tone: "muted",
+  },
+  changed: {
+    title: (table) => `Changed in ${table}`,
+    what: () => "The ingestion flow restamped the row (its UpdatedDate_DW): the row's data changed. A run that loads the row unchanged does not restamp it, so every entry like this one is a change.",
+    icon: FilePen,
+    tone: "info",
+  },
+  deleted: {
+    title: (table) => `Deleted from ${table}`,
+    what: () => "The ingestion flow's key match found the row gone from the source and marked it deleted (its DeletedDate_DW). A deleted row is never delivered: what OSDU holds is removed only by a removal someone asks for.",
+    icon: FileX2,
+    tone: "destructive",
+  },
+};
+
+function RunFacts({ run, rowsLabel }: { run: DeliveryChainRun; rowsLabel: string }) {
+  const duration = runDuration(run.durationSeconds);
+  return (
+    <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+      <FlowRef run={run} />
+      <RunRef runId={run.runId} />
+      <span className="text-muted-foreground">
+        <Mono>{run.status}</Mono>
+        {run.rows > 0 && `, ${run.rows.toLocaleString()} ${rowsLabel}`}
+        {duration !== null && `, took ${duration}`}
+      </span>
+    </span>
+  );
+}
+
 /**
- * The runs that carried the record through the estate before it reached the delivery ledger: pre-ingestion landing the
- * file, ingestion loading its row into the table the delivery flow reads. Each is a fact the platform recorded, found
- * by the file it processed or by the table it was writing when the row was stamped, so they take their place in the
- * same timeline as everything else.
+ * One change of the record's row, as the ledger recorded it: its arrival, a change, or its deletion. The runs are the
+ * evidence of the change, not events of their own: the ingestion run that wrote it and, for a change from a file, the
+ * landing that brought the file in. A run that reloaded the row unchanged made no change, and so is not here.
  */
-function chainEvents(chain: DeliveryRecordChain | undefined): JourneyEvent[] {
+function changeEvent(change: DeliverySourceChange, table: string): JourneyEvent {
+  const shape = CHANGE_SHAPES[change.kind];
+  const arrival = isArrival(change);
+  const deleted = change.kind === "deleted";
+  return {
+    id: `change-${change.kind}-${change.atUtc}`,
+    at: change.atUtc,
+    title: shape.title(table),
+    summary: [
+      change.fileName !== null
+        ? <Origin key="o" file={change.fileName} row={change.rowNumber} />
+        : arrival && change.kind !== "earliest" && "from a file the ledger never saw: the row changed before a plan read it",
+      change.loading !== null && <span key="l">{deleted ? "marked by" : "written by"} <RunRef runId={change.loading.runId} /></span>,
+      !arrival && change.landing !== null && <span key="f">landed by <RunRef runId={change.landing.run.runId} /></span>,
+    ],
+    error: change.loading !== null && !change.loading.success ? `The ingestion run ended ${change.loading.status}.` : null,
+    note: null,
+    more: (
+      <FactGrid>
+        <Fact label="What happened" wide>{shape.what(table)}</Fact>
+        <Fact label={deleted ? "Marked by" : "Written by"} wide>
+          {change.loading !== null
+            ? <RunFacts run={change.loading} rowsLabel="rows loaded" />
+            : <span className="text-muted-foreground">{`No recorded run of a flow that writes ${table} was executing at this moment: the run was pruned, ran before this estate recorded runs, or the lineage does not name the table's writers.`}</span>}
+        </Fact>
+        {!deleted && (
+          <Fact label="File landed by" wide>
+            {change.landing !== null
+              ? <RunFacts run={change.landing.run} rowsLabel="rows in the file" />
+              : <span className="text-muted-foreground">{change.fileName === null ? "The ledger holds no file for this version." : "No successful run recorded processing a file of this name before the row was written, so the landing is not named."}</span>}
+          </Fact>
+        )}
+        {change.landing?.filePath != null && (
+          <Fact label="Path" wide>
+            <TruncatedText text={change.landing.filePath} mono maxWidth={720} copy title="Path" />
+            {change.landing.sizeBytes > 0 && <span className="ml-2 text-muted-foreground"><Mono>{fileSize(change.landing.sizeBytes)}</Mono></span>}
+          </Fact>
+        )}
+      </FactGrid>
+    ),
+    tone: shape.tone,
+    icon: shape.icon,
+    order: 1,
+    lane: "source",
+    testId: `journey-source-${change.kind}`,
+  };
+}
+
+/**
+ * The first time the record came in from a file: the landing that brought in the file its arrival was loaded from. A
+ * landing of the same file later is no change of the record, so only the arrival's landing is an entry of its own; a
+ * later change names its landing as its evidence.
+ */
+function landingEvent(change: DeliverySourceChange, landing: DeliveryChainLanding): JourneyEvent {
+  const duration = runDuration(landing.run.durationSeconds);
+  return {
+    id: `landing-${landing.run.runId}`,
+    at: landing.run.ranUtc,
+    title: `Ingested from file by ${landing.run.flowName}`,
+    summary: [
+      <Origin key="o" file={landing.fileName} row={change.rowNumber} />,
+      landing.rows > 0 && `${landing.rows.toLocaleString()} row${landing.rows === 1 ? "" : "s"} in the file`,
+      duration !== null && `took ${duration}`,
+      <RunRef key="r" runId={landing.run.runId} />,
+    ],
+    error: landing.run.success ? null : landing.run.error,
+    note: null,
+    more: (
+      <FactGrid>
+        <Fact label="Flow"><FlowRef run={landing.run} /></Fact>
+        <Fact label="Run status"><Mono>{landing.run.status}</Mono>{" "}<span className="text-muted-foreground">wave</span>{" "}<Mono>{landing.run.wave}</Mono></Fact>
+        <Fact label="File"><TruncatedText text={landing.fileName} mono maxWidth={360} copy title="File" /></Fact>
+        {landing.filePath !== null && <Fact label="Path"><TruncatedText text={landing.filePath} mono maxWidth={360} copy title="Path" /></Fact>}
+        {landing.sizeBytes > 0 && <Fact label="Size"><Mono>{fileSize(landing.sizeBytes)}</Mono></Fact>}
+        {landing.fileModifiedUtc !== null && <Fact label="File modified"><RelativeTime value={landing.fileModifiedUtc} /></Fact>}
+      </FactGrid>
+    ),
+    tone: landing.run.success ? "success" : "destructive",
+    icon: FileInput,
+    order: 0,
+    lane: "source",
+    testId: "journey-source-landing",
+  };
+}
+
+/** The record's row through its ingestion table: each change of it, and the landing its arrival came in by. */
+function sourceEvents(chain: DeliveryRecordChain | undefined): JourneyEvent[] {
   if (chain === undefined) {
     return [];
   }
 
-  return chain.stages.map((stage) => {
-    const { icon, tone } = chainShape(stage);
-    const duration = runDuration(stage.durationSeconds);
-    return {
-      id: `chain-${stage.runId}-${stage.stage}`,
-      at: stage.ranUtc,
-      title: stage.stage === "ingestion"
-        ? `Ingested: ${stage.flowName} loaded the row into its table`
-        : stage.stage === "pre-ingestion"
-          ? `Landed: ${stage.flowName} took the file in`
-          : `${stage.flowName} handled the file`,
-      summary: [
-        <span key="f"><LongValue value={stage.matchedBy === "table" ? (stage.objectName ?? "its table") : stage.fileName} width={280} /></span>,
-        stage.rows > 0 && `${stage.rows.toLocaleString()} row${stage.rows === 1 ? "" : "s"}`,
-        duration !== null && `took ${duration}`,
-        !stage.success && `ended ${stage.status}`,
-        <RunRef key="r" runId={stage.runId} />,
-      ],
-      error: stage.error,
-      note: null,
-      more: (
-        <FactGrid>
-          <Fact label="Flow"><RouterLink to={`/pipelines/${stage.pipelineId}`} className="text-primary hover:underline">{stage.flowName}</RouterLink></Fact>
-          <Fact label="Run status"><Mono>{stage.status}</Mono>{" "}<span className="text-muted-foreground">wave</span>{" "}<Mono>{stage.wave}</Mono></Fact>
-          <Fact label="Found by">{stage.matchedBy === "table" ? "the table it was writing when the row was stamped" : "the file it processed"}</Fact>
-          <Fact label="File"><TruncatedText text={stage.fileName} mono maxWidth={360} copy title="File" /></Fact>
-          {stage.filePath !== null && <Fact label="Path"><TruncatedText text={stage.filePath} mono maxWidth={360} copy title="Path" /></Fact>}
-          {stage.sizeBytes > 0 && <Fact label="Size"><Mono>{fileSize(stage.sizeBytes)}</Mono></Fact>}
-          {stage.fileModifiedUtc !== null && <Fact label="File modified"><RelativeTime value={stage.fileModifiedUtc} /></Fact>}
-        </FactGrid>
-      ),
-      tone,
-      icon,
-      order: 0,
-      lane: "chain",
-      testId: `journey-chain-${stage.stage}`,
-    } satisfies JourneyEvent;
-  });
+  const table = ingestionTableName(chain.sourceTable);
+  return chain.changes.flatMap((change) =>
+    isArrival(change) && change.landing !== null ? [changeEvent(change, table), landingEvent(change, change.landing)] : [changeEvent(change, table)]);
 }
 
+/**
+ * Whether an attempt was an operation against OSDU: a delivery, a removal, a purge, a try that failed, or any try that
+ * took a step against the target. What the intake decided (a hold of a row it could not build, a change that rendered
+ * what OSDU holds, an older version) and the final hash check that found nothing to send are the ledger's decisions.
+ */
+function isOsduOperation(attempt: DeliveryAttempt): boolean {
+  return attempt.outcome === "delivered"
+    || attempt.outcome === "failed"
+    || attempt.outcome === "deleted"
+    || attempt.outcome === "historypurged"
+    || (attempt.result?.steps?.length ?? 0) > 0;
+}
+
+function attemptShape(attempt: DeliveryAttempt): { title: string; tone: Tone; icon: LucideIcon } {
+  switch (attempt.outcome) {
+    case "delivered":
+      return { title: attempt.targetVersion !== null ? `Delivered to OSDU as version ${attempt.targetVersion}` : "Delivered to OSDU", tone: "success", icon: CheckCircle2 };
+    case "failed":
+      return { title: "Delivery to OSDU failed", tone: "destructive", icon: XCircle };
+    case "held":
+      return attempt.phase === "source-deleted"
+        ? { title: "Held back: a deleted row is never delivered", tone: "warning", icon: PauseCircle }
+        : { title: isOsduOperation(attempt) ? "Held back: OSDU refused it" : "Held back", tone: "warning", icon: PauseCircle };
+    case "skipped":
+      return attempt.phase === "identical"
+        ? { title: "Nothing to send: the changed row renders what OSDU holds", tone: "muted", icon: CircleDashed }
+        : attempt.phase === "unchanged"
+          ? { title: "Nothing to send: OSDU already holds this version", tone: "muted", icon: CircleDashed }
+          : attempt.phase === "stale"
+            ? { title: "Skipped: the source carried an older version", tone: "muted", icon: CircleDashed }
+            : { title: "Skipped", tone: "muted", icon: CircleDashed };
+    case "deleted":
+      return { title: "Removed from OSDU", tone: "muted", icon: Trash2 };
+    case "historypurged":
+      return { title: "Earlier versions purged in OSDU", tone: "warning", icon: Eraser };
+    default:
+      return { title: attempt.outcome, tone: "muted", icon: CircleDashed };
+  }
+}
+
+const ACTIVITY_TITLES: Record<string, { title: string; icon: LucideIcon }> = {
+  release: { title: "Released back to pending", icon: Unlock },
+  redeliver: { title: "Redelivery asked for", icon: RotateCcw },
+  verify: { title: "Verify against OSDU", icon: ShieldCheck },
+  delete: { title: "Removal asked for", icon: Trash2 },
+};
+
 function attemptEvent(attempt: DeliveryAttempt): JourneyEvent {
-  const shape = ATTEMPT_TITLES[attempt.outcome] ?? { title: () => attempt.outcome, tone: "muted" as Tone, icon: CircleDashed };
-  const duration = attemptDuration(attempt);
+  const shape = attemptShape(attempt);
+  const osdu = isOsduOperation(attempt);
+  const duration = between(attempt.startedUtc, attempt.completedUtc);
   const steps = attempt.result?.steps ?? [];
   const correlationId = attempt.result?.correlationId;
   return {
     id: `attempt-${attempt.attemptId}`,
     at: attempt.startedUtc,
-    title: shape.title(attempt),
-    summary: [
-      attempt.phase !== "" && <span key="p">phase <Mono>{attempt.phase}</Mono></span>,
-      duration !== null && `took ${duration}`,
-      steps.length > 0 && `${steps.length} step${steps.length === 1 ? "" : "s"}`,
-      <RunRef key="r" runId={attempt.runId} />,
-      <SubmissionRef key="s" submissionId={attempt.submissionId} />,
-    ],
+    title: shape.title,
+    summary: osdu
+      ? [
+        attempt.phase !== "" && <span key="p">phase <Mono>{attempt.phase}</Mono></span>,
+        duration !== null && `took ${duration}`,
+        steps.length > 0 && `${steps.length} step${steps.length === 1 ? "" : "s"}`,
+        <RunRef key="r" runId={attempt.runId} />,
+        <SubmissionRef key="s" submissionId={attempt.submissionId} />,
+      ]
+      : [
+        attempt.sourceFileName !== null && <Origin key="o" file={attempt.sourceFileName} row={attempt.sourceRowNumber} />,
+        <RunRef key="r" runId={attempt.runId} />,
+        <SubmissionRef key="s" submissionId={attempt.submissionId} />,
+      ],
     error: attempt.error,
     note: attempt.result?.detail ?? null,
     more: (
@@ -301,7 +453,8 @@ function attemptEvent(attempt: DeliveryAttempt): JourneyEvent {
         <Fact label="OSDU version">{attempt.targetVersion !== null ? <Mono>{attempt.targetVersion}</Mono> : <NoFact />}</Fact>
         <Fact label="Completed"><RelativeTime value={attempt.completedUtc} /></Fact>
         <Fact label="Built from"><Origin file={attempt.sourceFileName} row={attempt.sourceRowNumber} inCell /></Fact>
-        <Fact label="Row received"><RelativeTime value={attempt.sourceUpdatedUtc} /></Fact>
+        <Fact label="Row stamped"><RelativeTime value={attempt.sourceUpdatedUtc} /></Fact>
+        {attempt.sourceDeletedUtc != null && <Fact label="Row deleted"><RelativeTime value={attempt.sourceDeletedUtc} /></Fact>}
         <Fact label="Metadata hash">{attempt.metadataHash !== null ? <TruncatedText text={attempt.metadataHash} mono maxWidth={360} copy title="Metadata hash" /> : <NoFact />}</Fact>
         <Fact label="Payload hash">{attempt.payloadHash !== null ? <TruncatedText text={attempt.payloadHash} mono maxWidth={360} copy title="Payload hash" /> : <NoFact />}</Fact>
         {steps.length > 0 && <Fact label="Steps" wide><AttemptSteps result={attempt.result} /></Fact>}
@@ -309,8 +462,8 @@ function attemptEvent(attempt: DeliveryAttempt): JourneyEvent {
     ),
     tone: shape.tone,
     icon: shape.icon,
-    order: 2,
-    lane: "dispatch",
+    order: 3,
+    lane: osdu ? "osdu" : "ledger",
     testId: `journey-attempt-${attempt.outcome}`,
   };
 }
@@ -346,61 +499,23 @@ function activityEvent(activity: DeliveryActivity): JourneyEvent {
       : null,
     tone,
     icon: shape.icon,
-    order: 3,
+    order: 4,
     lane: "intervention",
     testId: `journey-intervention-${activity.kind}`,
   };
 }
 
 /**
- * Every dated fact the ledger holds about the record, as one ordered story: when the row was received, when the record
- * entered the ledger, every dispatch with its outcome, every intervention with who asked for it, and what OSDU holds now.
+ * The record's own story, newest first, and nothing else: each change of its row in the ingestion table (its arrival
+ * with the landing that brought its file in, every later change, its deletion), when it entered the ledger and what
+ * the ledger decided, every operation against OSDU with its outcome, every intervention with who asked for it, and
+ * where it stands now. A pipeline run appears only as the evidence of a change it made to this row: a run that loaded
+ * the row again unchanged is a fact about the pipeline, which its own page holds, and not about this record.
  */
 function buildEvents(
   record: DeliveryRecord, attempts: DeliveryAttempt[], activities: DeliveryActivity[], chain: DeliveryRecordChain | undefined,
 ): JourneyEvent[] {
-  const events: JourneyEvent[] = chainEvents(chain);
-
-  // A record that has not been delivered has only the pending row, which is then simply the row it was received as;
-  // a newer row is a fact only once there is a delivered row for it to be newer than.
-  const received = record.sourceUpdatedUtc ?? record.pendingSourceUpdatedUtc;
-  if (received !== null) {
-    const delivered = record.sourceUpdatedUtc !== null;
-    events.push({
-      id: "received",
-      at: received,
-      title: "Received: the row reached the ingestion table",
-      summary: [
-        <Origin key="o" file={delivered ? record.sourceFileName : record.pendingSourceFileName} row={delivered ? record.sourceRowNumber : record.pendingSourceRowNumber} />,
-        delivered ? "the version the delivered document was built from" : "the version the document is built from",
-      ],
-      error: null,
-      note: null,
-      more: null,
-      tone: "info",
-      icon: Inbox,
-      order: 0,
-      lane: "chain",
-      testId: "journey-received",
-    });
-  }
-
-  if (record.sourceUpdatedUtc !== null && record.pendingSourceUpdatedUtc !== null && record.pendingSourceUpdatedUtc !== record.sourceUpdatedUtc) {
-    events.push({
-      id: "received-pending",
-      at: record.pendingSourceUpdatedUtc,
-      title: "Received: a newer row reached the ingestion table",
-      summary: [<Origin key="o" file={record.pendingSourceFileName} row={record.pendingSourceRowNumber} />, "the version the waiting document is built from"],
-      error: null,
-      note: null,
-      more: null,
-      tone: "info",
-      icon: FileInput,
-      order: 0,
-      lane: "chain",
-      testId: "journey-received-pending",
-    });
-  }
+  const events: JourneyEvent[] = sourceEvents(chain);
 
   events.push({
     id: "planned",
@@ -415,8 +530,8 @@ function buildEvents(
     more: null,
     tone: "info",
     icon: ScanSearch,
-    order: 1,
-    lane: "chain",
+    order: 2,
+    lane: "ledger",
     testId: "journey-planned",
   });
 
@@ -446,8 +561,8 @@ function buildEvents(
       more: null,
       tone: outcome === "match" ? "success" : outcome === "error" ? "muted" : "warning",
       icon: ShieldCheck,
-      order: 4,
-      lane: "state",
+      order: 5,
+      lane: "osdu",
       testId: "journey-verified",
     });
   }
@@ -463,8 +578,8 @@ function buildEvents(
       more: null,
       tone: "info",
       icon: Hourglass,
-      order: 5,
-      lane: "state",
+      order: 6,
+      lane: "ledger",
       testId: "journey-waiting",
     });
   }
@@ -473,7 +588,7 @@ function buildEvents(
     events.push({
       id: "queued",
       at: record.updatedUtc,
-      title: "Queued: a rendered document waits to be dispatched",
+      title: "Queued: a rendered document waits to be sent to OSDU",
       summary: [
         record.nextAttemptUtc !== null && <span key="n">next try <RelativeTime value={record.nextAttemptUtc} /></span>,
         record.workBatch !== null && `work batch ${record.workBatch}`,
@@ -484,61 +599,68 @@ function buildEvents(
       more: null,
       tone: "info",
       icon: Send,
-      order: 6,
-      lane: "state",
+      order: 7,
+      lane: "ledger",
       testId: "journey-queued",
     });
   }
 
-  // Newest first: what happened last is what an operator came for, and it sits at the top of the bounded list.
+  // Newest first: what happened last is what an operator came for, and it sits at the top of the bounded list. The
+  // API writes some moments without their zone; every moment is UTC by contract, so each is read as UTC.
   return events.sort((a, b) => {
-    const byTime = Date.parse(b.at) - Date.parse(a.at);
+    const byTime = parseUtc(b.at).getTime() - parseUtc(a.at).getTime();
     return byTime !== 0 && Number.isFinite(byTime) ? byTime : b.order - a.order;
   });
 }
 
 /**
- * The answers an operator came for, in one strip, in the order the estate moves a row: landed by pre-ingestion, loaded
- * into the table by ingestion, planned into the ledger, dispatched, landed in OSDU, verified, removed.
+ * The answers an operator came for, in one strip, in the order a record moves: the file it came in from, when its row
+ * reached the ingestion table, when the row last changed, when it landed in OSDU, when OSDU was last verified, and
+ * whether it was removed.
  */
 function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: DeliveryRecordChain | undefined): SummaryCell[] {
-  const dispatched = attempts.filter((a) => a.outcome === "delivered" || a.outcome === "failed" || a.outcome === "held");
+  const dispatched = attempts.filter((a) => a.outcome === "delivered" || a.outcome === "failed" || (a.outcome === "held" && isOsduOperation(a)));
   const failed = dispatched.filter((a) => a.outcome === "failed").length;
   const removed = attempts.find((a) => a.outcome === "deleted");
-  const pre = chain?.stages.find((s) => s.stage === "pre-ingestion");
-  const ing = chain?.stages.find((s) => s.stage === "ingestion");
+  const changes = chain?.changes ?? [];
+  const arrival = [...changes].reverse().find(isArrival);
+  const since = arrival === undefined ? changes : changes.filter((c) => parseUtc(c.atUtc).getTime() > parseUtc(arrival.atUtc).getTime());
+  const latest = since.at(0);
+  const unknown = chain === undefined ? "-" : "not recorded";
 
-  // The ingestion cell answers WHEN the row reached the table, which the ledger always knows (that is where it read
-  // the file and row from), and names the run that loaded it when the platform recorded one. A run that was not
-  // recorded leaves the time in place and says only that: "no run recorded" beside a time that proves the row is
-  // there would read as a contradiction.
-  const received = record.sourceUpdatedUtc ?? record.pendingSourceUpdatedUtc;
-  const receivedFrom = record.sourceFileName ?? record.pendingSourceFileName;
   const cells: SummaryCell[] = [
     {
-      label: "Pre-ingestion",
-      value: pre === undefined ? (chain === undefined ? "-" : "no run recorded") : <RelativeTime value={pre.ranUtc} />,
-      caption: pre === undefined
-        ? (chain?.fileName ?? receivedFrom ?? "no file recorded")
-        : `${pre.flowName}${pre.success ? "" : ` (${pre.status})`}`,
-      tone: pre !== undefined && !pre.success ? "destructive" : undefined,
-      testId: "milestone-pre",
+      label: "From file",
+      value: arrival?.landing != null ? <RelativeTime value={arrival.landing.run.ranUtc} /> : unknown,
+      caption: arrival === undefined
+        ? undefined
+        : arrival.fileName ?? "the file is not recorded",
+      tone: arrival?.landing != null && !arrival.landing.run.success ? "destructive" : undefined,
+      testId: "milestone-file",
     },
     {
-      label: "Ingestion",
-      value: received !== null ? <RelativeTime value={received} /> : ing !== undefined ? <RelativeTime value={ing.ranUtc} /> : chain === undefined ? "-" : "no run recorded",
-      caption: ing !== undefined
-        ? `${ing.flowName}${ing.success ? "" : ` (${ing.status})`}`
-        : chain === undefined
-          ? (receivedFrom ?? undefined)
-          : received !== null
-            ? "the row is in the table; the run is not recorded"
-            : "no ingestion run recorded for this row",
-      tone: ing !== undefined && !ing.success ? "destructive" : undefined,
-      testId: "milestone-ing",
+      label: "Loaded",
+      value: arrival !== undefined ? <RelativeTime value={arrival.atUtc} /> : unknown,
+      caption: arrival === undefined
+        ? undefined
+        : arrival.kind === "earliest"
+          ? `earliest version held, ${ingestionTableName(chain?.sourceTable ?? null)}`
+          : ingestionTableName(chain?.sourceTable ?? null),
+      testId: "milestone-loaded",
     },
     {
-      label: "Landed",
+      label: "Last change",
+      value: latest !== undefined ? <RelativeTime value={latest.atUtc} /> : arrival !== undefined ? "none" : unknown,
+      caption: latest === undefined
+        ? (arrival !== undefined ? "unchanged since it was loaded" : undefined)
+        : latest.kind === "deleted"
+          ? "the row was deleted"
+          : `${since.length} change${since.length === 1 ? "" : "s"} since it was loaded`,
+      tone: latest?.kind === "deleted" ? "destructive" : undefined,
+      testId: "milestone-changed",
+    },
+    {
+      label: "In OSDU",
       value: record.lastDeliveredUtc === null ? "not yet" : <RelativeTime value={record.lastDeliveredUtc} />,
       caption: record.lastDeliveredUtc === null
         ? (dispatched.length === 0
@@ -570,21 +692,21 @@ function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: 
 }
 
 /**
- * How far the record has come, as one strip in the order the estate moves a row: the run that landed its file, the
- * run that loaded its row, when it was planned, how often it was dispatched, when it landed and as which version, when
- * it was last verified, and whether it was removed. The page's spine: the timeline under it is the evidence.
+ * How far the record has come, as one strip in the order a record moves: the file it came in from, when its row
+ * reached the ingestion table and last changed there, when it landed in OSDU and as which version, when it was last
+ * verified, and whether it was removed. The page's spine: the timeline under it is the evidence.
  */
 export function RecordMilestones({ record, attempts, chain }: {
   record: DeliveryRecord;
   attempts: DeliveryAttempt[] | undefined;
-  /** The runs that carried the record's file through the estate; undefined while they are being read. */
+  /** The changes of the record's row in its ingestion table; undefined while they are being read. */
   chain: DeliveryRecordChain | undefined;
 }) {
   if (attempts === undefined) {
     return <Skeleton className="h-16 w-full rounded-lg" />;
   }
 
-  // Six cells (seven for a removed record) at the strip's default floor need more width than the workbench's content
+  // Five cells (six for a removed record) at the strip's default floor need more width than the workbench's content
   // measure gives them and strand the last on a line of its own; a time and a short caption fit in 160px.
   return <SummaryStrip cells={milestones(record, attempts, chain)} minCellWidth={160} data-testid="record-milestones" />;
 }
@@ -593,19 +715,24 @@ function laneMatches(event: JourneyEvent, filter: LaneFilter): boolean {
   return filter === "all" || event.lane === filter;
 }
 
+const EMPTY: Record<Exclude<LaneFilter, "all">, { title: string; description: string }> = {
+  source: { title: "No change recorded", description: "The ledger holds no version of this record's row in its ingestion table." },
+  osdu: { title: "Nothing done against OSDU yet", description: "The record has not been sent to, removed from or verified against OSDU." },
+  intervention: { title: "No intervention on this record", description: "Nobody has released, redelivered, verified or removed it." },
+};
+
 /**
- * The record's story from the ledger alone, newest first: where it stands, every intervention and who asked for it,
- * every dispatch and what OSDU answered, when it was planned and received, and the runs that carried its file. Each
- * entry is one line with the facts that place it; the rest of what the ledger holds about it (the steps a try took,
- * its worker and correlation id, an intervention's parameters) opens under the entry. The list scrolls inside a
- * bounded box, so a record with hundreds of tries does not push the rest of the page away; it narrows to the
- * dispatches or the interventions alone.
+ * The record's story, newest first, from the ledger and the changes of its row: how its row arrived and changed in the
+ * ingestion table, what the ledger decided, every operation against OSDU and what OSDU answered, and every
+ * intervention with who asked for it. Each entry is one line with the facts that place it; the rest (the runs a change
+ * came from, the steps a try took, an intervention's parameters) opens under the entry. The list scrolls inside a
+ * bounded box, and narrows to the row's changes, to what was done against OSDU, or to the interventions alone.
  */
 export function RecordJourney({ record, attempts, activities, chain }: {
   record: DeliveryRecord;
   attempts: DeliveryAttempt[] | undefined;
   activities: DeliveryActivity[] | undefined;
-  /** The runs that carried the record's file through the estate; undefined while they are being read. */
+  /** The changes of the record's row in its ingestion table; undefined while they are being read. */
   chain: DeliveryRecordChain | undefined;
 }) {
   const [filter, setFilter] = useState<LaneFilter>("all");
@@ -615,8 +742,7 @@ export function RecordJourney({ record, attempts, activities, chain }: {
     () => (loaded ? buildEvents(record, attempts, activities, chain) : []),
     [loaded, record, attempts, activities, chain]);
   const listed = useMemo(() => events.filter((event) => laneMatches(event, filter)), [events, filter]);
-  const dispatches = events.filter((event) => event.lane === "dispatch").length;
-  const interventions = events.filter((event) => event.lane === "intervention").length;
+  const count = (lane: Lane) => events.filter((event) => event.lane === lane).length;
 
   const toggle = (id: string) => setOpened((current) => {
     const next = new Set(current);
@@ -641,8 +767,9 @@ export function RecordJourney({ record, attempts, activities, chain }: {
           data-testid="record-journey-filter"
         >
           <ToggleGroupItem value="all" className="px-2.5 text-xs">{`Everything (${events.length})`}</ToggleGroupItem>
-          <ToggleGroupItem value="dispatch" className="px-2.5 text-xs">{`Dispatches (${dispatches})`}</ToggleGroupItem>
-          <ToggleGroupItem value="intervention" className="px-2.5 text-xs">{`Interventions (${interventions})`}</ToggleGroupItem>
+          <ToggleGroupItem value="source" className="px-2.5 text-xs">{`Source changes (${count("source")})`}</ToggleGroupItem>
+          <ToggleGroupItem value="osdu" className="px-2.5 text-xs">{`OSDU (${count("osdu")})`}</ToggleGroupItem>
+          <ToggleGroupItem value="intervention" className="px-2.5 text-xs">{`Interventions (${count("intervention")})`}</ToggleGroupItem>
         </ToggleGroup>
         <span className="ml-auto text-[12px] text-muted-foreground">
           ledger row updated <RelativeTime value={record.updatedUtc} />
@@ -653,8 +780,8 @@ export function RecordJourney({ record, attempts, activities, chain }: {
         : listed.length === 0
           ? (
             <EmptyState
-              title={filter === "dispatch" ? "No dispatch yet" : filter === "intervention" ? "No intervention on this record" : "Nothing recorded yet"}
-              description={filter === "dispatch" ? "The record has not been sent to OSDU." : filter === "intervention" ? "Nobody has released, redelivered, verified or removed it." : undefined}
+              title={filter === "all" ? "Nothing recorded yet" : EMPTY[filter].title}
+              description={filter === "all" ? undefined : EMPTY[filter].description}
             />
           )
           : (
@@ -709,8 +836,11 @@ export function RecordJourney({ record, attempts, activities, chain }: {
               })}
             </ol>
           )}
-      {loaded && chain !== undefined && !chain.fileKnown && chain.note !== null && (
-        <p className="text-[12px] text-muted-foreground" data-testid="record-chain-note">{chain.note}</p>
+      {loaded && chain !== undefined && (chain.note !== null || chain.truncated) && (
+        <p className="text-[12px] text-muted-foreground" data-testid="record-chain-note">
+          {chain.truncated && "The row changed more often than the timeline lists: its newest changes and its arrival are shown. "}
+          {chain.note}
+        </p>
       )}
     </Card>
   );

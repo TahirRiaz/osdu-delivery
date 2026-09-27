@@ -4,55 +4,76 @@ using SqlFlow.Delivery.Ledger;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
-/// <summary>How a stage was found, which is also what it is evidence of.</summary>
-public static class ChainMatch
+/// <summary>What one change of a record's row was, in the ingestion table the record's flow reads.</summary>
+public static class SourceChangeKind
 {
-    /// <summary>The run processed a file of that name: the platform's own record of processed files says so.</summary>
-    public const string File = "file";
+    /// <summary>The row first reached the table: the moment the ingestion flow inserted it (<c>InsertedDate_DW</c>).</summary>
+    public const string Loaded = "loaded";
+
+    /// <summary>The row reached the table again after earlier versions of it: it was deleted and inserted anew.</summary>
+    public const string Reloaded = "reloaded";
 
     /// <summary>
-    /// The run was writing the record's ingestion table at the moment the row was stamped: it is the run that loaded
-    /// the row, even though it processed no file of its own.
+    /// The earliest version of the row the ledger holds, for a record whose arrival the ledger does not know (its table
+    /// carries no insert column, or no plan has read the row since the ledger began keeping it): whether it was the row's
+    /// insert or a later change cannot be told, so it is named for what it is.
     /// </summary>
-    public const string Table = "table";
+    public const string Earliest = "earliest";
+
+    /// <summary>The ingestion flow changed the row: its checksum moved, so the flow stamped it again.</summary>
+    public const string Changed = "changed";
+
+    /// <summary>The ingestion flow marked the row deleted: its key match found the row gone from the source.</summary>
+    public const string Deleted = "deleted";
 }
 
 /// <summary>
-/// One run that carried a record's row, as a stage of its chain: which flow, of which kind, when it ran, how it ended,
-/// and what it read or wrote. The flow kinds are SQLFlow's own, so a stage says pre-ingestion or ingestion in the
-/// estate's vocabulary rather than in a name this module invented. <paramref name="MatchedBy"/> says how the run was
-/// found: by the file it processed, or by the table it was writing when the row was stamped, in which case
-/// <paramref name="ObjectName"/> names that table and <paramref name="FileName"/> is empty.
+/// One platform run a change of a record's row is evidence of: the ingestion run that was writing the record's table when
+/// the row was stamped, or the landing run that brought the change's file into the estate. The stage is the estate's own
+/// vocabulary (pre-ingestion, ingestion), from the flow's kind.
 /// </summary>
-public sealed record DeliveryChainStageDto(
+public sealed record DeliveryChainRunDto(
     string Stage, Guid RunId, Guid PipelineId, string FlowName, string FlowKind, int Wave, string Status, bool Success,
-    DateTime RanUtc, double? DurationSeconds, string FileName, string? FilePath, long Rows, long SizeBytes,
-    DateTimeOffset? FileModifiedUtc, string? Error, string MatchedBy = ChainMatch.File, string? ObjectName = null);
+    DateTime? StartedUtc, DateTime RanUtc, double? DurationSeconds, long Rows, string? Error);
+
+/// <summary>The landing that brought a change's file into the estate: its run, and the file as that run processed it.</summary>
+public sealed record DeliveryChainLandingDto(
+    DeliveryChainRunDto Run, string FileName, string? FilePath, long Rows, long SizeBytes, DateTimeOffset? FileModifiedUtc);
 
 /// <summary>
-/// Where one record is in the whole chain: the file it came from, every run that handled that file on its way through
-/// pre-ingestion and ingestion, and what the delivery ledger then did with the row. The stages before OSDU are read
-/// from the platform's own record of processed files, so they are what actually ran, not a reconstruction.
+/// One change of a record's row in its ingestion table, as the ledger recorded it: what it was (<see cref="SourceChangeKind"/>),
+/// the moment the table stamped it, the file and row it came from, the ingestion run that wrote it and the landing that
+/// brought its file in. A run is named only when the catalog proves it: <paramref name="Loading"/> was executing at the
+/// stamp, and <paramref name="Landing"/> is the last landing of the file before that run began. Either is null when no
+/// recorded run qualifies, never filled with a nearby one.
+/// </summary>
+public sealed record DeliverySourceChangeDto(
+    string Kind, DateTime AtUtc, string? FileName, long? RowNumber, DeliveryChainRunDto? Loading, DeliveryChainLandingDto? Landing);
+
+/// <summary>
+/// A record's row through its ingestion table: the table, when the row first reached it, and every change of it the
+/// ledger recorded, newest first. A run that reloaded the row without changing it leaves no stamp, and so no change: the
+/// runs named here are the evidence of a change, never a log of what ran. <paramref name="Truncated"/> says the row
+/// changed more often than <see cref="RecordChain.MaxChanges"/> times; the newest are shown, and its arrival always is.
 /// </summary>
 public sealed record DeliveryRecordChainDto(
-    string? FileName, long? RowNumber, DateTime? RowUpdatedUtc, IReadOnlyList<DeliveryChainStageDto> Stages,
-    bool FileKnown, string? Note);
+    string? SourceTable, DateTime? InsertedUtc, IReadOnlyList<DeliverySourceChangeDto> Changes, bool Truncated, string? Note);
 
 /// <summary>
-/// Assembles a record's chain from what the catalog recorded. A record carries the ingestion file its version was built
-/// from (the ingestion table's lineage columns); every flow that handled a file of that name has a row in
-/// <c>catalog.RunFile</c> against its run, so those runs are the chain, each named by its flow's kind.
+/// Assembles a record's changes from the ledger and proves each from the catalog. The ingestion flow restamps a row
+/// (<c>UpdatedDate_DW</c>) only when its checksum moves, so every distinct stamp the ledger recorded for the record, on
+/// the record or on any of its attempts, is one change of the row; a run that reloaded it unchanged left no stamp. The
+/// record's arrival is its <c>InsertedDate_DW</c>, and a deletion is the moment the table marked the row deleted.
 ///
-/// An ingestion flow reads the table a pre-ingestion flow landed, not a file, so it records no file and a file name can
-/// never name it. It is found the other way instead: the flows that write the record's own ingestion table are known
-/// from the lineage every flow kind declares, and the row carries the moment it was last written. The run of one of
-/// those flows that was executing at that moment is the run that loaded the row. Nothing here guesses: with no such
-/// run, the stage is left out rather than filled with the table's latest load.
+/// Each change is then tied to the runs that made it, from what the platform recorded. The ingestion run is the run of a
+/// flow that writes the record's table (what the lineage every flow kind declares says) that was executing when the row
+/// was stamped. The landing is the last successful run that processed a file of the change's name before that ingestion
+/// run began, which is the landing whose rows it read. Nothing here guesses: with no such run, the change names none.
 /// </summary>
 internal static class RecordChain
 {
-    /// <summary>The most runs a chain shows per file. A file handled more often than this is shown newest first.</summary>
-    public const int MaxStages = 50;
+    /// <summary>The most changes a chain shows. A row changed more often shows its newest ones, and its arrival.</summary>
+    public const int MaxChanges = 50;
 
     /// <summary>
     /// What a flow kind means in the chain an operator reads. A pre-ingestion flow is one of SQLFlow's file kinds: it
@@ -69,135 +90,224 @@ internal static class RecordChain
         _ => flowKind,
     };
 
-    /// <summary>
-    /// The chain of one record, newest first: the runs that handled its ingestion file, and the run that was writing
-    /// its ingestion table when the row was stamped. A record whose origin file the ledger does not hold (a record
-    /// planned before the origin was recorded, or one whose source reports no file) still names the run that loaded
-    /// its row when there is one, and a note says what is missing.
-    /// </summary>
-    /// <param name="catalog">The platform's catalog, which holds the runs and the lineage.</param>
-    /// <param name="record">The record whose chain is wanted.</param>
+    /// <summary>The changes of one record's row, newest first, each with the runs the catalog proves made it.</summary>
+    /// <param name="catalog">The platform's catalog, which holds the runs, the files they processed and the lineage.</param>
+    /// <param name="ledger">The ledger, whose attempts recorded the versions of the row.</param>
+    /// <param name="record">The record whose changes are wanted.</param>
     /// <param name="sourceTable">
-    /// The three-part name of the ingestion table the record's flow reads its records from, as the sync recorded it
-    /// for the flow's interface. Without it the ingestion stage cannot be named, and the rest of the chain answers as
-    /// before.
+    /// The three-part name of the ingestion table the record's flow reads, as the sync recorded it for the flow's
+    /// interface. Without it the ingestion runs cannot be named; the changes and their landings still answer.
     /// </param>
     /// <param name="ct">Cancellation.</param>
     public static async Task<DeliveryRecordChainDto> OfAsync(
-        CatalogDbContext catalog, RecordState record, string? sourceTable, CancellationToken ct)
+        CatalogDbContext catalog, ILedger ledger, RecordState record, string? sourceTable, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(catalog);
+        ArgumentNullException.ThrowIfNull(ledger);
         ArgumentNullException.ThrowIfNull(record);
 
-        // The file the delivered version came from, or the one the waiting work will be built from.
-        var fileName = record.SourceFileName ?? record.PendingSourceFileName;
-        var rowNumber = record.SourceRowNumber ?? record.PendingSourceRowNumber;
-        var updated = record.SourceUpdatedUtc ?? record.PendingSourceUpdatedUtc;
-        var loading = await LoadingRunAsync(catalog, sourceTable, updated, ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(fileName))
+        var seen = await ledger.ListOriginsAsync(record.FlowId, record.DeliveryKey, MaxChanges * 2, ct).ConfigureAwait(false);
+        var (changes, truncated) = Changes(record, seen);
+        if (changes.Count == 0)
         {
             return new DeliveryRecordChainDto(
-                null, rowNumber, updated, loading is null ? [] : [loading], FileKnown: false,
-                loading is null
-                    ? "The ledger holds no ingestion file for this record, and no recorded run was writing its table when the row was stamped. A record gets its file when its ingestion table reports one."
-                    : "The ledger holds no ingestion file for this record, so the run that landed it cannot be named. The run that loaded the row into its table is named above.");
+                sourceTable, record.SourceInsertedUtc, [], false,
+                "The ledger holds no version of this record's row: no plan has read it with the moment its ingestion table stamped it.");
         }
 
-        var files = await catalog.RunFiles.AsNoTracking()
-            .Where(f => f.Name == fileName)
-            .Join(
-                catalog.Runs.AsNoTracking(),
-                f => f.RunId,
-                r => r.RunId,
-                (f, r) => new { File = f, Run = r })
-            .OrderByDescending(x => x.Run.WrittenUtc)
-            .Take(MaxStages)
-            .ToListAsync(ct).ConfigureAwait(false);
-        if (files.Count == 0)
+        var writers = await WritersAsync(catalog, sourceTable, ct).ConfigureAwait(false);
+        var found = new List<(Change Change, RunRow? Loading, (RunRow Run, CatalogRunFile File)? Landing)>(changes.Count);
+        foreach (var change in changes)
         {
-            return new DeliveryRecordChainDto(
-                fileName, rowNumber, updated, loading is null ? [] : [loading], FileKnown: false,
-                "No run in the catalog recorded processing a file of this name, so the run that landed it cannot be named. The row did reach the ingestion table, which is where this record's file and row were read from: the run may have been pruned, it ran before this estate recorded processed files, or the file was loaded outside a platform run.");
+            var loading = await LoadingRunAsync(catalog, writers, change.AtUtc, ct).ConfigureAwait(false);
+
+            // A deletion comes from the ingestion flow's key match, which processes no file: it has no landing.
+            var landing = change.Kind == SourceChangeKind.Deleted || change.FileName is null
+                ? null
+                : await LandingAsync(catalog, change.FileName, loading?.StartedUtc ?? change.AtUtc, ct).ConfigureAwait(false);
+            found.Add((change, loading, landing));
         }
 
-        var pipelineIds = files.Select(x => x.Run.PipelineId).Distinct().ToList();
-        var waves = await catalog.Pipelines.AsNoTracking()
-            .Where(p => pipelineIds.Contains(p.Id))
-            .Select(p => new { p.Id, p.Wave })
-            .ToDictionaryAsync(p => p.Id, p => p.Wave, ct).ConfigureAwait(false);
+        var pipelineIds = found
+            .SelectMany(f => new[] { f.Loading?.PipelineId, f.Landing?.Run.PipelineId })
+            .OfType<Guid>()
+            .Distinct()
+            .ToList();
+        var waves = pipelineIds.Count == 0
+            ? []
+            : await catalog.Pipelines.AsNoTracking()
+                .Where(p => pipelineIds.Contains(p.Id))
+                .Select(p => new { p.Id, p.Wave })
+                .ToDictionaryAsync(p => p.Id, p => p.Wave, ct).ConfigureAwait(false);
 
-        var stages = files.Select(x => new DeliveryChainStageDto(
-            StageOf(x.Run.FlowKind),
-            x.Run.RunId,
-            x.Run.PipelineId,
-            x.Run.FlowName,
-            x.Run.FlowKind,
-            waves.GetValueOrDefault(x.Run.PipelineId, -1),
-            x.Run.Status,
-            x.Run.Success,
-            x.Run.WrittenUtc,
-            x.Run.DurationSeconds,
-            x.File.Name,
-            x.File.Path,
-            x.File.Rows,
-            x.File.SizeBytes,
-            x.File.Modified,
-            x.Run.Error)).ToList();
+        DeliveryChainRunDto Dto(RunRow run) => new(
+            StageOf(run.FlowKind), run.RunId, run.PipelineId, run.FlowName, run.FlowKind, waves.GetValueOrDefault(run.PipelineId, -1),
+            run.Status, run.Success, run.StartedUtc, run.RanUtc, run.DurationSeconds, run.Rows, run.Error);
 
-        // The ingestion run processed no file, so it is never among the ones matched by name; it takes its place in
-        // the chain by the time it ran, like every other stage.
-        if (loading is not null && !stages.Exists(s => s.Stage == "ingestion"))
+        var dtos = found.Select(f => new DeliverySourceChangeDto(
+            f.Change.Kind,
+            f.Change.AtUtc,
+            f.Change.FileName,
+            f.Change.RowNumber,
+            f.Loading is { } loading ? Dto(loading) : null,
+            f.Landing is { } landing
+                ? new DeliveryChainLandingDto(Dto(landing.Run), landing.File.Name, landing.File.Path, landing.File.Rows, landing.File.SizeBytes, landing.File.Modified)
+                : null)).ToList();
+        var note = sourceTable is null
+            ? "The ingestion table this record's flow reads is not recorded by the repository sync, so the ingestion runs that wrote its changes cannot be named."
+            : null;
+        return new DeliveryRecordChainDto(sourceTable, record.SourceInsertedUtc, dtos, truncated, note);
+    }
+
+    /// <summary>One change before its runs are found.</summary>
+    private sealed record Change(string Kind, DateTime AtUtc, string? FileName, long? RowNumber);
+
+    /// <summary>A catalog run, as much of it as a chain shows.</summary>
+    private sealed record RunRow(
+        Guid RunId, Guid PipelineId, string FlowName, string FlowKind, string Status, bool Success, DateTime? StartedUtc,
+        DateTime RanUtc, double? DurationSeconds, long Rows, string? Error);
+
+    /// <summary>
+    /// The record's changes, newest first: one per distinct stamp the ledger recorded (on the record, delivered or queued,
+    /// or on any attempt), its arrival, and each deletion. The arrival is the version stamped at the insert moment, or a
+    /// change of its own at that moment when the row changed before any plan read it; without an insert moment, the
+    /// earliest version is only the earliest. Past <see cref="MaxChanges"/>, the newest are kept with the arrival.
+    /// </summary>
+    private static (List<Change> Changes, bool Truncated) Changes(RecordState record, IReadOnlyList<RecordOriginSeen> seen)
+    {
+        // A stamp names one state of the row; the file and row it came from are taken where the ledger recorded one.
+        var versions = new SortedDictionary<DateTime, Change>();
+        void Add(RecordOrigin origin)
         {
-            stages.Add(loading);
-            stages = [.. stages.OrderByDescending(s => s.RanUtc)];
+            if (origin.UpdatedUtc is not { } stamp)
+            {
+                return;
+            }
+
+            if (!versions.TryGetValue(stamp, out var held) || (held.FileName is null && origin.FileName is not null))
+            {
+                versions[stamp] = new Change(SourceChangeKind.Changed, stamp, origin.FileName, origin.RowNumber);
+            }
         }
 
-        return new DeliveryRecordChainDto(fileName, rowNumber, updated, stages, FileKnown: true, null);
+        foreach (var version in seen)
+        {
+            Add(version.Origin);
+        }
+
+        Add(record.Origin);
+        Add(record.PendingOrigin);
+
+        var ordered = versions.Values.ToList();
+        if (record.SourceInsertedUtc is { } arrived)
+        {
+            var kind = ordered.Exists(v => v.AtUtc < arrived) ? SourceChangeKind.Reloaded : SourceChangeKind.Loaded;
+            var at = ordered.FindIndex(v => v.AtUtc == arrived);
+            if (at >= 0)
+            {
+                ordered[at] = ordered[at] with { Kind = kind };
+            }
+            else
+            {
+                // The row changed before any plan read it: the ledger holds its arrival, not the file that brought it.
+                ordered.Add(new Change(kind, arrived, null, null));
+            }
+        }
+        else if (ordered.Count > 0)
+        {
+            ordered[0] = ordered[0] with { Kind = SourceChangeKind.Earliest };
+        }
+
+        ordered.AddRange(seen
+            .Where(s => s.DeletedUtc is not null)
+            .GroupBy(s => s.DeletedUtc!.Value)
+            .Select(g => new Change(SourceChangeKind.Deleted, g.Key, g.First().Origin.FileName, g.First().Origin.RowNumber)));
+
+        var newest = ordered.OrderByDescending(c => c.AtUtc).ThenBy(c => c.Kind == SourceChangeKind.Deleted ? 0 : 1).ToList();
+        if (newest.Count <= MaxChanges)
+        {
+            return (newest, false);
+        }
+
+        var arrival = newest.FindLast(c => c.Kind is SourceChangeKind.Loaded or SourceChangeKind.Reloaded or SourceChangeKind.Earliest);
+        var kept = newest.Take(MaxChanges - (arrival is null ? 0 : 1)).ToList();
+        if (arrival is not null && !kept.Contains(arrival))
+        {
+            kept.Add(arrival);
+        }
+
+        return (kept, true);
     }
 
     /// <summary>
-    /// The run that loaded the record's row into its ingestion table: of the flows that write
-    /// <paramref name="sourceTable"/> (what the lineage of every flow kind declares), the run that was executing at
-    /// <paramref name="rowUpdatedUtc"/>, the moment the table stamped the row. A run whose window covers that moment is
-    /// the run that wrote it, so this names a fact rather than the table's latest load; with no such run, or with no
-    /// table or moment to go on, there is no ingestion stage.
+    /// The pipelines whose flows write <paramref name="sourceTable"/>, from the lineage every flow kind declares. None
+    /// without a table, or for a name that is not three parts, which lineage cannot place.
     /// </summary>
-    private static async Task<DeliveryChainStageDto?> LoadingRunAsync(
-        CatalogDbContext catalog, string? sourceTable, DateTime? rowUpdatedUtc, CancellationToken ct)
+    private static async Task<IReadOnlyList<Guid>> WritersAsync(CatalogDbContext catalog, string? sourceTable, CancellationToken ct)
     {
-        if (sourceTable is null || rowUpdatedUtc is not { } stamped || ObjectSuffix(sourceTable) is not { } suffix)
+        if (sourceTable is null || ObjectSuffix(sourceTable) is not { } suffix)
         {
-            return null;
+            return [];
         }
 
-        var writers = await catalog.LineageEdges.AsNoTracking()
+        return await catalog.LineageEdges.AsNoTracking()
             .Where(e => e.PipelineId != null && (e.Relation == "Writes" || e.Relation == "Creates") && e.ObjectKey.EndsWith(suffix))
-            .Select(e => new { PipelineId = e.PipelineId!.Value, e.ObjectName })
+            .Select(e => e.PipelineId!.Value)
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
-        if (writers.Count == 0)
+    }
+
+    /// <summary>
+    /// The run of a writer that was executing at <paramref name="stampedUtc"/>: of each writer, the first run recorded at
+    /// or after that moment (a run is recorded when it ends, so it is the one that can have been executing then), when it
+    /// had started by then. One seek of the catalog's (PipelineId, WrittenUtc) index per writer, however many runs the flow
+    /// has made. With no such run, there is none: the table's latest load is not a stand-in.
+    /// </summary>
+    private static async Task<RunRow?> LoadingRunAsync(CatalogDbContext catalog, IReadOnlyList<Guid> writers, DateTime stampedUtc, CancellationToken ct)
+    {
+        RunRow? found = null;
+        foreach (var pipelineId in writers)
+        {
+            var run = await catalog.Runs.AsNoTracking()
+                .Where(r => r.PipelineId == pipelineId && r.WrittenUtc >= stampedUtc)
+                .OrderBy(r => r.WrittenUtc)
+                .Select(r => new RunRow(
+                    r.RunId, r.PipelineId, r.FlowName, r.FlowKind, r.Status, r.Success, r.StartUtc, r.WrittenUtc, r.DurationSeconds,
+                    r.RowsLoaded ?? 0, r.Error))
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            if (run is { StartedUtc: { } started } && started <= stampedUtc && (found is null || started > found.StartedUtc))
+            {
+                found = run;
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// The landing that brought a change's file in: the last successful run that processed a file of that name and was
+    /// recorded by <paramref name="beforeUtc"/>, the moment the ingestion run that read it began. A landing after it
+    /// carried nothing into this change, however often the file was landed again. A file name the ledger holds with its
+    /// path (<c>showPathWithFileName</c>) is matched by its name as well.
+    /// </summary>
+    private static async Task<(RunRow Run, CatalogRunFile File)?> LandingAsync(CatalogDbContext catalog, string fileName, DateTime beforeUtc, CancellationToken ct)
+    {
+        var names = new[] { fileName, Path.GetFileName(fileName.Replace('\\', '/')) }.Where(n => n.Length > 0).Distinct(StringComparer.Ordinal).ToList();
+        var landing = await catalog.RunFiles.AsNoTracking()
+            .Where(f => names.Contains(f.Name))
+            .Join(catalog.Runs.AsNoTracking(), f => f.RunId, r => r.RunId, (f, r) => new { File = f, Run = r })
+            .Where(x => x.Run.Success && x.Run.WrittenUtc <= beforeUtc)
+            .OrderByDescending(x => x.Run.WrittenUtc)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        if (landing is null)
         {
             return null;
         }
 
-        var ids = writers.Select(w => w.PipelineId).Distinct().ToList();
-        var run = await catalog.Runs.AsNoTracking()
-            .Where(r => ids.Contains(r.PipelineId) && r.StartUtc != null && r.StartUtc <= stamped && (r.EndUtc == null || r.EndUtc >= stamped))
-            .OrderByDescending(r => r.StartUtc)
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        if (run is null)
-        {
-            return null;
-        }
-
-        var wave = await catalog.Pipelines.AsNoTracking()
-            .Where(p => p.Id == run.PipelineId)
-            .Select(p => (int?)p.Wave)
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-        return new DeliveryChainStageDto(
-            StageOf(run.FlowKind), run.RunId, run.PipelineId, run.FlowName, run.FlowKind, wave ?? -1, run.Status,
-            run.Success, run.WrittenUtc, run.DurationSeconds, string.Empty, null, run.RowsLoaded ?? 0, 0, null,
-            run.Error, ChainMatch.Table, writers.Find(w => w.PipelineId == run.PipelineId)?.ObjectName ?? sourceTable);
+        var run = landing.Run;
+        return (new RunRow(
+            run.RunId, run.PipelineId, run.FlowName, run.FlowKind, run.Status, run.Success, run.StartUtc, run.WrittenUtc, run.DurationSeconds,
+            landing.File.Rows, run.Error), landing.File);
     }
 
     /// <summary>

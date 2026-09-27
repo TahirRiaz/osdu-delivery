@@ -350,6 +350,19 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A record's timeline shows the changes of its row, not the pipeline's runs.** It listed every run that had processed
+  a file of the record's file name, so a file landed again every hour filled it with runs that changed nothing (a real
+  record showed 41 entries, 36 of them re-landings after its only change). It now lists what happened to the record:
+  its row's arrival in the ingestion table with the landing that brought its file in, every later change of the row and
+  its deletion, when it entered the ledger and what the ledger decided, every operation against OSDU, and every
+  intervention. The ingestion flow restamps a row only when it changes, so each distinct stamp the ledger recorded is
+  one change; a run appears only as the evidence of a change: the ingestion run that was writing the table when the
+  row was stamped, and the last landing of its file before that run, each named only when the catalog proves it.
+  `GET /api/v1/delivery/records/{flowId}/{key}/chain` returns the table, the row's arrival and its changes, newest
+  first, each with those runs; the ingestion run is found with one index seek per flow writing the table. The
+  milestone strip reads from file, loaded, last change, in OSDU and verified, and the timeline narrows to the source
+  changes, to what was done against OSDU, or to the interventions.
+
 - **A mapping is laid out the way the record it renders is.** The flat `mappings:` list, where every entry named its
   variable by a `target` path (`osdu.data.Curves[].CurveUnit`) and read with `source`, `static` and `appliesWhen`, is
   replaced by a `record` tree: `acl`, `legal`, `tags` and `data`, and below them each property at the place the record

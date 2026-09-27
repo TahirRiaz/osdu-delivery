@@ -180,6 +180,11 @@ export interface DeliveryRecord {
   pendingSourceFileName: string | null;
   pendingSourceRowNumber: number | null;
   pendingSourceUpdatedUtc: string | null;
+  /**
+   * When the ingestion table first inserted the record's row, which later changes never move: its arrival. Null when the
+   * table does not carry it, or no plan has read the row since the ledger began keeping it.
+   */
+  sourceInsertedUtc?: string | null;
   /** The key columns that find the record's row in the ingestion tables, as JSON. */
   sourceKeyJson: string | null;
   /** When a plan last asked for this record, for a record waiting on one. */
@@ -292,6 +297,8 @@ export interface DeliveryAttempt {
   sourceFileName: string | null;
   sourceRowNumber: number | null;
   sourceUpdatedUtc: string | null;
+  /** When the ingestion table marked that row deleted, for the hold of a deleted row (phase source-deleted). */
+  sourceDeletedUtc?: string | null;
 }
 
 /** One entry of the audit trail: who did what, when, with which inputs, and how it ended. */
@@ -633,10 +640,11 @@ export interface DeliveryRecordListQuery extends PageQuery {
 }
 
 /**
- * One run that handled the file a record came from: which flow, of which kind, when it ran and how it ended. The stage
- * is the estate's own vocabulary (pre-ingestion, ingestion), derived from the flow's kind.
+ * One platform run a change of a record's row is evidence of: the ingestion run that was writing the record's table when
+ * the row was stamped, or the landing that brought the change's file in. The stage is the estate's own vocabulary
+ * (pre-ingestion, ingestion), derived from the flow's kind.
  */
-export interface DeliveryChainStage {
+export interface DeliveryChainRun {
   stage: string;
   runId: string;
   pipelineId: string;
@@ -645,35 +653,55 @@ export interface DeliveryChainStage {
   wave: number;
   status: string;
   success: boolean;
+  startedUtc: string | null;
   ranUtc: string;
   durationSeconds: number | null;
+  /** Rows the run loaded (an ingestion run) or read from the file (a landing). */
+  rows: number;
+  error: string | null;
+}
+
+/** The landing that brought a change's file into the estate: its run, and the file as that run processed it. */
+export interface DeliveryChainLanding {
+  run: DeliveryChainRun;
   fileName: string;
   filePath: string | null;
   rows: number;
   sizeBytes: number;
   fileModifiedUtc: string | null;
-  error: string | null;
-  /**
-   * How the run was found, which is what it is evidence of: "file" means it processed a file of that name, "table"
-   * means it was writing the record's ingestion table at the moment the row was stamped, so it is the run that
-   * loaded the row even though it handled no file.
-   */
-  matchedBy: "file" | "table";
-  /** The table the run was writing, for a stage matched that way; null for a stage matched by its file. */
-  objectName: string | null;
 }
 
 /**
- * Where a record is in the whole chain: the ingestion file it came from, the row of it, and every run that handled that
- * file through pre-ingestion and ingestion. `fileKnown` is false when the ledger holds no file for the record, or when
- * no run in the catalog recorded one of that name; `note` then says which.
+ * What one change of a record's row was: its first arrival in the ingestion table (loaded), an arrival after earlier
+ * versions (reloaded: the row was deleted and inserted anew), the earliest version the ledger holds when it does not
+ * know the arrival (earliest), a change of the row (changed), or its deletion (deleted).
  */
-export interface DeliveryRecordChain {
+export type DeliverySourceChangeKind = "loaded" | "reloaded" | "earliest" | "changed" | "deleted";
+
+/**
+ * One change of a record's row in its ingestion table: the moment the table stamped it, the file and row it came from,
+ * the ingestion run that wrote it and the landing that brought its file in. A run is named only when the catalog proves
+ * it; either is null otherwise.
+ */
+export interface DeliverySourceChange {
+  kind: DeliverySourceChangeKind;
+  atUtc: string;
   fileName: string | null;
   rowNumber: number | null;
-  rowUpdatedUtc: string | null;
-  stages: DeliveryChainStage[];
-  fileKnown: boolean;
+  loading: DeliveryChainRun | null;
+  landing: DeliveryChainLanding | null;
+}
+
+/**
+ * A record's row through its ingestion table: the table, when the row first reached it, and every change of it the
+ * ledger recorded, newest first. A run that reloaded the row without changing it is not a change and is not here.
+ * `truncated` says only the newest changes (and the arrival) are listed; `note` says what the chain could not name.
+ */
+export interface DeliveryRecordChain {
+  sourceTable: string | null;
+  insertedUtc: string | null;
+  changes: DeliverySourceChange[];
+  truncated: boolean;
   note: string | null;
 }
 
@@ -1558,7 +1586,7 @@ export const deliveryApi = {
     get<DeliveryAttempt[]>(`${recordApiPath(record)}/attempts`, max ? { max } : {}),
   recordActivities: (record: DeliveryRecordRef, max?: number) =>
     get<DeliveryActivity[]>(`${recordApiPath(record)}/activities`, max ? { max } : {}),
-  /** Where the record is in the whole chain: the runs that carried its file through pre-ingestion and ingestion. */
+  /** The record's row through its ingestion table: its arrival and every change, each with the runs that made it. */
   recordChain: (record: DeliveryRecordRef) => get<DeliveryRecordChain>(`${recordApiPath(record)}/chain`),
   submission: (submissionId: string) => get<DeliverySubmissionDetail>(`/api/v1/delivery/submissions/${submissionId}`),
   submissionAttempts: (submissionId: string, max?: number) =>

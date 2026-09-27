@@ -68,25 +68,30 @@ test.describe.serial("record trace", () => {
     await expect(adminPage.getByTestId("journey-planned")).toContainText("claimed the OSDU id");
     await expect(adminPage.getByTestId("journey-queued")).toBeVisible();
 
-    // The chain before the ledger, named run by run. Pre-ingestion is found by the file it processed; ingestion
-    // processed no file of its own (it reads the table the pre flow landed), so it is found by the table it was
-    // writing when the row was stamped. Both are the estate's own runs, recorded as they ran.
-    await expect(adminPage.getByTestId("milestone-pre")).toContainText("recall-welllog-01-header-pre", { timeout: 30_000 });
-    await expect(adminPage.getByTestId("milestone-ing")).toContainText("recall-welllog-02-header-ing");
-    await expect(adminPage.getByTestId("milestone-pre")).not.toContainText("no run recorded");
-    await expect(adminPage.getByTestId("milestone-ing")).not.toContainText("no run recorded");
+    // The row's arrival, before the ledger: the file it came in from and when it reached the ingestion table. They are
+    // the record's own facts; the runs that made them are their evidence, found by the file the landing processed and
+    // by the table the ingestion run was writing when it inserted the row.
+    await expect(adminPage.getByTestId("milestone-file")).toContainText("welllog_", { timeout: 30_000 });
+    await expect(adminPage.getByTestId("milestone-file")).not.toContainText("not recorded");
+    await expect(adminPage.getByTestId("milestone-loaded")).toContainText("arc.WellLog");
+    await expect(adminPage.getByTestId("milestone-changed")).toContainText("unchanged since it was loaded");
 
-    // Each stage is in the timeline too, saying what it did: the file it took in, and the table it loaded the row into.
+    // The timeline holds the changes of this record's row, not the pipeline's runs: the landing that brought its file
+    // in, and the load that inserted the row, which names the ingestion run that wrote it.
     const journey = adminPage.getByTestId("record-journey");
-    await expect(journey).toContainText("Landed: recall-welllog-01-header-pre took the file in");
-    await expect(journey).toContainText("Ingested: recall-welllog-02-header-ing loaded the row into its table");
+    await expect(journey.getByTestId("journey-source-landing")).toContainText("Ingested from file by recall-welllog-01-header-pre");
+    await expect(journey.getByTestId("journey-source-loaded")).toContainText("Loaded into arc.WellLog");
+    await expect(journey.getByTestId("journey-source-loaded")).toContainText("written by");
+    await expect(journey.getByTestId("journey-source-changed")).toHaveCount(0);
 
-    // With every stage named there is nothing missing to explain, so the note is not rendered at all.
+    // With every run named there is nothing missing to explain, so the note is not rendered at all.
     await expect(adminPage.getByTestId("record-chain-note")).toHaveCount(0);
 
-    // An entry opens to the rest of what the ledger holds about it: the ingestion run's flow, status and file.
-    await journey.getByTestId("journey-chain-ingestion").getByTestId("journey-event-toggle").click();
-    await expect(journey.getByTestId("journey-chain-ingestion").getByTestId("journey-event-detail")).toContainText("recall-welllog-02-header-ing");
+    // An entry opens to the rest of what is known about it: the ingestion run that wrote the row, and the landing.
+    await journey.getByTestId("journey-source-loaded").getByTestId("journey-event-toggle").click();
+    const detail = journey.getByTestId("journey-source-loaded").getByTestId("journey-event-detail");
+    await expect(detail).toContainText("recall-welllog-02-header-ing");
+    await expect(detail).toContainText("recall-welllog-01-header-pre");
 
     // The Source tab names the ingestion file and row the record was staged from.
     await adminPage.getByTestId("record-tab-source").click();

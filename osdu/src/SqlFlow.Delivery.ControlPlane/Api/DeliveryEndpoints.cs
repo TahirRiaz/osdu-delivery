@@ -792,9 +792,10 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>
-    /// Where the record is in the whole chain: the ingestion file its version came from, and every run that handled that
-    /// file on its way through pre-ingestion and ingestion, read from the platform's own record of processed files. The
-    /// delivery half of the chain is the record itself, which the page already holds.
+    /// The record's row through its ingestion table: when it arrived, and every change of it the ledger recorded, each
+    /// with the ingestion run that wrote it and the landing that brought its file in, as the platform recorded them. A
+    /// run that reloaded the row without changing it is not a change and is not named. The delivery half of the record's
+    /// history is its attempts and activities, which the page reads beside it.
     /// </summary>
     private static async Task<Results<Ok<DeliveryRecordChainDto>, ProblemHttpResult>> GetRecordChainAsync(
         Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
@@ -803,14 +804,14 @@ public static class DeliveryEndpoints
         return record is null
             ? RecordNotFound(flowId, key)
             : TypedResults.Ok(await RecordChain.OfAsync(
-                db, record, await SourceTableAsync(osdu, record.FlowId, ct).ConfigureAwait(false), ct).ConfigureAwait(false));
+                db, ledger, record, await SourceTableAsync(osdu, record.FlowId, ct).ConfigureAwait(false), ct).ConfigureAwait(false));
     }
 
     /// <summary>
-    /// The ingestion table a flow reads its records from, which is what names the run that loaded a row. The sync
-    /// records it per interface, so it is one read and it survives a document that stopped parsing; a ledger no synced
-    /// interface names any more costs the ingestion stage and nothing else, and the runs that handled the file still
-    /// answer. The declared interface wins over one left behind by an older sync.
+    /// The ingestion table a flow reads its records from, which is what names the runs that wrote a row's changes. The
+    /// sync records it per interface, so it is one read and it survives a document that stopped parsing; a ledger no
+    /// synced interface names any more costs the ingestion runs and nothing else, and the changes and their landings
+    /// still answer. The declared interface wins over one left behind by an older sync.
     /// </summary>
     private static async Task<string?> SourceTableAsync(OsduDbContext osdu, Guid ledgerFlowId, CancellationToken ct)
         => await osdu.DeliveryInterfaces.AsNoTracking()

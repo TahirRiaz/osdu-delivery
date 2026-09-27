@@ -114,12 +114,13 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     queryFn: () => deliveryApi.recordActivities(ref, 200),
     refetchInterval: 10000,
   });
-  // Where the record has been before the ledger: the runs that carried its file through pre-ingestion and ingestion.
-  // They are past runs of other flows, so they are read once rather than polled.
+  // The record's row through its ingestion table: its arrival and every change of it, each with the runs that made it.
+  // A plan that records a change moves it, so it is read again with the record's history, if less often: the runs
+  // behind a change are past runs, and one change is one read of the catalog.
   const chain = useQuery({
     queryKey: ["delivery", "record", flowId, deliveryKey, "chain"],
     queryFn: () => deliveryApi.recordChain(ref),
-    staleTime: 60000,
+    refetchInterval: 30000,
   });
   const removalTask = useComputeTask(removal?.taskId ?? null);
   const sourceTask = useComputeTask(sourceTaskId);

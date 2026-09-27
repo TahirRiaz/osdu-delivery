@@ -105,7 +105,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
 | `GET /records/{flowId}/{key}`, `/attempts`, `/activities` | read | One flow's record, its delivery history, its interventions. A record is addressed by the ledger's flow id and the delivery key together, because the same row read by several flows is one record per flow. |
-| `GET /records/{flowId}/{key}/chain` | read | Where the record is in the whole chain: the ingestion file its version came from, its row, and every run that handled a file of that name through pre-ingestion and ingestion, newest first, each with its flow, stage, outcome and rows. Read from the platform's record of processed files, so the runs are ones that actually ran; `fileKnown` is false with a `note` when the ledger holds no file for the record or no run recorded one of that name. |
+| `GET /records/{flowId}/{key}/chain` | read | The record's row through its ingestion table: the table (`sourceTable`), when the row first arrived (`insertedUtc`), and every change of it the ledger recorded, newest first: `loaded` (the insert), `reloaded` (inserted again after earlier versions), `earliest` (the earliest version held, when the arrival is not known), `changed` and `deleted`, each with its file and row, the ingestion run that was writing the table when the row was stamped (`loading`), and the last landing of its file before that run (`landing`). A run that reloaded the row unchanged made no change and is not listed; a run the catalog does not prove is left out rather than guessed, and `note` says what could not be named. At most 50 changes, the newest and the arrival (`truncated`). |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
@@ -377,21 +377,25 @@ Pipelines like any other flow.
   one (the header chip, the timeline, the references, the records and search tables, the preview) it shows the type and
   the unique part alone, clipped to the room it has, with the whole id and kind on hover and a copy beside it that hands
   the id over verbatim; the facts a tab lists (worker, correlation id, hashes, files, paths) sit one to a line beside
-  their captions, each clipped at its cell with the same hover and copy. The **milestones** strip under it is four cells in the order the estate moves a row:
-  **pre-ingestion** (the run that landed the file), **ingestion** (when the row reached the table the delivery flow
-  reads, and the run that loaded it), **landed** (when, as which version; until then how many tries and how many
-  failed) and **verified** (when, what it found), with **removed** added for a record that was. The two chain stages
-  come from the platform's own record of processed files (`GET /api/v1/delivery/records/{flowId}/{key}/chain`),
-  matched on the ingestion file the record carries, so they name runs that actually ran; a run the platform did not
-  record says so beside the time the row was stamped, rather than showing a blank. Then the **tabs**, one question
-  each:
-  - **Timeline**: what happened, newest first, in a box of fixed height that scrolls, so a record with hundreds of
-    tries does not push the page down: where it stands now, every intervention with who asked for it, every dispatch
-    with its phase, duration, run and submission and what OSDU answered, when the record was planned and the row
-    received, and the pre-ingestion and ingestion runs with the rows they handled. An entry opens to the rest the
-    ledger holds about it (the steps a try took and what each returned, its worker, correlation id, work batch and
-    the origin it sent; an intervention's parameters). The timeline narrows to the dispatches or the interventions
-    alone.
+  their captions, each clipped at its cell with the same hover and copy. The **milestones** strip under it is five cells in the order a record moves:
+  **from file** (when the landing that brought in the file its row arrived from ran, and the file), **loaded** (when
+  the row reached the table the delivery flow reads), **last change** (when the row last changed there and how often
+  since it was loaded, or that it was deleted), **in OSDU** (when, as which version; until then how many tries and how
+  many failed) and **verified** (when, what it found), with **removed** added for a record that was. The first three
+  come from the record's changes (`GET /api/v1/delivery/records/{flowId}/{key}/chain`): the versions of its row the
+  ledger recorded, each proved by the runs the platform recorded, so a run that is not recorded says so rather than
+  being guessed. Then the **tabs**, one question each:
+  - **Timeline**: what happened to this record, newest first, in a box of fixed height that scrolls, so a record with
+    hundreds of tries does not push the page down. It is the record's own story and nothing else: its row's arrival in
+    the ingestion table with the landing that brought its file in, every later change of the row and its deletion,
+    when it entered the ledger and what the ledger decided (a hold, a change that rendered what OSDU already holds, an
+    older version), every operation against OSDU with what OSDU answered, every intervention with who asked for it,
+    and where it stands now. A pipeline run appears only as the evidence of a change it made to this row: the
+    ingestion flow restamps a row only when it changes, so a file landed and loaded again unchanged adds nothing. An
+    entry opens to the rest known about it (the ingestion run that wrote a change and the landing of its file; the
+    steps a try took and what each returned, its worker, correlation id, work batch and the origin it sent; an
+    intervention's parameters). The timeline narrows to the source changes, to what was done against OSDU, or to the
+    interventions alone.
   - **Source**: where the row came from: the source key, the ingestion file and row the delivered document was built
     from (and the newer row a waiting document is built from), when the row was received and the source last
     modified, the key columns that find it, and a read of its rows as the ingestion tables hold them now, on a node
