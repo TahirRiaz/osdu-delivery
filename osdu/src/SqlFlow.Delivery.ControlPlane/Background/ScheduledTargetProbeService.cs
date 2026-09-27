@@ -196,7 +196,9 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
                 continue;
             }
 
-            foreach (var flow in source.Source.Interfaces)
+            // A flow that names its partitions has a target in each, reached with that partition's configuration: every one
+            // is probed, bound to its partition, so a partition whose platform is down is seen as such.
+            foreach (var flow in source.Source.EveryLedger())
             {
                 if (budget <= 0)
                 {
@@ -207,8 +209,9 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
                 budget--;
                 try
                 {
+                    var bound = flow.Partition is { } partition ? source.Source.ForPartition(partition) : source.Source;
                     var pending = await QueueOneAsync(
-                        catalog, ledger, dispatcher, new DeliveryEndpoints.FlowContext(source.Pipeline, source.Source, flow), ct).ConfigureAwait(false);
+                        catalog, ledger, dispatcher, new DeliveryEndpoints.FlowContext(source.Pipeline, bound, flow), ct).ConfigureAwait(false);
                     if (pending is not null)
                     {
                         queued.Add(pending);
@@ -299,7 +302,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
             },
             ct).ConfigureAwait(false);
 
-        return new PendingProbe(activity.ActivityId, taskId, flow.Flow.Label, flow.Flow.Interface);
+        return new PendingProbe(activity.ActivityId, taskId, flow.Flow.Partition is { } bound ? $"{flow.Flow.Label}@{bound}" : flow.Flow.Label, flow.Flow.Interface);
     }
 
     // ---- Settling ----------------------------------------------------------------------------------------------

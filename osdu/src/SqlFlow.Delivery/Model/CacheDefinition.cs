@@ -34,11 +34,86 @@ public sealed record CacheDefinition
     /// <summary>The OSDU platform the types are searched on.</summary>
     public required CacheSource Source { get; init; }
 
-    /// <summary>The partition whose cache the flow fills: the <c>data-partition-id</c> its searches carry.</summary>
-    public string Scope => CacheScope.Of(Source.Headers, SourcePath ?? Name);
+    /// <summary>
+    /// The partitions the flow builds a cache for (<c>partitions</c>, docs/partitions-design.md section 2.2), in document
+    /// order; empty for a flow that names none and fills the cache of the partition its <c>source.headers</c> name.
+    /// </summary>
+    public IReadOnlyList<string> Partitions { get; init; } = [];
 
-    /// <summary>The types the flow captures into its partition's cache; a cache flow declares at least one.</summary>
+    /// <summary>
+    /// The partition this definition is bound to (<see cref="ForPartition"/>): the one a refresh builds the cache of. Null for
+    /// a flow that names no partitions, and for one that names some before it is bound.
+    /// </summary>
+    public string? Partition { get; init; }
+
+    /// <summary>True when the flow names the partitions it builds a cache for.</summary>
+    public bool DeclaresPartitions => Partitions.Count > 0;
+
+    /// <summary>
+    /// The partition whose cache the flow fills: the partition it is bound to, or for a flow that names none, the
+    /// <c>data-partition-id</c> its searches carry, as the document writes it.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The flow names its partitions and this definition is bound to none.</exception>
+    public string Scope => Partition
+        ?? (DeclaresPartitions
+            ? throw new InvalidOperationException(
+                $"Cache flow '{Name}' builds a cache for each of {PartitionNames.Listed(Partitions)}; bind it to the partition a refresh builds before asking for its scope.")
+            : CacheScope.Of(Source.Headers, SourcePath ?? Name));
+
+    /// <summary>
+    /// The types the flow captures into its partition's cache; a cache flow declares at least one. A definition bound to a
+    /// partition holds only the types built for it.
+    /// </summary>
     public required IReadOnlyList<ReferenceTypeSpec> Types { get; init; }
+
+    /// <summary>
+    /// This definition bound to <paramref name="partition"/>, one of the partitions the flow names: its searches carry the
+    /// partition as <c>data-partition-id</c>, and it holds only the types built for that partition.
+    /// </summary>
+    /// <exception cref="DeliveryException">The flow names no partitions, or not this one.</exception>
+    public CacheDefinition ForPartition(string partition)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(partition);
+        var wanted = partition.Trim();
+        if (!DeclaresPartitions)
+        {
+            throw new DeliveryException(
+                $"Cache flow '{Name}' names no partitions; it fills the cache of the partition its source.headers name, so it cannot be bound to '{wanted}'.");
+        }
+
+        var declared = Partitions.FirstOrDefault(p => string.Equals(p, wanted, StringComparison.OrdinalIgnoreCase))
+            ?? throw new DeliveryException($"Cache flow '{Name}' builds no cache for partition '{wanted}'; it names {PartitionNames.Listed(Partitions)}.");
+        var headers = new Dictionary<string, string>(Source.Headers, StringComparer.OrdinalIgnoreCase)
+        {
+            [CacheScope.PartitionHeader] = declared,
+        };
+        return this with
+        {
+            Partition = declared,
+            Source = Source with { Headers = headers },
+            Types = Types.Where(t => t.IsBuiltFor(declared)).ToList(),
+        };
+    }
+
+    /// <summary>
+    /// The flow as a run refreshes it (docs/partitions-design.md section 6): bound to the partition the run names, or to every
+    /// partition the flow names, in document order, when the run names none; a flow that names no partitions is refreshed as
+    /// it is. Each partition's cache is merged on its own, so refreshing them one after another never contends.
+    /// </summary>
+    /// <exception cref="DeliveryException">A partition is named for a flow that names none, or the one named is not the flow's.</exception>
+    public IReadOnlyList<CacheDefinition> ForRun(string? partition)
+    {
+        var wanted = string.IsNullOrWhiteSpace(partition) ? null : partition.Trim();
+        if (!DeclaresPartitions)
+        {
+            return wanted is null
+                ? [this]
+                : throw new DeliveryException(
+                    $"Cache flow '{Name}' names no partitions; it fills the cache of the partition its source.headers name, so a run cannot target '{wanted}'. Leave the partition out, or name the flow's partitions under 'partitions'.");
+        }
+
+        return wanted is null ? Partitions.Select(ForPartition).ToList() : [ForPartition(wanted)];
+    }
 
     /// <summary>The default <c>onChange</c> for the types that do not state one.</summary>
     public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Auto;

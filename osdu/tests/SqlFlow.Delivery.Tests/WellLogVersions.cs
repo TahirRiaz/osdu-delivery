@@ -50,6 +50,23 @@ internal static class WellLogVersions
         var mappings = Path.Combine(root, "next-mappings-" + FolderName(partition));
         Directory.CreateDirectory(mappings);
         File.WriteAllText(Path.Combine(mappings, NextMapping + ".yaml"), NextMappingDocument(partition));
+        if (flow.DeclaresPartitions)
+        {
+            // A flow that names its partitions delivers to the one a run binds it to: the pipeline names the partition it
+            // delivers to, keeping its own ledger there, and the kind supplies it as the partition every id is minted in.
+            var headers = flow.Target.Headers
+                .Where(h => !h.Key.Equals(CacheScope.PartitionHeader, StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(h => h.Key, h => h.Value, StringComparer.OrdinalIgnoreCase);
+            return (flow with
+            {
+                Name = name,
+                Partitions = [new DeclaredPartition(partition, KeepsLedger: true)],
+                Partition = null,
+                Render = flow.Render with { Mapping = NextMapping, MappingsDirectory = mappings },
+                Target = flow.Target with { Headers = headers },
+            }).ForPartition(partition);
+        }
+
         return flow with
         {
             Name = name,

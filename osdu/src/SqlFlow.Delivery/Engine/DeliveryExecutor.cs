@@ -66,32 +66,52 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         }
 
         // The file the node materialized is where the repository layout (mappings, snapshots) is resolved from.
-        var source = delivery.Source.WithSourcePath(Path.GetFullPath(flowFile));
+        var declared = delivery.Source.WithSourcePath(Path.GetFullPath(flowFile));
         var parameters = options.Parameters;
         parameters.Validate();
         var operation = DeliveryOperations.Of(parameters);
         var payload = DeliveryRunPayload.Parse(parameters);
         payload.Validate(operation);
 
+        // The partition the run targets travels as a run value beside the flow's own, and never reaches its parameters: it
+        // binds the source instead, so the ledger, the header, the cache and the configuration below are all that partition's.
+        var (partition, values) = PartitionNames.SplitRunValues(
+            parameters.Values, keptAsParameter: !declared.DeclaresPartitions && declared.Parameters.ContainsKey(PartitionNames.RunValue));
+        parameters = parameters with { Values = values };
+
         var runId = options.RunId ?? Guid.CreateVersion7();
         var actor = string.IsNullOrWhiteSpace(options.Actor) ? "unknown" : options.Actor.Trim();
-        var (runLogger, events, _) = RunArtifacts.BuildEventPlumbing(options, source.Name);
-        var loggers = new RunLogLoggerFactory(runLogger, events, runId, source.Name);
+        var (runLogger, events, _) = RunArtifacts.BuildEventPlumbing(options, declared.Name);
+        var loggers = new RunLogLoggerFactory(runLogger, events, runId, declared.Name);
         var log = loggers.CreateLogger("run");
         var context = _provider.GetRequiredService<EngineContext>()
             .ForRun(loggers)
-            .WithFanOut(options.FanOut is { } fanOut ? new RunFanOutDispatcher(fanOut) : null)
-            // The control plane supplies what it holds centrally; the node answers the rest from its own environment.
-            .WithSuppliedReferences(payload.References);
+            .WithFanOut(options.FanOut is { } fanOut ? new RunFanOutDispatcher(fanOut) : null);
 
         var stopwatch = Stopwatch.StartNew();
         object result;
         string? error = null;
         var success = false;
-        LogStart(log, source.Name, operation, parameters.Describe(), actor, runId);
+        LogStart(log, declared.Name, operation, parameters.Describe(), actor, runId);
         try
         {
-            result = await ExecuteOperationAsync(context, source, operation, parameters, payload, runId, actor, runLogger, log, ct).ConfigureAwait(false);
+            var source = declared.ForPartition(partition);
+            if (source.Partition is { } bound)
+            {
+                LogPartition(log, bound);
+            }
+
+            // The control plane supplies what it holds centrally, the partition's own values first; the node answers the
+            // rest from its own environment.
+            var partitioned = context.WithSuppliedReferences(payload.ReferencesFor(source.Partition));
+            if (source.DeclaresPartitions && StartsWholeRun(payload))
+            {
+                await _provider.GetRequiredService<PartitionLedgers>()
+                    .CheckAsync(partitioned.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage), source, ct)
+                    .ConfigureAwait(false);
+            }
+
+            result = await ExecuteOperationAsync(partitioned, source, operation, parameters, payload, runId, actor, runLogger, log, ct).ConfigureAwait(false);
             success = true;
             LogDone(log, operation, stopwatch.Elapsed.TotalSeconds);
         }
@@ -116,11 +136,11 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         }
 
         stopwatch.Stop();
-        var artifact = RunArtifacts.Artifact(FlowDefinition.FlowTypeName, source.Name, runId, success, error, result, events.Records);
-        var directory = RunArtifacts.Write(flowFile, source.Name, runId, artifact, runLogger.Render(), null, options.Echo);
+        var artifact = RunArtifacts.Artifact(FlowDefinition.FlowTypeName, declared.Name, runId, success, error, result, events.Records);
+        var directory = RunArtifacts.Write(flowFile, declared.Name, runId, artifact, runLogger.Render(), null, options.Echo);
         return new DocumentExecutionResult
         {
-            FlowName = source.Name,
+            FlowName = declared.Name,
             FlowKind = FlowDefinition.FlowTypeName,
             Success = success,
             Error = error,
@@ -528,8 +548,19 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         return merged;
     }
 
+    /// <summary>
+    /// True for a run that starts on the flow as a whole, not on part of what an earlier run began: no submission, no records
+    /// and no slices named. The ledger guards of a flow that names its partitions are checked there, once, and not again by
+    /// every member and every record-scoped run that follows.
+    /// </summary>
+    private static bool StartsWholeRun(DeliveryRunPayload payload)
+        => payload.SubmissionId is null && payload.RecordKeys.Count == 0 && payload.Slices.Count == 0;
+
     private static void LogStart(ILogger log, string flow, string operation, string parameters, string actor, Guid runId)
         => log.LogInformation("delivery flow '{Flow}': {Operation} (parameters: {Parameters}) requested by {Actor}, run {RunId}", flow, operation, parameters, actor, runId);
+
+    private static void LogPartition(ILogger log, string partition)
+        => log.LogInformation("delivering to partition '{Partition}': its header, its cache, its ledger and its configuration", partition);
 
     /// <summary>The route the run delivers by, what it carries there, and why the flow takes it when the flow says.</summary>
     private static void LogRoute(ILogger log, string operation, FlowRuntime runtime)

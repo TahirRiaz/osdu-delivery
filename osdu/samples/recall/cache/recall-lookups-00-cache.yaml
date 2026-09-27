@@ -11,17 +11,20 @@
 # instead of code: its unit maps and its curve dictionary. Their files sit in data/, and beside this flow the pre and ing
 # flows land and key each file into an ingestion table (recall-cacheunits-01/02-curve, recall-cacheunits-01/02-depth,
 # recall-cachecurvedictionary-01/02). This flow captures those tables, so lineage runs it after them in the recall-cache
-# schedule. Nothing here reaches the platform, so the flow needs no endpoint or credentials; the partition is still
-# named, because it says whose cache the tables belong to.
+# schedule. Nothing here reaches the platform, so the flow needs no endpoint or credentials; the partitions are still
+# named, because they say whose caches the tables belong to.
 flowType: cache
 name: recall-lookups-00-cache
 batch: recall
 
+# The OSDU partitions whose caches this flow builds the tables into. A refresh names one of them (the partition run
+# value: a dropdown in the GUI, --set partition=<name> on the CLI, values in a schedule), or builds each in turn when it
+# names none. A partition added here gets a cache of its own, which the delivery flows delivering there read.
+partitions: [dev]
+
 source:
   # The ingestion database the table types are read from, resolved on the node that runs the flow.
   connection: ${env:OSDU_DATA_DB}
-  headers:
-    data-partition-id: ${env:OSDU_DATA_PARTITION}
 
 types:
   # The spellings a curve's unit is written in, as the partition's UnitOfMeasure codes (petrodb-api's CurveUnit map).

@@ -843,6 +843,9 @@ public static class Samples
 
     private static FlowDefinition Localize(FlowDefinition flow, string root)
     {
+        // The sample flow names its partition; a test works in it, as a run bound to it does. The partition keeps the
+        // ledger the flow kept before it named its partitions, so every identity the suites derive stays what it was.
+        flow = flow.DeclaresPartitions ? flow.ForPartition(SamplePartition) : flow;
         var payloads = flow.Source.Payloads.ToDictionary(
             p => p.Key,
             p => p.Value with { Root = Path.Combine(root, "curves") },

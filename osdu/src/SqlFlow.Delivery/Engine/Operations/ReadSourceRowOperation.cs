@@ -29,11 +29,11 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
 
     public override string Name => OperationName;
 
-    protected override async Task<object> RunAsync(FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
+    protected override async Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
         var values = FlowParameters.Resolve(flow, Values(payload));
         var key = await ResolveKeyAsync(flow, payload, ct).ConfigureAwait(false);
-        var source = Context.Sources.Open(flow, values, Context.Loggers);
+        var source = context.Sources.Open(flow, values, context.Loggers);
         var header = await source.OpenAsync(SourceSelection.ForKeys([key.Key]), null, ct).ConfigureAwait(false);
         if (header.MissingKeys.Count > 0)
         {
@@ -44,7 +44,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
                 sourceKey = key.Key.Values,
                 found = false,
                 reason = $"the record table {flow.Source.Record.Object} holds no row with this key",
-                readUtc = Context.Time.GetUtcNow().UtcDateTime,
+                readUtc = context.Time.GetUtcNow().UtcDateTime,
             };
         }
 
@@ -57,7 +57,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
                 sourceKey = key.Key.Values,
                 found = false,
                 reason = "the row is outside the scope these parameter values name; read it with the values of its own scope",
-                readUtc = Context.Time.GetUtcNow().UtcDateTime,
+                readUtc = context.Time.GetUtcNow().UtcDateTime,
             };
         }
 
@@ -75,7 +75,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
                 fingerprint = record.Version.Fingerprint,
                 deletedUtc = record.DeletedUtc,
                 hold = record.Hold,
-                readUtc = Context.Time.GetUtcNow().UtcDateTime,
+                readUtc = context.Time.GetUtcNow().UtcDateTime,
             };
         }
 
@@ -86,7 +86,7 @@ public sealed class ReadSourceRowOperation : DeliveryOperation
             sourceKey = key.Key.Values,
             found = false,
             reason = "the row was there when the read opened and gone when it was read; it was removed while this operation ran",
-            readUtc = Context.Time.GetUtcNow().UtcDateTime,
+            readUtc = context.Time.GetUtcNow().UtcDateTime,
         };
     }
 

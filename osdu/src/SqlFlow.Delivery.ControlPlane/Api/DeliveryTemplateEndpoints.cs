@@ -122,6 +122,10 @@ public sealed record DeliveryTemplateSavedDto(DeliveryTemplateDto Template, stri
 /// <param name="ParameterReferences">The reference each value is read from, by parameter, for every value written as one.</param>
 /// <param name="Endpoint">The OSDU endpoint it delivers to, as the flow writes it.</param>
 /// <param name="CacheScope">The partition whose cache it reads, or null when its target names none a cache is kept under.</param>
+/// <param name="Partition">
+/// For a flow that names its partitions, the one partition this entry delivers to (a flow is offered once per partition it
+/// names); null for a flow that names none.
+/// </param>
 public sealed record DeliveryBuilderFlowDto(
     Guid PipelineId,
     string Name,
@@ -129,7 +133,8 @@ public sealed record DeliveryBuilderFlowDto(
     IReadOnlyDictionary<string, string> Parameters,
     IReadOnlyDictionary<string, string> ParameterReferences,
     string Endpoint,
-    string? CacheScope);
+    string? CacheScope,
+    string? Partition = null);
 
 /// <summary>
 /// A type a cache holds: the name a mapping reads it by, its entity type, the names its values are cached under, and for a
@@ -521,22 +526,25 @@ public static class DeliveryTemplateEndpoints
         {
             var repoPipelines = pipelines.Where(p => p.RepoId == repo.Id).ToList();
             // A run of the repository's flows resolves references from its central configuration before the node's own
-            // environment, so the check resolves them the same way and renders with what a run would.
-            var secrets = repoPipelines.Count == 0
-                ? engine.Secrets
-                : SqlFlow.Delivery.Http.SuppliedReferenceResolver.For(await config.EffectiveAsync(repo.Id, ct).ConfigureAwait(false), engine.Secrets);
+            // environment, the values set for the partition it is bound to first, so the check resolves them the same way
+            // and renders with what a run would.
+            var configuration = repoPipelines.Count == 0
+                ? DeliveryConfiguration.None
+                : await config.ConfigurationAsync(repo.Id, ct).ConfigureAwait(false);
             var flows = new List<DeliveryBuilderFlowDto>();
             foreach (var pipeline in repoPipelines)
             {
                 try
                 {
-                    // A source offers one connection per interface: each pins its own mapping and render parameters.
-                    foreach (var flow in documents.ParseSource(pipeline.Yaml, pipeline.RelativePath).Interfaces)
+                    // A source offers one connection per interface, and a source that names its partitions one per interface
+                    // and partition: each pins its own mapping and render parameters, and reads its own partition's cache.
+                    foreach (var flow in documents.ParseSource(pipeline.Yaml, pipeline.RelativePath).EveryLedger())
                     {
+                        var secrets = SqlFlow.Delivery.Http.SuppliedReferenceResolver.For(configuration.For(flow.Partition), engine.Secrets);
                         var (parameters, references) = await RenderParametersOfAsync(flow, secrets, ct).ConfigureAwait(false);
                         flows.Add(new DeliveryBuilderFlowDto(
                             pipeline.Id, flow.Label, flow.Render.Mapping, parameters, references, flow.Target.Endpoint,
-                            await CacheScopeOfAsync(flow, secrets, ct).ConfigureAwait(false)));
+                            await CacheScopeOfAsync(flow, secrets, ct).ConfigureAwait(false), flow.Partition));
                     }
                 }
                 catch (FlowValidationException)
@@ -564,7 +572,7 @@ public static class DeliveryTemplateEndpoints
     {
         var values = new Dictionary<string, string>(StringComparer.Ordinal);
         var references = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (name, supplied) in DeliveryDestination.Supplied(flow.Render.Parameters, DeliveryDestination.Parameters))
+        foreach (var (name, supplied) in DeliveryDestination.Supplied(flow.Render.Parameters, DeliveryDestination.Parameters, flow.Partition))
         {
             if (!supplied.Contains("${", StringComparison.Ordinal))
             {
@@ -742,7 +750,8 @@ public static class DeliveryTemplateEndpoints
         {
             // A search is checked against the schema it pins, as a delivery resolving the mapping would check it.
             var searches = await RenderResolver.SearchesAsync(templates, mapping, ct).ConfigureAwait(false);
-            foreach (var issue in Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches))
+            var fixtureCaches = await RenderResolver.FixtureCachesAsync(caches, mapping, context.CacheScope, ct).ConfigureAwait(false);
+            foreach (var issue in Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches, fixtureCaches: fixtureCaches))
             {
                 issues.Add(new MappingDraftIssue(
                     issue.Severity == IssueSeverity.Error ? MappingDraftIssue.ErrorSeverity : MappingDraftIssue.WarningSeverity, issue.Message, issue.Target));

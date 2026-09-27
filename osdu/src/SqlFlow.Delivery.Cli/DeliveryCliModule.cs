@@ -28,23 +28,24 @@ public sealed class DeliveryCliModule : ICliModule
         new CliVerb(
             "check",
             [
-                "sqlflow check    <flow.yaml> [--interface <name>] [--set k=v] [--connect]",
+                "sqlflow check    <flow.yaml> [--interface <name>] [--partition <id>] [--set k=v] [--connect]",
                 "                                   The delivery preflight: the flow's documents, its mapping against the",
                 "                                   pinned template, and the version of the cache it reads (needs --db:",
                 "                                   templates and caches live in the module's database). With --connect it",
                 "                                   also opens the flow's ingestion tables and reports what it would read.",
                 "                                   A flow that declares interfaces is checked one interface at a time, each",
                 "                                   with its route, its ledger and what it waits for; --interface checks one.",
+                "                                   A flow that names its partitions is checked in the one --partition names.",
             ],
             DeliveryVerbs.CheckAsync)
         {
             Flags = ["--connect"],
-            ValueOptions = ["--interface"],
+            ValueOptions = ["--interface", "--partition"],
         },
         new CliVerb(
             "preview",
             [
-                "sqlflow preview  <flow.yaml> [--interface <name>] [--key <key>] [--set k=v] [--out <file.json>]",
+                "sqlflow preview  <flow.yaml> [--interface <name>] [--partition <id>] [--key <key>] [--set k=v] [--out <file.json>]",
                 "                                   Render one record as a delivery would, and send nothing: the scope's",
                 "                                   first record, or the one --key names (a delivery key, an OSDU id the",
                 "                                   ledger holds, a source key, or a JSON array of the key's parts). Says what",
@@ -54,12 +55,12 @@ public sealed class DeliveryCliModule : ICliModule
             ],
             DeliveryPreviewVerbs.PreviewAsync)
         {
-            ValueOptions = ["--interface", "--key", "--out"],
+            ValueOptions = ["--interface", "--partition", "--key", "--out"],
         },
         new CliVerb(
             "fixtures",
             [
-                "sqlflow fixtures update <flow.yaml> [--interface <name>] [--dry-run]",
+                "sqlflow fixtures update <flow.yaml> [--interface <name>] [--partition <id>] [--dry-run]",
                 "                                   Render the fixtures of the flow's mapping as the preflight does and write",
                 "                                   each into its expected block, leaving the rest of the file as written",
                 "                                   (needs --db: the pinned template and cache live in the module's database).",
@@ -70,15 +71,16 @@ public sealed class DeliveryCliModule : ICliModule
         {
             Subcommands = ["update"],
             Flags = ["--dry-run"],
-            ValueOptions = ["--interface"],
+            ValueOptions = ["--interface", "--partition"],
         },
         new CliVerb(
             "records",
             [
-                "sqlflow records list <flow.yaml> [--interface <name>] [--search <term>] [--contains]",
+                "sqlflow records list <flow.yaml> [--interface <name>] [--partition <id>] [--search <term>] [--contains]",
                 "                     [--status <status>] [--max <n>]",
                 "                                   An interface's records from the ledger: the key, the status, the OSDU id",
-                "                                   and the last error of each (needs --db)",
+                "                                   and the last error of each (needs --db). A flow that names its partitions",
+                "                                   keeps a ledger per partition: --partition names the one to read",
                 "sqlflow records show <flow.yaml> --key <delivery key | source key> [--interface <name>] [--attempts <n>]",
                 "                                   One record with every try it took: what each sent, what the target",
                 "                                   answered step by step, and why it stopped (needs --db)",
@@ -90,43 +92,45 @@ public sealed class DeliveryCliModule : ICliModule
         {
             Subcommands = ["list", "show", "release"],
             Flags = ["--contains"],
-            ValueOptions = ["--interface", "--search", "--status", "--max", "--key", "--attempts"],
+            ValueOptions = ["--interface", "--partition", "--search", "--status", "--max", "--key", "--attempts"],
         },
         new CliVerb(
             "config",
             [
-                "sqlflow config list [--repo <id>]",
+                "sqlflow config list [--repo <id>] [--partition <id>]",
                 "                                   The central configuration: the values the control plane supplies to the",
                 "                                   runs it queues, so a flow's ${env:NAME} resolves from one place rather",
                 "                                   than from every node (needs --db)",
-                "sqlflow config effective --repo <id>",
+                "sqlflow config effective --repo <id> [--partition <id>]",
                 "                                   What a run of that repository's flows is given: the control plane's",
-                "                                   properties with the repository's own over them (needs --db)",
-                "sqlflow config set <name> --value <value> [--repo <id>] [--description <text>]",
-                "                                   Set a property, for every repository or for one. The value is a",
-                "                                   non-secret value or a ${env:...} or ${keyvault:...} reference a node",
-                "                                   resolves, never a secret (needs --db)",
-                "sqlflow config remove <name> [--repo <id>]",
+                "                                   properties with the repository's own over them, and for a run bound to",
+                "                                   --partition, that partition's values over both (needs --db)",
+                "sqlflow config set <name> --value <value> [--repo <id>] [--partition <id>] [--description <text>]",
+                "                                   Set a property, for every repository or for one, and for every partition",
+                "                                   or for one. The value is a non-secret value or a ${env:...} or",
+                "                                   ${keyvault:...} reference a node resolves, never a secret (needs --db)",
+                "sqlflow config remove <name> [--repo <id>] [--partition <id>]",
             ],
             DeliveryConfigVerbs.ConfigAsync)
         {
             Subcommands = ["list", "effective", "set", "remove"],
-            ValueOptions = ["--repo", "--value", "--description"],
+            ValueOptions = ["--repo", "--partition", "--value", "--description"],
         },
         new CliVerb(
             "cache",
             [
-                "sqlflow cache list <partition | cache.yaml>",
+                "sqlflow cache list <partition | cache.yaml> [--partition <id>]",
                 "                                   The versions of a partition's cache: when each was captured, by which",
-                "                                   run, and what it holds (needs --db)",
-                "sqlflow cache import <cache.yaml> --from-dir <dir>",
+                "                                   run, and what it holds; for a cache flow that names its partitions, of",
+                "                                   each partition it builds, or the one --partition names (needs --db)",
+                "sqlflow cache import <cache.yaml> --from-dir <dir> [--partition <id>]",
                 "                                   Write type files as a version of the cache, for offline work (needs --db).",
                 "                                   A cache is captured from OSDU by running its cache flow: sqlflow run <cache.yaml>",
             ],
             DeliveryVerbs.CacheAsync)
         {
             Subcommands = ["list", "import"],
-            ValueOptions = ["--from-dir"],
+            ValueOptions = ["--from-dir", "--partition"],
         },
         new CliVerb(
             "template",

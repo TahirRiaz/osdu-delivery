@@ -1109,7 +1109,11 @@ public class SqlServerChainTests
             payload.Validate(operation);
             if (operation == DeliveryOperations.Intake)
             {
-                using var runtime = await FlowRuntime.CreateAsync(engine, flow, member.Values, ct);
+                // A member run reaches the executor, which takes the partition it names off its values and binds the flow to
+                // it: a member of a run bound to a partition names that partition, and is never a parameter of the flow.
+                var (partition, values) = PartitionNames.SplitRunValues(member.Values, keptAsParameter: false);
+                Assert.Equal(flow.Partition, partition);
+                using var runtime = await FlowRuntime.CreateAsync(engine, flow, values, ct);
                 runtime.RunId = runId;
                 runtime.SubmissionId = payload.SubmissionId;
                 runtime.Slices = payload.Slices;

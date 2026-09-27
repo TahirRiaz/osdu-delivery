@@ -7,6 +7,9 @@ flowType: cache
 name: fixtures-osdu-00-reference-cache
 batch: fixtures
 
+# The partition whose cache the flow fills, as the sample estate names it.
+partitions: [dev]
+
 source:
   endpoint: ${env:OSDU_URL}
   auth:
@@ -17,8 +20,6 @@ source:
       url: ${env:OSDU_TOKEN_URL}
       body:
         scope: ${env:OSDU_SCOPE}
-  headers:
-    data-partition-id: ${env:OSDU_DATA_PARTITION}
 
 types:
   - kind: "osdu:wks:reference-data--TrajectoryStationPropertyType:*"

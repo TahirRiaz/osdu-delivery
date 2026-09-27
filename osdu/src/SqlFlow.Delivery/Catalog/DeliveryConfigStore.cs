@@ -1,8 +1,44 @@
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Catalog;
+
+/// <summary>
+/// The central configuration a run is given, in the two layers a run resolves with: <see cref="Base"/>, the values set for
+/// no partition, and <see cref="Partitions"/>, the values set for single partitions by partition name, which a run bound to
+/// one of them reads first (docs/partitions-design.md section 5).
+/// </summary>
+public sealed record DeliveryConfiguration(
+    IReadOnlyDictionary<string, string> Base,
+    IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> Partitions)
+{
+    /// <summary>No configuration: every reference is left to the node.</summary>
+    public static DeliveryConfiguration None { get; } = new(
+        new Dictionary<string, string>(StringComparer.Ordinal),
+        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase));
+
+    /// <summary>True when nothing is configured at any scope.</summary>
+    public bool IsEmpty => Base.Count == 0 && Partitions.Count == 0;
+
+    /// <summary>What a run bound to <paramref name="partition"/> resolves with: its values over the base; the base alone for none.</summary>
+    public IReadOnlyDictionary<string, string> For(string? partition)
+    {
+        if (partition is null || !Partitions.TryGetValue(partition, out var own) || own.Count == 0)
+        {
+            return Base;
+        }
+
+        var merged = new Dictionary<string, string>(Base, StringComparer.Ordinal);
+        foreach (var (name, value) in own)
+        {
+            merged[name] = value;
+        }
+
+        return merged;
+    }
+}
 
 /// <summary>
 /// The central configuration: the values the control plane supplies to the runs it queues, so a flow naming
@@ -12,8 +48,9 @@ namespace SqlFlow.Delivery.Catalog;
 /// <remarks>
 /// <para>
 /// A property is set for the whole control plane, and may be set again for one repository, which is an estate. The
-/// repository's value wins for the flows that repository holds, so two estates in one catalog deliver to two partitions
-/// without either naming its partition in a document.
+/// repository's value wins for the flows that repository holds. Either may be set for one OSDU partition as well, and a
+/// run bound to that partition resolves with it first: the repository's value for the partition, the control plane's for
+/// the partition, the repository's, the control plane's.
 /// </para>
 /// <para>
 /// A value is a non-secret value or a <c>${env:NAME}</c> or <c>${keyvault:vault/secret}</c> reference, which travels
@@ -40,44 +77,64 @@ public sealed class DeliveryConfigStore
             "The central configuration lives in the module's database, which this host was started without. Start it with the module's connection (Osdu:Database:Connection or SQLFLOW_OSDU_DB)."))();
 
     /// <summary>
-    /// What a run of a flow of <paramref name="repoId"/> is given: the control plane's own properties, with the
-    /// repository's own overriding them by name. Empty when nothing is set, which leaves every reference to the node.
+    /// What a run of a flow of <paramref name="repoId"/> is given, in its two layers: the values set for no partition (the
+    /// control plane's, with the repository's overriding them by name), and for each partition any value is set for, the
+    /// values set for it (the control plane's, with the repository's overriding them). None when nothing is set.
     /// </summary>
-    public async Task<IReadOnlyDictionary<string, string>> EffectiveAsync(Guid? repoId, CancellationToken ct = default)
+    public async Task<DeliveryConfiguration> ConfigurationAsync(Guid? repoId, CancellationToken ct = default)
     {
         if (_contexts is null)
         {
-            return new Dictionary<string, string>(StringComparer.Ordinal);
+            return DeliveryConfiguration.None;
         }
 
         await using var db = Open();
         var rows = await db.DeliveryConfigProperties
             .AsNoTracking()
             .Where(c => c.RepoId == null || c.RepoId == repoId)
-            .Select(c => new { c.RepoId, c.Name, c.Value })
+            .Select(c => new { c.RepoId, c.Partition, c.Name, c.Value })
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
-        var effective = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var row in rows.Where(r => r.RepoId is null))
+        var based = new Dictionary<string, string>(StringComparer.Ordinal);
+        var partitions = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+
+        // The control plane's rows first and the repository's second, so a repository's value replaces the control
+        // plane's for the same name in the same layer.
+        foreach (var row in rows.OrderBy(r => r.RepoId is not null))
         {
-            effective[row.Name] = row.Value;
+            if (row.Partition is null)
+            {
+                based[row.Name] = row.Value;
+                continue;
+            }
+
+            if (!partitions.TryGetValue(row.Partition, out var own))
+            {
+                own = new Dictionary<string, string>(StringComparer.Ordinal);
+                partitions[row.Partition] = own;
+            }
+
+            own[row.Name] = row.Value;
         }
 
-        // A repository's own value is read second, so it replaces the control plane's for the same name.
-        foreach (var row in rows.Where(r => r.RepoId is not null))
-        {
-            effective[row.Name] = row.Value;
-        }
-
-        return effective;
+        return new DeliveryConfiguration(
+            based,
+            partitions.ToDictionary(p => p.Key, p => (IReadOnlyDictionary<string, string>)p.Value, StringComparer.OrdinalIgnoreCase));
     }
 
     /// <summary>
-    /// The properties set at <paramref name="repoId"/> alone (null for the control plane's own), newest first, as a
-    /// listing shows them.
+    /// What a run of a flow of <paramref name="repoId"/> bound to <paramref name="partition"/> resolves with (the values set
+    /// for no partition when it is null): the view a person checks the configuration by, flattened.
     /// </summary>
-    public async Task<IReadOnlyList<DeliveryConfigProperty>> ListAsync(Guid? repoId, CancellationToken ct = default)
+    public async Task<IReadOnlyDictionary<string, string>> EffectiveAsync(Guid? repoId, string? partition, CancellationToken ct = default)
+        => (await ConfigurationAsync(repoId, ct).ConfigureAwait(false)).For(partition);
+
+    /// <summary>
+    /// The properties set at <paramref name="repoId"/> and <paramref name="partition"/> alone (null for the control plane's
+    /// own, and for no partition), by name, as a listing shows them.
+    /// </summary>
+    public async Task<IReadOnlyList<DeliveryConfigProperty>> ListAsync(Guid? repoId, string? partition, CancellationToken ct = default)
     {
         if (_contexts is null)
         {
@@ -87,7 +144,7 @@ public sealed class DeliveryConfigStore
         await using var db = Open();
         return await db.DeliveryConfigProperties
             .AsNoTracking()
-            .Where(c => c.RepoId == repoId)
+            .Where(c => c.RepoId == repoId && c.Partition == partition)
             .OrderBy(c => c.Name)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -106,17 +163,20 @@ public sealed class DeliveryConfigStore
             .AsNoTracking()
             .OrderBy(c => c.Name)
             .ThenBy(c => c.RepoId)
+            .ThenBy(c => c.Partition)
             .ToListAsync(ct)
             .ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Sets <paramref name="name"/> at <paramref name="repoId"/> (null for the control plane's own), replacing what was
-    /// there. Returns the row as it now stands.
+    /// Sets <paramref name="name"/> at <paramref name="repoId"/> (null for the control plane's own) for
+    /// <paramref name="partition"/> (null for no particular partition), replacing what was there. Returns the row as it now
+    /// stands.
     /// </summary>
-    /// <exception cref="FlowValidationException">The name or the value is not one a property may hold.</exception>
+    /// <exception cref="FlowValidationException">The name, the value or the partition is not one a property may hold.</exception>
     public async Task<DeliveryConfigProperty> SetAsync(
         Guid? repoId,
+        string? partition,
         string name,
         string value,
         string? description,
@@ -125,6 +185,7 @@ public sealed class DeliveryConfigStore
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+        var scope = CheckPartition(partition);
         if (!DeliveryConfigNames.IsName(name))
         {
             throw new FlowValidationException(
@@ -139,12 +200,12 @@ public sealed class DeliveryConfigStore
 
         await using var db = Open();
         var row = await db.DeliveryConfigProperties
-            .FirstOrDefaultAsync(c => c.RepoId == repoId && c.Name == name, ct)
+            .FirstOrDefaultAsync(c => c.RepoId == repoId && c.Partition == scope && c.Name == name, ct)
             .ConfigureAwait(false);
 
         if (row is null)
         {
-            row = new DeliveryConfigProperty { Id = Guid.NewGuid(), RepoId = repoId, Name = name };
+            row = new DeliveryConfigProperty { Id = Guid.NewGuid(), RepoId = repoId, Partition = scope, Name = name };
             db.DeliveryConfigProperties.Add(row);
         }
 
@@ -157,17 +218,35 @@ public sealed class DeliveryConfigStore
     }
 
     /// <summary>
-    /// Removes <paramref name="name"/> at <paramref name="repoId"/> (null for the control plane's own). False when it was
-    /// not set there, which is not an error: removing what is already absent leaves the same state.
+    /// Removes <paramref name="name"/> at <paramref name="repoId"/> (null for the control plane's own) for
+    /// <paramref name="partition"/> (null for no particular partition). False when it was not set there, which is not an
+    /// error: removing what is already absent leaves the same state.
     /// </summary>
-    public async Task<bool> RemoveAsync(Guid? repoId, string name, CancellationToken ct = default)
+    public async Task<bool> RemoveAsync(Guid? repoId, string? partition, string name, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        var scope = CheckPartition(partition);
         await using var db = Open();
         var removed = await db.DeliveryConfigProperties
-            .Where(c => c.RepoId == repoId && c.Name == name)
+            .Where(c => c.RepoId == repoId && c.Partition == scope && c.Name == name)
             .ExecuteDeleteAsync(ct)
             .ConfigureAwait(false);
         return removed > 0;
+    }
+
+    /// <summary>A partition a property is set for: null for none, or a data-partition-id written literally.</summary>
+    /// <exception cref="FlowValidationException">The value is not a data-partition-id.</exception>
+    private static string? CheckPartition(string? partition)
+    {
+        if (string.IsNullOrWhiteSpace(partition))
+        {
+            return null;
+        }
+
+        var name = partition.Trim();
+        return CacheScope.IsPartitionId(name)
+            ? name
+            : throw new FlowValidationException(
+                $"'{name}' is not a data-partition-id a property can be set for: letters, digits, underscore, hyphen and dot, at most {CacheScope.MaxLength} characters.");
     }
 }

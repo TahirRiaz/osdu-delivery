@@ -41,12 +41,14 @@ public static class DeliveryLineage
 
     /// <summary>
     /// Everything a source contributes: what each of its interfaces reads and writes, in document order, each declaration
-    /// once however many interfaces make it.
+    /// once however many interfaces make it. A source that names its partitions contributes for every one of them, each
+    /// interface bound to the partition, so its OSDU and cache nodes are the partition's (docs/partitions-design.md
+    /// section 6).
     /// </summary>
     public static RegisteredFlowLineage Describe(SourceDefinition source, RegisteredLineageContext context, DeliveryDocumentLoader documents)
     {
         ArgumentNullException.ThrowIfNull(source);
-        var described = source.Interfaces.Select(i => Describe(i, context, documents)).ToList();
+        var described = source.EveryLedger().Select(i => Describe(i, context, documents)).ToList();
         return new RegisteredFlowLineage
         {
             Objects = described.SelectMany(d => d.Objects).Distinct().ToList(),

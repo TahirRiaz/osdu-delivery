@@ -15,11 +15,24 @@ public static class CacheLineage
 {
     /// <summary>
     /// Everything the flow contributes, in declaration order. A dictionary's file is found as a refresh finds it, inside
-    /// the estate <paramref name="context"/> scans; without a context no file is read and none is declared.
+    /// the estate <paramref name="context"/> scans; without a context no file is read and none is declared. A flow that names
+    /// its partitions contributes for every one of them, bound to it, so each partition's cache types are nodes of their own
+    /// (docs/partitions-design.md section 6).
     /// </summary>
     public static RegisteredFlowLineage Describe(CacheDefinition flow, RegisteredLineageContext? context = null)
     {
         ArgumentNullException.ThrowIfNull(flow);
+        if (flow.DeclaresPartitions && flow.Partition is null)
+        {
+            var described = flow.Partitions.Select(p => Describe(flow.ForPartition(p), context)).ToList();
+            return new RegisteredFlowLineage
+            {
+                Objects = described.SelectMany(d => d.Objects).Distinct().ToList(),
+                Files = described.SelectMany(d => d.Files).Distinct().ToList(),
+                Datasets = described.SelectMany(d => d.Datasets).Distinct().ToList(),
+                Warnings = described.SelectMany(d => d.Warnings).Distinct(StringComparer.Ordinal).ToList(),
+            };
+        }
         var who = $"cache flow '{flow.Name}'";
         var warnings = new List<string>();
         var datasets = new List<DeclaredDataset>();
@@ -60,7 +73,10 @@ public static class CacheLineage
         return new RegisteredFlowLineage { Objects = DeclaredObjects(flow), Datasets = datasets, Files = files, Warnings = warnings };
     }
 
-    /// <summary>The ingestion tables the flow's table types read, on the connection its source declares, in declaration order.</summary>
+    /// <summary>
+    /// The ingestion tables the flow's table types read, on the connection its source declares, in declaration order: the
+    /// tables of every partition's types, once each.
+    /// </summary>
     public static IReadOnlyList<DeclaredDataObject> DeclaredObjects(CacheDefinition flow)
     {
         ArgumentNullException.ThrowIfNull(flow);

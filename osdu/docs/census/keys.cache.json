@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 71,
+  "keyCount": 75,
   "keys": [
     {
       "path": "batch",
@@ -82,6 +82,18 @@
       "required": false,
       "description": "When true, a run that supplies no value, for a parameter without a default, fails with \"parameter 'name' is required\". A scheduled fire supplies only the schedule's `values`, so give it one there.",
       "default": "false"
+    },
+    {
+      "path": "partitions",
+      "type": "list",
+      "required": false,
+      "description": "The OSDU data partitions the flow builds a cache for, each by its `data-partition-id` written literally, never a reference: at least one, at most 64, none twice. Each partition's cache is kept apart, keyed by the name. A refresh that names a partition builds that partition's cache; one that names none builds every partition's in turn, each with the partition's values of the central configuration. With it, `source.headers` may not name `data-partition-id`: every refresh sets it. Leave it out for a flow that fills the cache of the partition its headers name."
+    },
+    {
+      "path": "partitions[]",
+      "type": "string",
+      "required": false,
+      "description": "One partition the flow builds a cache for, by its `data-partition-id`."
     },
     {
       "path": "reliability",
@@ -394,8 +406,9 @@
     {
       "path": "source.headers",
       "type": "map",
-      "required": true,
-      "description": "Headers sent with every request to the platform. `data-partition-id` is always required: it names the partition whose cache the flow fills, and every search carries it."
+      "required": false,
+      "description": "Headers sent with every request to the platform. A flow that names no `partitions` must declare `data-partition-id`: it names the partition whose cache the flow fills, and every search carries it. A flow that names its `partitions` leaves it out: every refresh sets it to the partition it builds.",
+      "appliesWhen": "Required, with `data-partition-id`, unless the flow names its `partitions`; then `data-partition-id` is refused."
     },
     {
       "path": "source.headers.<name>",
@@ -407,7 +420,7 @@
       "path": "types",
       "type": "list",
       "required": true,
-      "description": "The types the flow caches, at least one. Each has exactly one origin: `kind` (searched on OSDU), `table` (an ingestion table) or `dictionary` (a dictionary document in the repository). Type names are unique within the flow, because a mapping reads a type by its name (`cache.<Type>.<field>`)."
+      "description": "The types the flow caches, at least one. Each has exactly one origin: `kind` (searched on OSDU), `table` (an ingestion table) or `dictionary` (a dictionary document in the repository). Type names are unique within each partition's cache, because a mapping reads a type by its name (`cache.<Type>.<field>`)."
     },
     {
       "path": "types[]",
@@ -495,6 +508,19 @@
         "approve"
       ],
       "default": "the flow's onChange"
+    },
+    {
+      "path": "types[].partitions",
+      "type": "list",
+      "required": false,
+      "description": "The partitions of the flow this type is built for, when not all of them; each must be one of the flow's `partitions`. Type names are unique per partition, so two declarations may share a name when their partitions do not overlap (prod's `CurveDictionary` from another table than dev's), and every partition of the flow is built at least one type.",
+      "appliesWhen": "Only on a flow that names its `partitions`."
+    },
+    {
+      "path": "types[].partitions[]",
+      "type": "string",
+      "required": false,
+      "description": "One partition of the flow the type is built for."
     },
     {
       "path": "types[].query",

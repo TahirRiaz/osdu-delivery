@@ -241,7 +241,7 @@ public sealed class SourceRuntimeTests : IDisposable
         EngineContext engine, SourceDefinition source, string operation = DeliveryOperations.Deliver, DeliveryRunPayload? payload = null,
         IRunFanOut? fanOut = null)
     {
-        using var provider = new ServiceCollection().AddSingleton(engine).BuildServiceProvider();
+        using var provider = new ServiceCollection().AddSingleton(engine).AddSingleton<PartitionLedgers>().BuildServiceProvider();
         return await new DeliveryExecutor(provider).ExecuteAsync(
             new DeliveryFlowDocument { Source = source },
             source.SourcePath!,
@@ -618,7 +618,7 @@ public sealed class SourceRuntimeTests : IDisposable
             foreach (var member in members)
             {
                 Enqueued.Add((DeliveryOperations.Of(member), DeliveryRunPayload.Parse(member)));
-                using var provider = new ServiceCollection().AddSingleton(engine).BuildServiceProvider();
+                using var provider = new ServiceCollection().AddSingleton(engine).AddSingleton<PartitionLedgers>().BuildServiceProvider();
                 var runId = Guid.CreateVersion7();
                 var result = await new DeliveryExecutor(provider).ExecuteAsync(
                     new DeliveryFlowDocument { Source = source },

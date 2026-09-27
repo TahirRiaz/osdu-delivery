@@ -206,7 +206,9 @@ public sealed class InterfaceDocumentsTests
     [Fact]
     public void A_document_in_the_single_form_is_a_source_of_one_interface_whose_identity_has_not_moved()
     {
-        var source = _loader.LoadSource(Samples.Flow);
+        // The sample names one partition, which keeps the ledger the flow kept before it named it: a run binds to it
+        // without being told, and its identity is the one the flow always had.
+        var source = _loader.LoadSource(Samples.Flow).ForPartition(null);
         var flow = Assert.Single(source.Interfaces);
         Assert.False(source.DeclaresInterfaces);
         Assert.Null(flow.Interface);
@@ -220,7 +222,7 @@ public sealed class InterfaceDocumentsTests
         Assert.Equal(new FlowFailWhen(), flow.FailWhen);
 
         // The one-flow reading is the same flow, and the single form answers to no interface name.
-        Assert.Equal(flow.Id, _loader.LoadFlow(Samples.Flow).Id);
+        Assert.Equal(flow.Id, _loader.LoadFlow(Samples.Flow).ForPartition(Samples.SamplePartition).Id);
         Assert.Contains("declares no interfaces", Assert.Throws<DeliveryException>(() => source.Interface("welllogs")).Message, StringComparison.Ordinal);
         Assert.Contains("declares no interfaces", Assert.Throws<DeliveryException>(() => source.Select(["welllogs"])).Message, StringComparison.Ordinal);
         Assert.Same(source.Interfaces, source.Select([]));

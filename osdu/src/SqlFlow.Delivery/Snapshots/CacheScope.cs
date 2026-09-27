@@ -49,6 +49,16 @@ public static partial class CacheScope
         return scope;
     }
 
+    /// <summary>
+    /// Whether <paramref name="value"/> is a partition id written literally: letters, digits, underscore, hyphen and dot, at
+    /// most <see cref="MaxLength"/> characters. A reference is not one: it names a partition only once a host resolves it.
+    /// </summary>
+    public static bool IsPartitionId(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value.Length > 0 && value.Length <= MaxLength && Segment().IsMatch(value);
+    }
+
     [GeneratedRegex(@"^[\w\-\.]+$")]
     private static partial Regex Segment();
 

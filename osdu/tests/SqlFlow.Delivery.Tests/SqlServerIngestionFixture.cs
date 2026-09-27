@@ -286,9 +286,15 @@ public sealed class SqlServerIngestionFixture : IAsyncDisposable
             runId ?? Guid.NewGuid(),
             ct);
 
-    /// <summary>The OSDU flow as its generated document declares it, loaded through the module's own loader.</summary>
+    /// <summary>
+    /// The OSDU flow as its generated document declares it, loaded through the module's own loader and bound to the partition
+    /// it names, as a run of it binds it.
+    /// </summary>
     public FlowDefinition DeliveryFlow()
-        => _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("recall-welllog-03-header-delivery"));
+    {
+        var flow = _provider.GetRequiredService<DeliveryDocumentLoader>().LoadFlow(FlowFile("recall-welllog-03-header-delivery"));
+        return flow.DeclaresPartitions ? flow.ForPartition(Samples.SamplePartition) : flow;
+    }
 
     /// <summary>Writes the well log metadata file the first pre flow reads; naming a new file lands a new batch of rows.</summary>
     public Task WriteLogFileAsync(string fileName, IReadOnlyList<SampleLog> logs, CancellationToken ct = default)

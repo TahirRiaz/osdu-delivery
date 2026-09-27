@@ -33,16 +33,99 @@ public sealed record FlowDefinition
     public string? AdoptedLedger { get; init; }
 
     /// <summary>
-    /// What the ledger identity is derived from: the adopted ledger, the flow's name for the single form, and
-    /// <c>flow/interface</c> for an interface of a source. It is also the name the ledger records the flow under.
+    /// The partitions the flow may deliver to (<c>partitions</c>, docs/partitions-design.md section 2.3), in document order;
+    /// empty for a flow that names none and delivers to the partition its <c>target.headers</c> name.
     /// </summary>
-    public string LedgerName => AdoptedLedger ?? Label;
+    public IReadOnlyList<DeclaredPartition> Partitions { get; init; } = [];
+
+    /// <summary>
+    /// The partition this definition is bound to (<see cref="ForPartition"/>): the one partition a run or a request of a flow
+    /// that names its partitions acts on. Null for a flow that names none, and for one that names some before it is bound.
+    /// </summary>
+    public string? Partition { get; init; }
+
+    /// <summary>True when the flow names the partitions it may deliver to.</summary>
+    public bool DeclaresPartitions => Partitions.Count > 0;
+
+    /// <summary>True when the flow names its partitions and this definition is not yet bound to one of them.</summary>
+    public bool IsUnbound => DeclaresPartitions && Partition is null;
+
+    /// <summary>
+    /// What the flow's own ledger identity is derived from, before any partition: the adopted ledger, the flow's name for the
+    /// single form, and <c>flow/interface</c> for an interface of a source. A flow that names no partitions keeps its ledger
+    /// under it, and so does the partition marked <c>keepLedger</c> of one that names them.
+    /// </summary>
+    public string OwnLedgerName => AdoptedLedger ?? Label;
+
+    /// <summary>True when this definition is bound to the partition that keeps the flow's own ledger (<c>keepLedger</c>).</summary>
+    public bool KeepsOwnLedger => Partition is not null
+        && Partitions.Any(p => p.KeepsLedger && string.Equals(p.Name, Partition, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The name the ledger records this definition under: <see cref="OwnLedgerName"/>, and <c>name@partition</c> for a
+    /// partition that keeps a ledger of its own.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The flow names its partitions and this definition is bound to none.</exception>
+    public string LedgerName
+    {
+        get
+        {
+            ThrowIfUnbound();
+            return Partition is null || KeepsOwnLedger ? OwnLedgerName : $"{OwnLedgerName}@{Partition}";
+        }
+    }
 
     /// <summary>How the definition is named in logs, traces and messages: the flow, and its interface when it has one.</summary>
     public string Label => Interface is null ? Name : $"{Name}/{Interface}";
 
-    /// <summary>Stable id derived from <see cref="LedgerName"/> (see <see cref="Identity.FlowId"/>): the ledger identity.</summary>
-    public Guid Id => Identity.FlowId.Of(LedgerName);
+    /// <summary>
+    /// The ledger identity (see <see cref="Identity.FlowId"/>): derived from <see cref="OwnLedgerName"/>, and together with
+    /// the partition for a partition that keeps a ledger of its own.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The flow names its partitions and this definition is bound to none.</exception>
+    public Guid Id
+    {
+        get
+        {
+            ThrowIfUnbound();
+            return Partition is null || KeepsOwnLedger ? Identity.FlowId.Of(OwnLedgerName) : Identity.FlowId.Of(OwnLedgerName, Partition);
+        }
+    }
+
+    /// <summary>
+    /// This definition bound to <paramref name="partition"/>, one of the partitions the flow names: the flow as if it had
+    /// been written for that one partition. Its requests carry the partition as <c>data-partition-id</c>, the mapping reads
+    /// it as the kind's <c>dataPartition</c>, and its ledger is the partition's.
+    /// </summary>
+    /// <exception cref="DeliveryException">The flow names no partitions, or not this one.</exception>
+    public FlowDefinition ForPartition(string partition)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(partition);
+        var wanted = partition.Trim();
+        if (!DeclaresPartitions)
+        {
+            throw new DeliveryException(
+                $"Flow '{Label}' names no partitions; it delivers to the partition its target.headers name, so it cannot be bound to '{wanted}'.");
+        }
+
+        var declared = Partitions.FirstOrDefault(p => string.Equals(p.Name, wanted, StringComparison.OrdinalIgnoreCase))
+            ?? throw new DeliveryException(
+                $"Flow '{Label}' does not deliver to partition '{wanted}'; it names {PartitionNames.Listed(Partitions.Select(p => p.Name))}.");
+        var headers = new Dictionary<string, string>(Target.Headers, StringComparer.OrdinalIgnoreCase)
+        {
+            [Snapshots.CacheScope.PartitionHeader] = declared.Name,
+        };
+        return this with { Partition = declared.Name, Target = Target with { Headers = headers } };
+    }
+
+    private void ThrowIfUnbound()
+    {
+        if (IsUnbound)
+        {
+            throw new InvalidOperationException(
+                $"Flow '{Label}' names the partitions {PartitionNames.Listed(Partitions.Select(p => p.Name))} and keeps a ledger for each; bind it to the partition a run or request acts on before asking for its ledger.");
+        }
+    }
 
     /// <summary>The interfaces of the same source this one waits for (<c>after:</c>), beside those its mapping implies.</summary>
     public IReadOnlyList<string> After { get; init; } = [];

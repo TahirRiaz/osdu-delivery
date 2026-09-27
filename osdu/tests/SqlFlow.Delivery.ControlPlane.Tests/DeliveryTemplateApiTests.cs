@@ -188,7 +188,7 @@ public sealed class DeliveryTemplateApiTests
         var config = new DeliveryConfigStore(() => SampleEstate.Context(cs));
         try
         {
-            await config.SetAsync(repoId, "OSDU_ACL_OWNER", "owners@" + suffix + ".example", null, "tests", DateTime.UtcNow);
+            await config.SetAsync(repoId, null, "OSDU_ACL_OWNER", "owners@" + suffix + ".example", null, "tests", DateTime.UtcNow);
             var repos = await ReadAsync<List<DeliveryBuilderRepoDto>>(await SendAsync(client, author, HttpMethod.Get, "/api/v1/delivery/mapping-builder/repos"));
             var repo = Assert.Single(repos, r => r.RepoId == repoId);
             Assert.Equal(sourceId, repo.SourceId);
@@ -289,6 +289,9 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal(
                 ("id", "{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveDictionary.log_curve_family_id}:"),
                 (family.Kind, family.Text));
+            // The sample mapping's fixtures are written for dev, and render against dev's cache wherever the mapping is
+            // checked, as the delivery suites keep it: the sample reference data under dev's ids.
+            await Samples.ImportSampleCacheAsync(new OsduCacheStore(() => SampleEstate.Context(cs)));
             var parameters = new Dictionary<string, string>
             {
                 ["dataPartition"] = "dev",
@@ -368,7 +371,7 @@ public sealed class DeliveryTemplateApiTests
         }
         finally
         {
-            await config.RemoveAsync(repoId, "OSDU_ACL_OWNER");
+            await config.RemoveAsync(repoId, null, "OSDU_ACL_OWNER");
             await CleanupAsync(cs, repoId, flowName, scope);
         }
     }

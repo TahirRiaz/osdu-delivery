@@ -35,6 +35,10 @@ public static partial class Preflight
     /// <param name="fixtures">
     /// False leaves the fixtures unchecked, for a caller that renders them itself (<see cref="RenderFixtures"/>).
     /// </param>
+    /// <param name="fixtureCaches">
+    /// The current versions of the caches of the other partitions the fixtures are written for
+    /// (<see cref="FixturePartitions"/>), by partition. A fixture written for a partition this leaves out cannot render.
+    /// </param>
     public static IReadOnlyList<ValidationIssue> Check(
         MappingDefinition mapping,
         SchemaSnapshot schema,
@@ -42,7 +46,8 @@ public static partial class Preflight
         RenderContext context,
         IReadOnlyDictionary<string, IReadOnlySet<string>>? sourceColumns,
         ResolvedSearches? searches = null,
-        bool fixtures = true)
+        bool fixtures = true,
+        IReadOnlyDictionary<string, ReferenceSnapshot>? fixtureCaches = null)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schema);
@@ -75,7 +80,7 @@ public static partial class Preflight
         MappingRenderer renderer;
         try
         {
-            renderer = new MappingRenderer(mapping, schema, references, context, searches);
+            renderer = new MappingRenderer(mapping, schema, references, context, searches, fixtureCaches: fixtureCaches);
         }
         catch (FlowValidationException ex)
         {
@@ -945,10 +950,41 @@ public static partial class Preflight
     }
 
     /// <summary>
+    /// The partitions the fixtures of <paramref name="mapping"/> are written for other than <paramref name="scope"/>, the
+    /// partition whose cache the render reads: each fixture's <c>dataPartition</c> (its own, or the one
+    /// <c>fixtureDefaults</c> gives every fixture) that names a partition. A fixture is captured against the cache of the
+    /// partition it names, so it renders against that partition's cache wherever the mapping runs: a mapping delivered to
+    /// several partitions keeps one set of fixtures. None when the mapping reads no cache (a null scope).
+    /// </summary>
+    public static IReadOnlyList<string> FixturePartitions(MappingDefinition mapping, string? scope)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        if (scope is null)
+        {
+            return [];
+        }
+
+        return mapping.Fixtures
+            .Select(FixturePartition)
+            .OfType<string>()
+            .Where(partition => !partition.Equals(scope, StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>The partition <paramref name="fixture"/> names by its <c>dataPartition</c>, when it names one written as a partition id.</summary>
+    private static string? FixturePartition(MappingFixture fixture)
+        => fixture.Parameters.TryGetValue(RenderContext.DataPartitionParameter, out var value) && value.Trim() is { } partition && CacheScope.IsPartitionId(partition)
+            ? partition
+            : null;
+
+    /// <summary>
     /// Renders every fixture of <paramref name="mapping"/> as the preflight gate does: over its own rows, with its
-    /// parameters over the render's, against the search answers it declares and never the platform. A fixture that fails
-    /// to render, or asks a search it declares no answer to, carries why instead of a result. The gate compares what each
-    /// renders with what it expects; <c>sqlflow fixtures update</c> writes it.
+    /// parameters over the render's, against the search answers it declares and never the platform, and against the cache
+    /// of the partition it is written for (<see cref="FixturePartitions"/>). A fixture that fails to render, asks a search it
+    /// declares no answer to, or is written for a partition whose cache the renderer was not given, carries why instead of
+    /// a result. The gate compares what each renders with what it expects; <c>sqlflow fixtures update</c> writes it.
     /// </summary>
     public static IReadOnlyList<FixtureRender> RenderFixtures(MappingDefinition mapping, MappingRenderer renderer)
     {
@@ -975,8 +1011,32 @@ public static partial class Preflight
                 fixtureContext = renderer.Context with { Parameters = parameters };
             }
 
+            // A fixture written for another partition than the one the render reads the cache of renders against the cache
+            // of its own: its ids name that partition, and only that partition's reference data holds them.
+            ReferenceSnapshot? fixtureCache = null;
+            var scope = renderer.Context.CacheScope;
+            if (scope is not null && FixturePartition(fixture) is { } partition && !partition.Equals(scope, StringComparison.Ordinal))
+            {
+                if (!renderer.FixtureCaches.TryGetValue(partition, out fixtureCache))
+                {
+                    renders.Add(new FixtureRender(
+                        fixture,
+                        null,
+                        $"is written for partition '{partition}' ({RenderContext.DataPartitionParameter}: {partition}), so it renders against that partition's cache, of which the catalog holds no version. Refresh a cache flow that builds '{partition}', or write the fixture for partition '{scope}'."));
+                    continue;
+                }
+
+                var context = fixtureContext ?? renderer.Context;
+                fixtureContext = context with
+                {
+                    CacheScope = partition,
+                    CacheVersion = fixtureCache.Version,
+                    SystemProperties = context.SystemProperties.Count > 0 ? SystemProperties.Pinned(fixtureCache.SystemProperties) : context.SystemProperties,
+                };
+            }
+
             // A fixture renders against the answers it declares, never the platform: what it checks is the mapping.
-            var fixtureRenderer = renderer.With(fixtureContext, new FixtureSearch(mapping, fixture));
+            var fixtureRenderer = renderer.With(fixtureContext, new FixtureSearch(mapping, fixture), fixtureCache);
 
             RenderResult result;
             try

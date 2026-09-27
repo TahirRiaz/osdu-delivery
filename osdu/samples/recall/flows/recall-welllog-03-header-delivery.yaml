@@ -4,14 +4,23 @@
 # recall_to_osdu and petrodb-api take today (POST /welllogs, then the parquet chunk, or a session of chunks), run from the
 # ingestion tables SQLFlow's own pre and ing flows load (recall-welllog-01-*-pre, recall-welllog-02-*-ing). This flow reads
 # what changed there, renders it with the mapping beside it (../mappings) and delivers it. The template it fills lives in
-# the module's database, and so does the cache it reads, the one of the partition it delivers to
-# (target.headers.data-partition-id): the lookup tables ../cache/recall-lookups-00-cache.yaml keeps there, which every
+# the module's database, and so does the cache it reads, the one of the partition a run delivers to
+# (partitions): the lookup tables ../cache/recall-lookups-00-cache.yaml keeps there, which every
 # reference the mapping writes is generated from, and the partition's reference data ../cache/recall-reference-00-cache.yaml
 # captures from OSDU, which every generated reference is checked against (the mapping's $coalesce and $unverified say
 # where one may go out as an unverified reference instead). One flow with a parameter serves every Recall log source.
 flowType: delivery
 name: recall-welllog-03-header-delivery
 batch: recall
+
+# The OSDU partitions this flow delivers to. A run targets one of them (the partition run value: a dropdown in the GUI,
+# --set partition=<name> on the CLI, values in a schedule; the only one when the flow names one), and the ids it mints, the
+# data-partition-id it sends, the cache it reads, the ledger it keeps and the configuration it resolves are that
+# partition's. dev keeps the ledger the flow kept before it named its partitions, so every record already delivered there
+# stays known; a partition added here starts a ledger of its own.
+partitions:
+  - name: dev
+    keepLedger: true
 
 parameters:
   logSource:
@@ -71,8 +80,6 @@ target:
       url: ${env:OSDU_TOKEN_URL}
       body:
         scope: ${env:OSDU_SCOPE}
-  headers:
-    data-partition-id: ${env:OSDU_DATA_PARTITION}
   protocol: ddms
   protocolOptions:
     sessionThresholdChunks: 1

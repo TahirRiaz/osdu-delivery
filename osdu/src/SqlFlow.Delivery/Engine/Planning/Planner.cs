@@ -290,7 +290,7 @@ public sealed class Planner
         var where = KeyPaths.Where(flow);
         var source = await _source.OpenAsync(selection, stored, ct).ConfigureAwait(false);
 
-        var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, source.Columns, resolved.Renderer.Searches);
+        var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, source.Columns, resolved.Renderer.Searches, fixtureCaches: resolved.Renderer.FixtureCaches);
         Preflight.ThrowIfFailed(issues, where);
         SourceBindings.Check(flow, resolved.Mapping, source, where);
 

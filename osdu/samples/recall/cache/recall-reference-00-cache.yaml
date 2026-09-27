@@ -10,11 +10,16 @@
 # spellings and the curve dictionary) stay lookup tables, in recall-lookups-00-cache: the mapping translates a Recall
 # value through them first and then finds the record here. Both flows fill the cache of the same partition.
 #
-# The platform, the credentials and the partition are the ones the delivery flow delivers with, so the cache holds what
-# the delivering identity can see in the partition it delivers to.
+# The platform and the credentials are the ones the delivery flow delivers with, and the partitions the ones it delivers
+# to, so each partition's cache holds what the delivering identity can see in that partition.
 flowType: cache
 name: recall-reference-00-cache
 batch: recall
+
+# The OSDU partitions whose reference data this flow captures, each into that partition's own cache and with that
+# partition's data-partition-id on every request. A refresh names one of them (the partition run value: a dropdown in the
+# GUI, --set partition=<name> on the CLI, values in a schedule), or captures each in turn when it names none.
+partitions: [dev]
 
 source:
   endpoint: ${env:OSDU_URL}
@@ -26,8 +31,6 @@ source:
       url: ${env:OSDU_TOKEN_URL}
       body:
         scope: ${env:OSDU_SCOPE}
-  headers:
-    data-partition-id: ${env:OSDU_DATA_PARTITION}
 
 types:
   # CurveUnit, DepthUnit and VerticalMeasurementUnitOfMeasureID, after the unit tables translate Recall's spelling. Found

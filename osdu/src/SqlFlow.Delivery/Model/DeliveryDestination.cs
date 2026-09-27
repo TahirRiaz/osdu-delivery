@@ -67,14 +67,28 @@ public static class DeliveryDestination
     /// </summary>
     /// <param name="supplied">The flow's <c>render.parameters</c>.</param>
     /// <param name="parameters">The parameters asked for: a mapping's declared ones, or every one the kind owns.</param>
-    public static IReadOnlyDictionary<string, string> Supplied(IReadOnlyDictionary<string, string> supplied, IEnumerable<string> parameters)
+    /// <param name="partition">
+    /// The partition the flow is bound to (<see cref="FlowDefinition.Partition"/>), or null. A bound flow's
+    /// <see cref="DataPartitionParameter"/> is that partition, written literally: the id a run mints names the partition it
+    /// delivers to, whatever any configuration holds. A flow that names its partitions cannot set the parameter itself.
+    /// </param>
+    public static IReadOnlyDictionary<string, string> Supplied(IReadOnlyDictionary<string, string> supplied, IEnumerable<string> parameters, string? partition = null)
     {
         ArgumentNullException.ThrowIfNull(supplied);
         ArgumentNullException.ThrowIfNull(parameters);
         var result = new Dictionary<string, string>(supplied, StringComparer.Ordinal);
         foreach (var parameter in parameters)
         {
-            if (!result.ContainsKey(parameter) && References.GetValueOrDefault(parameter) is { } reference)
+            if (result.ContainsKey(parameter))
+            {
+                continue;
+            }
+
+            if (partition is not null && parameter == DataPartitionParameter)
+            {
+                result[parameter] = partition;
+            }
+            else if (References.GetValueOrDefault(parameter) is { } reference)
             {
                 result[parameter] = reference;
             }

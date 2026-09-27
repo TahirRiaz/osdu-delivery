@@ -7,6 +7,7 @@ using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
 
 namespace SqlFlow.Delivery.Engine;
@@ -228,7 +229,11 @@ public sealed record DeliveryRunPayload
     /// <summary>The central configuration the control plane supplied with this run.</summary>
     public const string ReferencesProperty = "references";
 
-    private static readonly string[] Properties = [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty];
+    /// <summary>The central configuration set for one partition, by partition, which a run bound to it resolves with first.</summary>
+    public const string PartitionReferencesProperty = "partitionReferences";
+
+    private static readonly string[] Properties =
+        [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty, PartitionReferencesProperty];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -263,10 +268,52 @@ public sealed record DeliveryRunPayload
     /// </summary>
     public IReadOnlyDictionary<string, string> References { get; init; } = ReadOnlyDictionary<string, string>.Empty;
 
+    /// <summary>
+    /// The central configuration set for single partitions (docs/partitions-design.md section 5), by partition name: what a
+    /// run bound to one of them resolves with ahead of <see cref="References"/>. Every partition the control plane holds
+    /// values for travels, so a run that refreshes several partitions in turn resolves each with its own.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> PartitionReferences { get; init; }
+        = ReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>.Empty;
+
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
         => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && References.Count == 0;
+            && References.Count == 0 && PartitionReferences.Count == 0;
+
+    /// <summary>
+    /// True when the payload carries nothing but the central configuration the control plane supplied: what the payload of
+    /// a kind that names no submission, record or slice may hold.
+    /// </summary>
+    public bool CarriesOnlyConfiguration
+        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0;
+
+    /// <summary>
+    /// The configuration a run resolves its references with when it acts on <paramref name="partition"/>: the partition's
+    /// own values over the ones set for no partition. A value set for a partition always wins, so an estate-wide endpoint
+    /// never sends a run of one partition to another's platform. With no partition, the values set for none.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ReferencesFor(string? partition)
+    {
+        if (partition is null)
+        {
+            return References;
+        }
+
+        var own = PartitionReferences.FirstOrDefault(p => string.Equals(p.Key, partition, StringComparison.OrdinalIgnoreCase)).Value;
+        if (own is null || own.Count == 0)
+        {
+            return References;
+        }
+
+        var merged = new Dictionary<string, string>(References, StringComparer.Ordinal);
+        foreach (var (name, value) in own)
+        {
+            merged[name] = value;
+        }
+
+        return merged;
+    }
 
     /// <summary>The payload of a run's parameters; none when it carries none.</summary>
     public static DeliveryRunPayload Parse(RunParameters parameters)
@@ -310,7 +357,8 @@ public sealed record DeliveryRunPayload
             Slices = SliceList(root[SlicesProperty]),
             Interface = root[InterfaceProperty] is null ? null : Text(root[InterfaceProperty], InterfaceProperty),
             Interfaces = Names(root[InterfacesProperty]),
-            References = ReferenceMap(root[ReferencesProperty]),
+            References = ReferenceMap(root[ReferencesProperty], ReferencesProperty),
+            PartitionReferences = PartitionReferenceMap(root[PartitionReferencesProperty]),
         };
     }
 
@@ -487,6 +535,23 @@ public sealed record DeliveryRunPayload
             root[ReferencesProperty] = references;
         }
 
+        if (PartitionReferences.Count > 0)
+        {
+            var partitions = new JsonObject();
+            foreach (var (partition, values) in PartitionReferences.OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                var map = new JsonObject();
+                foreach (var (name, value) in values.OrderBy(r => r.Key, StringComparer.Ordinal))
+                {
+                    map[name] = value;
+                }
+
+                partitions[partition] = map;
+            }
+
+            root[PartitionReferencesProperty] = partitions;
+        }
+
         return root.ToJsonString();
     }
 
@@ -545,7 +610,7 @@ public sealed record DeliveryRunPayload
     /// The central configuration a payload carries: a JSON object of reference name to value, refused property by
     /// property so a bad one names itself. Absent is none, which leaves every reference to the node.
     /// </summary>
-    private static IReadOnlyDictionary<string, string> ReferenceMap(JsonNode? node)
+    private static IReadOnlyDictionary<string, string> ReferenceMap(JsonNode? node, string property)
     {
         if (node is null)
         {
@@ -554,12 +619,12 @@ public sealed record DeliveryRunPayload
 
         if (node is not JsonObject obj)
         {
-            throw new SqlFlowException($"payload {ReferencesProperty} must be a JSON object of reference name to value.");
+            throw new SqlFlowException($"payload {property} must be a JSON object of reference name to value.");
         }
 
         if (obj.Count > DeliveryConfigNames.MaxPerRun)
         {
-            throw new SqlFlowException($"payload {ReferencesProperty} holds {obj.Count} properties; one run carries at most {DeliveryConfigNames.MaxPerRun}.");
+            throw new SqlFlowException($"payload {property} holds {obj.Count} properties; one run carries at most {DeliveryConfigNames.MaxPerRun}.");
         }
 
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -567,15 +632,53 @@ public sealed record DeliveryRunPayload
         {
             if (!DeliveryConfigNames.IsName(name))
             {
-                throw new SqlFlowException($"payload {ReferencesProperty} property '{name}' does not name a reference: a letter or underscore followed by letters, digits and underscores, at most {DeliveryConfigNames.MaxNameLength} characters.");
+                throw new SqlFlowException($"payload {property} property '{name}' does not name a reference: a letter or underscore followed by letters, digits and underscores, at most {DeliveryConfigNames.MaxNameLength} characters.");
             }
 
             if (value is not JsonValue text || !text.TryGetValue<string>(out var supplied) || !DeliveryConfigNames.IsValue(supplied))
             {
-                throw new SqlFlowException($"payload {ReferencesProperty} property '{name}' must be a non-empty string of at most {DeliveryConfigNames.MaxValueLength} characters without control characters.");
+                throw new SqlFlowException($"payload {property} property '{name}' must be a non-empty string of at most {DeliveryConfigNames.MaxValueLength} characters without control characters.");
             }
 
             map[name] = supplied;
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// The central configuration set for single partitions a payload carries: a JSON object of partition name to the
+    /// partition's reference map, each refused as a flow refuses a partition name and as <see cref="References"/> refuses a map.
+    /// </summary>
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> PartitionReferenceMap(JsonNode? node)
+    {
+        if (node is null)
+        {
+            return ReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>.Empty;
+        }
+
+        if (node is not JsonObject obj)
+        {
+            throw new SqlFlowException($"payload {PartitionReferencesProperty} must be a JSON object of partition name to reference map.");
+        }
+
+        if (obj.Count > PartitionNames.MaxPerFlow)
+        {
+            throw new SqlFlowException($"payload {PartitionReferencesProperty} holds {obj.Count} partitions; one run carries the values of at most {PartitionNames.MaxPerFlow}.");
+        }
+
+        var map = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (partition, values) in obj)
+        {
+            if (!CacheScope.IsPartitionId(partition))
+            {
+                throw new SqlFlowException($"payload {PartitionReferencesProperty} names '{partition}', which is not a data-partition-id.");
+            }
+
+            if (!map.TryAdd(partition, ReferenceMap(values, $"{PartitionReferencesProperty}.{partition}")))
+            {
+                throw new SqlFlowException($"payload {PartitionReferencesProperty} names partition '{partition}' more than once (ignoring case).");
+            }
         }
 
         return map;

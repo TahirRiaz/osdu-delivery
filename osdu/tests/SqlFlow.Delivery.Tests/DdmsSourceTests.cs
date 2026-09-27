@@ -162,7 +162,7 @@ public sealed class DdmsSourceTests : IDisposable
 
     private static async Task<DocumentExecutionResult> RunAsync(EngineContext engine, SourceDefinition source)
     {
-        using var provider = new ServiceCollection().AddSingleton(engine).BuildServiceProvider();
+        using var provider = new ServiceCollection().AddSingleton(engine).AddSingleton<PartitionLedgers>().BuildServiceProvider();
         return await new DeliveryExecutor(provider).ExecuteAsync(
             new DeliveryFlowDocument { Source = source },
             source.SourcePath!,

@@ -81,9 +81,13 @@ public sealed class CacheFlowKind : IFlowDocumentKind
     {
         ArgumentNullException.ThrowIfNull(parameters);
         DeliveryOperations.RefuseBuiltInOverrides(parameters, CacheDefinition.FlowTypeName, "a refresh sweeps every declared type in full.");
-        if (parameters.Payload is not null)
+
+        // The control plane supplies its central configuration to every run of the module's kinds in the payload; a cache
+        // run takes that and nothing else, since a refresh has no submission, record or slice to name.
+        if (!DeliveryRunPayload.Parse(parameters).CarriesOnlyConfiguration)
         {
-            throw new SqlFlowException("A cache flow takes no payload; a run carries only the flow's parameter values.");
+            throw new SqlFlowException(
+                "A cache flow's payload carries only the central configuration the control plane supplies; a run names its partition and the flow's parameter values under values.");
         }
     }
 }

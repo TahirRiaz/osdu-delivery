@@ -32,7 +32,7 @@ internal static class DeliveryFixtureVerbs
         var ct = context.CancellationToken;
         var engine = context.Services.GetRequiredService<EngineContext>();
         var write = !context.Arguments.HasFlag("--dry-run");
-        var source = engine.Documents.LoadSource(flowPath);
+        var source = engine.Documents.LoadSource(flowPath).ForPartition(context.Arguments.GetOption("--partition"));
         var named = context.Arguments.GetOption("--interface");
         var flows = named is null ? source.Interfaces : [source.Interface(named)];
 

@@ -20,11 +20,12 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 /// <param name="Value">The value, or the reference a node resolves.</param>
 /// <param name="RepoId">The repository this value is set for, or null for the control plane's own.</param>
 /// <param name="RepoName">That repository's name, or null for the control plane's own.</param>
+/// <param name="Partition">The OSDU partition this value is set for, or null for a value that applies whatever the partition.</param>
 /// <param name="Description">What the property is for.</param>
 /// <param name="UpdatedUtc">When it was last set.</param>
 /// <param name="UpdatedBy">Who last set it.</param>
 public sealed record DeliveryConfigPropertyDto(
-    string Name, string Value, Guid? RepoId, string? RepoName, string? Description, DateTime UpdatedUtc, string UpdatedBy);
+    string Name, string Value, Guid? RepoId, string? RepoName, string? Partition, string? Description, DateTime UpdatedUtc, string UpdatedBy);
 
 /// <summary>What a caller sets: the value and, optionally, what it is for.</summary>
 public sealed record DeliveryConfigSetRequest(string? Value, string? Description);
@@ -36,8 +37,9 @@ public sealed record DeliveryConfigSetRequest(string? Value, string? Description
 /// <remarks>
 /// <para>
 /// A property is set for the whole control plane, or for one repository, which overrides the control plane's value for
-/// the flows that repository holds. Setting and removing are admin work; reading is not, because what an estate delivers
-/// to is what every operator reading a record needs to know.
+/// the flows that repository holds. Either may be set for one OSDU partition (<c>?partition=</c>), and a run bound to that
+/// partition resolves with it first (docs/partitions-design.md section 5). Setting and removing are admin work; reading is
+/// not, because what an estate delivers to is what every operator reading a record needs to know.
 /// </para>
 /// <para>
 /// A value is a non-secret value or a <c>${env:...}</c> or <c>${keyvault:...}</c> reference the node resolves, so a
@@ -66,16 +68,31 @@ public static class DeliveryConfigEndpoints
 
     /// <summary>
     /// What a run of a flow of this repository would be given: the control plane's properties with the repository's own
-    /// over them, which is what the node resolves against. The answer of the question an operator actually asks.
+    /// over them, and for a run bound to <paramref name="partition"/>, the values set for that partition over both, which is
+    /// what the node resolves against. The answer of the question an operator actually asks.
     /// </summary>
-    private static async Task<Ok<IReadOnlyDictionary<string, string>>> EffectiveAsync(
-        Guid repoId, DeliveryConfigStore config, CancellationToken ct)
-        => TypedResults.Ok(await config.EffectiveAsync(repoId, ct).ConfigureAwait(false));
+    private static async Task<Results<Ok<IReadOnlyDictionary<string, string>>, ProblemHttpResult>> EffectiveAsync(
+        Guid repoId, [FromQuery] string? partition, DeliveryConfigStore config, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(partition) && !Snapshots.CacheScope.IsPartitionId(partition.Trim()))
+        {
+            return TypedResults.Problem(
+                detail: $"'{partition.Trim()}' is not a data-partition-id: letters, digits, underscore, hyphen and dot, at most {Snapshots.CacheScope.MaxLength} characters.",
+                statusCode: StatusCodes.Status400BadRequest, title: "Not a partition");
+        }
 
-    /// <summary>Sets a property for the control plane, or for one repository when <c>repoId</c> is given.</summary>
+        var partitioned = string.IsNullOrWhiteSpace(partition) ? null : partition.Trim();
+        return TypedResults.Ok(await config.EffectiveAsync(repoId, partitioned, ct).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Sets a property for the control plane, or for one repository when <c>repoId</c> is given; for one partition when
+    /// <c>partition</c> is given.
+    /// </summary>
     private static async Task<Results<Ok<DeliveryConfigPropertyDto>, ProblemHttpResult>> SetAsync(
         string name,
         [FromQuery] Guid? repoId,
+        [FromQuery] string? partition,
         DeliveryConfigSetRequest? request,
         CatalogDbContext db,
         DeliveryConfigStore config,
@@ -98,7 +115,7 @@ public static class DeliveryConfigEndpoints
         try
         {
             var row = await config
-                .SetAsync(repoId, name, request.Value.Trim(), request.Description, RequestActor.Label(user), clock.GetUtcNow().UtcDateTime, ct)
+                .SetAsync(repoId, partition, name, request.Value.Trim(), request.Description, RequestActor.Label(user), clock.GetUtcNow().UtcDateTime, ct)
                 .ConfigureAwait(false);
             var described = await DescribeAsync(db, [row], ct).ConfigureAwait(false);
             return TypedResults.Ok(described[0]);
@@ -109,18 +126,28 @@ public static class DeliveryConfigEndpoints
         }
     }
 
-    /// <summary>Removes a property from the control plane, or from one repository when <c>repoId</c> is given.</summary>
+    /// <summary>
+    /// Removes a property from the control plane, or from one repository when <c>repoId</c> is given; from one partition when
+    /// <c>partition</c> is given.
+    /// </summary>
     private static async Task<Results<NoContent, NotFound, ProblemHttpResult>> RemoveAsync(
-        string name, [FromQuery] Guid? repoId, CatalogDbContext db, DeliveryConfigStore config, CancellationToken ct)
+        string name, [FromQuery] Guid? repoId, [FromQuery] string? partition, CatalogDbContext db, DeliveryConfigStore config, CancellationToken ct)
     {
         if (await MissingRepoAsync(db, repoId, ct).ConfigureAwait(false) is { } missing)
         {
             return missing;
         }
 
-        return await config.RemoveAsync(repoId, name, ct).ConfigureAwait(false)
-            ? TypedResults.NoContent()
-            : TypedResults.NotFound();
+        try
+        {
+            return await config.RemoveAsync(repoId, partition, name, ct).ConfigureAwait(false)
+                ? TypedResults.NoContent()
+                : TypedResults.NotFound();
+        }
+        catch (FlowValidationException invalid)
+        {
+            return TypedResults.Problem(detail: invalid.Message, statusCode: StatusCodes.Status400BadRequest, title: "Not a partition");
+        }
     }
 
     /// <summary>A problem when the repository named is not one the catalog holds, or null when it is (or none was named).</summary>
@@ -155,6 +182,7 @@ public static class DeliveryConfigEndpoints
                 r.Value,
                 r.RepoId,
                 r.RepoId is { } id ? names.GetValueOrDefault(id) : null,
+                r.Partition,
                 r.Description,
                 r.UpdatedUtc,
                 r.UpdatedBy)),

@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 478,
+  "keyCount": 480,
   "keys": [
     {
       "path": "batch",
@@ -1488,6 +1488,19 @@
       "default": "false"
     },
     {
+      "path": "partitions",
+      "type": "list",
+      "required": false,
+      "description": "The OSDU data partitions the flow may deliver to, each by its `data-partition-id` written literally, never a reference: at least one, at most 64, none twice. Every run targets one of them (the trigger dialog's partition, a schedule's `values: { partition: ... }`, or the CLI's `--partition`; a flow naming one partition needs none named), and the engine sets `target.headers.data-partition-id` and the mapping's `dataPartition` to it, reads that partition's cache, resolves the partition's values of the central configuration first, and keeps a ledger per partition. With it, `target.headers` may not name `data-partition-id` and `render.parameters` may not set `dataPartition`. Leave it out for a flow that delivers to the partition its headers name."
+    },
+    {
+      "path": "partitions[]",
+      "type": "object",
+      "required": false,
+      "description": "One partition: its name (`dev`), or `{ name: dev, keepLedger: true }`. `keepLedger` marks the partition that keeps the ledger the flow kept before it named its partitions, so the records already delivered there are not delivered again as new; at most one partition keeps it. Every other partition keeps a ledger of its own, under `<ledger name>@<partition>`. A name YAML reads as a number or a boolean is written in quotes.",
+      "freeForm": true
+    },
+    {
       "path": "reliability",
       "type": "object",
       "required": false,
@@ -1705,7 +1718,7 @@
       "path": "render.parameters",
       "type": "map",
       "required": false,
-      "description": "Values for the parameters the mapping declares, as literals or `${env:...}` references. They enter the render context, so a changed value renders the records again; in a source with interfaces an interface's `render.parameters` are merged over these."
+      "description": "Values for the parameters the mapping declares, as literals or `${env:...}` references. They enter the render context, so a changed value renders the records again; in a source with interfaces an interface's `render.parameters` are merged over these. A flow that names its `partitions` may not set `dataPartition`: every run supplies the partition it targets."
     },
     {
       "path": "render.parameters.<name>",
@@ -2546,8 +2559,9 @@
     {
       "path": "target.headers",
       "type": "map",
-      "required": true,
-      "description": "Extra headers on every request. It must declare a non-empty `data-partition-id`, which every OSDU service requires; that partition's cache is the one the mapping reads."
+      "required": false,
+      "description": "Extra headers on every request. A flow that names no `partitions` must declare a non-empty `data-partition-id`, which every OSDU service requires; that partition's cache is the one the mapping reads. A flow that names its `partitions` leaves it out: every run sets it to the partition it targets.",
+      "appliesWhen": "Required, with `data-partition-id`, unless the flow names its `partitions`; then `data-partition-id` is refused."
     },
     {
       "path": "target.headers.<name>",

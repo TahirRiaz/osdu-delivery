@@ -21,10 +21,20 @@ namespace SqlFlow.Delivery.Engine.Operations;
 /// catalog knows them, or an absolute <c>flowFile</c>); the node resolves every credential itself, exactly as it
 /// does for a run. The document must declare the named flow, so a stale catalog can never aim an operation at
 /// the wrong target. A flow that declares interfaces is acted on through the one the task names (<c>interface</c>); the
-/// others are never touched.
+/// others are never touched. A flow that names its partitions is acted on in the one the task names (<c>partition</c>),
+/// resolving its references with the central configuration the control plane supplied for it (<c>references</c>).
 /// </summary>
 public abstract class DeliveryOperation : IComputeOperation
 {
+    /// <summary>The task argument naming the partition a flow that names its partitions is acted on in.</summary>
+    public const string PartitionArgument = "partition";
+
+    /// <summary>
+    /// The task argument carrying the central configuration the control plane supplied: a JSON object shaped as a run
+    /// payload's configuration (<c>references</c> and <c>partitionReferences</c>).
+    /// </summary>
+    public const string ReferencesArgument = "references";
+
     internal static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -41,8 +51,6 @@ public abstract class DeliveryOperation : IComputeOperation
 
     public abstract string Name { get; }
 
-    protected EngineContext Context => _context;
-
     public async Task<string> ExecuteAsync(ComputeTaskPayload payload, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(payload);
@@ -53,21 +61,30 @@ public abstract class DeliveryOperation : IComputeOperation
             throw new SqlFlowException($"The flow file declares '{source.Name}', not '{payload.SourceRef}'. The file and the catalog have drifted; re-sync the repository.");
         }
 
-        var flow = source.Interface(payload.Argument("interface"));
+        var bound = source.ForPartition(payload.Argument(PartitionArgument));
+        var flow = bound.Interface(payload.Argument("interface"));
 
-        var result = await RunAsync(flow, payload, ct).ConfigureAwait(false);
+        // Every task resolves its references as a run of the same flow and partition does: from the configuration the control
+        // plane supplied, the partition's own values first, and only then from the node's environment.
+        var context = _context.WithSuppliedReferences(Supplied(payload).ReferencesFor(bound.Partition));
+        var result = await RunAsync(context, flow, payload, ct).ConfigureAwait(false);
         return JsonSerializer.Serialize(result, JsonOptions);
     }
 
-    protected abstract Task<object> RunAsync(FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct);
+    /// <summary>
+    /// Runs the operation on <paramref name="flow"/>, the interface the task names bound to the partition it names, with
+    /// <paramref name="context"/>: the node's services resolving references with the configuration supplied for the task.
+    /// </summary>
+    protected abstract Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct);
 
     /// <summary>The flow's protocol over a fresh HTTP runtime; the caller disposes the runtime.</summary>
-    protected async Task<(HttpRuntime Http, IDeliveryProtocol Protocol)> OpenTargetAsync(FlowDefinition flow, CancellationToken ct)
+    protected static async Task<(HttpRuntime Http, IDeliveryProtocol Protocol)> OpenTargetAsync(EngineContext context, FlowDefinition flow, CancellationToken ct)
     {
-        var http = new HttpRuntime(flow.Reliability, _context.Secrets, _context.Time, allowLoopback: EngineContext.LoopbackAllowed);
+        ArgumentNullException.ThrowIfNull(context);
+        var http = new HttpRuntime(flow.Reliability, context.Secrets, context.Time, allowLoopback: EngineContext.LoopbackAllowed);
         try
         {
-            var protocol = await _context.Protocols.CreateAsync(flow, http, _context.Loggers, ct).ConfigureAwait(false);
+            var protocol = await context.Protocols.CreateAsync(flow, http, context.Loggers, ct).ConfigureAwait(false);
             return (http, protocol);
         }
         catch
@@ -75,6 +92,18 @@ public abstract class DeliveryOperation : IComputeOperation
             http.Dispose();
             throw;
         }
+    }
+
+    /// <summary>
+    /// The central configuration a task carries (<see cref="ReferencesArgument"/>), parsed as strictly as a run's payload;
+    /// none when the control plane supplied none.
+    /// </summary>
+    private static DeliveryRunPayload Supplied(ComputeTaskPayload payload)
+    {
+        var supplied = DeliveryRunPayload.Parse(payload.Argument(ReferencesArgument));
+        return supplied.CarriesOnlyConfiguration
+            ? supplied
+            : throw new SqlFlowException($"The task's '{ReferencesArgument}' argument carries only the central configuration: references and partitionReferences.");
     }
 
     protected ILedger RequireLedger()
@@ -140,9 +169,9 @@ public sealed class ProbeTargetOperation : DeliveryOperation
 
     public override string Name => OperationName;
 
-    protected override async Task<object> RunAsync(FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
+    protected override async Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
-        var (http, protocol) = await OpenTargetAsync(flow, ct).ConfigureAwait(false);
+        var (http, protocol) = await OpenTargetAsync(context, flow, ct).ConfigureAwait(false);
         using (http)
         {
             var probe = await protocol.ProbeAsync(ct).ConfigureAwait(false);
@@ -156,7 +185,7 @@ public sealed class ProbeTargetOperation : DeliveryOperation
                 probe.Status,
                 probe.Detail,
                 probe.Path,
-                checkedUtc = Context.Time.GetUtcNow().UtcDateTime,
+                checkedUtc = context.Time.GetUtcNow().UtcDateTime,
             };
         }
     }
@@ -178,7 +207,7 @@ public sealed class ReadRecordOperation : DeliveryOperation
 
     public override string Name => OperationName;
 
-    protected override async Task<object> RunAsync(FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
+    protected override async Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
         var targetId = payload.Argument("targetId");
         long? version = null;
@@ -205,7 +234,7 @@ public sealed class ReadRecordOperation : DeliveryOperation
                 ?? throw new SqlFlowException($"Record {key} has not queued a document for OSDU in flow '{flow.Label}', so this flow wrote nothing to read back.");
             targetState = JsonMerge.ToValues(record.TargetStateJson);
         }
-        else if (Context.Ledger is { } ledger)
+        else if (context.Ledger is { } ledger)
         {
             // A target that keeps a record under a key it gave (a DSPDM row) is read by what the record's deliveries recorded.
             var matches = await ledger.ListAsync(flow.Id, new RecordQuery { Search = targetId, Max = 2 }, ct).ConfigureAwait(false);
@@ -215,7 +244,7 @@ public sealed class ReadRecordOperation : DeliveryOperation
             }
         }
 
-        var (http, protocol) = await OpenTargetAsync(flow, ct).ConfigureAwait(false);
+        var (http, protocol) = await OpenTargetAsync(context, flow, ct).ConfigureAwait(false);
         using var correlation = Http.OsduCorrelation.Begin();
         using (http)
         {
@@ -248,7 +277,7 @@ public sealed class ReadRecordOperation : DeliveryOperation
                 versions,
                 historyError,
                 record = document,
-                readUtc = Context.Time.GetUtcNow().UtcDateTime,
+                readUtc = context.Time.GetUtcNow().UtcDateTime,
             };
         }
     }
@@ -272,12 +301,12 @@ public sealed class DeleteRecordOperation : DeliveryOperation
 
     public override string Name => OperationName;
 
-    protected override async Task<object> RunAsync(FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
+    protected override async Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
         var scope = RemovalScopes.Parse(payload.Argument("scope"));
         var selection = ReadSelection(payload);
         RequireLedger();
-        using var runtime = FlowRuntime.ForTarget(Context, flow);
+        using var runtime = FlowRuntime.ForTarget(context, flow);
         runtime.Actor = Actor(payload);
         var summary = await runtime.RemoveAsync(selection, scope, ct).ConfigureAwait(false);
         return new
@@ -293,7 +322,7 @@ public sealed class DeleteRecordOperation : DeliveryOperation
             records = summary.Records,
             summary = summary.Describe(),
             actor = runtime.Actor,
-            removedUtc = Context.Time.GetUtcNow().UtcDateTime,
+            removedUtc = context.Time.GetUtcNow().UtcDateTime,
         };
     }
 

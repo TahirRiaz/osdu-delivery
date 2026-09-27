@@ -116,6 +116,15 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
     private static async Task<object> ExecuteOperationAsync(EngineContext context, RetrievalDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
     {
         var forced = RetrievalFlowKind.Forced(parameters);
+
+        // A retrieval flow reads the partition its headers name; it names no partitions, so a run targeting one (a schedule
+        // whose values name a partition for its delivery and cache flows) is told so rather than refused as a stray parameter.
+        if (!flow.Parameters.ContainsKey(PartitionNames.RunValue) && parameters.Values.TryGetValue(PartitionNames.RunValue, out var partition))
+        {
+            throw new SqlFlowException(
+                $"Retrieval flow '{flow.Name}' names no partitions: it retrieves from the partition its source.headers name, so a run cannot target '{partition}'. Leave the partition out of its run.");
+        }
+
         var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, parameters.Values);
         using var http = new HttpRuntime(flow.Reliability, context.Secrets, context.Time, allowLoopback: EngineContext.LoopbackAllowed, observer: context.HttpObserver);
         var client = await ProtocolFactory.ClientAsync(http, flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, context.Secrets, ct).ConfigureAwait(false);

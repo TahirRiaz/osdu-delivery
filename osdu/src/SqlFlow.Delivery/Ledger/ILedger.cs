@@ -976,6 +976,9 @@ public sealed record RecordQuery
 /// <summary>A count that stops at a limit: the number of matching records when <see cref="Exact"/>, otherwise a floor.</summary>
 public readonly record struct BoundedCount(int Count, bool Exact);
 
+/// <summary>How many records of one ledger went to one OSDU partition, as the partition their OSDU id names.</summary>
+public sealed record PartitionRecords(string Partition, long Records);
+
 /// <summary>
 /// What bounds a record listing, so that every page, count and search reads a bounded part of the ledger however many
 /// records a flow holds.
@@ -1241,6 +1244,16 @@ public interface ILedger
     Task<long> CountAttemptsAsync(Guid submissionId, AttemptOutcome outcome, string? phase = null, CancellationToken ct = default);
 
     Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default);
+
+    /// <summary>Whether the ledger of <paramref name="flowId"/> holds any record: an index seek, however large the ledger.</summary>
+    Task<bool> HoldsRecordsAsync(Guid flowId, CancellationToken ct = default);
+
+    /// <summary>
+    /// How many records of <paramref name="flowId"/> went to each OSDU partition, read from the partition their OSDU id names
+    /// (the id delivered, or the one claimed before delivery), most first; a record with neither is not counted. It reads the
+    /// flow's whole ledger, so it is asked when the ledgers of a flow that names its partitions are checked, never per record.
+    /// </summary>
+    Task<IReadOnlyList<PartitionRecords>> DeliveredPartitionsAsync(Guid flowId, CancellationToken ct = default);
 
     Task<bool> HasPendingAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default);
 

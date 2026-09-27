@@ -46,6 +46,9 @@ internal sealed class FlowYaml
 
     /// <summary>The source's interfaces, by name, in document order; null for the single form.</summary>
     public OrderedDictionary<string, InterfaceYaml?>? Interfaces { get; set; }
+
+    // The partitions the flow may deliver to: each a name (dev), or a name with its settings ({ name: dev, keepLedger: true }).
+    public List<object>? Partitions { get; set; }
 }
 
 /// <summary>
@@ -944,6 +947,9 @@ internal sealed class CacheYaml
     public List<CachedTypeYaml>? Types { get; set; }
 
     public FlowReliabilityYaml? Reliability { get; set; }
+
+    /// <summary>The partitions the flow builds a cache for, each by its data-partition-id.</summary>
+    public List<string>? Partitions { get; set; }
 }
 
 internal sealed class CacheSourceYaml
@@ -981,6 +987,9 @@ internal sealed class CachedTypeYaml
 
     /// <summary>For a table type: the column each row is keyed by.</summary>
     public string? Key { get; set; }
+
+    /// <summary>The partitions of the flow this type is built for; every partition of the flow when left out.</summary>
+    public List<string>? Partitions { get; set; }
 }
 
 internal sealed class RetrievalSourceYaml

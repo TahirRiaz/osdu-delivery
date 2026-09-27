@@ -108,8 +108,81 @@ public sealed partial record SourceDefinition
             ?? throw new DeliveryException($"Flow '{Name}' has no interface '{wanted}'; it declares {string.Join(", ", Names)}.");
     }
 
-    /// <summary>The interface whose ledger identity is <paramref name="flowId"/>, or null when none of them has it.</summary>
-    public FlowDefinition? ByFlowId(Guid flowId) => Interfaces.FirstOrDefault(i => i.Id == flowId);
+    /// <summary>
+    /// The partitions the source may deliver to (<c>partitions</c>), shared by every interface; empty for a source that
+    /// names none.
+    /// </summary>
+    public IReadOnlyList<DeclaredPartition> Partitions => First.Partitions;
+
+    /// <summary>True when the source names the partitions it may deliver to.</summary>
+    public bool DeclaresPartitions => First.DeclaresPartitions;
+
+    /// <summary>The partition every interface is bound to (<see cref="ForPartition"/>), or null.</summary>
+    public string? Partition => First.Partition;
+
+    /// <summary>
+    /// The source bound to the partition a run or a request targets (docs/partitions-design.md section 3): every interface
+    /// bound to it. A source that names no partitions takes none and is returned as it is. One that names a single partition
+    /// is bound to it when <paramref name="partition"/> is null; one that names several has to be told which.
+    /// </summary>
+    /// <exception cref="DeliveryException">
+    /// A partition is named for a source that names none, the source names several and none is named, or the one named is
+    /// not among them.
+    /// </exception>
+    public SourceDefinition ForPartition(string? partition)
+    {
+        var wanted = string.IsNullOrWhiteSpace(partition) ? null : partition.Trim();
+        if (!DeclaresPartitions)
+        {
+            return wanted is null
+                ? this
+                : throw new DeliveryException(
+                    $"Flow '{Name}' names no partitions; it delivers to the partition its target.headers name, so a run or request cannot target '{wanted}'. Leave the partition out, or name the flow's partitions under 'partitions'.");
+        }
+
+        if (wanted is null)
+        {
+            wanted = Partitions.Count == 1
+                ? Partitions[0].Name
+                : throw new DeliveryException(
+                    $"Flow '{Name}' delivers to {Partitions.Count} partitions ({PartitionNames.Listed(Partitions.Select(p => p.Name))}); name the one this run or request targets.");
+        }
+
+        return this with { Interfaces = Interfaces.Select(i => i.ForPartition(wanted)).ToList() };
+    }
+
+    /// <summary>
+    /// The interface whose ledger identity is <paramref name="flowId"/>, or null when none of them has it. A source that
+    /// names its partitions and is not yet bound is looked up in every one of them, and the interface found comes bound to
+    /// the partition whose ledger it is.
+    /// </summary>
+    public FlowDefinition? ByFlowId(Guid flowId)
+    {
+        if (!DeclaresPartitions || Partition is not null)
+        {
+            return Interfaces.FirstOrDefault(i => i.Id == flowId);
+        }
+
+        foreach (var partition in Partitions)
+        {
+            var bound = Interfaces.Select(i => i.ForPartition(partition.Name)).FirstOrDefault(i => i.Id == flowId);
+            if (bound is not null)
+            {
+                return bound;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Every interface of the source for every partition it names, bound; the interfaces as they are for a source that names
+    /// none. What a read model that keeps one row per ledger enumerates.
+    /// </summary>
+    public IEnumerable<FlowDefinition> EveryLedger()
+        => DeclaresPartitions && Partition is null
+            ? Partitions.SelectMany(p => Interfaces.Select(i => i.ForPartition(p.Name)))
+            : Interfaces;
 
     /// <summary>
     /// The interfaces <paramref name="names"/> selects, in document order: every interface when the list is empty. Every

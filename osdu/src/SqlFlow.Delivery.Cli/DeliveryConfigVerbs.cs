@@ -16,7 +16,8 @@ namespace SqlFlow.Delivery.Cli;
 /// <remarks>
 /// A property holds a non-secret value, or a <c>${env:...}</c> or <c>${keyvault:...}</c> reference the node resolves, so
 /// a deployment can point a whole estate at a secret without this command, this database or a run payload ever holding
-/// one.
+/// one. <c>--partition</c> sets, removes or reads the values of one OSDU partition, which a run bound to it resolves with
+/// first (docs/partitions-design.md section 5).
 /// </remarks>
 public static class DeliveryConfigVerbs
 {
@@ -32,13 +33,14 @@ public static class DeliveryConfigVerbs
         }
 
         var repo = Repo(context);
+        var partition = context.Arguments.GetOption("--partition");
         switch (context.Arguments.Positional(1)?.ToLowerInvariant() ?? string.Empty)
         {
             case "list":
             {
                 var rows = repo is null
                     ? await store.ListAllAsync(ct).ConfigureAwait(false)
-                    : await store.ListAsync(repo, ct).ConfigureAwait(false);
+                    : await store.ListAsync(repo, partition, ct).ConfigureAwait(false);
                 if (context.Json)
                 {
                     context.Out.WriteLine(CanonicalJson.Pretty(new JsonArray([.. rows.Select(Describe)])));
@@ -54,7 +56,9 @@ public static class DeliveryConfigVerbs
                 foreach (var row in rows)
                 {
                     var scope = row.RepoId is { } id ? id.ToString("D") : "(all repositories)";
-                    context.Out.WriteLine($"{row.Name} = {row.Value}  [{scope}]  set by {row.UpdatedBy} at {row.UpdatedUtc:u}");
+                    var partitioned = row.Partition is { } own ? $", partition {own}" : string.Empty;
+                    context.Out.WriteLine(string.Create(
+                        CultureInfo.InvariantCulture, $"{row.Name} = {row.Value}  [{scope}{partitioned}]  set by {row.UpdatedBy} at {row.UpdatedUtc:u}"));
                 }
 
                 return 0;
@@ -67,7 +71,7 @@ public static class DeliveryConfigVerbs
                     return context.UsageError("name the repository with --repo <id>: what a run is given depends on which estate it belongs to.");
                 }
 
-                var effective = await store.EffectiveAsync(id, ct).ConfigureAwait(false);
+                var effective = await store.EffectiveAsync(id, partition, ct).ConfigureAwait(false);
                 if (context.Json)
                 {
                     var json = new JsonObject();
@@ -101,7 +105,7 @@ public static class DeliveryConfigVerbs
                 }
 
                 var row = await store
-                    .SetAsync(repo, name, value, context.Arguments.GetOption("--description"), "cli", DateTime.UtcNow, ct)
+                    .SetAsync(repo, partition, name, value, context.Arguments.GetOption("--description"), "cli", DateTime.UtcNow, ct)
                     .ConfigureAwait(false);
                 context.Out.WriteLine(context.Json ? CanonicalJson.Pretty(Describe(row)) : $"{row.Name} set");
                 return 0;
@@ -114,13 +118,14 @@ public static class DeliveryConfigVerbs
                     return context.UsageError("name the property to remove.");
                 }
 
-                var removed = await store.RemoveAsync(repo, name, ct).ConfigureAwait(false);
+                var removed = await store.RemoveAsync(repo, partition, name, ct).ConfigureAwait(false);
                 context.Out.WriteLine(removed ? $"{name} removed" : $"{name} was not set");
                 return 0;
             }
 
             default:
-                return context.UsageError("use 'config list', 'config effective --repo <id>', 'config set <name> --value <value>' or 'config remove <name>'.");
+                return context.UsageError(
+                    "use 'config list', 'config effective --repo <id>', 'config set <name> --value <value>' or 'config remove <name>', each with --partition <id> for one partition's values.");
         }
     }
 
@@ -142,6 +147,7 @@ public static class DeliveryConfigVerbs
         ["name"] = row.Name,
         ["value"] = row.Value,
         ["repoId"] = row.RepoId?.ToString("D"),
+        ["partition"] = row.Partition,
         ["description"] = row.Description,
         ["updatedUtc"] = row.UpdatedUtc.ToString("O", CultureInfo.InvariantCulture),
         ["updatedBy"] = row.UpdatedBy,

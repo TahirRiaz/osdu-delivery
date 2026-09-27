@@ -7,6 +7,11 @@ flowType: delivery
 name: wells-wellbore-03-header-delivery
 batch: wells
 
+# The partition the flow delivers to, as the sample estate names it; dev keeps the ledger the flow kept before it named it.
+partitions:
+  - name: dev
+    keepLedger: true
+
 source:
   connection: ${env:OSDU_DATA_DB}
   record:
@@ -39,8 +44,6 @@ target:
       url: ${env:OSDU_TOKEN_URL}
       body:
         scope: ${env:OSDU_SCOPE}
-  headers:
-    data-partition-id: ${env:OSDU_DATA_PARTITION}
   protocol: storage
 
 reliability:

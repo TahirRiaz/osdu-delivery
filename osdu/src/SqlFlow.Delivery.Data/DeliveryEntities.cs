@@ -575,15 +575,20 @@ public sealed class DeliveryMapping
 /// One interface of a delivery flow document, as the repository sync found it (docs/interfaces-design.md section 4): the
 /// pipeline it belongs to, the ledger identity its records, submissions and statistics are kept under, and what it delivers
 /// and how. The API and the GUI find the pipeline of a ledger identity here, and the interfaces of a pipeline, without
-/// parsing a document. A document in the single form has one row, whose interface name is empty. The row of an interface
-/// the repository no longer declares is kept, inactive, so the records it delivered still lead to their flow.
+/// parsing a document. A document in the single form has one row, whose interface name is empty. A document that names its
+/// partitions has one row per interface and partition, each with the partition's ledger (docs/partitions-design.md section
+/// 4). The row of an interface the repository no longer declares is kept, inactive, so the records it delivered still lead
+/// to their flow.
 /// </summary>
 public sealed class DeliveryInterface
 {
     /// <summary>The longest interface name.</summary>
     public const int MaxInterfaceLength = 64;
 
-    /// <summary>Stable id: derived from the repository, the flow's name and the interface's name.</summary>
+    /// <summary>
+    /// Stable id: derived from the repository, the flow's name and the interface's name, and for a flow that names its
+    /// partitions the partition's name as well.
+    /// </summary>
     public Guid Id { get; set; }
 
     public Guid RepoId { get; set; }
@@ -593,6 +598,9 @@ public sealed class DeliveryInterface
 
     /// <summary>The interface's name; empty for a document in the single form.</summary>
     public string Interface { get; set; } = string.Empty;
+
+    /// <summary>The partition whose ledger the row describes; empty for a flow that names no partitions.</summary>
+    public string Partition { get; set; } = string.Empty;
 
     /// <summary>Where the interface is in its document, from 0.</summary>
     public int Ordinal { get; set; }
@@ -675,8 +683,18 @@ public sealed class DeliveryCacheDefinition
     /// <summary>The cache flow that declares the type.</summary>
     public string FlowName { get; set; } = string.Empty;
 
-    /// <summary>The partition whose cache the flow fills: its <c>source.headers.data-partition-id</c>.</summary>
+    /// <summary>
+    /// The partition whose cache the flow fills: one of the partitions it names (<c>partitions</c>), or for a flow that names
+    /// none, its <c>source.headers.data-partition-id</c> resolved.
+    /// </summary>
     public string Scope { get; set; } = string.Empty;
+
+    /// <summary>
+    /// True when the flow names the partitions it builds a cache for (docs/partitions-design.md section 2.2): it then has a
+    /// row per type and partition, and a refresh of it names the partition it builds. False for a flow whose partition is
+    /// its header's.
+    /// </summary>
+    public bool DeclaresPartitions { get; set; }
 
     /// <summary>
     /// Where the type's records come from: <c>osdu</c> (searched on the platform), <c>table</c> (an ingestion table) or
@@ -1069,13 +1087,20 @@ public static partial class DeliveryConfigNames
 /// One property of the central configuration: a value the control plane supplies to the runs it queues, so a flow that
 /// names <c>${env:NAME}</c> resolves it from here rather than from whatever the node that picks the run up happens to
 /// hold. A property is set once for the whole control plane (<see cref="RepoId"/> null) and may be set again for one
-/// repository, which is an estate: the repository's value wins for the flows that repository holds.
+/// repository, which is an estate: the repository's value wins for the flows that repository holds. Either may also be set
+/// for one OSDU partition (<see cref="Partition"/>), and a run of a flow bound to that partition resolves with it first.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <see cref="Value"/> is a non-secret value (a partition, an entitlements group, a legal tag, a base URL) or a
 /// <c>${env:NAME}</c> or <c>${keyvault:vault/secret}</c> reference, which travels unresolved and is resolved on the node.
 /// A literal secret here is a defect: this row, and the run payload it is carried in, are ordinary catalog content.
+/// </para>
+/// <para>
+/// For a run bound to partition P the value of a name is taken from the first scope that sets it: the repository's for P,
+/// the control plane's for P, the repository's, the control plane's (docs/partitions-design.md section 5). A value set for
+/// a partition always wins over one that is not, so an estate-wide endpoint never sends a run of one partition to another's
+/// platform.
 /// </para>
 /// </remarks>
 public sealed class DeliveryConfigProperty
@@ -1084,6 +1109,12 @@ public sealed class DeliveryConfigProperty
 
     /// <summary>The repository whose flows this value applies to, or null for the control plane's own value.</summary>
     public Guid? RepoId { get; set; }
+
+    /// <summary>
+    /// The OSDU partition whose runs this value applies to, by its data-partition-id, or null for a value that applies
+    /// whatever the partition.
+    /// </summary>
+    public string? Partition { get; set; }
 
     /// <summary>The reference name a flow spells as <c>${env:NAME}</c>, held as written.</summary>
     public string Name { get; set; } = string.Empty;
@@ -1403,7 +1434,8 @@ public static class DeliveryModel
             e.Property(i => i.RecordObject).HasMaxLength(400).IsRequired();
             e.Property(i => i.AfterJson).HasMaxLength(4000).IsRequired();
             e.Property(i => i.RelativePath).HasMaxLength(1000).IsRequired();
-            e.HasIndex(i => new { i.RepoId, i.FlowName, i.Interface }).IsUnique();
+            e.Property(i => i.Partition).HasMaxLength(200).IsRequired();
+            e.HasIndex(i => new { i.RepoId, i.FlowName, i.Interface, i.Partition }).IsUnique();
             // A record's page, a submission's page and the record search find the pipeline behind a ledger identity.
             e.HasIndex(i => i.LedgerFlowId);
         });
@@ -1508,10 +1540,12 @@ public static class DeliveryModel
             e.Property(c => c.Value).HasMaxLength(DeliveryConfigNames.MaxValueLength).IsRequired();
             e.Property(c => c.Description).HasMaxLength(400);
             e.Property(c => c.UpdatedBy).HasMaxLength(200).IsRequired();
-            // One value per name per scope, and the control plane's own value is the row with no repository. The filter is
-            // cleared because EF excludes nulls from a unique index over a nullable column by default, which would leave the
-            // control plane's own rows unconstrained; SQL Server treats nulls as equal, so one index covers both scopes.
-            e.HasIndex(c => new { c.RepoId, c.Name }).IsUnique().HasFilter(null);
+            e.Property(c => c.Partition).HasMaxLength(200);
+            // One value per name per scope: the control plane's own value is the row with no repository, and a value for
+            // no particular partition the row with no partition. The filter is cleared because EF excludes nulls from a
+            // unique index over nullable columns by default, which would leave those rows unconstrained; SQL Server treats
+            // nulls as equal, so one index covers every scope.
+            e.HasIndex(c => new { c.RepoId, c.Partition, c.Name }).IsUnique().HasFilter(null);
             e.HasIndex(c => c.Name);
         });
 
@@ -1556,7 +1590,8 @@ public static class DeliveryModel
             e.Property(c => c.Query).HasMaxLength(4000);
             e.Property(c => c.FieldsJson).IsRequired();
             e.Property(c => c.OnChange).HasMaxLength(16).IsRequired();
-            e.HasIndex(c => new { c.RepoId, c.FlowName, c.Name }).IsUnique();
+            // A cache flow that names its partitions declares each of its types once per partition it builds a cache for.
+            e.HasIndex(c => new { c.RepoId, c.FlowName, c.Name, c.Scope }).IsUnique();
             // A refresh reads every declaration of its partition; the GUI lists a partition's types and the flows filling them.
             e.HasIndex(c => new { c.Scope, c.Name });
             e.HasIndex(c => c.FlowName);

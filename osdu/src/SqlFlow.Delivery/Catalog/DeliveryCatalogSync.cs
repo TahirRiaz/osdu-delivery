@@ -432,16 +432,24 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         }
 
         // What the other repositories declare for the same partitions: this repository's declarations have to agree with them.
-        // Each document's partition is resolved once, and everything below is keyed by what it resolved to: the scopes
-        // read from other repositories, the conflict check, and the rows written. Resolving in one place is what keeps
-        // those three agreeing with each other and with the capture and the render.
-        var scopeOf = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (cache, _) in parsed)
+        // Each document is bound to every partition it builds a cache for (docs/partitions-design.md section 6): the ones it
+        // names, or the one its headers name, resolved once. Everything below is keyed by that partition: the scopes read
+        // from other repositories, the conflict check, and the rows written. Binding in one place is what keeps those three
+        // agreeing with each other and with the capture and the render.
+        var bindings = new List<(CacheDefinition Cache, string Relative, string Scope)>();
+        foreach (var (cache, relative) in parsed)
         {
-            scopeOf[cache.Name] = await ResolvedScopeAsync(cache, ct).ConfigureAwait(false);
+            if (cache.DeclaresPartitions)
+            {
+                bindings.AddRange(cache.Partitions.Select(partition => (cache.ForPartition(partition), relative, partition)));
+            }
+            else
+            {
+                bindings.Add((cache, relative, await ResolvedScopeAsync(cache, ct).ConfigureAwait(false)));
+            }
         }
 
-        var scopes = scopeOf.Values.Distinct(StringComparer.Ordinal).ToList();
+        var scopes = bindings.Select(b => b.Scope).Distinct(StringComparer.Ordinal).ToList();
         var names = flows.Keys.ToList();
         var elsewhere = await context.DeliveryCacheDefinitions.AsNoTracking()
             .Where(c => c.RepoId != repoId && scopes.Contains(c.Scope) && !names.Contains(c.FlowName))
@@ -457,13 +465,13 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 .ToList(),
             StringComparer.Ordinal);
 
-        foreach (var (cache, relative) in parsed)
+        foreach (var (cache, relative, scope) in bindings)
         {
-            // A cache is keyed by the partition its flow reaches, so the declaration is recorded under the resolved
-            // partition, which is what a capture and a render both look under. A control plane that cannot resolve the
-            // reference records it as written: the declaration is then found by a node that resolves it the same way, and
-            // one that does not fails naming the partition it could not find rather than writing under two keys.
-            var scope = scopeOf[cache.Name];
+            // A cache is keyed by the partition its flow reaches, so the declaration is recorded under that partition, which
+            // is what a capture and a render both look under: one the flow names, or the one its headers resolve to. A control
+            // plane that cannot resolve the reference records it as written: the declaration is then found by a node that
+            // resolves it the same way, and one that does not fails naming the partition it could not find rather than
+            // writing under two keys. A flow bound to a partition holds only the types built for it.
             foreach (var declaredType in cache.Types)
             {
                 // A dictionary type is recorded as its document says: its key, its fields and its file, found the way a
@@ -493,7 +501,10 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 }
 
                 declared[scope].Add(new Snapshots.CacheTypeDeclaration(cache.Name, type.Name, type.EntityType, type.Kind, type.Query, type.Fields, type.OnChange, type.Origin));
-                var id = FlowIdentity.FromName($"delivery-cache/{repoId:N}/{cache.Name}/{type.Name}");
+                // A flow that names no partitions keeps the identity its declarations always had; one that names them keeps
+                // one per partition.
+                var id = FlowIdentity.FromName(
+                    $"delivery-cache/{repoId:N}/{cache.Name}/{type.Name}" + (cache.DeclaresPartitions ? $"@{scope.ToLowerInvariant()}" : string.Empty));
                 seen.Add(id);
                 var declaration = Declaration(cache, type, relative);
                 if (!existing.TryGetValue(id, out var row))
@@ -552,9 +563,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         // one platform. A table or a dictionary is not searched, and says nothing about the platform.
         foreach (var scope in scopes)
         {
-            var endpoints = parsed
-                .Where(p => scopeOf[p.Cache.Name] == scope && p.Cache.Types.Any(t => t.Origin == Snapshots.CacheOrigin.Osdu) && p.Cache.Source.Endpoint is not null)
-                .Select(p => Clip(p.Cache.Source.Endpoint!, 1000))
+            var endpoints = bindings
+                .Where(b => b.Scope == scope && b.Cache.Types.Any(t => t.Origin == Snapshots.CacheOrigin.Osdu) && b.Cache.Source.Endpoint is not null)
+                .Select(b => Clip(b.Cache.Source.Endpoint!, 1000))
                 .Concat(elsewhere.Where(c => c.Scope == scope && c.Endpoint is not null).Select(c => c.Endpoint!))
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal)
@@ -795,16 +806,18 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         type.Origin == Snapshots.CacheOrigin.Osdu ? type.Kind : null,
         type.Origin == Snapshots.CacheOrigin.Osdu ? type.Query : null,
         JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson),
-        type.OnChange == Snapshots.CacheChangeMode.Auto ? "auto" : "approve");
+        type.OnChange == Snapshots.CacheChangeMode.Auto ? "auto" : "approve",
+        cache.DeclaresPartitions);
 
     private sealed record CacheDefinitionRow(
         string Origin, string? Endpoint, string? Connection, string? SourceObject, string? KeyField, string? DictionaryPath, string RelativePath,
-        string Name, string EntityType, string? Kind, string? Query, string FieldsJson, string OnChange)
+        string Name, string EntityType, string? Kind, string? Query, string FieldsJson, string OnChange, bool DeclaresPartitions)
     {
         public bool Matches(DeliveryCacheDefinition row)
             => row.Origin == Origin && row.Endpoint == Endpoint && row.Connection == Connection && row.SourceObject == SourceObject
                && row.KeyField == KeyField && row.DictionaryPath == DictionaryPath && row.RelativePath == RelativePath && row.Name == Name
-               && row.EntityType == EntityType && row.Kind == Kind && row.Query == Query && row.FieldsJson == FieldsJson && row.OnChange == OnChange;
+               && row.EntityType == EntityType && row.Kind == Kind && row.Query == Query && row.FieldsJson == FieldsJson && row.OnChange == OnChange
+               && row.DeclaresPartitions == DeclaresPartitions;
 
         public void WriteTo(DeliveryCacheDefinition row)
         {
@@ -821,6 +834,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
             row.Query = Query;
             row.FieldsJson = FieldsJson;
             row.OnChange = OnChange;
+            row.DeclaresPartitions = DeclaresPartitions;
         }
     }
 }

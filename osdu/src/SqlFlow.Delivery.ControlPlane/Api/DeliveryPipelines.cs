@@ -6,8 +6,11 @@ using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
-/// <summary>A delivery pipeline and the interface of it that keeps a ledger identity (empty for the single form).</summary>
-internal sealed record LedgerPipeline(CatalogPipeline Pipeline, string Interface);
+/// <summary>
+/// A delivery pipeline, the interface of it that keeps a ledger identity (empty for the single form), and the partition
+/// whose ledger it is (empty for a flow that names no partitions).
+/// </summary>
+internal sealed record LedgerPipeline(CatalogPipeline Pipeline, string Interface, string Partition = "");
 
 /// <summary>
 /// Finds the pipeline behind a ledger identity through the read model of sources and interfaces
@@ -40,7 +43,7 @@ internal static class DeliveryPipelines
         var ids = flowIds.Distinct().ToList();
         var locations = await osdu.DeliveryInterfaces.AsNoTracking()
             .Where(i => ids.Contains(i.LedgerFlowId))
-            .Select(i => new { i.LedgerFlowId, i.RepoId, i.FlowName, i.Interface, i.Active })
+            .Select(i => new { i.LedgerFlowId, i.RepoId, i.FlowName, i.Interface, i.Partition, i.Active })
             .ToListAsync(ct).ConfigureAwait(false);
         if (locations.Count == 0)
         {
@@ -56,7 +59,7 @@ internal static class DeliveryPipelines
             var match = group
                 .SelectMany(l => pipelines
                     .Where(p => p.RepoId == l.RepoId && string.Equals(p.Name, l.FlowName, StringComparison.OrdinalIgnoreCase))
-                    .Select(p => (Match: new LedgerPipeline(p, l.Interface), Declared: l.Active)))
+                    .Select(p => (Match: new LedgerPipeline(p, l.Interface, l.Partition), Declared: l.Active)))
                 .OrderByDescending(m => m.Declared)
                 .ThenByDescending(m => m.Match.Pipeline.Active)
                 .ThenBy(m => m.Match.Pipeline.Name, StringComparer.Ordinal)

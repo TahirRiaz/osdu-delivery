@@ -49,11 +49,7 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         var (runLogger, events, _) = RunArtifacts.BuildEventPlumbing(options, flow.Name);
         var loggers = new RunLogLoggerFactory(runLogger, events, runId, flow.Name);
         var log = loggers.CreateLogger("run");
-        // A cache and a retrieval flow name their platform and partition the same way a delivery flow does, so a run
-        // of one resolves them from the central configuration the control plane supplied before the node's own.
-        var context = _provider.GetRequiredService<EngineContext>()
-            .ForRun(loggers)
-            .WithSuppliedReferences(DeliveryRunPayload.Parse(options.Parameters).References);
+        var context = _provider.GetRequiredService<EngineContext>().ForRun(loggers);
         var warningSink = options.Echo;
 
         var stopwatch = Stopwatch.StartNew();
@@ -70,6 +66,14 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (CachePartitionsIncompleteException incomplete)
+        {
+            // A run over several partitions whose partitions did not all complete ends failed, and its outcome still says
+            // what each one did.
+            error = RunFailure.Describe(incomplete);
+            log.LogError("{Operation} failed: {Error}", operation, error);
+            result = incomplete.Outcome;
         }
         catch (Exception ex)
         {
@@ -109,18 +113,101 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         };
     }
 
+    /// <summary>
+    /// Runs the operation for the partition the run names, or for every partition the flow names, one after another, when
+    /// it names none (docs/partitions-design.md section 6). Each partition's cache is captured and merged on its own, with
+    /// the central configuration set for that partition, so a partition whose capture fails leaves the others refreshed and
+    /// the run ends failed naming it. A flow that names no partitions runs as it always did.
+    /// </summary>
     private static async Task<object> ExecuteOperationAsync(
         EngineContext context, CacheDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
     {
-        if (parameters.Payload is not null)
+        var payload = DeliveryRunPayload.Parse(parameters);
+        if (!payload.CarriesOnlyConfiguration)
         {
-            throw new SqlFlowException("A cache flow takes no payload: a refresh sweeps every declared type in full, so there is no submission, record or slice to name.");
+            throw new SqlFlowException(
+                "A cache flow's payload carries only the central configuration the control plane supplies: a refresh sweeps every declared type in full, so there is no submission, record or slice to name.");
         }
 
-        var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, parameters.Values);
+        var (partition, supplied) = PartitionNames.SplitRunValues(
+            parameters.Values, keptAsParameter: !flow.DeclaresPartitions && flow.Parameters.ContainsKey(PartitionNames.RunValue));
+        var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, supplied);
+        var bound = flow.ForRun(partition);
+        if (bound.Count == 1)
+        {
+            // A cache and a retrieval flow name their platform and partition the same way a delivery flow does, so a run
+            // resolves them from the central configuration the control plane supplied before the node's own.
+            return await RunOneAsync(context.WithSuppliedReferences(payload.ReferencesFor(bound[0].Partition)), bound[0], operation, values, runId, actor, log, ct)
+                .ConfigureAwait(false);
+        }
+
+        var outcomes = new List<CachePartitionOutcome>(bound.Count);
+        foreach (var one in bound)
+        {
+            ct.ThrowIfCancellationRequested();
+            log.LogInformation("partition '{Partition}': {Operation}", one.Partition, operation);
+            try
+            {
+                var outcome = await RunOneAsync(context.WithSuppliedReferences(payload.ReferencesFor(one.Partition)), one, operation, values, runId, actor, log, ct)
+                    .ConfigureAwait(false);
+                outcomes.Add(new CachePartitionOutcome(one.Partition!, outcome, null));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // One partition's failure is its own: the others are captured and merged regardless, and the run then ends
+                // failed naming every partition that did not complete.
+                var error = RunFailure.Describe(ex);
+                log.LogError(RunFailure.IsExpected(ex) ? null : ex, "partition '{Partition}': {Operation} failed: {Error}", one.Partition, operation, error);
+                outcomes.Add(new CachePartitionOutcome(one.Partition!, null, error));
+            }
+        }
+
+        var all = new CachePartitionsOutcome(operation, flow.Name, outcomes);
+        return all.Complete ? all : throw new CachePartitionsIncompleteException(all);
+    }
+
+    private static async Task<object> RunOneAsync(
+        EngineContext context, CacheDefinition flow, string operation, IReadOnlyDictionary<string, string> values, Guid runId, string actor, ILogger log, CancellationToken ct)
+    {
         var refresher = new CacheRefresher(context, log);
         return operation == DeliveryOperations.Plan
             ? await refresher.PlanAsync(flow, values, ct).ConfigureAwait(false)
             : await refresher.RefreshAsync(flow, values, runId, actor, ct).ConfigureAwait(false);
     }
+}
+
+/// <summary>
+/// The <c>result</c> of a run of a cache flow over several of its partitions: each partition's outcome (a refresh's or a
+/// plan's), or the error that stopped it.
+/// </summary>
+public sealed record CachePartitionsOutcome(string Operation, string Flow, IReadOnlyList<CachePartitionOutcome> Partitions)
+{
+    /// <summary>True when every partition's operation completed.</summary>
+    public bool Complete => Partitions.All(p => p.Error is null);
+
+    /// <summary>What the run did, as a run's error states it: the partitions that did not complete and why, then the ones that did.</summary>
+    public string Describe()
+    {
+        var failed = Partitions.Where(p => p.Error is not null).Select(p => $"partition '{p.Partition}' ({p.Error})").ToList();
+        var done = Partitions.Where(p => p.Error is null).Select(p => $"'{p.Partition}'").ToList();
+        return failed.Count == 0
+            ? $"cache flow '{Flow}': the {Operation} of every partition completed ({string.Join(", ", done)})."
+            : $"cache flow '{Flow}': the {Operation} of {string.Join(", ", failed)} did not complete; "
+                + (done.Count == 0 ? "no partition completed." : $"{string.Join(", ", done)} completed.");
+    }
+}
+
+/// <summary>One partition of a run over several: the outcome of its operation, or why it did not complete.</summary>
+public sealed record CachePartitionOutcome(string Partition, object? Outcome, string? Error);
+
+/// <summary>A run over several partitions in which at least one did not complete; it carries what every partition did.</summary>
+public sealed class CachePartitionsIncompleteException : DeliveryException
+{
+    public CachePartitionsIncompleteException(CachePartitionsOutcome outcome)
+        : base((outcome ?? throw new ArgumentNullException(nameof(outcome))).Describe())
+    {
+        Outcome = outcome;
+    }
+
+    public CachePartitionsOutcome Outcome { get; }
 }

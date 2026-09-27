@@ -349,6 +349,7 @@ internal static partial class FlowMapper
         var description = string.IsNullOrWhiteSpace(y.Description) ? null : y.Description!.Trim();
         var batch = string.IsNullOrWhiteSpace(y.Batch) ? null : y.Batch!.Trim();
         var path = source == "<inline>" ? null : source;
+        var partitions = MapPartitions(y.Partitions, source);
         if (y.Interfaces is null)
         {
             if (y.Reliability?.ParallelInterfaces is not null)
@@ -356,8 +357,9 @@ internal static partial class FlowMapper
                 throw new FlowValidationException($"{source}: reliability.parallelInterfaces says how many interfaces run at once, and the document declares no interfaces.");
             }
 
-            var flow = MapFlow(y, source, KeyPaths.Single);
+            var flow = MapFlow(y, source, KeyPaths.Single, partitions);
             CheckLedgerName(flow.Name, "name", source);
+            CheckPartitionLedgers([flow], source);
             return new SourceDefinition { SourcePath = path, Name = name, Description = description, Batch = batch, Interfaces = [flow] };
         }
 
@@ -368,16 +370,107 @@ internal static partial class FlowMapper
             Description = description,
             Batch = batch,
             DeclaresInterfaces = true,
-            Interfaces = MapInterfaces(y, name, source),
+            Interfaces = MapInterfaces(y, name, source, partitions),
             ParallelInterfaces = MapParallelInterfaces(y.Reliability, source),
         };
+    }
+
+    /// <summary>
+    /// The partitions a delivery flow may deliver to (docs/partitions-design.md section 2.3): each a name, or a map naming
+    /// it with its settings. Empty when the document names none. At most one partition keeps the ledger the flow kept
+    /// before it named its partitions.
+    /// </summary>
+    private static IReadOnlyList<DeclaredPartition> MapPartitions(List<object>? declared, string source)
+    {
+        if (declared is null)
+        {
+            return [];
+        }
+
+        var partitions = new List<DeclaredPartition>(declared.Count);
+        for (var i = 0; i < declared.Count; i++)
+        {
+            var where = string.Create(CultureInfo.InvariantCulture, $"{source}: partitions[{i}]");
+            partitions.Add(declared[i] switch
+            {
+                IDictionary<object, object?> entry => MapPartition(entry, where),
+                var scalar => new DeclaredPartition(PartitionNames.Check(PartitionScalar(scalar, where), where)),
+            });
+        }
+
+        PartitionNames.CheckList(partitions.Select(p => p.Name).ToList(), $"{source}: partitions");
+        var keeping = partitions.Where(p => p.KeepsLedger).Select(p => p.Name).ToList();
+        if (keeping.Count > 1)
+        {
+            throw new FlowValidationException(
+                $"{source}: partitions marks {string.Join(", ", keeping)} with keepLedger. The ledger the flow kept before it named its partitions holds the records delivered to one partition; mark that one.");
+        }
+
+        return partitions;
+    }
+
+    /// <summary>One partition written as a map: its <c>name</c>, and <c>keepLedger</c> when it keeps the flow's own ledger.</summary>
+    private static DeclaredPartition MapPartition(IDictionary<object, object?> entry, string where)
+    {
+        string? name = null;
+        var keepLedger = false;
+        foreach (var (key, value) in entry)
+        {
+            switch (key?.ToString())
+            {
+                case "name":
+                    name = PartitionScalar(value, $"{where}.name");
+                    break;
+                case "keepLedger":
+                    keepLedger = value switch
+                    {
+                        bool flag => flag,
+                        string text when bool.TryParse(text, out var parsed) => parsed,
+                        _ => throw new FlowValidationException($"{where}.keepLedger must be true or false."),
+                    };
+                    break;
+                default:
+                    throw new FlowValidationException($"{where} has no '{key}' setting; a partition takes 'name' and 'keepLedger'.");
+            }
+        }
+
+        return new DeclaredPartition(PartitionNames.Check(name, $"{where}.name"), keepLedger);
+    }
+
+    /// <summary>
+    /// A partition name written as a YAML scalar. The loader keeps an unquoted scalar's type, so a name YAML reads as a
+    /// number or a boolean is refused rather than turned back into text it may not have been written as.
+    /// </summary>
+    private static string PartitionScalar(object? value, string where) => value switch
+    {
+        null => throw new FlowValidationException($"{where} is empty; name the partition by its data-partition-id."),
+        string text => text,
+        sbyte or byte or short or ushort or int or uint or long or ulong => Convert.ToString(value, CultureInfo.InvariantCulture)!,
+        bool or double or float or decimal => throw new FlowValidationException(
+            $"{where} '{Convert.ToString(value, CultureInfo.InvariantCulture)}' is read as a {(value is bool ? "boolean" : "number")}; write the partition name in quotes."),
+        _ => throw new FlowValidationException($"{where} is neither a partition name nor a 'name'/'keepLedger' map."),
+    };
+
+    /// <summary>
+    /// Every ledger name a flow that names its partitions records under fits the width the ledger keeps it in:
+    /// <c>name@partition</c> for each partition that keeps a ledger of its own.
+    /// </summary>
+    private static void CheckPartitionLedgers(IReadOnlyList<FlowDefinition> flows, string source)
+    {
+        foreach (var flow in flows)
+        {
+            foreach (var partition in flow.Partitions.Where(p => !p.KeepsLedger))
+            {
+                CheckLedgerName($"{flow.OwnLedgerName}@{partition.Name}", $"the ledger name of '{flow.Label}' in partition '{partition.Name}'", source);
+            }
+        }
     }
 
     /// <summary>
     /// One flow definition out of a document shaped as the single form: the document itself, or the view of one interface
     /// the interface form builds (<see cref="InterfaceView"/>), whose messages name the interface's keys.
     /// </summary>
-    private static FlowDefinition MapFlow(FlowYaml y, string source, KeyPaths paths)
+    private static FlowDefinition MapFlow(FlowYaml y, string source, KeyPaths paths, IReadOnlyList<DeclaredPartition> partitions)
     {
         var name = Require(y.Name, "name", source);
         var src = y.Source ?? throw Missing("source", source);
@@ -401,6 +494,7 @@ internal static partial class FlowMapper
             Description = string.IsNullOrWhiteSpace(y.Description) ? null : y.Description!.Trim(),
             Batch = string.IsNullOrWhiteSpace(y.Batch) ? null : y.Batch!.Trim(),
             Interface = paths.Interface,
+            Partitions = partitions,
             Parameters = (y.Parameters ?? []).ToDictionary(
                 kv => kv.Key,
                 kv => new FlowParameter { Required = kv.Value?.Required ?? false, Default = kv.Value?.Default, Description = kv.Value?.Description },
@@ -450,7 +544,7 @@ internal static partial class FlowMapper
     /// an interface written at the source level, two interfaces sharing a ledger identity, and interfaces that wait for
     /// each other.
     /// </summary>
-    private static List<FlowDefinition> MapInterfaces(FlowYaml y, string name, string source)
+    private static List<FlowDefinition> MapInterfaces(FlowYaml y, string name, string source, IReadOnlyList<DeclaredPartition> partitions)
     {
         var interfaces = y.Interfaces!;
         var src = y.Source ?? throw Missing("source", source);
@@ -498,7 +592,7 @@ internal static partial class FlowMapper
 
             var paths = KeyPaths.ForInterface(interfaceName);
             var route = ResolveRoute(i, at, source);
-            var flow = MapFlow(InterfaceView(y, i, route), source, paths) with
+            var flow = MapFlow(InterfaceView(y, i, route), source, paths, partitions) with
             {
                 Description = string.IsNullOrWhiteSpace(i.Description) ? null : i.Description.Trim(),
                 AdoptedLedger = MapLedger(i.Ledger, at, source),
@@ -547,6 +641,7 @@ internal static partial class FlowMapper
 
         CheckAfter(flows, source);
         CheckLedgers(flows, source);
+        CheckPartitionLedgers(flows, source);
         return flows;
     }
 
@@ -979,13 +1074,15 @@ internal static partial class FlowMapper
             }
         }
 
-        foreach (var group in flows.GroupBy(f => f.Id))
+        // Compared by the ledger each interface keeps before any partition: a flow that names its partitions keeps one ledger
+        // per interface and partition, derived from that name, so interfaces apart there are apart in every partition.
+        foreach (var group in flows.GroupBy(f => Identity.FlowId.Of(f.OwnLedgerName)))
         {
             var sharing = group.ToList();
             if (sharing.Count > 1)
             {
                 throw new FlowValidationException(
-                    $"{source}: the interfaces {string.Join(", ", sharing.Select(f => f.Interface))} would keep the same ledger ('{sharing[0].LedgerName}'); each interface keeps a ledger of its own.");
+                    $"{source}: the interfaces {string.Join(", ", sharing.Select(f => f.Interface))} would keep the same ledger ('{sharing[0].OwnLedgerName}'); each interface keeps a ledger of its own.");
             }
         }
     }
@@ -1406,16 +1503,48 @@ internal static partial class FlowMapper
         // Every OSDU service makes data-partition-id a required header (openapi storage v2, file v2, search v2,
         // workflow v1, schema-service v1). A flow that leaves it out authors a run where every single request comes
         // back 400 with a message about a tenant, which is a slow and confusing way to learn about a typo in the
-        // flow. It costs nothing to say so while the document is being read.
-        if (!flow.Target.Headers.ContainsKey(PartitionHeader))
+        // flow. It costs nothing to say so while the document is being read. A flow that names its partitions leaves the
+        // header to the engine, which sets it to the partition each run targets; one written by hand beside them could only
+        // disagree, and so could a dataPartition every id would be minted in.
+        if (flow.DeclaresPartitions)
         {
-            throw new FlowValidationException(
-                $"{source}: target.headers must declare '{PartitionHeader}'. Every OSDU service requires it and rejects a request without it.");
-        }
+            if (flow.Target.Headers.ContainsKey(PartitionHeader))
+            {
+                throw new FlowValidationException(
+                    $"{source}: target.headers names '{PartitionHeader}', and the flow names its partitions: every run sets the header to the partition it targets. Remove the header.");
+            }
 
-        if (string.IsNullOrWhiteSpace(flow.Target.Headers[PartitionHeader]))
+            if (flow.Render.Parameters.ContainsKey(DeliveryDestination.DataPartitionParameter))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {paths.Shared("render.parameters")} sets '{DeliveryDestination.DataPartitionParameter}', and the flow names its partitions: every id a run mints is minted in the partition it targets. Remove the parameter.");
+            }
+
+            if (flow.Parameters.ContainsKey(PartitionNames.RunValue))
+            {
+                throw new FlowValidationException(
+                    $"{source}: parameters declares '{PartitionNames.RunValue}', and the flow names its partitions: a run names the partition it targets under that value. Rename the parameter.");
+            }
+
+            // A cache version is a version of one partition's cache, so a pin means something for a flow of one partition only.
+            if (flow.Partitions.Count > 1 && !flow.Render.CacheVersion.Equals(FlowRender.CurrentCacheVersion, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {paths.Shared("render.cacheVersion")} pins version {flow.Render.CacheVersion}, which is a version of one partition's cache, and the flow names {flow.Partitions.Count} partitions, each rendering against its own partition's cache. Remove render.cacheVersion, or name one partition.");
+            }
+        }
+        else
         {
-            throw new FlowValidationException($"{source}: target.headers.{PartitionHeader} must not be empty.");
+            if (!flow.Target.Headers.ContainsKey(PartitionHeader))
+            {
+                throw new FlowValidationException(
+                    $"{source}: target.headers must declare '{PartitionHeader}', or the flow must name the partitions it delivers to under 'partitions'. Every OSDU service requires the header and rejects a request without it.");
+            }
+
+            if (string.IsNullOrWhiteSpace(flow.Target.Headers[PartitionHeader]))
+            {
+                throw new FlowValidationException($"{source}: target.headers.{PartitionHeader} must not be empty.");
+            }
         }
 
         if (flow.Target.ProtocolOptions.BatchSize is < 1 or > ProtocolOptions.MaxBatchSize)

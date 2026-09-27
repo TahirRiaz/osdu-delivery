@@ -76,8 +76,21 @@ public sealed record ReferenceTypeSpec
     /// </summary>
     public CacheChangeMode OnChange { get; init; } = CacheChangeMode.Auto;
 
+    /// <summary>
+    /// The partitions of its cache flow the type is built for (<c>types[].partitions</c>, docs/partitions-design.md section
+    /// 2.2); empty when it is built for every partition the flow names, and for a flow that names none.
+    /// </summary>
+    public IReadOnlyList<string> Partitions { get; init; } = [];
+
     /// <summary>True for a type whose records are not OSDU records: a table or a dictionary.</summary>
     public bool IsLookup => Origin != CacheOrigin.Osdu;
+
+    /// <summary>Whether the type is built for <paramref name="partition"/>: every type is, unless it names its partitions.</summary>
+    public bool IsBuiltFor(string partition)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(partition);
+        return Partitions.Count == 0 || Partitions.Contains(partition, StringComparer.OrdinalIgnoreCase);
+    }
 
     /// <summary>Where the records come from, as a person reads it: the kind searched, the table read, or the dictionary held.</summary>
     public string Describe() => Origin switch

@@ -86,7 +86,7 @@ public sealed class RenderResolver
         // Where a record goes and under whose access and legal terms belongs to the kind, not to any one mapping: a
         // parameter the kind owns that the flow leaves out takes the reference the kind names for it. A flow that names
         // its own value still wins, so a document can pin a destination when it has to.
-        var supplied = DeliveryDestination.Supplied(flow.Render.Parameters, mapping.Parameters.Keys);
+        var supplied = DeliveryDestination.Supplied(flow.Render.Parameters, mapping.Parameters.Keys, flow.Partition);
 
         // What reaches a mapping from outside it is deployment configuration, not mapping content: the partition, the
         // legal tag and the access groups of an estate all differ between test and production while the mapping stays the
@@ -110,10 +110,40 @@ public sealed class RenderResolver
         };
 
         var searches = await SearchesAsync(_templates, mapping, ct).ConfigureAwait(false);
-        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches, checkFixtures);
+        var fixtureCaches = await FixtureCachesAsync(_cache, mapping, scope, ct).ConfigureAwait(false);
+        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches, checkFixtures, fixtureCaches);
         Preflight.ThrowIfFailed(issues, where);
-        var renderer = new MappingRenderer(mapping, schema, references, context, searches, _search);
+        var renderer = new MappingRenderer(mapping, schema, references, context, searches, _search, fixtureCaches);
         return new ResolvedMapping(mapping, schema, references, context, renderer);
+    }
+
+    /// <summary>
+    /// The current version of the cache of every other partition than <paramref name="scope"/> the fixtures of
+    /// <paramref name="mapping"/> are written for (<see cref="Preflight.FixturePartitions"/>), by partition, read from
+    /// <paramref name="caches"/>. A partition whose cache holds no version is left out, and the preflight names each fixture
+    /// written for it. None when the mapping reads no cache, its fixtures are all written for <paramref name="scope"/>, or
+    /// the host has no module database.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<string, ReferenceSnapshot>> FixtureCachesAsync(
+        ICacheStore? caches, MappingDefinition mapping, string? scope, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        var found = new Dictionary<string, ReferenceSnapshot>(StringComparer.Ordinal);
+        if (caches is null)
+        {
+            return found;
+        }
+
+        foreach (var partition in Preflight.FixturePartitions(mapping, scope))
+        {
+            if (await caches.CurrentVersionAsync(partition, ct).ConfigureAwait(false) is { } version
+                && await caches.LoadAsync(partition, version, ct).ConfigureAwait(false) is { } snapshot)
+            {
+                found[partition] = snapshot;
+            }
+        }
+
+        return found;
     }
 
     /// <summary>
@@ -204,7 +234,7 @@ public sealed class RenderResolver
         {
             version = await _cache.CurrentVersionAsync(scope, ct).ConfigureAwait(false)
                 ?? throw new FlowValidationException(
-                    $"{where}: mapping {mapping.Reference} reads the cache of partition '{scope}', which holds no version yet. Run a cache flow whose source.headers.data-partition-id is '{scope}' with the refresh operation to capture one.");
+                    $"{where}: mapping {mapping.Reference} reads the cache of partition '{scope}', which holds no version yet. Refresh a cache flow that builds it (one naming '{scope}' under partitions, or whose source.headers.data-partition-id is '{scope}') to capture one.");
         }
 
         var references = await _cache.LoadAsync(scope, version, ct).ConfigureAwait(false)

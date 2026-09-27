@@ -75,7 +75,13 @@ public sealed record EngineContext(
     /// node. A run given nothing keeps the node's own resolver, so it behaves exactly as it did before.
     /// </summary>
     public EngineContext WithSuppliedReferences(IReadOnlyDictionary<string, string> supplied)
-        => this with { Secrets = Http.SuppliedReferenceResolver.For(supplied, Secrets) };
+        => this with { Secrets = Http.SuppliedReferenceResolver.For(supplied, Secrets), Supplied = supplied };
+
+    /// <summary>
+    /// The central configuration this context resolves with ahead of the node (<see cref="WithSuppliedReferences"/>):
+    /// what a member run it queues carries on, so a member resolves every reference exactly as the run that queued it.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Supplied { get; init; } = System.Collections.ObjectModel.ReadOnlyDictionary<string, string>.Empty;
 
     /// <summary>A context with the fan-out the platform handed this run; every run gets its own.</summary>
     public EngineContext WithFanOut(IFanOutDispatcher? dispatcher) => this with { FanOut = dispatcher };
@@ -913,8 +919,15 @@ public sealed class FlowRuntime : IDisposable
         var members = shares.Skip(1).Where(s => s.Count > 0).Select(share => new RunParameters
         {
             Operation = DeliveryOperations.Intake,
-            Values = Parameters,
-            Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId, Slices = share, Force = force, Interface = Flow.Interface }.ToJson(),
+            Values = MemberValues(Parameters),
+            Payload = new DeliveryRunPayload
+            {
+                SubmissionId = submission.SubmissionId,
+                Slices = share,
+                Force = force,
+                Interface = Flow.Interface,
+                References = _context.Supplied,
+            }.ToJson(),
         }).ToList();
 
         var totals = await intake.PlanSlicesAsync(Flow, prepared, shares[0], ct).ConfigureAwait(false);
@@ -943,6 +956,22 @@ public sealed class FlowRuntime : IDisposable
     }
 
     /// <summary>
+    /// The values a member run of this one carries: <paramref name="values"/>, and the partition the flow is bound to, so a
+    /// member binds to the partition this run delivers to and keeps its records in the same ledger. With the central
+    /// configuration this run resolves with, carried in the member's payload, a member resolves every reference as this run
+    /// did, whatever the node it lands on holds.
+    /// </summary>
+    private IReadOnlyDictionary<string, string> MemberValues(IReadOnlyDictionary<string, string> values)
+    {
+        if (Flow.Partition is not { } partition)
+        {
+            return values;
+        }
+
+        return new Dictionary<string, string>(values, StringComparer.Ordinal) { [PartitionNames.RunValue] = partition };
+    }
+
+    /// <summary>
     /// The drain, with member drains across the fleet when the flow declares a fan-out and the submission is big
     /// enough: this run drains too, waits for the members, then settles whatever their leases or backoffs left.
     /// </summary>
@@ -958,7 +987,8 @@ public sealed class FlowRuntime : IDisposable
                 .Select(_ => new RunParameters
                 {
                     Operation = DeliveryOperations.Drain,
-                    Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId, Interface = Flow.Interface }.ToJson(),
+                    Values = MemberValues(System.Collections.ObjectModel.ReadOnlyDictionary<string, string>.Empty),
+                    Payload = new DeliveryRunPayload { SubmissionId = submission.SubmissionId, Interface = Flow.Interface, References = _context.Supplied }.ToJson(),
                 })
                 .ToList();
             handle = await dispatcher.EnqueueAsync(parameters, ct).ConfigureAwait(false);

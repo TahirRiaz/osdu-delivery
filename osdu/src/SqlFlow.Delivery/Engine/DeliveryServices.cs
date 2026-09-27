@@ -98,6 +98,7 @@ public static class DeliveryServices
 
         // Execution: the run executors behind the platform's document executor, and the ad-hoc compute operations
         // a node runs for the control plane (target probe, record read-back, source row read-back, record preview and removal).
+        services.TryAddSingleton<PartitionLedgers>();
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, CacheExecutor>();

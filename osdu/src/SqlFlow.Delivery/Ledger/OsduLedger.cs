@@ -678,6 +678,40 @@ public sealed partial class OsduLedger : ILedger
             ct);
     }
 
+    public Task<bool> HoldsRecordsAsync(Guid flowId, CancellationToken ct = default)
+        => ReadAsync(db => db.DeliveryRecords.AnyAsync(r => r.FlowId == flowId, ct), ct);
+
+    public async Task<IReadOnlyList<PartitionRecords>> DeliveredPartitionsAsync(Guid flowId, CancellationToken ct = default)
+    {
+        // An OSDU id is <partition>:<entity type>:<id>, so the partition is everything before its first colon. A record is
+        // counted by the id it was delivered as, or by the id it claimed when it has not been delivered yet. The two columns
+        // are compared under different collations, so each is grouped on its own rather than coalesced into one expression
+        // the server could not collate. The queries run on SQL Server, where IndexOf(string) translates to CHARINDEX; the
+        // char overload the analyzer prefers has no translation there.
+#pragma warning disable CA1866 // Use 'string.IndexOf(char)': the expression is translated to SQL, not run in .NET.
+        var delivered = await ReadAsync(
+            db => db.DeliveryRecords
+                .Where(r => r.FlowId == flowId && r.TargetId != null && r.TargetId.IndexOf(":") > 0)
+                .GroupBy(r => r.TargetId!.Substring(0, r.TargetId.IndexOf(":")))
+                .Select(g => new { Partition = g.Key, Records = g.LongCount() })
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+        var claimed = await ReadAsync(
+            db => db.DeliveryRecords
+                .Where(r => r.FlowId == flowId && r.TargetId == null && r.ClaimedTargetId != null && r.ClaimedTargetId.IndexOf(":") > 0)
+                .GroupBy(r => r.ClaimedTargetId!.Substring(0, r.ClaimedTargetId.IndexOf(":")))
+                .Select(g => new { Partition = g.Key, Records = g.LongCount() })
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+#pragma warning restore CA1866
+        return delivered.Concat(claimed)
+            .GroupBy(c => c.Partition, StringComparer.Ordinal)
+            .Select(g => new PartitionRecords(g.Key, g.Sum(c => c.Records)))
+            .OrderByDescending(c => c.Records)
+            .ThenBy(c => c.Partition, StringComparer.Ordinal)
+            .ToList();
+    }
+
     public Task<bool> HasPendingAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
     {
         var pending = StatusText.Of(RecordStatus.Pending);

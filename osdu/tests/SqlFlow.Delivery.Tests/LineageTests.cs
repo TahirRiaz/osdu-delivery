@@ -23,8 +23,11 @@ public sealed class LineageTests : IDisposable
 {
     private const string Platform = "${env:OSDU_URL}";
 
-    /// <summary>The sample estate names its partition as the reference a node holds, and lineage compares it as written.</summary>
-    private const string Partition = "${env:OSDU_DATA_PARTITION}";
+    /// <summary>
+    /// The partition the sample estate and the fixture documents name: their flows name it under <c>partitions</c> (the
+    /// retrieval in its header), and lineage keys a partition as it is written.
+    /// </summary>
+    private const string Partition = "dev";
 
     private static readonly DateTime Utc = new(2026, 9, 16, 0, 0, 0, DateTimeKind.Utc);
 
@@ -165,15 +168,15 @@ public sealed class LineageTests : IDisposable
         Assert.Equal((LineageRelation.Reads, "../data/curves", "chunk_*.parquet"), (payload.Relation, payload.Location, payload.FilePattern));
 
         Assert.Equal(
-            "osdu-type/${env:OSDU_DATA_PARTITION}/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0",
+            "osdu-type/dev/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0",
             Datasets(lineage, LineageRelation.Writes));
         // The unit tables, the curve dictionary and the partition's units (which a unit is found among when the table does
         // not translate it) come out of the partition's cache; the wellbores are searched for on the platform, so the flow
         // reads the wellbore kind itself and is ordered after whatever delivers wellbores there.
         Assert.Equal(
-            "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/CurveDictionary, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallDepthUnits, "
-            + "osdu-cache/${env:OSDU_DATA_PARTITION}/cache/RecallUnits, osdu-cache/${env:OSDU_DATA_PARTITION}/cache/UnitOfMeasure, "
-            + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
+            "osdu-cache/dev/cache/CurveDictionary, osdu-cache/dev/cache/RecallDepthUnits, "
+            + "osdu-cache/dev/cache/RecallUnits, osdu-cache/dev/cache/UnitOfMeasure, "
+            + "osdu-type/dev/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         var written = lineage.Datasets.Single(d => d.Relation == LineageRelation.Writes);
         Assert.Equal((Platform, (char?)':'), (written.Instance, written.Separator));
@@ -188,7 +191,7 @@ public sealed class LineageTests : IDisposable
 
         Assert.Empty(lineage.Warnings);
         Assert.Empty(lineage.Files);
-        Assert.Equal("osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:1.3.0", Datasets(lineage, LineageRelation.Writes));
+        Assert.Equal("osdu-type/dev/master-data/osdu:wks:master-data--Wellbore:1.3.0", Datasets(lineage, LineageRelation.Writes));
     }
 
     [Fact]
@@ -204,7 +207,7 @@ public sealed class LineageTests : IDisposable
 
         Assert.Empty(lineage.Warnings);
         Assert.Equal(
-            "osdu-type/${env:OSDU_DATA_PARTITION}/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0, osdu-type/${env:OSDU_DATA_PARTITION}/dataset/osdu:wks:dataset--File.Generic:1.0.0",
+            "osdu-type/dev/work-product-component/osdu:wks:work-product-component--WellLog:1.4.0, osdu-type/dev/dataset/osdu:wks:dataset--File.Generic:1.0.0",
             Datasets(lineage, LineageRelation.Writes));
     }
 
@@ -248,9 +251,9 @@ public sealed class LineageTests : IDisposable
         var lineage = Describe("flows/wells-osdu-04-metadata-retrieval.yaml");
 
         Assert.Equal(
-            "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
-            + "osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/${env:OSDU_DATA_PARTITION}/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
-            + "osdu-type/${env:OSDU_DATA_PARTITION}/master-data/osdu:wks:master-data--Wellbore:*",
+            "osdu-type/dev/reference-data/osdu:wks:reference-data--UnitOfMeasure:*, osdu-type/dev/reference-data/osdu:wks:reference-data--LogCurveBusinessValue:*, "
+            + "osdu-type/dev/reference-data/osdu:wks:reference-data--VerticalMeasurementType:*, osdu-type/dev/reference-data/osdu:wks:reference-data--TrajectoryStationPropertyType:*, "
+            + "osdu-type/dev/master-data/osdu:wks:master-data--Wellbore:*",
             Datasets(lineage, LineageRelation.Reads));
         Assert.Empty(Datasets(lineage, LineageRelation.Writes));
         Assert.Equal(
@@ -432,7 +435,9 @@ public sealed class LineageTests : IDisposable
     [Fact]
     public void A_flow_whose_partition_names_no_cache_keeps_its_tables_and_files_and_says_why_it_has_no_osdu_nodes()
     {
-        Rewrite("flows/recall-welllog-03-header-delivery.yaml", "    data-partition-id: ${env:OSDU_DATA_PARTITION}\n", "    data-partition-id: \"open des\"\n");
+        // The flow in the header form, its partition written as text that is no partition id.
+        Rewrite("flows/recall-welllog-03-header-delivery.yaml", "partitions:\n  - name: dev\n    keepLedger: true\n", string.Empty);
+        Rewrite("flows/recall-welllog-03-header-delivery.yaml", "  protocol: ddms\n", "  headers:\n    data-partition-id: \"open des\"\n  protocol: ddms\n");
 
         var lineage = Describe("flows/recall-welllog-03-header-delivery.yaml");
 

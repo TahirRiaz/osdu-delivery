@@ -14,8 +14,11 @@ namespace SqlFlow.Delivery.Catalog;
 /// </summary>
 public sealed record RepositorySource(string RelativePath, SourceDefinition Source, bool Active = true);
 
-/// <summary>A pipeline's interface as the read model knows it: the flow, the interface (empty for the single form) and its ledger.</summary>
-public sealed record InterfaceLocation(Guid RepoId, string FlowName, string Interface, Guid LedgerFlowId, string LedgerName, bool Active);
+/// <summary>
+/// A pipeline's interface as the read model knows it: the flow, the interface (empty for the single form), the partition
+/// whose ledger it is (empty for a flow that names no partitions) and that ledger.
+/// </summary>
+public sealed record InterfaceLocation(Guid RepoId, string FlowName, string Interface, Guid LedgerFlowId, string LedgerName, bool Active, string Partition = "");
 
 /// <summary>
 /// The read model of sources and their interfaces (<see cref="DeliveryInterface"/>): written for a whole repository at a
@@ -28,8 +31,9 @@ public static class DeliveryInterfaceCatalog
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     /// <summary>
-    /// Makes the repository's rows describe <paramref name="sources"/>: one row per interface, added or updated, and the
-    /// rows of interfaces the sources no longer declare kept but made inactive.
+    /// Makes the repository's rows describe <paramref name="sources"/>: one row per interface (per interface and partition
+    /// for a source that names its partitions), added or updated, and the rows of interfaces the sources no longer declare
+    /// kept but made inactive.
     /// <paramref name="kinds"/> gives the OSDU kind of each mapping reference the repository holds valid. A ledger identity
     /// kept by an interface of another flow is reported: two flows delivering the same records would take turns with them.
     /// </summary>
@@ -54,11 +58,15 @@ public static class DeliveryInterfaceCatalog
                 continue;
             }
 
-            for (var ordinal = 0; ordinal < source.Interfaces.Count; ordinal++)
+            var ordinals = source.Interfaces.Select((flow, ordinal) => (flow.Interface ?? string.Empty, ordinal))
+                .ToDictionary(i => i.Item1, i => i.ordinal, StringComparer.OrdinalIgnoreCase);
+            foreach (var flow in source.EveryLedger())
             {
-                var flow = source.Interfaces[ordinal];
                 var name = flow.Interface ?? string.Empty;
-                var id = FlowIdentity.FromName($"delivery-interface/{repoId:N}/{source.Name.ToLowerInvariant()}/{name.ToLowerInvariant()}");
+                var partition = flow.Partition ?? string.Empty;
+                var id = FlowIdentity.FromName(
+                    $"delivery-interface/{repoId:N}/{source.Name.ToLowerInvariant()}/{name.ToLowerInvariant()}"
+                    + (partition.Length == 0 ? string.Empty : $"@{partition.ToLowerInvariant()}"));
                 seen.Add(id);
                 var wanted = new DeliveryInterface
                 {
@@ -66,7 +74,8 @@ public static class DeliveryInterfaceCatalog
                     RepoId = repoId,
                     FlowName = source.Name,
                     Interface = name,
-                    Ordinal = ordinal,
+                    Partition = partition,
+                    Ordinal = ordinals[name],
                     LedgerFlowId = flow.Id,
                     LedgerName = flow.LedgerName,
                     Route = DeliveryProtocols.Name(flow.Target.Protocol),
@@ -97,6 +106,7 @@ public static class DeliveryInterfaceCatalog
 
                 row.FlowName = wanted.FlowName;
                 row.Interface = wanted.Interface;
+                row.Partition = wanted.Partition;
                 row.Ordinal = wanted.Ordinal;
                 row.LedgerFlowId = wanted.LedgerFlowId;
                 row.LedgerName = wanted.LedgerName;
@@ -137,17 +147,22 @@ public static class DeliveryInterfaceCatalog
         return await context.DeliveryInterfaces.AsNoTracking()
             .Where(i => i.LedgerFlowId == ledgerFlowId)
             .OrderByDescending(i => i.Active).ThenBy(i => i.FlowName).ThenBy(i => i.Interface)
-            .Select(i => new InterfaceLocation(i.RepoId, i.FlowName, i.Interface, i.LedgerFlowId, i.LedgerName, i.Active))
+            .Select(i => new InterfaceLocation(i.RepoId, i.FlowName, i.Interface, i.LedgerFlowId, i.LedgerName, i.Active, i.Partition))
             .ToListAsync(ct).ConfigureAwait(false);
     }
 
-    /// <summary>The interfaces a repository declares for one flow, in document order; empty when the sync has not described it.</summary>
-    public static async Task<IReadOnlyList<DeliveryInterface>> OfFlowAsync(OsduDbContext context, Guid repoId, string flowName, CancellationToken ct)
+    /// <summary>
+    /// The interfaces a repository declares for one flow, in document order, in <paramref name="partition"/> (null or empty
+    /// for a flow that names no partitions); empty when the sync has not described it.
+    /// </summary>
+    public static async Task<IReadOnlyList<DeliveryInterface>> OfFlowAsync(
+        OsduDbContext context, Guid repoId, string flowName, string? partition, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
+        var scope = partition ?? string.Empty;
         return await context.DeliveryInterfaces.AsNoTracking()
-            .Where(i => i.RepoId == repoId && i.FlowName == flowName && i.Active)
+            .Where(i => i.RepoId == repoId && i.FlowName == flowName && i.Partition == scope && i.Active)
             .OrderBy(i => i.Ordinal)
             .ToListAsync(ct).ConfigureAwait(false);
     }
@@ -165,7 +180,7 @@ public static class DeliveryInterfaceCatalog
     }
 
     private static bool Same(DeliveryInterface row, DeliveryInterface wanted)
-        => row.FlowName == wanted.FlowName && row.Interface == wanted.Interface && row.Ordinal == wanted.Ordinal
+        => row.FlowName == wanted.FlowName && row.Interface == wanted.Interface && row.Partition == wanted.Partition && row.Ordinal == wanted.Ordinal
            && row.LedgerFlowId == wanted.LedgerFlowId && row.LedgerName == wanted.LedgerName && row.Route == wanted.Route
            && row.RouteReason == wanted.RouteReason && row.MappingReference == wanted.MappingReference && row.Kind == wanted.Kind
            && row.RecordObject == wanted.RecordObject && row.AfterJson == wanted.AfterJson && row.RelativePath == wanted.RelativePath

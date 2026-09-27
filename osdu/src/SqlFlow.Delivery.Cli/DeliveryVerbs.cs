@@ -43,7 +43,8 @@ internal static class DeliveryVerbs
         var engine = context.Services.GetRequiredService<EngineContext>();
         var values = RunParameters.ParseValues(context.Arguments.GetOptions("--set"));
         var connect = context.Arguments.HasFlag("--connect");
-        var source = engine.Documents.LoadSource(flowPath);
+        // A flow that names its partitions is checked in the one --partition names, or in its only one.
+        var source = engine.Documents.LoadSource(flowPath).ForPartition(context.Arguments.GetOption("--partition"));
         var named = context.Arguments.GetOption("--interface");
         var flows = named is null ? source.Interfaces : [source.Interface(named)];
 
@@ -353,45 +354,41 @@ internal static class DeliveryVerbs
             case "list":
             {
                 // A partition is often named ${env:...}, by a cache flow or on the command line; the cache is keyed by
-                // what that resolves to, as a capture and an import key it, so the partition is resolved first.
-                var (declared, where) = File.Exists(target) ? (engine.Documents.LoadCache(target).Scope, target) : (target, "sqlflow cache list");
-                var scope = CacheScope.Normalize(await engine.Secrets.ResolveAsync(CacheScope.Normalize(declared, where), ct).ConfigureAwait(false), where);
-                var versions = await store.ListVersionsAsync(scope, ct).ConfigureAwait(false);
+                // what that resolves to, as a capture and an import key it, so the partition is resolved first. A cache flow
+                // that names its partitions is listed for the one --partition names, or for every one it names.
+                var scopes = new List<string>();
+                if (File.Exists(target))
+                {
+                    foreach (var bound in engine.Documents.LoadCache(target).ForRun(context.Arguments.GetOption("--partition")))
+                    {
+                        scopes.Add(await ResolvedScopeAsync(engine, bound.Scope, target, ct).ConfigureAwait(false));
+                    }
+                }
+                else
+                {
+                    scopes.Add(await ResolvedScopeAsync(engine, target, "sqlflow cache list", ct).ConfigureAwait(false));
+                }
+
+                var listed = new List<(string Scope, IReadOnlyList<CacheVersionInfo> Versions)>();
+                foreach (var scope in scopes)
+                {
+                    listed.Add((scope, await store.ListVersionsAsync(scope, ct).ConfigureAwait(false)));
+                }
+
                 if (context.Json)
                 {
-                    context.Out.WriteLine(CanonicalJson.Pretty(new JsonArray(versions.Select(v => (JsonNode)Describe(v)).ToArray())));
+                    context.Out.WriteLine(CanonicalJson.Pretty(new JsonArray(listed.SelectMany(l => l.Versions).Select(v => (JsonNode)Describe(v)).ToArray())));
                     return 0;
                 }
 
-                if (versions.Count == 0)
+                for (var i = 0; i < listed.Count; i++)
                 {
-                    context.Out.WriteLine($"the cache of partition {scope} holds no version yet; run a cache flow of the partition with the refresh operation to capture one");
-                }
-
-                foreach (var v in versions)
-                {
-                    var run = v.RunId is { } runId ? $" in run {runId:D}" : string.Empty;
-                    context.Out.WriteLine(
-                        $"{v.Version}  {(v.Current ? "current" : "       ")}  {v.Items} record(s) in {v.Types.Count} type(s), written by cache flow {v.FlowName} at {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} for {v.CapturedBy}{run}");
-                }
-
-                if (versions.FirstOrDefault(v => v.Current) is { } current)
-                {
-                    context.Out.WriteLine();
-                    if (current.SystemProperties.Count == 0)
+                    if (i > 0)
                     {
-                        context.Out.WriteLine($"system properties: none read yet; refresh a cache flow of partition {scope} to read them");
+                        context.Out.WriteLine();
                     }
-                    else
-                    {
-                        context.Out.WriteLine($"system properties of partition {scope}, as version {current.Version} holds them (settings of the platform, not cached records):");
-                        foreach (var property in current.SystemProperties)
-                        {
-                            var source = property.Source is null ? string.Empty : $"  from {property.Source}";
-                            var detail = property.Detail is null ? string.Empty : $"  ({property.Detail})";
-                            context.Out.WriteLine($"  {property.Service,-8}  {property.Name}  {property.State.ToString().ToLowerInvariant()}{source}{detail}");
-                        }
-                    }
+
+                    WriteVersions(context, listed[i].Scope, listed[i].Versions);
                 }
 
                 return 0;
@@ -399,18 +396,25 @@ internal static class DeliveryVerbs
 
             case "import":
             {
-                var cache = engine.Documents.LoadCache(target);
                 if (context.Arguments.GetOption("--from-dir") is not { } directory)
                 {
                     return context.UsageError("name the directory the type files are in with --from-dir.");
                 }
 
+                // A cache flow that names several partitions is imported into the one --partition names: files hold one
+                // partition's records, whose ids name it.
+                var bound = engine.Documents.LoadCache(target).ForRun(context.Arguments.GetOption("--partition"));
+                if (bound.Count > 1)
+                {
+                    return context.UsageError(
+                        $"the cache flow builds a cache for {string.Join(", ", bound.Select(b => b.Partition))}; name the one the files belong to with --partition.");
+                }
+
+                var cache = bound[0];
                 var full = Path.GetFullPath(directory);
                 // Keyed by the partition the document actually names, resolved, so an offline import lands in the same
                 // cache a capture writes and a render reads.
-                var importScope = CacheScope.Normalize(
-                    await engine.Secrets.ResolveAsync(cache.Scope, ct).ConfigureAwait(false),
-                    cache.SourcePath ?? cache.Name);
+                var importScope = await ResolvedScopeAsync(engine, cache.Scope, cache.SourcePath ?? cache.Name, ct).ConfigureAwait(false);
                 var builder = new SnapshotBuilder(store, importScope, cache.Name, engine.Time, engine.Loggers.CreateLogger<SnapshotBuilder>());
                 var write = await builder.ImportDirectoryAsync(
                     full, cache.Types, new CacheCapture(null, RunActors.LocalAccount(), $"files under {full}"), ct).ConfigureAwait(false);
@@ -419,7 +423,7 @@ internal static class DeliveryVerbs
                 {
                     context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
                     {
-                        ["partition"] = cache.Scope,
+                        ["partition"] = importScope,
                         ["flow"] = cache.Name,
                         ["version"] = write.Snapshot.Version,
                         ["written"] = write.Written,
@@ -430,13 +434,58 @@ internal static class DeliveryVerbs
                 }
 
                 context.Out.WriteLine(write.Written
-                    ? $"cache of partition {cache.Scope}: version {write.Snapshot.Version} written from cache flow {cache.Name}, holding {write.Snapshot.Types.Count} type(s) and {records} record(s), now current"
-                    : $"cache of partition {cache.Scope}: the files add nothing version {write.Snapshot.Version} does not already hold, so nothing was written");
+                    ? $"cache of partition {importScope}: version {write.Snapshot.Version} written from cache flow {cache.Name}, holding {write.Snapshot.Types.Count} type(s) and {records} record(s), now current"
+                    : $"cache of partition {importScope}: the files add nothing version {write.Snapshot.Version} does not already hold, so nothing was written");
                 return 0;
             }
 
             default:
                 return context.UsageError($"'{verb}' is not a cache subcommand.");
+        }
+    }
+
+    /// <summary>
+    /// A partition as the cache is keyed by it: <paramref name="declared"/>, a partition id or a reference, resolved the way
+    /// a capture and a render resolve it.
+    /// </summary>
+    private static async Task<string> ResolvedScopeAsync(EngineContext engine, string declared, string where, CancellationToken ct)
+        => CacheScope.Normalize(await engine.Secrets.ResolveAsync(CacheScope.Normalize(declared, where), ct).ConfigureAwait(false), where);
+
+    /// <summary>The versions of one partition's cache, newest first, and the system properties its current version holds.</summary>
+    private static void WriteVersions(CliVerbContext context, string scope, IReadOnlyList<CacheVersionInfo> versions)
+    {
+        if (versions.Count == 0)
+        {
+            context.Out.WriteLine($"the cache of partition {scope} holds no version yet; run a cache flow of the partition with the refresh operation to capture one");
+            return;
+        }
+
+        context.Out.WriteLine($"partition {scope}:");
+        foreach (var v in versions)
+        {
+            var run = v.RunId is { } runId ? $" in run {runId:D}" : string.Empty;
+            context.Out.WriteLine(
+                $"{v.Version}  {(v.Current ? "current" : "       ")}  {v.Items} record(s) in {v.Types.Count} type(s), written by cache flow {v.FlowName} at {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} for {v.CapturedBy}{run}");
+        }
+
+        if (versions.FirstOrDefault(v => v.Current) is not { } current)
+        {
+            return;
+        }
+
+        context.Out.WriteLine();
+        if (current.SystemProperties.Count == 0)
+        {
+            context.Out.WriteLine($"system properties: none read yet; refresh a cache flow of partition {scope} to read them");
+            return;
+        }
+
+        context.Out.WriteLine($"system properties of partition {scope}, as version {current.Version} holds them (settings of the platform, not cached records):");
+        foreach (var property in current.SystemProperties)
+        {
+            var source = property.Source is null ? string.Empty : $"  from {property.Source}";
+            var detail = property.Detail is null ? string.Empty : $"  ({property.Detail})";
+            context.Out.WriteLine($"  {property.Service,-8}  {property.Name}  {property.State.ToString().ToLowerInvariant()}{source}{detail}");
         }
     }
 

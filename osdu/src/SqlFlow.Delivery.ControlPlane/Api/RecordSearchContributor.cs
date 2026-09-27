@@ -7,14 +7,16 @@ using SqlFlow.Delivery.Ledger;
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
 /// <summary>
-/// One delivery record a search found: where it belongs (the flow's pipeline and, for a source, the interface), how it is
-/// identified, its custody state, and the ingestion file and row its newest version came from (the queued version's
-/// while work waits, the delivered one's otherwise), which is how an operator who holds a file recognises a record.
+/// One delivery record a search found: where it belongs (the flow's pipeline and, for a source, the interface, and for a
+/// flow that names its partitions, the partition), how it is identified, its custody state, and the ingestion file and row
+/// its newest version came from (the queued version's while work waits, the delivered one's otherwise), which is how an
+/// operator who holds a file recognises a record.
 /// </summary>
 public sealed record DeliveryRecordHitDto(
     Guid DeliveryKey, Guid FlowId, string? FlowName, Guid? PipelineId, string SourceKey, string? Label, string? TargetId,
     string Status, DateTime? LastDeliveredUtc, DateTime UpdatedUtc, string? Interface = null,
-    IReadOnlyList<DeliveryRecordMatchDto>? Matched = null, string? SourceFileName = null, long? SourceRowNumber = null);
+    IReadOnlyList<DeliveryRecordMatchDto>? Matched = null, string? SourceFileName = null, long? SourceRowNumber = null,
+    string? Partition = null);
 
 /// <summary>
 /// One value of a record that the term matched, and what that value is (an identity the mapping declares, a key value,
@@ -102,12 +104,24 @@ internal static class DeliveryRecordHits
             found is { Interface.Length: > 0 } ? found.Interface : null,
             matched is { Count: > 0 } ? matched : null,
             origin.FileName,
-            origin.RowNumber);
+            origin.RowNumber,
+            found is { Partition.Length: > 0 } ? found.Partition : null);
     }
 
-    /// <summary>How a hit names where it belongs: the pipeline, and the interface of a source.</summary>
+    /// <summary>
+    /// How a hit names where it belongs: the pipeline, the interface of a source, and the partition of a flow that names its
+    /// partitions, as its ledger is named (<c>flow/interface@partition</c>).
+    /// </summary>
     public static string? Named(LedgerPipeline? found)
-        => found is null ? null : found.Interface.Length == 0 ? found.Pipeline.Name : $"{found.Pipeline.Name}/{found.Interface}";
+    {
+        if (found is null)
+        {
+            return null;
+        }
+
+        var named = found.Interface.Length == 0 ? found.Pipeline.Name : $"{found.Pipeline.Name}/{found.Interface}";
+        return found.Partition.Length == 0 ? named : $"{named}@{found.Partition}";
+    }
 }
 
 /// <summary>

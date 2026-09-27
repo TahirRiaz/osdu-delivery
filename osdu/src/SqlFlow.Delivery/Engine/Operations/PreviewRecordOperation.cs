@@ -28,9 +28,9 @@ public sealed class PreviewRecordOperation : DeliveryOperation
 
     public override string Name => OperationName;
 
-    protected override async Task<object> RunAsync(FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
+    protected override async Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
-        using var runtime = await FlowRuntime.CreateAsync(flow.Interface is null ? Context : Context.ForInterface(flow.Interface), flow, Values(payload), ct).ConfigureAwait(false);
+        using var runtime = await FlowRuntime.CreateAsync(flow.Interface is null ? context : context.ForInterface(flow.Interface), flow, Values(payload), ct).ConfigureAwait(false);
         var preview = await new RecordPreviewer(runtime).PreviewAsync(payload.Argument("key"), ct).ConfigureAwait(false);
 
         // Measured as the answer is written, escapes and all, so what fits here fits the task result.

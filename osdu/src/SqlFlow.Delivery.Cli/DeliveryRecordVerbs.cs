@@ -39,9 +39,10 @@ internal static class DeliveryRecordVerbs
             ?? throw new FlowValidationException(
                 "Records live in the module's database. Run 'sqlflow records' with --db <conn-ref>, or set the catalog variable.");
 
-        var source = engine.Documents.LoadSource(flowPath);
+        // A flow that names its partitions keeps a ledger per partition: the one --partition names, or its only one.
+        var source = engine.Documents.LoadSource(flowPath).ForPartition(context.Arguments.GetOption("--partition"));
         var flow = source.Interface(context.Arguments.GetOption("--interface"));
-        var flowId = FlowId.Of(flow.LedgerName);
+        var flowId = flow.Id;
         var label = flow.Interface is null ? flow.Name : $"{source.Name} / {flow.Interface}";
 
         return verb switch

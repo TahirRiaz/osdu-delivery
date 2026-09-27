@@ -112,7 +112,7 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
         await using var db = _module.CreateDbContext();
         var keeping = await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("recall-welllog-03-header-delivery"), CancellationToken.None);
         Assert.Equal(new InterfaceLocation(_repo, "petrel", "logs", FlowId.Of("recall-welllog-03-header-delivery"), "recall-welllog-03-header-delivery", true), Assert.Single(keeping));
-        Assert.Equal(["wellbores", "logs"], (await DeliveryInterfaceCatalog.OfFlowAsync(db, _repo, "petrel", CancellationToken.None)).Select(i => i.Interface));
+        Assert.Equal(["wellbores", "logs"], (await DeliveryInterfaceCatalog.OfFlowAsync(db, _repo, "petrel", null, CancellationToken.None)).Select(i => i.Interface));
     }
 
     [Fact]
@@ -134,7 +134,7 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
             // Its records still lead to their flow, and the flow's own listing leaves it out.
             var keeping = Assert.Single(await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("recall-welllog-03-header-delivery"), CancellationToken.None));
             Assert.False(keeping.Active);
-            Assert.Equal(["wellbores"], (await DeliveryInterfaceCatalog.OfFlowAsync(db, _repo, "petrel", CancellationToken.None)).Select(i => i.Interface));
+            Assert.Equal(["wellbores"], (await DeliveryInterfaceCatalog.OfFlowAsync(db, _repo, "petrel", null, CancellationToken.None)).Select(i => i.Interface));
         }
 
         File.Delete(Path.Combine(_root, "flows", "petrel.yaml"));
