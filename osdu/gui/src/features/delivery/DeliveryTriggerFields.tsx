@@ -229,7 +229,7 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
               ? "Delivery keys to check; empty verifies the flow's delivered records."
               : effectiveOperation === "sync"
                 ? "Delivery keys whose rows to read from the ingestion tables (at most 1,000); empty syncs every record."
-                : "Delivery keys to send again regardless of what OSDU holds; empty delivers what changed."}
+                : "Delivery keys to send again, changed or not; empty delivers what changed."}
           </p>
         </div>
       )}
@@ -264,7 +264,7 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
-            Which part of the scoped records goes to OSDU again: the record and its payload files, or one of them.
+            Which part of the scoped records is sent again: the record and its payload files, or one of them.
           </p>
         </div>
       )}

@@ -52,7 +52,7 @@ export function DeliveryCacheFlowVersions({ flowName }: { flowName: string }) {
           className="text-primary hover:underline"
           data-testid="pipeline-cache-link"
         >
-          OSDU cache page
+          Cache page
         </RouterLink>
         .
       </p>

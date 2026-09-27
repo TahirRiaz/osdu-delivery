@@ -96,9 +96,9 @@ export default function DeliveryCachePage() {
   return (
     <Page data-testid="page-delivery-cache">
       <PageHeader
-        title="OSDU cache"
+        title="Cache"
         subtitle={cache === null
-          ? "The reference data and lookup tables mappings resolve against, one cache per OSDU partition."
+          ? "The reference data and lookup tables mappings resolve against, one cache per data partition."
           : <CacheSubtitle cache={cache} />}
         actions={cache === null ? undefined : (
           <>

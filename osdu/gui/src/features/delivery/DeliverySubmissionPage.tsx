@@ -99,7 +99,7 @@ function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; 
         data-testid="submission-remove-delivered"
       >
         <Trash2 />
-        Remove what it delivered from OSDU
+        Remove what it delivered
       </Button>
       <RemovalDialog
         open={removeOpen}

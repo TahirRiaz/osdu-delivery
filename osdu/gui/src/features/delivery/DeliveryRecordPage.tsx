@@ -228,7 +228,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               onClick={() => sync.mutate()}
               disabled={busy || detail.pipelineId === null || !canOperate}
               title={canOperate
-                ? "Read the record's row from its ingestion table and consolidate the ledger with it: its arrival, a change the ledger never saw (planned by the next run), a row that is gone. Nothing is sent to OSDU."
+                ? "Read the record's row from its ingestion table and consolidate the ledger with it: its arrival, a change the ledger never saw (planned by the next run), a row that is gone. Nothing is sent."
                 : "A sync runs on a node, which takes the operate scope."}
               data-testid="record-sync"
             >
@@ -343,7 +343,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
       <ConfirmDialog
         open={confirm === "redeliver"}
         title="Redeliver record"
-        message="Forget what OSDU holds for this record and queue a deliver run that renders and sends it again from the current source. The run is recorded under your name."
+        message="Queue a deliver run that renders and sends this record again from the current source, whatever was delivered before. The run is recorded under your name."
         confirmLabel="Redeliver"
         busy={redeliver.isPending}
         onConfirm={() => redeliver.mutate()}

@@ -45,7 +45,7 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, interfaceName,
         data-testid="record-osdu-read"
       >
         <BookOpenCheck />
-        {osdu.taskId === null ? "Read from OSDU" : "Read again"}
+        {osdu.taskId === null ? "Read" : "Read again"}
       </Button>
       {popout && (
         <IconAction
@@ -69,10 +69,10 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, interfaceName,
           icon={<BookOpenCheck />}
           title={canActOnTarget ? "Not read yet" : record.status === "deleted" ? "Removed from OSDU" : "No OSDU id yet"}
           description={canActOnTarget
-            ? "Read from OSDU shows the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written."
+            ? "Read shows the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written."
             : record.status === "deleted"
-              ? "The record was removed from OSDU, so there is nothing of this flow's to read there."
-              : "The record has not been planned for delivery, so OSDU holds nothing of it."}
+              ? "The record was removed, so there is nothing of this flow's to read."
+              : "The record has not been planned for delivery, so there is nothing to read."}
           data-testid="record-osdu-empty"
         />
       )}

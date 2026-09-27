@@ -389,20 +389,20 @@ function isOsduOperation(attempt: DeliveryAttempt): boolean {
 function attemptShape(attempt: DeliveryAttempt): { title: string; tone: Tone; icon: LucideIcon } {
   switch (attempt.outcome) {
     case "delivered":
-      return { title: attempt.targetVersion !== null ? `Delivered to OSDU as version ${attempt.targetVersion}` : "Delivered to OSDU", tone: "success", icon: CheckCircle2 };
+      return { title: attempt.targetVersion !== null ? `Delivered as version ${attempt.targetVersion}` : "Delivered", tone: "success", icon: CheckCircle2 };
     case "failed":
-      return { title: "Delivery to OSDU failed", tone: "destructive", icon: XCircle };
+      return { title: "Delivery failed", tone: "destructive", icon: XCircle };
     case "held":
       return attempt.phase === "source-deleted"
         ? { title: "Held back: a deleted row is never delivered", tone: "warning", icon: PauseCircle }
-        : { title: isOsduOperation(attempt) ? "Held back: OSDU refused it" : "Held back", tone: "warning", icon: PauseCircle };
+        : { title: isOsduOperation(attempt) ? "Held back: refused when sent" : "Held back", tone: "warning", icon: PauseCircle };
     case "skipped":
       return attempt.phase === "source-missing"
         ? { title: "Not found in the ingestion table: the row is gone, and the record keeps its status", tone: "warning", icon: FileQuestion }
         : attempt.phase === "identical"
-        ? { title: "Nothing to send: the changed row renders what OSDU holds", tone: "muted", icon: CircleDashed }
+        ? { title: "Nothing to send: the changed row renders what was delivered", tone: "muted", icon: CircleDashed }
         : attempt.phase === "unchanged"
-          ? { title: "Nothing to send: OSDU already holds this version", tone: "muted", icon: CircleDashed }
+          ? { title: "Nothing to send: already delivered", tone: "muted", icon: CircleDashed }
           : attempt.phase === "stale"
             ? { title: "Skipped: the source carried an older version", tone: "muted", icon: CircleDashed }
             : { title: "Skipped", tone: "muted", icon: CircleDashed };
@@ -418,7 +418,7 @@ function attemptShape(attempt: DeliveryAttempt): { title: string; tone: Tone; ic
 const ACTIVITY_TITLES: Record<string, { title: string; icon: LucideIcon }> = {
   release: { title: "Released back to pending", icon: Unlock },
   redeliver: { title: "Redelivery asked for", icon: RotateCcw },
-  verify: { title: "Verify against OSDU", icon: ShieldCheck },
+  verify: { title: "Verify", icon: ShieldCheck },
   sync: { title: "Synced from source", icon: RefreshCw },
   delete: { title: "Removal asked for", icon: Trash2 },
 };
@@ -553,7 +553,7 @@ function buildEvents(
       id: "verified",
       at: record.lastVerifiedUtc,
       title: outcome === "match"
-        ? "Verified: OSDU holds what the ledger holds"
+        ? "Verified: OSDU matches the ledger"
         : outcome === "drifted"
           ? "Verified: OSDU has drifted from what was delivered"
           : outcome === "missing"
@@ -592,7 +592,7 @@ function buildEvents(
     events.push({
       id: "queued",
       at: record.updatedUtc,
-      title: "Queued: a rendered document waits to be sent to OSDU",
+      title: "Queued to send",
       summary: [
         record.nextAttemptUtc !== null && <span key="n">next try <RelativeTime value={record.nextAttemptUtc} /></span>,
         record.workBatch !== null && `work batch ${record.workBatch}`,
@@ -664,7 +664,7 @@ function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: 
       testId: "milestone-changed",
     },
     {
-      label: "In OSDU",
+      label: "Delivered",
       value: record.lastDeliveredUtc === null ? "not yet" : <RelativeTime value={record.lastDeliveredUtc} />,
       caption: record.lastDeliveredUtc === null
         ? (dispatched.length === 0
@@ -781,7 +781,7 @@ function laneMatches(event: JourneyEvent, filter: LaneFilter): boolean {
 
 const EMPTY: Record<Exclude<LaneFilter, "all">, { title: string; description: string }> = {
   source: { title: "No change recorded", description: "The ledger holds no version of this record's row in its ingestion table." },
-  osdu: { title: "Nothing done against OSDU yet", description: "The record has not been sent to, removed from or verified against OSDU." },
+  osdu: { title: "Nothing delivered yet", description: "The record has not been delivered, removed or verified." },
   intervention: { title: "No intervention on this record", description: "Nobody has released, redelivered, verified or removed it." },
 };
 
@@ -834,7 +834,7 @@ export function RecordJourney({ record, attempts, activities, chain }: {
         >
           <ToggleGroupItem value="all" className="px-2.5 text-xs">{`Everything (${events.length})`}</ToggleGroupItem>
           <ToggleGroupItem value="source" className="px-2.5 text-xs">{`Source changes (${count("source")})`}</ToggleGroupItem>
-          <ToggleGroupItem value="osdu" className="px-2.5 text-xs">{`OSDU (${count("osdu")})`}</ToggleGroupItem>
+          <ToggleGroupItem value="osdu" className="px-2.5 text-xs">{`Delivery (${count("osdu")})`}</ToggleGroupItem>
           <ToggleGroupItem value="intervention" className="px-2.5 text-xs">{`Interventions (${count("intervention")})`}</ToggleGroupItem>
         </ToggleGroup>
         <span className="ml-auto text-[12px] text-muted-foreground">

@@ -551,7 +551,7 @@ internal static partial class EntryValues
                     break;
                 default:
                     holds.Add(
-                        $"{path}: searching {kind} for {find.Field} '{value}' {answer.Describe()}; a reference picked from several, or taken without an answer, would put a wrong document into OSDU, so the record is held. Make the incoming value name one record.");
+                        $"{path}: searching {kind} for {find.Field} '{value}' {answer.Describe()}; a reference picked from several, or taken without an answer, would deliver a wrong document, so the record is held. Make the incoming value name one record.");
                     return null;
             }
 
@@ -581,11 +581,11 @@ internal static partial class EntryValues
                     continue;
                 case SearchOutcome.Refused:
                     holds.Add(
-                        $"{path}: searching {kind} for {find.Field} '{value}' found no record exactly, and once case is ignored it {looseAnswer.Describe()}; a reference taken without an answer would put a wrong document into OSDU, so the record is held.");
+                        $"{path}: searching {kind} for {find.Field} '{value}' found no record exactly, and once case is ignored it {looseAnswer.Describe()}; a reference taken without an answer would deliver a wrong document, so the record is held.");
                     return null;
                 default:
                     holds.Add(
-                        $"{path}: searching {kind} for {find.Field} '{value}' found no record exactly, and once case is ignored it {looseAnswer.Describe()}; a reference picked from several would put a wrong document into OSDU, so the record is held. Make the incoming value exact with a replace modifier.");
+                        $"{path}: searching {kind} for {find.Field} '{value}' found no record exactly, and once case is ignored it {looseAnswer.Describe()}; a reference picked from several would deliver a wrong document, so the record is held. Make the incoming value exact with a replace modifier.");
                     return null;
             }
         }

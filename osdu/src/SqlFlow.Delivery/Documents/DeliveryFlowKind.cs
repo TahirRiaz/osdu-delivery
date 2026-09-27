@@ -58,7 +58,7 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
     /// <summary>The operations of a delivery run, the default first.</summary>
     public static IReadOnlyList<FlowKindOperation> DeliveryOperationList { get; } =
     [
-        new(DeliveryOperations.Deliver, "Deliver", "Plan the rows the ingestion tables changed and deliver what renders differently to OSDU.", WritesTarget: true),
+        new(DeliveryOperations.Deliver, "Deliver", "Plan the rows the ingestion tables changed and deliver what renders differently.", WritesTarget: true),
         new(DeliveryOperations.Plan, "Plan", "Plan the rows the ingestion tables changed and report what a delivery would send, changing nothing.", WritesTarget: false),
         new(DeliveryOperations.Intake, "Intake", "Plan the rows into work batches without delivering them: a fan-out member's share of a plan.", WritesTarget: false),
         new(DeliveryOperations.Drain, "Drain", "Deliver the work batches a submission already planned.", WritesTarget: true),

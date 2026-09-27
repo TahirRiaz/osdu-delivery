@@ -195,7 +195,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   // A flow's sync reads one interface's ledger: the single form's, or the interface picked.
   const canSync = !many || interfaceName !== null;
   const syncTitle = canSync
-    ? "Read every record's row from the ingestion table and consolidate the ledger with it: arrivals, changes the ledger never saw (planned by the next run), rows that are gone. Nothing is sent to OSDU."
+    ? "Read every record's row from the ingestion table and consolidate the ledger with it: arrivals, changes the ledger never saw (planned by the next run), rows that are gone. Nothing is sent."
     : "Pick an interface: a sync reads one interface's records.";
 
   if (stats.isError) {
@@ -388,7 +388,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                   className="ml-auto h-7"
                   onClick={() => syncSource.mutate(syncRequestFor(allMatching, filter, matched, selected))}
                   disabled={!canSync || syncSource.isPending}
-                  title="Read the selected records' rows from the ingestion table and consolidate the ledger with them. Nothing is sent to OSDU."
+                  title="Read the selected records' rows from the ingestion table and consolidate the ledger with them. Nothing is sent."
                   data-testid="delivery-sync-selected"
                 >
                   <RefreshCw />

@@ -102,7 +102,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
         <div className="flex flex-col gap-1">
           <h2 className="text-sm font-semibold">Preview a record</h2>
           <p className="text-[13px] text-muted-foreground">
-            Renders one record on a node exactly as a delivery would, and sends nothing: OSDU, the ledger and the work location are left as they are.
+            Renders one record on a node exactly as a delivery would. Nothing is sent, and the ledger and the work location are left as they are.
             Leave the key empty for the first record of the scope.
           </p>
         </div>

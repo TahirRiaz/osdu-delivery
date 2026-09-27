@@ -119,7 +119,7 @@ export default function DeliveryDocumentsPage() {
     <Page data-testid="page-delivery-documents">
       <PageHeader
         title="Mappings"
-        subtitle="The mapping documents the repositories hold, as the last sync found them. The caches mappings read are on the OSDU cache page."
+        subtitle="The mapping documents the repositories hold, as the last sync found them. The caches mappings read are on the Cache page."
         actions={(
           <Button asChild size="sm" data-testid="delivery-documents-new-mapping">
             <RouterLink to="/delivery/mappings/build">

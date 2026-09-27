@@ -440,7 +440,7 @@ export default function MappingBuilderPage() {
                   {cache === null
                     ? "Without a cache nothing is prefilled from it, and cache entries are not checked."
                     : cache.currentVersion === null
-                      ? `The cache of ${cache.scope} has no version yet, so nothing is prefilled from it. Refresh one of its cache flows on the OSDU cache page.`
+                      ? `The cache of ${cache.scope} has no version yet, so nothing is prefilled from it. Refresh one of its cache flows on the Cache page.`
                       : `The cache of ${cache.scope} holds ${cache.types.length} type${cache.types.length === 1 ? "" : "s"} at version ${cache.currentVersion}.`}
                 </p>
               </div>

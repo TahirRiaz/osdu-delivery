@@ -394,7 +394,7 @@ function LocationBar({ back, onBack, location, view, controls }: {
             <span className="mt-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
           </>
         )}
-        <nav className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-1 text-[12px] leading-5" aria-label="Where in OSDU" data-testid="osdu-trail">
+        <nav className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-1 text-[12px] leading-5" aria-label="Location" data-testid="osdu-trail">
           {location}
         </nav>
       </div>
@@ -467,7 +467,7 @@ function AccessView({ record }: { record: Record<string, unknown> }) {
 /** The records this one refers to, each opened by its name, with the paths that name it, each a step to that place. */
 function LinksView({ model, ownId, onOpenLink, opening, onSelect }: { model: RecordModel; ownId: string | null; onOpenLink?: OpenLink; opening?: string | null; onSelect: (path: string) => void }) {
   if (model.references.length === 0) {
-    return <EmptyState title="No linked records" description="No value of this record names another OSDU record." />;
+    return <EmptyState title="No linked records" description="No value of this record names another record." />;
   }
 
   return (
@@ -908,7 +908,7 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
     : null;
   const pickedRecord = pickedRead?.found === true && pickedRead.record ? pickedRead.record : null;
   const pickedFailure = picked !== null && isTerminalTask(pickedTask.data)
-    ? (pickedTask.data?.status !== "succeeded" ? (pickedTask.data?.error ?? "the read did not answer") : pickedRecord === null ? `OSDU holds no version ${picked.version} of the record` : null)
+    ? (pickedTask.data?.status !== "succeeded" ? (pickedTask.data?.error ?? "the read did not answer") : pickedRecord === null ? `The record has no version ${picked.version}` : null)
     : pickedTask.isError ? String(pickedTask.error) : null;
   const pickedLoading = pick.isPending || (picked !== null && !isTerminalTask(pickedTask.data) && !pickedTask.isError);
   // The record in view: the picked version once it has arrived, the latest until then and when the pick is the latest.
@@ -1215,7 +1215,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
     if (entry.error !== undefined) {
       message = <div className="p-3"><ProblemView error={entry.error} /></div>;
     } else if (!isTerminalTask(entry.task)) {
-      message = <div className="p-3"><TaskProgress label={level === 0 ? "Reading the record from OSDU through its flow's route" : "Reading the linked record through the flow's route"} task={entry.task} testId="osdu-read-progress" /></div>;
+      message = <div className="p-3"><TaskProgress label={level === 0 ? "Reading the record through its flow's route" : "Reading the linked record through the flow's route"} task={entry.task} testId="osdu-read-progress" /></div>;
     } else if (entry.task?.status !== "succeeded" || read === null) {
       message = (
         <Alert variant="destructive" className="m-3 w-auto" data-testid="osdu-read-failed">

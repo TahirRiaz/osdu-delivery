@@ -123,14 +123,14 @@ internal static class RouteRehearsal
             "Storage",
             $"{options.RecordMethod ?? "PUT"} {path}{query}",
             string.Create(CultureInfo.InvariantCulture, $"{what}, in one array with the other records of its batch (up to {options.BatchSize})"),
-            "the record's id and the version OSDU gave it");
+            "the record's id and version");
     }
 
     private static void Preserved(List<string> notes, ProtocolOptions options)
     {
         if (options.PreserveDataKeys.Count > 0)
         {
-            notes.Add($"An update copies data.{string.Join(", data.", options.PreserveDataKeys)} forward from the record OSDU holds (target.protocolOptions.preserveDataKeys), so those keys are sent as OSDU has them, not as rendered.");
+            notes.Add($"An update copies data.{string.Join(", data.", options.PreserveDataKeys)} forward from the record OSDU holds (target.protocolOptions.preserveDataKeys), so those keys are sent as that record has them, not as rendered.");
         }
     }
 

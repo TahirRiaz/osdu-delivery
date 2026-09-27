@@ -66,14 +66,14 @@ const SCOPES: ScopeChoice[] = [
   {
     scope: "record",
     title: "Remove the record",
-    effect: "The record stops resolving in OSDU. Nothing is destroyed: every version stays on disk and OSDU can restore it.",
+    effect: "The record stops resolving in OSDU. Nothing is destroyed: every version stays on disk and can be restored.",
     ledger: "Marked deleted here and blocked from redelivery until its source changes or it is released.",
     reversible: true,
     path: (target) => target.recordPath,
     // The node says which call the record scope makes: a DDMS's own DELETE, or a POST to storage's :delete path or the
     // dataset service's reversible removal.
     method: (target) => target.recordMethod,
-    confirmLabel: "Remove from OSDU",
+    confirmLabel: "Remove",
   },
   {
     scope: "history",
@@ -88,7 +88,7 @@ const SCOPES: ScopeChoice[] = [
   {
     scope: "everything",
     title: "Purge everything",
-    effect: "The record and every one of its versions are destroyed permanently. This cannot be undone in OSDU.",
+    effect: "The record and every one of its versions are destroyed permanently. This cannot be undone.",
     ledger: "Marked deleted here and blocked from redelivery until its source changes or it is released.",
     reversible: false,
     path: (target) => target.everythingPath,
@@ -266,8 +266,8 @@ export function RemovalDialog({ open, onClose, pipelineId, interfaceName = null,
         {preview.data !== undefined && preview.data.neverDelivered > 0 && (
           <p className="flex items-start gap-2 text-[13px] text-warning" data-testid="removal-never-delivered">
             <CircleAlert className="mt-0.5 size-4 shrink-0" />
-            {preview.data.neverDelivered.toLocaleString()} of these have never been delivered, so OSDU holds
-            nothing for them. They are still asked for, and come back reported as already gone.
+            {preview.data.neverDelivered.toLocaleString()} of these have never been delivered. They are still asked for,
+            and come back reported as already gone.
           </p>
         )}
 

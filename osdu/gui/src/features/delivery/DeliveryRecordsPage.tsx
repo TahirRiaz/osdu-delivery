@@ -247,7 +247,7 @@ export default function DeliveryRecordsPage() {
           <History className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
           <span>
             The latest records the delivery system took in or sent, newest first. Type above to find one by what you
-            hold; open a row for its journey through pre-ingestion, ingestion and OSDU.
+            hold; open a row for its journey through pre-ingestion, ingestion and delivery.
           </span>
         </p>
       )}

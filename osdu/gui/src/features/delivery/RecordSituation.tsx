@@ -104,7 +104,7 @@ function Waiters({ record, waiters }: { record: DeliveryRecord; waiters: Deliver
     : waiters.length === 1 ? "1 record waits" : `${waiters.length} records wait`;
   return (
     <Line tone={stuck ? "warning" : "info"} icon={Hourglass} testId="record-waited-on-by">
-      {record.status === "delivered" ? `${count} for this one still: ` : `${count} for this one to land in OSDU: `}
+      {record.status === "delivered" ? `${count} for this one still: ` : `${count} for this one to be delivered: `}
       {named.map((waiter, i) => (
         <span key={`${waiter.flowId}:${waiter.deliveryKey}`}>
           {i > 0 && ", "}

@@ -61,7 +61,7 @@ function useDecideTags(onDecided?: () => void) {
     onSuccess: (result) => {
       toast.success(result.approved
         ? `${result.decided} change${result.decided === 1 ? "" : "s"} approved; the rollout carries the records in batches.`
-        : `${result.decided} change${result.decided === 1 ? "" : "s"} rejected; OSDU keeps what it holds.`);
+        : `${result.decided} change${result.decided === 1 ? "" : "s"} rejected; the delivered records stay as they are.`);
       void queryClient.invalidateQueries({ queryKey: ["delivery", "cache"] });
       onDecided?.();
     },
@@ -146,7 +146,7 @@ function RowDecision({ tag }: { tag: DeliveryUpdateTag }) {
         data-testid="delivery-cache-row-approve"
       />
       <IconAction
-        label="Reject: OSDU keeps what it holds"
+        label="Reject: the delivered records stay as they are"
         icon={<X />}
         className="text-destructive hover:text-destructive"
         disabled={decide.isPending}
@@ -415,7 +415,7 @@ export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal }: {
               title="Nothing needs approval"
               description={approvalTypes.length === 0
                 ? "No type of this cache asks for approval, so a changed value reaches the delivered records on the next run without waiting here. To look at a type's changes first, set onChange: approve on it in a cache flow file of the partition."
-                : "A change waits here only when a record already delivered to OSDU was built from a value that moved in a type that asks for approval."}
+                : "A change waits here only when a record already delivered was built from a value that moved in a type that asks for approval."}
               data-testid="delivery-cache-approvals-empty"
             />
           </Card>
