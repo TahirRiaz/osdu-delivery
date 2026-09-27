@@ -21,12 +21,12 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CorrelationError } from "@/components/CorrelationError";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FilterBar } from "@/components/FilterBar";
-import { KpiCard } from "@/components/KpiCard";
 import { PagedTable } from "@/components/PagedTable";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
+import { FlowStatusBar } from "./FlowStatusBar";
 import { InterfacePicker } from "./InterfacePicker";
 import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./RecordCells";
 import { useInterfaceChoice } from "./useInterfaceChoice";
@@ -225,40 +225,48 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
 
       {section === "overview" && (
         <>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => probeTarget.mutate()} disabled={probeTarget.isPending} data-testid="delivery-probe">
-              <Radar />
-              Probe target
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setReleaseOpen(true)} disabled={blocked === 0} data-testid="delivery-release-all">
-              <Unlock />
-              Release blocked ({blocked})
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => syncSource.mutate(undefined)} disabled={!canSync || syncSource.isPending} title={syncTitle} data-testid="delivery-sync-all">
-              <RefreshCw />
-              Sync timelines
-            </Button>
-          </div>
           {s === undefined ? (
-            <Skeleton className="h-24 w-full rounded-lg" />
+            <Skeleton className="h-28 w-full rounded-lg" />
           ) : (
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-5 xl:grid-cols-9" data-testid="delivery-stats">
-              <KpiCard label="Records" value={s.total} testId="delivery-kpi-total" />
-              <KpiCard label="Delivered" value={s.delivered} color="success" caption={`${s.deliveredLast24h} in the last 24h`} testId="delivery-kpi-delivered" />
-              <KpiCard label="Pending" value={s.pending + s.delivering} color="info" caption={s.delivering > 0 ? `${s.delivering} delivering now` : undefined} testId="delivery-kpi-pending" />
-              <KpiCard
-                label="Waiting"
-                value={s.waiting}
-                color={s.waiting > 0 ? "info" : undefined}
-                caption={s.waiting > 0 ? "for records they refer to" : undefined}
-                testId="delivery-kpi-waiting"
+            <Card className="gap-3 rounded-lg p-3" data-testid="delivery-overview">
+              <FlowStatusBar
+                stats={s}
+                actions={(
+                  <>
+                    <Button variant="outline" size="sm" onClick={() => probeTarget.mutate()} disabled={probeTarget.isPending} data-testid="delivery-probe">
+                      <Radar />
+                      Probe target
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => setReleaseOpen(true)} disabled={blocked === 0} data-testid="delivery-release-all">
+                      <Unlock />
+                      Release blocked ({blocked})
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => syncSource.mutate(undefined)} disabled={!canSync || syncSource.isPending} title={syncTitle} data-testid="delivery-sync-all">
+                      <RefreshCw />
+                      Sync timelines
+                    </Button>
+                  </>
+                )}
               />
-              <KpiCard label="Held" value={s.held} color={s.held > 0 ? "warning" : undefined} testId="delivery-kpi-held" />
-              <KpiCard label="Failed" value={s.failed} color={s.failed > 0 ? "error" : undefined} testId="delivery-kpi-failed" />
-              <KpiCard label="Deleted" value={s.deleted} testId="delivery-kpi-deleted" />
-              <KpiCard label="Drifted" value={s.drifted} color={s.drifted > 0 ? "warning" : undefined} caption={s.lastVerifiedUtc ? "since the last verify" : "never verified"} testId="delivery-kpi-drifted" />
-              <KpiCard label="Submissions" value={s.submissions} testId="delivery-kpi-submissions" />
-            </div>
+              {s.lastSubmission && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t pt-2.5 text-[13px]" data-testid="delivery-last-submission">
+                  <span className="font-medium">Last submission</span>
+                  <SubmissionStatusBadge status={s.lastSubmission.status} />
+                  <RouterLink
+                    to={`/delivery/submissions/${s.lastSubmission.submissionId}`}
+                    className="font-mono text-[12px] text-primary hover:underline"
+                    title={s.lastSubmission.submissionId}
+                  >
+                    {s.lastSubmission.submissionId.slice(0, 8)}
+                  </RouterLink>
+                  <span className="text-muted-foreground">received <RelativeTime value={s.lastSubmission.receivedUtc} /></span>
+                  <SubmissionCounts submission={s.lastSubmission} hideZeros />
+                  <RouterLink to="?tab=submissions" className="ml-auto text-[12px] text-primary hover:underline" data-testid="delivery-kpi-submissions">
+                    {`All ${s.submissions.toLocaleString()} ${s.submissions === 1 ? "submission" : "submissions"}`}
+                  </RouterLink>
+                </div>
+              )}
+            </Card>
           )}
           {many && (
             <Card className="gap-2 overflow-hidden rounded-lg p-0" data-testid="delivery-interfaces">
@@ -294,19 +302,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
               {probeJson !== null && (
                 <CodeView value={probeJson} language="json" height={180} data-testid="delivery-probe-json" />
               )}
-            </Card>
-          )}
-          {s?.lastSubmission && (
-            <Card className="gap-1 rounded-lg p-3" data-testid="delivery-last-submission">
-              <div className="flex flex-wrap items-center gap-2 text-[13px]">
-                <span className="font-medium">Last submission</span>
-                <SubmissionStatusBadge status={s.lastSubmission.status} />
-                <RouterLink to={`/delivery/submissions/${s.lastSubmission.submissionId}`} className="font-mono text-[12px] text-primary hover:underline">
-                  {s.lastSubmission.submissionId}
-                </RouterLink>
-                <span className="text-muted-foreground">received <RelativeTime value={s.lastSubmission.receivedUtc} /></span>
-              </div>
-              <SubmissionCounts submission={s.lastSubmission} />
             </Card>
           )}
         </>
@@ -348,10 +343,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 run {runFilter.slice(0, 8)}: clear
               </Button>
             )}
-            <Button variant="outline" size="sm" className="ml-auto h-8" onClick={() => syncSource.mutate(undefined)} disabled={!canSync || syncSource.isPending} title={syncTitle} data-testid="delivery-records-sync-all">
-              <RefreshCw />
-              Sync all from source
-            </Button>
           </FilterBar>
           <PagedTable
             queryKey={["delivery", "records", pipelineId, interfaceName, search, status, drifted, contains, submissionFilter, deliveredFilter, runFilter]}
@@ -562,8 +553,11 @@ const submissionColumns: Column<DeliverySubmission>[] = [
   { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={280} /> },
 ];
 
-/** The counts of one submission as one compact line. */
-export function SubmissionCounts({ submission }: { submission: DeliverySubmission }) {
+/**
+ * The counts of one submission as one compact line. `hideZeros` keeps only the counts that hold something, for a line
+ * that sits beside other facts: a submission that planned nothing then says so in two words instead of ten zeros.
+ */
+export function SubmissionCounts({ submission, hideZeros = false }: { submission: DeliverySubmission; hideZeros?: boolean }) {
   const parts: { label: string; value: number; className?: string }[] = [
     { label: "records", value: submission.recordCount },
     { label: "planned", value: submission.planned },
@@ -576,9 +570,14 @@ export function SubmissionCounts({ submission }: { submission: DeliverySubmissio
     { label: "failed", value: submission.failed, className: submission.failed > 0 ? "text-destructive" : undefined },
     { label: "waiting", value: submission.waiting, className: submission.waiting > 0 ? "text-info" : undefined },
   ];
+  const shown = hideZeros ? parts.filter((part) => part.value > 0) : parts;
+  if (shown.length === 0) {
+    return <span className="text-[13px] text-muted-foreground" data-testid="submission-counts">nothing changed</span>;
+  }
+
   return (
     <div className="flex flex-wrap gap-x-3 gap-y-1 text-[13px] text-muted-foreground" data-testid="submission-counts">
-      {parts.map((part) => (
+      {shown.map((part) => (
         <span key={part.label} className={part.className}>
           <span className="font-mono tabular-nums">{part.value.toLocaleString()}</span> {part.label}
         </span>

@@ -30,6 +30,10 @@ const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
   () => import("./features/delivery/DeliveryFlowPanel").then((loaded) => ({ default: loaded.DeliveryFlowPanel })),
 );
+const DeliveryTargetFacts = lazyRoute(
+  "DeliveryTargetFacts",
+  () => import("./features/delivery/DeliveryTargetFacts").then((loaded) => ({ default: loaded.DeliveryTargetFacts })),
+);
 const DeliveryPreviewPanel = lazyRoute(
   "DeliveryPreviewPanel",
   () => import("./features/delivery/DeliveryPreviewPanel").then((loaded) => ({ default: loaded.DeliveryPreviewPanel })),
@@ -64,8 +68,11 @@ const census: GuiModule["census"] = [
 /** The module's own navigation group: one home for every surface this product adds. */
 const OSDU_GROUP = "osdu";
 
-/** SQLFlow's pipeline tabs that describe its own flows' data (view columns, processed files), not these kinds. */
-const HIDDEN_PIPELINE_TABS = ["transforms", "files"];
+/**
+ * SQLFlow's pipeline tabs that describe its own flows' data (view columns, processed files), not these kinds, and the
+ * definition, which for these kinds is the YAML tab's document again as JSON.
+ */
+const HIDDEN_PIPELINE_TABS = ["transforms", "files", "definition"];
 
 /** SQLFlow's run tabs that describe its own runs' work (files, SQL statements, keys, assertions, health metrics). */
 const HIDDEN_RUN_TABS = ["files", "statements", "surrogate-keys", "assertions", "health-metrics"];
@@ -122,6 +129,9 @@ const deliveryKind: FlowKindContribution = {
   ],
   defaultPipelineTab: "delivery",
   hiddenPipelineTabs: HIDDEN_PIPELINE_TABS,
+  // A delivery source's target is an endpoint, not a server the catalog knows, which it names only as "file".
+  hiddenPipelineFacts: ["targetServer"],
+  pipelineFacts: (pipeline) => <Deferred placeholder={false}><DeliveryTargetFacts pipelineId={pipeline.id} /></Deferred>,
   runColumns,
   run: runPanels({
     headerActions: (run) => <DeliveryRunActions run={run} />,
