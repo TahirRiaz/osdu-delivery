@@ -68,6 +68,12 @@ interface CoverageView {
   state: CoverageState;
   /** The entry filling the variable itself; null for an object filled through what it holds, and for an empty one. */
   entry: MappingDraftEntry | null;
+  /** For a variable an entry further up writes (its static value, or a value it writes whole): that entry's target. */
+  writtenBy: string | null;
+  /** The entry at writtenBy, when the draft has it. */
+  holder: MappingDraftEntry | null;
+  /** With writtenBy: the values that static value gives the variable, once each. */
+  values: string[];
   /** The worst finding on the variable, and what it says. */
   finding: MappingDraftIssue | null;
 }
@@ -121,7 +127,23 @@ function textMatches(variable: DeliveryTemplateVariable, term: string, covered: 
     || (variable.title ?? "").toLowerCase().includes(term)
     || (variable.description ?? "").toLowerCase().includes(term)
     || variable.relationships.some((relationship) => relationship.toLowerCase().includes(term))
-    || (covered?.entry != null && entryText(covered.entry).toLowerCase().includes(term));
+    || (covered?.entry != null && entryText(covered.entry).toLowerCase().includes(term))
+    || (covered?.values ?? []).some((value) => value.toLowerCase().includes(term));
+}
+
+/** What fills a variable, on one line for a row's hover: its entry, or the static value further up that writes it. */
+function fillText(covered: CoverageView | undefined): string[] {
+  if (covered?.entry != null) {
+    return [entryText(covered.entry)];
+  }
+
+  if (covered?.writtenBy != null) {
+    return covered.holder?.input === "Static" || covered.values.length > 0
+      ? [`static value of ${covered.writtenBy}${covered.values.length === 0 ? "" : `: ${covered.values.join(", ")}`}`]
+      : [`written whole by ${covered.writtenBy}${covered.holder === null ? "" : `: ${entryText(covered.holder)}`}`];
+  }
+
+  return [];
 }
 
 /**
@@ -268,7 +290,7 @@ function VariableLabel({ node }: { node: VariableNode }) {
         <span
           role="img"
           aria-label={coverage.label}
-          title={[finding?.message ?? coverage.label, ...(covered?.entry == null ? [] : [entryText(covered.entry)])].join("\n")}
+          title={[finding?.message ?? coverage.label, ...fillText(covered)].join("\n")}
           className={cn("inline-flex shrink-0", finding === null ? coverage.textClass : finding.severity === "error" ? "text-destructive" : "text-warning")}
           data-testid={`templates-view-coverage-${variable.path}`}
           data-coverage={covered?.state}
@@ -388,10 +410,39 @@ function VariableProperties({ variable, holds }: { variable: DeliveryTemplateVar
           <DetailPair label="Free keys of"><span className="font-mono text-[12px]">{variable.keyValueType}</span></DetailPair>
         )}
         {holds > 0 && <DetailPair label="Holds">{holds} variable{holds === 1 ? "" : "s"}</DetailPair>}
-        {covered !== undefined && covered.entry === null && (
+        {covered !== undefined && covered.entry === null && covered.writtenBy === null && (
           <DetailPair label="Filled by">
             {covered.state === "Empty" ? "No entry of the mapping" : "The entries filling what it holds"}
           </DetailPair>
+        )}
+        {covered !== undefined && covered.entry === null && covered.writtenBy !== null && (
+          <div className="col-span-2" data-testid="templates-view-properties-written-by">
+            <DetailPair label="Filled by">
+              {covered.holder?.input === "Static" || covered.values.length > 0
+                ? (
+                  <span className="text-[13px]">
+                    {covered.holder?.input === "Static" ? "The static value of " : "A static alternative of "}
+                    <span className="font-mono text-[12px]">{covered.writtenBy}</span>
+                    {covered.values.length === 0 ? ", which writes what it holds" : ", which gives it"}
+                  </span>
+                )
+                : (
+                  <span className="text-[13px]">
+                    {"The value "}
+                    <span className="font-mono text-[12px]">{covered.writtenBy}</span>
+                    {" writes whole, which holds it on the rows its value does"}
+                    {covered.holder !== null && <span className="mt-1 block font-mono text-[12px] break-all">{entryText(covered.holder)}</span>}
+                  </span>
+                )}
+              {covered.values.length > 0 && (
+                <ul className="mt-1 flex flex-col gap-0.5">
+                  {covered.values.map((value) => (
+                    <li key={value} className="font-mono text-[12px] break-all" data-testid="templates-view-properties-written-value">{value}</li>
+                  ))}
+                </ul>
+              )}
+            </DetailPair>
+          </div>
         )}
         {covered?.entry != null && (
           <div className="col-span-2" data-testid="templates-view-properties-entry">
@@ -467,6 +518,9 @@ export function TemplateVariableExplorer({ variables, mapping }: { variables: De
         {
           state: variable.state,
           entry: variable.direct ? byTarget.get(variable.target) ?? null : null,
+          writtenBy: variable.direct ? null : variable.writtenBy ?? null,
+          holder: variable.direct || variable.writtenBy == null ? null : byTarget.get(variable.writtenBy) ?? null,
+          values: variable.values ?? [],
           finding: worst.get(variable.target) ?? null,
         },
       ]),

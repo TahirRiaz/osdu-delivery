@@ -12,7 +12,7 @@ import { GlyphRef } from "@/components/GlyphRef";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import type { EntryEditorTarget } from "./MappingEntryEditor";
-import { entrySummary } from "./mappingDraft";
+import { entrySummary, inheritedFill, type InheritedFill } from "./mappingDraft";
 import { pathDepth, shapeText, splitPath } from "./templateFormat";
 import { keyVariable, type VariableRow } from "./variableRows";
 
@@ -23,6 +23,36 @@ interface MappingBuilderVariablesProps {
   onOpen: (target: Omit<EntryEditorTarget, "session">) => void;
   /** Gives a variable a cache entry read from its first fitting cached type. */
   onUseCache: (variable: DeliveryTemplateVariable) => void;
+}
+
+/**
+ * What fills a variable without an entry of its own: the entry above it that writes it (a static value with what it gives
+ * it, or a value written whole), or nothing.
+ */
+function InheritedSummary({ fill }: { fill: InheritedFill | null }) {
+  if (fill === null) {
+    return <span className="text-muted-foreground">Not filled</span>;
+  }
+
+  if (!fill.present) {
+    return (
+      <span className="min-w-0 text-muted-foreground" data-testid="mapping-builder-inherited">
+        {"Not in the static value of "}
+        <span className="font-mono text-[12px]">{fill.holder.target}</span>
+      </span>
+    );
+  }
+
+  const where = fill.holder.input === "Static" ? "In the static value of" : fill.values.length > 0 ? "In a static alternative of" : "Written whole by";
+  return (
+    <span className="flex min-w-0 items-center gap-1" data-testid="mapping-builder-inherited">
+      <span className="shrink-0 text-muted-foreground">{where}</span>
+      <span className="shrink-0 font-mono text-[12px]">{fill.holder.target}</span>
+      {fill.values.length > 0 && (
+        <TruncatedText text={`: ${fill.values.join(", ")}`} mono maxWidth={900} className="min-w-0" />
+      )}
+    </span>
+  );
 }
 
 /** The template's variables with what the draft fills them with: pick one to edit its entry. */
@@ -42,6 +72,21 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
     return worst;
   }, [issues]);
 
+  // What an entry further up writes into a variable no entry of its own fills: a static value, or a value written whole.
+  const inherited = useMemo(() => {
+    const entries = rows.flatMap((row) => (row.entry === null ? [] : [row.entry]));
+    const fills = new Map<string, InheritedFill>();
+    for (const row of rows) {
+      const fill = row.entry === null ? inheritedFill(entries, row.key) : null;
+      if (fill !== null) {
+        fills.set(row.key, fill);
+      }
+    }
+
+    return fills;
+  }, [rows]);
+  const rowOf = useMemo(() => new Map(rows.map((row) => [row.key, row])), [rows]);
+
   const term = filter.trim().toLowerCase();
   const shown = rows.filter((row) => (!onlyEntries || row.entry !== null)
     && (term === ""
@@ -49,8 +94,10 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
       || (row.variable.title ?? "").toLowerCase().includes(term)
       || (row.variable.description ?? "").toLowerCase().includes(term)
       || row.variable.relationships.some((relationship) => relationship.toLowerCase().includes(term))
-      || (row.entry !== null && entrySummary(row.entry).toLowerCase().includes(term))));
+      || (row.entry !== null && entrySummary(row.entry).toLowerCase().includes(term))
+      || (inherited.get(row.key)?.values ?? []).some((value) => value.toLowerCase().includes(term))));
   const filled = rows.filter((row) => row.entry !== null).length;
+  const writtenAbove = rows.filter((row) => inherited.get(row.key)?.present === true).length;
 
   const columns: Column<VariableRow>[] = [
     {
@@ -103,7 +150,7 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
             {finding === "error" && <OctagonAlert className="size-3.5 shrink-0 text-destructive" aria-label="The check found an error" />}
             {finding === "warning" && <TriangleAlert className="size-3.5 shrink-0 text-warning" aria-label="The check found a warning" />}
             {row.entry === null
-              ? <span className="text-muted-foreground">Not filled</span>
+              ? <InheritedSummary fill={inherited.get(row.key) ?? null} />
               : <TruncatedText text={entrySummary(row.entry)} mono maxWidth={1200} className="min-w-0" />}
             {row.entry !== null && row.entry.prefilled && (
               <Badge variant="secondary" className="shrink-0 bg-info/15 text-[10px] text-info" data-testid="mapping-builder-prefilled">
@@ -121,7 +168,7 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
       align: "right",
       render: (row) => (
         <span className="inline-flex items-center gap-1">
-          {row.kind === "variable" && row.entry === null && row.variable.cacheTypes.length > 0 && (
+          {row.kind === "variable" && row.entry === null && !inherited.has(row.key) && row.variable.cacheTypes.length > 0 && (
             <Button
               variant="outline"
               size="xs"
@@ -156,7 +203,7 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
       <div className="flex flex-wrap items-baseline gap-2">
         <h2 className="text-[13px] font-medium">Variables</h2>
         <span className="text-xs text-muted-foreground" data-testid="mapping-builder-variables-count">
-          {filled} of {rows.length} have an entry. A variable without one is left out of the record.
+          {filled} of {rows.length} have an entry{writtenAbove > 0 ? `, and ${writtenAbove} more are written by an entry above them` : ""}. A variable nothing writes is left out of the record.
         </span>
       </div>
       <FilterBar>
@@ -176,7 +223,17 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
         columns={columns}
         rows={shown}
         rowKey={(row) => row.key}
-        onRowClick={(row) => onOpen({ variable: row.variable, entry: row.entry, keyHolder: null, outside: row.outside })}
+        onRowClick={(row) => {
+          // A variable an entry above writes is edited where it is written: in that entry.
+          const holder = inherited.get(row.key)?.holder;
+          const holderRow = holder === undefined ? undefined : rowOf.get(holder.target);
+          if (holder !== undefined && holderRow !== undefined) {
+            onOpen({ variable: holderRow.variable, entry: holder, keyHolder: null, outside: holderRow.outside });
+            return;
+          }
+
+          onOpen({ variable: row.variable, entry: row.entry, keyHolder: null, outside: row.outside });
+        }}
         emptyMessage={onlyEntries && term === "" ? "No variable has an entry yet." : "No variable matches the filter."}
         skeletonRows={8}
         data-testid="mapping-builder-variables"

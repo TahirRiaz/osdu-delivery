@@ -208,13 +208,77 @@ export function entryText(entry: MappingDraftEntry): string {
     entrySummary(entry),
     lookup === "" ? "" : `by ${lookup}`,
     entry.modifiers.length === 0 ? "" : `| ${entry.modifiers.map(modifierText).join(" | ")}`,
+    entry.unverified ? "(unverified)" : "",
     entry.when === null ? "" : `when ${entry.when}`,
   ].filter((part) => part !== "").join(" ");
 }
 
 /** One alternative of a coalesce entry on one line: what it reads, looks up and does, and whether it may go out unverified. */
 export function alternativeText(alternative: MappingDraftEntry): string {
-  return entryText(alternative) + (alternative.unverified ? " (unverified)" : "");
+  return entryText(alternative);
+}
+
+/**
+ * What an entry further up writes into a target no entry of its own fills: the nearest entry whose target holds it and
+ * that writes what it holds (a static value, a value written whole such as a cached field holding an object, or a
+ * coalesce of them), with the values a static value gives the target, once each. `present` is false when that entry is a
+ * static value without the target in it, which leaves the target out. Null when nothing above writes it; a repeat does
+ * not, since each property of its items has an entry of its own.
+ */
+export interface InheritedFill {
+  holder: MappingDraftEntry;
+  values: string[];
+  present: boolean;
+}
+
+export function inheritedFill(entries: readonly MappingDraftEntry[], target: string): InheritedFill | null {
+  let holder: MappingDraftEntry | null = null;
+  for (const entry of entries) {
+    const inside = target.startsWith(`${entry.target}.`) || target.startsWith(`${entry.target}[].`);
+    if (inside && entry.input !== "Repeat" && (holder === null || entry.target.length > holder.target.length)) {
+      holder = entry;
+    }
+  }
+
+  if (holder === null) {
+    return null;
+  }
+
+  const literals = holder.input === "Static"
+    ? [holder.static]
+    : holder.input === "Coalesce" ? holder.alternatives.filter((alternative) => alternative.input === "Static").map((alternative) => alternative.static) : [];
+  const found = literals.flatMap((text) => valuesAt(text, target.slice(holder.target.length)));
+  const values = [...new Set(found.filter((value) => value !== undefined).map(scalarText).filter((text): text is string => text !== null))];
+  return { holder, values, present: holder.input !== "Static" || found.length > 0 };
+}
+
+/** What a static value's JSON holds at a path below it (`.Name`, `[].TypeID`, `.Items[].Code`): every value along it. */
+function valuesAt(json: string | null, rest: string): unknown[] {
+  const parsed = parseJson(json);
+  if (!parsed.ok || parsed.value === undefined) {
+    return [];
+  }
+
+  let nodes: unknown[] = [parsed.value];
+  for (const step of rest.split(/(?=\.)|(?=\[\])/).filter((part) => part !== "")) {
+    nodes = step === "[]"
+      ? nodes.flatMap((node) => (Array.isArray(node) ? node : []))
+      : nodes.flatMap((node) => {
+        const name = step.startsWith(".") ? step.slice(1) : step;
+        return node !== null && typeof node === "object" && !Array.isArray(node) && name in node ? [(node as Record<string, unknown>)[name]] : [];
+      });
+  }
+
+  return nodes;
+}
+
+/** A value a static value gives as the document writes it: text as it is, a number or a boolean as written; null for an object or a list. */
+function scalarText(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return typeof value === "number" || typeof value === "boolean" ? String(value) : null;
 }
 
 /** One property the mapping fills: where the value comes from, what is done to it, and the target it is written to. */
@@ -232,6 +296,10 @@ export interface PropertyRow {
   lookupDetail: string[];
   /** Coalesce: each alternative on one line, in the order they are tried; empty for any other entry. */
   alternatives: string[];
+  /** The id the entry builds goes out even when the cache holds no such record ($unverified). */
+  unverified: boolean;
+  /** A cache lookup tries once more with punctuation and spacing folded away ($ignoreSeparators). */
+  ignoreSeparators: boolean;
   /** The modifiers in order, one line each; empty for a value taken as it stands. */
   modifiers: string[];
   /** The modifier kinds in order, which is what a row has room for: `split, replace`. */
@@ -270,6 +338,8 @@ export function propertyRow(entry: MappingDraftEntry): PropertyRow {
     lookup,
     lookupDetail: lookupLines(entry),
     alternatives: entry.input === "Coalesce" ? entry.alternatives.map(alternativeText) : [],
+    unverified: entry.unverified,
+    ignoreSeparators: entry.input === "Cache" && entry.ignoreSeparators,
     modifiers,
     modifierKinds: entry.modifiers.map((modifier) => (isCachedReplace(modifier) ? "replace from cache" : modifier.kind)).join(", "),
     condition,

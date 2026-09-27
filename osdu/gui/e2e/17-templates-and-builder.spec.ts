@@ -433,6 +433,17 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(alternatives.nth(1)).toContainText("cache.UnitOfMeasure.id by ID/Code/Name = dataset.elev_meas_ref");
     await expect(alternatives.nth(2)).toContainText("(unverified)");
 
+    // A property no entry of its own fills says what does: the technical assurance's type is in the static list written
+    // to TechnicalAssurances, and the value it gives is shown, not only that something fills it.
+    await properties.getByTestId("templates-view-variable-osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID").click();
+    await expect(properties.getByTestId("templates-view-properties-written-by")).toContainText("The static value of osdu.data.TechnicalAssurances, which gives it");
+    await expect(properties.getByTestId("templates-view-properties-written-value"))
+      .toHaveText("{$param.dataPartition}:reference-data--TechnicalAssuranceType:Unevaluated:");
+
+    // A reference that may go out without its record says so where it is written.
+    await properties.getByTestId("templates-view-variable-osdu.data.Curves[].LogCurveTypeID").click();
+    await expect(entry.getByTestId("delivery-mapping-property-detail-unverified")).toBeVisible();
+
     // The search reads what fills a variable too, so a source column answers with every variable it reaches: the
     // vertical measurement, and the unit that measurement is found by.
     await properties.getByTestId("templates-view-variables-filter").fill("elev_meas_ref");
@@ -496,6 +507,18 @@ test.describe.serial("templates and the mapping builder", () => {
     // The sample mapping renders its fixtures against the imported cache exactly, so it loads, passes and can be proposed.
     await expect(adminPage.getByTestId("mapping-builder-valid")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("mapping-builder-propose")).toBeEnabled();
+
+    // A property a static value above writes is no gap in the builder either: the list says where it is written and what
+    // it is given, offers no cache entry for it, and opening it opens the entry that writes it.
+    await adminPage.getByTestId("mapping-builder-variables-filter").fill("TechnicalAssuranceTypeID");
+    const assurance = adminPage.getByTestId("mapping-builder-entry-summary-osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID");
+    await expect(assurance.getByTestId("mapping-builder-inherited")).toContainText("In the static value of");
+    await expect(assurance).toContainText("reference-data--TechnicalAssuranceType:Unevaluated:");
+    await expect(adminPage.getByTestId("mapping-builder-use-cache-osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID")).toHaveCount(0);
+    await rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID").click();
+    await expect(adminPage.getByTestId("mapping-builder-entry-target")).toHaveText("osdu.data.TechnicalAssurances");
+    await adminPage.getByTestId("mapping-builder-entry-cancel").click();
+    await adminPage.getByTestId("mapping-builder-variables-filter").fill("");
 
     // A curve's unit is a coalesce: it opens as the first value of its alternatives, listed in the order they are tried.
     await rowWith(adminPage, "mapping-builder-variables", "mapping-builder-variable-osdu.data.Curves[].CurveUnit").click();

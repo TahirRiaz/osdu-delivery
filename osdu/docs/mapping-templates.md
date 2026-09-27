@@ -632,7 +632,19 @@ An entry filling a free key of an object that takes them (`osdu.tags.DeliveredBy
 entry the template does not let a mapping fill is named above the tree, so no entry of the document goes unseen. A
 literal object or list fills the properties it holds as well: a `TechnicalAssurances` list whose item names its
 `TechnicalAssuranceTypeID` fills that property on every row, and a property only some of a list's items carry is
-filled on some rows.
+filled on some rows. Such a property has no entry of its own, so beside the tree it is filled by "the static value of
+`osdu.data.TechnicalAssurances`", with every value that static value gives it
+(`{$param.dataPartition}:reference-data--TechnicalAssuranceType:Unevaluated:`); the row's hover says the same, and the
+filter finds it by those values. A `$coalesce`'s literal alternative fills what it holds the same way, on the rows it is
+taken. An object an entry writes whole from a value only the render knows (a cached field holding an object) holds
+whatever that value holds, so its properties read as written by that entry on some rows, never as filled by nothing, and
+a property the schema requires in it is a warning that the value may leave it out.
+
+The mapping builder lists them the same way: a variable no entry of its own fills but an entry above it writes reads "In
+the static value of" (or "Written whole by") that entry with what it gives, offers no cache entry of its own, and opens
+the entry that writes it, which is where it is edited; a static value that leaves it out reads "Not in the static value
+of" that entry. Beside the tree, an entry whose id may go out without its record says so (`$unverified`), and a cache
+lookup that tries once more with punctuation and spacing folded away says that too (`$ignoreSeparators`).
 
 Each row says how the document reaches its variable.
 

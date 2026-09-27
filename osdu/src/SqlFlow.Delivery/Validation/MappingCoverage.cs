@@ -25,7 +25,20 @@ public enum CoverageState
 /// <param name="State">Whether the mapping reaches it on every row, on some rows, or never.</param>
 /// <param name="Direct">True when an entry targets the variable itself; false for a holder filled through what it holds.</param>
 /// <param name="Required">Whether the schema requires the property in the object that holds it.</param>
-public sealed record VariableCoverage(string Target, CoverageState State, bool Direct, bool Required);
+/// <param name="WrittenBy">
+/// For a variable no entry targets that an entry further up writes: the target of that entry. Either its literal holds the
+/// variable (the TechnicalAssuranceTypeID of the items of a literal TechnicalAssurances list, or of a <c>$coalesce</c>'s
+/// literal alternative), or it writes an object whole from a value only the render knows (a cached field holding an
+/// object), whose properties are whatever that value holds. Null otherwise.
+/// </param>
+/// <param name="Values">
+/// With <paramref name="WrittenBy"/>: the values a literal gives the variable, once each in the order it holds them (one
+/// per item of a literal list that carries a different one), each a text, a number or a boolean as written. Empty for an
+/// object or a list the literal writes there, whose own properties say what they hold, and for a variable an object
+/// written whole holds.
+/// </param>
+public sealed record VariableCoverage(
+    string Target, CoverageState State, bool Direct, bool Required, string? WrittenBy = null, IReadOnlyList<string>? Values = null);
 
 /// <summary>What a mapping fills of the template it pins, variable by variable, and what it leaves required and empty.</summary>
 /// <param name="Variables">Every variable a mapping may fill, in template order, parents before their children.</param>
@@ -124,14 +137,32 @@ public static class MappingCoverage
         var own = new Dictionary<string, CoverageState>(StringComparer.Ordinal);
         var inside = new Dictionary<string, CoverageState>(StringComparer.Ordinal);
         var direct = new HashSet<string>(StringComparer.Ordinal);
+        var literals = new Dictionary<string, (string Holder, List<string> Values)>(StringComparer.Ordinal);
         foreach (var entry in mapping.Entries)
         {
             var state = FillsEveryRow(entry) ? CoverageState.Always : CoverageState.Sometimes;
             own[entry.Target.Text] = Best(own, entry.Target.Text, state);
             direct.Add(entry.Target.Text);
+            var walk = new LiteralWalk(own, literals, entry.Target.Text);
             if (entry.IsStatic && entry.Static is { } literal)
             {
-                WrittenBy(own, entry.Target.Text, [literal], state);
+                WrittenBy(walk, entry.Target.Text, [literal], state);
+            }
+            else if (!entry.IsRepeater)
+            {
+                // A $coalesce's literal alternative writes what it holds on the rows it is the one taken.
+                foreach (var alternative in entry.Alternatives.Where(a => a.Static is not null))
+                {
+                    WrittenBy(walk, entry.Target.Text, [alternative.Static!], CoverageState.Sometimes);
+                }
+
+                // An object or a list written whole from a value only the render knows (a cached field holding one) holds
+                // whatever that value holds: its properties are written by the entry, on the rows the value holds them.
+                if (template.Find(entry.Target) is { Shape: TemplateVariableShape.Group or TemplateVariableShape.GroupList }
+                    && entry.ValueNodes.Any(node => node.Static is null))
+                {
+                    WrittenWhole(walk, template, entry.Target.Text);
+                }
             }
 
             for (var holder = entry.Target.Parent; holder is not null; holder = holder.Parent)
@@ -165,7 +196,7 @@ public static class MappingCoverage
             listed.Add((target, entry.Target.Parent?.Text, key.Required));
         }
 
-        var variables = Rolled(listed, states, own, direct);
+        var variables = Rolled(listed, states, own, direct, literals);
 
         var issues = new List<ValidationIssue>(RequiredIssues(mapping, template.Schema, where));
         var gated = new HashSet<string>(issues.Select(i => i.Target).OfType<string>(), StringComparer.Ordinal);
@@ -202,7 +233,8 @@ public static class MappingCoverage
         List<(string Path, string? Holder, bool Required)> listed,
         IReadOnlyDictionary<string, CoverageState> states,
         IReadOnlyDictionary<string, CoverageState> own,
-        IReadOnlySet<string> direct)
+        IReadOnlySet<string> direct,
+        IReadOnlyDictionary<string, (string Holder, List<string> Values)> literals)
     {
         // The variables each object holds, and then the objects read back to front, so what they hold is settled first.
         var held = new Dictionary<string, List<(string Path, bool Required)>>(StringComparer.Ordinal);
@@ -227,8 +259,21 @@ public static class MappingCoverage
                 : promised.Aggregate(CoverageState.Always, (worst, state) => state < worst ? state : worst);
         }
 
-        return listed.Select(v => new VariableCoverage(v.Path, shown[v.Path], direct.Contains(v.Path), v.Required)).ToList();
+        return listed.Select(v =>
+        {
+            var isDirect = direct.Contains(v.Path);
+            return !isDirect && literals.TryGetValue(v.Path, out var literal)
+                ? new VariableCoverage(v.Path, shown[v.Path], isDirect, v.Required, literal.Holder, literal.Values)
+                : new VariableCoverage(v.Path, shown[v.Path], isDirect, v.Required);
+        }).ToList();
     }
+
+    /// <summary>
+    /// Where a walk through one entry's literal records what it finds: the state of each path it writes, and for each path
+    /// the entry whose literal writes it with the values it gives there.
+    /// </summary>
+    private sealed record LiteralWalk(
+        Dictionary<string, CoverageState> Written, Dictionary<string, (string Holder, List<string> Values)> Literals, string Holder);
 
     /// <summary>
     /// Records what a literal writes below <paramref name="path"/>, given every value it writes there (one for a literal
@@ -236,22 +281,22 @@ public static class MappingCoverage
     /// list of objects writes the properties of its items at <c>path[].name</c>. A property every holder carries is written
     /// as surely as the literal is; one only some of them carry is written for those, so no more than sometimes.
     /// </summary>
-    private static void WrittenBy(Dictionary<string, CoverageState> written, string path, IReadOnlyList<JsonNode> values, CoverageState state)
+    private static void WrittenBy(LiteralWalk walk, string path, IReadOnlyList<JsonNode> values, CoverageState state)
     {
         var objects = values.OfType<JsonObject>().ToList();
         if (objects.Count > 0)
         {
-            WrittenInside(written, path + ".", objects, state);
+            WrittenInside(walk, path + ".", objects, state);
         }
 
         var items = values.OfType<JsonArray>().SelectMany(list => list).ToList();
         if (items.Count > 0 && items.All(item => item is JsonObject))
         {
-            WrittenInside(written, path + "[].", items.Cast<JsonObject>().ToList(), state);
+            WrittenInside(walk, path + "[].", items.Cast<JsonObject>().ToList(), state);
         }
     }
 
-    private static void WrittenInside(Dictionary<string, CoverageState> written, string prefix, List<JsonObject> holders, CoverageState state)
+    private static void WrittenInside(LiteralWalk walk, string prefix, List<JsonObject> holders, CoverageState state)
     {
         var names = holders.SelectMany(holder => holder).Where(property => property.Value is not null).Select(property => property.Key)
             .Distinct(StringComparer.Ordinal).ToList();
@@ -260,10 +305,46 @@ public static class MappingCoverage
             var values = holders.Select(holder => holder[name]).OfType<JsonNode>().ToList();
             var reached = values.Count == holders.Count ? state : CoverageState.Sometimes;
             var path = prefix + name;
-            written[path] = Best(written, path, reached);
-            WrittenBy(written, path, values, reached);
+            walk.Written[path] = Best(walk.Written, path, reached);
+
+            // What the literal gives the property, so a view can show it where the property is: each value once, as written.
+            if (!walk.Literals.TryGetValue(path, out var literal))
+            {
+                literal = (walk.Holder, []);
+                walk.Literals[path] = literal;
+            }
+
+            foreach (var text in values.OfType<JsonValue>().Select(ValueText).Where(text => !literal.Values.Contains(text, StringComparer.Ordinal)))
+            {
+                literal.Values.Add(text);
+            }
+
+            WrittenBy(walk, path, values, reached);
         }
     }
+
+    /// <summary>
+    /// Records every variable of the template below <paramref name="path"/> as written, on some rows, by the entry that
+    /// writes the object or list at <paramref name="path"/> whole: what that value holds is known only when it is rendered.
+    /// </summary>
+    private static void WrittenWhole(LiteralWalk walk, OsduTemplate template, string path)
+    {
+        foreach (var variable in template.Fillable)
+        {
+            var below = variable.Path.Text;
+            if (!below.StartsWith(path + ".", StringComparison.Ordinal) && !below.StartsWith(path + "[].", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            walk.Written[below] = Best(walk.Written, below, CoverageState.Sometimes);
+            walk.Literals.TryAdd(below, (walk.Holder, []));
+        }
+    }
+
+    /// <summary>A literal value as the document writes it: text as it is, a number or a boolean in its JSON form.</summary>
+    private static string ValueText(JsonValue value)
+        => value.TryGetValue<string>(out var text) ? text : value.ToJsonString();
 
     /// <summary>
     /// Whether a required variable is reachable at all: every object on the way to it is filled. A property required inside

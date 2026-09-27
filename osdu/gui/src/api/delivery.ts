@@ -1547,6 +1547,13 @@ export interface DeliveryMappingCoverageVariable {
   /** True when an entry targets the variable itself; false for an object filled through what it holds. */
   direct: boolean;
   required: boolean;
+  /**
+   * For a variable no entry targets that a static value further up writes (the TechnicalAssuranceTypeID of the items of a
+   * static TechnicalAssurances list): the target of the entry whose static value it is.
+   */
+  writtenBy?: string | null;
+  /** With writtenBy: the values that static value gives the variable, once each; empty for an object or a list. */
+  values?: string[] | null;
 }
 
 /**

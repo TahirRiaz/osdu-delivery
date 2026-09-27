@@ -105,6 +105,11 @@ export function EntryDetail({ row, target = true }: { row: PropertyRow; target?:
                 <li key={`${index}-${line}`} className="font-mono text-[12px] break-all">{line}</li>
               ))}
             </ul>
+            {row.ignoreSeparators && (
+              <p className="mt-1 text-[11px] text-muted-foreground" data-testid="delivery-mapping-property-detail-ignore-separators">
+                and once more with punctuation and spacing folded away
+              </p>
+            )}
             {row.modifiers.length > 0 && (
               <div className="mt-2" data-testid="delivery-mapping-property-detail-modifiers">
                 <p className="text-[11px] text-muted-foreground">on the value the lookup compares, first</p>
@@ -123,6 +128,14 @@ export function EntryDetail({ row, target = true }: { row: PropertyRow; target?:
       </Node>
 
       {steps}
+      {row.unverified && (
+        <p
+          className="my-1 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-[12px]"
+          data-testid="delivery-mapping-property-detail-unverified"
+        >
+          The id is written even when the cache holds no such record, and recorded as unverified until a refresh finds it.
+        </p>
+      )}
       {target && <Node label="Written to" value={row.target} target />}
     </div>
   );

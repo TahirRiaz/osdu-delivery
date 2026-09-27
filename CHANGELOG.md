@@ -13,6 +13,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A property no entry of its own fills says what does.** The coverage of a mapping (`POST
+  /api/v1/delivery/mapping-builder/coverage`) names, for every variable an entry further up writes, that entry
+  (`writtenBy`) and the values a static value gives it (`values`), so the Mappings view shows the
+  `TechnicalAssuranceTypeID` of a static `TechnicalAssurances` list as "the static value of
+  `osdu.data.TechnicalAssurances`" with `{$param.dataPartition}:reference-data--TechnicalAssuranceType:Unevaluated:`,
+  where it said only "the entries filling what it holds". The same holds for a `$coalesce`'s literal alternative, and
+  for an object written whole from a cached field, whose properties now read as written by that entry on some rows
+  instead of as filled by nothing (which raised a false warning for a property the schema requires in it). The mapping
+  builder's variable list says the same, offers no cache entry for such a variable, and opens the entry that writes it.
+  Beside the tree, an `$unverified` entry and a lookup with `$ignoreSeparators` say so.
 - **`$coalesce`: a property taken from the first of several sources that gives a value.** A `$coalesce` node lists two
   or more alternatives, each a value node of its own (a column, an expression, a cached record, a search or a literal
   default, with its own `$findBy`, `$modifiers`, `$ignoreSeparators` and `$unverified`), tried in order; `$when`,

@@ -99,6 +99,13 @@ public class MappingCoverageTests
             """);
         Assert.Equal(CoverageState.Always, Variable(partly, "osdu.data.Curves[].CurveID").State);
         Assert.False(Variable(partly, "osdu.data.Curves[].CurveID").Direct);
+
+        // A property the literal writes says which entry's literal it is and what it gives there, once each value, so a
+        // view shows what fills it rather than only that something does.
+        Assert.Equal("osdu.data.Curves", Variable(partly, "osdu.data.Curves[].CurveID").WrittenBy);
+        Assert.Equal(["GR", "RHOB"], Variable(partly, "osdu.data.Curves[].CurveID").Values!);
+        Assert.Equal(["1000"], Variable(partly, "osdu.data.Curves[].TopDepth").Values!);
+        Assert.Null(Variable(partly, "osdu.data.Curves").WrittenBy);
         Assert.Equal(CoverageState.Sometimes, Variable(partly, "osdu.data.Curves[].TopDepth").State);
         Assert.Equal(CoverageState.Sometimes, Variable(partly, "osdu.data.Curves").State);
         Assert.True(Variable(partly, "osdu.data.Curves").Direct);
@@ -113,6 +120,45 @@ public class MappingCoverageTests
         Assert.Equal(CoverageState.Always, Variable(whole, "osdu.data.Curves[].TopDepth").State);
         Assert.Equal(CoverageState.Always, Variable(whole, "osdu.data.Curves").State);
         Assert.DoesNotContain(whole.Issues, i => i.Target == "osdu.data.Curves[].TopDepth");
+    }
+
+    [Fact]
+    public void An_object_written_whole_says_what_writes_its_properties_and_that_they_may_be_left_out()
+    {
+        // A cached field holding an object writes it whole: its properties are whatever the cached value holds, so they are
+        // written by that entry on the rows the value holds them, never reported as filled by nothing.
+        var required = Requiring("\"Nested\":{\"type\":\"object\",\"properties\":{\"Inner\":{\"type\":\"string\"}}}", "\"Nested\":{\"type\":\"object\",\"properties\":{\"Inner\":{\"type\":\"string\"}},\"required\":[\"Inner\"]}");
+        var cached = Cover(required, """
+            Nested:
+              $cache: UnitOfMeasure.Nested
+              $findBy: Code = unit
+            """);
+        var inner = Variable(cached, "osdu.data.Nested.Inner");
+        Assert.Equal((CoverageState.Sometimes, false, "osdu.data.Nested"), (inner.State, inner.Direct, inner.WrittenBy));
+        Assert.Empty(inner.Values!);
+        Has(cached, IssueSeverity.Warning, "requires osdu.data.Nested.Inner, and what fills it may leave it out");
+        Assert.DoesNotContain(cached.Issues, i => i.Message.Contains("which the mapping does not fill", StringComparison.Ordinal));
+
+        // A $coalesce's literal alternative writes what it holds on the rows it is taken, with the values it gives.
+        var coalesced = Cover("""
+            Nested:
+              $coalesce:
+                - $cache: UnitOfMeasure.Nested
+                  $findBy: Code = unit
+                - $value: { Inner: unknown }
+            """);
+        var fallback = Variable(coalesced, "osdu.data.Nested.Inner");
+        Assert.Equal((CoverageState.Sometimes, "osdu.data.Nested"), (fallback.State, fallback.WrittenBy));
+        Assert.Equal(["unknown"], fallback.Values!);
+
+        // A repeater writes nothing whole: an item property it has no entry for is filled by nothing.
+        var repeated = Cover("""
+            Curves:
+              $forEach: curves
+              $item:
+                CurveID: { $from: curve_id }
+            """);
+        Assert.Equal((CoverageState.Empty, (string?)null), (Variable(repeated, "osdu.data.Curves[].TopDepth").State, Variable(repeated, "osdu.data.Curves[].TopDepth").WrittenBy));
     }
 
     [Fact]
