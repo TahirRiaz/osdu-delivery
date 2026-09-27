@@ -420,16 +420,40 @@ Pipelines like any other flow.
   ledger recorded, each proved by the runs the platform recorded, so a run that is not recorded says so rather than
   being guessed. Then the **tabs**, one question each:
   - **Timeline**: what happened to this record, newest first, in a box that takes the rest of the page and scrolls
-    inside it, so a record with hundreds of tries keeps its filter in view and the page does not grow with it. It is the record's own story and nothing else: its row's arrival in
-    the ingestion table with the landing that brought its file in, every later change of the row and its deletion,
-    when it entered the ledger and what the ledger decided (a hold, a change that rendered what OSDU already holds, an
-    older version), every operation against OSDU with what OSDU answered, every intervention with who asked for it,
-    and where it stands now. A pipeline run appears only as the evidence of a change it made to this row: the
-    ingestion flow restamps a row only when it changes, so a file landed and loaded again unchanged adds nothing. An
-    entry opens to the rest known about it (the ingestion run that wrote a change and the landing of its file; the
-    steps a try took and what each returned, its worker, correlation id, work batch and the origin it sent; an
-    intervention's parameters). The timeline narrows to the source changes, to what was done against OSDU, or to the
-    interventions alone.
+    inside it, so a record with hundreds of tries keeps its filter in view and the page does not grow with it. It is
+    the record's own story and nothing else: its row's arrival in the ingestion table with the landing that brought
+    its file in, every later change of the row and its deletion, when the ledger picked it up, what the ledger decided
+    (a hold, a change that rendered what was delivered, an older version), every try with what OSDU answered, and
+    every request someone made of it. **Where it stands now** heads the list.
+    - **Chapters.** The story is cut where something set the record moving: its row arrived, changed or was deleted,
+      or someone asked for a redelivery, a release or a removal. Each chapter opens with a band naming what started
+      it and how it ended (delivered, delivered and verified, held because OSDU refused it, nothing to send, queued),
+      numbered in the order the chapters happened. Steps that set the record moving one after another before anything
+      came of them (a file landing and the load of its row, a request asked twice) open one chapter together.
+    - **The rail.** Every step sits on one of three lanes, the ingestion table, the ledger and OSDU, and a path runs
+      between them in the order the steps are listed, so the record's movement reads at a glance. A node's colour is
+      how the step went; a step someone asked for carries the initial of who asked. Times share one column, in local
+      time, with the day on each chapter's band.
+    - **Picked up for delivery** is when the ledger took the record in: a deliver run read its row, rendered the
+      document with the mapping and the cache, queued it, and reserved the record's OSDU id for the flow. The id is
+      computed from the record key, so it is reserved before anything is sent.
+    - **What OSDU answered.** A try that OSDU refused sits on the OSDU lane, titled with the status (`Refused: HTTP
+      404 Not Found`), with the request, what OSDU said, and what the refusal left the record in (held, because a 404
+      is not retried). Tries that ended alike one after another (a throttled service, five times) fold into one
+      entry that opens to each try.
+    - **Requests.** A redelivery, release, removal or verify names who asked and how many records it named: `this
+      record only` for the record page's own buttons, which act on this record alone, or the count of a request made
+      for several records at once. A verify and its result are one entry.
+    - **Ids** of runs and submissions show their last six characters (a UUIDv7 starts with a timestamp, so a run and
+      the submission it created share their first characters); the whole id is on hover and in the entry.
+    - The syncs that read the row's history from the ingestion table into the ledger sit under the list: they are
+      bookkeeping of the timeline itself, not steps of the record.
+
+    A pipeline run appears only as the evidence of a change it made to this row: the ingestion flow restamps a row
+    only when it changes, so a file landed and loaded again unchanged adds nothing. An entry opens to the rest known
+    about it (the ingestion run that wrote a change and the landing of its file; the steps a try took and what each
+    returned, its worker, correlation id, work batch and the origin it sent; a request's parameters). The timeline
+    narrows to one lane, or to the requests someone made.
   - **Source**: where the row came from: the source key, the ingestion file and row the delivered document was built
     from (and the newer row a waiting document is built from), when the row was received and the source last
     modified, the key columns that find it (each value beside the column the flow's `source.record.key` names, with a

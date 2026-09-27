@@ -1,14 +1,15 @@
 import { useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
+import { format, formatDistanceToNow } from "date-fns";
 import {
-  ArchiveRestore, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Database, DatabaseZap, Eraser, FileInput, FilePen,
-  FileQuestion, FileX2, Hourglass, PauseCircle, RefreshCw, RotateCcw, ScanSearch, Send, ShieldCheck, Trash2, Unlock,
-  UserRoundCog, XCircle, type LucideIcon,
+  ArchiveRestore, CheckCircle2, ChevronRight, CircleDashed, CircleDot, Database, DatabaseZap, Eraser, FileInput, FilePen,
+  FileQuestion, FileX2, Hourglass, Layers, Loader, PauseCircle, RefreshCw, ScanSearch, Send, ShieldCheck, Trash2, XCircle,
+  type LucideIcon,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { parseUtc } from "@/lib/time";
 import { CodeView } from "@/components/CodeView";
@@ -17,7 +18,7 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
 import { TruncatedText } from "@/components/TruncatedText";
 import type {
-  DeliveryActivity, DeliveryAttempt, DeliveryAttemptResult, DeliveryChainLanding, DeliveryChainRun, DeliveryRecord,
+  DeliveryActivity, DeliveryAttempt, DeliveryAttemptStep, DeliveryChainLanding, DeliveryChainRun, DeliveryRecord,
   DeliveryRecordChain, DeliverySourceChange, DeliverySourceChangeKind,
 } from "../../api/delivery";
 import { Fact, FactGrid, NoFact } from "./Facts";
@@ -27,32 +28,23 @@ import { RecordName } from "./RecordName";
 type Tone = "success" | "destructive" | "warning" | "info" | "muted";
 
 /**
- * Which of the record's stories an event belongs to, so the timeline can be narrowed to one of them: the changes of its
- * row in the ingestion table, what the ledger decided about it, what was done against OSDU, and who intervened.
+ * Where a step happened: in the record's row of its ingestion table, in the ledger, or in OSDU. The rail draws each on
+ * a lane of its own, so the path between the lanes shows how the record moved.
  */
-type Lane = "source" | "ledger" | "osdu" | "intervention";
-type LaneFilter = "all" | "source" | "osdu" | "intervention";
+type Lane = "source" | "ledger" | "osdu";
 
-/** One thing that happened to the record: when, what, the facts that place it, and the rest. */
-interface JourneyEvent {
-  id: string;
-  at: string;
-  title: string;
-  /** The facts that place the event, kept to one line: the file and row, the run and submission it belongs to. */
-  summary: ReactNode[];
-  /** What went wrong, when something did; shown under the summary in the destructive colour. */
-  error: string | null;
-  /** A note the event carries that is not an error (what the target answered, why nothing was sent). */
-  note: string | null;
-  /** Everything else known about the event, revealed when the entry is opened. */
-  more: ReactNode | null;
-  tone: Tone;
-  icon: LucideIcon;
-  /** Events dated alike (a landing and the load it fed, an attempt's start and its completion) keep their order by this. */
-  order: number;
-  lane: Lane;
-  testId: string;
-}
+/** What the timeline narrows to: one lane, or the steps someone asked for. */
+type Filter = "all" | Lane | "people";
+
+const LANES: readonly Lane[] = ["source", "ledger", "osdu"];
+const LANE_X: Record<Lane, number> = { source: 22, ledger: 66, osdu: 110 };
+const LANE_LABEL: Record<Lane, string> = { source: "Source", ledger: "Ledger", osdu: "OSDU" };
+
+/** How far below the top of its row a node's centre sits, which is where the path meets it. */
+const NODE_CENTRE = 14;
+
+/** The time, the rail and the entry: one grid every row of the timeline shares, so times and nodes line up. */
+const ROW = "grid grid-cols-[72px_132px_minmax(0,1fr)]";
 
 const TONE_RING: Record<Tone, string> = {
   success: "border-success/50 bg-success/10 text-success",
@@ -61,6 +53,71 @@ const TONE_RING: Record<Tone, string> = {
   info: "border-info/50 bg-info/10 text-info",
   muted: "border-border bg-muted text-muted-foreground",
 };
+
+const TONE_TEXT: Record<Tone, string> = {
+  success: "text-success",
+  destructive: "text-destructive",
+  warning: "text-warning",
+  info: "text-info",
+  muted: "text-muted-foreground",
+};
+
+interface Outcome {
+  text: string;
+  tone: Tone;
+}
+
+/** One thing that happened to the record: when, where, what, the facts that place it, and the rest. */
+interface Entry {
+  id: string;
+  at: string;
+  lane: Lane;
+  title: string;
+  tone: Tone;
+  /** The node's icon; null draws the initial of who asked instead. */
+  icon: LucideIcon | null;
+  /** Who asked, for a step someone asked for. */
+  actor: string | null;
+  /** How many records the request named, when that is known: one for this record alone. */
+  scope: number | null;
+  /** The facts that place the entry, on one line: the file and row, the run and submission, how long it took. */
+  facts: ReactNode[];
+  /** What the step left the record in, when that is not its title (held until released, tried again). */
+  then: Outcome | null;
+  /** What went wrong, when something did. */
+  error: string | null;
+  /** Everything else known about the step, revealed when the entry is opened. */
+  more: ReactNode | null;
+  /** Entries dated alike (a landing and the load it fed, a request and the try it started) keep their order by this. */
+  order: number;
+  /** A step that sets the record moving opens a chapter, named by this: its row arrived or changed, someone asked. */
+  trigger: string | null;
+  /** What this step settles its chapter as, for a step that settles something. */
+  outcome: Outcome | null;
+  /** A verify, whose match after a delivery settles the chapter as delivered and verified. */
+  verifies: boolean;
+  /** Consecutive tries that ended alike share this key and fold into one entry. */
+  foldKey: string | null;
+  testId: string;
+}
+
+/** A stretch of the record's story: what set it moving, what happened, and how it ended. */
+interface Chapter {
+  number: number;
+  trigger: string;
+  entries: Entry[];
+  outcome: Outcome;
+}
+
+/** Where the record stands now: the last row of its story, and the outcome of a chapter nothing has settled yet. */
+interface Now {
+  title: string;
+  tone: Tone;
+  icon: LucideIcon;
+  lane: Lane;
+  facts: ReactNode[];
+  error: string | null;
+}
 
 function Mono({ children }: { children: ReactNode }) {
   return <span className="font-mono text-[12px]">{children}</span>;
@@ -107,31 +164,57 @@ function Origin({ file, row, inCell = false }: { file: string | null; row: numbe
   );
 }
 
+/**
+ * The part of an id that tells it apart. Run and submission ids are UUIDv7, whose first characters are a timestamp: a
+ * run and the submission it created, or two runs a minute apart, share them. The last characters are random.
+ */
+function idTail(id: string): string {
+  return id.replace(/-/g, "").slice(-6).toLowerCase();
+}
+
 function RunRef({ runId }: { runId: string | null }) {
   return runId === null
     ? null
-    : <RouterLink to={`/runs/${runId}`} className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => event.stopPropagation()}>run {runId.slice(0, 8)}</RouterLink>;
+    : (
+      <RouterLink
+        to={`/runs/${runId}`}
+        className="font-mono text-[12px] text-primary hover:underline"
+        title={`run ${runId.toLowerCase()}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {`run …${idTail(runId)}`}
+      </RouterLink>
+    );
 }
 
 function SubmissionRef({ submissionId }: { submissionId: string | null }) {
   return submissionId === null
     ? null
-    : <RouterLink to={`/delivery/submissions/${submissionId}`} className="font-mono text-[12px] text-primary hover:underline" onClick={(event) => event.stopPropagation()}>submission {submissionId.slice(0, 8)}</RouterLink>;
+    : (
+      <RouterLink
+        to={`/delivery/submissions/${submissionId}`}
+        className="font-mono text-[12px] text-primary hover:underline"
+        title={`submission ${submissionId.toLowerCase()}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        {`submission …${idTail(submissionId)}`}
+      </RouterLink>
+    );
 }
 
 function FlowRef({ run }: { run: DeliveryChainRun }) {
   return <RouterLink to={`/pipelines/${run.pipelineId}`} className="text-primary hover:underline" onClick={(event) => event.stopPropagation()}>{run.flowName}</RouterLink>;
 }
 
-/** The pieces of an event's summary line, separated so a missing one leaves no dangling separator. */
-function Summary({ parts }: { parts: ReactNode[] }) {
-  const shown = parts.filter((part) => part !== null && part !== undefined && part !== false);
+/** The pieces of an entry's fact line, separated so a missing one leaves no dangling separator. */
+function FactLine({ parts }: { parts: ReactNode[] }) {
+  const shown = parts.filter((part) => part !== null && part !== undefined && part !== false && part !== "");
   if (shown.length === 0) {
     return null;
   }
 
   return (
-    <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-muted-foreground">
+    <span className="flex flex-wrap items-center gap-x-3.5 gap-y-0.5 text-[12px] text-muted-foreground">
       {/* Each part is a flex row of its own, so a clipped value inside it counts at its clipped width: as a plain
           inline the part would size to the whole unclipped string and leave a blank stretch after the ellipsis. */}
       {shown.map((part, index) => <span key={index} className="inline-flex max-w-full flex-wrap items-baseline gap-x-1">{part}</span>)}
@@ -139,35 +222,41 @@ function Summary({ parts }: { parts: ReactNode[] }) {
   );
 }
 
-/** The steps of one try, compactly: name, status, duration, and whether an earlier try had completed it. */
-export function AttemptSteps({ result }: { result: DeliveryAttemptResult | null }) {
-  const steps = result?.steps ?? [];
-  if (steps.length === 0) {
-    return <span className="text-muted-foreground">-</span>;
-  }
-
+/** The steps of one try, one line each: whether it completed, its name, what the target answered and how long it took. */
+function StepList({ steps }: { steps: DeliveryAttemptStep[] }) {
   return (
-    <div className="flex flex-wrap gap-1">
-      {steps.map((step, index) => (
-        <Badge
-          key={`${step.name}-${index}`}
-          variant="outline"
-          className={step.error !== undefined ? "text-destructive" : undefined}
-          title={step.returned !== undefined ? JSON.stringify(step.returned) : undefined}
-        >
-          {step.name}
-          {step.status !== undefined ? ` ${step.status}` : ""}
-          {step.ms !== undefined ? ` ${step.ms}ms` : ""}
-          {step.resumed === true ? " (resumed)" : ""}
-        </Badge>
-      ))}
-    </div>
+    <ul className="flex flex-col gap-1 text-[12px]" data-testid="journey-steps">
+      {steps.map((step, index) => {
+        const failed = step.error !== undefined;
+        const version = step.returned?.version;
+        const meta = [
+          step.status !== undefined ? `HTTP ${step.status}` : null,
+          step.ms !== undefined ? `${step.ms.toLocaleString()} ms` : null,
+          version !== undefined ? `version ${version}` : null,
+          step.resumed === true ? "completed by an earlier try" : null,
+        ].filter((part) => part !== null);
+        return (
+          <li
+            key={`${step.name}-${index}`}
+            className="grid grid-cols-[14px_minmax(0,auto)_minmax(0,1fr)] items-baseline gap-x-2"
+            title={step.returned !== undefined ? JSON.stringify(step.returned) : undefined}
+          >
+            <span className={failed ? "text-destructive" : "text-success"}>{failed ? "✕" : "✓"}</span>
+            <Mono>{step.name}</Mono>
+            <span className="min-w-0 truncate font-mono text-[11.5px] text-muted-foreground">
+              {meta.join(" · ")}
+              {failed && <span className="text-destructive">{meta.length > 0 ? " · " : ""}{step.error}</span>}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
 /** How long something took, from two moments the ledger or the catalog recorded. */
-function between(from: string | null, to: string): string | null {
-  if (from === null) {
+function between(from: string | null, to: string | null): string | null {
+  if (from === null || to === null) {
     return null;
   }
 
@@ -224,33 +313,64 @@ function isArrival(change: DeliverySourceChange): boolean {
   return change.kind === "loaded" || change.kind === "reloaded" || change.kind === "earliest";
 }
 
-const CHANGE_SHAPES: Record<DeliverySourceChangeKind, { title: (table: string) => string; what: (table: string) => string; icon: LucideIcon; tone: Tone }> = {
+/** The local day a moment fell on, as the timeline names days: "Fri 25 Sep". */
+function dayOf(at: string): string {
+  return format(parseUtc(at), "EEE d MMM");
+}
+
+function clockOf(at: string): string {
+  return format(parseUtc(at), "HH:mm");
+}
+
+/** Who asked, as the ledger names them without the prefix of a signed-in user. */
+function actorName(actor: string): string {
+  return actor.startsWith("user:") ? actor.slice("user:".length) : actor;
+}
+
+/** The letter a person's node carries: the first of their name, past a schedule's or a workstation's prefix. */
+function actorInitial(actor: string): string {
+  const name = actorName(actor).replace(/^(cli|schedule):/, "");
+  return name === "" || name === "unknown" ? "?" : name.charAt(0).toUpperCase();
+}
+
+const CHANGE_SHAPES: Record<DeliverySourceChangeKind, {
+  title: (table: string) => string;
+  trigger: (table: string) => string;
+  what: (table: string) => string;
+  icon: LucideIcon;
+  tone: Tone;
+}> = {
   loaded: {
-    title: (table) => `Loaded into ${table}`,
+    title: (table) => `Row loaded into ${table}`,
+    trigger: (table) => `Row arrived in ${table}`,
     what: (table) => `The ingestion flow inserted the row into ${table} (its InsertedDate_DW): the record's arrival. A later run that loads the row unchanged leaves it as it is, and is no part of this history.`,
     icon: DatabaseZap,
     tone: "info",
   },
   reloaded: {
-    title: (table) => `Loaded into ${table} again`,
+    title: (table) => `Row loaded into ${table} again`,
+    trigger: (table) => `Row arrived in ${table} again`,
     what: (table) => `The ingestion flow inserted the row into ${table} again after earlier versions of it: the row was deleted from the table and loaded anew.`,
     icon: ArchiveRestore,
     tone: "info",
   },
   earliest: {
-    title: (table) => `In ${table}: the earliest version the ledger holds`,
+    title: (table) => `Row in ${table}: the earliest version the ledger holds`,
+    trigger: (table) => `Row in ${table}`,
     what: () => "The ledger does not know when the row first reached the table: the table carries no InsertedDate_DW, or no plan has read the row since the ledger began keeping it. This is the earliest version of the row it recorded; whether it was the row's insert or a later change cannot be told.",
     icon: Database,
     tone: "muted",
   },
   changed: {
-    title: (table) => `Changed in ${table}`,
+    title: (table) => `Row changed in ${table}`,
+    trigger: (table) => `Row changed in ${table}`,
     what: () => "The ingestion flow restamped the row (its UpdatedDate_DW): the row's data changed. A run that loads the row unchanged does not restamp it, so every entry like this one is a change.",
     icon: FilePen,
     tone: "info",
   },
   deleted: {
-    title: (table) => `Deleted from ${table}`,
+    title: (table) => `Row deleted from ${table}`,
+    trigger: (table) => `Row deleted from ${table}`,
     what: () => "The ingestion flow's key match found the row gone from the source and marked it deleted (its DeletedDate_DW). A deleted row is never delivered: what OSDU holds is removed only by a removal someone asks for.",
     icon: FileX2,
     tone: "destructive",
@@ -272,28 +392,37 @@ function RunFacts({ run, rowsLabel }: { run: DeliveryChainRun; rowsLabel: string
   );
 }
 
+function entryDefaults(): Pick<Entry, "actor" | "scope" | "then" | "error" | "more" | "trigger" | "outcome" | "verifies" | "foldKey"> {
+  return { actor: null, scope: null, then: null, error: null, more: null, trigger: null, outcome: null, verifies: false, foldKey: null };
+}
+
 /**
  * One change of the record's row, as the ledger recorded it: its arrival, a change, or its deletion. The runs are the
- * evidence of the change, not events of their own: the ingestion run that wrote it and, for a change from a file, the
+ * evidence of the change, not entries of their own: the ingestion run that wrote it and, for a change from a file, the
  * landing that brought the file in. A run that reloaded the row unchanged made no change, and so is not here.
  */
-function changeEvent(change: DeliverySourceChange, table: string): JourneyEvent {
+function changeEntry(change: DeliverySourceChange, table: string): Entry {
   const shape = CHANGE_SHAPES[change.kind];
   const arrival = isArrival(change);
   const deleted = change.kind === "deleted";
   return {
+    ...entryDefaults(),
     id: `change-${change.kind}-${change.atUtc}`,
     at: change.atUtc,
+    lane: "source",
     title: shape.title(table),
-    summary: [
+    tone: shape.tone,
+    icon: shape.icon,
+    facts: [
       change.fileName !== null
         ? <Origin key="o" file={change.fileName} row={change.rowNumber} />
         : arrival && change.kind !== "earliest" && "from a file the ledger never saw: the row changed before a plan read it",
-      change.loading !== null && <span key="l">{deleted ? "marked by" : "written by"} <RunRef runId={change.loading.runId} /></span>,
+      change.loading !== null
+        ? <span key="l">{deleted ? "marked by" : "written by"} <RunRef runId={change.loading.runId} /></span>
+        : "the ingestion run that wrote it is not recorded",
       !arrival && change.landing !== null && <span key="f">landed by <RunRef runId={change.landing.run.runId} /></span>,
     ],
     error: change.loading !== null && !change.loading.success ? `The ingestion run ended ${change.loading.status}.` : null,
-    note: null,
     more: (
       <FactGrid>
         <Fact label="What happened" wide>{shape.what(table)}</Fact>
@@ -317,10 +446,8 @@ function changeEvent(change: DeliverySourceChange, table: string): JourneyEvent 
         )}
       </FactGrid>
     ),
-    tone: shape.tone,
-    icon: shape.icon,
     order: 1,
-    lane: "source",
+    trigger: shape.trigger(table),
     testId: `journey-source-${change.kind}`,
   };
 }
@@ -330,20 +457,23 @@ function changeEvent(change: DeliverySourceChange, table: string): JourneyEvent 
  * landing of the same file later is no change of the record, so only the arrival's landing is an entry of its own; a
  * later change names its landing as its evidence.
  */
-function landingEvent(change: DeliverySourceChange, landing: DeliveryChainLanding): JourneyEvent {
+function landingEntry(change: DeliverySourceChange, landing: DeliveryChainLanding, table: string): Entry {
   const duration = runDuration(landing.run.durationSeconds);
   return {
+    ...entryDefaults(),
     id: `landing-${landing.run.runId}`,
     at: landing.run.ranUtc,
-    title: `Ingested from file by ${landing.run.flowName}`,
-    summary: [
+    lane: "source",
+    title: `File landed by ${landing.run.flowName}`,
+    tone: landing.run.success ? "info" : "destructive",
+    icon: FileInput,
+    facts: [
       <Origin key="o" file={landing.fileName} row={change.rowNumber} />,
       landing.rows > 0 && `${landing.rows.toLocaleString()} row${landing.rows === 1 ? "" : "s"} in the file`,
       duration !== null && `took ${duration}`,
       <RunRef key="r" runId={landing.run.runId} />,
     ],
     error: landing.run.success ? null : landing.run.error,
-    note: null,
     more: (
       <FactGrid>
         <Fact label="Flow"><FlowRef run={landing.run} /></Fact>
@@ -354,90 +484,209 @@ function landingEvent(change: DeliverySourceChange, landing: DeliveryChainLandin
         {landing.fileModifiedUtc !== null && <Fact label="File modified"><RelativeTime value={landing.fileModifiedUtc} /></Fact>}
       </FactGrid>
     ),
-    tone: landing.run.success ? "success" : "destructive",
-    icon: FileInput,
     order: 0,
-    lane: "source",
+    trigger: CHANGE_SHAPES[change.kind].trigger(table),
     testId: "journey-source-landing",
   };
 }
 
 /** The record's row through its ingestion table: each change of it, and the landing its arrival came in by. */
-function sourceEvents(chain: DeliveryRecordChain | undefined): JourneyEvent[] {
+function sourceEntries(chain: DeliveryRecordChain | undefined): Entry[] {
   if (chain === undefined) {
     return [];
   }
 
   const table = ingestionTableName(chain.sourceTable);
   return chain.changes.flatMap((change) =>
-    isArrival(change) && change.landing !== null ? [changeEvent(change, table), landingEvent(change, change.landing)] : [changeEvent(change, table)]);
+    isArrival(change) && change.landing !== null
+      ? [changeEntry(change, table), landingEntry(change, change.landing, table)]
+      : [changeEntry(change, table)]);
+}
+
+/** When the ledger first took the record in: the run read its row, rendered it, queued it and reserved its OSDU id. */
+function pickedUpEntry(record: DeliveryRecord): Entry {
+  return {
+    ...entryDefaults(),
+    id: "planned",
+    at: record.createdUtc,
+    lane: "ledger",
+    title: "Picked up for delivery",
+    tone: "info",
+    icon: ScanSearch,
+    facts: [
+      <span key="m">rendered with mapping <Mono>{record.mappingName}</Mono></span>,
+      record.targetId !== null
+        ? <span key="t">OSDU id reserved for this flow: <RecordName id={record.targetId} copy className="max-w-[320px]" /></span>
+        : "no OSDU id reserved yet",
+    ],
+    more: (
+      <FactGrid>
+        <Fact label="What happened" wide>
+          A deliver run read the row, rendered the document with the mapping and the cache, and queued it to be sent. It
+          reserved the record's OSDU id for this flow, so no other flow can write to that record. The id is computed from
+          the record key: nothing was sent at this point.
+        </Fact>
+        <Fact label="OSDU id">{record.targetId !== null ? <TruncatedText text={record.targetId} mono maxWidth={420} copy title="OSDU id" /> : <NoFact />}</Fact>
+        <Fact label="Mapping"><Mono>{record.mappingName}</Mono></Fact>
+        <Fact label="Rendered with">{record.renderContext !== null ? <TruncatedText text={record.renderContext} mono maxWidth={420} copy title="Render context" /> : <NoFact />}</Fact>
+      </FactGrid>
+    ),
+    order: 3,
+    testId: "journey-planned",
+  };
+}
+
+/** What OSDU answered a refused request with, read from the error the worker stored. */
+interface Refusal {
+  status: number;
+  reason: string;
+  method: string | null;
+  url: string | null;
+  answer: string | null;
+}
+
+function refusalOf(error: string | null): Refusal | null {
+  if (error === null) {
+    return null;
+  }
+
+  const head = /HTTP (\d{3}) ([A-Za-z]+) from (GET|POST|PUT|PATCH|DELETE|HEAD) (\S+)/.exec(error);
+  if (head === null) {
+    const bare = /^HTTP (\d{3})\b/.exec(error);
+    return bare === null ? null : { status: Number(bare[1]), reason: "", method: null, url: null, answer: null };
+  }
+
+  const answer = /\):\s*(.+)$/s.exec(error)?.[1]?.trim();
+  return {
+    status: Number(head[1]),
+    reason: head[2].replace(/([a-z])([A-Z])/g, "$1 $2"),
+    method: head[3],
+    url: head[4],
+    answer: answer === undefined || answer === "" ? null : answer,
+  };
+}
+
+function urlPath(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
 }
 
 /**
- * Whether an attempt was an operation against OSDU: a delivery, a removal, a purge, a try that failed, or any try that
- * took a step against the target. What the intake decided (a hold of a row it could not build, a change that rendered
- * what OSDU holds, an older version) and the final hash check that found nothing to send are the ledger's decisions.
+ * Whether a try reached OSDU: a delivery, a removal, a purge, a try that failed, one that took a step, or one OSDU
+ * refused. What the intake decided (a hold of a row it could not build, a change that rendered what was delivered, an
+ * older version) and the final hash check that found nothing to send are the ledger's decisions. A refused request
+ * completes no step, so a refusal is known by the answer the worker stored with its hold.
  */
-function isOsduOperation(attempt: DeliveryAttempt): boolean {
+function reachedTarget(attempt: DeliveryAttempt): boolean {
   return attempt.outcome === "delivered"
     || attempt.outcome === "failed"
     || attempt.outcome === "deleted"
     || attempt.outcome === "historypurged"
-    || (attempt.result?.steps?.length ?? 0) > 0;
+    || (attempt.result?.steps?.length ?? 0) > 0
+    || (attempt.outcome === "held" && attempt.worker !== "intake" && refusalOf(attempt.error) !== null);
 }
 
-function attemptShape(attempt: DeliveryAttempt): { title: string; tone: Tone; icon: LucideIcon } {
+const PHASE_TEXT: Record<string, string> = {
+  metadata: "record only",
+  payload: "payload only",
+  "metadata+payload": "record and payload",
+};
+
+function statusText(refusal: Refusal): string {
+  return `HTTP ${refusal.status}${refusal.reason !== "" ? ` ${refusal.reason}` : ""}`;
+}
+
+/** An error as a reader takes it in: what OSDU answered and what it said, or the error as stored when it was no answer. */
+function shortError(error: string | null): string | null {
+  const refusal = refusalOf(error);
+  return refusal === null || refusal.method === null ? error : `${statusText(refusal)}${refusal.answer !== null ? `: ${refusal.answer}` : ""}`;
+}
+
+function attemptShape(attempt: DeliveryAttempt, refusal: Refusal | null, reached: boolean): {
+  title: string; tone: Tone; icon: LucideIcon; then: Outcome | null; outcome: Outcome | null;
+} {
+  const waits = "the record waits for someone to release or redeliver it";
   switch (attempt.outcome) {
     case "delivered":
-      return { title: attempt.targetVersion !== null ? `Delivered as version ${attempt.targetVersion}` : "Delivered", tone: "success", icon: CheckCircle2 };
-    case "failed":
-      return { title: "Delivery failed", tone: "destructive", icon: XCircle };
+      return { title: "Delivered", tone: "success", icon: CheckCircle2, then: null, outcome: { text: "Delivered", tone: "success" } };
+    case "failed": {
+      const final = attempt.error?.startsWith("failed after") === true;
+      return {
+        title: refusal !== null ? `Failed: ${statusText(refusal)}` : "Failed",
+        tone: "destructive",
+        icon: XCircle,
+        then: final ? { text: `No tries left: ${waits}.`, tone: "destructive" } : { text: "It will be tried again.", tone: "muted" },
+        outcome: final ? { text: "Failed", tone: "destructive" } : { text: "Failed, to be tried again", tone: "warning" },
+      };
+    }
     case "held":
-      return attempt.phase === "source-deleted"
-        ? { title: "Held back: a deleted row is never delivered", tone: "warning", icon: PauseCircle }
-        : { title: isOsduOperation(attempt) ? "Held back: refused when sent" : "Held back", tone: "warning", icon: PauseCircle };
+      if (attempt.phase === "source-deleted") {
+        return { title: "Held: the row was deleted, so it is not delivered", tone: "warning", icon: PauseCircle, then: null, outcome: { text: "Held: the row was deleted", tone: "warning" } };
+      }
+
+      return refusal !== null && reached
+        ? {
+          title: `Refused: ${statusText(refusal)}`,
+          tone: "destructive",
+          icon: XCircle,
+          then: { text: `Held: a ${refusal.status} is not retried, so ${waits}.`, tone: "warning" },
+          outcome: { text: `Held: refused with ${refusal.status}`, tone: "warning" },
+        }
+        : { title: "Held", tone: "warning", icon: PauseCircle, then: { text: "Not tried again until someone releases it or its row changes.", tone: "warning" }, outcome: { text: "Held", tone: "warning" } };
     case "skipped":
-      return attempt.phase === "source-missing"
-        ? { title: "Not found in the ingestion table: the row is gone, and the record keeps its status", tone: "warning", icon: FileQuestion }
-        : attempt.phase === "identical"
-        ? { title: "Nothing to send: the changed row renders what was delivered", tone: "muted", icon: CircleDashed }
-        : attempt.phase === "unchanged"
-          ? { title: "Nothing to send: already delivered", tone: "muted", icon: CircleDashed }
-          : attempt.phase === "stale"
-            ? { title: "Skipped: the source carried an older version", tone: "muted", icon: CircleDashed }
-            : { title: "Skipped", tone: "muted", icon: CircleDashed };
+      switch (attempt.phase) {
+        case "source-missing":
+          return { title: "Not found in the ingestion table", tone: "warning", icon: FileQuestion, then: { text: "The row is gone; the record keeps its status.", tone: "muted" }, outcome: null };
+        case "identical":
+          return { title: "Nothing to send: the changed row renders what was delivered", tone: "muted", icon: CircleDashed, then: null, outcome: { text: "Nothing to send", tone: "muted" } };
+        case "unchanged":
+          return { title: "Nothing to send: already delivered", tone: "muted", icon: CircleDashed, then: null, outcome: { text: "Nothing to send", tone: "muted" } };
+        case "stale":
+          return { title: "Skipped: an older version of the row", tone: "muted", icon: CircleDashed, then: null, outcome: { text: "Skipped: older version", tone: "muted" } };
+        default:
+          return { title: "Skipped", tone: "muted", icon: CircleDashed, then: null, outcome: { text: "Skipped", tone: "muted" } };
+      }
     case "deleted":
-      return { title: "Removed from OSDU", tone: "muted", icon: Trash2 };
+      return { title: "Removed", tone: "muted", icon: Trash2, then: { text: "Blocked until someone releases it.", tone: "muted" }, outcome: { text: "Removed", tone: "muted" } };
     case "historypurged":
-      return { title: "Earlier versions purged in OSDU", tone: "warning", icon: Eraser };
+      return { title: "Earlier versions purged", tone: "warning", icon: Eraser, then: null, outcome: { text: "Earlier versions purged", tone: "warning" } };
     default:
-      return { title: attempt.outcome, tone: "muted", icon: CircleDashed };
+      return { title: attempt.outcome, tone: "muted", icon: CircleDashed, then: null, outcome: null };
   }
 }
 
-const ACTIVITY_TITLES: Record<string, { title: string; icon: LucideIcon }> = {
-  release: { title: "Released back to pending", icon: Unlock },
-  redeliver: { title: "Redelivery asked for", icon: RotateCcw },
-  verify: { title: "Verify", icon: ShieldCheck },
-  sync: { title: "Synced from source", icon: RefreshCw },
-  delete: { title: "Removal asked for", icon: Trash2 },
-};
+/** The error a try stored, without what differs from one try to the next, so tries that failed alike compare equal. */
+function errorShape(error: string | null): string {
+  return (error ?? "").replace(/\(correlation-id [^)]*\)/g, "").replace(/\s+/g, " ").trim();
+}
 
-function attemptEvent(attempt: DeliveryAttempt): JourneyEvent {
-  const shape = attemptShape(attempt);
-  const osdu = isOsduOperation(attempt);
-  const duration = between(attempt.startedUtc, attempt.completedUtc);
+function attemptEntry(attempt: DeliveryAttempt): Entry {
   const steps = attempt.result?.steps ?? [];
   const correlationId = attempt.result?.correlationId;
+  const refusal = refusalOf(attempt.error);
+  const reached = reachedTarget(attempt);
+  const shape = attemptShape(attempt, refusal, reached);
+  const took = between(attempt.startedUtc, attempt.completedUtc);
+  const lane: Lane = attempt.phase === "source-missing" ? "source" : reached ? "osdu" : "ledger";
+  const request = refusal?.method != null && refusal.url !== null ? `${refusal.method} ${urlPath(refusal.url)}` : null;
+  const version = attempt.targetVersion !== null && attempt.outcome === "delivered" ? attempt.targetVersion : null;
   return {
+    ...entryDefaults(),
     id: `attempt-${attempt.attemptId}`,
     at: attempt.startedUtc,
+    lane,
     title: shape.title,
-    summary: osdu
+    tone: shape.tone,
+    icon: shape.icon,
+    facts: reached
       ? [
-        attempt.phase !== "" && <span key="p">phase <Mono>{attempt.phase}</Mono></span>,
-        duration !== null && `took ${duration}`,
-        steps.length > 0 && `${steps.length} step${steps.length === 1 ? "" : "s"}`,
+        PHASE_TEXT[attempt.phase],
+        request !== null && <Mono key="q">{request}</Mono>,
+        took !== null && `took ${took}`,
+        version !== null && <Mono key="v">{`version ${version}`}</Mono>,
         <RunRef key="r" runId={attempt.runId} />,
         <SubmissionRef key="s" submissionId={attempt.submissionId} />,
       ]
@@ -446,184 +695,439 @@ function attemptEvent(attempt: DeliveryAttempt): JourneyEvent {
         <RunRef key="r" runId={attempt.runId} />,
         <SubmissionRef key="s" submissionId={attempt.submissionId} />,
       ],
-    error: attempt.error,
-    note: attempt.result?.detail ?? null,
+    then: shape.then,
+    // A refusal's facts already say what was asked and what came back; what OSDU said about it is the error to read.
+    error: refusal?.answer ?? attempt.error,
     more: (
-      <FactGrid>
-        <Fact label="Worker"><TruncatedText text={attempt.worker} mono maxWidth={360} title="Worker" /></Fact>
-        <Fact label="Correlation id">{correlationId !== undefined ? <TruncatedText text={correlationId} mono maxWidth={360} copy title="Correlation id" /> : <NoFact />}</Fact>
-        <Fact label="Work batch">{attempt.workBatch !== null ? <Mono>{attempt.workBatch}</Mono> : <NoFact />}</Fact>
-        <Fact label="OSDU version">{attempt.targetVersion !== null ? <Mono>{attempt.targetVersion}</Mono> : <NoFact />}</Fact>
-        <Fact label="Completed"><RelativeTime value={attempt.completedUtc} /></Fact>
-        <Fact label="Built from"><Origin file={attempt.sourceFileName} row={attempt.sourceRowNumber} inCell /></Fact>
-        <Fact label="Row stamped"><RelativeTime value={attempt.sourceUpdatedUtc} /></Fact>
-        {attempt.sourceDeletedUtc != null && <Fact label="Row deleted"><RelativeTime value={attempt.sourceDeletedUtc} /></Fact>}
-        <Fact label="Metadata hash">{attempt.metadataHash !== null ? <TruncatedText text={attempt.metadataHash} mono maxWidth={360} copy title="Metadata hash" /> : <NoFact />}</Fact>
-        <Fact label="Payload hash">{attempt.payloadHash !== null ? <TruncatedText text={attempt.payloadHash} mono maxWidth={360} copy title="Payload hash" /> : <NoFact />}</Fact>
-        {steps.length > 0 && <Fact label="Steps" wide><AttemptSteps result={attempt.result} /></Fact>}
-      </FactGrid>
+      <div className="flex flex-col gap-2.5">
+        {steps.length > 0 && <StepList steps={steps} />}
+        <FactGrid>
+          {refusal?.url != null && <Fact label="Request" wide><Mono>{`${refusal.method ?? ""} ${refusal.url}`}</Mono></Fact>}
+          {attempt.error !== null && <Fact label="Error" wide><span className="text-destructive">{attempt.error}</span></Fact>}
+          {attempt.result?.detail !== undefined && <Fact label="Note" wide>{attempt.result.detail}</Fact>}
+          <Fact label="Correlation id">{correlationId !== undefined ? <TruncatedText text={correlationId} mono maxWidth={360} copy title="Correlation id" /> : <NoFact />}</Fact>
+          <Fact label="Built from"><Origin file={attempt.sourceFileName} row={attempt.sourceRowNumber} inCell /></Fact>
+          <Fact label="Row stamped"><RelativeTime value={attempt.sourceUpdatedUtc} /></Fact>
+          {attempt.sourceDeletedUtc != null && <Fact label="Row deleted"><RelativeTime value={attempt.sourceDeletedUtc} /></Fact>}
+          <Fact label="OSDU version">{attempt.targetVersion !== null ? <Mono>{attempt.targetVersion}</Mono> : <NoFact />}</Fact>
+          <Fact label="Work batch">{attempt.workBatch !== null ? <Mono>{attempt.workBatch}</Mono> : <NoFact />}</Fact>
+          <Fact label="Worker"><TruncatedText text={attempt.worker} mono maxWidth={360} title="Worker" /></Fact>
+          <Fact label="Completed"><RelativeTime value={attempt.completedUtc} /></Fact>
+          <Fact label="Run">{attempt.runId !== null ? <TruncatedText text={attempt.runId.toLowerCase()} mono maxWidth={360} copy title="Run" /> : <NoFact />}</Fact>
+          <Fact label="Submission">{attempt.submissionId !== null ? <TruncatedText text={attempt.submissionId.toLowerCase()} mono maxWidth={360} copy title="Submission" /> : <NoFact />}</Fact>
+          <Fact label="Metadata hash">{attempt.metadataHash !== null ? <TruncatedText text={attempt.metadataHash} mono maxWidth={360} copy title="Metadata hash" /> : <NoFact />}</Fact>
+          <Fact label="Payload hash">{attempt.payloadHash !== null ? <TruncatedText text={attempt.payloadHash} mono maxWidth={360} copy title="Payload hash" /> : <NoFact />}</Fact>
+        </FactGrid>
+      </div>
     ),
-    tone: shape.tone,
-    icon: shape.icon,
-    order: 3,
-    // A row a sync did not find is a fact of the source, like the row's other changes.
-    lane: osdu ? "osdu" : attempt.phase === "source-missing" ? "source" : "ledger",
+    order: 4,
+    outcome: shape.outcome,
+    foldKey: attempt.outcome === "failed" || attempt.outcome === "held" || attempt.outcome === "skipped"
+      ? `${attempt.outcome}|${attempt.phase}|${lane}|${errorShape(attempt.error)}`
+      : null,
     testId: `journey-attempt-${attempt.outcome}`,
   };
 }
 
-function activityEvent(activity: DeliveryActivity): JourneyEvent {
-  const shape = ACTIVITY_TITLES[activity.kind] ?? { title: activity.kind, icon: UserRoundCog };
-  const tone: Tone = activity.outcome === "failed" ? "destructive" : activity.outcome === "running" ? "info" : "muted";
-  const hasMore = activity.parametersJson !== null || activity.completedUtc !== null;
+/** Tries of this length or more that ended alike, one after another, read as one entry that opens to each of them. */
+const FOLD_AT = 3;
+
+function foldRepeats(entries: Entry[]): Entry[] {
+  const folded: Entry[] = [];
+  let index = 0;
+  while (index < entries.length) {
+    const first = entries[index];
+    let end = index + 1;
+    while (first.foldKey !== null && end < entries.length && entries[end].foldKey === first.foldKey) {
+      end += 1;
+    }
+
+    const run = entries.slice(index, end);
+    if (run.length < FOLD_AT) {
+      folded.push(...run);
+    } else {
+      const latest = run[run.length - 1];
+      folded.push({
+        ...latest,
+        id: `fold-${first.id}`,
+        title: `${latest.title}, ${run.length} times`,
+        facts: [`from ${clockOf(first.at)} to ${clockOf(latest.at)}`, ...latest.facts.slice(-2)],
+        more: (
+          <div className="flex flex-col gap-2.5">
+            <ul className="flex flex-col gap-0.5 text-[12px] text-muted-foreground" data-testid="journey-folded-tries">
+              {run.map((entry) => (
+                <li key={entry.id} className="flex flex-wrap items-baseline gap-x-3">
+                  <RelativeTime value={entry.at} />
+                  <FactLine parts={entry.facts} />
+                </li>
+              ))}
+            </ul>
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">The latest try</span>
+            {latest.more}
+          </div>
+        ),
+      });
+    }
+
+    index = end;
+  }
+
+  return folded;
+}
+
+/** The activity's parameters, as the ledger stored them; null when they are absent or not an object. */
+function parametersOf(activity: DeliveryActivity): Record<string, unknown> | null {
+  if (activity.parametersJson === null) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(activity.parametersJson);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+/** How many records a request named: the keys it listed, or this record alone when the ledger tied it to one. */
+function scopeOf(activity: DeliveryActivity, parameters: Record<string, unknown> | null): number | null {
+  const keys = parameters?.keys;
+  if (Array.isArray(keys) && keys.length > 0) {
+    return keys.length;
+  }
+
+  return activity.deliveryKey !== null ? 1 : null;
+}
+
+/** What a redelivery re-sends, from the scope and parts it was asked with. */
+function redeliveryOf(parameters: Record<string, unknown> | null): string | null {
+  const parts = parameters?.parts;
+  if (Array.isArray(parts) && parts.length > 0) {
+    return `the ${parts.map(String).join(" and ")}`;
+  }
+
+  switch (parameters?.scope) {
+    case "All":
+      return "everything: record and payload";
+    case "Metadata":
+      return "the record";
+    case "Payload":
+      return "the payload";
+    default:
+      return null;
+  }
+}
+
+/** The request each kind of intervention makes, and the button on a record's page that makes it for that record alone. */
+const REQUESTS: Partial<Record<string, { one: string; many: (count: number) => string; button: string }>> = {
+  redeliver: { one: "Redelivery of this record asked", many: (count) => `Redelivery asked for ${count} records, this one among them`, button: "Redeliver" },
+  release: { one: "Release of this record asked", many: (count) => `Release asked for ${count} records, this one among them`, button: "Release" },
+  delete: { one: "Removal of this record asked", many: (count) => `Removal asked for ${count} records, this one among them`, button: "Remove" },
+  verify: { one: "Verify of this record asked", many: (count) => `Verify asked for ${count} records, this one among them`, button: "Verify" },
+};
+
+function activityDetail(activity: DeliveryActivity): ReactNode {
+  return (
+    <FactGrid>
+      <Fact label="Asked by"><Mono>{activity.actor}</Mono></Fact>
+      <Fact label="Ended">{activity.completedUtc !== null ? <RelativeTime value={activity.completedUtc} /> : "still running"}</Fact>
+      <Fact label="Outcome"><Mono>{activity.outcome}</Mono></Fact>
+      {activity.summary !== null && <Fact label="Summary" wide>{activity.summary}</Fact>}
+      {activity.parametersJson !== null && (
+        <Fact label="Parameters" wide>
+          <CodeView value={storedJson(activity.parametersJson)} language="json" height={120} />
+        </Fact>
+      )}
+    </FactGrid>
+  );
+}
+
+/** Whether a verify was the one whose outcome the record holds: the record was verified while the verify ran. */
+function covers(activity: DeliveryActivity, at: string): boolean {
+  const moment = parseUtc(at).getTime();
+  const from = parseUtc(activity.startedUtc).getTime() - 2000;
+  const to = activity.completedUtc === null ? Number.POSITIVE_INFINITY : parseUtc(activity.completedUtc).getTime() + 2000;
+  return moment >= from && moment <= to;
+}
+
+function verifyShape(record: DeliveryRecord): { title: string; tone: Tone; outcome: Outcome } {
+  switch (record.lastVerifyOutcome) {
+    case "match":
+      return { title: "Verified: matches the ledger", tone: "success", outcome: { text: "Verified", tone: "success" } };
+    case "drifted":
+      return { title: "Verified: drifted from what was delivered", tone: "warning", outcome: { text: "Drifted", tone: "warning" } };
+    case "missing":
+      return { title: "Verified: no longer in OSDU", tone: "warning", outcome: { text: "Missing from OSDU", tone: "warning" } };
+    default:
+      return { title: "Verify could not read the record", tone: "muted", outcome: { text: "Verify could not read it", tone: "muted" } };
+  }
+}
+
+/** The version a verify compared, when no delivery since has moved it. */
+function verifiedVersion(record: DeliveryRecord): number | null {
+  if (record.targetVersion === null || record.lastVerifiedUtc === null) {
+    return null;
+  }
+
+  return record.lastDeliveredUtc === null || parseUtc(record.lastVerifiedUtc).getTime() >= parseUtc(record.lastDeliveredUtc).getTime()
+    ? record.targetVersion
+    : null;
+}
+
+/**
+ * What someone asked for on this record: a redelivery, a release, a removal or a verify, with who asked, how many records
+ * the request named, and what came of it. A verify carries its result, when it is the one whose outcome the record holds,
+ * so a request and its answer are one entry. A request that is not a verify sets the record moving, and so opens a
+ * chapter.
+ */
+function activityEntry(activity: DeliveryActivity, record: DeliveryRecord, result: boolean): Entry {
+  const parameters = parametersOf(activity);
+  const scope = scopeOf(activity, parameters);
+  const request = REQUESTS[activity.kind];
+  const who = actorName(activity.actor);
+  const failed = activity.outcome === "failed";
+  const many = scope !== null && scope > 1 && request !== undefined
+    ? `asked for ${scope} records at once; this page's ${request.button} acts on this record only`
+    : null;
+  const then: Outcome | null = activity.outcome === "running"
+    ? { text: "Still running.", tone: "info" }
+    : activity.outcome === "cancelled" ? { text: "Cancelled.", tone: "muted" } : null;
+
+  if (activity.kind === "verify") {
+    const shape = result ? verifyShape(record) : null;
+    const version = result ? verifiedVersion(record) : null;
+    const took = between(activity.startedUtc, activity.completedUtc);
+    return {
+      ...entryDefaults(),
+      id: `activity-${activity.activityId}`,
+      at: activity.startedUtc,
+      lane: "osdu",
+      title: shape?.title ?? "Verified",
+      tone: failed ? "destructive" : shape?.tone ?? "muted",
+      icon: ShieldCheck,
+      actor: activity.actor,
+      scope,
+      facts: [
+        version !== null && <Mono key="v">{`version ${version}`}</Mono>,
+        shape === null && !failed && activity.summary,
+        many,
+        took !== null && `took ${took}`,
+        <RunRef key="r" runId={activity.runId} />,
+      ],
+      then,
+      error: failed ? activity.summary : null,
+      more: activityDetail(activity),
+      order: 5,
+      outcome: shape?.outcome ?? null,
+      verifies: shape !== null,
+      testId: "journey-verified",
+    };
+  }
+
+  const title = request === undefined ? activity.kind : scope !== null && scope > 1 ? request.many(scope) : request.one;
   return {
+    ...entryDefaults(),
     id: `activity-${activity.activityId}`,
     at: activity.startedUtc,
-    title: `${shape.title} by ${activity.actor}`,
-    summary: [
-      activity.outcome,
-      activity.outcome !== "failed" && activity.summary,
+    lane: "ledger",
+    title,
+    tone: failed ? "destructive" : activity.outcome === "running" ? "info" : "muted",
+    icon: null,
+    actor: activity.actor,
+    scope,
+    facts: [
+      activity.kind === "redeliver" ? redeliveryOf(parameters) : !failed && activity.summary,
+      many,
       <RunRef key="r" runId={activity.runId} />,
       <SubmissionRef key="s" submissionId={activity.submissionId} />,
     ],
-    error: activity.outcome === "failed" ? activity.summary : null,
-    note: null,
-    more: hasMore
-      ? (
-        <FactGrid>
-          <Fact label="Ended">{activity.completedUtc !== null ? <RelativeTime value={activity.completedUtc} /> : "still running"}</Fact>
-          <Fact label="Flow">{activity.flowName}</Fact>
-          {activity.parametersJson !== null && (
-            <Fact label="Parameters" wide>
-              <CodeView value={storedJson(activity.parametersJson)} language="json" height={120} />
-            </Fact>
-          )}
-        </FactGrid>
-      )
-      : null,
-    tone,
-    icon: shape.icon,
-    order: 4,
-    lane: "intervention",
+    then,
+    error: failed ? activity.summary : null,
+    more: activityDetail(activity),
+    order: 2,
+    trigger: request === undefined ? null : `${title.replace(/, this one among them$/, "")} by ${who}`,
+    outcome: failed ? { text: `${request?.button ?? activity.kind} failed`, tone: "destructive" } : null,
     testId: `journey-intervention-${activity.kind}`,
   };
 }
 
+/** A verify whose request the ledger did not tie to this record (a whole flow's, or a scheduled one): its outcome alone. */
+function verifiedEntry(record: DeliveryRecord, at: string): Entry {
+  const shape = verifyShape(record);
+  const version = verifiedVersion(record);
+  return {
+    ...entryDefaults(),
+    id: "verified",
+    at,
+    lane: "osdu",
+    title: shape.title,
+    tone: shape.tone,
+    icon: ShieldCheck,
+    facts: [version !== null && <Mono key="v">{`version ${version}`}</Mono>, "in a verify of the flow"],
+    order: 5,
+    outcome: shape.outcome,
+    verifies: true,
+    testId: "journey-verified",
+  };
+}
+
+/** Where the record stands now, from its ledger row. */
+function nowOf(record: DeliveryRecord): Now {
+  const updated = <span key="u">updated <RelativeTime value={record.updatedUtc} /></span>;
+  const blocked = record.blocked && "blocked until someone releases it";
+  switch (record.status) {
+    case "delivered":
+      return {
+        title: "Delivered",
+        tone: "success",
+        icon: CheckCircle2,
+        lane: "osdu",
+        facts: [
+          record.targetVersion !== null && <span key="v">OSDU holds <Mono>{`version ${record.targetVersion}`}</Mono></span>,
+          record.lastVerifiedUtc !== null && <span key="c">last verified <RelativeTime value={record.lastVerifiedUtc} />{record.lastVerifyOutcome !== null && `: ${record.lastVerifyOutcome}`}</span>,
+          updated,
+        ],
+        error: null,
+      };
+    case "pending":
+      return record.hasPendingDocument
+        ? {
+          title: "Queued to send",
+          tone: "info",
+          icon: Send,
+          lane: "ledger",
+          facts: [
+            record.nextAttemptUtc !== null && <span key="n">next try <RelativeTime value={record.nextAttemptUtc} /></span>,
+            record.workBatch !== null && `work batch ${record.workBatch}`,
+            <SubmissionRef key="s" submissionId={record.lastSubmissionId} />,
+            updated,
+          ],
+          error: shortError(record.lastError),
+        }
+        : {
+          title: record.planRequestedUtc !== null ? "Waiting for the next run to pick it up" : "Pending",
+          tone: "info",
+          icon: Hourglass,
+          lane: "ledger",
+          facts: [record.planRequestedUtc !== null && <span key="p">asked <RelativeTime value={record.planRequestedUtc} /></span>, updated],
+          error: shortError(record.lastError),
+        };
+    case "delivering":
+      return {
+        title: "Being delivered",
+        tone: "info",
+        icon: Loader,
+        lane: "osdu",
+        facts: [record.leaseExpiresUtc !== null && <span key="l">lease runs out <RelativeTime value={record.leaseExpiresUtc} /></span>, updated],
+        error: null,
+      };
+    case "waiting":
+      return {
+        title: "Waiting for a record it refers to",
+        tone: "info",
+        icon: Hourglass,
+        lane: "ledger",
+        facts: [record.waitingFor !== null && <RecordName key="w" id={record.waitingFor} copy className="max-w-[320px]" />, updated],
+        error: null,
+      };
+    case "held":
+      return { title: "Held", tone: "warning", icon: PauseCircle, lane: "ledger", facts: [blocked, updated], error: shortError(record.lastError) };
+    case "failed":
+      return { title: "Failed", tone: "destructive", icon: XCircle, lane: "ledger", facts: [blocked, updated], error: shortError(record.lastError) };
+    case "deleted":
+      return { title: "Removed", tone: "muted", icon: Trash2, lane: "osdu", facts: [blocked, updated], error: null };
+    default:
+      return { title: record.status, tone: "muted", icon: CircleDashed, lane: "ledger", facts: [updated], error: shortError(record.lastError) };
+  }
+}
+
+/** How a chapter ended: its last settled step, a verified delivery as both, or, for the latest, where the record stands. */
+function settle(entries: Entry[], latest: boolean, now: Now): Outcome {
+  const settled = entries.reduce<Outcome | null>((outcome, entry) => {
+    if (entry.outcome === null) {
+      return outcome;
+    }
+
+    return entry.verifies && entry.outcome.tone === "success" && outcome !== null && outcome.text === "Delivered"
+      ? { text: "Delivered and verified", tone: "success" }
+      : entry.outcome;
+  }, null);
+
+  return settled ?? (latest ? { text: now.title, tone: now.tone } : { text: "Nothing sent", tone: "muted" });
+}
+
+interface Story {
+  chapters: Chapter[];
+  now: Now;
+  syncs: DeliveryActivity[];
+  table: string;
+}
+
 /**
- * The record's own story, newest first, and nothing else: each change of its row in the ingestion table (its arrival
- * with the landing that brought its file in, every later change, its deletion), when it entered the ledger and what
- * the ledger decided, every operation against OSDU with its outcome, every intervention with who asked for it, and
- * where it stands now. A pipeline run appears only as the evidence of a change it made to this row: a run that loaded
- * the row again unchanged is a fact about the pipeline, which its own page holds, and not about this record.
+ * The record's story, in chapters. Each step is placed on the lane where it happened; the steps are read in the order
+ * they happened and cut into chapters where something set the record moving (its row arrived, changed or was deleted,
+ * or someone asked for a redelivery, a release or a removal), so a chapter is what started it and what came of it.
+ * Steps that set the record moving one after another, before anything came of them (a file landing and the load of its
+ * row, a request asked twice), open one chapter together. A sync of the timeline itself is kept apart: it is how the
+ * ledger learned the row's history, not a step of it.
  */
-function buildEvents(
+function buildStory(
   record: DeliveryRecord, attempts: DeliveryAttempt[], activities: DeliveryActivity[], chain: DeliveryRecordChain | undefined,
-): JourneyEvent[] {
-  const events: JourneyEvent[] = sourceEvents(chain);
+): Story {
+  const lastVerified = record.lastVerifiedUtc;
+  const verifyWithResult = lastVerified === null
+    ? undefined
+    : activities.filter((a) => a.kind === "verify" && covers(a, lastVerified)).at(-1);
 
-  events.push({
-    id: "planned",
-    at: record.createdUtc,
-    title: "Planned: the record entered the ledger",
-    summary: [
-      record.targetId !== null ? <span key="t">claimed the OSDU id <RecordName id={record.targetId} copy className="max-w-[320px]" /></span> : "no OSDU id claimed yet",
-      `mapping ${record.mappingName}`,
-    ],
-    error: null,
-    note: null,
-    more: null,
-    tone: "info",
-    icon: ScanSearch,
-    order: 2,
-    lane: "ledger",
-    testId: "journey-planned",
-  });
-
-  for (const attempt of attempts) {
-    events.push(attemptEvent(attempt));
-  }
-
+  const entries: Entry[] = [...sourceEntries(chain), pickedUpEntry(record)];
   for (const activity of activities) {
-    events.push(activityEvent(activity));
+    if (activity.kind !== "sync") {
+      entries.push(activityEntry(activity, record, activity === verifyWithResult));
+    }
   }
 
-  if (record.lastVerifiedUtc !== null) {
-    const outcome = record.lastVerifyOutcome;
-    events.push({
-      id: "verified",
-      at: record.lastVerifiedUtc,
-      title: outcome === "match"
-        ? "Verified: OSDU matches the ledger"
-        : outcome === "drifted"
-          ? "Verified: OSDU has drifted from what was delivered"
-          : outcome === "missing"
-            ? "Verified: OSDU no longer holds the record"
-            : "Verify could not read the record",
-      summary: [outcome !== null && `outcome ${outcome}`, record.targetVersion !== null && `ledger version ${record.targetVersion}`],
-      error: null,
-      note: null,
-      more: null,
-      tone: outcome === "match" ? "success" : outcome === "error" ? "muted" : "warning",
-      icon: ShieldCheck,
-      order: 5,
-      lane: "osdu",
-      testId: "journey-verified",
-    });
+  if (lastVerified !== null && verifyWithResult === undefined) {
+    entries.push(verifiedEntry(record, lastVerified));
   }
 
-  if (record.status === "waiting") {
-    events.push({
-      id: "waiting",
-      at: record.updatedUtc,
-      title: "Waiting for a record it refers to",
-      summary: [record.waitingFor !== null && <RecordName key="w" id={record.waitingFor} copy className="max-w-[320px]" />],
-      error: null,
-      note: record.lastError,
-      more: null,
-      tone: "info",
-      icon: Hourglass,
-      order: 6,
-      lane: "ledger",
-      testId: "journey-waiting",
-    });
-  }
+  const attemptEntries = attempts.map(attemptEntry);
+  entries.push(...attemptEntries);
 
-  if (record.hasPendingDocument && record.status === "pending") {
-    events.push({
-      id: "queued",
-      at: record.updatedUtc,
-      title: "Queued to send",
-      summary: [
-        record.nextAttemptUtc !== null && <span key="n">next try <RelativeTime value={record.nextAttemptUtc} /></span>,
-        record.workBatch !== null && `work batch ${record.workBatch}`,
-        <SubmissionRef key="s" submissionId={record.lastSubmissionId} />,
-      ],
-      error: null,
-      note: null,
-      more: null,
-      tone: "info",
-      icon: Send,
-      order: 7,
-      lane: "ledger",
-      testId: "journey-queued",
-    });
-  }
-
-  // Newest first: what happened last is what an operator came for, and it sits at the top of the bounded list. The
-  // API writes some moments without their zone; every moment is UTC by contract, so each is read as UTC.
-  return events.sort((a, b) => {
-    const byTime = parseUtc(b.at).getTime() - parseUtc(a.at).getTime();
-    return byTime !== 0 && Number.isFinite(byTime) ? byTime : b.order - a.order;
+  // In the order it happened. The API writes some moments without their zone; every moment is UTC by contract.
+  entries.sort((a, b) => {
+    const byTime = parseUtc(a.at).getTime() - parseUtc(b.at).getTime();
+    return byTime !== 0 && Number.isFinite(byTime) ? byTime : a.order - b.order;
   });
+
+  const chapters: Chapter[] = [];
+  const now = nowOf(record);
+  for (const entry of foldRepeats(entries)) {
+    const current = chapters.at(-1);
+    const onlyTriggers = current !== undefined && current.entries.every((e) => e.trigger !== null);
+    if (current === undefined || (entry.trigger !== null && !onlyTriggers)) {
+      chapters.push({ number: chapters.length + 1, trigger: entry.trigger ?? entry.title, entries: [entry], outcome: { text: now.title, tone: now.tone } });
+    } else {
+      current.entries.push(entry);
+    }
+  }
+
+  chapters.forEach((chapter, index) => {
+    chapter.outcome = settle(chapter.entries, index === chapters.length - 1, now);
+  });
+
+  const syncs = activities
+    .filter((a) => a.kind === "sync")
+    .sort((a, b) => parseUtc(b.startedUtc).getTime() - parseUtc(a.startedUtc).getTime());
+  return { chapters, now, syncs, table: ingestionTableName(chain?.sourceTable ?? null) };
 }
 
 /**
  * The answers an operator came for, in one strip, in the order a record moves: the file it came in from, when its row
- * reached the ingestion table, when the row last changed, when it landed in OSDU, when OSDU was last verified, and
- * whether it was removed.
+ * reached the ingestion table, when the row last changed, when it was delivered, when it was last verified, and whether
+ * it was removed.
  */
 function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: DeliveryRecordChain | undefined): SummaryCell[] {
-  const dispatched = attempts.filter((a) => a.outcome === "delivered" || a.outcome === "failed" || (a.outcome === "held" && isOsduOperation(a)));
+  const dispatched = attempts.filter((a) => a.outcome === "delivered" || a.outcome === "failed" || (a.outcome === "held" && reachedTarget(a)));
   const failed = dispatched.filter((a) => a.outcome === "failed").length;
   const removed = attempts.find((a) => a.outcome === "deleted");
   const changes = chain?.changes ?? [];
@@ -697,7 +1201,7 @@ function milestones(record: DeliveryRecord, attempts: DeliveryAttempt[], chain: 
 
 /**
  * How far the record has come, as one strip in the order a record moves: the file it came in from, when its row
- * reached the ingestion table and last changed there, when it landed in OSDU and as which version, when it was last
+ * reached the ingestion table and last changed there, when it was delivered and as which version, when it was last
  * verified, and whether it was removed. The page's spine: the timeline under it is the evidence.
  */
 export function RecordMilestones({ record, attempts, chain }: {
@@ -736,9 +1240,9 @@ function scrollingAncestor(node: HTMLElement): HTMLElement | null {
  * from the list's place in the pane's content rather than on screen, so it holds while the page scrolls, and again
  * whenever the pane or anything in it changes size. A short list stays short; a long one fills the page and scrolls.
  */
-function useFillHeight(): { cardRef: (node: HTMLDivElement | null) => void; listRef: (node: HTMLOListElement | null) => void; maxHeight: number | null } {
+function useFillHeight(): { cardRef: (node: HTMLDivElement | null) => void; listRef: (node: HTMLDivElement | null) => void; maxHeight: number | null } {
   const [card, setCard] = useState<HTMLDivElement | null>(null);
-  const [list, setList] = useState<HTMLOListElement | null>(null);
+  const [list, setList] = useState<HTMLDivElement | null>(null);
   const [maxHeight, setMaxHeight] = useState<number | null>(null);
   useLayoutEffect(() => {
     if (card === null || list === null) {
@@ -775,23 +1279,237 @@ function useFillHeight(): { cardRef: (node: HTMLDivElement | null) => void; list
   return { cardRef: setCard, listRef: setList, maxHeight };
 }
 
-function laneMatches(event: JourneyEvent, filter: LaneFilter): boolean {
-  return filter === "all" || event.lane === filter;
+function matches(entry: Entry, filter: Filter): boolean {
+  return filter === "all" || (filter === "people" ? entry.actor !== null : entry.lane === filter);
 }
 
-const EMPTY: Record<Exclude<LaneFilter, "all">, { title: string; description: string }> = {
+const EMPTY: Record<Exclude<Filter, "all">, { title: string; description: string }> = {
   source: { title: "No change recorded", description: "The ledger holds no version of this record's row in its ingestion table." },
+  ledger: { title: "Nothing decided in the ledger", description: "The ledger has taken no step of its own on this record." },
   osdu: { title: "Nothing delivered yet", description: "The record has not been delivered, removed or verified." },
-  intervention: { title: "No intervention on this record", description: "Nobody has released, redelivered, verified or removed it." },
+  people: { title: "Nobody asked for anything", description: "Nobody has redelivered, released, verified or removed this record." },
 };
 
+/** A moment in the time column: the local clock, with the day under it when the row's chapter began on another day. */
+function TimeCell({ at, day }: { at: string; day: string | null }) {
+  const date = parseUtc(at);
+  const utc = date.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+  return (
+    <div className="flex flex-col items-end pr-2.5 pt-[5px]">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="font-mono text-[12px] tabular-nums">
+            {format(date, "HH:mm")}<span className="text-muted-foreground">{format(date, ":ss")}</span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="font-mono text-[11px]">{`${formatDistanceToNow(date, { addSuffix: true })} · ${utc}`}</TooltipContent>
+      </Tooltip>
+      {day !== null && <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{day}</span>}
+    </div>
+  );
+}
+
+const PATH = "absolute bg-muted-foreground/40";
+
 /**
- * The record's story, newest first, from the ledger and the changes of its row: how its row arrived and changed in the
- * ingestion table, what the ledger decided, every operation against OSDU and what OSDU answered, and every
- * intervention with who asked for it. Each entry is one line with the facts that place it; the rest (the runs a change
- * came from, the steps a try took, an intervention's parameters) opens under the entry. The list takes the rest of the
- * page and scrolls inside it, so its filter stays in view, and narrows to the row's changes, to what was done against
- * OSDU, or to the interventions alone.
+ * The rail beside one row: the three lanes, the path from the row above (across to this row's lane at the top of the
+ * row, then down to its node) and on to the row below, and the node.
+ */
+function RailCell({ lane, from, last, children }: { lane: Lane; from: Lane | null; last: boolean; children?: ReactNode }) {
+  const x = LANE_X[lane];
+  const left = from === null ? x : Math.min(LANE_X[from], x);
+  const right = from === null ? x : Math.max(LANE_X[from], x);
+  return (
+    <div className="relative" aria-hidden="true">
+      {LANES.map((l) => <span key={l} className="absolute inset-y-0 w-px bg-border/70" style={{ left: LANE_X[l] }} />)}
+      {from !== null && right > left && <span className={cn(PATH, "top-0 h-0.5")} style={{ left: left - 1, width: right - left + 2 }} />}
+      {from !== null && <span className={cn(PATH, "top-0 w-0.5")} style={{ left: x - 1, height: NODE_CENTRE }} />}
+      {!last && <span className={cn(PATH, "bottom-0 w-0.5")} style={{ left: x - 1, top: NODE_CENTRE }} />}
+      {children}
+    </div>
+  );
+}
+
+/** A node on the rail: a ring in the colour of how the step went, around its icon or the initial of who asked. */
+function RailNode({ lane, tone, size = 22, className, children }: { lane: Lane; tone: Tone; size?: number; className?: string; children: ReactNode }) {
+  return (
+    <span
+      className={cn("absolute z-[1] rounded-full bg-card", className)}
+      style={{ left: LANE_X[lane] - size / 2, top: NODE_CENTRE - size / 2, width: size, height: size }}
+    >
+      <span className={cn("flex size-full items-center justify-center rounded-full border", TONE_RING[tone])}>{children}</span>
+    </span>
+  );
+}
+
+function ScopeChip({ scope }: { scope: number }) {
+  return scope === 1
+    ? (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-primary/45 bg-primary/10 px-1.5 text-[11px] font-medium text-primary" title="The request named this record alone" data-testid="journey-scope">
+        <CircleDot className="size-3" />this record only
+      </span>
+    )
+    : (
+      <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-warning/45 bg-warning/10 px-1.5 text-[11px] font-medium text-warning" title={`The request named ${scope} records at once`} data-testid="journey-scope">
+        <Layers className="size-3" />{`${scope} records`}
+      </span>
+    );
+}
+
+function EntryRow({ entry, from, last, day, open, onToggle }: {
+  entry: Entry; from: Lane | null; last: boolean; day: string | null; open: boolean; onToggle: () => void;
+}) {
+  const Icon = entry.icon;
+  const title = <span className="text-[13.5px] font-semibold">{entry.title}</span>;
+  return (
+    <li className={ROW} data-testid={entry.testId} data-state={open ? "open" : "closed"}>
+      <TimeCell at={entry.at} day={day} />
+      <RailCell lane={entry.lane} from={from} last={last}>
+        <RailNode lane={entry.lane} tone={entry.tone}>
+          {Icon !== null
+            ? <Icon className="size-3" />
+            : <span className="text-[10px] font-semibold" title={entry.actor ?? undefined}>{actorInitial(entry.actor ?? "")}</span>}
+        </RailNode>
+      </RailCell>
+      <div className={cn("flex min-w-0 flex-col gap-0.5 pl-1 pt-0.5", last ? "pb-1" : "pb-3.5")}>
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+          {entry.more !== null
+            ? (
+              <button
+                type="button"
+                className="flex min-w-0 cursor-pointer items-center gap-1.5 text-left hover:underline hover:decoration-border hover:underline-offset-4"
+                onClick={onToggle}
+                aria-expanded={open}
+                data-testid="journey-event-toggle"
+              >
+                <ChevronRight className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none", open && "rotate-90")} />
+                {title}
+              </button>
+            )
+            : <span className="flex min-w-0 items-center gap-1.5"><span className="size-3.5 shrink-0" aria-hidden="true" />{title}</span>}
+          {entry.actor !== null && (
+            <span className="whitespace-nowrap rounded-full border px-1.5 text-[11px] font-medium text-muted-foreground" title={entry.actor} data-testid="journey-actor">
+              {actorName(entry.actor)}
+            </span>
+          )}
+          {entry.scope !== null && <ScopeChip scope={entry.scope} />}
+        </div>
+        <FactLine parts={entry.facts} />
+        {entry.then !== null && (
+          <span className={cn("flex items-baseline gap-1.5 text-[12.5px]", TONE_TEXT[entry.then.tone])}>
+            <span className="text-muted-foreground" aria-hidden="true">↳</span>{entry.then.text}
+          </span>
+        )}
+        {entry.error !== null && <span className="text-[12px] text-destructive" data-testid="journey-attempt-error">{entry.error}</span>}
+        {open && entry.more !== null && (
+          <div className="mt-1.5 rounded-md border bg-muted/30 px-3 py-2" data-testid="journey-event-detail">
+            {entry.more}
+          </div>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** When a chapter ran: the day and the span of clock it covered, or both days when it ran past midnight. */
+function chapterWhen(entries: Entry[]): string {
+  const first = entries[0].at;
+  const last = entries[entries.length - 1].at;
+  if (dayOf(first) !== dayOf(last)) {
+    return `${dayOf(first)} ${clockOf(first)} to ${dayOf(last)} ${clockOf(last)}`;
+  }
+
+  return clockOf(first) === clockOf(last) ? `${dayOf(first)} · ${clockOf(first)}` : `${dayOf(first)} · ${clockOf(first)} to ${clockOf(last)}`;
+}
+
+function ChapterRow({ chapter, count, from }: { chapter: Chapter; count: number; from: Lane | null }) {
+  const newest = chapter.entries[chapter.entries.length - 1].at;
+  return (
+    <li className={ROW} data-testid="journey-chapter" aria-label={`Chapter ${chapter.number}: ${chapter.trigger}, ${chapter.outcome.text}`}>
+      <div className="flex justify-end pr-2.5 pt-[15px]">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{dayOf(newest)}</span>
+      </div>
+      <div className="relative" aria-hidden="true">
+        {LANES.map((l) => <span key={l} className="absolute inset-y-0 w-px bg-border/70" style={{ left: LANE_X[l] }} />)}
+        {from !== null && <span className={cn(PATH, "inset-y-0 w-0.5")} style={{ left: LANE_X[from] - 1 }} />}
+      </div>
+      <div className="min-w-0 py-1.5 pl-1">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-md border bg-muted/40 px-2.5 py-1.5">
+          <span className="grid size-5 place-items-center rounded-md border bg-card text-[11px] font-semibold tabular-nums" title={`Chapter ${chapter.number} of ${count}`}>
+            {chapter.number}
+          </span>
+          <span className="text-[13px] font-semibold" data-testid="journey-chapter-trigger">{chapter.trigger}</span>
+          <span className="text-muted-foreground" aria-hidden="true">→</span>
+          <span className={cn("rounded-full border px-2 text-[11.5px] font-semibold", TONE_RING[chapter.outcome.tone])} data-testid="journey-chapter-outcome">
+            {chapter.outcome.text}
+          </span>
+          <span className="ml-auto text-[12px] tabular-nums text-muted-foreground">{chapterWhen(chapter.entries)}</span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function NowRow({ now, last }: { now: Now; last: boolean }) {
+  const Icon = now.icon;
+  return (
+    <li className={ROW} data-testid="journey-now">
+      <div className={cn("pr-2.5 pt-[6px] text-right text-[11px] font-semibold uppercase tracking-wide", TONE_TEXT[now.tone])}>Now</div>
+      <RailCell lane={now.lane} from={null} last={last}>
+        <RailNode lane={now.lane} tone={now.tone} size={26} className="ring-4 ring-muted">
+          <Icon className="size-3.5" />
+        </RailNode>
+      </RailCell>
+      <div className="flex min-w-0 flex-col gap-0.5 pb-3 pl-1 pt-1">
+        <span className="flex items-center gap-1.5"><span className="size-3.5 shrink-0" aria-hidden="true" /><span className="text-[13.5px] font-semibold">{now.title}</span></span>
+        <FactLine parts={now.facts} />
+        {now.error !== null && <span className="text-[12px] text-destructive">{now.error}</span>}
+      </div>
+    </li>
+  );
+}
+
+/** The syncs that read the row's history from the ingestion table into the ledger: bookkeeping of the timeline itself. */
+function SyncLine({ syncs, table }: { syncs: DeliveryActivity[]; table: string }) {
+  if (syncs.length === 0) {
+    return null;
+  }
+
+  const shown = syncs.slice(0, 3);
+  return (
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-baseline gap-x-2 border-t pt-2 text-[12px] text-muted-foreground" data-testid="journey-syncs">
+      <span className="inline-flex items-center gap-1.5 self-start">
+        <RefreshCw className="size-3.5" />
+        <span>Timeline synced from <Mono>{table}</Mono>:</span>
+      </span>
+      <span className="flex min-w-0 flex-col gap-0.5">
+        {shown.map((sync) => (
+          <span key={sync.activityId} className="inline-flex flex-wrap items-baseline gap-x-1.5">
+            <RelativeTime value={sync.startedUtc} />
+            <span>{`by ${actorName(sync.actor)}${sync.summary !== null ? `, ${sync.summary}` : ""}`}</span>
+            <RunRef runId={sync.runId} />
+          </span>
+        ))}
+        {syncs.length > shown.length && <span>{`and ${syncs.length - shown.length} earlier`}</span>}
+      </span>
+    </div>
+  );
+}
+
+type Row =
+  | { kind: "now" }
+  | { kind: "chapter"; chapter: Chapter }
+  | { kind: "entry"; entry: Entry; day: string | null };
+
+/**
+ * What happened to the record, newest first, in chapters: each opens with what set the record moving (its row arrived,
+ * changed or was deleted, or someone asked for a redelivery, a release or a removal) and says how it ended, and its
+ * steps sit on the rail's three lanes, the row's ingestion table, the ledger and OSDU, with a path between them. Times
+ * share one column. A step someone asked for names who asked and how many records the request named. Every entry opens
+ * to the rest known about it (the runs a change came from, the steps a try took and what they answered, a request's
+ * parameters). Where the record stands now heads the list, and the syncs that read the row's history into the ledger
+ * sit under it. The list takes the rest of the page and scrolls inside it, so its filter stays in view, and narrows to
+ * one lane, or to the steps someone asked for.
  */
 export function RecordJourney({ record, attempts, activities, chain }: {
   record: DeliveryRecord;
@@ -800,15 +1518,39 @@ export function RecordJourney({ record, attempts, activities, chain }: {
   /** The changes of the record's row in its ingestion table; undefined while they are being read. */
   chain: DeliveryRecordChain | undefined;
 }) {
-  const [filter, setFilter] = useState<LaneFilter>("all");
+  const [filter, setFilter] = useState<Filter>("all");
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
   const { cardRef, listRef, maxHeight } = useFillHeight();
   const loaded = attempts !== undefined && activities !== undefined;
-  const events = useMemo(
-    () => (loaded ? buildEvents(record, attempts, activities, chain) : []),
+  const story = useMemo(
+    () => (loaded ? buildStory(record, attempts, activities, chain) : null),
     [loaded, record, attempts, activities, chain]);
-  const listed = useMemo(() => events.filter((event) => laneMatches(event, filter)), [events, filter]);
-  const count = (lane: Lane) => events.filter((event) => event.lane === lane).length;
+
+  const all = useMemo(() => story?.chapters.flatMap((chapter) => chapter.entries) ?? [], [story]);
+  const count = (f: Exclude<Filter, "all">) => all.filter((entry) => matches(entry, f)).length;
+
+  const rows = useMemo(() => {
+    if (story === null) {
+      return [];
+    }
+
+    const list: Row[] = filter === "all" ? [{ kind: "now" }] : [];
+    for (const chapter of [...story.chapters].reverse()) {
+      const shown = chapter.entries.filter((entry) => matches(entry, filter)).reverse();
+      if (shown.length === 0) {
+        continue;
+      }
+
+      list.push({ kind: "chapter", chapter });
+      const chapterDay = dayOf(chapter.entries[chapter.entries.length - 1].at);
+      for (const entry of shown) {
+        const day = dayOf(entry.at);
+        list.push({ kind: "entry", entry, day: day === chapterDay ? null : day });
+      }
+    }
+
+    return list;
+  }, [story, filter]);
 
   const toggle = (id: string) => setOpened((current) => {
     const next = new Set(current);
@@ -821,29 +1563,66 @@ export function RecordJourney({ record, attempts, activities, chain }: {
     return next;
   });
 
+  // The path runs through the rows in the order they are listed; the last row with a node ends it.
+  let lastNode = -1;
+  rows.forEach((row, index) => {
+    if (row.kind !== "chapter") {
+      lastNode = index;
+    }
+  });
+
+  const listed: ReactNode[] = [];
+  let from: Lane | null = null;
+  if (story !== null) {
+    rows.forEach((row, index) => {
+      switch (row.kind) {
+        case "now":
+          listed.push(<NowRow key="now" now={story.now} last={index === lastNode} />);
+          from = story.now.lane;
+          break;
+        case "chapter":
+          listed.push(<ChapterRow key={`chapter-${row.chapter.number}`} chapter={row.chapter} count={story.chapters.length} from={from} />);
+          break;
+        case "entry":
+          listed.push(
+            <EntryRow
+              key={row.entry.id}
+              entry={row.entry}
+              from={from}
+              last={index === lastNode}
+              day={row.day}
+              open={opened.has(row.entry.id)}
+              onToggle={() => toggle(row.entry.id)}
+            />,
+          );
+          from = row.entry.lane;
+          break;
+      }
+    });
+  }
+
   return (
     <Card ref={cardRef} className="gap-2 rounded-lg p-3" data-testid="record-journey">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <ToggleGroup
           type="single"
           value={filter}
-          onValueChange={(value) => { if (value !== "") { setFilter(value as LaneFilter); } }}
+          onValueChange={(value) => { if (value !== "") { setFilter(value as Filter); } }}
           variant="outline"
           size="sm"
           data-testid="record-journey-filter"
         >
-          <ToggleGroupItem value="all" className="px-2.5 text-xs">{`Everything (${events.length})`}</ToggleGroupItem>
-          <ToggleGroupItem value="source" className="px-2.5 text-xs">{`Source changes (${count("source")})`}</ToggleGroupItem>
-          <ToggleGroupItem value="osdu" className="px-2.5 text-xs">{`Delivery (${count("osdu")})`}</ToggleGroupItem>
-          <ToggleGroupItem value="intervention" className="px-2.5 text-xs">{`Interventions (${count("intervention")})`}</ToggleGroupItem>
+          <ToggleGroupItem value="all" className="px-2.5 text-xs">{`All (${all.length})`}</ToggleGroupItem>
+          <ToggleGroupItem value="source" className="px-2.5 text-xs">{`Source (${count("source")})`}</ToggleGroupItem>
+          <ToggleGroupItem value="ledger" className="px-2.5 text-xs">{`Ledger (${count("ledger")})`}</ToggleGroupItem>
+          <ToggleGroupItem value="osdu" className="px-2.5 text-xs">{`OSDU (${count("osdu")})`}</ToggleGroupItem>
+          <ToggleGroupItem value="people" className="px-2.5 text-xs">{`Asked for (${count("people")})`}</ToggleGroupItem>
         </ToggleGroup>
-        <span className="ml-auto text-[12px] text-muted-foreground">
-          ledger row updated <RelativeTime value={record.updatedUtc} />
-        </span>
+        <span className="ml-auto text-[12px] text-muted-foreground">Newest first, in local time</span>
       </div>
-      {!loaded
+      {story === null
         ? <Skeleton className="h-24 w-full rounded-md" />
-        : listed.length === 0
+        : rows.length === 0
           ? (
             <EmptyState
               title={filter === "all" ? "Nothing recorded yet" : EMPTY[filter].title}
@@ -851,62 +1630,24 @@ export function RecordJourney({ record, attempts, activities, chain }: {
             />
           )
           : (
-            <ol
-              ref={listRef}
-              className="flex flex-col overflow-y-auto pr-1"
-              style={{ maxHeight: maxHeight ?? MIN_LIST_HEIGHT }}
-              data-testid="record-journey-events"
-            >
-              {listed.map((event, index) => {
-                const Icon = event.icon;
-                const last = index === listed.length - 1;
-                const open = opened.has(event.id);
-                const Chevron = open ? ChevronDown : ChevronRight;
-                return (
-                  <li key={event.id} className="relative flex gap-3" data-testid={event.testId} data-state={open ? "open" : "closed"}>
-                    <div className="flex flex-col items-center">
-                      <span className={cn("flex size-6 shrink-0 items-center justify-center rounded-full border", TONE_RING[event.tone])}>
-                        <Icon className="size-3.5" />
-                      </span>
-                      {!last && <span className="w-px flex-1 bg-border" />}
-                    </div>
-                    <div className={cn("flex min-w-0 flex-1 flex-col gap-0.5 pb-3", last && "pb-0")}>
-                      <div className="flex min-w-0 items-baseline gap-x-2">
-                        {event.more !== null
-                          ? (
-                            <button
-                              type="button"
-                              className="flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-2 text-left hover:underline"
-                              onClick={() => toggle(event.id)}
-                              aria-expanded={open}
-                              data-testid="journey-event-toggle"
-                            >
-                              <Chevron className="size-3.5 shrink-0 self-center text-muted-foreground" />
-                              <span className="text-[13px] font-medium">{event.title}</span>
-                            </button>
-                          )
-                          : (
-                            <span className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-                              <span className="size-3.5 shrink-0 self-center" aria-hidden="true" />
-                              <span className="text-[13px] font-medium">{event.title}</span>
-                            </span>
-                          )}
-                        <span className="shrink-0 text-[12px] text-muted-foreground"><RelativeTime value={event.at} absolute /></span>
-                      </div>
-                      <Summary parts={event.summary} />
-                      {event.error !== null && <span className="text-[12px] text-destructive" data-testid="journey-attempt-error">{event.error}</span>}
-                      {event.note !== null && <span className="text-[12px] text-muted-foreground">{event.note}</span>}
-                      {open && event.more !== null && (
-                        <div className="mt-1.5 rounded-md border bg-muted/30 px-3 py-2" data-testid="journey-event-detail">
-                          {event.more}
-                        </div>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-            </ol>
+            <div ref={listRef} className="overflow-y-auto pr-1" style={{ maxHeight: maxHeight ?? MIN_LIST_HEIGHT }}>
+              <div className={cn(ROW, "sticky top-0 z-[2] bg-card pb-0.5 pt-1")} aria-hidden="true">
+                <span />
+                <div className="relative h-5">
+                  {LANES.map((lane) => (
+                    <span key={lane} className="absolute top-0.5 -translate-x-1/2 whitespace-nowrap text-[9.5px] font-semibold uppercase tracking-wide text-muted-foreground" style={{ left: LANE_X[lane] }}>
+                      {LANE_LABEL[lane]}
+                    </span>
+                  ))}
+                </div>
+                <span className="pl-1 pt-0.5 text-[11px] text-muted-foreground">where each step happened</span>
+              </div>
+              <ol className="flex flex-col" data-testid="record-journey-events">
+                {listed}
+              </ol>
+            </div>
           )}
+      {story !== null && <SyncLine syncs={story.syncs} table={story.table} />}
       {loaded && chain !== undefined && (chain.note !== null || chain.truncated) && (
         <p className="text-[12px] text-muted-foreground" data-testid="record-chain-note">
           {chain.truncated && "The row changed more often than the timeline lists: its newest changes and its arrival are shown. "}

@@ -57,16 +57,20 @@ test.describe.serial("record trace", () => {
     await expect(adminPage).toHaveURL(/status=pending/);
     await expect(rows.first()).toContainText("NORWAY_WELLDB", { timeout: 30_000 });
 
-    // A row opens the record, whose journey starts with the row the intake staged it from and ends with the queued
-    // document: planned, never dispatched, nothing landed.
+    // A row opens the record, whose timeline starts with where it stands now, the queued document, and tells the one
+    // chapter it has lived so far: its row arrived, the ledger picked it up and reserved its OSDU id, nothing was sent.
     await rows.first().click();
     await expect(adminPage.getByTestId("page-delivery-record")).toBeVisible();
     await expect(adminPage.getByTestId("record-journey")).toBeVisible();
     await expect(adminPage.getByTestId("record-milestones")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("milestone-landed")).toContainText("not yet");
+    await expect(adminPage.getByTestId("journey-now")).toContainText("Queued to send");
     await expect(adminPage.getByTestId("journey-planned")).toBeVisible();
-    await expect(adminPage.getByTestId("journey-planned")).toContainText("claimed the OSDU id");
-    await expect(adminPage.getByTestId("journey-queued")).toBeVisible();
+    await expect(adminPage.getByTestId("journey-planned")).toContainText("Picked up for delivery");
+    await expect(adminPage.getByTestId("journey-planned")).toContainText("OSDU id reserved for this flow");
+    await expect(adminPage.getByTestId("journey-chapter")).toHaveCount(1);
+    await expect(adminPage.getByTestId("journey-chapter-trigger")).toContainText("Row arrived in arc.WellLog");
+    await expect(adminPage.getByTestId("journey-chapter-outcome")).toContainText("Queued to send");
 
     // The row's arrival, before the ledger: the file it came in from and when it reached the ingestion table. They are
     // the record's own facts; the runs that made them are their evidence, found by the file the landing processed and
@@ -79,8 +83,8 @@ test.describe.serial("record trace", () => {
     // The timeline holds the changes of this record's row, not the pipeline's runs: the landing that brought its file
     // in, and the load that inserted the row, which names the ingestion run that wrote it.
     const journey = adminPage.getByTestId("record-journey");
-    await expect(journey.getByTestId("journey-source-landing")).toContainText("Ingested from file by recall-welllog-01-header-pre");
-    await expect(journey.getByTestId("journey-source-loaded")).toContainText("Loaded into arc.WellLog");
+    await expect(journey.getByTestId("journey-source-landing")).toContainText("File landed by recall-welllog-01-header-pre");
+    await expect(journey.getByTestId("journey-source-loaded")).toContainText("Row loaded into arc.WellLog");
     await expect(journey.getByTestId("journey-source-loaded")).toContainText("written by");
     await expect(journey.getByTestId("journey-source-changed")).toHaveCount(0);
 
