@@ -39,6 +39,15 @@ function FlowCard({ pipeline, stats, onOpen }: { pipeline: PipelineSummary; stat
         <Badge variant="outline">{pipeline.batch ?? "default"}</Badge>
         {!pipeline.active && <Badge variant="outline" className="border-warning/50 text-warning">inactive</Badge>}
         {stats && stats.drifted > 0 && <Badge variant="secondary" className="bg-warning/15 text-warning">{stats.drifted} drifted</Badge>}
+        {(stats?.partitions ?? []).length > 0 && (
+          <span
+            className="ml-auto flex flex-wrap items-center gap-1"
+            title="The OSDU partitions this flow delivers to; its counts add every partition's ledger up. Open the flow to see one partition."
+            data-testid={`delivery-flow-${pipeline.id}-partitions`}
+          >
+            {stats!.partitions!.map((name) => <Badge key={name} variant="secondary" className="font-mono text-[11px]">{name}</Badge>)}
+          </span>
+        )}
       </div>
       {stats === undefined ? (
         <Skeleton className="h-14 w-full" />

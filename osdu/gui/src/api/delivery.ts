@@ -47,6 +47,13 @@ export interface DeliveryFlowStats {
   lastVerifiedUtc: string | null;
   submissions: number;
   lastSubmission: DeliverySubmission | null;
+  /**
+   * The partition the counts are of, for a flow that names its partitions and was counted in one; null when it was counted
+   * as a whole, or names none.
+   */
+  partition?: string | null;
+  /** The partitions the counts cover, for a flow that names its partitions; null for one that names none. */
+  partitions?: string[] | null;
 }
 
 /** One submission as the ledger received it and what became of it. */
@@ -128,6 +135,8 @@ export interface DeliverySubmissionDetail {
   runIds: string[];
   /** The interface of a source the submission belongs to; null for a flow in the single form. */
   interface?: string | null;
+  /** The partition the submission delivered to, for a flow that names its partitions; null for one that names none. */
+  partition?: string | null;
 }
 
 /** The current state of one deliverable: what OSDU holds for it, what is pending, and why it is where it is. */
@@ -212,6 +221,8 @@ export interface DeliveryRecordLink {
   label: string | null;
   targetId: string | null;
   status: DeliveryRecordStatus;
+  /** The partition its ledger delivers to, for a flow that names its partitions. */
+  partition?: string | null;
 }
 
 export interface DeliveryRecordDetail {
@@ -229,6 +240,11 @@ export interface DeliveryRecordDetail {
    * `source.record.key` as the catalog's copy of the flow declares it now. Null when the catalog holds no readable copy.
    */
   keyColumns?: string[] | null;
+  /**
+   * The partition the record's ledger delivers to, for a flow that names its partitions (each partition keeps a ledger of
+   * its own); null for a flow that names none.
+   */
+  partition?: string | null;
 }
 
 /**
@@ -254,6 +270,8 @@ export interface DeliveryRecordHit {
   /** The ingestion file and row the record's newest version came from: the queued version's while work waits. */
   sourceFileName?: string | null;
   sourceRowNumber?: number | null;
+  /** The partition the record's ledger delivers to, for a flow that names its partitions. */
+  partition?: string | null;
 }
 
 /** One value of a record a lookup matched: the value as it was read, and what it is (identity, key, label, osdu, file). */
@@ -420,6 +438,11 @@ export interface DeliveryCacheFlow {
   schedules: DeliveryCacheSchedule[];
   types: string[];
   connection: string | null;
+  /**
+   * The partitions the flow builds a cache for, when it names them (`partitions:`): a refresh of it names the one it
+   * builds, or builds each in turn. Null for a flow whose partition is its source header's.
+   */
+  partitions?: string[] | null;
 }
 
 /**
@@ -632,6 +655,8 @@ export interface DeliveryPruneResult {
 export interface DeliveryRecordListQuery extends PageQuery {
   /** Which interface of the source the records are of. Required when the source delivers more than one. */
   interface?: string;
+  /** Which partition's ledger the records are of. Required when the flow names its partitions. */
+  partition?: string;
   /** A delivery key (exact), or a prefix over label, source key and target id. */
   search?: string;
   /** "contains" for the slower substring match; prefix by default. */
@@ -735,6 +760,8 @@ export interface DeliveryRecordFlow {
   flowName: string;
   /** The interface of a source that delivers several; null for a flow in the single form. */
   interface: string | null;
+  /** The partition of a flow that names its partitions; null for a flow that names none. */
+  partition?: string | null;
 }
 
 /**
@@ -798,6 +825,11 @@ export interface DeliveryInterface {
   parameters?: DeliveryParameter[] | null;
   /** The record table's key columns, in the order a key's parts are named. */
   keyColumns?: string[] | null;
+  /**
+   * The partition the interface is described in, for a flow that names its partitions: each partition keeps a ledger of its
+   * own. Null for a flow that names none. Listed without a partition, such a flow lists every interface in every partition.
+   */
+  partition?: string | null;
 }
 
 /** A parameter a flow declares: a value of it fills the record scope's predicate and the work location. */
@@ -1100,6 +1132,8 @@ export interface DeliveryActivityListQuery extends PageQuery {
   pipelineId?: string;
   /** Which interface of that source; required when it delivers more than one. */
   interface?: string;
+  /** Which partition of that flow; required when it names its partitions. */
+  partition?: string;
   submissionId?: string;
   runId?: string;
   kind?: string;
@@ -1331,6 +1365,11 @@ export interface DeliveryBuilderFlow {
   endpoint: string;
   /** The partition the flow delivers to, whose cache it reads; null when its target names none a cache is kept under. */
   cacheScope: string | null;
+  /**
+   * For a flow that names its partitions, the one partition this entry delivers to: such a flow is offered once per
+   * partition it names. Null for a flow that names none.
+   */
+  partition?: string | null;
 }
 
 /** A repository as the mapping builder offers it: the git source a proposal opens against, and its delivery flows. */
@@ -1606,18 +1645,65 @@ export const deliveryRecordRoute = ({ flowId, deliveryKey }: DeliveryRecordRef) 
   `/delivery/records/${encodeURIComponent(flowId)}/${encodeURIComponent(deliveryKey)}`;
 
 /**
- * A flow-level path with the interface the request is about. A source that delivers several interfaces answers
- * nothing without one, because its records, submissions, target and counts are per interface, never summed.
+ * Which ledger of a flow a request is about: the interface of a source (null for the single form), and the partition of a
+ * flow that names its partitions (null for one that names none). A flow keeps a ledger per interface and partition, so its
+ * records, submissions, target, previews and interventions are read and acted on one ledger at a time, never summed.
  */
-const flowPath = (pipelineId: string, suffix: string, interfaceName?: string | null) =>
-  `/api/v1/delivery/flows/${pipelineId}${suffix}${interfaceName ? `?interface=${encodeURIComponent(interfaceName)}` : ""}`;
+export interface DeliveryFlowScope {
+  interfaceName?: string | null;
+  partition?: string | null;
+}
+
+/** What a ledger is called wherever a page names it: the flow, the interface of a source, and the partition it delivers to. */
+export const ledgerLabel = (flowName: string, scope?: DeliveryFlowScope): string =>
+  `${flowName}${scope?.interfaceName ? ` / ${scope.interfaceName}` : ""}${scope?.partition ? ` in partition ${scope.partition}` : ""}`;
+
+/**
+ * The link to a flow's page showing one ledger: `tab` (records, submissions) in the interface and partition of `scope`,
+ * with any further query parameters a view reads.
+ */
+export const flowLedgerRoute = (pipelineId: string, scope?: DeliveryFlowScope, extra: Record<string, string> = {}): string => {
+  const params = new URLSearchParams(extra);
+  if (scope?.interfaceName) {
+    params.set("interface", scope.interfaceName);
+  }
+
+  if (scope?.partition) {
+    params.set("partition", scope.partition);
+  }
+
+  const query = params.toString();
+  return `/pipelines/${pipelineId}${query === "" ? "" : `?${query}`}`;
+};
+
+/** The query parameters naming a scope's interface and partition. */
+const scopeQuery = (scope?: DeliveryFlowScope): Record<string, string> => ({
+  ...(scope?.interfaceName ? { interface: scope.interfaceName } : {}),
+  ...(scope?.partition ? { partition: scope.partition } : {}),
+});
+
+/**
+ * A flow-level path with the ledger the request is about. A source that delivers several interfaces, or a flow that names
+ * several partitions, answers nothing without one, because its records, submissions, target and counts are per ledger.
+ */
+const flowPath = (pipelineId: string, suffix: string, scope?: DeliveryFlowScope) => {
+  const query = new URLSearchParams(scopeQuery(scope)).toString();
+  return `/api/v1/delivery/flows/${pipelineId}${suffix}${query === "" ? "" : `?${query}`}`;
+};
 
 export const deliveryApi = {
-  /** The counts of one interface, or of the whole source when it names none. */
-  stats: (pipelineId: string, interfaceName?: string | null) =>
-    get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`, interfaceName ? { interface: interfaceName } : {}),
-  /** Every interface of a source, in the order a run takes them, each with its route and counts. */
-  interfaces: (pipelineId: string) => get<DeliveryInterface[]>(`/api/v1/delivery/flows/${pipelineId}/interfaces`),
+  /**
+   * The counts of one interface, or of the whole source when the scope names none; of one partition, or of every partition
+   * added up when the scope names none.
+   */
+  stats: (pipelineId: string, scope?: DeliveryFlowScope) =>
+    get<DeliveryFlowStats>(`/api/v1/delivery/flows/${pipelineId}/stats`, scopeQuery(scope)),
+  /**
+   * Every interface of a source, in the order a run takes them, each with its route and counts: in `partition`, or for a
+   * flow that names its partitions and no partition given, in every partition, each row naming its own.
+   */
+  interfaces: (pipelineId: string, partition?: string | null) =>
+    get<DeliveryInterface[]>(`/api/v1/delivery/flows/${pipelineId}/interfaces`, partition ? { partition } : {}),
   records: (pipelineId: string, query: DeliveryRecordListQuery = {}) =>
     get<PagedResult<DeliveryRecord>>(`/api/v1/delivery/flows/${pipelineId}/records`, query as QueryParams),
   /**
@@ -1630,11 +1716,11 @@ export const deliveryApi = {
     get<PagedResult<DeliveryRecordHit>>("/api/v1/delivery/records", query as unknown as QueryParams),
   /** The flows the lookup can be narrowed to, one per interface of a source, ordered by flow. */
   recordFlows: () => get<DeliveryRecordFlow[]>("/api/v1/delivery/records/flows"),
-  /** A flow's submissions, newest first. */
-  submissions: (pipelineId: string, max?: number, interfaceName?: string | null) =>
+  /** A flow's submissions in one ledger, newest first. */
+  submissions: (pipelineId: string, max?: number, scope?: DeliveryFlowScope) =>
     get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, {
       ...(max ? { max } : {}),
-      ...(interfaceName ? { interface: interfaceName } : {}),
+      ...scopeQuery(scope),
     }),
   retrievals: (pipelineId: string, max?: number) =>
     get<DeliveryRetrieval[]>(`/api/v1/delivery/flows/${pipelineId}/retrievals`, max ? { max } : {}),
@@ -1741,11 +1827,11 @@ export const deliveryApi = {
   /** What one record read out of the cache when it was rendered. */
   recordCacheUses: (record: DeliveryRecordRef) => get<DeliveryCacheUse[]>(`${recordApiPath(record)}/cache`),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
-  releaseFlow: (pipelineId: string, keys?: string[], interfaceName?: string | null) =>
-    post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", interfaceName), { keys: keys ?? null }),
-  /** Queues a target probe on a node: is OSDU reachable with the flow's credentials? */
-  probe: (pipelineId: string, interfaceName?: string | null) =>
-    post<ComputeTaskAccepted>(flowPath(pipelineId, "/probe", interfaceName)),
+  releaseFlow: (pipelineId: string, keys?: string[], scope?: DeliveryFlowScope) =>
+    post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", scope), { keys: keys ?? null }),
+  /** Queues a target probe on a node: is OSDU reachable with the flow's credentials, in the scope's partition? */
+  probe: (pipelineId: string, scope?: DeliveryFlowScope) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/probe", scope)),
   release: (record: DeliveryRecordRef) => post<DeliveryReleaseResult>(`${recordApiPath(record)}/release`),
   /** Marks the record for redelivery and (with run) queues the deliver run that sends it. */
   redeliver: (record: DeliveryRecordRef, scope: "all" | "metadata" | "payload" = "all", run = true) =>
@@ -1759,8 +1845,8 @@ export const deliveryApi = {
    */
   syncRecord: (record: DeliveryRecordRef) => post<DeliveryRunAccepted>(`${recordApiPath(record)}/sync`),
   /** Queues the same sync for records of the flow's interface: those the request names, or every one without a request. */
-  syncFlow: (pipelineId: string, interfaceName?: string | null, request?: DeliverySyncRequest) =>
-    post<DeliveryRunAccepted>(flowPath(pipelineId, "/sync", interfaceName), request ?? {}),
+  syncFlow: (pipelineId: string, scope?: DeliveryFlowScope, request?: DeliverySyncRequest) =>
+    post<DeliveryRunAccepted>(flowPath(pipelineId, "/sync", scope), request ?? {}),
   /** Queues a read-back of the record as its flow wrote it to OSDU, at its latest version or at `version`; poll the task for the document. */
   read: (record: DeliveryRecordRef, version?: number) =>
     post<ComputeTaskAccepted>(`${recordApiPath(record)}/read`, version === undefined ? undefined : { version }),
@@ -1774,22 +1860,22 @@ export const deliveryApi = {
    * key, a delivery key, an OSDU id the ledger holds, or a JSON array of the key's parts), rendered as a delivery would
    * render it and sent nowhere. `values` fill the flow's parameters; the declared defaults fill the rest. Poll the task.
    */
-  preview: (pipelineId: string, request: { key?: string | null; values?: Record<string, string> }, interfaceName?: string | null) =>
-    post<ComputeTaskAccepted>(flowPath(pipelineId, "/preview", interfaceName), request),
+  preview: (pipelineId: string, request: { key?: string | null; values?: Record<string, string> }, scope?: DeliveryFlowScope) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/preview", scope), request),
   /** Queues a preview of this record, rendered from its current source row as a delivery would render it now. */
   previewRecord: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/preview`),
   /** Queues a read of any OSDU record by id, through the flow's route and credentials. Poll the task. */
-  readOsdu: (pipelineId: string, targetId: string, interfaceName?: string | null, version?: number) =>
-    post<ComputeTaskAccepted>(flowPath(pipelineId, "/osdu/read", interfaceName), version === undefined ? { targetId } : { targetId, version }),
-  /** Where the flow's records live, and which call each removal scope makes against them. */
-  target: (pipelineId: string, interfaceName?: string | null) =>
-    get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`, interfaceName ? { interface: interfaceName } : {}),
+  readOsdu: (pipelineId: string, targetId: string, scope?: DeliveryFlowScope, version?: number) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/osdu/read", scope), version === undefined ? { targetId } : { targetId, version }),
+  /** Where the flow's records live in the scope's partition, and which call each removal scope makes against them. */
+  target: (pipelineId: string, scope?: DeliveryFlowScope) =>
+    get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`, scopeQuery(scope)),
   /** What a removal would act on, without removing anything: the confirmation's contents. */
-  previewRemoval: (pipelineId: string, request: DeliveryRemovalRequest, interfaceName?: string | null) =>
-    post<DeliveryRemovalPreview>(flowPath(pipelineId, "/records/remove/preview", interfaceName), request),
+  previewRemoval: (pipelineId: string, request: DeliveryRemovalRequest, scope?: DeliveryFlowScope) =>
+    post<DeliveryRemovalPreview>(flowPath(pipelineId, "/records/remove/preview", scope), request),
   /** Queues the removal of the selected records, or of every record the filter matches, on a node. */
-  removeRecords: (pipelineId: string, request: DeliveryRemovalRequest, interfaceName?: string | null) =>
-    post<DeliveryRemovalAccepted>(flowPath(pipelineId, "/records/remove", interfaceName), request),
+  removeRecords: (pipelineId: string, request: DeliveryRemovalRequest, scope?: DeliveryFlowScope) =>
+    post<DeliveryRemovalAccepted>(flowPath(pipelineId, "/records/remove", scope), request),
   prune: (olderThanDays: number) => post<DeliveryPruneResult>("/api/v1/delivery/ledger/prune", { olderThanDays }),
 };
 

@@ -50,10 +50,20 @@ function bareColumn(text: string): string {
 
 /**
  * Where a check value was prefilled from: the reference the flow's run reads it from, or, when the control plane cannot
- * resolve that reference, which one it is and that the check needs a value in its place. Nothing is said for a value the
- * flow writes out, or once the author has typed their own.
+ * resolve that reference, which one it is and that the check needs a value in its place. A flow that names its partitions
+ * supplies the partition itself, so its dataPartition is said to be that partition. Nothing is said for a value the flow
+ * writes out, or once the author has typed their own.
  */
 function CheckValueSource({ flow, parameter, edited }: { flow: DeliveryBuilderFlow | null; parameter: string; edited: boolean }) {
+  if (flow !== null && !edited && parameter === "dataPartition" && flow.partition) {
+    return (
+      <p className="text-xs text-muted-foreground" data-testid={`mapping-builder-check-source-${parameter}`}>
+        The partition <span className="font-mono">{flow.partition}</span>, one of the partitions the flow names, as a run
+        delivering there mints its ids in.
+      </p>
+    );
+  }
+
   const reference = flow?.parameterReferences[parameter];
   if (flow === null || reference === undefined || edited) {
     return null;
@@ -142,7 +152,13 @@ export default function MappingBuilderPage() {
   const chosenTemplate = parseTemplateKey(templateChoice);
 
   const reference = `${name.trim()}@${mappingVersion.trim()}`;
-  const checkFlow = repo === null ? null : repo.flows.find((flow) => flow.mapping === reference) ?? repo.flows[0] ?? null;
+  // A flow that names its partitions is offered once per partition, each with that partition's values; the check takes the
+  // one for the partition whose cache is picked, so the values it renders with and the cache it reads agree.
+  const usingMapping = repo === null ? [] : repo.flows.filter((flow) => flow.mapping === reference);
+  const checkFlow = repo === null
+    ? null
+    : usingMapping.find((flow) => cacheChoice !== "" && flow.cacheScope === cacheChoice) ?? usingMapping[0] ?? repo.flows[0] ?? null;
+  const checkFlowName = checkFlow === null ? "" : `${checkFlow.name}${checkFlow.partition ? ` in partition ${checkFlow.partition}` : ""}`;
   const cacheScope = cacheChoice !== "" ? cacheChoice : checkFlow?.cacheScope ?? "";
   const cache = (caches.data ?? []).find((candidate) => candidate.scope === cacheScope) ?? null;
 
@@ -418,7 +434,7 @@ export default function MappingBuilderPage() {
                     ? "The repository the mapping lives in; its delivery flow supplies the parameters the check renders with."
                     : checkFlow === null
                       ? `${repo.name} has no delivery flow, so the check renders without flow parameters.`
-                      : `The check renders with the parameters of ${checkFlow.name}.`}
+                      : `The check renders with the parameters of ${checkFlowName}.`}
                 </p>
               </div>
               <div className="flex flex-col gap-1.5">
@@ -617,7 +633,7 @@ export default function MappingBuilderPage() {
                 <h2 className="text-[13px] font-medium">Check values</h2>
                 <p className="text-xs text-muted-foreground">
                   The check renders the fixtures and static values with these. They are not written into the mapping.
-                  {checkFlow !== null && <> Prefilled from flow <span className="font-mono">{checkFlow.name}</span>.</>}
+                  {checkFlow !== null && <> Prefilled from flow <span className="font-mono">{checkFlowName}</span>.</>}
                 </p>
               </div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

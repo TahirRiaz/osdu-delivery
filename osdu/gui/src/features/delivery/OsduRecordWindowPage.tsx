@@ -68,7 +68,7 @@ function OsduRecordWindow({ flowId, deliveryKey }: DeliveryRecordRef) {
         record={detail.record}
         deliveryRef={ref}
         pipelineId={detail.pipelineId}
-        interfaceName={detail.interface ?? null}
+        flowScope={{ interfaceName: detail.interface ?? null, partition: detail.partition ?? null }}
         canOperate={canOperate}
         disabled={false}
         osdu={osdu}

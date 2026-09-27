@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { isApiError } from "@/api/client";
 import {
-  DELIVERY_RECORD_STATUSES, deliveryApi, deliveryRecordRoute,
+  DELIVERY_RECORD_STATUSES, deliveryApi, deliveryRecordRoute, ledgerLabel,
   type DeliveryInterface, type DeliveryRecord, type DeliveryRecordFilter, type DeliveryRecordStatus, type DeliverySubmission,
   type DeliverySyncRequest,
 } from "../../api/delivery";
@@ -28,6 +28,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { FlowStatusBar } from "./FlowStatusBar";
 import { InterfacePicker } from "./InterfacePicker";
+import { PartitionPicker } from "./PartitionPicker";
 import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./RecordCells";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
@@ -35,8 +36,8 @@ import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask
 
 const ALL = "all";
 
-/** The URL filters that name records of one interface, which another interface's view drops. */
-const SCOPED_TO_INTERFACE = ["submission", "delivered", "run"] as const;
+/** The URL filters that name records of one ledger, which the view of another interface or partition drops. */
+const SCOPED_TO_LEDGER = ["submission", "delivered", "run"] as const;
 
 /** The file and row a record's newest version came from: the queued version's while work waits, as the lookup names it. */
 function originOf(row: DeliveryRecord): RecordOrigin {
@@ -88,8 +89,10 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const submissionFilter = searchParams.get("submission");
   const deliveredFilter = searchParams.get("delivered");
   const runFilter = searchParams.get("run");
-  // The chips point at records of the interface that was showing; another interface's records are not those.
-  const { interfaces, names, many, interfaceName, selectInterface } = useInterfaceChoice(pipelineId, SCOPED_TO_INTERFACE);
+  // The chips point at records of the ledger that was showing; another interface's or partition's records are not those.
+  const {
+    rows, names, many, interfaceName, partitions, partition, scope, ready, selectInterface, selectPartition,
+  } = useInterfaceChoice(pipelineId, SCOPED_TO_LEDGER);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string>(ALL);
   const [drifted, setDrifted] = useState(false);
@@ -135,19 +138,19 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   }, []);
   const removal = useComputeTask(removalTaskId);
 
-  // The overview shows the source: its counts are every interface's, with the breakdown below them. The records and
-  // submissions views show one interface, because that is what their ledgers are.
+  // The overview shows the source in the partition in view: its counts are every interface's, with the breakdown below
+  // them. The records and submissions views show one interface, because that is what their ledgers are.
   const statsOf = section === "overview" ? null : interfaceName;
   const stats = useQuery({
-    queryKey: ["delivery", "stats", pipelineId, statsOf],
-    queryFn: () => deliveryApi.stats(pipelineId, statsOf),
-    enabled: section === "overview" || !many || interfaceName !== null,
+    queryKey: ["delivery", "stats", pipelineId, statsOf, partition],
+    queryFn: () => deliveryApi.stats(pipelineId, { interfaceName: statsOf, partition }),
+    enabled: ready && (section === "overview" || !many || interfaceName !== null),
     refetchInterval: 10000,
   });
   const submissions = useQuery({
-    queryKey: ["delivery", "submissions", pipelineId, interfaceName],
-    queryFn: () => deliveryApi.submissions(pipelineId, 100, interfaceName),
-    enabled: section !== "records" && (!many || interfaceName !== null),
+    queryKey: ["delivery", "submissions", pipelineId, interfaceName, partition],
+    queryFn: () => deliveryApi.submissions(pipelineId, 100, scope),
+    enabled: ready && section !== "records" && (!many || interfaceName !== null),
     refetchInterval: 10000,
   });
   const probe = useComputeTask(probeTaskId);
@@ -162,12 +165,12 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   }, [finishedRemoval, queryClient]);
 
   const probeTarget = useMutation({
-    mutationFn: () => deliveryApi.probe(pipelineId, interfaceName),
+    mutationFn: () => deliveryApi.probe(pipelineId, scope),
     onSuccess: (accepted) => setProbeTaskId(accepted.taskId),
     onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
   const releaseAll = useMutation({
-    mutationFn: () => deliveryApi.releaseFlow(pipelineId, undefined, interfaceName),
+    mutationFn: () => deliveryApi.releaseFlow(pipelineId, undefined, scope),
     onSuccess: (result) => {
       setReleaseOpen(false);
       toast.success(`Released ${result.released} record${result.released === 1 ? "" : "s"}.`);
@@ -182,7 +185,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   // A sync reads the records' rows from the ingestion tables and consolidates the ledger with them; it sends nothing to
   // OSDU, so it asks for no confirmation. Its run says what it found; the lists poll, and pick up what it wrote.
   const syncSource = useMutation({
-    mutationFn: (request: DeliverySyncRequest | undefined) => deliveryApi.syncFlow(pipelineId, interfaceName, request),
+    mutationFn: (request: DeliverySyncRequest | undefined) => deliveryApi.syncFlow(pipelineId, scope, request),
     onSuccess: (accepted, request) => {
       if (request !== undefined) {
         clearSelection();
@@ -209,9 +212,21 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const probeResult = probe.data;
   const probeJson = isTerminalTask(probeResult) ? taskResultJson(probeResult) : null;
   const removalJson = isTerminalTask(removal.data) ? taskResultJson(removal.data) : null;
+  // What the ledger in view is called wherever the view names it: the flow, its interface, and its partition.
+  const ledgerName = ledgerLabel(flowName, scope);
 
   return (
     <div className="flex flex-col gap-4" data-testid={`delivery-panel-${section}`}>
+      {partitions.length > 0 && (
+        <PartitionPicker
+          partitions={partitions}
+          partition={partition}
+          onSelect={selectPartition}
+          caption={partitions.length === 1
+            ? "the one partition this flow delivers to; it keeps its own ledger"
+            : `of ${partitions.length} partitions; each keeps its own ledger, and every count and action below is this one's`}
+        />
+      )}
       {many && (
         <InterfacePicker
           names={names}
@@ -275,15 +290,15 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 <span className="text-muted-foreground">
                   in the order a run takes them; every wave runs together, after the waves before it
                 </span>
-                {interfaces.data?.find((row) => row.orderProblem !== null)?.orderProblem && (
+                {rows?.find((row) => row.orderProblem !== null)?.orderProblem && (
                   <span className="text-warning">
-                    Order from <span className="font-mono">after:</span> alone: {interfaces.data.find((row) => row.orderProblem !== null)!.orderProblem}
+                    Order from <span className="font-mono">after:</span> alone: {rows.find((row) => row.orderProblem !== null)!.orderProblem}
                   </span>
                 )}
               </div>
               <DataTable
                 columns={interfaceColumns}
-                rows={interfaces.data}
+                rows={rows}
                 rowKey={(row) => row.interface ?? row.flowId}
                 onRowClick={(row) => row.interface !== null && selectInterface(row.interface)}
                 emptyMessage="This source declares no interfaces."
@@ -344,9 +359,13 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
               </Button>
             )}
           </FilterBar>
+          {/* A flow that names its partitions has no records until the partition in view is known. */}
+          {!ready ? <Skeleton className="h-40 w-full rounded-lg" /> : (
           <PagedTable
-            queryKey={["delivery", "records", pipelineId, interfaceName, search, status, drifted, contains, submissionFilter, deliveredFilter, runFilter]}
-            fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, { page, pageSize, interface: interfaceName ?? undefined, ...filter })}
+            queryKey={["delivery", "records", pipelineId, interfaceName, partition, search, status, drifted, contains, submissionFilter, deliveredFilter, runFilter]}
+            fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, {
+              page, pageSize, interface: interfaceName ?? undefined, partition: partition ?? undefined, ...filter,
+            })}
             columns={recordColumns}
             rowKey={(row) => row.deliveryKey}
             onRowClick={(row) => navigate(deliveryRecordRoute(row))}
@@ -400,6 +419,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             emptyMessage="No records match. A flow's records appear here once its first submission has been planned."
             data-testid="delivery-records-table"
           />
+          )}
           {removalTaskId !== null && (
             <Card className="gap-2 rounded-lg p-3" data-testid="delivery-removal-result">
               <div className="flex items-center gap-2 text-[13px] font-medium">
@@ -417,8 +437,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             open={removeOpen}
             onClose={() => setRemoveOpen(false)}
             pipelineId={pipelineId}
-            interfaceName={interfaceName}
-            flowName={interfaceName === null ? flowName : `${flowName} / ${interfaceName}`}
+            flowScope={scope}
+            flowName={ledgerName}
             selection={selectionFor(allMatching, filter, matched, selected)}
             onQueued={(accepted) => {
               clearSelection();
@@ -443,7 +463,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
       <ConfirmDialog
         open={releaseOpen}
         title="Release blocked records"
-        message={`Release every held, failed and deleted record of ${flowName} back to pending? Records that still hold a rendered document are queued at once; the others are planned again on the next submission.`}
+        message={`Release every held, failed and deleted record of ${ledgerName} back to pending? Records that still hold a rendered document are queued at once; the others are planned again on the next submission.`}
         confirmLabel="Release"
         busy={releaseAll.isPending}
         onConfirm={() => releaseAll.mutate()}

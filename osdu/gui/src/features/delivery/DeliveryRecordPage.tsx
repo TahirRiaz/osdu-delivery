@@ -9,7 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
-import { deliveryApi, type DeliveryRecordRef } from "../../api/delivery";
+import { deliveryApi, flowLedgerRoute, ledgerLabel, type DeliveryFlowScope, type DeliveryRecordRef } from "../../api/delivery";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CorrelationError } from "@/components/CorrelationError";
 import { IdChip } from "@/components/IdChip";
@@ -211,7 +211,9 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const busy = verify.isPending || sync.isPending || redeliver.isPending || release.isPending || osdu.queueing || readSource.isPending
     || render.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
-  const flowLabel = detail.flowName === null ? undefined : detail.interface ? `${detail.flowName} / ${detail.interface}` : detail.flowName;
+  // The record's ledger: the interface of its source and the partition it delivers to, which every view of it acts in.
+  const flowScope: DeliveryFlowScope = { interfaceName: detail.interface ?? null, partition: detail.partition ?? null };
+  const flowLabel = detail.flowName === null ? undefined : ledgerLabel(detail.flowName, { interfaceName: flowScope.interfaceName });
 
   return (
     <Page data-testid="page-delivery-record">
@@ -277,7 +279,8 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               copyTestId="copy-record-target"
             />
           )}
-          {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={flowLabel} to={`/pipelines/${detail.pipelineId}`} testId="record-pipeline-link" copyTestId="copy-record-pipeline" />}
+          {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={flowLabel} to={flowLedgerRoute(detail.pipelineId, flowScope)} testId="record-pipeline-link" copyTestId="copy-record-pipeline" />}
+          {detail.partition && <IdChip label="partition" value={detail.partition} testId="record-partition" copyTestId="copy-record-partition" />}
           {record.lastSubmissionId && <IdChip label="submission" value={record.lastSubmissionId} to={`/delivery/submissions/${record.lastSubmissionId}`} testId="record-submission-link" copyTestId="copy-record-submission" />}
         </div>
         <RecordSituation record={record} waitsOn={detail.waitsOn} waitedOnBy={detail.waitedOnBy ?? []} />
@@ -322,7 +325,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
             record={record}
             deliveryRef={ref}
             pipelineId={detail.pipelineId}
-            interfaceName={detail.interface ?? null}
+            flowScope={flowScope}
             canOperate={canOperate}
             disabled={busy}
             osdu={osdu}
@@ -354,7 +357,8 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           open={removeOpen}
           onClose={() => setRemoveOpen(false)}
           pipelineId={detail.pipelineId}
-          flowName={detail.flowName ?? "this flow"}
+          flowScope={flowScope}
+          flowName={ledgerLabel(detail.flowName ?? "this flow", flowScope)}
           selection={{ kind: "keys", keys: [deliveryKey] }}
           singleLabel={record.label ?? record.sourceKey}
           onQueued={(accepted) => {

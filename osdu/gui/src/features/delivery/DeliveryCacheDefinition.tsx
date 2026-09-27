@@ -64,10 +64,16 @@ export function DeliveryCacheDefinition({ cache, onRefresh }: {
     {
       id: "flow",
       header: "Cache flow",
+      // A flow that names its partitions builds a cache for each; the ones it builds besides this one are named with it.
       render: (flow) => (
         <span className="flex flex-col">
           <span className="font-mono text-[12.5px] font-medium">{flow.name}</span>
           <span className="text-[11px] text-muted-foreground">{flow.repoName}</span>
+          {(flow.partitions ?? []).length > 0 && (
+            <span className="text-[11px] text-muted-foreground" data-testid={`delivery-cache-flow-partitions-${flow.name}`}>
+              builds <span className="font-mono">{flow.partitions!.join(", ")}</span>
+            </span>
+          )}
         </span>
       ),
     },

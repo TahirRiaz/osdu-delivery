@@ -1,10 +1,12 @@
 import { useEffect, useId, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import type { TriggerBodyContribution, TriggerFieldsProps } from "@/modules/registry";
+import { deliveryApi } from "../../api/delivery";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -25,6 +27,50 @@ const REDELIVER_SCOPES: readonly { value: RedeliverScope; label: string }[] = [
   { value: "metadata", label: "Metadata only" },
   { value: "payload", label: "Payload only" },
 ];
+
+/** The run value naming the partition a run of a flow that names its partitions targets (docs/partitions-design.md section 3). */
+const PARTITION = "partition";
+
+/**
+ * The dropdown's choice for a cache refresh that names no partition: every partition the flow names, one after another.
+ * No partition id is written with '*', so it never stands for one.
+ */
+const EVERY_PARTITION = "*";
+
+/**
+ * The partitions a flow names (`partitions:`), in its order, read from what the control plane already serves about it: a
+ * delivery flow's interface listing, which names a row's partition, and the cache listing, which names a cache flow's.
+ * Empty for a flow that names none, and for every other kind.
+ */
+function useFlowPartitions(flowKind: string, pipelineId: string | null) {
+  const delivery = useQuery({
+    queryKey: ["delivery", "interfaces", pipelineId],
+    queryFn: () => deliveryApi.interfaces(pipelineId!),
+    enabled: flowKind === "delivery" && pipelineId !== null,
+    staleTime: 30000,
+  });
+  const caches = useQuery({
+    queryKey: ["delivery", "caches"],
+    queryFn: () => deliveryApi.caches(),
+    enabled: flowKind === "cache" && pipelineId !== null,
+    staleTime: 30000,
+  });
+  const partitions = useMemo(() => {
+    if (flowKind === "delivery") {
+      return [...new Set((delivery.data ?? []).map((row) => row.partition ?? null).filter((name): name is string => name !== null))];
+    }
+
+    if (flowKind === "cache") {
+      const flow = (caches.data ?? []).flatMap((cache) => cache.flows).find((f) => f.pipelineId === pipelineId);
+      return flow?.partitions ?? [];
+    }
+
+    return [];
+  }, [flowKind, delivery.data, caches.data, pipelineId]);
+  const loading = pipelineId !== null
+    && ((flowKind === "delivery" && delivery.isPending) || (flowKind === "cache" && caches.isPending));
+  return { partitions, loading };
+}
 
 /** The payload keys these fields own; anything else the run being repeated carried goes with it unchanged. */
 const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver", "interface", "interfaces"]);
@@ -67,11 +113,14 @@ function parseValues(text: string): { values: Record<string, string>; error: str
  * operation rather than a field here. A run being repeated opens with what it was given, and keeps any other part of
  * its payload (the key slices a fan-out member took) as it was.
  */
-export function DeliveryTriggerFields({ flowKind, operation, initialValues, initialPayload, onChange }: TriggerFieldsProps) {
+export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initialValues, initialPayload, onChange }: TriggerFieldsProps) {
   const idPrefix = useId();
   const [force, setForce] = useState(() => initialPayload?.force === true);
+  // The partition is picked from the ones the flow names, never typed: it is the one value of a run that decides which
+  // OSDU environment is written to. A run being repeated opens on the partition it ran in.
+  const [partitionChoice, setPartitionChoice] = useState<string | null>(() => initialValues[PARTITION] ?? null);
   const [valuesText, setValuesText] = useState(
-    () => Object.entries(initialValues).map(([name, value]) => `${name}=${value}`).join("\n"),
+    () => Object.entries(initialValues).filter(([name]) => name !== PARTITION).map(([name, value]) => `${name}=${value}`).join("\n"),
   );
   const [submissionId, setSubmissionId] = useState(
     () => (typeof initialPayload?.submissionId === "string" ? initialPayload.submissionId : ""),
@@ -111,6 +160,15 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
   const takesRedeliver = takesRecordScope && effectiveOperation === "deliver" && recordKeys.length > 0;
   const takesInterfaces = deliveryKind && effectiveOperation !== null;
   const interfaceNames = useMemo(() => lines(interfacesText), [interfacesText]);
+  const { partitions, loading: partitionsLoading } = useFlowPartitions(flowKind, pipelineId);
+  const takesPartition = partitions.length > 0;
+  // A delivery run acts in one partition: the only one the flow names, or the one picked. A cache refresh may name none,
+  // and then builds every partition's cache in turn.
+  const partition = !takesPartition
+    ? null
+    : partitionChoice !== null && partitions.includes(partitionChoice)
+      ? partitionChoice
+      : deliveryKind && partitions.length === 1 ? partitions[0] : null;
 
   const body = useMemo<TriggerBodyContribution>(() => {
     const parsed = takesValues ? parseValues(valuesText) : { values: {}, error: null };
@@ -118,6 +176,13 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
     // Client-side mirror of the kind's own validation, so obvious mistakes are caught before the round trip; the control
     // plane validates authoritatively and its problem details still render if anything slips through.
     const error = parsed.error
+      ?? (PARTITION in parsed.values
+        ? "The partition is not a flow parameter; pick it from the partitions the flow names."
+        : partitionsLoading
+          ? "Reading the partitions the flow names."
+          : deliveryKind && takesPartition && partition === null
+            ? "Pick the partition this run delivers to: the flow names several, and each is a different OSDU environment."
+            : null)
       ?? (takesSubmission && trimmedSubmission !== "" && !UUID.test(trimmedSubmission)
         ? "The submission id must be a UUID."
         : takesRecordScope && recordKeys.some((key) => !UUID.test(key))
@@ -149,14 +214,19 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
       payload.interfaces = interfaceNames;
     }
 
+    const values: Record<string, string> = { ...parsed.values };
+    if (takesPartition && partition !== null) {
+      values[PARTITION] = partition;
+    }
+
     return {
-      values: Object.keys(parsed.values).length > 0 ? parsed.values : undefined,
+      values: Object.keys(values).length > 0 ? values : undefined,
       payload: Object.keys(payload).length > 0 ? payload : undefined,
       error,
     };
   }, [
-    carried, force, interfaceNames, recordKeys, redeliver, submissionId, takesForce, takesInterfaces, takesRecordScope,
-    takesRedeliver, takesSubmission, takesValues, valuesText,
+    carried, deliveryKind, force, interfaceNames, partition, partitionsLoading, recordKeys, redeliver, submissionId, takesForce,
+    takesInterfaces, takesPartition, takesRecordScope, takesRedeliver, takesSubmission, takesValues, valuesText,
   ]);
 
   useEffect(() => {
@@ -165,6 +235,30 @@ export function DeliveryTriggerFields({ flowKind, operation, initialValues, init
 
   return (
     <div className="flex flex-col gap-3" data-testid="trigger-kind-fields">
+      {takesPartition && (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={`${idPrefix}-partition`}>Partition</Label>
+          <Select
+            value={partition ?? (deliveryKind ? "" : EVERY_PARTITION)}
+            onValueChange={(value) => setPartitionChoice(value === EVERY_PARTITION ? null : value)}
+          >
+            <SelectTrigger id={`${idPrefix}-partition`} size="sm" className="h-8 w-full font-mono" data-testid="trigger-partition">
+              <SelectValue placeholder="Choose a partition" />
+            </SelectTrigger>
+            <SelectContent>
+              {!deliveryKind && (
+                <SelectItem value={EVERY_PARTITION}>Every partition, one after another</SelectItem>
+              )}
+              {partitions.map((name) => <SelectItem key={name} value={name} className="font-mono">{name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {deliveryKind
+              ? "The OSDU partition this run delivers to: its ids, cache, ledger and configuration are that partition's."
+              : "The partition whose cache this refresh builds; every partition the flow names, in turn, when none is picked."}
+          </p>
+        </div>
+      )}
       {takesForce && (
         <div className="flex flex-col gap-1">
           <Label className="flex items-center gap-2 text-[13px] font-normal">

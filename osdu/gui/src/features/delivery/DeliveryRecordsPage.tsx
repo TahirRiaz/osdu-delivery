@@ -79,7 +79,8 @@ const recordColumn = (searching: boolean): Column<DeliveryRecordHit> => ({
 
 /**
  * The flow that delivers the record, named in full: which pipeline delivered a record is what an operator reads a row
- * by, next to the record itself. A source's interfaces share the flow's name, so an interface is named under it.
+ * by, next to the record itself. A source's interfaces share the flow's name, so an interface is named under it, and so
+ * is the partition of a flow that names its partitions, which keeps a ledger per partition.
  */
 const flowColumn: Column<DeliveryRecordHit> = {
   id: "flow",
@@ -90,7 +91,16 @@ const flowColumn: Column<DeliveryRecordHit> = {
       : (
         <div className="flex flex-col">
           <span className="font-mono text-[12px]">{row.flowName}</span>
-          {row.interface && <Badge variant="outline" className="w-fit font-mono text-[10px]">{row.interface}</Badge>}
+          {(row.interface || row.partition) && (
+            <span className="flex flex-wrap gap-1">
+              {row.interface && <Badge variant="outline" className="w-fit font-mono text-[10px]">{row.interface}</Badge>}
+              {row.partition && (
+                <Badge variant="secondary" className="w-fit font-mono text-[10px]" title="The OSDU partition this record's ledger delivers to">
+                  {row.partition}
+                </Badge>
+              )}
+            </span>
+          )}
         </div>
       )
   ),
@@ -174,14 +184,15 @@ export default function DeliveryRecordsPage() {
   const searching = term !== "";
   const columns = useMemo(() => columnsFor(searching), [searching]);
 
-  // The flow is a ledger identity holding records: one per interface of a source. An interface's choice leads with the
-  // interface, since a source's interfaces share the flow's name and the picker is too narrow to show both whole.
+  // The flow is a ledger identity holding records: one per interface of a source and partition of a flow that names its
+  // partitions. An interface's choice leads with the interface, since a source's interfaces share the flow's name and the
+  // picker is too narrow to show both whole; a partition follows the flow as its ledger is named (flow@partition).
   const flow = searchParams.get("flow") ?? "";
   const flows = useQuery({ queryKey: ["delivery", "record-flows"], queryFn: deliveryApi.recordFlows });
   const flowOptions = useMemo<FilterOption[]>(() => {
     const named = (flows.data ?? []).map((f) => ({
       value: f.flowId,
-      label: f.interface ? `${f.interface} · ${f.flowName}` : f.flowName,
+      label: `${f.interface ? `${f.interface} · ${f.flowName}` : f.flowName}${f.partition ? `@${f.partition}` : ""}`,
     }));
     // Two identities named alike (a ledger an interface stopped adopting, say) are told apart by the identity itself.
     const shared = new Set(named.map((o) => o.label).filter((label, i, all) => all.indexOf(label) !== i));

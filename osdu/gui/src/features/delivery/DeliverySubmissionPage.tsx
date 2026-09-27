@@ -10,13 +10,7 @@ import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "@/api/client";
-import {
-  deliveryApi,
-  deliveryRecordRoute,
-  type DeliveryAttempt,
-  type DeliverySubmissionDetail,
-  type DeliveryWorkBatch,
-} from "../../api/delivery";
+import { deliveryApi, deliveryRecordRoute, flowLedgerRoute, ledgerLabel, type DeliveryAttempt, type DeliverySubmissionDetail, type DeliveryWorkBatch } from "../../api/delivery";
 import { AttemptDetail } from "./AttemptDetail";
 import { CodeView } from "@/components/CodeView";
 import { CorrelationError } from "@/components/CorrelationError";
@@ -45,14 +39,12 @@ export default function DeliverySubmissionPage() {
   return <SubmissionContent submissionId={submissionId} />;
 }
 
-/** The flow's Records tab, scoped to one of this submission's sets, on the interface the submission belongs to. */
+/** The flow's Records tab, scoped to one of this submission's sets, in the ledger (interface and partition) the submission belongs to. */
 function recordsLink(detail: DeliverySubmissionDetail, param: "submission" | "delivered"): string {
-  const params = new URLSearchParams({ tab: "records", [param]: detail.submission.submissionId });
-  if (detail.interface) {
-    params.set("interface", detail.interface);
-  }
-
-  return `/pipelines/${detail.pipelineId}?${params.toString()}`;
+  return flowLedgerRoute(
+    detail.pipelineId!,
+    { interfaceName: detail.interface ?? null, partition: detail.partition ?? null },
+    { tab: "records", [param]: detail.submission.submissionId });
 }
 
 /**
@@ -68,8 +60,10 @@ function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; 
   // The count the confirmation is built on, read the way the removal will resolve it, not the submission's own tally:
   // a record removed or purged since is not in OSDU any more, and the removal must be aimed at what is.
   const delivered = useQuery({
-    queryKey: ["delivery", "records", pipelineId, detail.interface ?? null, "delivered-by", s.submissionId],
-    queryFn: () => deliveryApi.records(pipelineId!, { deliveredBy: s.submissionId, page: 1, pageSize: 1, interface: detail.interface ?? undefined }),
+    queryKey: ["delivery", "records", pipelineId, detail.interface ?? null, detail.partition ?? null, "delivered-by", s.submissionId],
+    queryFn: () => deliveryApi.records(pipelineId!, {
+      deliveredBy: s.submissionId, page: 1, pageSize: 1, interface: detail.interface ?? undefined, partition: detail.partition ?? undefined,
+    }),
     enabled: pipelineId !== null,
     refetchInterval: s.status === "completed" || s.status === "failed" ? 30000 : 5000,
   });
@@ -105,8 +99,8 @@ function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; 
         open={removeOpen}
         onClose={() => setRemoveOpen(false)}
         pipelineId={pipelineId}
-        interfaceName={detail.interface ?? null}
-        flowName={detail.interface ? `${s.flowName} / ${detail.interface}` : s.flowName}
+        flowScope={{ interfaceName: detail.interface ?? null, partition: detail.partition ?? null }}
+        flowName={ledgerLabel(s.flowName, { interfaceName: detail.interface ?? null, partition: detail.partition ?? null })}
         selection={{ kind: "filter", filter: { deliveredBy: s.submissionId }, expected: count }}
         onQueued={(accepted) => {
           onQueued(accepted.taskId);

@@ -3,7 +3,7 @@ import { useMutation, useQueries } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { isApiError } from "@/api/client";
 import type { ComputeTask, ComputeTaskAccepted } from "@/api/types";
-import { deliveryApi } from "../../api/delivery";
+import { deliveryApi, type DeliveryFlowScope } from "../../api/delivery";
 import { OsduRecordInspector, type InspectorEntry } from "./OsduRecordInspector";
 import { computeTaskQuery } from "./useComputeTask";
 
@@ -16,9 +16,10 @@ const MAX_TRAIL = 8;
  * one inspector, the last one in view; stepping back along the trail closes what was opened after that point. A
  * version of any record on the trail is read into the inspector in place, without disturbing the trail.
  */
-export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, readRootVersion, ledgerVersion, actions, fill = false }: {
+export function OsduRecordPanel({ pipelineId, flowScope, task, targetId, readRootVersion, ledgerVersion, actions, fill = false }: {
   pipelineId: string | null;
-  interfaceName: string | null;
+  /** The ledger whose route, credentials and partition a record opened from the page's is read through. */
+  flowScope: DeliveryFlowScope;
   /** The page's own read, as it stands. */
   task: ComputeTask | undefined;
   /** The id the page's read is for, so the trail names it before the read has answered. */
@@ -36,7 +37,7 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, rea
   const [opening, setOpening] = useState<string | null>(null);
   const reads = useQueries({ queries: trail.map((link) => computeTaskQuery(link.taskId)) });
   const open = useMutation({
-    mutationFn: ({ id }: { id: string; level: number; from: string }) => deliveryApi.readOsdu(pipelineId!, id, interfaceName),
+    mutationFn: ({ id }: { id: string; level: number; from: string }) => deliveryApi.readOsdu(pipelineId!, id, flowScope),
     onMutate: (asked) => setOpening(asked.id),
     // A record opened from the one at level N takes place N+1 and closes everything that was after it. The trail is
     // bounded: past its length the request is refused rather than the first records quietly dropped.
@@ -68,7 +69,7 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, rea
         : undefined}
       readVersionAt={(level) => (level === 0
         ? readRootVersion
-        : canOpen ? (version) => deliveryApi.readOsdu(pipelineId, entries[level].id, interfaceName, version) : undefined)}
+        : canOpen ? (version) => deliveryApi.readOsdu(pipelineId, entries[level].id, flowScope, version) : undefined)}
       onBack={(to) => setTrail((was) => was.slice(0, to))}
       actions={actions}
       fill={fill}

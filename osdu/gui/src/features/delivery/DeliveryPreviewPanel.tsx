@@ -10,6 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/auth/AuthContext";
 import { deliveryApi, type DeliveryParameter, type DeliveryRecordPreview } from "../../api/delivery";
 import { InterfacePicker } from "./InterfacePicker";
+import { PartitionPicker } from "./PartitionPicker";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RecordPreviewView } from "./RecordPreviewView";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
@@ -34,7 +35,9 @@ function valuesToSend(parameters: DeliveryParameter[], values: Record<string, st
 export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: string; flowName: string }) {
   const { hasScope } = useAuth();
   const canOperate = hasScope("operate");
-  const { interfaces, names, many, interfaceName, current, selectInterface } = useInterfaceChoice(pipelineId);
+  const {
+    interfaces, names, many, interfaceName, current, partitions, partition, scope, selectInterface, selectPartition,
+  } = useInterfaceChoice(pipelineId);
   const parameters = useMemo(() => current?.parameters ?? [], [current]);
   const keyColumns = current?.keyColumns ?? [];
   const [key, setKey] = useState("");
@@ -57,7 +60,8 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
     });
   }
 
-  // Another interface is another table and another scope: its preview starts afresh.
+  // Another interface is another table and another scope, and another partition another cache and target: its preview
+  // starts afresh.
   const shownFor = current?.flowId ?? null;
   const [previewedFor, setPreviewedFor] = useState<string | null>(shownFor);
   if (shownFor !== previewedFor) {
@@ -71,7 +75,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
     mutationFn: () => deliveryApi.preview(
       pipelineId,
       { key: key.trim() === "" ? null : key.trim(), values: valuesToSend(parameters, values) },
-      interfaceName),
+      scope),
     onSuccess: (accepted) => setTaskId(accepted.taskId),
   });
 
@@ -94,6 +98,14 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
 
   return (
     <div className="flex flex-col gap-4" data-testid="delivery-panel-preview">
+      {partitions.length > 0 && (
+        <PartitionPicker
+          partitions={partitions}
+          partition={partition}
+          onSelect={selectPartition}
+          caption="the preview renders with this partition's cache, ids and configuration"
+        />
+      )}
       {many && (
         <InterfacePicker names={names} interfaceName={interfaceName} onSelect={selectInterface} caption={`of ${names.length} interfaces of ${flowName}`} />
       )}

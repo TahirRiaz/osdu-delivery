@@ -27,8 +27,8 @@ const WELLBORE = "osdu:wks:master-data--Wellbore:1.3.0";
  */
 const CACHE_SYSTEM = "osdu-cache";
 
-/** The partition the estate's flows name, as lineage keeps it: the reference they write, lower-cased as every namespace is. */
-const PARTITION = "${env:osdu_data_partition}";
+/** The partition the estate's flows name, as lineage keeps it: the name they write under partitions, lower-cased as every namespace is. */
+const PARTITION = "dev";
 
 test.describe.serial("lineage", () => {
   test("the synced estate lists the OSDU types and cache types its flows write and read", async ({ request }) => {
@@ -45,8 +45,8 @@ test.describe.serial("lineage", () => {
     expect(wellLog, `no ${WELL_LOG} among ${datasets.map((d) => d.name).join(", ")}`).toBeDefined();
     // Two flows deliver well logs: the sample's delivery flow in the single form, and the welllogs interface of the
     // fixture source that delivers several kinds as interfaces.
-    // The estate names its partition as a reference, and lineage keeps a reference as its text rather than resolving it,
-    // so every flow naming the partition the same way meets on the same node.
+    // Every flow of the estate names the same partition, and lineage keeps a partition as it is written, so every flow
+    // delivering there meets on the same node.
     expect([wellLog!.namespace, wellLog!.group, wellLog!.writers]).toEqual([PARTITION, "work-product-component", 2]);
 
     const wellbore = named("osdu-type", WELLBORE);

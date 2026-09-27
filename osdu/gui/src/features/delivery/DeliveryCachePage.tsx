@@ -102,22 +102,20 @@ export default function DeliveryCachePage() {
           : <CacheSubtitle cache={cache} />}
         actions={cache === null ? undefined : (
           <>
-            {all.length > 1 && (
-              <Select value={cache.scope} onValueChange={chooseCache}>
-                <SelectTrigger size="sm" className="h-8 min-w-52" aria-label="Partition" data-testid="delivery-cache-picker">
-                  <DatabaseZap />
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {all.map((candidate) => (
-                    <SelectItem key={candidate.scope} value={candidate.scope}>
-                      <span className="font-mono text-[12px]">{candidate.scope}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-            <CacheFlowActions flows={cache.flows} onRefresh={setRefreshing} />
+            <Select value={cache.scope} onValueChange={chooseCache}>
+              <SelectTrigger size="sm" className="h-8 min-w-52" aria-label="Partition" title="The OSDU partition whose cache is shown" data-testid="delivery-cache-picker">
+                <DatabaseZap />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {all.map((candidate) => (
+                  <SelectItem key={candidate.scope} value={candidate.scope}>
+                    <span className="font-mono text-[12px]">{candidate.scope}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <CacheFlowActions flows={cache.flows} scope={cache.scope} onRefresh={setRefreshing} />
           </>
         )}
       />
@@ -139,7 +137,7 @@ export default function DeliveryCachePage() {
               <EmptyState
                 icon={<DatabaseZap />}
                 title="No cache is defined yet"
-                description="A cache is filled by cache flows: YAML files in a repository with flowType: cache, listing the OSDU types to cache and the paths of each record to keep, and the dictionaries and ingestion tables to hold as lookup tables. Each fills the cache of the partition in its data-partition-id. Sync the repository and the partition's cache appears here; refresh a flow to capture the first version."
+                description="A cache is filled by cache flows: YAML files in a repository with flowType: cache, listing the OSDU types to cache and the paths of each record to keep, and the dictionaries and ingestion tables to hold as lookup tables. Each fills the cache of every partition it names under partitions, or of the one in its data-partition-id. Sync the repository and each partition's cache appears here; refresh a flow to capture the first version."
                 data-testid="delivery-cache-none"
               />
             </Card>
@@ -164,6 +162,7 @@ export default function DeliveryCachePage() {
           flowName={refreshing.name}
           flowId={refreshing.pipelineId}
           flowKind="cache"
+          initialValues={cache !== null && (refreshing.partitions ?? []).includes(cache.scope) ? { partition: cache.scope } : null}
         />
       )}
     </Page>
@@ -221,9 +220,14 @@ function cacheFilesLink(flows: DeliveryCacheFlow[]): string {
 /**
  * The header's actions for the cache flows filling the partition: Cache files opens them as a filter on Pipelines, and
  * Refresh runs one flow's capture (a button when one flow fills the partition, a menu naming the flows when several do,
- * because a refresh captures what one flow declares, not the partition's whole cache).
+ * because a refresh captures what one flow declares, not the partition's whole cache). A flow that names its partitions
+ * refreshes the partition in view: the dialog opens on it, and says which others the flow builds.
  */
-function CacheFlowActions({ flows, onRefresh }: { flows: DeliveryCacheFlow[]; onRefresh: (flow: DeliveryCacheFlow) => void }) {
+function CacheFlowActions({ flows, scope, onRefresh }: {
+  flows: DeliveryCacheFlow[];
+  scope: string;
+  onRefresh: (flow: DeliveryCacheFlow) => void;
+}) {
   const runnable = flows.filter((flow) => flow.pipelineId !== null);
   const files = (
     <Button asChild size="sm" variant="outline" data-testid="delivery-cache-files">
@@ -272,7 +276,10 @@ function CacheFlowActions({ flows, onRefresh }: { flows: DeliveryCacheFlow[]; on
               data-testid={`delivery-cache-refresh-${flow.name}`}
             >
               <span className="font-mono text-[12px]">{flow.name}</span>
-              <span className="text-[11px] text-muted-foreground">{flow.types.join(", ")}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {flow.types.join(", ")}
+                {(flow.partitions ?? []).length > 1 && ` (builds ${flow.partitions!.join(", ")}; refreshes ${scope})`}
+              </span>
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>

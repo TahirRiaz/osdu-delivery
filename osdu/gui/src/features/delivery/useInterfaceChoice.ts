@@ -1,40 +1,62 @@
 import { useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { deliveryApi } from "../../api/delivery";
+import { deliveryApi, type DeliveryFlowScope } from "../../api/delivery";
 
 /**
- * Which interface of a source a view is about. Every view of a source is about one of its interfaces: they have separate
- * ledgers, so their records, submissions, targets and previews are never summed. The choice travels in the URL, so a link
- * to a source's records (or its preview) is a link to one interface's. A flow in the single form has one interface and no
- * name, and `interfaceName` is null for it; `current` is the interface in view either way, once the listing has loaded.
- * `clearOnChange` names the URL parameters that meant something only for the interface that was showing.
+ * Which ledger of a flow a view is about: the interface of a source, and the partition of a flow that names its
+ * partitions. Every view of a flow is about one ledger: interfaces and partitions keep separate ledgers, so their records,
+ * submissions, targets and previews are never summed. The choice travels in the URL (`interface`, `partition`), so a link
+ * to a flow's records (or its preview) is a link to one ledger's.
+ *
+ * A flow in the single form has one interface and no name, and `interfaceName` is null for it; a flow that names no
+ * partitions has `partitions` empty and `partition` null. A flow that names them is shown in the partition the URL names,
+ * or the first it names. `current` is the interface in view either way, once the listing has loaded, and `scope` is what
+ * every flow-level request of the view carries. `clearOnChange` names the URL parameters that meant something only for the
+ * ledger that was showing.
  */
 export function useInterfaceChoice(pipelineId: string, clearOnChange: readonly string[] = []) {
   const [searchParams, setSearchParams] = useSearchParams();
+  // Listed without a partition, a flow that names its partitions lists every interface in every partition, each row
+  // naming its partition: the one listing that says both which partitions there are and how each stands.
   const interfaces = useQuery({
     queryKey: ["delivery", "interfaces", pipelineId],
     queryFn: () => deliveryApi.interfaces(pipelineId),
     staleTime: 30000,
   });
-  const names = useMemo(
-    () => (interfaces.data ?? []).map((row) => row.interface).filter((name): name is string => name !== null),
+  const partitions = useMemo(
+    () => [...new Set((interfaces.data ?? []).map((row) => row.partition ?? null).filter((name): name is string => name !== null))],
     [interfaces.data]);
+  const askedPartition = searchParams.get("partition");
+  const partition = partitions.length === 0
+    ? null
+    : askedPartition !== null && partitions.includes(askedPartition) ? askedPartition : partitions[0];
+  const rows = useMemo(
+    () => (interfaces.data === undefined ? undefined : interfaces.data.filter((row) => (row.partition ?? null) === partition)),
+    [interfaces.data, partition]);
+  const names = useMemo(
+    () => (rows ?? []).map((row) => row.interface).filter((name): name is string => name !== null),
+    [rows]);
   const many = names.length > 1;
   const asked = searchParams.get("interface");
   const interfaceName = many ? (asked !== null && names.includes(asked) ? asked : names[0]) : null;
-  const current = interfaces.data === undefined
+  const current = rows === undefined
     ? undefined
-    : interfaces.data.find((row) => row.interface === interfaceName) ?? (many ? undefined : interfaces.data[0]);
+    : rows.find((row) => row.interface === interfaceName) ?? (many ? undefined : rows[0]);
+  // Until the listing answers, nothing says whether the flow names partitions, so a request that must name one waits.
+  const ready = interfaces.data !== undefined || interfaces.isError;
+  const scope = useMemo<DeliveryFlowScope>(() => ({ interfaceName, partition }), [interfaceName, partition]);
   const clearKey = clearOnChange.join("\u001f");
-  const selectInterface = useCallback((next: string) => setSearchParams((existing) => {
+  const choose = useCallback((name: "interface" | "partition", next: string) => setSearchParams((existing) => {
     const params = new URLSearchParams(existing);
-    params.set("interface", next);
-    for (const name of clearKey === "" ? [] : clearKey.split("\u001f")) {
-      params.delete(name);
+    params.set(name, next);
+    for (const cleared of clearKey === "" ? [] : clearKey.split("\u001f")) {
+      params.delete(cleared);
     }
 
     return params;
   }), [setSearchParams, clearKey]);
-  return { interfaces, names, many, interfaceName, current, selectInterface };
+  const selectInterface = useCallback((next: string) => choose("interface", next), [choose]);
+  const selectPartition = useCallback((next: string) => choose("partition", next), [choose]);
+  return { interfaces, rows, names, many, interfaceName, current, partitions, partition, scope, ready, selectInterface, selectPartition };
 }
