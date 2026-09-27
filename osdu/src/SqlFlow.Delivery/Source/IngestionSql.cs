@@ -328,9 +328,21 @@ public static class IngestionSql
             return records;
         }
 
+        // A record whose row was soft-deleted in the window is a candidate although its update column did not move: the
+        // ingestion flow tags a row deleted without touching it, and a deleted row is one the plan must hold. Its own
+        // part, rather than an OR beside the update window, so each column is sought through its own index.
+        var parts = new List<string> { records };
+        if (layout.Deleted is { } deletedRecord)
+        {
+            parts.Add($"""
+                SELECT DISTINCT {OrderList(layout, "r")}
+                FROM {layout.Record.Quoted} r
+                {Where(layout, "r", WindowPredicate("r", deletedRecord, hasLower), bounds)}
+                """);
+        }
+
         // A record whose own row did not change in the window is still a candidate when one of its child rows did, or when
         // a child row was soft-deleted in it: the record's document is built from those rows as well.
-        var parts = new List<string> { records };
         foreach (var dataset in layout.Datasets.Where(d => d.Updated is not null || d.Deleted is not null))
         {
             var changed = new List<string>();

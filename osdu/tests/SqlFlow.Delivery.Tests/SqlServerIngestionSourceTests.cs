@@ -100,6 +100,41 @@ public sealed class SqlServerIngestionSourceTests
     }
 
     [Fact]
+    public async Task A_row_soft_deleted_in_the_window_is_a_candidate_although_its_update_column_did_not_move()
+    {
+        await using var estate = await SqlServerIngestionFixture.StartAsync();
+        var table = await CreateTableAsync(
+            estate,
+            "Tagged",
+            "[RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT [PK_Tagged] PRIMARY KEY CLUSTERED, [item_key] nvarchar(50) NOT NULL, [UpdatedDate_DW] datetime NULL, [DeletedDate_DW] datetime NULL",
+            "CREATE UNIQUE NONCLUSTERED INDEX [NCI_KeyColumn] ON {0} ([item_key]);");
+
+        // Three rows loaded; then the ingestion flow's key match tags one deleted, which stamps the delete column and
+        // leaves the update column where the load put it, and another changes. One row was tagged before the window.
+        await ExecuteAsync(estate, $"""
+            INSERT INTO {table} ([item_key], [UpdatedDate_DW], [DeletedDate_DW])
+            VALUES (N'kept', @loaded, NULL), (N'tagged', @loaded, NULL), (N'changed', @loaded, NULL), (N'tagged-before', @loaded, @loaded);
+            UPDATE {table} SET [DeletedDate_DW] = @changed WHERE [item_key] = N'tagged';
+            UPDATE {table} SET [UpdatedDate_DW] = @changed WHERE [item_key] = N'changed';
+            """);
+        var flow = ItemFlow(estate, "Tagged");
+
+        var source = estate.Engine.Sources.Open(flow, NoValues, NullLoggerFactory.Instance);
+        var header = await source.OpenAsync(SourceSelection.Incremental(Loaded), null);
+        Assert.Equal(2, header.EstimatedCandidates);
+        Assert.True(header.HasChanges);
+        var read = new Dictionary<string, DateTime?>(StringComparer.Ordinal);
+        await foreach (var record in source.ReadAsync(header, null))
+        {
+            read[record.Row.GetString("item_key")!] = record.DeletedUtc;
+        }
+
+        Assert.Equal(["changed", "tagged"], read.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal(Changed, read["tagged"]);
+        Assert.Null(read["changed"]);
+    }
+
+    [Fact]
     public async Task A_primary_key_a_read_cannot_rely_on_is_refused_with_what_it_lacks()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();

@@ -220,13 +220,15 @@ the template are read from the catalog, so rendering needs the catalog connectio
 ### Incremental reads: what changed since the last run
 
 A run does not read every row. It reads the rows the ingestion tables changed in a window above the scope's
-watermark, the records whose child rows changed in it, and any record the ledger asked to plan again. Every row it
-does read goes through the whole pipeline: render, the preflight-checked mapping, the hash of the rendered document
-against what OSDU holds, and the same hash check again by the worker just before anything is sent.
+watermark, the record rows the ingestion flow marked deleted in it, the records whose child rows changed or were
+marked deleted in it, and any record the ledger asked to plan again. Every row it does read goes through the whole
+pipeline: render, the preflight-checked mapping, the hash of the rendered document against what OSDU holds, and the
+same hash check again by the worker just before anything is sent.
 
 | Key | What it does |
 | --- | --- |
 | `source.systemColumns.updated` | The ingestion column the window is taken on, `UpdatedDate_DW` by default. SQLFlow's ingestion stamps it on insert, and on update only for rows whose checksum changed, so an identically re-landed row is never read again. The window is `(watermark - overlapSeconds, now]`, fixed when the read opens. |
+| `source.systemColumns.deleted` | The soft-delete stamp, `DeletedDate_DW` by default when the table carries it. SQLFlow's ingestion stamps it when its key match finds a row gone from the source, without touching the update column, so the window is taken on it as well: a row marked deleted in the window is read, held, and never delivered. |
 | `source.incremental.overlapSeconds` | How far below the watermark the next run reads again (900 by default), so a transaction that committed after the previous read's upper bound is still picked up. |
 | `source.lastModified` | An optional business version column: a `datetime`, or text holding RFC 3339 / ISO 8601 (without an offset it is read as UTC). A row whose moment is later than the version the ledger holds, delivered or queued, is planned; the same moment is skipped without rendering; an older one is **stale**, never sent, and recorded as a skipped attempt against the record. An empty or unreadable value holds the record with a reason naming the column. |
 | `change.payloadDetect: lastModified` | The payload's files are its watermark. A payload is reconsidered when a file was modified after the ones OSDU's payload was sent from, or the set of files (names, sizes, times) changed; files older than the payload already delivered or queued are stale and never sent. When the flow still declares a `hashColumn`, that hash stays the final check, so rewritten files with the same content are not uploaded again; without one, the files themselves are the payload's identity. Costs one storage listing per record per run. |

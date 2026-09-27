@@ -1083,7 +1083,7 @@
       "path": "interfaces.<name>.systemColumns.deleted",
       "type": "string",
       "required": false,
-      "description": "The soft-delete stamp. A record row the ingestion table marked deleted is held and never delivered; the default is used when the table carries it, a column named here must exist, and `~` opts out. Set here, it overrides the source's value for this interface.",
+      "description": "The soft-delete stamp. A record row the ingestion table marked deleted is held and never delivered, and an incremental run reads a row marked deleted in its window although its update column did not move; the default is used when the table carries it, a column named here must exist, and `~` opts out. Set here, it overrides the source's value for this interface.",
       "default": "the source's value, else DeletedDate_DW"
     },
     {
@@ -1909,7 +1909,7 @@
       "path": "source.systemColumns.deleted",
       "type": "string",
       "required": false,
-      "description": "The soft-delete stamp. A record row the ingestion table marked deleted is held and never delivered; the default is used when the table carries it, a column named here must exist, and `~` opts out.",
+      "description": "The soft-delete stamp. A record row the ingestion table marked deleted is held and never delivered, and an incremental run reads a row marked deleted in its window although its update column did not move; the default is used when the table carries it, a column named here must exist, and `~` opts out.",
       "default": "DeletedDate_DW"
     },
     {

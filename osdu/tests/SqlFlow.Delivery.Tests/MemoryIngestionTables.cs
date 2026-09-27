@@ -281,8 +281,13 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
                 return true;
             }
 
-            return record.UpdatedUtc <= window.UpperUtc && (window.LowerUtc is not { } lower || record.UpdatedUtc > lower);
+            // The row changed in the window, or was soft-deleted in it: the ingestion flow tags a row deleted without
+            // touching its update column.
+            return Within(record.UpdatedUtc, window) || (record.DeletedUtc is { } deleted && Within(deleted, window));
         }
+
+        private static bool Within(DateTime moment, SourceWindow window)
+            => moment <= window.UpperUtc && (window.LowerUtc is not { } lower || moment > lower);
 
         private bool InScope(MemoryRecord record)
         {

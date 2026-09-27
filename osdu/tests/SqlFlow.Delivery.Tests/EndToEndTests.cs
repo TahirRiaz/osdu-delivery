@@ -444,6 +444,35 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_row_tagged_deleted_is_held_by_the_next_incremental_run_although_its_update_column_did_not_move()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+            var delivered = Now;
+
+            // The ingestion flow's key match tags the row deleted: the delete column is stamped, the update column is not.
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            tables.Records[0].DeletedUtc = Now;
+
+            // The next run reads what changed since the last one, as the platform's watermark bounds it.
+            runtime.Selection = SourceSelection.Incremental(delivered);
+            var (summary, _) = await RunAsync(runtime, protocol, ledger);
+
+            Assert.Equal(0, summary.Delivered);
+            Assert.Empty(protocol.Deliveries);
+            var held = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(RecordStatus.Held, held!.Status);
+            Assert.Contains("marked the record row deleted", held.LastError, StringComparison.Ordinal);
+            // The rows nobody touched are read past: the window holds the one that was tagged.
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1)))!.Status);
+        }
+    }
+
+    [Fact]
     public async Task A_record_scoped_run_reads_only_the_rows_it_names_by_key()
     {
         var tables = await EstateAsync();
