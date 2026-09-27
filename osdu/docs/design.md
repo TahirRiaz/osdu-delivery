@@ -130,9 +130,10 @@ The three non-source inputs are pinned together as a **render context**:
 renderContext = (mappingVersion, cache partition and cacheVersion, templateVersion)
 ```
 
-A flow reads the cache of the partition it delivers to (its `target.headers.data-partition-id`, section 6.2); a
-render reads the version that is current when the run starts, unless the flow pins one (`render.cacheVersion`), and the
-ledger's render context records the partition under `cache` and the version under `cacheVersion`. A mapping that reads
+A run reads the cache of the partition it delivers to (section 6.2): the one it is bound to among the partitions its flow
+names (`partitions`), or its `target.headers.data-partition-id` for a flow that names none. A render reads the version
+that is current when the run starts, unless the flow pins one (`render.cacheVersion`), and the ledger's render context
+records the partition under `cache` and the version under `cacheVersion`. A mapping that reads
 nothing from a cache renders against no cache at all.
 
 It is fixed for a render, recorded in the ledger against every document produced, and it
@@ -322,10 +323,11 @@ preflight gate rather than holding every record at run time.
 **Who fills it.** What is cached is defined by flows of their own, `flowType: cache`
 ([documents.md](documents.md#cache-flow)): the OSDU platform to search, the types to cache
 (each a kind, an optional query and the paths to keep), and what a changed value does.
-There is one cache per OSDU data partition, keyed by the partition the flows reach, their
-declared `data-partition-id` with its references resolved (`CacheScope`): a cache flow fills the cache of the partition in its
-`source.headers.data-partition-id`, and a delivery flow reads the cache of the partition in
-its `target.headers.data-partition-id`, so no flow names a cache. A run of a cache flow, the
+There is one cache per OSDU data partition, keyed by the partition the flows reach (`CacheScope`): a partition a flow
+names under `partitions`, or a declared `data-partition-id` with its references resolved. A cache flow fills the cache of
+each partition it names, one after another, or of the one in its `source.headers.data-partition-id`, and a delivery run
+reads the cache of the partition it is bound to, so no flow names a cache
+([docs/partitions-design.md](../../docs/partitions-design.md)). A run of a cache flow, the
 `refresh` operation that its schedule fires, sweeps every declared type in full through the
 search cursor and merges what it found into the partition's cache, which writes a new
 version into the catalog. The capture is deliberately never incremental: a cache holding
@@ -376,7 +378,9 @@ reads its version from the catalog, which is what keeps a plan working without a
 OSDU.
 
 **Where it is visible.** The repository sync projects each cache flow's declared types, with
-the partition it fills and the endpoint it searches (`osdu.CacheDefinition`), so a
+the partition it fills (one row per type and partition for a flow that names its partitions, marked as named, so a
+partition the flow stops naming lets go of what the flow held in it) and the endpoint it searches
+(`osdu.CacheDefinition`), so a
 refresh knows every path its partition keeps for a type, and the GUI's OSDU cache page shows
 which files fill a partition's cache beside the versions their runs wrote, and searches the
 cached values. Every read of cached records names one partition and one version, the current

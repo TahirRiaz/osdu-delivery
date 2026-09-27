@@ -103,6 +103,15 @@ so an estate can hold some values centrally and leave the rest where they are.
 | --- | --- |
 | The control plane | Every repository it serves. |
 | One repository | The flows that repository holds, over the control plane's own value of the same name. |
+| One partition | Either of the two, for runs bound to one OSDU partition (`--partition`, `?partition=`), over the value set for no partition. |
+
+A value set for a partition is for flows that name their partitions ([documents.md](documents.md#partitions)): a run bound
+to a partition resolves each name from the repository's value for that partition, then the control plane's value for it,
+then the repository's value for no partition, then the control plane's, and only then from the node. So the endpoint, the
+legal tag and the access groups of test and prod can differ while the flows and mappings stay the same. A run carries the
+values set for no partition and every partition's own, and binds to its partition on the node; a task a node runs for one
+record (a read back, a delete, a preview) carries the values of the one partition it acts in. A partition is written as
+an id segment, never a reference.
 
 A property holds a non-secret value (a partition, an entitlements group, a legal tag, a base URL) or a `${env:...}` or
 `${keyvault:...}` reference, which travels unresolved and is resolved on the node. **A literal secret in a property is a
@@ -112,19 +121,23 @@ property at a secret with a reference instead, and the node resolves it.
 ```bash
 sqlflow config set OSDU_DATA_PARTITION --value dev --db <conn-ref>
 sqlflow config set OSDU_LEGAL_TAG --value dev-equinor-private-default --repo <repo id> --db <conn-ref>
-sqlflow config effective --repo <repo id> --db <conn-ref>   # what a run of that estate is given
+sqlflow config set OSDU_LEGAL_TAG --value test-equinor-private-default --repo <repo id> --partition test --db <conn-ref>
+sqlflow config effective --repo <repo id> --db <conn-ref>                    # what a run naming no partition is given
+sqlflow config effective --repo <repo id> --partition test --db <conn-ref>   # what a run bound to test is given
 ```
 
 The same through the API: `GET /api/v1/delivery/config`, `PUT /api/v1/delivery/config/{name}` and
-`DELETE /api/v1/delivery/config/{name}` (both admin, both taking an optional `repoId`), and
-`GET /api/v1/delivery/config/effective/{repoId}`.
+`DELETE /api/v1/delivery/config/{name}` (both admin, both taking an optional `repoId` and `partition`), and
+`GET /api/v1/delivery/config/effective/{repoId}` (with an optional `partition`).
 
 ### What the OSDU flow kind supplies
 
 Where a record goes and under whose access and legal terms belongs to the kind, not to any one flow. A mapping declares
 the parameters it fills and a flow does not repeat them: `dataPartition`, `aclOwner`, `aclViewer` and `legalTag` default
 to `${env:OSDU_DATA_PARTITION}`, `${env:OSDU_ACL_OWNER}`, `${env:OSDU_ACL_VIEWER}` and `${env:OSDU_LEGAL_TAG}`. A flow
-that names its own value under `render.parameters` still wins, so a document can pin a destination when it has to.
+that names its own value under `render.parameters` still wins, so a document can pin a destination when it has to. A flow
+that names its partitions is given `dataPartition` as the partition the run is bound to, written literally, and never
+reads `OSDU_DATA_PARTITION`; the others still come from the configuration, the partition's own values first.
 
 ## Where values come from
 

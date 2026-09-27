@@ -70,7 +70,7 @@ target:
     secretRef: ${env:OSDU_CLIENT_SECRET}
     token: { url: ${env:OSDU_TOKEN_URL}, body: { scope: ${env:OSDU_SCOPE} }, basicAuthClient: false, tokenPath: access_token, applyPrefix: "Bearer " }
   headers:                         # extra headers on every request
-    data-partition-id: dev         # required: every OSDU service rejects a request without it, so the loader insists on it; its cache is the one the mapping reads
+    data-partition-id: dev         # required unless the flow names its partitions (see Partitions): every OSDU service rejects a request without it; its cache is the one the mapping reads
   # the route: storage | file | dataset | manifest | ddms | fileAndDdms | manifestAndDdms | workflow | dspdm | etp
   # (the names these routes carried before, osduRecord | osduWellLog | ... , still load)
   protocol: ddms
@@ -197,8 +197,9 @@ decided by the hash of the rendered document alone, so a new cache version that 
 
 ### The cache a flow renders with
 
-The mapping's `cache.<Type>` sources read the cache of the partition the flow delivers to: the partition in
-`target.headers.data-partition-id`, which every cache flow of that partition fills
+The mapping's `cache.<Type>` sources read the cache of the partition a run delivers to: the one it targets among the
+flow's `partitions` ([Partitions](#partitions)), or for a flow that names none, the partition in
+`target.headers.data-partition-id`. Every cache flow of that partition fills it
 ([The partition cache](#the-partition-cache)). A flow names no cache: a flow document that still declares
 `render.cache` is refused when it loads, rather than read against a cache other than the one its author meant.
 `render.cacheVersion` says which version of the partition's cache: `current`, the default, takes whichever version is
@@ -214,9 +215,55 @@ the cache, and when it only searches, those of the version `render.cacheVersion`
 and one that finds the partition's keywordLower setting changed renders all of them again under the new rule. When the
 partition's cache holds no version yet, or the host has no module database, the properties are unknown and a search
 asks exact questions alone. A mapping that does read the cache fails before anything renders when the
-partition's cache holds no version yet (run a cache flow whose `source.headers.data-partition-id` is that partition
-with the refresh operation), or when `render.cacheVersion` pins a version the catalog does not hold. Both the cache and
+partition's cache holds no version yet (refresh a cache flow that builds that partition: one naming it under
+`partitions`, or whose `source.headers.data-partition-id` is that partition), or when `render.cacheVersion` pins a version the catalog does not hold. Both the cache and
 the template are read from the catalog, so rendering needs the catalog connection.
+
+### Partitions
+
+A flow can name the OSDU partitions it delivers to, so one flow and one generic mapping serve several environments (dev,
+test, prod) from one SQLFlow instance ([docs/partitions-design.md](../../docs/partitions-design.md)):
+
+```yaml
+flowType: delivery
+name: recall-welllog-03-header-delivery
+partitions:
+  - name: dev
+    keepLedger: true               # keeps the ledger the flow kept before it named its partitions
+  - test
+  - prod
+target:
+  endpoint: ${env:OSDU_URL}        # no data-partition-id: each run sets it to the partition it targets
+```
+
+- **A run targets one partition**, named under the run value `partition`: the Partition dropdown of the trigger dialog,
+  `--set partition=test` on `sqlflow run` and `sqlflow trigger`, `values: { partition: test }` on a schedule; the
+  module's own verbs (`check`, `preview`, `fixtures`, `records`, `cache`, `config`) take `--partition test`. A flow that names one partition runs in it
+  without being told. A flow that names several refuses a run that names none, and a flow that names none refuses a run
+  that names one.
+- **Bound to its partition, a run is the flow as if it had been written for it.** Every request carries
+  `data-partition-id: <partition>`. Every id and reference the mapping mints is minted in it, because the kind supplies the
+  partition, written literally, as `dataPartition` to a mapping that declares it. The mapping reads that partition's
+  cache, and the central configuration resolves with that partition's own values first
+  ([environment-variables.md](environment-variables.md#the-central-configuration)). The mapping itself names no partition.
+- **Each partition keeps a ledger of its own**, named `<ledger>@<partition>` (`recall-welllog-03-header-delivery@test`)
+  and keyed apart from every other, so the same record delivered to test and to prod is two records, each with its own
+  history. The one partition marked `keepLedger: true` keeps the ledger the flow kept before it named its partitions,
+  under its old name and identity, so a flow that moves from a header to named partitions keeps every record it delivered.
+  A whole run refuses to start, and says why, while no partition keeps a ledger that holds records delivered to a
+  partition the flow still names (they would be delivered again as new), and while the kept ledger holds another
+  partition's records.
+- **Fixtures stay written for the partition they were captured in.** A fixture renders against the cache of the partition
+  its `dataPartition` names ([Fixtures](#fixtures)), so a run in another partition checks the same fixtures.
+- A flow that names its partitions leaves `target.headers.data-partition-id` and `render.parameters.dataPartition` out,
+  declares no parameter named `partition`, and pins no `render.cacheVersion` when it names more than one, because a version
+  is a version of one partition's cache. A partition is written literally, an id segment (letters, digits, underscore,
+  hyphen and dot) of at most 200 characters, and a flow names at most 64.
+- **The GUI and the API read a flow one partition at a time.** A flow's pages carry a Partition dropdown of the partitions
+  it names, and every count, record, submission, preview and action on them is that partition's. The API takes
+  `?partition=` on every flow-level route and answers 400 when a flow naming several is asked about none, with two
+  exceptions: the interface listing then lists every interface in every partition, each row naming its partition, and the
+  counts add every partition up, as the Delivery overview's card shows them with the partitions listed.
 
 ### Incremental reads: what changed since the last run
 
@@ -1053,15 +1100,17 @@ A cache is for closed vocabularies a capture can hold whole; records that are bu
 well log names, are searched for by the mapping as each record needs one ([findBy and a search](#findby-and-a-search)).
 Beside OSDU's own records, a partition's cache holds lookup tables this estate keeps itself, such as how a source spells
 its units: a cache flow fills one from a dictionary document in the repository ([Dictionary](#dictionary)), and every
-mapping reads it the way it reads any cached type. It fills the cache of the partition its `source.headers.data-partition-id` names, and a delivery flow
-reads the cache of the partition it delivers to ([The partition cache](#the-partition-cache)). A cache flow capturing
-the reference data well log and trajectory mappings look units, business values and station property types up in,
-filling partition `dev`, reads:
+mapping reads it the way it reads any cached type. It fills the cache of every partition it names under `partitions`, or,
+naming none, of the partition its `source.headers.data-partition-id` names, and a delivery run reads the cache of the
+partition it delivers to ([The partition cache](#the-partition-cache)). A cache flow capturing the reference data well
+log and trajectory mappings look units, business values and station property types up in, filling partitions `dev` and
+`test`, reads:
 
 ```yaml
 flowType: cache
 name: osdu-reference-00-cache
 batch: reference
+partitions: [dev, test]            # the partitions whose caches it fills; a refresh names one, or fills each in turn
 
 source:
   endpoint: ${env:OSDU_URL}
@@ -1073,8 +1122,6 @@ source:
       url: ${env:OSDU_TOKEN_URL}
       body:
         scope: ${env:OSDU_SCOPE}
-  headers:
-    data-partition-id: dev
 
 # A changed cached value rewrites the documents built from it. By default (onChange: auto) the affected records are tagged
 # and the next run delivers them. Where a change should be looked at first, onChange: approve (here for every type, or on
@@ -1116,8 +1163,10 @@ flow keeps every LogCurveType the partition holds, tens of thousands of them, ra
 | --- | --- |
 | `name` | Required. The cache flow's name: its pipeline identity, and the name the versions it writes and the records it holds in the partition's cache are recorded under. A cache flow is named globally: the sync warns when a second file in the repository declares the same name (the first file wins), and when another repository declares it too (rename one of them). |
 | `description` | Optional text describing the cache. |
-| `parameters` | Optional, as on a delivery flow; `{name}` tokens usable in a type's `query`. A token no parameter declares is refused. |
-| `source.endpoint`, `source.auth`, `source.headers` | The OSDU platform the OSDU types are searched on, written as `target` is on a delivery flow: `${env:NAME}` and `${keyvault:vault/secret}` references and the same auth types. `source.endpoint` is required when the flow declares a type with a `kind`, and refused, with `source.auth`, when every type it declares is a lookup table. `data-partition-id` is always required: it names the partition whose cache the flow fills, an id segment (letters, digits, underscore, hyphen and dot) or a `${env:...}` or `${keyvault:...}` reference, and every search carries it. |
+| `parameters` | Optional, as on a delivery flow; `{name}` tokens usable in a type's `query`. A token no parameter declares is refused, and so is a parameter named `partition` on a flow that names its partitions. |
+| `partitions` | Optional: the OSDU partitions whose caches the flow fills, each written literally as an id segment, at most 64. A refresh names one of them under the run value `partition` (the Partition dropdown of the trigger dialog, `--set partition=<name>` on `sqlflow run` and `sqlflow trigger`, a schedule's `values`), or, naming none, fills each in turn: a partition that fails leaves the others refreshed, and the run's result says how each went. Each partition's refresh searches with that partition's `data-partition-id`, keeps what it captures in that partition's cache, and resolves its references with the partition's own configuration first. A flow that names its partitions leaves `source.headers.data-partition-id` out. |
+| `types[].partitions` | Optional: the partitions of the flow's `partitions` this type is cached in, when not all of them. A type's name is unique within each partition, and every partition the flow names caches at least one type. |
+| `source.endpoint`, `source.auth`, `source.headers` | The OSDU platform the OSDU types are searched on, written as `target` is on a delivery flow: `${env:NAME}` and `${keyvault:vault/secret}` references and the same auth types. `source.endpoint` is required when the flow declares a type with a `kind`, and refused, with `source.auth`, when every type it declares is a lookup table. `data-partition-id` is required unless the flow names its partitions: it names the partition whose cache the flow fills, an id segment (letters, digits, underscore, hyphen and dot) or a `${env:...}` or `${keyvault:...}` reference, and every search carries it. A flow that names its partitions leaves it out, and each refresh sets it to the partition it fills. |
 | `types` | Required, at least one: the types the flow caches, each from one origin: a `kind` searched on OSDU, or a `dictionary` (a lookup table kept in the repository, [Dictionary](#dictionary)). Each type's name is unique within the flow, because a mapping reads a type by its name. Another cache flow of the same partition may declare the same OSDU type, and the cache then holds one type under it ([The partition cache](#the-partition-cache)); a lookup table is declared by one cache flow of a partition. |
 | `types[].kind` | For an OSDU type: the kind searched, `authority:source:entityType:version` with wildcards per segment. |
 | `source.connection` | The ingestion database the flow's table types are read from, declared exactly as a delivery flow's `source.connection` is: a whole `${env:...}` or `${keyvault:...}` reference, or a SQL Server connection string whose secrets are references; a literal password is refused. Required when the flow declares a type with a `table`, and refused when it declares none. |
@@ -1193,13 +1242,15 @@ its table or dictionary wherever the flow runs.
 
 ### The partition cache
 
-A catalog keeps one cache per OSDU data partition, keyed by the partition the flows reach through their
-`data-partition-id` header (its scope). A cache flow fills the cache of the partition in its
-`source.headers.data-partition-id`; a delivery flow reads the cache of the partition in its
-`target.headers.data-partition-id`. A partition is written as an id segment (letters, digits, underscore, hyphen and
-dot, at most 200 characters) or a `${env:...}` or `${keyvault:...}` reference, and a cache is keyed by what it resolves
-to: `dev` and a reference that resolves to `dev` name the same cache, and a capture, an import, the repository sync and a
-render all resolve it the same way.
+A catalog keeps one cache per OSDU data partition, keyed by the partition the flows reach (its scope). A cache flow fills
+the cache of each partition it names under `partitions`, one at a time, or, naming none, of the partition in its
+`source.headers.data-partition-id`; a delivery run reads the cache of the partition it delivers to: the one it targets
+among its flow's `partitions`, or the one in `target.headers.data-partition-id`. A partition a flow names under
+`partitions` is written literally; a header partition is written as an id segment (letters, digits, underscore, hyphen
+and dot, at most 200 characters) or a `${env:...}` or `${keyvault:...}` reference, and a cache is keyed by what it
+resolves to: `dev`, a partition named `dev`, and a reference that resolves to `dev` name the same cache, and a capture, an
+import, the repository sync and a render all resolve it the same way. So a flow can move from its header to named
+partitions and keep reading and filling the cache it had.
 
 Several cache flows may fill one partition, in the same repository or in different ones, so each project declares the
 reference data it needs without copying another project's file. What they capture is stored once per partition, and
@@ -1896,6 +1947,12 @@ does not fill as they are ([protocols.md](protocols.md#osdudspdm-the-dspdm-route
 | `datasets` | The rows of each child dataset, by child dataset name. |
 | `expected` | The exact record, as JSON, compared canonically. `sqlflow fixtures update` writes it from what the fixture renders ([reference/cli/delivery.md](reference/cli/delivery.md)). |
 
+A fixture is captured against the cache of one partition, and renders against that partition's cache wherever the mapping
+runs: the partition its `dataPartition` names (its own, or the one `fixtureDefaults.parameters` gives every fixture). A
+mapping delivered to several partitions ([Partitions](#partitions)) therefore keeps one set of fixtures: a run in another
+partition renders them against the current version of the cache they were written for, and fails its preflight, naming
+each fixture, while that cache holds no version in the catalog. A fixture that names no partition renders in the run's.
+
 ### What the preflight gate checks
 
 When the mapping is read, its header, every node of the record tree, the `$findBy` lines, modifiers and expressions
@@ -1922,7 +1979,8 @@ any row is rendered, and with no OSDU call:
    and a `ref` settles one entity type.
 9. Every parameter the mapping requires has a value, the flow supplies none the mapping does not declare, and every
    `{$param.name}` token and every `$param.<name>` an expression reads has a value.
-10. Every fixture renders exactly as declared, and without holds, under this context.
+10. Every fixture renders exactly as declared, and without holds, under this context, against the cache of the
+    partition it is written for ([Fixtures](#fixtures)).
 
 If any check fails, nothing renders.
 
@@ -1938,8 +1996,9 @@ it ([docs/lineage-design.md](../../docs/lineage-design.md)). What each kind cont
 | Retrieval | Each of `source.kinds`, wildcards included | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest under `target.location` |
 
 An **OSDU type** node is one exact kind in one partition of one platform: the platform is the flow's endpoint as written
-(`${env:OSDU_URL}`; a literal URL is identified by a hash, never shown), the partition is `data-partition-id`, and the
-node is listed under the entity type's group (`master-data`, `reference-data`, `work-product-component`, `dataset`). A
+(`${env:OSDU_URL}`; a literal URL is identified by a hash, never shown), the partition is `data-partition-id` as written,
+or each partition a flow names under `partitions` (such a flow has nodes in every one of them), and the node is listed
+under the entity type's group (`master-data`, `reference-data`, `work-product-component`, `dataset`). A
 kind read with wildcards has a node of its own, and also reads every exact kind the estate writes on the same platform
 and partition that it matches segment by segment. A **cache type** node is a cache type name in a partition, whichever
 platform filled it, because a partition has one cache. The catalog explorer lists both under Datasets, and an object's

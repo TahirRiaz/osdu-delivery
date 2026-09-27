@@ -3,11 +3,12 @@
 ## check
 
 ```bash
-sqlflow check <flow.yaml> [--interface <name>] [--connect] [--set name=value]... [--db <ref>] [--json]
+sqlflow check <flow.yaml> [--interface <name>] [--partition <name>] [--connect] [--set name=value]... [--db <ref>] [--json]
 ```
 
 Everything checkable without OSDU: the flow and the pinned mapping parse, the template the mapping pins loads from
-the catalog, the version of the cache of the partition the flow delivers to (its `target.headers.data-partition-id`)
+the catalog, the version of the cache of the partition the flow delivers to (the one `--partition` names for a flow that
+names its partitions, the only one when it names one; its `target.headers.data-partition-id` for a flow that names none)
 loads from the catalog (its current version, or the one `render.cacheVersion` pins), the render context is built,
 and the mapping is checked against the template and the cache (the preflight gate,
 [mapping-templates.md](../../mapping-templates.md#checks)). A mapping that reads nothing from a cache is checked
@@ -22,7 +23,10 @@ Templates and caches live in the catalog, so `check` needs the catalog connectio
 `SQLFLOW_CATALOG_DB`. Without one it fails saying so; the check that needs no catalog is `sqlflow validate`
 ([validate.md](validate.md)).
 
-`--set` supplies the flow's own parameters (`logSource=STAT_COMP`). `--json` prints the resolved facts (flow id,
+`--set` supplies the flow's own parameters (`logSource=STAT_COMP`). A flow that names its partitions is checked in one
+partition, as a run of it is ([documents.md](../../documents.md#partitions)): `--partition` names it, a flow naming one
+needs none, and a partition the flow does not name is refused. The mapping's fixtures render against the caches of the
+partitions they are written for, whichever partition is checked. `--json` prints the resolved facts (flow id,
 mapping reference, the template's kind and version, render context, layout, and the cache read with its
 `partition`, `version` and `types` count, null when the mapping reads no cache). A flow on the `ddms` route also gets a
 `ddms` line, and `ddms` in its JSON, saying which collection of which DDMS its records go to
@@ -46,7 +50,7 @@ with its `interface`, `ledger`, `route` (`name` and `reason`), `after`, `wave`, 
 ## preview
 
 ```text
-sqlflow preview <flow.yaml> [--interface <name>] [--key <key>] [--set name=value]... [--out <file.json>] [--db <ref>] [--json]
+sqlflow preview <flow.yaml> [--interface <name>] [--partition <name>] [--key <key>] [--set name=value]... [--out <file.json>] [--db <ref>] [--json]
 ```
 
 Renders one record as a delivery would render it, and sends nothing: the same preview a delivery flow's Preview tab
@@ -75,7 +79,7 @@ previews one, and a key needs it, since a key names a record of one interface.
 ## fixtures
 
 ```text
-sqlflow fixtures update <flow.yaml> [--interface <name>] [--dry-run] [--db <ref>] [--json]
+sqlflow fixtures update <flow.yaml> [--interface <name>] [--partition <name>] [--dry-run] [--db <ref>] [--json]
 ```
 
 Writes what each fixture of the flow's mapping renders into its `expected` block
@@ -104,20 +108,21 @@ per mapping file: `mapping`, `path`, `written`, and `fixtures`, each with its `n
 ## cache
 
 ```bash
-sqlflow cache list <partition | cache.yaml> [--db <ref>] [--json]
-sqlflow cache import <cache.yaml> --from-dir <dir> [--db <ref>] [--json]
+sqlflow cache list <partition | cache.yaml> [--partition <name>] [--db <ref>] [--json]
+sqlflow cache import <cache.yaml> --from-dir <dir> [--partition <name>] [--db <ref>] [--json]
 ```
 
 The versions of a partition's cache, which live in the catalog and nowhere else
 ([documents.md](../../documents.md#the-partition-cache)). A catalog keeps one cache per OSDU data partition,
-filled by every cache flow (`flowType: cache`) whose `source.headers.data-partition-id` names the partition. Both
+filled by every cache flow (`flowType: cache`) that names the partition under `partitions`, or whose
+`source.headers.data-partition-id` names it. Both
 forms need the catalog connection (`--db <ref>`, or `SQLFLOW_CATALOG_DB`); without one they fail with
 `Caches live in the catalog. Run 'sqlflow cache' with --db <conn-ref>, or set the catalog variable.`
 
 | Verb | What it does |
 | --- | --- |
-| `list` | Takes a partition (`dev`), or a cache flow's file, which names the partition the flow fills (its `data-partition-id` reference resolved), and prints every version, newest first: its label, `current` against the current one, how many records in how many types, the cache flow that wrote it, when it was captured, for whom, and in which run. Then the system properties the current version holds, which are settings of the platform rather than cached records: each one's service, name and state, what the service took it from, and why it is unknown ([documents.md](../../documents.md#cache-flow)). A value that is neither a partition id (letters, digits, underscore, hyphen and dot) nor a `${env:...}` or `${keyvault:...}` reference is refused. A partition whose cache has no version yet says to run a cache flow of the partition with the refresh operation. With `--json`, each version also carries its `partition`, its `flow`, its sequence, the version before it, where its content came from, the record count per type and its `systemProperties` (`service`, `name`, `state`, `source`, `detail`). |
-| `import` | Merges the type files in `--from-dir` into the cache of the flow's partition as that cache flow's capture, for work without an OSDU platform (the sample estate keeps such files in `osdu/samples/cache-records`, beside the source folders rather than in one, because a cache lives in the module database and never in a repository). A file is `{Name}.json`: the type's entity type and its records, each an `id` and the captured values. The files have to be exactly what the cache flow declares: a file for every declared OSDU type and none for a type it does not declare, each under the declared entity type, every record an id of that entity type in the flow's partition (`<partition>:<entityType>:<code>`), and no value under a name the type does not capture. A lookup table the flow fills from a table or a dictionary is neither required nor accepted: it is captured from its origin. Anything else is refused, naming every mismatch, and nothing is written. The merge is the one a refresh makes: a record in the files replaces what the cache held for it, a record the flow's last capture held that the files leave out goes only when no other cache flow's capture still holds it, and types the files do not cover are left as they are. When the merge changes the cached content, a version is written, recorded as written by the cache flow and captured by `cli:<user>` with no run, and it becomes current. |
+| `list` | Takes a partition (`dev`), or a cache flow's file, which names the partition the flow fills (its `data-partition-id` reference resolved; every partition a flow naming its partitions builds, one after another, or the one `--partition` names), and prints every version, newest first: its label, `current` against the current one, how many records in how many types, the cache flow that wrote it, when it was captured, for whom, and in which run. Then the system properties the current version holds, which are settings of the platform rather than cached records: each one's service, name and state, what the service took it from, and why it is unknown ([documents.md](../../documents.md#cache-flow)). A value that is neither a partition id (letters, digits, underscore, hyphen and dot) nor a `${env:...}` or `${keyvault:...}` reference is refused. A partition whose cache has no version yet says to run a cache flow of the partition with the refresh operation. With `--json`, each version also carries its `partition`, its `flow`, its sequence, the version before it, where its content came from, the record count per type and its `systemProperties` (`service`, `name`, `state`, `source`, `detail`). |
+| `import` | Merges the type files in `--from-dir` into the cache of the flow's partition as that cache flow's capture (a flow that names several partitions needs `--partition`, and the files are that partition's records, their ids in it), for work without an OSDU platform (the sample estate keeps such files in `osdu/samples/cache-records`, beside the source folders rather than in one, because a cache lives in the module database and never in a repository). A file is `{Name}.json`: the type's entity type and its records, each an `id` and the captured values. The files have to be exactly what the cache flow declares: a file for every declared OSDU type and none for a type it does not declare, each under the declared entity type, every record an id of that entity type in the flow's partition (`<partition>:<entityType>:<code>`), and no value under a name the type does not capture. A lookup table the flow fills from a table or a dictionary is neither required nor accepted: it is captured from its origin. Anything else is refused, naming every mismatch, and nothing is written. The merge is the one a refresh makes: a record in the files replaces what the cache held for it, a record the flow's last capture held that the files leave out goes only when no other cache flow's capture still holds it, and types the files do not cover are left as they are. When the merge changes the cached content, a version is written, recorded as written by the cache flow and captured by `cli:<user>` with no run, and it becomes current. |
 
 Files that add nothing the current version does not already hold write nothing, as a refresh that finds nothing new
 writes nothing: `cache of partition <partition>: the files add nothing version <version> does not already hold, so
@@ -172,6 +177,14 @@ history says exactly what was asked:
 | `--payload <json>` or `--payload @<file>` | One JSON object whose shape the flow kind owns, inline or read from a file. At most 64,000 characters. |
 | `--db <ref>` | The catalog connection (default `${env:SQLFLOW_CATALOG_DB}`) for a local run. With it the ledger is live and the run is recorded. |
 
+A flow that names its partitions ([documents.md](../../documents.md#partitions)) runs in the partition the run value
+`partition` names: `--set partition=test`, as the trigger dialog's Partition dropdown and a schedule's
+`values: { partition: test }` give it. The kind takes it off the flow's parameters and binds the flow to it, so the ids,
+the header, the cache, the ledger and the configuration of the run are that partition's. A delivery flow that names
+several partitions refuses a run that names none, and one that names one runs in it; a cache flow refreshes the one
+named, or every partition it names in turn. A flow that names none refuses the value, unless it declares a parameter of
+that name, which then takes it as any parameter; a retrieval flow refuses it.
+
 ### The operations
 
 | Flow kind | Operations | Default |
@@ -222,7 +235,9 @@ The run's result carries the submission and the record counts (planned, delivere
 which the run page and the runs list show. A refresh's result carries the partition and the cache flow, the
 version the partition's cache holds after it, the version it replaced, whether a version was written, when it was
 captured, and per type what was captured and what its changes reach; a plan on a cache flow carries the partition,
-the flow, the current version and what each type's search matches.
+the flow, the current version and what each type's search matches. A cache flow that names several partitions, run for
+all of them, carries one such result per partition, with the error of any that failed: the run fails when one did, and
+says which, while the others stay refreshed.
 
 ## Exit codes
 
