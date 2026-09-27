@@ -91,6 +91,7 @@ Each of these lets a host add something of its own without SQLFlow knowing what 
 | `85438d5` | A host module registers compute operations beside the built-in datasource ones (`IComputeOperation`). |
 | `d054a9c` | A running flow fans its work out to member runs over the node protocol, and a registered kind's run result is recorded (`IRunFanOut`, migration `RunFanOutAndResult`). |
 | `350342b` | The pipelines filter offers the flow kinds registered modules add. |
+| `7a20033` | A host module names the flow kinds it adds (`FlowKindContribution.identity`: a label, a lucide glyph and a tone from the validated chart palette), and every kind is shown by them wherever its pipelines and runs are: a tile leading the pipeline's header with "<name> flow" under the name and the card's top edge in the tone, the glyph on its workbench tab (`useTabFlowKind`), and a chip on its row in the pipelines tree, the runs board and a run's header (`FlowKindBadge`, `FlowKindTile`). SQLFlow's own thirteen kinds are described the same way (`flowKinds.ts`, DESIGN.md 3.5 and 7.3.1), toned by what they do with data. That half is one upstream wants regardless: its kinds were outline pills holding the flowType value, and every pipeline tab wore the same glyph, so pipelines of different kinds open side by side read as one page. |
 | `0b503c7` | A flow's file selection is read from its stored definition rather than re-read from disk. |
 
 ### The catalog, lineage and search
