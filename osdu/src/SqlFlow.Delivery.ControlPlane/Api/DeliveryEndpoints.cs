@@ -131,11 +131,14 @@ public sealed record DeliveryRecordFlowDto(Guid FlowId, Guid PipelineId, string 
 /// A record with the pipeline (and, for a source, the interface) it belongs to. The pending document itself lives in the
 /// submission's work batches on storage, which the nodes read; its reference and batch are on the record. A waiting record
 /// names the record it waits for (<c>WaitsOn</c>), and every record lists the records waiting for it (<c>WaitedOnBy</c>,
-/// the first <see cref="DeliveryEndpoints.MaxWaitersShown"/>).
+/// the first <see cref="DeliveryEndpoints.MaxWaitersShown"/>). <c>KeyColumns</c> names the parts of the record's key
+/// tuple (<c>SourceKeyJson</c>): its interface's <c>source.record.key</c> as the catalog's copy of the flow declares it
+/// now, null when the catalog holds no readable copy of that flow or interface.
 /// </summary>
 public sealed record DeliveryRecordDetailDto(
     DeliveryRecordDto Record, Guid? PipelineId, Guid? RepoId, string? FlowName, string? Interface = null,
-    DeliveryRecordLinkDto? WaitsOn = null, IReadOnlyList<DeliveryRecordLinkDto>? WaitedOnBy = null);
+    DeliveryRecordLinkDto? WaitsOn = null, IReadOnlyList<DeliveryRecordLinkDto>? WaitedOnBy = null,
+    IReadOnlyList<string>? KeyColumns = null);
 
 /// <summary>One delivery try, as the append-only history holds it: its outcome, and every step with what the target returned.</summary>
 public sealed record DeliveryAttemptDto(
@@ -744,7 +747,7 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryRecordDetailDto>, ProblemHttpResult>> GetRecordAsync(
-        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
     {
         var record = await ledger.GetRecordAsync(flowId, new DeliveryKey(key), ct).ConfigureAwait(false);
         if (record is null)
@@ -772,7 +775,23 @@ public static class DeliveryEndpoints
         }
 
         return TypedResults.Ok(new DeliveryRecordDetailDto(
-            ToDto(record), found?.Pipeline.Id, found?.Pipeline.RepoId, found?.Pipeline.Name, NamedInterface(found), waitsOn, waitedOnBy));
+            ToDto(record), found?.Pipeline.Id, found?.Pipeline.RepoId, found?.Pipeline.Name, NamedInterface(found), waitsOn, waitedOnBy,
+            KeyColumnsOf(documents, found)));
+    }
+
+    /// <summary>
+    /// The key columns a ledger identity's interface declares (<c>source.record.key</c>), in the order its records' key
+    /// tuples hold their parts; null when the catalog holds no pipeline for it, its copy does not parse, or it no longer
+    /// declares the interface.
+    /// </summary>
+    private static IReadOnlyList<string>? KeyColumnsOf(DeliveryDocumentLoader documents, LedgerPipeline? found)
+    {
+        if (found is null || Parse(documents, found.Pipeline).Source is not { } source)
+        {
+            return null;
+        }
+
+        return Pick(source.Source, NamedInterface(found), out var flow) is null ? flow!.Source.Record.Key : null;
     }
 
     /// <summary>How many of the records waiting for one record its page lists.</summary>

@@ -234,6 +234,9 @@ public sealed class DeliveryInterfacesApiTests
             // A record leads to its pipeline and interface, and a task queued for it names the interface the node acts through.
             var record = await JsonAsync(client, token, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}");
             Assert.Equal((pipelineId, flowName, "welllogs"), (record.GetProperty("pipelineId").GetGuid(), record.GetProperty("flowName").GetString(), record.GetProperty("interface").GetString()));
+
+            // It names the columns of its key tuple as its own interface declares them, not another interface's of the source.
+            Assert.Equal(["source_project", "log_id"], record.GetProperty("keyColumns").EnumerateArray().Select(c => c.GetString()));
             using (var read = await SendAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/read"))
             {
                 Assert.True(read.StatusCode == HttpStatusCode.Accepted, await read.Content.ReadAsStringAsync());

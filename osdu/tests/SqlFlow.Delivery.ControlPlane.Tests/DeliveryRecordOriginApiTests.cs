@@ -117,6 +117,10 @@ public sealed class DeliveryRecordOriginApiTests
             Assert.Equal(pending, record.GetProperty("sourceUpdatedUtc").GetDateTime());
             Assert.Contains("WB-ORIGIN-1", record.GetProperty("sourceKeyJson").GetString()!, StringComparison.Ordinal);
 
+            // The catalog holds no pipeline for this ledger, so nothing names the key's columns, and the record says so
+            // rather than guessing them.
+            Assert.Equal(JsonValueKind.Null, recordJson.RootElement.GetProperty("keyColumns").ValueKind);
+
             // The pending document is settled by the promotion, so nothing is left waiting.
             Assert.False(record.GetProperty("hasPendingDocument").GetBoolean());
             Assert.False(record.GetProperty("pendingMetadata").GetBoolean());

@@ -336,6 +336,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         <TabsContent value="source">
           <RecordSourceTab
             record={record}
+            keyColumns={detail.keyColumns ?? null}
             canRead={detail.pipelineId !== null && !busy}
             reading={sourceTaskId !== null && !isTerminalTask(sourceTask.data)}
             onRead={() => readSource.mutate()}

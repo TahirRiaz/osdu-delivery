@@ -430,7 +430,8 @@ Pipelines like any other flow.
     interventions alone.
   - **Source**: where the row came from: the source key, the ingestion file and row the delivered document was built
     from (and the newer row a waiting document is built from), when the row was received and the source last
-    modified, the key columns that find it, and a read of its rows as the ingestion tables hold them now, on a node
+    modified, the key columns that find it (each value beside the column the flow's `source.record.key` names, with a
+    copy of the key as the ledger holds it), and a read of its rows as the ingestion tables hold them now, on a node
     with the flow's own connection.
   - **Document**: what the ledger holds to send: the rendered document waiting to go (its work batch, submission,
     reference, payload location and the steps an earlier try completed), what OSDU returned when the record last

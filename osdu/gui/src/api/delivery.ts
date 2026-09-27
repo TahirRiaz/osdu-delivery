@@ -224,6 +224,11 @@ export interface DeliveryRecordDetail {
   waitsOn?: DeliveryRecordLink | null;
   /** The records waiting for this one (the first 50). */
   waitedOnBy?: DeliveryRecordLink[] | null;
+  /**
+   * The columns the record's key tuple (`sourceKeyJson`) holds the values of, in its order: the interface's
+   * `source.record.key` as the catalog's copy of the flow declares it now. Null when the catalog holds no readable copy.
+   */
+  keyColumns?: string[] | null;
 }
 
 /**
