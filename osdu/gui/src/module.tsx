@@ -18,6 +18,7 @@ import { DeliveryTriggerFields } from "./features/delivery/DeliveryTriggerFields
 const DeliveryOverviewPage = lazyRoute("DeliveryOverviewPage", () => import("./features/delivery/DeliveryOverviewPage"));
 const DeliveryRecordsPage = lazyRoute("DeliveryRecordsPage", () => import("./features/delivery/DeliveryRecordsPage"));
 const DeliveryRecordPage = lazyRoute("DeliveryRecordPage", () => import("./features/delivery/DeliveryRecordPage"));
+const OsduRecordWindowPage = lazyRoute("OsduRecordWindowPage", () => import("./features/delivery/OsduRecordWindowPage"));
 const DeliverySubmissionPage = lazyRoute("DeliverySubmissionPage", () => import("./features/delivery/DeliverySubmissionPage"));
 const DeliveryActivityPage = lazyRoute("DeliveryActivityPage", () => import("./features/delivery/DeliveryActivityPage"));
 const DeliveryDocumentsPage = lazyRoute("DeliveryDocumentsPage", () => import("./features/delivery/DeliveryDocumentsPage"));
@@ -172,6 +173,8 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery", component: DeliveryOverviewPage },
     { path: "/delivery/records", component: DeliveryRecordsPage },
     { path: "/delivery/records/:flowId/:key", component: DeliveryRecordPage },
+    // A record's OSDU explorer alone, in a window of its own that the record page's OSDU tab opens.
+    { path: "/delivery/records/:flowId/:key/osdu", component: OsduRecordWindowPage, frame: "window" },
     { path: "/delivery/submissions/:submissionId", component: DeliverySubmissionPage },
     { path: "/delivery/activity", component: DeliveryActivityPage },
     { path: "/delivery/documents", component: DeliveryDocumentsPage },

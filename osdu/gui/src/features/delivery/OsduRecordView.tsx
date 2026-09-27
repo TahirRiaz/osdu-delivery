@@ -16,7 +16,7 @@ const MAX_TRAIL = 8;
  * one inspector, the last one in view; stepping back along the trail closes what was opened after that point. A
  * version of any record on the trail is read into the inspector in place, without disturbing the trail.
  */
-export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, readRootVersion, ledgerVersion, actions }: {
+export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, readRootVersion, ledgerVersion, actions, fill = false }: {
   pipelineId: string | null;
   interfaceName: string | null;
   /** The page's own read, as it stands. */
@@ -29,6 +29,8 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, rea
   ledgerVersion?: number | null;
   /** The page's own controls over the read, shown on the inspector's header row. */
   actions?: ReactNode;
+  /** Whether the inspector fills its flex column parent (a window of its own) rather than a share of the viewport. */
+  fill?: boolean;
 }) {
   const [trail, setTrail] = useState<{ id: string; taskId: string; from: string }[]>([]);
   const [opening, setOpening] = useState<string | null>(null);
@@ -69,6 +71,7 @@ export function OsduRecordPanel({ pipelineId, interfaceName, task, targetId, rea
         : canOpen ? (version) => deliveryApi.readOsdu(pipelineId, entries[level].id, interfaceName, version) : undefined)}
       onBack={(to) => setTrail((was) => was.slice(0, to))}
       actions={actions}
+      fill={fill}
     />
   );
 }

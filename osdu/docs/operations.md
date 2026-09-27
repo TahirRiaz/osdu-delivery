@@ -335,7 +335,7 @@ it is a node task, like a read-back, because only a node holds the flow's connec
 - **What it does not do.** It sends nothing, so what a DDMS would answer, and the values it keeps on the record (a bulk
   data link), are not in it; the route's steps say where those come from.
 
-A record's page compares the other way round: its **Compare** tab renders the record afresh from its current source
+A record's page compares the other way round: its **Render** tab renders the record afresh from its current source
 row and reads what OSDU holds, both on a node, and shows the two side by side with OSDU's own fields (`version`,
 `createUser`, `createTime`, `modifyUser`, `modifyTime`) set aside, keys in order, and a placeholder named as a value
 the platform gives rather than as a change. The ledger keeps what it sent as a hash, not as the document, so the
@@ -397,16 +397,18 @@ Pipelines like any other flow.
   flow's and the Records page's, ends with the OSDU type of each record the ledger has an OSDU id for, and the type is
   the link that opens the record's page reading it from OSDU (a deleted record keeps its type and copy, without the
   link). A flow's list shows the record whole with the file it came from and its last error under it, and when it was
-  delivered in a few characters; the OSDU version, sixteen digits that repeat the delivery time, is on the record's In
+  delivered in a few characters; the OSDU version, sixteen digits that repeat the delivery time, is on the record's
   OSDU tab.
 - **A record's page**: three layers, each fact in one place, and as little as answers the question. The **header** is
   who the record is and where it stands: its label, custody state and blocked flag; its OSDU id, flow and last
   submission as chips; the **situation** its state calls for and no other (held or failed with the error and the next
   try; waiting, with the record it waits for; being delivered under a lease, or a lease that ran out; a rendered
-  document waiting to go, with its work batch; blocked; removed), so a delivered record with nothing wrong has no
-  situation line at all; and the operations: Sync from source, Verify, Redeliver, Release (while blocked), Send without
+  document waiting to go, with its work batch and the steps an earlier try of it completed; blocked; removed; and the
+  records waiting for this one, the first five named and the rest a click away, a warning while this record failed, is
+  held or is blocked, since it keeps them waiting), so a delivered record with nothing wrong has no situation line at
+  all; and the operations: Sync from source, Verify, Redeliver, Release (while blocked), Send without
   waiting (while waiting) and Remove from OSDU. An OSDU id is long and its start repeats down a whole flow, so everywhere the GUI names
-  one (the header chip, the timeline, the references, the records and search tables, the preview) it shows the type and
+  one (the header chip, the timeline, the records and search tables, the preview) it shows the type and
   the unique part alone, clipped to the room it has, with the whole id and kind on hover and a copy beside it that hands
   the id over verbatim; the facts a tab lists (worker, correlation id, hashes, files, paths) sit one to a line beside
   their captions, each clipped at its cell with the same hover and copy. The **milestones** strip under it is five cells in the order a record moves:
@@ -433,11 +435,19 @@ Pipelines like any other flow.
     modified, the key columns that find it (each value beside the column the flow's `source.record.key` names, with a
     copy of the key as the ledger holds it), and a read of its rows as the ingestion tables hold them now, on a node
     with the flow's own connection.
-  - **Document**: what the ledger holds to send: the rendered document waiting to go (its work batch, submission,
-    reference, payload location and the steps an earlier try completed), what OSDU returned when the record last
-    landed, the fingerprints (metadata hash, payload hash, source fingerprint) the ledger decides "changed" by, and
-    the render context.
-  - **In OSDU**: the record as OSDU holds it, read on a node through the flow's route, in an **inspector** of fixed
+  - **Render**: the record's output, built from the data available now. **Render** builds the record's manifest from
+    its current source row with the flow's mapping and the cache, on a node, and reads what OSDU holds through the
+    flow's route; nothing is sent. Only the manifest is built, not the DDMS sections a DDMS route sends besides it (bulk
+    data, series, rows). Above the result, the mapping and cache version that rendered the document OSDU holds sit
+    beside those the render used, each flagged where it changed since. The result names what the route does with the
+    manifest (the DDMS it reaches, and the route's own notes: the link a DDMS keeps on the record, keys carried forward
+    from OSDU, a dataset already registered), which explains the differences a comparison alone cannot; what the next
+    run would do and why; why a delivery would hold the record; the preflight's warnings; and the document, either
+    beside OSDU's copy (a side-by-side comparison with the unchanged stretches folded away, the differences counted by
+    kind) or whole, with the searches the render made. Nothing is shown twice: the comparison is the list of what
+    differs. The render stays on the tab while another is looked at. An old `?tab=document`, `?tab=compare` or
+    `?tab=context` link opens it.
+  - **OSDU**: the record as OSDU holds it, read on a node through the flow's route, in an **inspector** of fixed
     height, so a record of ten thousand values is read the way a file tree is, never as one tall page.
     - **One location bar** says where the reader is, and nothing below it repeats it. It has a row of its own across
       the inspector, and a path longer than the row wraps onto a further line rather than clipping. The page's own
@@ -470,10 +480,10 @@ Pipelines like any other flow.
       opens that record in the inspector, read through the same route, and the copy beside it yields the id.
     - **Search** counts its matches on every branch of the outline, marks them where they stand, and steps from match
       to match. The branches a reader opens are remembered in the browser for the record's kind. **Open in a window**
-      puts the same view in a browser window of its own, and a page opened with `?tab=osdu` reads the record at once.
-  - **Compare**: what OSDU holds beside what a delivery would send now, as a side-by-side comparison and a list of
-    the paths that differ.
-  - **References**: the OSDU ids the waiting document refers to, and the records of the ledger waiting for this one.
+      opens the explorer alone in a browser window of its own (`/delivery/records/{flowId}/{key}/osdu`): the record
+      named on one line and the inspector filling the rest, read as the window opens, with nothing of the workbench
+      around it, so it can sit on a second screen. One window per record: opening it again brings that window back. A
+      page opened with `?tab=osdu` reads the record at once.
 - **The removal dialog**: one surface for both. It names the target first (endpoint as declared, data partition,
   protocol, auth) because that is which OSDU the records are about to leave, then the three scopes side by side
   with what each destroys, whether it can be undone, what the ledger will do, and the exact call it makes. The

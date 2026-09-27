@@ -93,22 +93,23 @@ test.describe.serial("record trace", () => {
     await expect(detail).toContainText("recall-welllog-02-header-ing");
     await expect(detail).toContainText("recall-welllog-01-header-pre");
 
-    // The Source tab names the ingestion file and row the record was staged from.
+    // The Source tab names the ingestion file and row the record was staged from. Every long value it shows is clipped
+    // to its own column and copyable: a value wider than its cell used to run under the value beside it.
     await adminPage.getByTestId("record-tab-source").click();
     await expect(adminPage.getByTestId("record-origin")).toContainText("welllog_");
-
-    // The Document tab holds the waiting document. Every long value it shows is clipped to its own column and
-    // copyable: a staged payload's path is longer than the column it sits in, and a value wider than its cell used
-    // to run under the value beside it.
-    await adminPage.getByTestId("record-tab-document").click();
-    const location = adminPage.getByTestId("copy-record-payload-location");
-    await expect(location).toBeVisible();
+    await expect(adminPage.getByTestId("copy-record-origin")).toBeVisible();
     const fits = await adminPage.evaluate(() => Array.from(document.querySelectorAll("span[style*='max-width']"))
       .every((span) => {
         const parent = span.parentElement;
         return parent === null || span.getBoundingClientRect().width <= parent.getBoundingClientRect().width + 1;
       }));
     expect(fits).toBe(true);
+
+    // The Render tab sets the mapping and cache that rendered the delivered document beside those a render uses now;
+    // this record was never delivered, so it says so, and offers the render.
+    await adminPage.getByTestId("record-tab-render").click();
+    await expect(adminPage.getByTestId("record-render-delivered-mapping")).toContainText("not delivered");
+    await expect(adminPage.getByTestId("record-render-run")).toBeEnabled();
 
     // Removing the one record opens the removal surface, which says the record was never delivered; nothing is sent.
     await adminPage.getByTestId("record-delete").click();

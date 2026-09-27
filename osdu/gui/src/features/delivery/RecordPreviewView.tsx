@@ -74,6 +74,11 @@ const searchColumns: Column<DeliveryPreviewSearch>[] = [
   { id: "id", header: "Found", fill: true, render: (row) => (row.id === null || row.id === undefined ? <span className="text-muted-foreground">-</span> : <RecordName id={row.id} copy className="max-w-[420px] text-[12px]" copyTestId="copy-preview-found" />) },
 ];
 
+/** The searches a render made, one row each: what it asked the platform and what it found. */
+export function PreviewSearches({ searches, testId }: { searches: DeliveryPreviewSearch[]; testId: string }) {
+  return <DataTable columns={searchColumns} rows={searches} rowKey={(row) => `${row.kind}|${row.field}|${row.value}`} emptyMessage="No searches." data-testid={testId} />;
+}
+
 function referenceColumns(): Column<DeliveryPreviewReference>[] {
   return [
     { id: "id", header: "OSDU id", fill: true, render: (row) => <RecordName id={row.id} copy className="max-w-[420px] text-[12px]" copyTestId="copy-preview-reference" /> },
@@ -378,7 +383,7 @@ export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview 
               {document.searches.length > 0 && (
                 <div className="flex flex-col gap-1">
                   <h3 className="text-[13px] font-medium">What the render found by searching the platform</h3>
-                  <DataTable columns={searchColumns} rows={document.searches} rowKey={(row) => `${row.kind}|${row.field}|${row.value}`} emptyMessage="No searches." data-testid="preview-searches" />
+                  <PreviewSearches searches={document.searches} testId="preview-searches" />
                 </div>
               )}
             </div>

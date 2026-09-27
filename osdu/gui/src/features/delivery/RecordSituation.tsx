@@ -1,7 +1,8 @@
-import { useCallback, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { Ban, CircleAlert, Hourglass, KeyRound, Loader2, Send, Trash2, type LucideIcon } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
@@ -27,10 +28,11 @@ function Line({ tone, icon: Icon, spin = false, testId, children }: { tone: Tone
   );
 }
 
-/** A link to another record's page, named as the ledger names the record. */
+/** A link to another record's page, named as the ledger names the record, with its flow on hover. */
 export function RecordLink({ link, testId }: { link: DeliveryRecordLink; testId?: string }) {
+  const flow = link.flowName === null ? undefined : link.interface ? `${link.flowName} / ${link.interface}` : link.flowName;
   return (
-    <RouterLink to={`/delivery/records/${link.flowId}/${link.deliveryKey}`} className="text-primary hover:underline" data-testid={testId}>
+    <RouterLink to={`/delivery/records/${link.flowId}/${link.deliveryKey}`} className="text-primary hover:underline" title={flow} data-testid={testId}>
       {link.label ?? link.sourceKey}
     </RouterLink>
   );
@@ -64,12 +66,80 @@ function NextTry({ record }: { record: DeliveryRecord }) {
 }
 
 /**
+ * The steps of the waiting delivery an earlier try completed (a file uploaded, a dataset registered) before it stopped,
+ * which the next try resumes after rather than doing again; what each returned is on hover.
+ */
+function StepsDone({ record }: { record: DeliveryRecord }) {
+  const steps = record.pendingSteps === null ? [] : Object.keys(record.pendingSteps);
+  if (steps.length === 0) {
+    return null;
+  }
+
+  return (
+    <span title={JSON.stringify(record.pendingSteps, null, 2)} data-testid="record-steps-done">
+      {" An earlier try completed "}
+      <span className="font-mono">{steps.join(", ")}</span>
+      {"; the next try resumes after them."}
+    </span>
+  );
+}
+
+/** The most records waiting for this one the record's page is given (the control plane's `MaxWaitersShown`). */
+const MAX_WAITERS_SHOWN = 50;
+
+/** How many of the records waiting for this one the line names before it offers the rest. */
+const WAITERS_NAMED = 5;
+
+/**
+ * The records whose waiting document refers to this one: what this record's state costs beyond itself. A record that
+ * failed, is held or is blocked keeps them waiting, so the line warns then. The first few are named, the rest one click
+ * away, each a link to its own page with its flow on hover.
+ */
+function Waiters({ record, waiters }: { record: DeliveryRecord; waiters: DeliveryRecordLink[] }) {
+  const [all, setAll] = useState(false);
+  const named = all ? waiters : waiters.slice(0, WAITERS_NAMED);
+  const stuck = record.blocked || record.status === "failed" || record.status === "held";
+  const count = waiters.length >= MAX_WAITERS_SHOWN
+    ? `${MAX_WAITERS_SHOWN} or more records wait`
+    : waiters.length === 1 ? "1 record waits" : `${waiters.length} records wait`;
+  return (
+    <Line tone={stuck ? "warning" : "info"} icon={Hourglass} testId="record-waited-on-by">
+      {record.status === "delivered" ? `${count} for this one still: ` : `${count} for this one to land in OSDU: `}
+      {named.map((waiter, i) => (
+        <span key={`${waiter.flowId}:${waiter.deliveryKey}`}>
+          {i > 0 && ", "}
+          <RecordLink link={waiter} testId="record-waiter-link" />
+        </span>
+      ))}
+      {waiters.length > named.length
+        ? (
+          // Kept on one line: the button is a box of its own, and the full stop after it wrapped alone.
+          <span className="whitespace-nowrap">
+            {" and "}
+            <Button variant="link" className="h-auto p-0 text-[13px]" onClick={() => setAll(true)} data-testid="record-waiters-more">
+              {`${waiters.length - named.length} more`}
+            </Button>
+            .
+          </span>
+        )
+        : "."}
+    </Line>
+  );
+}
+
+/**
  * Where the record stands right now and why, said once, in the lines its state calls for and in no others: blocked,
  * held or failed with its error, waiting for another record, mid-delivery under a lease (or a lease that ran out), a
- * rendered document waiting to go, removed. A delivered record with nothing wrong has no situation and gets no lines:
- * the status pill and the milestones say everything there is.
+ * rendered document waiting to go (with the steps an earlier try of it completed), removed, and the records waiting for
+ * this one. A delivered record with nothing wrong has no situation and gets no lines: the status pill and the milestones
+ * say everything there is.
  */
-export function RecordSituation({ record, waitsOn }: { record: DeliveryRecord; waitsOn: DeliveryRecordLink | null | undefined }) {
+export function RecordSituation({ record, waitsOn, waitedOnBy }: {
+  record: DeliveryRecord;
+  waitsOn: DeliveryRecordLink | null | undefined;
+  /** The records whose waiting document refers to this one, the first `MAX_WAITERS_SHOWN`. */
+  waitedOnBy: DeliveryRecordLink[];
+}) {
   const leaseExpired = useHasPassed(record.leaseExpiresUtc);
   const lines: ReactNode[] = [];
 
@@ -96,6 +166,7 @@ export function RecordSituation({ record, waitsOn }: { record: DeliveryRecord; w
               {` The rendered ${pendingWhat(record)} waits`}
               {record.workBatch !== null && ` in work batch ${record.workBatch}`}
               {record.blocked ? " until the record is released." : " for the next try."}
+              <StepsDone record={record} />
             </span>
           )}
           {record.lastError !== null && <div className="mt-1 break-words">{record.lastError}</div>}
@@ -153,6 +224,7 @@ export function RecordSituation({ record, waitsOn }: { record: DeliveryRecord; w
             )
             : "Pending: the flow's next deliver run renders the record from its source row and sends it."}
           <NextTry record={record} />
+          {record.hasPendingDocument && <StepsDone record={record} />}
         </Line>,
       );
       break;
@@ -164,6 +236,7 @@ export function RecordSituation({ record, waitsOn }: { record: DeliveryRecord; w
             {record.workBatch !== null && ` in work batch ${record.workBatch}`}
             .
             <NextTry record={record} />
+            <StepsDone record={record} />
           </Line>,
         );
       }
@@ -175,6 +248,10 @@ export function RecordSituation({ record, waitsOn }: { record: DeliveryRecord; w
         </Line>,
       );
       break;
+  }
+
+  if (waitedOnBy.length > 0) {
+    lines.push(<Waiters key="waiters" record={record} waiters={waitedOnBy} />);
   }
 
   if (record.status !== "delivering" && record.leaseOwner !== null) {

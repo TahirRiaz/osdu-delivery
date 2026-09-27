@@ -48,7 +48,7 @@ function originOf(row: DeliveryRecord): RecordOrigin {
 const recordColumns: Column<DeliveryRecord>[] = [
   { id: "status", header: "Status", render: (row) => <RecordStatusBadge status={row.status} /> },
   // The record whole, with the file it came from and its last error under it; everything beside it is compact, so the
-  // grid fits its panel, and OSDU comes last. The OSDU version is on the record's In OSDU tab: in a row it is sixteen
+  // grid fits its panel, and OSDU comes last. The OSDU version is on the record's OSDU tab: in a row it is sixteen
   // digits that repeat the delivery time.
   {
     id: "label",

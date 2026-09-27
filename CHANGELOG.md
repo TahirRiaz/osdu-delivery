@@ -360,6 +360,23 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A record's Document and Compare tabs are one tab, Render.** The Document tab showed the ledger's bookkeeping about
+  a document it could not show: where a waiting document sat in its work batch (already on the situation line), three
+  hashes (already on each dispatch in the timeline), the ids OSDU returned (already in the header and on the
+  timeline's dispatches), and the submission's whole render context (the same for every record of it, and on the
+  submission's page). Render builds the record's output from the data available now: its manifest, from the current
+  source row with the flow's mapping and the cache, on a node and sending nothing, beside what OSDU holds or whole.
+  Only the manifest is built, not the DDMS sections a DDMS route sends besides it, and the tab says so. The mapping and
+  cache version that rendered OSDU's copy sit beside those the render used, flagged where either changed, with what the
+  next run would do and why a delivery would hold the record. The steps an earlier try of a waiting delivery completed
+  move to the situation line. `?tab=document`, `?tab=compare` and `?tab=context` open the Render tab. The In OSDU tab
+  is named OSDU, after the place the record is read from, as Source is. The References tab is gone: the ids a waiting
+  document refers to were empty for every delivered record, and the one that matters, the record it waits for, is on
+  the situation line already; the records waiting for this one become a situation line of their own, shown only when
+  there are any, and `?tab=references` opens the timeline. The OSDU tab's **Open in a window** opened the whole
+  record page again in a pop-up; it now opens the OSDU explorer alone (`/delivery/records/{flowId}/{key}/osdu`), the
+  inspector filling a window with nothing of the workbench around it, read as the window opens.
+
 - **A record's timeline shows the changes of its row, not the pipeline's runs.** It listed every run that had processed
   a file of the record's file name, so a file landed again every hour filled it with runs that changed nothing (a real
   record showed 41 entries, 36 of them re-landings after its only change). It now lists what happened to the record:

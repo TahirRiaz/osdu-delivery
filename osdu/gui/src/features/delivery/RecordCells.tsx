@@ -57,7 +57,7 @@ export function RecordIdentity({ label, sourceKey, origin, error }: {
 /**
  * Where a record stands in OSDU, in a few characters: its type (WellLog, Wellbore), since the row's record column
  * already names it and an id's unique part is most often a minted hash. The whole id is on hover, with a copy beside
- * it. The type is itself the link to the record's In OSDU tab, which reads the record as OSDU holds it; a row's own
+ * it. The type is itself the link to the record's OSDU tab, which reads the record as OSDU holds it; a row's own
  * click still opens the record's journey. A deleted record keeps its type and copy but no link, since OSDU no longer
  * serves it; a record with no id yet says so.
  */

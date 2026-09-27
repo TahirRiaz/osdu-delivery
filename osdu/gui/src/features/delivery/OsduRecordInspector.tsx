@@ -1169,7 +1169,7 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
  * the last is shown; the way back on the location bar returns to the record before, as it was, and closes what was
  * opened after it.
  */
-export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, readVersionAt, onBack, actions }: {
+export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, readVersionAt, onBack, actions, fill = false }: {
   entries: InspectorEntry[];
   ledgerVersion?: number | null;
   opening?: string | null;
@@ -1181,6 +1181,11 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
   onBack: (level: number) => void;
   /** The page's own controls over the read, shown on the location bar. */
   actions?: ReactNode;
+  /**
+   * Whether the inspector takes the height its flex column parent gives it (a window of its own) rather than a fixed
+   * share of the viewport under a page's header (a tab).
+   */
+  fill?: boolean;
 }) {
   const shownLevel = entries.length - 1;
 
@@ -1252,13 +1257,23 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
   };
 
   return (
-    <div data-testid="osdu-panel">
+    <div className={fill ? "flex min-h-0 flex-1 flex-col" : undefined} data-testid="osdu-panel">
       {entries.map((entry, level) => {
         const { content, inspector } = body(entry, level);
         return (
           // Every record on the trail stays mounted, so stepping back finds it as it was left; only the last is shown.
-          <div key={`${level}:${entry.task?.taskId ?? entry.id}`} hidden={level !== shownLevel} data-testid={level > 0 ? "osdu-linked" : undefined}>
-            <Card className={cn("flex flex-col gap-0 overflow-hidden rounded-lg p-0", inspector ? "h-[72vh] min-h-[520px]" : "h-auto")}>
+          <div
+            key={`${level}:${entry.task?.taskId ?? entry.id}`}
+            hidden={level !== shownLevel}
+            className={fill ? "flex min-h-0 flex-1 flex-col" : undefined}
+            data-testid={level > 0 ? "osdu-linked" : undefined}
+          >
+            <Card
+              className={cn(
+                "flex flex-col gap-0 overflow-hidden rounded-lg p-0",
+                !inspector ? "h-auto" : fill ? "min-h-[520px] flex-1" : "h-[72vh] min-h-[520px]",
+              )}
+            >
               {content}
             </Card>
           </div>

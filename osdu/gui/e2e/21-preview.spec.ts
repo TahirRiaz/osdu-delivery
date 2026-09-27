@@ -90,7 +90,7 @@ test.describe.serial("record preview and OSDU read", () => {
     await row.getByTestId("open-in-osdu").click();
     await expect(adminPage.getByTestId("page-delivery-record")).toBeVisible();
 
-    // The page opened on its In OSDU tab reads the record at once. Nothing was delivered, so OSDU holds none.
+    // The page opened on its OSDU tab reads the record at once. Nothing was delivered, so OSDU holds none.
     await expect(adminPage.getByTestId("record-tab-osdu")).toHaveAttribute("data-state", "active");
     await expect(adminPage.getByTestId("osdu-not-found")).toBeVisible({ timeout: 60_000 });
 
@@ -128,6 +128,14 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(adminPage.getByTestId("osdu-trail")).not.toContainText("Full document");
     await adminPage.getByTestId("osdu-mode-fields").click();
 
+    // The explorer opens in a window of its own: the record named, the inspector filling the window and read as it
+    // opens, and nothing of the workbench around it.
+    const [explorer] = await Promise.all([adminPage.context().waitForEvent("page"), adminPage.getByTestId("record-osdu-popout").click()]);
+    await expect(explorer.getByTestId("page-osdu-window")).toBeVisible({ timeout: 30_000 });
+    await expect(explorer.getByTestId("osdu-record-json")).toContainText("held by the stand-in", { timeout: 60_000 });
+    await expect(explorer.getByTestId("record-tabs")).toHaveCount(0);
+    await explorer.close();
+
     // The versions OSDU keeps of it ride with the read: the stand-in keeps one, which is the latest and the one in
     // view, so the picker names it as such and offers nothing older.
     const versions = adminPage.getByTestId("osdu-record-versions");
@@ -154,12 +162,18 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(linked).toHaveCount(0);
     await expect(adminPage.getByTestId("osdu-record-json")).toContainText("held by the stand-in");
 
-    // Compare: what OSDU holds beside what a delivery would send now, rendered afresh from the record's source row.
-    await adminPage.getByTestId("record-tab-compare").click();
-    await adminPage.getByTestId("record-compare-run").click();
-    await expect(adminPage.getByTestId("record-compare-diff")).toBeVisible({ timeout: 60_000 });
-    await expect(adminPage.getByTestId("record-compare-counts")).toContainText(/changed|would be added|only in OSDU/);
-    await expect(adminPage.getByTestId("record-compare-differences")).toContainText("data.Name");
-    await expect(adminPage.getByTestId("record-compare-summary")).toBeVisible();
+    // Render: the record's manifest built afresh from its source row, beside what OSDU holds (the stand-in's copy differs
+    // in its name), with the mapping it was built with beside the one that built OSDU's copy, and what the next run would
+    // do; the whole document is one toggle away.
+    await adminPage.getByTestId("record-tab-render").click();
+    await expect(adminPage.getByTestId("record-render-scope")).toContainText("manifest");
+    await adminPage.getByTestId("record-render-run").click();
+    await expect(adminPage.getByTestId("record-render-diff")).toBeVisible({ timeout: 60_000 });
+    await expect(adminPage.getByTestId("record-render-counts")).toContainText(/changed|would be added|only in OSDU/);
+    await expect(adminPage.getByTestId("record-render-now-mapping")).toContainText("@");
+    await expect(adminPage.getByTestId("record-render-next")).toBeVisible();
+    await adminPage.getByTestId("record-render-view-document").click();
+    await expect(adminPage.getByTestId("record-render-document")).toBeVisible();
+    await expect(adminPage.getByTestId("record-render-diff")).toBeHidden();
   });
 });
