@@ -405,11 +405,14 @@ Pipelines like any other flow.
     - **One location bar** says where the reader is, and nothing below it repeats it. It has a row of its own across
       the inspector, and a path longer than the row wraps onto a further line rather than clipping. The page's own
       record is named by its type alone, as the page names it above (the whole id and kind on hover), then the path
-      inside it. A record opened from a link continues the same path, named by its type and, where its id reads as a
-      name, the unique part of it; an id minted as a hash or a GUID gives the type alone. So it reads from the first
-      record through the value that named the next to where the reader is now:
-      `WellLog > data > WellboreID > Wellbore NO-15-5-7-AT2 > data`. Any crumb steps back, and a record stepped back
-      to is as the reader left it. The row below holds the view (Fields or JSON) and the **version picker** on the
+      inside it. The record's name stands for its content, the `data` block every record keeps it in, so a path inside
+      it follows the name without a `data` step, while the other sections (`meta`, `tags`, `ancestry`) and the views
+      (System fields, Full document, Access & legal, Linked records) are named steps; the copy beside the last step
+      yields the full path. A record opened from a link continues the same path, named by its type and, where its id
+      reads as a name, the unique part of it; an id minted as a hash or a GUID gives the type alone. So it reads from
+      the first record through the value that named the next to where the reader is now:
+      `WellLog > WellboreID > Wellbore NO-15-5-7-AT2 > NameAliases > [0]`. Any crumb steps back, and a record
+      stepped back to is as the reader left it. The row below holds the view (Fields or JSON) and the **version picker** on the
       left, and the page's read controls on the right.
     - **The version picker** shows the version in view, marked latest or older (amber), with a check when it is the
       version this flow delivered; its menu lists every version OSDU keeps, newest first. A picked version is read on

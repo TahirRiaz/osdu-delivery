@@ -31,8 +31,8 @@ import {
   canonicalText, differences, downloadJson, fileNameOf, shortValue, withoutOsduFields, withoutVersion, type DifferenceKind, type JsonDifference,
 } from "./osduDocument";
 import {
-  branchPaths, buildModel, describeBranch, documentNode, idParts, isMintedUnique, isReferenceNode, loadLayout, matching, pathSegments, saveLayout, trail,
-  type RecordModel, type RecordNode,
+  branchPaths, buildModel, CONTENT_SECTION, describeBranch, documentNode, idParts, isMintedUnique, isReferenceNode, loadLayout, locationSegments, matching,
+  saveLayout, trail, type RecordModel, type RecordNode,
 } from "./osduRecordModel";
 import { RecordName } from "./RecordName";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
@@ -330,7 +330,7 @@ function namedByType(id: string, level: number): boolean {
 
 /**
  * The records before the current one on the trail, each named once and followed by the path of the value that led on
- * from it, so the location reads as one path across records: log, data, WellboreID, then the wellbore. Any step of
+ * from it, so the location reads as one path across records: log, WellboreID, then the wellbore. Any step of
  * an earlier record goes back to it, as it was left. The current record follows as the next step.
  */
 function PriorCrumbs({ prior, onBack }: { prior: PriorCrumb[]; onBack: (level: number) => void }) {
@@ -343,7 +343,7 @@ function PriorCrumbs({ prior, onBack }: { prior: PriorCrumb[]; onBack: (level: n
               <RecordName id={crumb.id} typeOnly={namedByType(crumb.id, crumb.level)} />
             </button>
           </CrumbStep>
-          {crumb.from !== null && pathSegments(crumb.from).map((segment, index) => (
+          {crumb.from !== null && locationSegments(crumb.from).map((segment, index) => (
             <CrumbStep key={index}>
               <Crumb label={segment.index ? `[${segment.key}]` : segment.key} onClick={() => onBack(crumb.level)} title={`Back to ${crumb.id}, where ${crumb.from} named the next record`} />
             </CrumbStep>
@@ -949,7 +949,9 @@ function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack
   const shown = node === undefined ? 0 : Math.min(node.children.length, shownCounts.get(node.path) ?? PAGE);
   const showMore = () => { if (node !== undefined) { setShownCounts((current) => new Map(current).set(node.path, node.children.length)); } };
   const isTable = node !== undefined && node.kind === "array" && node.children.length > 0 && node.children.every((child) => child.kind === "object");
-  const crumbs = node === undefined ? [] : trail(model, node.path);
+  // The record's name stands for its content, so the content section is no step of its own.
+  const crumbs = node === undefined ? [] : trail(model, node.path).filter((crumb) => crumb.path !== CONTENT_SECTION);
+  const atContent = selected === CONTENT_SECTION;
 
   // The copy of the path rides on the last step, so a wrapped location never leaves it alone on a line.
   const copyPath = node === undefined ? null : <CopyButton iconOnly label="Copy the path" text={node.path} testId="copy-osdu-path" />;
@@ -959,16 +961,17 @@ function RecordInspector({ read, level, prior, ledgerVersion, onOpenLink, onBack
       <CrumbStep first={prior.length === 0}>
         <button
           type="button"
-          className={cn("min-w-0 max-w-full rounded-sm hover:underline", selected === RECORD ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
-          onClick={() => select(RECORD)}
-          title="The record's system fields"
+          className={cn("min-w-0 max-w-full rounded-sm hover:underline", atContent ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
+          onClick={() => select(model.sections[0]?.path ?? RECORD)}
+          title="The record's content"
+          aria-current={atContent ? "location" : undefined}
           data-testid="osdu-crumb-record"
         >
           <RecordName id={read.targetId} kind={kind} typeOnly={namedByType(read.targetId, level)} className="font-medium" />
         </button>
       </CrumbStep>
       {node === undefined
-        ? selected !== RECORD && <CrumbStep><Crumb label={VIEW_NAMES[selected]} mono={false} current /></CrumbStep>
+        ? <CrumbStep><Crumb label={VIEW_NAMES[selected]} mono={false} current /></CrumbStep>
         : crumbs.map((crumb, index) => {
           const isItem = model.byPath.get(crumb.parent)?.kind === "array";
           const last = index === crumbs.length - 1;

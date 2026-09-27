@@ -122,8 +122,10 @@ test.describe.serial("record preview and OSDU read", () => {
     // The full document is the whole record as OSDU returned it, envelope and all, and a key in it steps to its branch.
     await adminPage.getByTestId("osdu-outline-document").click();
     await expect(adminPage.getByTestId("osdu-json")).toContainText("e2e-stand-in");
+    // The record's content is where its name leads, so the location ends on the record rather than naming `data`.
     await adminPage.getByTestId("osdu-json").getByTestId("osdu-json-key").filter({ hasText: "data" }).first().click();
-    await expect(adminPage.getByTestId("osdu-trail")).toContainText("data");
+    await expect(adminPage.getByTestId("osdu-crumb-record")).toHaveAttribute("aria-current", "location");
+    await expect(adminPage.getByTestId("osdu-trail")).not.toContainText("Full document");
     await adminPage.getByTestId("osdu-mode-fields").click();
 
     // The versions OSDU keeps of it ride with the read: the stand-in keeps one, which is the latest and the one in

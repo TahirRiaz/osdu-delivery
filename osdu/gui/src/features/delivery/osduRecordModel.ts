@@ -7,8 +7,14 @@ export const ENVELOPE_KEYS = new Set(["id", "kind", "version", "acl", "legal", "
 const LAYOUT_PREFIX = "osdu-delivery.record-outline.";
 const LAYOUT_MAX_PATHS = 300;
 
+/**
+ * The section every OSDU record keeps its content in. The inspector opens on it, and the location leaves it implicit: a
+ * path inside it follows the record's name straight away, where `meta` or `tags` are named as the steps they are.
+ */
+export const CONTENT_SECTION = "data";
+
 /** What the outline opens on a record whose kind it has not seen: the record itself, with everything under it folded. */
-const DEFAULT_OPEN: readonly string[] = ["data"];
+const DEFAULT_OPEN: readonly string[] = [CONTENT_SECTION];
 
 export type NodeKind = "object" | "array" | "leaf";
 
@@ -75,8 +81,8 @@ export function buildModel(record: Record<string, unknown>, ownId: string | null
   const byPath = new Map<string, RecordNode>();
   const keys = Object.keys(record);
   const ordered = [
-    ...keys.filter((key) => key === "data"),
-    ...keys.filter((key) => key !== "data" && !ENVELOPE_KEYS.has(key)).sort(),
+    ...keys.filter((key) => key === CONTENT_SECTION),
+    ...keys.filter((key) => key !== CONTENT_SECTION && !ENVELOPE_KEYS.has(key)).sort(),
   ];
   const sections = ordered.map((key) => build(key, record[key], key, "", byPath));
 
@@ -224,8 +230,11 @@ export interface PathSegment {
   index: boolean;
 }
 
-/** The steps of a path as `childPath` writes it: `data.Curves[3].CurveUnit` is data, Curves, [3], CurveUnit. */
-export function pathSegments(path: string): PathSegment[] {
+/**
+ * The steps of a path as `childPath` writes it, as the location shows them: `data.Curves[3].CurveUnit` is Curves, [3],
+ * CurveUnit, the content section being implicit in the record's name; `meta[0].name` is meta, [0], name.
+ */
+export function locationSegments(path: string): PathSegment[] {
   const segments: PathSegment[] = [];
   for (const part of path.split(".")) {
     const bracket = part.indexOf("[");
@@ -239,7 +248,7 @@ export function pathSegments(path: string): PathSegment[] {
     }
   }
 
-  return segments;
+  return segments.length > 0 && !segments[0].index && segments[0].key === CONTENT_SECTION ? segments.slice(1) : segments;
 }
 
 /**
