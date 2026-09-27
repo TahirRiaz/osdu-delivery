@@ -103,8 +103,12 @@ test.describe.serial("osdu cache", () => {
     const cacheRow = adminPage.getByTestId("repo-pipeline").filter({ hasText: CACHE });
     await expect(cacheRow.first()).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: DELIVERY_FLOW })).toHaveCount(0);
+    await expect(cacheRow.first().getByTestId("repo-pipeline-kind")).toHaveText("Cache");
     await cacheRow.first().click();
     await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
+    // A cache flow's page says so before anything else, so it never reads as a delivery flow's.
+    await expect(adminPage.getByTestId("pipeline-kind")).toHaveAttribute("data-kind", "cache");
+    await expect(adminPage.getByTestId("pipeline-kind-label")).toHaveText("Cache flow");
     await adminPage.getByTestId("pipeline-tab-yaml").click();
     await expect(adminPage.getByTestId("pipeline-yaml")).toContainText("flowType: cache", { timeout: 15_000 });
     // A cache flow is analysed like SQLFlow's own flows: its keys are documented on hover, and nothing in it is flagged.

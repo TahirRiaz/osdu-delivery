@@ -1,6 +1,6 @@
 import {
-  DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, PackageCheck, PackageSearch, PencilRuler, ScrollText,
-  ShieldCheck, Workflow,
+  CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, PackageCheck, PackageSearch, PencilRuler,
+  ScrollText, ShieldCheck, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
 import type { Column } from "@/components/DataTable";
@@ -90,8 +90,12 @@ function runPanels(extra: Omit<RunDetailContribution, "card" | "hiddenTabs">): R
   };
 }
 
+// The module's kinds wear the icons of the pages they feed (Delivery, Cache), in colours of their own: a delivery flow
+// in the one tone SQLFlow leaves to modules, a cache flow in orange, so a pre, ingestion, cache and delivery flow of one
+// source each read differently; a retrieval flow brings records in, as SQLFlow's blue kinds do.
 const deliveryKind: FlowKindContribution = {
   kind: "delivery",
+  identity: { label: "Delivery", icon: PackageCheck, tone: "magenta" },
   pipelineTabs: [
     {
       value: "delivery",
@@ -143,6 +147,7 @@ const deliveryKind: FlowKindContribution = {
 
 const retrievalKind: FlowKindContribution = {
   kind: "retrieval",
+  identity: { label: "Retrieval", icon: CloudDownload, tone: "blue" },
   pipelineTabs: [
     {
       value: "retrievals",
@@ -160,6 +165,7 @@ const retrievalKind: FlowKindContribution = {
 
 const cacheKind: FlowKindContribution = {
   kind: "cache",
+  identity: { label: "Cache", icon: DatabaseZap, tone: "orange" },
   pipelineTabs: [
     {
       value: "versions",

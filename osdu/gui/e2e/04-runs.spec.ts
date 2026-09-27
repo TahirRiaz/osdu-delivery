@@ -33,6 +33,10 @@ test.describe.serial("runs", () => {
     await expect(adminPage.getByTestId("status-badge").filter({ hasText: "succeeded" }).first())
       .toBeVisible({ timeout: 180_000 });
 
+    // The run page names the kind of flow it ran, as its pipeline's page does.
+    await expect(adminPage.getByTestId("run-kind")).toHaveText("Delivery");
+    await expect(adminPage.getByTestId("run-kind")).toHaveAttribute("data-kind", "delivery");
+
     // The run records what was asked: the operation and the flow parameter show on the run page.
     await expect(adminPage.getByTestId("run-parameters")).toBeVisible();
     await expect(adminPage.getByTestId("run-operation")).toHaveText("plan");
