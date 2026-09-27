@@ -57,6 +57,15 @@ public static class AttemptPhases
 
     /// <summary>A skipped attempt: the final hash check found OSDU already holding the queued document and payload.</summary>
     public const string Unchanged = "unchanged";
+
+    /// <summary>
+    /// A skipped attempt the intake writes: the ingestion table changed the row, and the document it renders is the one
+    /// OSDU holds or the one already queued, so nothing is sent. It records the change, with the row's new origin.
+    /// </summary>
+    public const string Identical = "identical";
+
+    /// <summary>A held attempt: the ingestion table marked the record row deleted, and a deleted row is never delivered.</summary>
+    public const string SourceDeleted = "source-deleted";
 }
 
 public enum VerifyOutcome
@@ -66,6 +75,12 @@ public enum VerifyOutcome
     Missing,
     Error,
 }
+
+/// <summary>
+/// A version of a record's ingestion row as its attempts recorded it: its origin, when the ingestion table marked the row
+/// deleted (for the hold of a deleted row), and when the ledger first recorded it.
+/// </summary>
+public sealed record RecordOriginSeen(RecordOrigin Origin, DateTime? DeletedUtc, DateTime FirstRecordedUtc);
 
 /// <summary>Where the version of a record came from: the ingestion table's file and row, and when the table last updated the row.</summary>
 public readonly record struct RecordOrigin(string? FileName, long? RowNumber, DateTime? UpdatedUtc)
@@ -232,6 +247,13 @@ public sealed record RecordState
     /// <summary>When the ingestion table last updated that row.</summary>
     public DateTime? SourceUpdatedUtc { get; init; }
 
+    /// <summary>
+    /// When the ingestion table first inserted the record's row (SQLFlow's <c>InsertedDate_DW</c>), as the last plan that
+    /// read the row saw it: the row's arrival, which later changes never move. Null when the table does not carry it, or
+    /// when no plan has read the row since the ledger began keeping it.
+    /// </summary>
+    public DateTime? SourceInsertedUtc { get; init; }
+
     public string? MetadataHash { get; init; }
 
     public string? PayloadHash { get; init; }
@@ -313,6 +335,13 @@ public sealed record RecordState
 
     /// <summary>When the ingestion table last updated that row.</summary>
     public DateTime? PendingSourceUpdatedUtc { get; init; }
+
+    /// <summary>
+    /// When the ingestion table marked the row the pending state was read from deleted, for a record held because of it:
+    /// the hold's attempt records the moment under <see cref="AttemptPhases.SourceDeleted"/>. The attempt keeps it, not
+    /// the record.
+    /// </summary>
+    public DateTime? PendingSourceDeletedUtc { get; init; }
 
     public string? PendingMetadataHash { get; init; }
 
@@ -416,6 +445,9 @@ public sealed record AttemptRecord
 
     /// <summary>When the ingestion table last updated that row.</summary>
     public DateTime? SourceUpdatedUtc { get; init; }
+
+    /// <summary>When the ingestion table marked that row deleted, for the hold of a deleted row; null otherwise.</summary>
+    public DateTime? SourceDeletedUtc { get; init; }
 }
 
 /// <summary>How a try ended for one claimed record: what the worker appends under its lease, applied to the record later.</summary>
@@ -509,7 +541,7 @@ public sealed record SkippedRecord
 
     public required SkipKind Kind { get; init; }
 
-    /// <summary>What the plan said about the record, for the attempt a stale skip writes.</summary>
+    /// <summary>What the plan said about the record, for the attempt a stale or identical skip writes.</summary>
     public required string Reason { get; init; }
 
     /// <summary>The record's key tuple, as the source read it.</summary>
@@ -520,8 +552,11 @@ public sealed record SkippedRecord
 
     public DateTime? SourceModifiedUtc { get; init; }
 
-    /// <summary>The ingestion file and row the plan read, for the attempt a stale skip writes.</summary>
+    /// <summary>The ingestion file and row the plan read, for the attempt a stale or identical skip writes.</summary>
     public RecordOrigin Origin { get; init; }
+
+    /// <summary>When the ingestion table first inserted the row, as the plan read it.</summary>
+    public DateTime? SourceInsertedUtc { get; init; }
 
     /// <summary>The payload watermark the source carried.</summary>
     public DateTime? PayloadModifiedUtc { get; init; }
@@ -529,7 +564,7 @@ public sealed record SkippedRecord
     /// <summary>The render context the record was rendered under (a rendered skip advances the record to it).</summary>
     public string? RenderContext { get; init; }
 
-    /// <summary>The platform run of the intake, for the attempt a stale skip writes.</summary>
+    /// <summary>The platform run of the intake, for the attempt a stale or identical skip writes.</summary>
     public Guid? RunId { get; init; }
 }
 
@@ -1243,6 +1278,14 @@ public interface ILedger
 
     /// <summary>One of the flow's records' attempts, newest first: the record's history, and nothing of another flow's record with the same key.</summary>
     Task<IReadOnlyList<AttemptRecord>> ListAttemptsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default);
+
+    /// <summary>
+    /// The versions of one of the flow's records' ingestion row its attempts recorded, newest first: each distinct origin
+    /// (the stamp, file and row) an attempt was built from or recorded, and each moment the ingestion table marked the row
+    /// deleted, with when the ledger first recorded it. Read over every attempt the record has, not a page of them; at
+    /// most <paramref name="max"/>. The record's own delivered and queued origins are on the record.
+    /// </summary>
+    Task<IReadOnlyList<RecordOriginSeen>> ListOriginsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default);
 
     /// <summary>The attempts a submission produced, newest first: the submission view.</summary>
     Task<IReadOnlyList<AttemptRecord>> ListAttemptsForSubmissionAsync(Guid submissionId, int max, CancellationToken ct = default);

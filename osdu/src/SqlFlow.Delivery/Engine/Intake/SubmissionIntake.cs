@@ -515,6 +515,7 @@ public sealed class SubmissionIntake
         SourceFingerprint = entry.SourceFingerprint,
         SourceModifiedUtc = entry.SourceModifiedUtc,
         Origin = new RecordOrigin(entry.Origin.FileName, entry.Origin.RowNumber, entry.Origin.UpdatedUtc),
+        SourceInsertedUtc = entry.Origin.InsertedUtc,
         PayloadModifiedUtc = entry.PayloadModifiedUtc,
         RenderContext = entry.SkipTier == SkipTier.ContentHash ? renderContext : null,
         RunId = RunId,
@@ -645,6 +646,8 @@ public sealed class SubmissionIntake
         PendingSourceFileName = entry.Origin.FileName,
         PendingSourceRowNumber = entry.Origin.RowNumber,
         PendingSourceUpdatedUtc = entry.Origin.UpdatedUtc,
+        PendingSourceDeletedUtc = entry.SourceDeletedUtc,
+        SourceInsertedUtc = entry.Origin.InsertedUtc,
         LastError = Http.HeaderRedaction.RedactMessage(entry.Reason),
     };
 
@@ -668,6 +671,7 @@ public sealed class SubmissionIntake
         PendingSourceFileName = entry.Origin.FileName,
         PendingSourceRowNumber = entry.Origin.RowNumber,
         PendingSourceUpdatedUtc = entry.Origin.UpdatedUtc,
+        SourceInsertedUtc = entry.Origin.InsertedUtc,
         PendingMetadataHash = entry.Render!.MetadataHash,
         PendingPayloadHash = entry.PayloadHash,
         PendingPayloadModifiedUtc = entry.DeliverPayload ? entry.PayloadModifiedUtc : null,

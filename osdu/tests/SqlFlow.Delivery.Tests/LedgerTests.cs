@@ -1225,6 +1225,96 @@ public class SqlLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task A_changed_row_that_renders_what_OSDU_holds_is_recorded_once_and_the_origin_moves_with_it()
+    {
+        var arrived = Now.AddDays(-3);
+        var loaded = Now.AddDays(-2);
+        var changed = Now.AddDays(-1);
+        var s1 = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", s1) with
+        {
+            PendingSourceFileName = "first.csv", PendingSourceRowNumber = 1, PendingSourceUpdatedUtc = loaded, SourceInsertedUtc = arrived,
+        }]);
+        var claimed = ((await Ledger.ClaimAsync(_flow, s1, "w", 10, TimeSpan.FromMinutes(5), Now)).Records).Single();
+        await Ledger.CompleteAsync(_flow, Delivered(claimed, s1));
+        await Ledger.UpsertPendingAsync(_flow, [Pending("b", s1) with
+        {
+            PendingSourceFileName = "first.csv", PendingSourceRowNumber = 2, PendingSourceUpdatedUtc = loaded, SourceInsertedUtc = arrived,
+        }]);
+        var a = claimed.DeliveryKey;
+        var b = DeliveryKey.Derive("test", ["b"]);
+        var delivered = await Ledger.GetRecordAsync(_flow, a);
+        Assert.Equal(("first.csv", 1L, loaded, arrived), (delivered!.SourceFileName, delivered.SourceRowNumber, delivered.SourceUpdatedUtc, delivered.SourceInsertedUtc));
+
+        // The ingestion table changed both rows from a second file, and each renders the document OSDU holds or the one
+        // already queued: nothing is sent, and each change is recorded against its record with the row's new origin.
+        SkippedRecord Identical(DeliveryKey key, long row, DateTime stamp) => new()
+        {
+            DeliveryKey = key,
+            Kind = SkipKind.Rendered,
+            Reason = "metadata and payload hashes unchanged",
+            SourceFingerprint = "fp-2",
+            Origin = new RecordOrigin("second.csv", row, stamp),
+            SourceInsertedUtc = arrived,
+        };
+
+        var s2 = Guid.NewGuid();
+        await Ledger.MarkSkippedAsync(_flow, [Identical(a, 7, changed), Identical(b, 8, changed)], s2);
+        foreach (var (key, row) in new[] { (a, 7L), (b, 8L) })
+        {
+            var identical = Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10), x => x.Phase == AttemptPhases.Identical);
+            Assert.Equal((AttemptOutcome.Skipped, "intake", s2), (identical.Outcome, identical.Worker, identical.SubmissionId));
+            Assert.Equal(("second.csv", row, changed), (identical.SourceFileName, identical.SourceRowNumber, identical.SourceUpdatedUtc));
+            Assert.Contains("hashes unchanged", identical.ResultJson, StringComparison.Ordinal);
+        }
+
+        // The delivered record's origin moves with its fingerprint; the queued work's lands with that work.
+        var moved = await Ledger.GetRecordAsync(_flow, a);
+        Assert.Equal(("second.csv", 7L, changed, "fp-2"), (moved!.SourceFileName, moved.SourceRowNumber, moved.SourceUpdatedUtc, moved.SourceFingerprint));
+        var queued = await Ledger.GetRecordAsync(_flow, b);
+        Assert.Equal(("second.csv", 8L, changed), (queued!.PendingSourceFileName, queued.PendingSourceRowNumber, queued.PendingSourceUpdatedUtc));
+        Assert.Equal(RecordStatus.Pending, queued.Status);
+
+        // The same rows rendered again (a cache or mapping rollout), or re-read from under the watermark: no change, so no
+        // attempt; the origin stays where the change put it.
+        await Ledger.MarkSkippedAsync(_flow, [Identical(a, 7, changed), Identical(b, 8, changed)], Guid.NewGuid());
+        await Ledger.MarkSkippedAsync(_flow, [Identical(a, 1, loaded), Identical(b, 2, loaded)], Guid.NewGuid());
+        Assert.Single(await Ledger.ListAttemptsAsync(_flow, a, 10), x => x.Phase == AttemptPhases.Identical);
+        Assert.Single(await Ledger.ListAttemptsAsync(_flow, b, 10), x => x.Phase == AttemptPhases.Identical);
+        var kept = await Ledger.GetRecordAsync(_flow, a);
+        Assert.Equal(("second.csv", 7L, changed), (kept!.SourceFileName, kept.SourceRowNumber, kept.SourceUpdatedUtc));
+
+        // The versions the record's history holds: each once, newest first, however many attempts recorded it.
+        var versions = await Ledger.ListOriginsAsync(_flow, b, 10);
+        var only = Assert.Single(versions);
+        Assert.Equal((new RecordOrigin("second.csv", 8, changed), (DateTime?)null), (only.Origin, only.DeletedUtc));
+
+        // A read of a table without the insert column leaves the arrival the ledger knows.
+        await Ledger.UpsertPendingAsync(_flow, [Pending("a", Guid.NewGuid()) with { PendingSourceUpdatedUtc = Now }]);
+        Assert.Equal(arrived, (await Ledger.GetRecordAsync(_flow, a))!.SourceInsertedUtc);
+    }
+
+    [Fact]
+    public async Task A_record_held_because_its_row_was_deleted_dates_the_deletion_on_its_hold()
+    {
+        var deleted = Now.AddHours(-1);
+        await Ledger.MarkHeldAsync(_flow, [
+            Pending("a", Guid.NewGuid()) with { PendingSourceUpdatedUtc = Now.AddDays(-1), PendingSourceDeletedUtc = deleted, SourceInsertedUtc = Now.AddDays(-2), LastError = "the ingestion table marked the record row deleted" },
+            Pending("b", Guid.NewGuid()) with { LastError = "no Wellbore matches" },
+        ]);
+
+        var gone = Assert.Single(await Ledger.ListAttemptsAsync(_flow, DeliveryKey.Derive("test", ["a"]), 10));
+        Assert.Equal((AttemptOutcome.Held, AttemptPhases.SourceDeleted, deleted), (gone.Outcome, gone.Phase, gone.SourceDeletedUtc));
+        Assert.Equal(Now.AddDays(-2), (await Ledger.GetRecordAsync(_flow, DeliveryKey.Derive("test", ["a"])))!.SourceInsertedUtc);
+        var other = Assert.Single(await Ledger.ListAttemptsAsync(_flow, DeliveryKey.Derive("test", ["b"]), 10));
+        Assert.Equal(("render", (DateTime?)null), (other.Phase, other.SourceDeletedUtc));
+
+        // The deletion is one of the versions the record's history holds, with the row's last stamp beside it.
+        var version = Assert.Single(await Ledger.ListOriginsAsync(_flow, DeliveryKey.Derive("test", ["a"]), 10));
+        Assert.Equal(((DateTime?)deleted, (DateTime?)Now.AddDays(-1)), (version.DeletedUtc, version.Origin.UpdatedUtc));
+    }
+
+    [Fact]
     public async Task Two_flows_reading_the_same_row_keep_separate_records_and_histories()
     {
         // One ingestion row, two flows: the well log flow writes a WellLog, the other flow a Wellbore. The delivery key is

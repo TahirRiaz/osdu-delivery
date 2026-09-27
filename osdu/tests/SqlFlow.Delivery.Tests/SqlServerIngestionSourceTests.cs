@@ -135,6 +135,66 @@ public sealed class SqlServerIngestionSourceTests
     }
 
     [Fact]
+    public async Task A_row_is_read_with_when_it_first_reached_the_table_and_a_column_that_cannot_say_so_is_refused()
+    {
+        await using var estate = await SqlServerIngestionFixture.StartAsync();
+        const string Unique = "CREATE UNIQUE NONCLUSTERED INDEX [NCI_KeyColumn] ON {0} ([item_key]);";
+        var table = await CreateTableAsync(
+            estate,
+            "Arrived",
+            "[RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT [PK_Arrived] PRIMARY KEY, [item_key] nvarchar(50) NOT NULL, [InsertedDate_DW] datetime NULL, [UpdatedDate_DW] datetime NULL",
+            Unique);
+        await CreateTableAsync(
+            estate, "Unstamped", "[RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT [PK_Unstamped] PRIMARY KEY, [item_key] nvarchar(50) NOT NULL, [UpdatedDate_DW] datetime NULL", Unique);
+        await CreateTableAsync(
+            estate,
+            "TextArrival",
+            "[RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT [PK_TextArrival] PRIMARY KEY, [item_key] nvarchar(50) NOT NULL, [InsertedDate_DW] nvarchar(30) NULL, [UpdatedDate_DW] datetime NULL",
+            Unique);
+
+        // Inserted by one load and changed by the next: the insert stamp stays where the first load put it.
+        await ExecuteAsync(estate, $"INSERT INTO {table} ([item_key], [InsertedDate_DW], [UpdatedDate_DW]) VALUES (N'item', @loaded, @changed);");
+        await ExecuteAsync(estate, $"INSERT INTO [{estate.ArcSchema}].[Unstamped] ([item_key], [UpdatedDate_DW]) VALUES (N'item', @changed);");
+
+        async Task<SqlFlow.Delivery.Rendering.SourceOrigin> OriginAsync(FlowDefinition flow)
+        {
+            var source = estate.Engine.Sources.Open(flow, NoValues, NullLoggerFactory.Instance);
+            var header = await source.OpenAsync(SourceSelection.Full(), null);
+            await foreach (var record in source.ReadAsync(header, null))
+            {
+                return record.Origin;
+            }
+
+            throw new InvalidOperationException("The table holds one row, and the read found none.");
+        }
+
+        var arrived = await OriginAsync(ItemFlow(estate, "Arrived"));
+        Assert.Equal((Loaded, Changed), (arrived.InsertedUtc, arrived.UpdatedUtc));
+
+        // A table without the column is read without an arrival, unless the flow named the column itself.
+        Assert.Null((await OriginAsync(ItemFlow(estate, "Unstamped"))).InsertedUtc);
+        FlowDefinition Declared(string table)
+        {
+            var flow = ItemFlow(estate, table);
+            return flow with { Source = flow.Source with { SystemColumns = flow.Source.SystemColumns with { InsertedDeclared = true } } };
+        }
+
+        var missing = await Assert.ThrowsAsync<FlowValidationException>(() => OriginAsync(Declared("Unstamped")));
+        Assert.Contains("names column 'InsertedDate_DW', which the record table", missing.Message, StringComparison.Ordinal);
+
+        // A column of that name that holds no moment is refused, and the message says how to opt out.
+        var text = await Assert.ThrowsAsync<FlowValidationException>(() => OriginAsync(ItemFlow(estate, "TextArrival")));
+        Assert.Contains("which is nvarchar(30)", text.Message, StringComparison.Ordinal);
+        Assert.Contains("inserted: ~", text.Message, StringComparison.Ordinal);
+
+        // Opted out, the same table reads without one.
+        var optedOut = ItemFlow(estate, "TextArrival");
+        optedOut = optedOut with { Source = optedOut.Source with { SystemColumns = optedOut.Source.SystemColumns with { Inserted = null } } };
+        await ExecuteAsync(estate, $"INSERT INTO [{estate.ArcSchema}].[TextArrival] ([item_key], [InsertedDate_DW], [UpdatedDate_DW]) VALUES (N'item', N'yesterday', @changed);");
+        Assert.Null((await OriginAsync(optedOut)).InsertedUtc);
+    }
+
+    [Fact]
     public async Task A_primary_key_a_read_cannot_rely_on_is_refused_with_what_it_lacks()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();

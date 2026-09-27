@@ -476,6 +476,35 @@ public sealed partial class OsduLedger : ILedger
                     continue;
                 }
 
+                entity.SourceInsertedUtc = skip.SourceInsertedUtc ?? entity.SourceInsertedUtc;
+
+                // The ingestion table changed the row since the version the ledger stands at, delivered or queued, and it
+                // renders the document OSDU already has: a change of the record although nothing is sent. The attempt
+                // keeps it with the row's new origin, and the origin moves on with the fingerprint below, so a later plan
+                // that renders the same row again (a cache or mapping rollout) finds the change recorded and writes nothing.
+                var changed = skip.Origin.UpdatedUtc is { } stamp
+                    && !(entity.SourceUpdatedUtc >= stamp)
+                    && !(entity.PendingSourceUpdatedUtc >= stamp);
+                if (changed)
+                {
+                    db.DeliveryAttempts.Add(new DeliveryAttempt
+                    {
+                        FlowId = flowId,
+                        DeliveryKey = entity.DeliveryKey,
+                        SubmissionId = submissionId,
+                        RunId = skip.RunId,
+                        Worker = "intake",
+                        StartedUtc = now,
+                        CompletedUtc = now,
+                        Outcome = StatusText.Of(AttemptOutcome.Skipped),
+                        Phase = AttemptPhases.Identical,
+                        ResultJson = AttemptResult.WithDetail(null, Truncate(Http.HeaderRedaction.RedactMessage(skip.Reason), 2000)),
+                        SourceFileName = Truncate(skip.Origin.FileName, DeliveryModel.MaxSourceFileNameLength),
+                        SourceRowNumber = skip.Origin.RowNumber,
+                        SourceUpdatedUtc = skip.Origin.UpdatedUtc,
+                    });
+                }
+
                 if (entity.PendingDocumentRef is not null && (entity.Status == pending || entity.Status == delivering))
                 {
                     // Identical to the queued work: the version the drop carried belongs to that work and lands with it.
@@ -484,6 +513,13 @@ public sealed partial class OsduLedger : ILedger
                     if (entity.PendingPayload)
                     {
                         entity.PendingPayloadModifiedUtc = Latest(entity.PendingPayloadModifiedUtc, skip.PayloadModifiedUtc);
+                    }
+
+                    if (changed)
+                    {
+                        entity.PendingSourceFileName = Truncate(skip.Origin.FileName, DeliveryModel.MaxSourceFileNameLength);
+                        entity.PendingSourceRowNumber = skip.Origin.RowNumber;
+                        entity.PendingSourceUpdatedUtc = skip.Origin.UpdatedUtc;
                     }
 
                     entity.UpdatedUtc = now;
@@ -500,6 +536,12 @@ public sealed partial class OsduLedger : ILedger
                     entity.SourceModifiedUtc = Latest(entity.SourceModifiedUtc, skip.SourceModifiedUtc);
                     entity.PayloadModifiedUtc = Latest(entity.PayloadModifiedUtc, skip.PayloadModifiedUtc);
                     entity.RenderContext = skip.RenderContext ?? entity.RenderContext;
+                    if (changed)
+                    {
+                        entity.SourceFileName = Truncate(skip.Origin.FileName, DeliveryModel.MaxSourceFileNameLength);
+                        entity.SourceRowNumber = skip.Origin.RowNumber;
+                        entity.SourceUpdatedUtc = skip.Origin.UpdatedUtc;
+                    }
                 }
             }
 
@@ -561,6 +603,7 @@ public sealed partial class OsduLedger : ILedger
                 entity.PendingSourceFileName = Truncate(record.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength);
                 entity.PendingSourceRowNumber = record.PendingSourceRowNumber;
                 entity.PendingSourceUpdatedUtc = record.PendingSourceUpdatedUtc;
+                entity.SourceInsertedUtc = record.SourceInsertedUtc ?? entity.SourceInsertedUtc;
                 entity.PlanRequestedUtc = null;
                 entity.PendingMetadata = false;
                 entity.PendingPayload = false;
@@ -576,11 +619,12 @@ public sealed partial class OsduLedger : ILedger
                     StartedUtc = now,
                     CompletedUtc = now,
                     Outcome = StatusText.Of(AttemptOutcome.Held),
-                    Phase = "render",
+                    Phase = record.PendingSourceDeletedUtc is null ? "render" : AttemptPhases.SourceDeleted,
                     Error = Truncate(record.LastError, 2000),
                     SourceFileName = Truncate(record.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength),
                     SourceRowNumber = record.PendingSourceRowNumber,
                     SourceUpdatedUtc = record.PendingSourceUpdatedUtc,
+                    SourceDeletedUtc = record.PendingSourceDeletedUtc,
                 });
             }
 
@@ -1206,6 +1250,27 @@ public sealed partial class OsduLedger : ILedger
                 .ToListAsync(ct),
             ct).ConfigureAwait(false);
         return rows.Select(ToRecord).ToList();
+    }
+
+    public async Task<IReadOnlyList<RecordOriginSeen>> ListOriginsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default)
+    {
+        // One grouped read over the record's attempts, sought through (FlowId, DeliveryKey, StartedUtc): a record is tried
+        // a bounded number of times between retention's prunes, and its versions are far fewer than its tries.
+        var rows = await ReadAsync(
+            db => db.DeliveryAttempts
+                .Where(a => a.FlowId == flowId && a.DeliveryKey == key.Value && (a.SourceUpdatedUtc != null || a.SourceDeletedUtc != null))
+                .GroupBy(a => new { a.SourceUpdatedUtc, a.SourceFileName, a.SourceRowNumber, a.SourceDeletedUtc })
+                .Select(g => new { g.Key.SourceUpdatedUtc, g.Key.SourceFileName, g.Key.SourceRowNumber, g.Key.SourceDeletedUtc, First = g.Min(a => a.StartedUtc) })
+                .OrderByDescending(v => v.SourceDeletedUtc ?? v.SourceUpdatedUtc)
+                .Take(Math.Clamp(max, 1, 1000))
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+        return rows
+            .Select(v => new RecordOriginSeen(
+                new RecordOrigin(v.SourceFileName, v.SourceRowNumber, v.SourceUpdatedUtc is { } updated ? DateTime.SpecifyKind(updated, DateTimeKind.Utc) : null),
+                v.SourceDeletedUtc is { } deleted ? DateTime.SpecifyKind(deleted, DateTimeKind.Utc) : null,
+                DateTime.SpecifyKind(v.First, DateTimeKind.Utc)))
+            .ToList();
     }
 
     public async Task<IReadOnlyList<AttemptRecord>> ListAttemptsForSubmissionAsync(Guid submissionId, int max, CancellationToken ct = default)
@@ -2236,6 +2301,7 @@ public sealed partial class OsduLedger : ILedger
         SourceFileName = Truncate(attempt.SourceFileName, DeliveryModel.MaxSourceFileNameLength),
         SourceRowNumber = attempt.SourceRowNumber,
         SourceUpdatedUtc = attempt.SourceUpdatedUtc,
+        SourceDeletedUtc = attempt.SourceDeletedUtc,
     };
 
     private static AttemptRecord ToRecord(DeliveryAttempt a) => new()
@@ -2258,6 +2324,7 @@ public sealed partial class OsduLedger : ILedger
         SourceFileName = a.SourceFileName,
         SourceRowNumber = a.SourceRowNumber,
         SourceUpdatedUtc = a.SourceUpdatedUtc is { } updated ? DateTime.SpecifyKind(updated, DateTimeKind.Utc) : null,
+        SourceDeletedUtc = a.SourceDeletedUtc is { } deleted ? DateTime.SpecifyKind(deleted, DateTimeKind.Utc) : null,
     };
 
     private static ActivityRecord ToRecord(DeliveryActivity a) => new()
@@ -2389,6 +2456,7 @@ public sealed partial class OsduLedger : ILedger
         SourceFileName = r.SourceFileName,
         SourceRowNumber = r.SourceRowNumber,
         SourceUpdatedUtc = r.SourceUpdatedUtc,
+        SourceInsertedUtc = r.SourceInsertedUtc,
         MetadataHash = r.MetadataHash,
         PayloadHash = r.PayloadHash,
         PayloadModifiedUtc = r.PayloadModifiedUtc,

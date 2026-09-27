@@ -13,6 +13,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The ledger keeps every change of a record's row, and when the row arrived.** A record keeps when the ingestion
+  table first inserted its row (`InsertedDate_DW`, `source.systemColumns.inserted`, opted out of with `~`), which later
+  changes never move. A row the ingestion table changed that renders the document OSDU already holds, or the one already
+  queued, is recorded as an attempt (`skipped`, phase `identical`) with the row's new origin, and the record's origin
+  moves to that row with its fingerprint: before, only the fingerprint moved and the change left no trace. It is written
+  only when the row's stamp moved, so a cache or mapping rollout that renders the same rows again writes nothing. The
+  hold of a row the ingestion table marked deleted is its own phase (`held`, `source-deleted`) and carries the moment of
+  the deletion. Migration `RecordSourceArrivalAndDeletion`, module version 1.13.0: two nullable columns
+  (`Record.SourceInsertedUtc`, `Attempt.SourceDeletedUtc`); a record learns its arrival the next time a plan reads its
+  row.
 - **A record can be previewed before it is sent, and read as OSDU holds it.** A delivery flow's new Preview tab
   renders one record on a node exactly as a delivery would, and sends nothing: the first record of the scope, or the one
   a key names (a source key as the Records page shows it, a delivery key, an OSDU id the ledger holds, or the key's
@@ -513,6 +523,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **An incremental run reads a record row marked deleted.** SQLFlow's key match stamps `DeletedDate_DW` without
+  touching `UpdatedDate_DW`, and the incremental read windowed on the update column alone, so a deleted row was held
+  only by a full or keyed run and otherwise stayed delivered with nothing on its history. The record table's delete
+  column now joins the window, as a child dataset's already did.
 - **The control plane suites expect the recall estate.** The module database tests expect the two mappings a copy of
   the sample estate holds (the recall well log mapping and the wellbore fixture beside it), and the mapping builder test
   expects the recall mapping as it is: a unit translated through `$cache.RecallUnits` and then made a reference, a curve

@@ -444,6 +444,42 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_row_the_ingestion_table_changed_to_what_OSDU_holds_is_recorded_once_and_nothing_is_sent()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+            var arrived = tables.Records[1].InsertedUtc;
+
+            // A later file carries the row again with a column the mapping does not read changed: the ingestion table
+            // stamps it as changed, and it renders the document OSDU already holds.
+            _clock.Advance(TimeSpan.FromMinutes(10));
+            tables.Records[1].UpdatedUtc = Now;
+            tables.Records[1].DatasetUpdatedUtc["curves"] = Now;
+            tables.Records[1].FileName = "stat_comp_welllog_next.csv";
+            tables.Records[1].RowNumber = 42;
+
+            var (summary, submission) = await RunAsync(runtime, protocol, ledger);
+            Assert.Equal(0, summary.Delivered);
+            Assert.Empty(protocol.Deliveries);
+            var identical = Assert.Single(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(1), 10), a => a.Phase == AttemptPhases.Identical);
+            Assert.Equal((AttemptOutcome.Skipped, submission), (identical.Outcome, identical.SubmissionId));
+            Assert.Equal(("stat_comp_welllog_next.csv", 42L, (DateTime?)Now), (identical.SourceFileName, identical.SourceRowNumber, identical.SourceUpdatedUtc));
+            var record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1));
+            Assert.Equal(("stat_comp_welllog_next.csv", (DateTime?)Now, arrived), (record!.SourceFileName, record.SourceUpdatedUtc, record.SourceInsertedUtc));
+
+            // The whole source read again changes nothing, and records nothing.
+            runtime.Selection = SourceSelection.Full();
+            await RunAsync(runtime, protocol, ledger, force: true);
+            Assert.Single(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(1), 10), a => a.Phase == AttemptPhases.Identical);
+            Assert.Empty(protocol.Deliveries);
+        }
+    }
+
+    [Fact]
     public async Task A_row_tagged_deleted_is_held_by_the_next_incremental_run_although_its_update_column_did_not_move()
     {
         var tables = await EstateAsync();
@@ -467,6 +503,10 @@ public class EndToEndTests : IDisposable
             var held = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
             Assert.Equal(RecordStatus.Held, held!.Status);
             Assert.Contains("marked the record row deleted", held.LastError, StringComparison.Ordinal);
+            // The record's history dates the deletion, and the record still knows when its row first arrived.
+            var hold = Assert.Single(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 10), a => a.Outcome == AttemptOutcome.Held);
+            Assert.Equal((AttemptPhases.SourceDeleted, (DateTime?)Now), (hold.Phase, hold.SourceDeletedUtc));
+            Assert.Equal(tables.Records[0].InsertedUtc, held.SourceInsertedUtc);
             // The rows nobody touched are read past: the window holds the one that was tagged.
             Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1)))!.Status);
         }
@@ -804,7 +844,7 @@ public class EndToEndTests : IDisposable
             Assert.Equal(wellboreSubmission, (await ledger.GetWatermarkAsync(wellbores.Flow.Id, Planner.ScopeKey(wellbores.Parameters)))!.SubmissionId);
 
             // A column only the well log reads changes: that flow sends its document again, the other renders its own,
-            // finds it unchanged and sends nothing. Each decides from its own record.
+            // finds it unchanged, sends nothing and records the change of its row. Each decides from its own record.
             logProtocol.Deliveries.Clear();
             wellboreProtocol.Deliveries.Clear();
             _clock.Advance(TimeSpan.FromMinutes(10));
@@ -814,7 +854,9 @@ public class EndToEndTests : IDisposable
             Assert.Equal(SampleEstate.Key(0), Assert.Single(logProtocol.Deliveries).Key);
             Assert.Empty(wellboreProtocol.Deliveries);
             Assert.Equal(2, (await ledger.ListAttemptsAsync(logs.Flow.Id, SampleEstate.Key(0), 10)).Count);
-            Assert.Single(await ledger.ListAttemptsAsync(wellbores.Flow.Id, SampleEstate.Key(0), 10));
+            var wellboreHistory = await ledger.ListAttemptsAsync(wellbores.Flow.Id, SampleEstate.Key(0), 10);
+            Assert.Equal(2, wellboreHistory.Count);
+            Assert.Equal((AttemptOutcome.Skipped, AttemptPhases.Identical, (DateTime?)Now), (wellboreHistory[0].Outcome, wellboreHistory[0].Phase, wellboreHistory[0].SourceUpdatedUtc));
 
             // Removing the wellbores takes the wellbore records out of OSDU and leaves every well log where it is.
             wellbores.Actor = "gui:tahir";

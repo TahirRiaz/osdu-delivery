@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 476,
+  "keyCount": 478,
   "keys": [
     {
       "path": "batch",
@@ -1094,6 +1094,13 @@
       "default": "the source's value, else FileName_DW"
     },
     {
+      "path": "interfaces.<name>.systemColumns.inserted",
+      "type": "string",
+      "required": false,
+      "description": "The date and time column holding when the ingestion flow first inserted the row, which it never moves afterwards. The ledger keeps it on the record, so the record's history dates the row's arrival in the ingestion table. The default is used when the table carries it, a column named here must exist, and `~` opts out. Set here, it overrides the source's value for this interface.",
+      "default": "the source's value, else InsertedDate_DW"
+    },
+    {
       "path": "interfaces.<name>.systemColumns.rowNumber",
       "type": "string",
       "required": false,
@@ -1903,7 +1910,7 @@
       "path": "source.systemColumns",
       "type": "object",
       "required": false,
-      "description": "The names of SQLFlow's system columns on the ingestion tables. A column left out keeps its default; `~` opts out of `fileName`, `rowNumber` or `deleted`."
+      "description": "The names of SQLFlow's system columns on the ingestion tables. A column left out keeps its default; `~` opts out of `fileName`, `rowNumber`, `deleted` or `inserted`."
     },
     {
       "path": "source.systemColumns.deleted",
@@ -1918,6 +1925,13 @@
       "required": false,
       "description": "The column naming the file a row was landed from, recorded in the ledger as the record's origin (at most 800 characters). `~` opts out of recording the origin file.",
       "default": "FileName_DW"
+    },
+    {
+      "path": "source.systemColumns.inserted",
+      "type": "string",
+      "required": false,
+      "description": "The date and time column holding when the ingestion flow first inserted the row, which it never moves afterwards. The ledger keeps it on the record, so the record's history dates the row's arrival in the ingestion table. The default is used when the table carries it, a column named here must exist, and `~` opts out.",
+      "default": "InsertedDate_DW"
     },
     {
       "path": "source.systemColumns.rowNumber",

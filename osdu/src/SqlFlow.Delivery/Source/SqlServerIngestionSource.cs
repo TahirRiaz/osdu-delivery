@@ -60,6 +60,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
     private IngestionLayout? _layout;
     private string? _fileNameColumn;
     private string? _rowNumberColumn;
+    private string? _insertedColumn;
 
     public SqlServerIngestionSource(FlowDefinition flow, IReadOnlyDictionary<string, string> values, ISecretResolver secrets, ILogger<SqlServerIngestionSource> logger)
     {
@@ -309,6 +310,21 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         }
 
         _rowNumberColumn = Optional(record, source.SystemColumns.RowNumber)?.Name;
+
+        var inserted = Optional(record, source.SystemColumns.Inserted);
+        if (source.SystemColumns.InsertedDeclared && source.SystemColumns.Inserted is { } declaredInserted && inserted is null)
+        {
+            throw new FlowValidationException($"{where}: {_keys.Name("source.systemColumns.inserted")} names column '{declaredInserted}', which the record table {recordName} does not hold.");
+        }
+
+        if (inserted is not null && !inserted.IsMoment)
+        {
+            throw new FlowValidationException(
+                $"{where}: {_keys.Name("source.systemColumns.inserted")} names column '{inserted.Name}' of {recordName}, which is {inserted.SqlType}. "
+                + $"The moment a row first reached the ingestion table is a date and time column (SQLFlow's {FlowSystemColumns.DefaultInserted}); name another, or opt out with {_keys.Name("source.systemColumns.inserted")}: ~.");
+        }
+
+        _insertedColumn = inserted?.Name;
 
         var datasets = new List<IngestionDataset>(source.Datasets.Count);
         foreach (var (name, dataset) in source.Datasets.OrderBy(d => d.Key, StringComparer.Ordinal))
@@ -752,7 +768,8 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             Origin = new SourceOrigin(
                 _fileNameColumn is null ? null : builder.Row.GetString(_fileNameColumn),
                 _rowNumberColumn is null ? null : builder.Row.Get(_rowNumberColumn) as long?,
-                updated),
+                updated,
+                _insertedColumn is null ? null : Moment(builder.Row.Get(_insertedColumn))),
             Version = SourceVersion.Of(IngestionFingerprint.Of(updated, versions)),
             SourceKeyJson = key.Json,
             DeletedUtc = layout.Deleted is { } deleted ? Moment(builder.Row.Get(deleted)) : null,

@@ -39,6 +39,7 @@ source:
     fileName: FileName_DW
     rowNumber: RowNumber_DW
     deleted: DeletedDate_DW
+    inserted: InsertedDate_DW        # when the row first reached the table: dates its arrival on the record's history
   incremental:
     overlapSeconds: 900              # re-read below the last watermark (default 900, 0 to 86400)
     pageSize: 1000                   # keys per page

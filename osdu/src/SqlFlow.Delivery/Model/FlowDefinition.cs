@@ -248,8 +248,16 @@ public sealed record FlowSystemColumns
 
     public const string DefaultDeleted = "DeletedDate_DW";
 
+    public const string DefaultInserted = "InsertedDate_DW";
+
     /// <summary>When the ingestion flow last changed the row: what an incremental read windows on.</summary>
     public string Updated { get; init; } = DefaultUpdated;
+
+    /// <summary>
+    /// When the ingestion flow first inserted the row, which it never moves afterwards: what dates the record's arrival in
+    /// the ingestion table. Used when the table carries it; null when the flow opts out (<c>inserted: ~</c>).
+    /// </summary>
+    public string? Inserted { get; init; } = DefaultInserted;
 
     /// <summary>The file the row was landed from; null when the flow opts out (<c>fileName: ~</c>).</summary>
     public string? FileName { get; init; } = DefaultFileName;
@@ -262,6 +270,9 @@ public sealed record FlowSystemColumns
 
     /// <summary>Whether the flow named <see cref="Deleted"/> itself, so a table without it is refused rather than read without one.</summary>
     public bool DeletedDeclared { get; init; }
+
+    /// <summary>Whether the flow named <see cref="Inserted"/> itself, so a table without it is refused rather than read without one.</summary>
+    public bool InsertedDeclared { get; init; }
 }
 
 /// <summary>How the source is read incrementally.</summary>

@@ -53,6 +53,12 @@ public sealed record PlanEntry
     /// <summary>The file, row and update time the record row carries, which every attempt of it is traced by.</summary>
     public SourceOrigin Origin { get; init; }
 
+    /// <summary>
+    /// When the ingestion table marked the record row deleted, for the entry that holds the record because of it; null
+    /// for every other entry. The hold's attempt records it, so the record's history dates the deletion.
+    /// </summary>
+    public DateTime? SourceDeletedUtc { get; init; }
+
     public string? PayloadHash { get; init; }
 
     /// <summary>The newest modified time among the payload's files, when the flow takes them as the payload watermark.</summary>
@@ -590,6 +596,7 @@ public sealed class Planner
                 {
                     Reason = $"the ingestion table marked the record row deleted at {Moment(deleted)}; a deleted row is never delivered. "
                         + "Remove the record from OSDU deliberately, or restore the row in the source.",
+                    SourceDeletedUtc = deleted,
                 });
                 continue;
             }

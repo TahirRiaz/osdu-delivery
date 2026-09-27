@@ -10,8 +10,8 @@ namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
 /// One record as the in-memory ingestion tables hold it: the record row, the rows of each child dataset, and the system
-/// columns SQLFlow's own ingestion would have stamped on them (when the row last changed, which file it came from, and
-/// whether it is soft-deleted).
+/// columns SQLFlow's own ingestion would have stamped on them (when the row first arrived and last changed, which file it
+/// came from, and whether it is soft-deleted).
 /// </summary>
 public sealed class MemoryRecord
 {
@@ -20,6 +20,9 @@ public sealed class MemoryRecord
     public Dictionary<string, List<IDictionary<string, object?>>> Datasets { get; } = new(StringComparer.OrdinalIgnoreCase);
 
     public DateTime UpdatedUtc { get; set; }
+
+    /// <summary>When the ingestion flow first inserted the row, which it never moves afterwards; null for a table without the column.</summary>
+    public DateTime? InsertedUtc { get; set; }
 
     public string? FileName { get; set; }
 
@@ -255,7 +258,7 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
             {
                 Row = new SourceRow(new Dictionary<string, object?>(record.Row, StringComparer.OrdinalIgnoreCase)),
                 Scopes = datasets,
-                Origin = new SourceOrigin(record.FileName, record.RowNumber, record.UpdatedUtc),
+                Origin = new SourceOrigin(record.FileName, record.RowNumber, record.UpdatedUtc, record.InsertedUtc),
                 Version = SourceVersion.Of(IngestionFingerprint.Of(record.UpdatedUtc, versions)),
                 SourceKeyJson = key.Json,
                 DeletedUtc = record.DeletedUtc,

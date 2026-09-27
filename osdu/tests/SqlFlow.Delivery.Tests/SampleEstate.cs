@@ -80,6 +80,7 @@ public static class SampleEstate
         {
             Row = row,
             UpdatedUtc = updatedUtc,
+            InsertedUtc = updatedUtc,
             FileName = FileName,
             RowNumber = rowNumber,
         };

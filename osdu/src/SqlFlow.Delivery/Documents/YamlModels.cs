@@ -318,6 +318,7 @@ internal sealed class FlowSystemColumnsYaml
     private string? _fileName;
     private string? _rowNumber;
     private string? _deleted;
+    private string? _inserted;
 
     public string? Updated
     {
@@ -359,6 +360,16 @@ internal sealed class FlowSystemColumnsYaml
         }
     }
 
+    public string? Inserted
+    {
+        get => _inserted;
+        set
+        {
+            _inserted = value;
+            HasInserted = true;
+        }
+    }
+
     [YamlDotNet.Serialization.YamlIgnore]
     public bool HasUpdated { get; private set; }
 
@@ -370,6 +381,9 @@ internal sealed class FlowSystemColumnsYaml
 
     [YamlDotNet.Serialization.YamlIgnore]
     public bool HasDeleted { get; private set; }
+
+    [YamlDotNet.Serialization.YamlIgnore]
+    public bool HasInserted { get; private set; }
 }
 
 internal sealed class FlowIncrementalYaml

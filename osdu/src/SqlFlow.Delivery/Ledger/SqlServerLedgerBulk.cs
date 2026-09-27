@@ -61,6 +61,7 @@ internal static class SqlServerLedgerBulk
             [PendingSourceFileName] nvarchar(800) NULL,
             [PendingSourceRowNumber] bigint NULL,
             [PendingSourceUpdatedUtc] datetime2 NULL,
+            [SourceInsertedUtc] datetime2 NULL,
             [PendingMetadataHash] nvarchar(64) NULL,
             [PendingPayloadHash] nvarchar(64) NULL,
             [PendingPayloadModifiedUtc] datetime2 NULL,
@@ -142,6 +143,7 @@ internal static class SqlServerLedgerBulk
                 [PendingSourceModifiedUtc] = s.[PendingSourceModifiedUtc],
                 [PendingSourceFileName] = s.[PendingSourceFileName], [PendingSourceRowNumber] = s.[PendingSourceRowNumber],
                 [PendingSourceUpdatedUtc] = s.[PendingSourceUpdatedUtc],
+                [SourceInsertedUtc] = COALESCE(s.[SourceInsertedUtc], t.[SourceInsertedUtc]),
                 [PendingMetadataHash] = s.[PendingMetadataHash], [PendingPayloadHash] = s.[PendingPayloadHash],
                 [PendingPayloadModifiedUtc] = s.[PendingPayloadModifiedUtc],
                 [PendingPayloadLocation] = s.[PendingPayloadLocation], [PendingMetadata] = s.[PendingMetadata], [PendingPayload] = s.[PendingPayload],
@@ -155,12 +157,12 @@ internal static class SqlServerLedgerBulk
         SET @updated = @@ROWCOUNT;
         INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [SourceKeyJson], [Label], [MappingName], [TargetId], [ClaimedTargetId], [Status], [LastSubmissionId], [AttemptCount],
                 [PendingDocumentRef], [WorkBatch], [PendingRenderContext], [PendingSourceFingerprint], [PendingSourceModifiedUtc],
-                [PendingSourceFileName], [PendingSourceRowNumber], [PendingSourceUpdatedUtc],
+                [PendingSourceFileName], [PendingSourceRowNumber], [PendingSourceUpdatedUtc], [SourceInsertedUtc],
                 [PendingMetadataHash], [PendingPayloadHash], [PendingPayloadModifiedUtc],
                 [PendingPayloadLocation], [PendingMetadata], [PendingPayload], [PendingReferences], [CacheSetId], [Blocked], [CreatedUtc], [UpdatedUtc])
         SELECT s.[DeliveryKey], s.[FlowId], s.[SourceKey], s.[SourceKeyJson], s.[Label], s.[MappingName], s.[TargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2, N'pending', s.[LastSubmissionId], 0,
                 s.[PendingDocumentRef], s.[WorkBatch], s.[PendingRenderContext], s.[PendingSourceFingerprint], s.[PendingSourceModifiedUtc],
-                s.[PendingSourceFileName], s.[PendingSourceRowNumber], s.[PendingSourceUpdatedUtc],
+                s.[PendingSourceFileName], s.[PendingSourceRowNumber], s.[PendingSourceUpdatedUtc], s.[SourceInsertedUtc],
                 s.[PendingMetadataHash], s.[PendingPayloadHash], s.[PendingPayloadModifiedUtc],
                 s.[PendingPayloadLocation], s.[PendingMetadata], s.[PendingPayload], s.[PendingReferences], s.[CacheSetId], 0, @now, @now
         FROM #PendingStage AS s
@@ -729,6 +731,7 @@ internal static class SqlServerLedgerBulk
         table.Columns.Add("PendingSourceFileName", typeof(string));
         table.Columns.Add("PendingSourceRowNumber", typeof(long));
         table.Columns.Add("PendingSourceUpdatedUtc", typeof(DateTime));
+        table.Columns.Add("SourceInsertedUtc", typeof(DateTime));
         table.Columns.Add("PendingMetadataHash", typeof(string));
         table.Columns.Add("PendingPayloadHash", typeof(string));
         table.Columns.Add("PendingPayloadModifiedUtc", typeof(DateTime));
@@ -745,7 +748,7 @@ internal static class SqlServerLedgerBulk
                 Value(r.LastSubmissionId), Value(r.PendingDocumentRef), Value(r.WorkBatch), Value(r.PendingRenderContext),
                 Value(r.PendingSourceFingerprint), Value(r.PendingSourceModifiedUtc),
                 Value(Truncate(r.PendingSourceFileName, DeliveryModel.MaxSourceFileNameLength)), Value(r.PendingSourceRowNumber), Value(r.PendingSourceUpdatedUtc),
-                Value(r.PendingMetadataHash), Value(r.PendingPayloadHash),
+                Value(r.SourceInsertedUtc), Value(r.PendingMetadataHash), Value(r.PendingPayloadHash),
                 Value(r.PendingPayloadModifiedUtc), Value(r.PendingPayloadLocation), r.PendingMetadata, r.PendingPayload,
                 Value(RecordReferences.Encode(r.PendingReferences)), Value(r.CacheSetId));
         }
@@ -774,13 +777,14 @@ internal static class SqlServerLedgerBulk
         table.Columns.Add("SourceFileName", typeof(string));
         table.Columns.Add("SourceRowNumber", typeof(long));
         table.Columns.Add("SourceUpdatedUtc", typeof(DateTime));
+        table.Columns.Add("SourceDeletedUtc", typeof(DateTime));
         foreach (var a in attempts)
         {
             table.Rows.Add(
                 a.FlowId, a.DeliveryKey, Value(a.SubmissionId), Value(a.RunId), a.Worker, a.StartedUtc, a.CompletedUtc,
                 a.Outcome, a.Phase, Value(a.MetadataHash), Value(a.PayloadHash), Value(a.TargetVersion),
                 Value(a.Error), Value(a.ResultJson), Value(a.WorkBatch),
-                Value(a.SourceFileName), Value(a.SourceRowNumber), Value(a.SourceUpdatedUtc));
+                Value(a.SourceFileName), Value(a.SourceRowNumber), Value(a.SourceUpdatedUtc), Value(a.SourceDeletedUtc));
         }
 
         return table;

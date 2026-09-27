@@ -304,6 +304,7 @@ internal static class DeliveryVerbs
                 ["fileName"] = flow.Source.SystemColumns.FileName,
                 ["rowNumber"] = flow.Source.SystemColumns.RowNumber,
                 ["deleted"] = flow.Source.SystemColumns.Deleted,
+                ["inserted"] = flow.Source.SystemColumns.Inserted,
             },
             ["columns"] = columns,
         };

@@ -715,6 +715,11 @@ internal static partial class FlowMapper
             merged.Deleted = over.HasDeleted ? over.Deleted : shared.Deleted;
         }
 
+        if (over.HasInserted || shared.HasInserted)
+        {
+            merged.Inserted = over.HasInserted ? over.Inserted : shared.Inserted;
+        }
+
         return merged;
     }
 
@@ -1138,6 +1143,8 @@ internal static partial class FlowMapper
             RowNumber = declared.HasRowNumber ? Optional(declared.RowNumber) : defaults.RowNumber,
             Deleted = declared.HasDeleted ? Optional(declared.Deleted) : defaults.Deleted,
             DeletedDeclared = declared.HasDeleted && !string.IsNullOrWhiteSpace(declared.Deleted),
+            Inserted = declared.HasInserted ? Optional(declared.Inserted) : defaults.Inserted,
+            InsertedDeclared = declared.HasInserted && !string.IsNullOrWhiteSpace(declared.Inserted),
         };
     }
 
@@ -1275,7 +1282,7 @@ internal static partial class FlowMapper
             CheckColumn(lastModified, paths.Shared("source.lastModified"), source);
         }
 
-        foreach (var column in new[] { src.SystemColumns.Updated, src.SystemColumns.FileName, src.SystemColumns.RowNumber, src.SystemColumns.Deleted }.OfType<string>())
+        foreach (var column in new[] { src.SystemColumns.Updated, src.SystemColumns.FileName, src.SystemColumns.RowNumber, src.SystemColumns.Deleted, src.SystemColumns.Inserted }.OfType<string>())
         {
             CheckColumn(column, paths.Shared("source.systemColumns"), source);
         }

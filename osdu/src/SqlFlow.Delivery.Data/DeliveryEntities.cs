@@ -135,6 +135,12 @@ public sealed class DeliveryRecord
     /// <summary>When the ingestion table last updated the row the version OSDU holds came from.</summary>
     public DateTime? SourceUpdatedUtc { get; set; }
 
+    /// <summary>
+    /// When the ingestion table first inserted the record's row, as the last plan that read it saw it: the row's arrival,
+    /// which later changes never move. Null when the table does not carry it.
+    /// </summary>
+    public DateTime? SourceInsertedUtc { get; set; }
+
     public string? MetadataHash { get; set; }
 
     public string? PayloadHash { get; set; }
@@ -293,6 +299,9 @@ public sealed class DeliveryAttempt
 
     /// <summary>When the ingestion table last updated that row.</summary>
     public DateTime? SourceUpdatedUtc { get; set; }
+
+    /// <summary>When the ingestion table marked that row deleted, for the hold of a deleted row; null otherwise.</summary>
+    public DateTime? SourceDeletedUtc { get; set; }
 }
 
 /// <summary>One work batch of a submission: a file of rendered documents, claimed and drained as one unit.</summary>

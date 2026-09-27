@@ -73,6 +73,7 @@ the identities its mapping declares when it is next staged.
 | `SourceKeyJson` | The record's key tuple as a JSON array, in `source.record.key` order: what a key-scoped read of the ingestion tables uses. |
 | `SourceFileName`, `SourceRowNumber`, `SourceUpdatedUtc` | Where the version OSDU holds came from: the ingestion row's `FileName_DW`, `RowNumber_DW` and `UpdatedDate_DW`. |
 | `PendingSourceFileName`, `PendingSourceRowNumber`, `PendingSourceUpdatedUtc` | The same for the queued version, or for the state a held, failed or deleted record was left in. |
+| `SourceInsertedUtc` | When the ingestion table first inserted the record's row (`InsertedDate_DW`), which later changes never move: the row's arrival, as the last plan that read it saw it. Null while the table does not carry the column, or until a plan reads the row. |
 | `PlanRequestedUtc` | Set when the ledger asks for the record to be planned again (a redeliver, a release with no pending document, a cache rollout); the next run pages these records and plans them as a keys selection, and planning clears it. |
 | `TargetId`, `TargetVersion` | The OSDU id and the last known version (the drift handle). |
 | `ClaimedTargetId` | The OSDU id the record claimed for its flow when it first queued a document, kept for good. Unique across the ledger: one OSDU record belongs to one flow. Null for a record that was only ever held. |
@@ -110,12 +111,22 @@ A route that sends its payload in parts (the composed routes and the workflow ro
 
 The record it belongs to (`FlowId`, `DeliveryKey`), worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`), the
 phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `none`), the hashes
-established, the version returned,
+established, the version returned, the origin of the row it was built from (`SourceFileName`, `SourceRowNumber`,
+`SourceUpdatedUtc`, and `SourceDeletedUtc` for the hold of a row the ingestion table marked deleted),
 the redacted error (for a held or failed try only: a try that did not fail keeps its note, chunks sent or why nothing
 was sent or what a removal took, as `detail` in its result), the platform `RunId` the attempt happened in, the `WorkBatch` it was drained from, and
 `ResultJson`: every step the protocol took (name, timing, status, what the target returned, whether an earlier
 try had completed it) and the values returned. Render-time holds are written by the intake with worker
 `intake`; deletions by the actor who asked for them.
+
+The intake also writes the plan decisions that are changes of the record although nothing is sent, so the record's
+history holds every change of its row:
+
+| Outcome, phase | When |
+| --- | --- |
+| `held`, `source-deleted` | The ingestion table marked the record row deleted. `SourceDeletedUtc` is the moment it did. |
+| `skipped`, `identical` | The ingestion table changed the row since the version the ledger stands at, delivered or queued, and it renders the document OSDU holds or the one already queued. The record's origin moves to the new row with its fingerprint, so a later plan that renders the same row again (a cache or mapping rollout) writes nothing. |
+| `skipped`, `stale` | The row is older than the version the record holds ([Record lifecycle](#record-lifecycle)). |
 
 An attempt's result names the `correlationId` every OSDU request of that try carried in the `correlation-id` header,
 so the attempt can be found in the services' own logs (a removal names the id its chunk's calls carried, with what OSDU

@@ -111,7 +111,7 @@ public sealed record DeliveryRecordDto(
     string? SourceFileName, long? SourceRowNumber, DateTime? SourceUpdatedUtc,
     string? PendingSourceFileName, long? PendingSourceRowNumber, DateTime? PendingSourceUpdatedUtc,
     string? SourceKeyJson, DateTime? PlanRequestedUtc,
-    string? WaitingFor = null, IReadOnlyList<DeliveryRecordReferenceDto>? References = null);
+    string? WaitingFor = null, IReadOnlyList<DeliveryRecordReferenceDto>? References = null, DateTime? SourceInsertedUtc = null);
 
 /// <summary>An OSDU id a record's pending document refers to, and the property of the record holding it.</summary>
 public sealed record DeliveryRecordReferenceDto(string Id, string Property);
@@ -141,7 +141,7 @@ public sealed record DeliveryRecordDetailDto(
 public sealed record DeliveryAttemptDto(
     long AttemptId, Guid DeliveryKey, Guid? SubmissionId, Guid? RunId, string Worker, DateTime StartedUtc, DateTime CompletedUtc,
     string Outcome, string Phase, string? MetadataHash, string? PayloadHash, long? TargetVersion, string? Error, JsonElement? Result, int? WorkBatch,
-    string? SourceFileName, long? SourceRowNumber, DateTime? SourceUpdatedUtc);
+    string? SourceFileName, long? SourceRowNumber, DateTime? SourceUpdatedUtc, DateTime? SourceDeletedUtc = null);
 
 /// <summary>One entry of the audit trail: who did what, when, with which inputs, and how it ended.</summary>
 public sealed record DeliveryActivityDto(
@@ -2184,14 +2184,16 @@ public static class DeliveryEndpoints
         r.PendingSourceFileName, r.PendingSourceRowNumber, r.PendingSourceUpdatedUtc,
         r.SourceKeyJson, r.PlanRequestedUtc,
         // What the pending document refers to, and, while the record waits, the record it waits for.
-        r.WaitingFor, r.PendingReferences.Select(p => new DeliveryRecordReferenceDto(p.Id, p.Property)).ToList());
+        r.WaitingFor, r.PendingReferences.Select(p => new DeliveryRecordReferenceDto(p.Id, p.Property)).ToList(),
+        // When the row first reached the ingestion table, which later changes never move.
+        r.SourceInsertedUtc);
 
     private static DeliveryAttemptDto ToDto(AttemptRecord a) => new(
         a.AttemptId, a.DeliveryKey.Value, a.SubmissionId, a.RunId, a.Worker, a.StartedUtc, a.CompletedUtc, a.Outcome.ToString().ToLowerInvariant(),
         a.Phase, a.MetadataHash, a.PayloadHash, a.TargetVersion, a.Error, ParseJsonOrNull(a.ResultJson), a.WorkBatch,
         // The origin of the document this try sent, which is what makes a past attempt reconstructible from the ledger
         // alone even after the record has moved on to a newer row.
-        a.SourceFileName, a.SourceRowNumber, a.SourceUpdatedUtc);
+        a.SourceFileName, a.SourceRowNumber, a.SourceUpdatedUtc, a.SourceDeletedUtc);
 
     private static DeliveryActivityDto ToDto(ActivityRecord a) => new(
         a.ActivityId, a.FlowId, a.FlowName, a.Kind, a.Actor, a.StartedUtc, a.CompletedUtc, a.Outcome, a.ParametersJson, a.SubmissionId,

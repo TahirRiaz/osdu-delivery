@@ -48,11 +48,11 @@ public sealed class SourceRow
 
 /// <summary>
 /// Where a record's row came from, as SQLFlow's system columns on the ingestion table say: the file the pre-ingestion flow
-/// landed it from (<c>FileName_DW</c>), its row in that file (<c>RowNumber_DW</c>) and when the ingestion flow last updated it
-/// (<c>UpdatedDate_DW</c>). Each part is null when the table does not carry it or the flow opts out of it. It is what traces a
-/// delivered version, and every attempt of it, back to the exact row of the exact file.
+/// landed it from (<c>FileName_DW</c>), its row in that file (<c>RowNumber_DW</c>), when the ingestion flow last updated it
+/// (<c>UpdatedDate_DW</c>), and when it first inserted it (<c>InsertedDate_DW</c>), which it never moves afterwards. Each part is null when the table does not carry it or the flow opts out of it. It is what traces a
+/// delivered version, and every attempt of it, back to the exact row of the exact file, and dates the row's arrival.
 /// </summary>
-public readonly record struct SourceOrigin(string? FileName, long? RowNumber, DateTime? UpdatedUtc);
+public readonly record struct SourceOrigin(string? FileName, long? RowNumber, DateTime? UpdatedUtc, DateTime? InsertedUtc = null);
 
 /// <summary>
 /// One deliverable as read from the ingestion tables: the record row plus the rows of each child dataset. The renderer's
