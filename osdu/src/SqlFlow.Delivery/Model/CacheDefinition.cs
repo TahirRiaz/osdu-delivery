@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Model;
@@ -82,6 +83,11 @@ public sealed record CacheDefinition
     /// <c>data-partition-id</c> its searches carry, as the document writes it.
     /// </summary>
     /// <exception cref="InvalidOperationException">The flow names its partitions and this definition is bound to none.</exception>
+    /// <remarks>
+    /// Derived from the partition a definition is bound to, so it is no part of the document as written: the definition the
+    /// catalog keeps as JSON leaves it out, as it does for a flow bound to no partition yet.
+    /// </remarks>
+    [JsonIgnore]
     public string Scope => Partition
         ?? (Partitioned
             ? throw new InvalidOperationException(

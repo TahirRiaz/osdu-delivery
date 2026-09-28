@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using SqlFlow.Core;
 
 namespace SqlFlow.Delivery.Model;
@@ -84,6 +85,11 @@ public sealed record FlowDefinition
     /// partition that keeps a ledger of its own.
     /// </summary>
     /// <exception cref="InvalidOperationException">The flow names its partitions and this definition is bound to none.</exception>
+    /// <remarks>
+    /// Derived from the partition a definition is bound to, so it is no part of the document as written: the definition the
+    /// catalog keeps as JSON leaves it out, as it does for a flow bound to no partition yet.
+    /// </remarks>
+    [JsonIgnore]
     public string LedgerName
     {
         get
@@ -101,6 +107,8 @@ public sealed record FlowDefinition
     /// the partition for a partition that keeps a ledger of its own.
     /// </summary>
     /// <exception cref="InvalidOperationException">The flow names its partitions and this definition is bound to none.</exception>
+    /// <remarks>Derived from the partition, as <see cref="LedgerName"/> is, and left out of the definition kept as JSON.</remarks>
+    [JsonIgnore]
     public Guid Id
     {
         get
