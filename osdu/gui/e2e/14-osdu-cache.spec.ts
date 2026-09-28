@@ -304,13 +304,15 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("nav-delivery-cache").click();
     await adminPage.getByTestId("delivery-cache-tab-deliveries").click();
 
-    // Deliveries holds both ways the cache reaches records already in OSDU: the changes being carried out, and what
-    // records were built without.
-    await expect(adminPage.getByTestId("delivery-cache-part-updates")).toContainText("Updated by cache changes");
-    await expect(adminPage.getByTestId("delivery-cache-part-gaps")).toContainText("Missing from cache");
+    // Deliveries holds both ways the cache reaches records already in OSDU in one list: what records were built without,
+    // and the changes being carried out.
+    await expect(adminPage.getByTestId("delivery-cache-part-updates")).toContainText("Updated by the cache");
+    await expect(adminPage.getByTestId("delivery-cache-tag-status-missing")).toContainText("Missing from cache");
 
-    // No type asks for approval, so the list opens on every change rather than on an approval queue.
-    await expect(adminPage.getByTestId("delivery-cache-tag-status-all")).toHaveAttribute("data-state", "on", { timeout: 30_000 });
+    // No type asks for approval, so the list opens on every change (or on what is missing) rather than on an approval queue.
+    await expect(adminPage.getByTestId("delivery-cache-tag-status-pending")).toHaveAttribute("data-state", "off", { timeout: 30_000 });
+    await adminPage.getByTestId("delivery-cache-tag-status-all").click();
+    await expect(adminPage.getByTestId("delivery-cache-tag-status-all")).toHaveAttribute("data-state", "on");
     await expect(adminPage.getByTestId("delivery-cache-approval-rule")).toHaveText("Every type updates automatically: a change reaches its records on their next delivery.");
     await expect(adminPage.getByTestId("delivery-cache-tags-table")).toContainText("No refresh of this cache has changed a value", { timeout: 30_000 });
 

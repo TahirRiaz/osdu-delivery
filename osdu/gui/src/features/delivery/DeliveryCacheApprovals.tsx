@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Check, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +16,7 @@ import { PagedTable, type Column } from "@/components/PagedTable";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
+import { DeliveryCacheGaps } from "./DeliveryCacheGaps";
 import { RecordId } from "./DeliveryCacheRecords";
 
 /** The bottom panel content ids this surface owns. */
@@ -23,13 +24,17 @@ const PANEL = "cache-tag:";
 
 const ALL = "all";
 
+/** Not a state of a change: the records built without a value the cache did not hold, which no refresh has changed yet. */
+const MISSING = "missing";
+
 const statuses: { value: string; label: string }[] = [
+  { value: MISSING, label: "Missing from cache" },
   { value: "pending", label: "Waiting for approval" },
   { value: "approved", label: "Approved" },
   { value: "rolling", label: "Rolling out" },
   { value: "applied", label: "Rolled out" },
   { value: "rejected", label: "Rejected" },
-  { value: ALL, label: "All" },
+  { value: ALL, label: "All changes" },
 ];
 
 const statusLabel = Object.fromEntries(statuses.map((s) => [s.value, s.label])) as Record<string, string>;
@@ -293,21 +298,30 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
 }
 
 /**
- * The changes refreshes found in one partition cache, in values delivered records were built from, and what became of each. By
- * default a change goes out on the next run on its own and shows here as a rollout; a type whose cache flow asks for
- * approval holds its changes here until someone decides, with Approve and Reject in the row, in bulk from a selection,
- * and in the panel a row opens. The list opens on the changes waiting for a decision when there can be any, and on
- * every change otherwise.
+ * What the cache does to the delivered records of one partition, in one list: the records built without a value the cache
+ * did not hold (Missing from cache), and the changes refreshes found in values delivered records were built from, with
+ * what became of each. By default a change goes out on the next run on its own and shows here as a rollout; a type whose
+ * cache flow asks for approval holds its changes here until someone decides, with Approve and Reject in the row, in bulk
+ * from a selection, and in the panel a row opens. The list opens on the changes waiting for a decision when there can be
+ * any, else on what is missing when anything is, and on every change otherwise.
  */
-export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal }: {
+export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal, openMissing = false }: {
   /** The partition whose cache the changes were found in. */
   scope: string;
   /** The types of the cache whose changes wait for approval; empty when every change goes out on its own. */
   approvalTypes: string[];
   /** How many of the cache's changes wait for a decision; undefined while it loads. */
   pendingTotal: number | undefined;
+  /** Whether a link opened the list on what is missing from the cache. */
+  openMissing?: boolean;
 }) {
-  const [chosen, setChosen] = useState<string | null>(null);
+  const [chosen, setChosen] = useState<string | null>(openMissing ? MISSING : null);
+  // The same query the missing list reads, so opening it costs nothing more.
+  const gaps = useQuery({
+    queryKey: ["delivery", "cache", "gaps", scope, null, false],
+    queryFn: () => deliveryApi.cacheGaps({ scope, type: undefined, empty: false }),
+  });
+  const missingTotal = gaps.data?.length ?? 0;
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [openTag, setOpenTag] = useState<DeliveryUpdateTag | null>(null);
   // The affected counts of every row seen so far, so a selection that spans pages still adds up.
@@ -315,7 +329,7 @@ export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal }: {
   const { ownedId, show, close } = useOwnedPanel(PANEL);
 
   const approval = approvalTypes.length > 0 || (pendingTotal ?? 0) > 0;
-  const status = chosen ?? (approval ? "pending" : ALL);
+  const status = chosen ?? (approval ? "pending" : missingTotal > 0 ? MISSING : ALL);
   const pending = status === "pending";
 
   const raise = useCallback((tag: DeliveryUpdateTag) => show(
@@ -402,17 +416,24 @@ export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal }: {
               {option.value === "pending" && (pendingTotal ?? 0) > 0 && (
                 <span className="rounded-full bg-warning/15 px-1.5 font-mono text-[11px] tabular-nums text-warning">{pendingTotal}</span>
               )}
+              {option.value === MISSING && missingTotal > 0 && (
+                <span className="rounded-full bg-muted px-1.5 font-mono text-[11px] tabular-nums text-muted-foreground">{missingTotal}</span>
+              )}
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
         <span className="text-[12px] text-muted-foreground" data-testid="delivery-cache-approval-rule">
-          {approvalTypes.length === 0
+          {status === MISSING
+            ? "Records built without a value the cache did not hold. The refresh that brings it lists them as a change, and they are updated on their next delivery."
+            : approvalTypes.length === 0
             ? "Every type updates automatically: a change reaches its records on their next delivery."
             : `Approval is on for ${approvalTypes.join(", ")}; every other type updates automatically on the next delivery.`}
         </span>
       </div>
 
-      {pending && pendingTotal === 0
+      {status === MISSING
+        ? <DeliveryCacheGaps scope={scope} type={null} />
+        : pending && pendingTotal === 0
         ? (
           <Card className="gap-0 rounded-lg p-0">
             <EmptyState
@@ -440,7 +461,7 @@ export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal }: {
             toolbar={toolbar}
             onPageLoaded={onPageLoaded}
             emptyMessage={status === ALL
-              ? "No refresh of this cache has changed a value a delivered record was built from. Records built without a value the cache did not hold are under Missing from cache, and move here once a refresh brings it."
+              ? "No refresh of this cache has changed a value a delivered record was built from."
               : "No changes in this state."}
             data-testid="delivery-cache-tags-table"
           />

@@ -27,7 +27,7 @@ const GAP_LABEL: Record<string, string> = {
  * What delivered records of one partition were built without, most records first: the values the cache did not hold when
  * they were rendered (a wellbore loaded after its logs, the access group a data office has not listed for a field yet).
  * Each is filled by the refresh that brings it, which tags the records like any cache change and updates them on their
- * next delivery; until then this is where they are flagged. It is the Missing from cache section of the Deliveries tab.
+ * next delivery; until then this is where they are flagged. It is the Missing from cache state of the Deliveries tab's list.
  */
 export function DeliveryCacheGaps({ scope, type }: { scope: string; type: string | null }) {
   const [empty, setEmpty] = useState(false);

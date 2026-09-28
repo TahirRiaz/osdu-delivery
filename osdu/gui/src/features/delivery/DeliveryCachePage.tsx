@@ -27,7 +27,6 @@ import { isPartitionId, useActivePartition } from "./activePartition";
 import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheSetup } from "./DeliveryCacheSetup";
 import { parseSetupNode, type SetupNode } from "./cacheSetupNode";
-import { DeliveryCacheGaps } from "./DeliveryCacheGaps";
 import { CacheCompareDialog, DeliveryCacheHistory } from "./DeliveryCacheHistory";
 import { DeliveryCacheRecords } from "./DeliveryCacheRecords";
 
@@ -49,7 +48,7 @@ function typeHint(type: CachedTypeSummary): string {
  */
 type Tab = "records" | "history" | "deliveries" | "setup";
 
-/** A section of a tab a link can land on: what records were built without, and the partition's OSDU feature flags. */
+/** A section of a tab a link can land on: what records were built without, a state of the Deliveries list, and the partition's OSDU feature flags. */
 type Section = "gaps" | "flags";
 
 /**
@@ -577,20 +576,18 @@ function CacheWorkbench({ cache, tab, section, node, onNode, type, onTab, onType
           <DeliveryCacheHistory scope={cache.scope} type={scoped?.name ?? null} />
         </TabsContent>
 
-        <TabsContent value="deliveries" className="flex flex-col gap-8">
+        <TabsContent value="deliveries">
           <TabSection
             id="updates"
-            title="Updated by cache changes"
-            about="Records already in OSDU that were built from a cached value a refresh has since changed. A type set to onChange: auto, the default, needs nothing from anyone: the change is approved as it is found and each record is updated on its flow's next delivery, and this list shows that being carried out. A type set to onChange: approve waits here until someone approves or rejects the change."
+            title="Updated by the cache"
+            about="Records already in OSDU that the cache has changed or will change. Missing from cache: records built without something the cache did not hold when they were rendered (a wellbore loaded after its logs, an access group not listed yet for a field, a reference written unverified); nothing needs doing, since the refresh that brings it lists them as a change. The other states are those changes: a type set to onChange: auto, the default, is approved as found and each record is updated on its flow's next delivery; a type set to onChange: approve waits for someone to approve or reject the change. Fix the source when something should not be missing at all."
           >
-            <DeliveryCacheApprovals scope={cache.scope} approvalTypes={approvalTypes} pendingTotal={pending.data?.total} />
-          </TabSection>
-          <TabSection
-            id="gaps"
-            title="Missing from cache"
-            about="Records already in OSDU that were built without something the cache did not hold when they were rendered: a wellbore loaded after its logs, an access group not listed yet for a field, a reference written unverified. Nothing needs doing here: once a refresh brings what was missing, the records are updated like any other cache change, on their next delivery. Fix the source when a gap should not be there at all."
-          >
-            <DeliveryCacheGaps scope={cache.scope} type={null} />
+            <DeliveryCacheApprovals
+              scope={cache.scope}
+              approvalTypes={approvalTypes}
+              pendingTotal={pending.data?.total}
+              openMissing={section === "gaps"}
+            />
           </TabSection>
         </TabsContent>
 
