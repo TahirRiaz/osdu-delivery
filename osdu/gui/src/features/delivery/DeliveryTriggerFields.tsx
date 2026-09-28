@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import type { TriggerBodyContribution, TriggerFieldsProps } from "@/modules/registry";
 import { deliveryApi } from "../../api/delivery";
+import { useActivePartition } from "./activePartition";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -117,8 +118,11 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   const idPrefix = useId();
   const [force, setForce] = useState(() => initialPayload?.force === true);
   // The partition is picked from the ones the flow names, never typed: it is the one value of a run that decides which
-  // OSDU environment is written to. A run being repeated opens on the partition it ran in.
-  const [partitionChoice, setPartitionChoice] = useState<string | null>(() => initialValues[PARTITION] ?? null);
+  // OSDU environment is written to. A run being repeated opens on the partition it ran in; a fresh one on the workbench's
+  // partition (the title bar's) when the flow names it. Undefined is nothing picked yet; null is a cache refresh of every
+  // partition in turn, picked as such.
+  const [active] = useActivePartition();
+  const [partitionChoice, setPartitionChoice] = useState<string | null | undefined>(() => initialValues[PARTITION]);
   const [valuesText, setValuesText] = useState(
     () => Object.entries(initialValues).filter(([name]) => name !== PARTITION).map(([name, value]) => `${name}=${value}`).join("\n"),
   );
@@ -162,13 +166,15 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   const interfaceNames = useMemo(() => lines(interfacesText), [interfacesText]);
   const { partitions, loading: partitionsLoading } = useFlowPartitions(flowKind, pipelineId);
   const takesPartition = partitions.length > 0;
-  // A delivery run acts in one partition: the only one the flow names, or the one picked. A cache refresh may name none,
-  // and then builds every partition's cache in turn.
-  const partition = !takesPartition
+  // A delivery run acts in one partition: the one picked, else the workbench's when the flow names it, else the only one it
+  // names. A cache refresh may name none, and then builds every partition's cache in turn.
+  const partition = !takesPartition || partitionChoice === null
     ? null
-    : partitionChoice !== null && partitions.includes(partitionChoice)
+    : partitionChoice !== undefined && partitions.includes(partitionChoice)
       ? partitionChoice
-      : deliveryKind && partitions.length === 1 ? partitions[0] : null;
+      : active !== null && partitions.includes(active)
+        ? active
+        : deliveryKind && partitions.length === 1 ? partitions[0] : null;
 
   const body = useMemo<TriggerBodyContribution>(() => {
     const parsed = takesValues ? parseValues(valuesText) : { values: {}, error: null };

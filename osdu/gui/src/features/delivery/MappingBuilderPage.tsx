@@ -25,6 +25,7 @@ import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { RichTooltip } from "@/components/RichTooltip";
 import { OutcomePill } from "@/components/StatusBadge";
+import { isPartitionId, useActivePartition } from "./activePartition";
 import { MappingBuilderVariables } from "./MappingBuilderVariables";
 import { MappingEntryEditor, type EntryEditorTarget } from "./MappingEntryEditor";
 import { MappingProposeSheet } from "./MappingProposeSheet";
@@ -96,8 +97,10 @@ export default function MappingBuilderPage() {
   const mappingId = searchParams.get("mappingId");
 
   const [repoId, setRepoId] = useState("");
-  // The partition cache picked; empty follows the partition the check's delivery flow delivers to.
+  // The partition cache picked here; empty follows the workbench's partition (the title bar's) when a cache is kept for it,
+  // and else the partition the check's delivery flow delivers to.
   const [cacheChoice, setCacheChoice] = useState("");
+  const [active, setActive] = useActivePartition();
   const [templateChoice, setTemplateChoice] = useState("");
   const [name, setName] = useState("");
   const [mappingVersion, setMappingVersion] = useState("1.0.0");
@@ -155,11 +158,14 @@ export default function MappingBuilderPage() {
   // A flow that names its partitions is offered once per partition, each with that partition's values; the check takes the
   // one for the partition whose cache is picked, so the values it renders with and the cache it reads agree.
   const usingMapping = repo === null ? [] : repo.flows.filter((flow) => flow.mapping === reference);
+  const preferred = cacheChoice !== ""
+    ? cacheChoice
+    : active !== null && (caches.data ?? []).some((candidate) => candidate.scope === active) ? active : "";
   const checkFlow = repo === null
     ? null
-    : usingMapping.find((flow) => cacheChoice !== "" && flow.cacheScope === cacheChoice) ?? usingMapping[0] ?? repo.flows[0] ?? null;
+    : usingMapping.find((flow) => preferred !== "" && flow.cacheScope === preferred) ?? usingMapping[0] ?? repo.flows[0] ?? null;
   const checkFlowName = checkFlow === null ? "" : `${checkFlow.name}${checkFlow.partition ? ` in partition ${checkFlow.partition}` : ""}`;
-  const cacheScope = cacheChoice !== "" ? cacheChoice : checkFlow?.cacheScope ?? "";
+  const cacheScope = preferred !== "" ? preferred : checkFlow?.cacheScope ?? "";
   const cache = (caches.data ?? []).find((candidate) => candidate.scope === cacheScope) ?? null;
 
   const detail = useQuery({
@@ -439,7 +445,16 @@ export default function MappingBuilderPage() {
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="mapping-builder-cache">Partition cache</Label>
-                <Select value={cache?.scope ?? ""} onValueChange={setCacheChoice}>
+                <Select
+                  value={cache?.scope ?? ""}
+                  onValueChange={(scope) => {
+                    setCacheChoice(scope);
+                    // A partition picked here is the workbench's too; a cache kept under an unresolved reference is not one.
+                    if (isPartitionId(scope)) {
+                      setActive(scope);
+                    }
+                  }}
+                >
                   <SelectTrigger id="mapping-builder-cache" size="sm" className="h-8 w-full" data-testid="mapping-builder-cache">
                     <SelectValue placeholder={caches.data === undefined ? "Loading the caches" : caches.data.length === 0 ? "No cache is defined" : "Pick a partition"} />
                   </SelectTrigger>

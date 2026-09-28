@@ -1,7 +1,8 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { deliveryApi, type DeliveryFlowScope } from "../../api/delivery";
+import { useActivePartition } from "./activePartition";
 
 /**
  * Which ledger of a flow a view is about: the interface of a source, and the partition of a flow that names its
@@ -11,9 +12,11 @@ import { deliveryApi, type DeliveryFlowScope } from "../../api/delivery";
  *
  * A flow in the single form has one interface and no name, and `interfaceName` is null for it; a flow that names no
  * partitions has `partitions` empty and `partition` null. A flow that names them is shown in the partition the URL names,
- * or the first it names. `current` is the interface in view either way, once the listing has loaded, and `scope` is what
- * every flow-level request of the view carries. `clearOnChange` names the URL parameters that meant something only for the
- * ledger that was showing.
+ * else in the workbench's partition (the title bar's) when the flow names it, else in the first it names; `outside` is
+ * then the workbench's partition the flow does not deliver to, for the view to say so. A partition the URL names, or one
+ * picked here, becomes the workbench's. `current` is the interface in view either way, once the listing has loaded, and
+ * `scope` is what every flow-level request of the view carries. `clearOnChange` names the URL parameters that meant
+ * something only for the ledger that was showing.
  */
 export function useInterfaceChoice(pipelineId: string, clearOnChange: readonly string[] = []) {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -27,10 +30,20 @@ export function useInterfaceChoice(pipelineId: string, clearOnChange: readonly s
   const partitions = useMemo(
     () => [...new Set((interfaces.data ?? []).map((row) => row.partition ?? null).filter((name): name is string => name !== null))],
     [interfaces.data]);
+  const [active, setActive] = useActivePartition();
   const askedPartition = searchParams.get("partition");
+  const askedKnown = askedPartition !== null && partitions.includes(askedPartition);
   const partition = partitions.length === 0
     ? null
-    : askedPartition !== null && partitions.includes(askedPartition) ? askedPartition : partitions[0];
+    : askedKnown ? askedPartition : active !== null && partitions.includes(active) ? active : partitions[0];
+  const outside = partitions.length > 0 && active !== null && !partitions.includes(active) ? active : null;
+
+  // A link that names the partition makes it the workbench's, so the title bar says which partition the page is about.
+  useEffect(() => {
+    if (askedKnown && askedPartition !== active) {
+      setActive(askedPartition);
+    }
+  }, [askedKnown, askedPartition, active, setActive]);
   const rows = useMemo(
     () => (interfaces.data === undefined ? undefined : interfaces.data.filter((row) => (row.partition ?? null) === partition)),
     [interfaces.data, partition]);
@@ -57,6 +70,11 @@ export function useInterfaceChoice(pipelineId: string, clearOnChange: readonly s
     return params;
   }), [setSearchParams, clearKey]);
   const selectInterface = useCallback((next: string) => choose("interface", next), [choose]);
-  const selectPartition = useCallback((next: string) => choose("partition", next), [choose]);
-  return { interfaces, rows, names, many, interfaceName, current, partitions, partition, scope, ready, selectInterface, selectPartition };
+  const selectPartition = useCallback((next: string) => {
+    choose("partition", next);
+    setActive(next);
+  }, [choose, setActive]);
+  return {
+    interfaces, rows, names, many, interfaceName, current, partitions, partition, outside, scope, ready, selectInterface, selectPartition,
+  };
 }

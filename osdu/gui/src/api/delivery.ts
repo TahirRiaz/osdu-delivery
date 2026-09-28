@@ -1645,6 +1645,25 @@ export const deliveryRecordRoute = ({ flowId, deliveryKey }: DeliveryRecordRef) 
   `/delivery/records/${encodeURIComponent(flowId)}/${encodeURIComponent(deliveryKey)}`;
 
 /**
+ * One OSDU partition the catalog knows: what its cache serves and the delivery flows that name it. What the title bar's
+ * partition switcher lists.
+ */
+export interface DeliveryPartition {
+  name: string;
+  /** The version of its cache deliveries read, or null while it holds none. */
+  currentVersion: string | null;
+  capturedUtc: string | null;
+  types: number;
+  items: number;
+  /** The cache flows that fill its cache. */
+  cacheFlows: string[];
+  /** The delivery flows that name it under `partitions`. */
+  deliveryFlows: string[];
+  /** Cache changes found in it that wait for a decision. */
+  pendingChanges: number;
+}
+
+/**
  * Which ledger of a flow a request is about: the interface of a source (null for the single form), and the partition of a
  * flow that names its partitions (null for one that names none). A flow keeps a ledger per interface and partition, so its
  * records, submissions, target, previews and interventions are read and acted on one ledger at a time, never summed.
@@ -1692,6 +1711,8 @@ const flowPath = (pipelineId: string, suffix: string, scope?: DeliveryFlowScope)
 };
 
 export const deliveryApi = {
+  /** Every partition a cache is kept for or a delivery flow names, with what its cache serves and what waits in it. */
+  partitions: () => get<DeliveryPartition[]>("/api/v1/delivery/partitions"),
   /**
    * The counts of one interface, or of the whole source when the scope names none; of one partition, or of every partition
    * added up when the scope names none.

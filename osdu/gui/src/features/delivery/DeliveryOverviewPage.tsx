@@ -16,6 +16,7 @@ import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { RelativeTime } from "@/components/RelativeTime";
 import { fetchAllPipelines } from "@/features/pipelines/fetchAllPipelines";
+import { useActivePartition } from "./activePartition";
 import { SubmissionStatusBadge } from "./DeliveryBadges";
 
 function Count({ label, value, tone }: { label: string; value: number; tone?: "success" | "warning" | "destructive" | "info" }) {
@@ -28,7 +29,18 @@ function Count({ label, value, tone }: { label: string; value: number; tone?: "s
   );
 }
 
-function FlowCard({ pipeline, stats, onOpen }: { pipeline: PipelineSummary; stats: DeliveryFlowStats | undefined; onOpen: () => void }) {
+/**
+ * One delivery flow's card. A flow that names the workbench's partition is counted in it, and its partition badges mark
+ * that one; a flow that names its partitions but not that one is counted across all of them, and says so.
+ */
+function FlowCard({ pipeline, stats, active, onOpen }: {
+  pipeline: PipelineSummary;
+  stats: DeliveryFlowStats | undefined;
+  active: string | null;
+  onOpen: () => void;
+}) {
+  const partitions = stats?.partitions ?? [];
+  const inActive = stats?.partition !== undefined && stats.partition !== null;
   const total = stats?.total ?? 0;
   const delivered = stats?.delivered ?? 0;
   const ratio = total === 0 ? 0 : Math.round((delivered / total) * 100);
@@ -39,13 +51,23 @@ function FlowCard({ pipeline, stats, onOpen }: { pipeline: PipelineSummary; stat
         <Badge variant="outline">{pipeline.batch ?? "default"}</Badge>
         {!pipeline.active && <Badge variant="outline" className="border-warning/50 text-warning">inactive</Badge>}
         {stats && stats.drifted > 0 && <Badge variant="secondary" className="bg-warning/15 text-warning">{stats.drifted} drifted</Badge>}
-        {(stats?.partitions ?? []).length > 0 && (
+        {partitions.length > 0 && (
           <span
             className="ml-auto flex flex-wrap items-center gap-1"
-            title="The OSDU partitions this flow delivers to; its counts add every partition's ledger up. Open the flow to see one partition."
+            title={inActive
+              ? `The OSDU partitions this flow delivers to; the counts are ${stats!.partition}'s, the workbench's partition.`
+              : `The OSDU partitions this flow delivers to${active === null ? "" : `, of which ${active} is not one`}; the counts add every partition's ledger up.`}
             data-testid={`delivery-flow-${pipeline.id}-partitions`}
           >
-            {stats!.partitions!.map((name) => <Badge key={name} variant="secondary" className="font-mono text-[11px]">{name}</Badge>)}
+            {partitions.map((name) => (
+              <Badge
+                key={name}
+                variant={name === stats?.partition ? "default" : "secondary"}
+                className="font-mono text-[11px]"
+              >
+                {name}
+              </Badge>
+            ))}
           </span>
         )}
       </div>
@@ -117,13 +139,24 @@ export default function DeliveryOverviewPage() {
     queryFn: () => fetchAllPipelines({ kind: "delivery" }),
   });
   const pipelines = flows.data?.items ?? [];
-  const stats = useQueries({
+  const [active] = useActivePartition();
+  const whole = useQueries({
     queries: pipelines.map((pipeline) => ({
       queryKey: ["delivery", "stats", pipeline.id],
       queryFn: () => deliveryApi.stats(pipeline.id),
       refetchInterval: 15000,
     })),
   });
+  // A flow that names the workbench's partition is counted in it; the whole flow's counts say which partitions it names.
+  const inActive = useQueries({
+    queries: pipelines.map((pipeline, index) => ({
+      queryKey: ["delivery", "stats", pipeline.id, null, active],
+      queryFn: () => deliveryApi.stats(pipeline.id, { partition: active }),
+      enabled: active !== null && (whole[index]?.data?.partitions ?? []).includes(active),
+      refetchInterval: 15000,
+    })),
+  });
+  const stats = pipelines.map((_, index) => (inActive[index]?.data !== undefined ? inActive[index] : whole[index]));
 
   if (flows.isError) {
     return (
@@ -164,7 +197,13 @@ export default function DeliveryOverviewPage() {
       ) : (
         <div className="grid gap-3 lg:grid-cols-2" data-testid="delivery-flows">
           {pipelines.map((pipeline, index) => (
-            <FlowCard key={pipeline.id} pipeline={pipeline} stats={stats[index]?.data} onOpen={() => navigate(`/pipelines/${pipeline.id}?tab=delivery`)} />
+            <FlowCard
+              key={pipeline.id}
+              pipeline={pipeline}
+              stats={stats[index]?.data}
+              active={active}
+              onOpen={() => navigate(`/pipelines/${pipeline.id}?tab=delivery${stats[index]?.data?.partition ? `&partition=${encodeURIComponent(stats[index]!.data!.partition!)}` : ""}`)}
+            />
           ))}
         </div>
       )}

@@ -317,6 +317,20 @@ public sealed class DeliveryPartitionsApiTests
                 Assert.Equal(new[] { dev, test }.Order(StringComparer.Ordinal), flow.GetProperty("partitions").EnumerateArray().Select(p => p.GetString()));
             }
 
+            // The partitions the catalog knows are what the title bar's switcher offers: each with the cache flows that fill it
+            // and the delivery flows that name it; neither holds a cache version yet.
+            var known = (await JsonAsync(client, token, "/api/v1/delivery/partitions")).EnumerateArray().ToList();
+            foreach (var scope in new[] { dev, test })
+            {
+                var partition = Assert.Single(known, p => p.GetProperty("name").GetString() == scope);
+                Assert.Equal([cacheFlowName], partition.GetProperty("cacheFlows").EnumerateArray().Select(f => f.GetString()));
+                Assert.Equal([flowName], partition.GetProperty("deliveryFlows").EnumerateArray().Select(f => f.GetString()));
+                Assert.Equal(JsonValueKind.Null, partition.GetProperty("currentVersion").ValueKind);
+                Assert.Equal(0, partition.GetProperty("pendingChanges").GetInt64());
+            }
+
+            Assert.Equal(known.Select(p => p.GetProperty("name").GetString()).Order(StringComparer.Ordinal), known.Select(p => p.GetProperty("name").GetString()));
+
             // The configuration is set and read per partition; a partition written as a reference names none.
             var admin = await TokenAsync(client, ["admin"]);
             using (var set = await SendAsync(client, admin, HttpMethod.Put, $"/api/v1/delivery/config/OSDU_URL?repoId={repoId:D}&partition={test}", new DeliveryConfigSetRequest("https://test.osdu.example.com", null)))

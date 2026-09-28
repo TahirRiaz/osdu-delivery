@@ -382,6 +382,9 @@ public static class DeliveryEndpoints
 
         // The central configuration the control plane supplies to the runs it queues.
         DeliveryConfigEndpoints.Map(delivery);
+
+        // The partitions the catalog knows, which every OSDU page is read in.
+        DeliveryPartitionEndpoints.Map(delivery);
         delivery.MapGet("/flows/{pipelineId:guid}/stats", GetStatsAsync).WithName("GetDeliveryFlowStats");
         delivery.MapGet("/flows/{pipelineId:guid}/interfaces", ListInterfacesAsync).WithName("ListDeliveryInterfaces");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");

@@ -36,7 +36,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
   const { hasScope } = useAuth();
   const canOperate = hasScope("operate");
   const {
-    interfaces, names, many, interfaceName, current, partitions, partition, scope, selectInterface, selectPartition,
+    interfaces, names, many, interfaceName, current, partitions, partition, outside, scope, selectInterface, selectPartition,
   } = useInterfaceChoice(pipelineId);
   const parameters = useMemo(() => current?.parameters ?? [], [current]);
   const keyColumns = current?.keyColumns ?? [];
@@ -103,7 +103,9 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
           partitions={partitions}
           partition={partition}
           onSelect={selectPartition}
-          caption="the preview renders with this partition's cache, ids and configuration"
+          caption={outside !== null
+            ? `this flow does not deliver to ${outside}, the workbench's partition; the preview renders in ${partition}`
+            : "the preview renders with this partition's cache, ids and configuration"}
         />
       )}
       {many && (

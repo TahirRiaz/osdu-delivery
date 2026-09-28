@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, DatabaseZap, Play, ScrollText, ShieldAlert } from "lucide-react";
@@ -11,7 +11,6 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryCache, type DeliveryCacheFlow } from "../../api/delivery";
 import { CorrelationError } from "@/components/CorrelationError";
@@ -23,6 +22,7 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
 import { TriggerRunDialog } from "@/features/runs/TriggerRunDialog";
 import { scheduleCadence, summarizeTypes, type CachedTypeSummary } from "./cacheFormat";
+import { isPartitionId, useActivePartition } from "./activePartition";
 import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheDefinition } from "./DeliveryCacheDefinition";
 import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
@@ -60,13 +60,14 @@ function isTab(value: string | null): value is Tab {
  */
 export default function DeliveryCachePage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [remembered, setRemembered] = useLocalStorageState("sqlflow.filters.delivery-cache.scope", "");
+  const [active, setActive] = useActivePartition();
   const [refreshing, setRefreshing] = useState<DeliveryCacheFlow | null>(null);
 
   const caches = useQuery({ queryKey: ["delivery", "cache", "caches"], queryFn: () => deliveryApi.caches() });
   const all = caches.data ?? [];
   const byFlow = searchParams.get("flow");
-  const requested = searchParams.get("scope") ?? remembered;
+  // A link names the partition (`partition`, or `scope` as older links do); otherwise the page shows the workbench's.
+  const requested = searchParams.get("partition") ?? searchParams.get("scope") ?? active;
   const cache = (byFlow === null ? undefined : all.find((candidate) => candidate.flows.some((flow) => flow.name === byFlow)))
     ?? all.find((candidate) => candidate.scope === requested)
     ?? all[0]
@@ -89,9 +90,22 @@ export default function DeliveryCachePage() {
   }, { replace: true });
 
   const chooseCache = (scope: string) => {
-    setRemembered(scope);
-    update({ scope, flow: null, type: null });
+    if (isPartitionId(scope)) {
+      setActive(scope);
+    }
+
+    update({ partition: scope, scope: null, flow: null, type: null });
   };
+
+  // The partition shown becomes the workbench's when a link named it, so the title bar says which cache is in view. A
+  // cache kept under a partition the sync could not resolve (a reference) is shown, but is no partition to work in.
+  const shownScope = cache?.scope ?? null;
+  const linked = searchParams.get("partition") ?? searchParams.get("scope") ?? byFlow;
+  useEffect(() => {
+    if (linked !== null && shownScope !== null && shownScope !== active && isPartitionId(shownScope)) {
+      setActive(shownScope);
+    }
+  }, [linked, shownScope, active, setActive]);
 
   return (
     <Page data-testid="page-delivery-cache">
