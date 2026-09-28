@@ -117,6 +117,30 @@ public sealed partial record SourceDefinition
     /// <summary>True when the source names the partitions it may deliver to.</summary>
     public bool DeclaresPartitions => First.DeclaresPartitions;
 
+    /// <summary>True when the source names neither partitions nor a header partition, and so serves every registered partition.</summary>
+    public bool FollowsRegistry => First.FollowsRegistry;
+
+    /// <summary>True when the source works in partitions, named or registered.</summary>
+    public bool Partitioned => First.Partitioned;
+
+    /// <summary>
+    /// Whether settling the partition a run or request names (<paramref name="requested"/>, or none) needs the registry:
+    /// always for a source that follows it, and for one that names several partitions when none is named, to take the
+    /// default among them. A hard-coded partition is settled from the document alone.
+    /// </summary>
+    public bool NeedsRegistry(string? requested)
+        => FollowsRegistry || (DeclaresPartitions && string.IsNullOrWhiteSpace(requested) && Partitions.Count > 1);
+
+    /// <summary>
+    /// The partitions the source serves: those it names, or for a source that follows the registry, every registered one;
+    /// none for a source whose partition is its header's.
+    /// </summary>
+    public IReadOnlyList<string> Served(RegisteredPartitions registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        return DeclaresPartitions ? Partitions.Select(p => p.Name).ToList() : FollowsRegistry ? registry.Names : [];
+    }
+
     /// <summary>The partition every interface is bound to (<see cref="ForPartition"/>), or null.</summary>
     public string? Partition => First.Partition;
 
@@ -132,23 +156,74 @@ public sealed partial record SourceDefinition
     public SourceDefinition ForPartition(string? partition)
     {
         var wanted = string.IsNullOrWhiteSpace(partition) ? null : partition.Trim();
-        if (!DeclaresPartitions)
+        if (!Partitioned)
         {
             return wanted is null
                 ? this
                 : throw new DeliveryException(
-                    $"Flow '{Name}' names no partitions; it delivers to the partition its target.headers name, so a run or request cannot target '{wanted}'. Leave the partition out, or name the flow's partitions under 'partitions'.");
+                    $"Flow '{Name}' names no partitions; it delivers to the partition its target.headers name, so a run or request cannot target '{wanted}'. Leave the partition out, or take the header out so the flow serves every registered partition.");
         }
 
         if (wanted is null)
         {
-            wanted = Partitions.Count == 1
+            wanted = DeclaresPartitions && Partitions.Count == 1
                 ? Partitions[0].Name
-                : throw new DeliveryException(
-                    $"Flow '{Name}' delivers to {Partitions.Count} partitions ({PartitionNames.Listed(Partitions.Select(p => p.Name))}); name the one this run or request targets.");
+                : throw new DeliveryException(DeclaresPartitions
+                    ? $"Flow '{Name}' delivers to {Partitions.Count} partitions ({PartitionNames.Listed(Partitions.Select(p => p.Name))}); name the one this run or request targets."
+                    : $"Flow '{Name}' serves every partition registered with the catalog; name the one this run or request targets.");
         }
 
         return this with { Interfaces = Interfaces.Select(i => i.ForPartition(wanted)).ToList() };
+    }
+
+    /// <summary>
+    /// The source bound to the partition a run or a request targets (docs/partitions-design.md section 3). A source hard-codes
+    /// its partitions (<c>partitions</c>) or leaves them to the registry. One that names them runs in the one named, which has
+    /// to be among them, and when none is named, in the registry's default when it is among them, else in the only one it
+    /// names; the registry need not hold them. One that follows the registry runs in the partition named, which the registry
+    /// has to hold, else in its default. A source whose partition is its header's takes none, as <see cref="ForPartition"/>
+    /// says.
+    /// </summary>
+    /// <exception cref="DeliveryException">
+    /// The partition named is not the source's, or for a source that follows the registry not registered; a delivery run names
+    /// every partition; or none is named and neither the default nor a single named partition settles it.
+    /// </exception>
+    public SourceDefinition Resolve(string? requested, RegisteredPartitions registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        var wanted = string.IsNullOrWhiteSpace(requested) ? null : requested.Trim();
+        if (!Partitioned)
+        {
+            return ForPartition(wanted);
+        }
+
+        if (wanted == PartitionNames.Every)
+        {
+            throw new DeliveryException($"A run or request of delivery flow '{Name}' acts in one partition; name it rather than '{PartitionNames.Every}'.");
+        }
+
+        if (wanted is not null)
+        {
+            return ForPartition(FollowsRegistry ? registry.Find(wanted) ?? throw new DeliveryException(registry.NotRegistered(wanted)) : wanted);
+        }
+
+        var served = Served(registry);
+        if (registry.Default is { } fallback && served.Contains(fallback, StringComparer.OrdinalIgnoreCase))
+        {
+            return ForPartition(fallback);
+        }
+
+        if (DeclaresPartitions && Partitions.Count == 1)
+        {
+            return ForPartition(Partitions[0].Name);
+        }
+
+        // A flow that names its partitions needs no registration; only a registry-driven one has nothing to act in without it.
+        throw new DeliveryException(FollowsRegistry && registry.All.Count == 0
+            ? $"No partition is registered with the catalog, so flow '{Name}' has none to act in. Register one on the Partitions page or with 'sqlflow partition add <name>'."
+            : registry.Default is null
+                ? $"Flow '{Name}' serves {PartitionNames.Listed(served)} and no partition is the default; name the one this run or request targets, or make one the default."
+                : $"Flow '{Name}' serves {PartitionNames.Listed(served)}, and the default partition '{registry.Default}' is not one of them; name the one this run or request targets.");
     }
 
     /// <summary>
@@ -156,16 +231,16 @@ public sealed partial record SourceDefinition
     /// names its partitions and is not yet bound is looked up in every one of them, and the interface found comes bound to
     /// the partition whose ledger it is.
     /// </summary>
-    public FlowDefinition? ByFlowId(Guid flowId)
+    public FlowDefinition? ByFlowId(Guid flowId, RegisteredPartitions? registry = null)
     {
-        if (!DeclaresPartitions || Partition is not null)
+        if (!Partitioned || Partition is not null)
         {
             return Interfaces.FirstOrDefault(i => i.Id == flowId);
         }
 
-        foreach (var partition in Partitions)
+        foreach (var partition in Served(registry ?? RegisteredPartitions.None))
         {
-            var bound = Interfaces.Select(i => i.ForPartition(partition.Name)).FirstOrDefault(i => i.Id == flowId);
+            var bound = Interfaces.Select(i => i.ForPartition(partition)).FirstOrDefault(i => i.Id == flowId);
             if (bound is not null)
             {
                 return bound;
@@ -176,13 +251,17 @@ public sealed partial record SourceDefinition
     }
 
     /// <summary>
-    /// Every interface of the source for every partition it names, bound; the interfaces as they are for a source that names
-    /// none. What a read model that keeps one row per ledger enumerates.
+    /// Every interface of the source for every partition it serves, bound; the interfaces as they are for a source bound to a
+    /// partition, or whose partition is its header's. What a read model that keeps one row per ledger enumerates. A source
+    /// that follows the registry serves the partitions <paramref name="registry"/> holds.
     /// </summary>
-    public IEnumerable<FlowDefinition> EveryLedger()
-        => DeclaresPartitions && Partition is null
-            ? Partitions.SelectMany(p => Interfaces.Select(i => i.ForPartition(p.Name)))
+    public IEnumerable<FlowDefinition> EveryLedger(RegisteredPartitions registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        return Partitioned && Partition is null
+            ? Served(registry).SelectMany(p => Interfaces.Select(i => i.ForPartition(p)))
             : Interfaces;
+    }
 
     /// <summary>
     /// The interfaces <paramref name="names"/> selects, in document order: every interface when the list is empty. Every

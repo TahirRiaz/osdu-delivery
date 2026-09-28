@@ -43,12 +43,16 @@ public static class DeliveryLineage
     /// Everything a source contributes: what each of its interfaces reads and writes, in document order, each declaration
     /// once however many interfaces make it. A source that names its partitions contributes for every one of them, each
     /// interface bound to the partition, so its OSDU and cache nodes are the partition's (docs/partitions-design.md
-    /// section 6).
+    /// section 6); one that leaves them to the registry contributes once, under <see cref="PartitionNames.Every"/>.
     /// </summary>
     public static RegisteredFlowLineage Describe(SourceDefinition source, RegisteredLineageContext context, DeliveryDocumentLoader documents)
     {
         ArgumentNullException.ThrowIfNull(source);
-        var described = source.EveryLedger().Select(i => Describe(i, context, documents)).ToList();
+        // A source that leaves its partitions to the registry is described once, under the partition that stands for every
+        // registered one: lineage is computed from the documents, and the registry is the catalog's.
+        var described = (source.FollowsRegistry ? source.Interfaces : source.EveryLedger(RegisteredPartitions.None))
+            .Select(i => Describe(i, context, documents))
+            .ToList();
         return new RegisteredFlowLineage
         {
             Objects = described.SelectMany(d => d.Objects).Distinct().ToList(),
@@ -79,7 +83,9 @@ public static class DeliveryLineage
         }
 
         var datasets = new List<DeclaredDataset>();
-        var partition = OsduLineage.Partition(flow.Target.Headers, who, "target.headers", warnings);
+        var partition = flow.FollowsRegistry && flow.Partition is null
+            ? PartitionNames.Every
+            : OsduLineage.Partition(flow.Target.Headers, who, "target.headers", warnings);
         var mapping = PinnedMapping(flow, context, documents, who, warnings);
         if (partition is not null)
         {

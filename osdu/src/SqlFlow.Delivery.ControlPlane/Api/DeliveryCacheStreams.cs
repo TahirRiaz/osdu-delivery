@@ -10,6 +10,7 @@ using SqlFlow.Catalog;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
@@ -171,7 +172,7 @@ public static class DeliveryCacheStreams
         }
 
         var named = types.SelectMany(t => t.Stages.Select(s => (s.RepoId, s.Flow)))
-            .Concat(types.SelectMany(t => graph.Readers(t.Nodes)))
+            .Concat(types.SelectMany(t => graph.Readers(t.Nodes, partition)))
             .Distinct()
             .ToList();
         var pipelineOf = named
@@ -210,7 +211,7 @@ public static class DeliveryCacheStreams
                         s.Inputs);
                 })
                 .ToList();
-            var readers = graph.Readers(nodes)
+            var readers = graph.Readers(nodes, partition)
                 .Select(r =>
                 {
                     var pipeline = Pipeline(r.RepoId, r.Flow);
@@ -500,33 +501,57 @@ public static class DeliveryCacheStreams
         private readonly ILookup<(Guid, string), EdgeRow> _byFlow = edges.ToLookup(e => (e.RepoId, e.Flow.ToLowerInvariant()));
 
         /// <summary>
-        /// The cache type nodes a cache flow writes for a type: in <paramref name="partition"/> for a flow that names its
-        /// partitions (lineage keys a cache type by the partition as the flow writes it), and whatever its header names for
-        /// one that does not.
+        /// The cache type nodes a cache flow writes for a type: in <paramref name="partition"/> for a flow that works in
+        /// partitions (lineage keys a cache type by the partition as the flow writes it, and a flow that serves every
+        /// registered partition under <see cref="PartitionNames.Every"/>, which stands for each of them), and whatever its
+        /// header names for one that does not.
         /// </summary>
         public IEnumerable<string> CacheNodes(Guid repoId, string flow, string type, string? partition)
             => _byFlow[(repoId, flow.ToLowerInvariant())]
                 .Where(e => e.Relation == "Writes" && e.ObjectKey.StartsWith(CacheNodePrefix, StringComparison.Ordinal))
                 .Where(e => Segments(e.ObjectKey) is [_, var named, _, var name]
                     && name.Equals(type, StringComparison.OrdinalIgnoreCase)
-                    && (partition is null || named.Equals(partition, StringComparison.OrdinalIgnoreCase)))
+                    && (partition is null || InPartition(named, partition)))
                 .Select(e => e.ObjectKey);
 
-        /// <summary>The flows that read any of <paramref name="nodes"/>.</summary>
-        public IEnumerable<(Guid RepoId, string Flow)> Readers(IEnumerable<string> nodes)
-            => nodes.SelectMany(node => _readers[node]).Select(e => (e.RepoId, e.Flow)).Distinct();
+        /// <summary>Whether a cache node keyed by <paramref name="named"/> is in <paramref name="partition"/>: named for it, or for every partition.</summary>
+        private static bool InPartition(string named, string partition)
+            => named.Equals(partition, StringComparison.OrdinalIgnoreCase) || named == PartitionNames.Every;
 
         /// <summary>
-        /// Reads of cache types in the same partitions as <paramref name="nodes"/> (or named <paramref name="partition"/>)
-        /// whose type no node of them is: a type a delivery flow reads that is not in the list at all.
+        /// The flows that read any of <paramref name="nodes"/> in <paramref name="partition"/>: a read of the same type named
+        /// for the partition, for every partition (a registry-driven delivery flow), or as the node itself is keyed (a
+        /// partition a header names).
+        /// </summary>
+        public IEnumerable<(Guid RepoId, string Flow)> Readers(IEnumerable<string> nodes, string partition)
+            => nodes.SelectMany(node => Aliases(node, partition)).Distinct(StringComparer.Ordinal)
+                .SelectMany(key => _readers[key]).Select(e => (e.RepoId, e.Flow)).Distinct();
+
+        /// <summary>The keys a cache type node answers to in <paramref name="partition"/>: itself, and its type named for the partition and for every partition.</summary>
+        private static IEnumerable<string> Aliases(string node, string partition)
+        {
+            yield return node;
+            if (Segments(node) is [var system, _, var name, var type])
+            {
+                yield return string.Join('|', system, partition.ToLowerInvariant(), name, type);
+                yield return string.Join('|', system, PartitionNames.Every, name, type);
+            }
+        }
+
+        /// <summary>
+        /// Reads of cache types in the same partitions as <paramref name="nodes"/> (or named <paramref name="partition"/>,
+        /// or every partition) whose type no node of them writes: a type a delivery flow reads that is not in the list at
+        /// all. A read and a write of the same type meet across partition spellings, since a registry-driven flow's node
+        /// stands for every partition.
         /// </summary>
         public IEnumerable<(string Type, string Reader)> UnfilledReads(IReadOnlyList<string> nodes, string partition)
         {
-            var spelled = nodes.Select(n => Segments(n)[1]).Append(partition.ToLowerInvariant()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var written = nodes.ToHashSet(StringComparer.Ordinal);
+            var spelled = nodes.Select(n => Segments(n)[1]).Append(partition.ToLowerInvariant()).Append(PartitionNames.Every)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var writtenTypes = nodes.Select(n => Segments(n)[3]).ToHashSet(StringComparer.OrdinalIgnoreCase);
             return _readers
-                .Where(g => g.Key.StartsWith(CacheNodePrefix, StringComparison.Ordinal) && !written.Contains(g.Key)
-                    && Segments(g.Key) is [_, var named, _, _] && spelled.Contains(named))
+                .Where(g => g.Key.StartsWith(CacheNodePrefix, StringComparison.Ordinal)
+                    && Segments(g.Key) is [_, var named, _, var type] && spelled.Contains(named) && !writtenTypes.Contains(type))
                 .SelectMany(g => g.Select(e => (Segments(g.Key)[3], e.Flow)))
                 .Distinct()
                 .OrderBy(r => r.Item1, StringComparer.Ordinal).ThenBy(r => r.Flow, StringComparer.Ordinal);

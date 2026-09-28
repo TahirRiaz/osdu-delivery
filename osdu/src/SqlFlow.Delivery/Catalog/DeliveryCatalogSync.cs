@@ -433,15 +433,25 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         // What the other repositories declare for the same partitions: this repository's declarations have to agree with them.
         // Each document is bound to every partition it builds a cache for (docs/partitions-design.md section 6): the ones it
-        // names, or the one its headers name, resolved once. Everything below is keyed by that partition: the scopes read
-        // from other repositories, the conflict check, and the rows written. Binding in one place is what keeps those three
-        // agreeing with each other and with the capture and the render.
+        // names, every registered one for a flow that leaves them to the registry, or the one its headers name, resolved
+        // once. Everything below is keyed by that partition: the scopes read from other repositories, the conflict check, and
+        // the rows written. Binding in one place is what keeps those three agreeing with each other and with the capture and
+        // the render. A partition registered later is bound at the next sync.
+        var registry = parsed.Any(p => p.Cache.FollowsRegistry)
+            ? await DeliveryPartitionRegistry.ReadAsync(context, ct).ConfigureAwait(false)
+            : RegisteredPartitions.None;
         var bindings = new List<(CacheDefinition Cache, string Relative, string Scope)>();
         foreach (var (cache, relative) in parsed)
         {
-            if (cache.DeclaresPartitions)
+            if (cache.Partitioned)
             {
-                bindings.AddRange(cache.Partitions.Select(partition => (cache.ForPartition(partition), relative, partition)));
+                var served = cache.Served(registry);
+                if (served.Count == 0)
+                {
+                    warnings.Add($"{relative}: cache flow '{cache.Name}' builds a cache for every partition registered with the catalog, and none is registered yet, so it builds none. Register a partition on the Partitions page or with 'sqlflow partition add <name>'.");
+                }
+
+                bindings.AddRange(served.Select(partition => cache.ForPartition(partition)).Select(bound => (bound, relative, bound.Partition!)));
             }
             else
             {
@@ -504,7 +514,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
                 // A flow that names no partitions keeps the identity its declarations always had; one that names them keeps
                 // one per partition.
                 var id = FlowIdentity.FromName(
-                    $"delivery-cache/{repoId:N}/{cache.Name}/{type.Name}" + (cache.DeclaresPartitions ? $"@{scope.ToLowerInvariant()}" : string.Empty));
+                    $"delivery-cache/{repoId:N}/{cache.Name}/{type.Name}" + (cache.Partitioned ? $"@{scope.ToLowerInvariant()}" : string.Empty));
                 seen.Add(id);
                 var declaration = Declaration(cache, type, relative);
                 if (!existing.TryGetValue(id, out var row))
@@ -807,7 +817,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         type.Origin == Snapshots.CacheOrigin.Osdu ? type.Query : null,
         JsonSerializer.Serialize(type.Fields.Select(f => new { f.Path, As = f.Name }).ToList(), SummaryJson),
         type.OnChange == Snapshots.CacheChangeMode.Auto ? "auto" : "approve",
-        cache.DeclaresPartitions);
+        cache.Partitioned);
 
     private sealed record CacheDefinitionRow(
         string Origin, string? Endpoint, string? Connection, string? SourceObject, string? KeyField, string? DictionaryPath, string RelativePath,

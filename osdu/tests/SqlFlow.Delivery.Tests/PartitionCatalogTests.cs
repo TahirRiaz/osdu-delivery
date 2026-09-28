@@ -74,6 +74,23 @@ public sealed class PartitionCatalogTests : IDisposable
         {{types}}
         """;
 
+    /// <summary>The lookups cache flow naming neither partitions nor a header: it builds a cache for every registered partition.</summary>
+    private const string RegistryLookupsFlow = """
+        flowType: cache
+        name: recall-lookups-00-cache
+        source:
+          connection: ${env:OSDU_DATA_DB}
+        types:
+          - table: OsduData.arc.CacheCurveDictionary
+            name: CurveDictionary
+            key: mnemonic
+            fields: [log_curve_type_id]
+        """;
+
+    private DeliveryPartitionRegistry Registry() => new(_module.CreateDbContext);
+
+    private static readonly DateTime Now = new(2026, 9, 28, 9, 0, 0, DateTimeKind.Utc);
+
     [Fact]
     public async Task A_cache_flow_that_names_its_partitions_declares_each_type_once_per_partition_it_is_built_for()
     {
@@ -177,6 +194,75 @@ public sealed class PartitionCatalogTests : IDisposable
         Assert.Empty(await DeliveryInterfaceCatalog.OfFlowAsync(db, _repo, "petrel", null, CancellationToken.None));
         var keeping = Assert.Single(await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("petrel/logs", "test"), CancellationToken.None));
         Assert.Equal(("logs", "test"), (keeping.Interface, keeping.Partition));
+    }
+
+    [Fact]
+    public async Task A_registry_driven_cache_flow_declares_its_types_in_every_registered_partition_as_the_registry_stands_at_each_sync()
+    {
+        Write("cache/lookups.yaml", RegistryLookupsFlow);
+
+        // Nothing registered: the flow builds nothing, and the sync says why.
+        var warnings = await SyncAsync();
+        Assert.Contains(warnings, w => w.Contains("none is registered yet", StringComparison.Ordinal));
+        Assert.Empty(await DefinitionsAsync());
+
+        await Registry().AddAsync("dev", null, makeDefault: false, "tester", Now);
+        await Registry().AddAsync("test", null, makeDefault: false, "tester", Now);
+        Assert.Empty(await SyncAsync());
+        Assert.Equal(
+            ["dev/recall-lookups-00-cache/CurveDictionary (named)", "test/recall-lookups-00-cache/CurveDictionary (named)"],
+            await DefinitionsAsync());
+
+        // A partition registered later is described at the next sync, and one removed is let go of.
+        await Registry().AddAsync("prod", null, makeDefault: false, "tester", Now);
+        Assert.True(await Registry().RemoveAsync("test"));
+        Assert.Empty(await SyncAsync());
+        Assert.Equal(
+            ["dev/recall-lookups-00-cache/CurveDictionary (named)", "prod/recall-lookups-00-cache/CurveDictionary (named)"],
+            await DefinitionsAsync());
+    }
+
+    [Fact]
+    public async Task A_registry_driven_delivery_flow_is_described_in_every_registered_partition_and_keeps_the_ledger_keepLedger_names()
+    {
+        await Registry().AddAsync("dev", null, makeDefault: false, "tester", Now);
+        await Registry().AddAsync("test", null, makeDefault: false, "tester", Now);
+        Write("flows/welllog.yaml", """
+            flowType: delivery
+            name: recall-welllog
+            keepLedger: dev
+            source:
+              connection: ${env:OSDU_DATA_DB}
+              record: { object: OsduData.arc.WellLog, key: [log_id] }
+              lastModified: update_date
+              work: work/welllog
+            render:
+              mapping: WellLog@1.4.0
+            target:
+              endpoint: ${env:OSDU_URL}
+              protocol: storage
+            """);
+
+        await SyncAsync();
+
+        await using (var db = _module.CreateDbContext())
+        {
+            var rows = await db.DeliveryInterfaces.AsNoTracking().Where(i => i.RepoId == _repo).ToListAsync();
+            Assert.Equal(
+                [("dev", FlowId.Of("recall-welllog"), "recall-welllog", true), ("test", FlowId.Of("recall-welllog", "test"), "recall-welllog@test", true)],
+                rows.Select(r => (r.Partition, r.LedgerFlowId, r.LedgerName, r.Active)).OrderBy(r => r.Partition, StringComparer.Ordinal).ToList());
+        }
+
+        // Taken out of the registry, a partition's interface stops answering first; its records still lead to their flow.
+        Assert.True(await Registry().RemoveAsync("test"));
+        await SyncAsync();
+        await using (var db = _module.CreateDbContext())
+        {
+            var test = await db.DeliveryInterfaces.AsNoTracking().SingleAsync(i => i.RepoId == _repo && i.Partition == "test");
+            Assert.False(test.Active);
+            var keeping = await DeliveryInterfaceCatalog.KeepingAsync(db, FlowId.Of("recall-welllog", "test"), CancellationToken.None);
+            Assert.Equal("recall-welllog", Assert.Single(keeping).FlowName);
+        }
     }
 
     [Fact]

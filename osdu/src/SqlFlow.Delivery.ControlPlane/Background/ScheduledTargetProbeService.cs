@@ -148,12 +148,13 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
         var catalog = scope.ServiceProvider.GetRequiredService<CatalogDbContext>();
         var ledger = scope.ServiceProvider.GetRequiredService<ILedger>();
         var documents = scope.ServiceProvider.GetRequiredService<DeliveryDocumentLoader>();
+        var partitions = scope.ServiceProvider.GetRequiredService<IPartitionRegistry>();
         var dispatcher = scope.ServiceProvider.GetRequiredService<IRunDispatcher>();
 
         var carried = await OpenProbesAsync(ledger, ct).ConfigureAwait(false);
         await SweepAsync(catalog, ledger, carried, ct).ConfigureAwait(false);
 
-        var queued = await QueueAsync(catalog, ledger, documents, dispatcher, ct).ConfigureAwait(false);
+        var queued = await QueueAsync(catalog, ledger, documents, partitions, dispatcher, ct).ConfigureAwait(false);
         await AwaitSettlementAsync(catalog, ledger, queued, ct).ConfigureAwait(false);
     }
 
@@ -161,7 +162,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
 
     /// <summary>Queues a probe for every interface this pass covers, and starts each one's activity.</summary>
     private async Task<List<PendingProbe>> QueueAsync(
-        CatalogDbContext catalog, ILedger ledger, DeliveryDocumentLoader documents, IRunDispatcher dispatcher, CancellationToken ct)
+        CatalogDbContext catalog, ILedger ledger, DeliveryDocumentLoader documents, IPartitionRegistry partitions, IRunDispatcher dispatcher, CancellationToken ct)
     {
         var names = _options.PipelineNames();
         var pipelines = await PipelinesAsync(catalog, names, ct).ConfigureAwait(false);
@@ -179,6 +180,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
         var queued = new List<PendingProbe>();
         var budget = _options.MaxPerPass;
         var capped = false;
+        RegisteredPartitions? registry = null;
         foreach (var pipeline in pipelines)
         {
             ct.ThrowIfCancellationRequested();
@@ -196,9 +198,15 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
                 continue;
             }
 
-            // A flow that names its partitions has a target in each, reached with that partition's configuration: every one
-            // is probed, bound to its partition, so a partition whose platform is down is seen as such.
-            foreach (var flow in source.Source.EveryLedger())
+            // A flow that works in partitions has a target in each it serves, reached with that partition's configuration:
+            // every one is probed, bound to its partition, so a partition whose platform is down is seen as such. The
+            // registry is read once a pass, for the first flow that serves it.
+            if (source.Source.FollowsRegistry)
+            {
+                registry ??= await partitions.ReadAsync(ct).ConfigureAwait(false);
+            }
+
+            foreach (var flow in source.Source.EveryLedger(registry ?? RegisteredPartitions.None))
             {
                 if (budget <= 0)
                 {

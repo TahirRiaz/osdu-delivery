@@ -7,12 +7,12 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.Engine;
 
 /// <summary>
-/// The guards that keep a flow's ledgers apart once it names its partitions (docs/partitions-design.md section 4). A flow
-/// that delivered before it named its partitions kept its records in its own ledger; naming them gives every partition but
-/// the one marked <c>keepLedger</c> a new ledger. Two mistakes would then deliver records again or mix them, and a run is
-/// refused before it starts rather than let either happen:
+/// The guards that keep a flow's ledgers apart once it serves partitions, named or registered (docs/partitions-design.md
+/// section 4). A flow that delivered before it served partitions kept its records in its own ledger; serving them gives
+/// every partition but the one marked <c>keepLedger</c> a new ledger. Two mistakes would then deliver records again or mix
+/// them, and a run is refused before it starts rather than let either happen:
 /// <list type="bullet">
-/// <item>no partition keeps the flow's own ledger, while it holds records delivered to a partition the flow still names:
+/// <item>no partition keeps the flow's own ledger, while it holds records delivered to a partition the flow still serves:
 /// that partition's next run would find an empty ledger and deliver every one of them again as new;</item>
 /// <item>the partition that keeps it finds records in it delivered to another partition: its runs would treat them as its
 /// own.</item>
@@ -25,25 +25,28 @@ public sealed class PartitionLedgers
 {
     private readonly ConcurrentDictionary<string, bool> _passed = new(StringComparer.Ordinal);
 
-    /// <summary>Refuses a run of <paramref name="bound"/>, a source bound to one partition, when its ledgers would be lost or mixed.</summary>
+    /// <summary>
+    /// Refuses a run of <paramref name="bound"/>, a source bound to one partition, when its ledgers would be lost or mixed.
+    /// <paramref name="served"/> are the partitions the source serves: those it names, or every registered one.
+    /// </summary>
     /// <exception cref="DeliveryException">A guard does not hold; the message names the records and what to change.</exception>
-    public async Task CheckAsync(ILedger ledger, SourceDefinition bound, CancellationToken ct)
+    public async Task CheckAsync(ILedger ledger, SourceDefinition bound, IReadOnlyList<string> served, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(ledger);
         ArgumentNullException.ThrowIfNull(bound);
-        if (!bound.DeclaresPartitions || bound.Partition is null)
+        ArgumentNullException.ThrowIfNull(served);
+        if (!bound.Partitioned || bound.Partition is null)
         {
             return;
         }
 
-        var keeping = bound.Partitions.FirstOrDefault(p => p.KeepsLedger)?.Name;
-        var declared = bound.Partitions.Select(p => p.Name).ToList();
+        var keeping = bound.Partitions.FirstOrDefault(p => p.KeepsLedger)?.Name ?? bound.First.LedgerPartition;
         foreach (var flow in bound.Interfaces)
         {
             var own = FlowId.Of(flow.OwnLedgerName);
             if (keeping is null)
             {
-                await CheckUnkeptAsync(ledger, flow, own, declared, ct).ConfigureAwait(false);
+                await CheckUnkeptAsync(ledger, flow, own, served, ct).ConfigureAwait(false);
             }
             else if (flow.KeepsOwnLedger)
             {
@@ -67,9 +70,11 @@ public sealed class PartitionLedgers
             if (reached.Count > 0)
             {
                 throw new DeliveryException(
-                    $"Flow '{flow.Label}' names the partitions {PartitionNames.Listed(declared)}, and no partition keeps the ledger '{flow.OwnLedgerName}' it kept before: "
+                    $"Flow '{flow.Label}' serves the partitions {PartitionNames.Listed(declared)}, and no partition keeps the ledger '{flow.OwnLedgerName}' it kept before: "
                     + $"that ledger holds {Describe(reached)}. A partition that keeps a ledger of its own starts it empty, so its next run would deliver those records again as new. "
-                    + $"Mark the partition they were delivered to with keepLedger: true under partitions ({reached[0].Partition}). Nothing ran.");
+                    + (flow.DeclaresPartitions
+                        ? $"Mark the partition they were delivered to with keepLedger: true under partitions ({reached[0].Partition}). Nothing ran."
+                        : $"Name the partition they were delivered to at the top of the flow: keepLedger: {reached[0].Partition}. Nothing ran."));
             }
         }
 
@@ -90,7 +95,7 @@ public sealed class PartitionLedgers
         {
             throw new DeliveryException(
                 $"Partition '{keeping}' keeps the ledger '{flow.OwnLedgerName}' of flow '{flow.Label}', and that ledger holds {Describe(foreign)}, "
-                + $"delivered while the flow named no partitions and took its partition from the environment. A run of '{keeping}' would treat them as its own. "
+                + $"delivered while the flow served no partitions and took its partition from the environment. A run of '{keeping}' would treat them as its own. "
                 + "Keep the ledger for the partition its records went to, and deliver the others again from their own partition's ledger. Nothing ran.");
         }
 

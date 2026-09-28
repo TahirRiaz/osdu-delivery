@@ -30,7 +30,8 @@ internal static class DeliveryPreviewVerbs
         var values = RunParameters.ParseValues(context.Arguments.GetOptions("--set"));
         var key = context.Arguments.GetOption("--key");
         var output = context.Arguments.GetOption("--out");
-        var source = engine.Documents.LoadSource(flowPath).ForPartition(context.Arguments.GetOption("--partition"));
+        // Previewed in the partition a run would take.
+        var source = await CliPartitions.ResolveAsync(context, engine.Documents.LoadSource(flowPath), ct).ConfigureAwait(false);
         var named = context.Arguments.GetOption("--interface");
         var flows = named is null ? source.Interfaces : [source.Interface(named)];
         if (key is not null && flows.Count > 1)

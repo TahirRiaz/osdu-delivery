@@ -8,13 +8,25 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The partitions a flow names (docs/partitions-design.md sections 2 to 4): how a delivery flow and a cache flow declare
-/// them, what the loader refuses beside them, how a definition is bound to the one partition a run targets, and the ledger
-/// identity each partition keeps, with a flow that names none left exactly as it was.
+/// The partitions a flow works in (docs/partitions-design.md sections 2 to 4): how a delivery flow and a cache flow
+/// hard-code them or leave them to the registry, what the loader refuses beside them, how a definition is bound to the one
+/// partition a run targets, and the ledger identity each partition keeps, with a flow whose partition is its header's left
+/// exactly as it was.
 /// </summary>
 public sealed class PartitionDocumentsTests
 {
     private readonly DeliveryDocumentLoader _loader = new();
+
+    /// <summary>A registry holding dev, test and prod, with <paramref name="fallback"/> the default when one is named.</summary>
+    private static RegisteredPartitions Registry(string? fallback = "dev") => new(
+        new[] { "dev", "test", "prod" }.Select(name => new RegisteredPartition(name, null, name == fallback)));
+
+    /// <summary>
+    /// A delivery flow in the single form naming neither partitions nor a partition header, so serving every registered
+    /// partition; <paramref name="extra"/> is added at the top of the document.
+    /// </summary>
+    private static string RegistryDelivery(string extra = "") => Delivery("[dev]")
+        .Replace("partitions: [dev]\n", extra, StringComparison.Ordinal);
 
     /// <summary>A delivery flow in the single form naming <paramref name="partitions"/> (a YAML value), with no partition header.</summary>
     private static string Delivery(string partitions, string headers = "{ }", string parameters = "{ region: north }", string name = "recall-welllog") => $$"""
@@ -189,7 +201,7 @@ public sealed class PartitionDocumentsTests
         var dev = source.ForPartition("dev");
         Assert.Equal(["petrel/wells", "petrel-wellbores"], dev.Interfaces.Select(i => i.LedgerName));
 
-        var ledgers = source.EveryLedger().ToList();
+        var ledgers = source.EveryLedger(RegisteredPartitions.None).ToList();
         Assert.Equal(4, ledgers.Count);
         Assert.Equal(4, ledgers.Select(l => l.Id).Distinct().Count());
     }
@@ -307,20 +319,27 @@ public sealed class PartitionDocumentsTests
     }
 
     [Fact]
-    public void A_cache_run_refreshes_the_partition_it_names_or_every_partition_in_turn()
+    public void A_cache_run_refreshes_the_partition_it_names_every_partition_in_turn_or_the_default()
     {
         var cache = _loader.ParseCache(Cache("[dev, test]", Lookups), "cache/lookups.yaml");
 
-        Assert.Equal(["dev", "test"], cache.ForRun(null).Select(c => c.Scope));
-        Assert.Equal(["test"], cache.ForRun("Test").Select(c => c.Scope));
-        Assert.Throws<DeliveryException>(() => cache.ForRun("prod"));
+        Assert.Equal(["dev", "test"], cache.ForRun(PartitionNames.Every, RegisteredPartitions.None).Select(c => c.Scope));
+        Assert.Equal(["test"], cache.ForRun("Test", RegisteredPartitions.None).Select(c => c.Scope));
+        Assert.Throws<DeliveryException>(() => cache.ForRun("prod", Registry()));
+
+        // Naming none takes the registry's default when the flow builds it; a hard-coded partition need not be registered.
+        Assert.Equal(["test"], cache.ForRun(null, Registry("test")).Select(c => c.Scope));
+        var notAmongThem = Assert.Throws<DeliveryException>(() => cache.ForRun(null, Registry("prod")));
+        Assert.Contains("the default partition 'prod' is not one of them", notAmongThem.Message, StringComparison.Ordinal);
+        Assert.Throws<DeliveryException>(() => cache.ForRun(null, RegisteredPartitions.None));
+        Assert.Equal(["dev"], _loader.ParseCache(Cache("[dev]", Lookups), "cache/lookups.yaml").ForRun(null, RegisteredPartitions.None).Select(c => c.Scope));
 
         var single = _loader.ParseCache(
             Cache("[dev]", Lookups, headers: "{ data-partition-id: dev }").Replace("partitions: [dev]\n", string.Empty, StringComparison.Ordinal),
             "cache/lookups.yaml");
         Assert.Equal("dev", single.Scope);
-        Assert.Same(single, single.ForRun(null).Single());
-        Assert.Throws<DeliveryException>(() => single.ForRun("dev"));
+        Assert.Same(single, single.ForRun(null, Registry()).Single());
+        Assert.Throws<DeliveryException>(() => single.ForRun("dev", Registry()));
     }
 
     [Fact]
@@ -364,7 +383,7 @@ public sealed class PartitionDocumentsTests
 
         var ex = Assert.Throws<FlowValidationException>(() => _loader.ParseCache(yaml, "cache/lookups.yaml"));
 
-        Assert.Contains("the flow names none", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("the flow's one partition is its header's", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -394,13 +413,120 @@ public sealed class PartitionDocumentsTests
     }
 
     [Fact]
-    public void A_flow_that_names_neither_a_partition_header_nor_partitions_is_told_it_may_name_either()
+    public void A_cache_flow_that_names_neither_a_partition_header_nor_partitions_builds_every_registered_partition()
     {
         var yaml = Cache("[dev]", Lookups).Replace("partitions: [dev]\n", string.Empty, StringComparison.Ordinal);
 
-        var ex = Assert.Throws<FlowValidationException>(() => _loader.ParseCache(yaml, "cache/lookups.yaml"));
+        var cache = _loader.ParseCache(yaml, "cache/lookups.yaml");
 
-        Assert.Contains($"'{CacheScope.PartitionHeader}'", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("'partitions'", ex.Message, StringComparison.Ordinal);
+        Assert.True(cache.FollowsRegistry);
+        Assert.True(cache.Partitioned);
+        Assert.Empty(cache.Partitions);
+        Assert.Throws<InvalidOperationException>(() => cache.Scope);
+        Assert.Equal(["dev", "prod", "test"], cache.Served(Registry()));
+        Assert.Equal(["dev"], cache.ForRun(null, Registry()).Select(c => c.Scope));
+        Assert.Equal(["test"], cache.ForRun("TEST", Registry()).Select(c => c.Scope));
+        Assert.Equal(["dev", "prod", "test"], cache.ForRun(PartitionNames.Every, Registry()).Select(c => c.Scope));
+        Assert.Equal("prod", cache.ForPartition("prod").Source.Headers[CacheScope.PartitionHeader]);
+
+        var unregistered = Assert.Throws<DeliveryException>(() => cache.ForRun("staging", Registry()));
+        Assert.Contains("'staging' is not registered", unregistered.Message, StringComparison.Ordinal);
+        Assert.Contains("sqlflow partition add staging", unregistered.Message, StringComparison.Ordinal);
+
+        var none = Assert.Throws<DeliveryException>(() => cache.ForRun(null, RegisteredPartitions.None));
+        Assert.Contains("No partition is registered", none.Message, StringComparison.Ordinal);
+        var noDefault = Assert.Throws<DeliveryException>(() => cache.ForRun(null, Registry(fallback: null)));
+        Assert.Contains("no partition is the default", noDefault.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_registry_driven_cache_type_may_name_the_partitions_it_is_built_for()
+    {
+        var yaml = Cache("[dev]", Lookups.TrimEnd('\n') + "\n    partitions: [prod]\n").Replace("partitions: [dev]\n", string.Empty, StringComparison.Ordinal);
+
+        var cache = _loader.ParseCache(yaml, "cache/lookups.yaml");
+
+        Assert.Equal(["CurveDictionary"], cache.ForPartition("dev").Types.Select(t => t.Name));
+        Assert.Equal(["CurveDictionary", "RecallUnits"], cache.ForPartition("prod").Types.Select(t => t.Name));
+    }
+
+    [Fact]
+    public void A_delivery_flow_that_names_neither_a_partition_header_nor_partitions_serves_every_registered_partition()
+    {
+        var source = _loader.ParseSource(RegistryDelivery(), "flows/welllog.yaml");
+
+        Assert.True(source.FollowsRegistry);
+        Assert.False(source.DeclaresPartitions);
+        Assert.True(source.First.IsUnbound);
+        Assert.Throws<InvalidOperationException>(() => source.First.Id);
+        Assert.True(source.NeedsRegistry("dev"));
+        Assert.Equal(["dev", "prod", "test"], source.Served(Registry()));
+        Assert.Equal(3, source.EveryLedger(Registry()).Select(l => l.Id).Distinct().Count());
+
+        Assert.Equal("dev", source.Resolve(null, Registry()).Partition);
+        var test = source.Resolve(" Test ", Registry());
+        Assert.Equal("test", test.Partition);
+        Assert.Equal("test", test.First.Target.Headers["data-partition-id"]);
+        Assert.Equal("recall-welllog@test", test.First.LedgerName);
+
+        Assert.Contains("'staging' is not registered", Assert.Throws<DeliveryException>(() => source.Resolve("staging", Registry())).Message, StringComparison.Ordinal);
+        Assert.Contains("acts in one partition", Assert.Throws<DeliveryException>(() => source.Resolve(PartitionNames.Every, Registry())).Message, StringComparison.Ordinal);
+        Assert.Contains("No partition is registered", Assert.Throws<DeliveryException>(() => source.Resolve(null, RegisteredPartitions.None)).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_hard_coded_partition_list_takes_the_registry_default_when_it_names_it_and_needs_no_registration()
+    {
+        var source = _loader.ParseSource(Delivery("[dev, test]"), "flows/welllog.yaml");
+
+        Assert.False(source.NeedsRegistry("dev"));
+        Assert.True(source.NeedsRegistry(null));
+        Assert.Equal("dev", source.Resolve("dev", RegisteredPartitions.None).Partition);
+        Assert.Equal("test", source.Resolve(null, Registry("test")).Partition);
+        Assert.Contains(
+            "the default partition 'prod' is not one of them",
+            Assert.Throws<DeliveryException>(() => source.Resolve(null, Registry("prod"))).Message,
+            StringComparison.Ordinal);
+        Assert.Throws<DeliveryException>(() => source.Resolve("prod", Registry()));
+
+        var one = _loader.ParseSource(Delivery("[sandbox]"), "flows/welllog.yaml");
+        Assert.False(one.NeedsRegistry(null));
+        Assert.Equal("sandbox", one.Resolve(null, RegisteredPartitions.None).Partition);
+    }
+
+    [Fact]
+    public void A_registry_driven_flow_names_the_partition_that_keeps_its_old_ledger_at_the_top()
+    {
+        var source = _loader.ParseSource(RegistryDelivery("keepLedger: dev\n"), "flows/welllog.yaml");
+
+        Assert.Equal(FlowId.Of("recall-welllog"), source.ForPartition("dev").First.Id);
+        Assert.Equal("recall-welllog", source.ForPartition("DEV").First.LedgerName);
+        Assert.Equal(FlowId.Of("recall-welllog", "test"), source.ForPartition("test").First.Id);
+    }
+
+    [Theory]
+    [InlineData("partitions: [dev, test]\nkeepLedger: dev\n", "{ }", "mark that partition with keepLedger: true")]
+    [InlineData("keepLedger: dev\n", "{ data-partition-id: dev }", "so it keeps one ledger")]
+    [InlineData("keepLedger: true\n", "{ }", "'true' is no partition")]
+    [InlineData("keepLedger: dev partition\n", "{ }", "is not a data-partition-id")]
+    public void A_top_level_keepLedger_is_refused_where_it_cannot_name_the_ledger_s_partition(string extra, string headers, string expected)
+    {
+        var yaml = Delivery("[dev]", headers).Replace("partitions: [dev]\n", extra, StringComparison.Ordinal);
+
+        var ex = Assert.Throws<FlowValidationException>(() => _loader.ParseSource(yaml, "flows/welllog.yaml"));
+
+        Assert.StartsWith("flows/welllog.yaml:", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(expected, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_registry_driven_flow_refuses_a_cache_version_pin_and_an_empty_header_is_refused()
+    {
+        var pinned = RegistryDelivery().Replace("  mapping: WellLog@1.4.0\n", "  mapping: WellLog@1.4.0\n  cacheVersion: 20260908T212727Z\n", StringComparison.Ordinal);
+        var ex = Assert.Throws<FlowValidationException>(() => _loader.ParseFlow(pinned, "flows/welllog.yaml"));
+        Assert.Contains("serves every registered partition", ex.Message, StringComparison.Ordinal);
+
+        var empty = Assert.Throws<FlowValidationException>(() => _loader.ParseFlow(Delivery("[dev]", "{ data-partition-id: '' }").Replace("partitions: [dev]\n", string.Empty, StringComparison.Ordinal), "flows/welllog.yaml"));
+        Assert.Contains("data-partition-id", empty.Message, StringComparison.Ordinal);
     }
 }

@@ -26,6 +26,12 @@ public static class PartitionNames
     public const int MaxPerFlow = 64;
 
     /// <summary>
+    /// The run value that asks a cache refresh to build every partition its flow serves, one after another. No partition id
+    /// is written with '*', so it never stands for one.
+    /// </summary>
+    public const string Every = "*";
+
+    /// <summary>
     /// <paramref name="declared"/> as a partition name, trimmed.
     /// </summary>
     /// <exception cref="FlowValidationException">The value is empty, a reference, or not a partition id.</exception>
@@ -61,7 +67,7 @@ public static class PartitionNames
         ArgumentException.ThrowIfNullOrWhiteSpace(where);
         if (names.Count == 0)
         {
-            throw new FlowValidationException($"{where} names no partition. Name at least one, or leave the key out for a flow that serves the partition its headers name.");
+            throw new FlowValidationException($"{where} names no partition. Name at least one, or leave the key out for a flow that serves every partition registered with the catalog.");
         }
 
         if (names.Count > MaxPerFlow)

@@ -61,7 +61,12 @@ public abstract class DeliveryOperation : IComputeOperation
             throw new SqlFlowException($"The flow file declares '{source.Name}', not '{payload.SourceRef}'. The file and the catalog have drifted; re-sync the repository.");
         }
 
-        var bound = source.ForPartition(payload.Argument(PartitionArgument));
+        // The partition the task acts in, settled as a run's is: hard-coded in the flow, or the one named from the registry.
+        var requested = payload.Argument(PartitionArgument);
+        var registry = source.NeedsRegistry(requested)
+            ? await _context.PartitionRegistry.ReadAsync(ct).ConfigureAwait(false)
+            : RegisteredPartitions.None;
+        var bound = source.Resolve(requested, registry);
         var flow = bound.Interface(payload.Argument("interface"));
 
         // Every task resolves its references as a run of the same flow and partition does: from the configuration the control

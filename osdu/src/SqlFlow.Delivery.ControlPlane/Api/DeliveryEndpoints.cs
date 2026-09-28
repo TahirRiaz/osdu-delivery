@@ -446,12 +446,13 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// A flow's dashboard card: one interface's counts when the request names it (or the flow has one), and the sum of
-    /// every interface's otherwise, which is what a source as a whole holds. A flow that names its partitions is counted in
-    /// the partition the request names, or, when it names none, as a whole: every partition's ledgers added up, as a
-    /// source's interfaces are.
+    /// every interface's otherwise, which is what a source as a whole holds. A flow that works in partitions is counted in
+    /// the partition the request names, or, when it names none, as a whole: the ledgers of every partition it serves added
+    /// up, as a source's interfaces are.
     /// </summary>
     private static async Task<Results<Ok<DeliveryFlowStatsDto>, ProblemHttpResult>> GetStatsAsync(
-        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, TimeProvider clock, CancellationToken ct)
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
+        IPartitionRegistry partitions, ILedger ledger, TimeProvider clock, CancellationToken ct)
     {
         var (unbound, problem) = await ResolveSourceAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
         if (unbound is null)
@@ -459,9 +460,12 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        var whole = unbound.Source.DeclaresPartitions && string.IsNullOrWhiteSpace(partition);
+        var whole = unbound.Source.Partitioned && string.IsNullOrWhiteSpace(partition);
+        var registry = whole && unbound.Source.FollowsRegistry
+            ? await partitions.ReadAsync(ct).ConfigureAwait(false)
+            : await RegistryForAsync(partitions, unbound.Source, partition, ct).ConfigureAwait(false);
         var source = unbound;
-        if (!whole && Bind(unbound, partition, out source) is { } unpartitioned)
+        if (!whole && Bind(unbound, partition, registry, out source) is { } unpartitioned)
         {
             return unpartitioned;
         }
@@ -469,7 +473,7 @@ public static class DeliveryEndpoints
         IReadOnlyList<FlowDefinition> flows;
         if (interfaceName is null)
         {
-            flows = whole ? source.Source.EveryLedger().ToList() : source.Source.Interfaces;
+            flows = whole ? source.Source.EveryLedger(registry).ToList() : source.Source.Interfaces;
         }
         else if (Pick(source.Source, interfaceName, out var named) is { } unknown)
         {
@@ -478,7 +482,7 @@ public static class DeliveryEndpoints
         else
         {
             flows = whole
-                ? source.Source.EveryLedger().Where(f => string.Equals(f.Interface, named!.Interface, StringComparison.Ordinal)).ToList()
+                ? source.Source.EveryLedger(registry).Where(f => string.Equals(f.Interface, named!.Interface, StringComparison.Ordinal)).ToList()
                 : [named!];
         }
 
@@ -494,13 +498,13 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// A flow's interfaces in document order, each with how it is delivered, the order a run takes it in and its counts. A
-    /// flow that names its partitions lists them in the partition the request names, or, when it names none, in every
-    /// partition in the order the flow names them, each row naming its partition: the one listing that says which partitions
-    /// a flow delivers to and how each stands.
+    /// flow that works in partitions lists them in the partition the request names, or, when it names none, in every
+    /// partition it serves (the ones it names, in its order, or every registered one), each row naming its partition: the
+    /// one listing that says which partitions a flow delivers to and how each stands.
     /// </summary>
     private static async Task<Results<Ok<IReadOnlyList<DeliveryInterfaceDto>>, ProblemHttpResult>> ListInterfacesAsync(
-        Guid pipelineId, [FromQuery] string? partition, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine, ILedger ledger,
-        TimeProvider clock, CancellationToken ct)
+        Guid pipelineId, [FromQuery] string? partition, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
+        EngineContext engine, ILedger ledger, TimeProvider clock, CancellationToken ct)
     {
         var (unbound, problem) = await ResolveSourceAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
         if (unbound is null)
@@ -508,25 +512,28 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        var whole = unbound.Source.DeclaresPartitions && string.IsNullOrWhiteSpace(partition);
+        var whole = unbound.Source.Partitioned && string.IsNullOrWhiteSpace(partition);
+        var registry = whole && unbound.Source.FollowsRegistry
+            ? await partitions.ReadAsync(ct).ConfigureAwait(false)
+            : await RegistryForAsync(partitions, unbound.Source, partition, ct).ConfigureAwait(false);
         var source = unbound;
-        if (!whole && Bind(unbound, partition, out source) is { } unpartitioned)
+        if (!whole && Bind(unbound, partition, registry, out source) is { } unpartitioned)
         {
             return unpartitioned;
         }
 
         // The kind each mapping fills is what the repository sync read; a mapping it could not read has none yet. The
         // interfaces are described once per partition, so each partition listed has its own rows.
-        var partitions = whole ? source.Source.Partitions.Select(p => (string?)p.Name).ToList() : [source.Source.Partition];
+        var listedPartitions = whole ? source.Source.Served(registry).Select(p => (string?)p).ToList() : [source.Source.Partition];
         var described = new List<DeliveryInterface>();
-        foreach (var named in partitions)
+        foreach (var named in listedPartitions)
         {
             described.AddRange(await DeliveryInterfaceCatalog.OfFlowAsync(osdu, source.Pipeline.RepoId, source.Pipeline.Name, named, ct).ConfigureAwait(false));
         }
 
         var (order, orderProblem) = await OrderAsync(osdu, documents, engine, source, ct).ConfigureAwait(false);
         var now = clock.GetUtcNow().UtcDateTime;
-        var listed = whole ? source.Source.EveryLedger().ToList() : source.Source.Interfaces;
+        var listed = whole ? source.Source.EveryLedger(registry).ToList() : source.Source.Interfaces;
         var result = new List<DeliveryInterfaceDto>(listed.Count);
         foreach (var flow in listed)
         {
@@ -633,9 +640,9 @@ public static class DeliveryEndpoints
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
         Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, Guid? deliveredBy, int? page, int? pageSize,
-        [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -766,16 +773,16 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryTargetDto>, ProblemHttpResult>> GetTargetAsync(
-        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, CancellationToken ct)
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, IPartitionRegistry partitions, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         return flow is null ? problem! : TypedResults.Ok(await ToTargetDtoAsync(osdu, flow, ct).ConfigureAwait(false));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliverySubmissionDto>>, ProblemHttpResult>> ListSubmissionsAsync(
-        Guid pipelineId, int? max, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        Guid pipelineId, int? max, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -987,12 +994,12 @@ public static class DeliveryEndpoints
 
     private static async Task<Results<Ok<PagedResult<DeliveryActivityDto>>, ProblemHttpResult>> ListActivitiesAsync(
         Guid? pipelineId, Guid? submissionId, Guid? runId, string? kind, string? actor, string? outcome, DateTime? since, DateTime? until,
-        int? page, int? pageSize, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        int? page, int? pageSize, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger, CancellationToken ct)
     {
         Guid? flowId = null;
         if (pipelineId is { } pid)
         {
-            var (flow, problem) = await ResolveAsync(db, documents, pid, interfaceName, partition, ct).ConfigureAwait(false);
+            var (flow, problem) = await ResolveAsync(db, documents, partitions, pid, interfaceName, partition, ct).ConfigureAwait(false);
             if (flow is null)
             {
                 return problem!;
@@ -1406,10 +1413,10 @@ public static class DeliveryEndpoints
     // ---- Interventions -------------------------------------------------------------------------------------------
 
     private static async Task<Results<Ok<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseFlowAsync(
-        Guid pipelineId, DeliveryReleaseRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine,
+        Guid pipelineId, DeliveryReleaseRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, EngineContext engine,
         ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -1576,10 +1583,10 @@ public static class DeliveryEndpoints
     /// find, since a row's delivery key comes from its mapping.
     /// </summary>
     private static async Task<Results<Accepted<DeliveryRunAccepted>, ProblemHttpResult>> SyncFlowAsync(
-        Guid pipelineId, DeliverySyncRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
+        Guid pipelineId, DeliverySyncRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
         ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -1692,10 +1699,10 @@ public static class DeliveryEndpoints
     /// ingestion tables, and is an answer rather than a failure.
     /// </summary>
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> PreviewAsync(
-        Guid pipelineId, DeliveryPreviewRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
+        Guid pipelineId, DeliveryPreviewRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
         IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -1797,7 +1804,7 @@ public static class DeliveryEndpoints
     /// the record, at its latest version. Nothing is written.
     /// </summary>
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadTargetAsync(
-        Guid pipelineId, DeliveryReadRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
+        Guid pipelineId, DeliveryReadRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
         IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
         var asked = request?.TargetId?.Trim();
@@ -1821,7 +1828,7 @@ public static class DeliveryEndpoints
             return invalid;
         }
 
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -1864,10 +1871,10 @@ public static class DeliveryEndpoints
     /// of quietly widening it.
     /// </summary>
     private static async Task<Results<Accepted<DeliveryRemovalAccepted>, ProblemHttpResult>> RemoveRecordsAsync(
-        Guid pipelineId, DeliveryRemovalRequest request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger,
+        Guid pipelineId, DeliveryRemovalRequest request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger,
         IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -1947,9 +1954,9 @@ public static class DeliveryEndpoints
 
     /// <summary>What a removal would take away, and from where: the confirmation's contents, computed not guessed.</summary>
     private static async Task<Results<Ok<DeliveryRemovalPreview>, ProblemHttpResult>> PreviewRemovalAsync(
-        Guid pipelineId, DeliveryRemovalRequest request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, CancellationToken ct)
+        Guid pipelineId, DeliveryRemovalRequest request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -2070,9 +2077,9 @@ public static class DeliveryEndpoints
             : DdmsRouting.Of(flow).Explain(kind);
 
     private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ProbeAsync(
-        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveAsync(db, documents, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
             return problem!;
@@ -2172,10 +2179,25 @@ public static class DeliveryEndpoints
     /// form, and a source of one interface, need no name; a source of several has to be told which.
     /// </summary>
     internal static async Task<(FlowContext? Flow, ProblemHttpResult? Problem)> ResolveAsync(
-        CatalogDbContext db, DeliveryDocumentLoader documents, Guid pipelineId, string? interfaceName, string? partition, CancellationToken ct)
+        CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, Guid pipelineId, string? interfaceName, string? partition,
+        CancellationToken ct)
     {
         var (source, problem) = await ResolveSourceAsync(db, documents, pipelineId, ct).ConfigureAwait(false);
-        return source is null ? (null, problem) : Select(source, interfaceName, partition);
+        return source is null
+            ? (null, problem)
+            : Select(source, interfaceName, partition, await RegistryForAsync(partitions, source.Source, partition, ct).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// The registry, read when settling <paramref name="partition"/> for <paramref name="source"/> needs it
+    /// (<see cref="SourceDefinition.NeedsRegistry"/>), and none otherwise: a partition the flow hard-codes is settled from
+    /// its document alone.
+    /// </summary>
+    internal static async Task<RegisteredPartitions> RegistryForAsync(IPartitionRegistry partitions, SourceDefinition source, string? partition, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(partitions);
+        ArgumentNullException.ThrowIfNull(source);
+        return source.NeedsRegistry(partition) ? await partitions.ReadAsync(ct).ConfigureAwait(false) : RegisteredPartitions.None;
     }
 
     /// <summary>The delivery pipeline and its parsed source, or the problem to answer with.</summary>
@@ -2213,35 +2235,38 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>
-    /// The source bound to the partition a request names (docs/partitions-design.md section 8): required for a flow that
-    /// names several partitions, its only one when it names one, and refused for a flow that names none. Null when bound,
-    /// otherwise the problem to answer with.
+    /// The source bound to the partition a request names (docs/partitions-design.md section 8), settled as a run settles it
+    /// (<see cref="SourceDefinition.Resolve"/>): the one named, or when none is, the registry's default among the flow's
+    /// partitions, else its only one; refused for a flow whose partition is its header's. With no
+    /// <paramref name="registry"/>, the partition is one a ledger already keeps, and the flow is bound to it as it is, so a
+    /// record of a partition since taken out of the registry can still be read and acted on. Null when bound, otherwise the
+    /// problem to answer with.
     /// </summary>
-    internal static ProblemHttpResult? Bind(SourceContext source, string? partition, out SourceContext bound)
+    internal static ProblemHttpResult? Bind(SourceContext source, string? partition, RegisteredPartitions? registry, out SourceContext bound)
     {
         ArgumentNullException.ThrowIfNull(source);
         try
         {
-            bound = source with { Source = source.Source.ForPartition(partition) };
+            bound = source with { Source = registry is null ? source.Source.ForPartition(partition) : source.Source.Resolve(partition, registry) };
             return null;
         }
         catch (DeliveryException ex)
         {
             bound = source;
             return TypedResults.Problem(
-                detail: ex.Message + (source.Source.DeclaresPartitions ? " Name it with ?partition=." : string.Empty),
+                detail: ex.Message + (source.Source.Partitioned ? " Name it with ?partition=." : string.Empty),
                 statusCode: StatusCodes.Status400BadRequest,
-                title: source.Source.DeclaresPartitions && string.IsNullOrWhiteSpace(partition) ? "Partition required" : "No such partition");
+                title: source.Source.Partitioned && string.IsNullOrWhiteSpace(partition) ? "Partition required" : "No such partition");
         }
     }
 
     /// <summary>
-    /// The interface of a source a request names, bound to the partition it names, as a flow context, or the problem to
-    /// answer with.
+    /// The interface of a source a request names, bound to the partition it names (<see cref="Bind"/>), as a flow context, or
+    /// the problem to answer with.
     /// </summary>
-    internal static (FlowContext? Flow, ProblemHttpResult? Problem) Select(SourceContext unbound, string? interfaceName, string? partition)
+    internal static (FlowContext? Flow, ProblemHttpResult? Problem) Select(SourceContext unbound, string? interfaceName, string? partition, RegisteredPartitions? registry)
     {
-        if (Bind(unbound, partition, out var source) is { } unpartitioned)
+        if (Bind(unbound, partition, registry, out var source) is { } unpartitioned)
         {
             return (null, unpartitioned);
         }
@@ -2306,7 +2331,7 @@ public static class DeliveryEndpoints
             return (null, null, problem);
         }
 
-        var (flow, missing) = Select(source, found.Interface.Length == 0 ? null : found.Interface, found.Partition.Length == 0 ? null : found.Partition);
+        var (flow, missing) = Select(source, found.Interface.Length == 0 ? null : found.Interface, found.Partition.Length == 0 ? null : found.Partition, registry: null);
         return flow is null ? (null, null, missing) : (flow, record, null);
     }
 

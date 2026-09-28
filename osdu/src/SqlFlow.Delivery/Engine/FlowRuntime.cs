@@ -39,7 +39,8 @@ public sealed record EngineContext(
     Templates.ITemplateStore? Templates = null,
     ICacheStore? Cache = null,
     IRecordSearchFactory? Searches = null,
-    RunTrace? Trace = null)
+    RunTrace? Trace = null,
+    IPartitionRegistry? Partitions = null)
 {
     /// <summary>The environment switch that lets a flow target a loopback address (local OSDU emulators, tests).</summary>
     public const string AllowLoopbackVariable = "SQLFLOW_DELIVERY_ALLOW_LOOPBACK";
@@ -53,6 +54,12 @@ public sealed record EngineContext(
 
     /// <summary>Where a flow's search sources are answered, never null: the platform the flow delivers to, unless composed otherwise.</summary>
     public IRecordSearchFactory RecordSearches => Searches ?? PlatformRecordSearchFactory.Instance;
+
+    /// <summary>
+    /// The partition registry, never null: the module's database's when the host has one, and otherwise one that says, when a
+    /// run needs it, that the host has none. A flow that names its partitions or a header partition never reads it.
+    /// </summary>
+    public IPartitionRegistry PartitionRegistry => Partitions ?? UnavailablePartitionRegistry.Instance;
 
     /// <summary>
     /// A context for one run: everything the engine logs while it serves the run (the source, the planner, the intake, the

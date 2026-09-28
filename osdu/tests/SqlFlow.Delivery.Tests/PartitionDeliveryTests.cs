@@ -169,10 +169,10 @@ public sealed partial class PartitionDeliveryTests : IDisposable
         Assert.Equal(other.Count, await db.DeliveryRecords.CountAsync(r => r.FlowId == FlowId.Of(Name, Other)));
         Assert.True(await db.DeliveryRecords.Where(r => r.FlowId == FlowId.Of(Name, Other)).AllAsync(r => r.TargetId!.StartsWith(Other + ":")));
 
-        // A run of a flow naming two partitions that names neither is refused, and delivers nothing.
+        // A run of a flow naming two partitions that names neither, with no default to take, is refused and delivers nothing.
         var unnamed = await RunAsync(partition: null);
         Assert.False(unnamed.Success);
-        Assert.Contains("name the one this run or request targets", unnamed.Error, StringComparison.Ordinal);
+        Assert.Contains("no partition is the default; name the one this run or request targets", unnamed.Error, StringComparison.Ordinal);
         Assert.Equal(other.Count + dev.Count, protocol.Deliveries.Count);
     }
 }

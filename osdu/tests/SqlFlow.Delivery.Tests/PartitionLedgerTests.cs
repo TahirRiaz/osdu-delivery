@@ -55,6 +55,30 @@ public sealed class PartitionLedgerTests
         """.ReplaceLineEndings("\n"), "flows/welllog.yaml").ForPartition(partition);
 
     /// <summary>
+    /// The flow of this test naming neither partitions nor a header, so serving every registered partition, keeping the
+    /// ledger it kept before in <paramref name="keepLedger"/> when one is named, and bound to <paramref name="partition"/>.
+    /// </summary>
+    private SourceDefinition RegistryFlow(string? keepLedger, string partition) => _loader.ParseSource($$"""
+        flowType: delivery
+        name: {{_name}}
+        {{(keepLedger is null ? string.Empty : $"keepLedger: {keepLedger}")}}
+        source:
+          connection: ${env:OSDU_DATA_DB}
+          record: { object: OsduData.arc.WellLog, key: [log_id] }
+          lastModified: update_date
+          work: work/welllog
+        render:
+          mapping: WellLog@1.4.0
+        target:
+          endpoint: ${env:OSDU_URL}
+          protocol: storage
+        """.ReplaceLineEndings("\n"), "flows/welllog.yaml").ForPartition(partition);
+
+    /// <summary>The guards over <paramref name="bound"/>, a flow serving <paramref name="served"/>, or the partitions it names.</summary>
+    private static Task CheckAsync(PartitionLedgers guards, ILedger ledger, SourceDefinition bound, params string[] served)
+        => guards.CheckAsync(ledger, bound, served.Length > 0 ? served : bound.Served(RegisteredPartitions.None), CancellationToken.None);
+
+    /// <summary>
     /// Records in the ledger of <paramref name="flowId"/>: one per partition named, each with an OSDU id of its own in that
     /// partition (ids are unique across the shared database), delivered, or only claimed when <paramref name="claimedOnly"/>;
     /// a null partition is a record with no id yet.
@@ -105,7 +129,7 @@ public sealed class PartitionLedgerTests
         var ledger = await LedgerAsync();
         await SeedAsync(FlowId.Of(_name), false, "dev", "dev");
 
-        var ex = await Assert.ThrowsAsync<DeliveryException>(() => new PartitionLedgers().CheckAsync(ledger, Flow("[dev, test]", "test"), CancellationToken.None));
+        var ex = await Assert.ThrowsAsync<DeliveryException>(() => CheckAsync(new PartitionLedgers(), ledger, Flow("[dev, test]", "test")));
 
         Assert.Contains("no partition keeps the ledger", ex.Message, StringComparison.Ordinal);
         Assert.Contains("2 records delivered to 'dev'", ex.Message, StringComparison.Ordinal);
@@ -119,7 +143,7 @@ public sealed class PartitionLedgerTests
         var ledger = await LedgerAsync();
         await SeedAsync(FlowId.Of(_name), false, "sandbox");
 
-        await new PartitionLedgers().CheckAsync(ledger, Flow("[dev, test]", "dev"), CancellationToken.None);
+        await CheckAsync(new PartitionLedgers(), ledger, Flow("[dev, test]", "dev"));
     }
 
     [Fact]
@@ -129,12 +153,12 @@ public sealed class PartitionLedgerTests
         await SeedAsync(FlowId.Of(_name), false, "dev");
         var dev = Flow("[{ name: dev, keepLedger: true }, test]", "dev");
 
-        await new PartitionLedgers().CheckAsync(ledger, dev, CancellationToken.None);
+        await CheckAsync(new PartitionLedgers(), ledger, dev);
 
         Assert.Equal(FlowId.Of(_name), dev.First.Id);
 
         // The other partition keeps a ledger of its own and starts it empty; nothing about the kept ledger holds it back.
-        await new PartitionLedgers().CheckAsync(ledger, Flow("[{ name: dev, keepLedger: true }, test]", "test"), CancellationToken.None);
+        await CheckAsync(new PartitionLedgers(), ledger, Flow("[{ name: dev, keepLedger: true }, test]", "test"));
     }
 
     [Fact]
@@ -144,7 +168,7 @@ public sealed class PartitionLedgerTests
         await SeedAsync(FlowId.Of(_name), false, "dev", "test");
 
         var ex = await Assert.ThrowsAsync<DeliveryException>(
-            () => new PartitionLedgers().CheckAsync(ledger, Flow("[{ name: dev, keepLedger: true }, test]", "dev"), CancellationToken.None));
+            () => CheckAsync(new PartitionLedgers(), ledger, Flow("[{ name: dev, keepLedger: true }, test]", "dev")));
 
         Assert.Contains("Partition 'dev' keeps the ledger", ex.Message, StringComparison.Ordinal);
         Assert.Contains("1 record delivered to 'test'", ex.Message, StringComparison.Ordinal);
@@ -156,13 +180,62 @@ public sealed class PartitionLedgerTests
         var ledger = await LedgerAsync();
         var guards = new PartitionLedgers();
         var dev = Flow("[{ name: dev, keepLedger: true }, test]", "dev");
-        await guards.CheckAsync(ledger, dev, CancellationToken.None);
+        await CheckAsync(guards, ledger, dev);
 
         // No run bound to its partitions can add another partition's record to the kept ledger; one written behind the
         // engine's back is not looked for again by the host that passed the check, and a host starting afresh finds it.
         await SeedAsync(FlowId.Of(_name), false, "test");
-        await guards.CheckAsync(ledger, dev, CancellationToken.None);
-        await Assert.ThrowsAsync<DeliveryException>(() => new PartitionLedgers().CheckAsync(ledger, dev, CancellationToken.None));
+        await CheckAsync(guards, ledger, dev);
+        await Assert.ThrowsAsync<DeliveryException>(() => CheckAsync(new PartitionLedgers(), ledger, dev));
+    }
+
+    [Fact]
+    public async Task A_registry_driven_run_is_refused_while_no_partition_keeps_a_ledger_holding_records_of_a_registered_partition()
+    {
+        var ledger = await LedgerAsync();
+        await SeedAsync(FlowId.Of(_name), false, "dev");
+
+        var ex = await Assert.ThrowsAsync<DeliveryException>(
+            () => CheckAsync(new PartitionLedgers(), ledger, RegistryFlow(null, "test"), "dev", "test"));
+
+        Assert.Contains("no partition keeps the ledger", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("at the top of the flow: keepLedger: dev", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_registry_driven_flow_is_not_held_back_by_records_of_a_partition_the_registry_no_longer_holds()
+    {
+        var ledger = await LedgerAsync();
+        await SeedAsync(FlowId.Of(_name), false, "sandbox");
+
+        await CheckAsync(new PartitionLedgers(), ledger, RegistryFlow(null, "dev"), "dev", "test");
+    }
+
+    [Fact]
+    public async Task A_registry_driven_flow_keeps_its_ledger_in_the_partition_keepLedger_names()
+    {
+        var ledger = await LedgerAsync();
+        await SeedAsync(FlowId.Of(_name), false, "dev");
+        var dev = RegistryFlow("dev", "dev");
+        var test = RegistryFlow("dev", "test");
+
+        await CheckAsync(new PartitionLedgers(), ledger, dev, "dev", "test");
+        await CheckAsync(new PartitionLedgers(), ledger, test, "dev", "test");
+
+        Assert.Equal(FlowId.Of(_name), dev.First.Id);
+        Assert.Equal(FlowId.Of(_name, "test"), test.First.Id);
+    }
+
+    [Fact]
+    public async Task A_registry_driven_partition_that_keeps_the_ledger_is_refused_when_it_holds_another_partition_s_records()
+    {
+        var ledger = await LedgerAsync();
+        await SeedAsync(FlowId.Of(_name), false, "dev", "test");
+
+        var ex = await Assert.ThrowsAsync<DeliveryException>(
+            () => CheckAsync(new PartitionLedgers(), ledger, RegistryFlow("dev", "dev"), "dev", "test"));
+
+        Assert.Contains("Partition 'dev' keeps the ledger", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -186,6 +259,6 @@ public sealed class PartitionLedgerTests
             """.ReplaceLineEndings("\n"), "flows/welllog.yaml");
         await SeedAsync(FlowId.Of(_name), false, "test");
 
-        await new PartitionLedgers().CheckAsync(ledger, source, CancellationToken.None);
+        await CheckAsync(new PartitionLedgers(), ledger, source);
     }
 }

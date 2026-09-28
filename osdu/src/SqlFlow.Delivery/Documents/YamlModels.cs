@@ -49,6 +49,9 @@ internal sealed class FlowYaml
 
     // The partitions the flow may deliver to: each a name (dev), or a name with its settings ({ name: dev, keepLedger: true }).
     public List<object>? Partitions { get; set; }
+
+    // For a flow that leaves its partitions to the registry: the partition that keeps the ledger it kept before (keepLedger: dev).
+    public string? KeepLedger { get; set; }
 }
 
 /// <summary>

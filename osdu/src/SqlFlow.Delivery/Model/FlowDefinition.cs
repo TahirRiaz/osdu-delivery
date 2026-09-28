@@ -47,8 +47,25 @@ public sealed record FlowDefinition
     /// <summary>True when the flow names the partitions it may deliver to.</summary>
     public bool DeclaresPartitions => Partitions.Count > 0;
 
-    /// <summary>True when the flow names its partitions and this definition is not yet bound to one of them.</summary>
-    public bool IsUnbound => DeclaresPartitions && Partition is null;
+    /// <summary>
+    /// True for a flow that names neither its partitions nor a <c>data-partition-id</c> header: it serves every partition
+    /// registered with the catalog (docs/partitions-design.md section 2.1), so the same document delivers to every
+    /// environment, and a run binds it to the one it targets, the registry's default when it names none.
+    /// </summary>
+    public bool FollowsRegistry { get; init; }
+
+    /// <summary>
+    /// The partition that keeps the ledger the flow kept before it served partitions: <c>keepLedger</c> at the top of a flow
+    /// that follows the registry. A flow that names its partitions marks it on the partition's entry instead. Null when every
+    /// partition keeps a ledger of its own.
+    /// </summary>
+    public string? LedgerPartition { get; init; }
+
+    /// <summary>True when the flow works in partitions, named or registered, so a run or a request binds it to one of them.</summary>
+    public bool Partitioned => DeclaresPartitions || FollowsRegistry;
+
+    /// <summary>True when the flow works in partitions and this definition is not yet bound to one of them.</summary>
+    public bool IsUnbound => Partitioned && Partition is null;
 
     /// <summary>
     /// What the flow's own ledger identity is derived from, before any partition: the adopted ledger, the flow's name for the
@@ -59,7 +76,8 @@ public sealed record FlowDefinition
 
     /// <summary>True when this definition is bound to the partition that keeps the flow's own ledger (<c>keepLedger</c>).</summary>
     public bool KeepsOwnLedger => Partition is not null
-        && Partitions.Any(p => p.KeepsLedger && string.Equals(p.Name, Partition, StringComparison.OrdinalIgnoreCase));
+        && (Partitions.Any(p => p.KeepsLedger && string.Equals(p.Name, Partition, StringComparison.OrdinalIgnoreCase))
+            || string.Equals(LedgerPartition, Partition, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// The name the ledger records this definition under: <see cref="OwnLedgerName"/>, and <c>name@partition</c> for a
@@ -93,37 +111,50 @@ public sealed record FlowDefinition
     }
 
     /// <summary>
-    /// This definition bound to <paramref name="partition"/>, one of the partitions the flow names: the flow as if it had
-    /// been written for that one partition. Its requests carry the partition as <c>data-partition-id</c>, the mapping reads
-    /// it as the kind's <c>dataPartition</c>, and its ledger is the partition's.
+    /// This definition bound to <paramref name="partition"/>, one of the partitions the flow names, or for a flow that follows
+    /// the registry, any partition: the flow as if it had been written for that one partition. Its requests carry the
+    /// partition as <c>data-partition-id</c>, the mapping reads it as the kind's <c>dataPartition</c>, and its ledger is the
+    /// partition's. Whether the partition is registered is the caller's to check (<see cref="SourceDefinition.Resolve"/>).
     /// </summary>
-    /// <exception cref="DeliveryException">The flow names no partitions, or not this one.</exception>
+    /// <exception cref="DeliveryException">The flow works in no partitions, does not name this one, or it is no partition id.</exception>
     public FlowDefinition ForPartition(string partition)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(partition);
         var wanted = partition.Trim();
-        if (!DeclaresPartitions)
+        if (!Partitioned)
         {
             throw new DeliveryException(
                 $"Flow '{Label}' names no partitions; it delivers to the partition its target.headers name, so it cannot be bound to '{wanted}'.");
         }
 
-        var declared = Partitions.FirstOrDefault(p => string.Equals(p.Name, wanted, StringComparison.OrdinalIgnoreCase))
-            ?? throw new DeliveryException(
-                $"Flow '{Label}' does not deliver to partition '{wanted}'; it names {PartitionNames.Listed(Partitions.Select(p => p.Name))}.");
+        string bound;
+        if (DeclaresPartitions)
+        {
+            bound = Partitions.FirstOrDefault(p => string.Equals(p.Name, wanted, StringComparison.OrdinalIgnoreCase))?.Name
+                ?? throw new DeliveryException(
+                    $"Flow '{Label}' does not deliver to partition '{wanted}'; it names {PartitionNames.Listed(Partitions.Select(p => p.Name))}.");
+        }
+        else
+        {
+            bound = Snapshots.CacheScope.IsPartitionId(wanted)
+                ? wanted
+                : throw new DeliveryException($"Flow '{Label}' cannot be bound to '{wanted}': a partition is a data-partition-id (letters, digits, underscore, hyphen and dot).");
+        }
+
         var headers = new Dictionary<string, string>(Target.Headers, StringComparer.OrdinalIgnoreCase)
         {
-            [Snapshots.CacheScope.PartitionHeader] = declared.Name,
+            [Snapshots.CacheScope.PartitionHeader] = bound,
         };
-        return this with { Partition = declared.Name, Target = Target with { Headers = headers } };
+        return this with { Partition = bound, Target = Target with { Headers = headers } };
     }
 
     private void ThrowIfUnbound()
     {
         if (IsUnbound)
         {
-            throw new InvalidOperationException(
-                $"Flow '{Label}' names the partitions {PartitionNames.Listed(Partitions.Select(p => p.Name))} and keeps a ledger for each; bind it to the partition a run or request acts on before asking for its ledger.");
+            throw new InvalidOperationException(DeclaresPartitions
+                ? $"Flow '{Label}' names the partitions {PartitionNames.Listed(Partitions.Select(p => p.Name))} and keeps a ledger for each; bind it to the partition a run or request acts on before asking for its ledger."
+                : $"Flow '{Label}' serves every partition registered with the catalog and keeps a ledger for each; bind it to the partition a run or request acts on before asking for its ledger.");
         }
     }
 

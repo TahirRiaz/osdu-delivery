@@ -10,6 +10,7 @@ using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
@@ -43,8 +44,8 @@ internal static class DeliveryVerbs
         var engine = context.Services.GetRequiredService<EngineContext>();
         var values = RunParameters.ParseValues(context.Arguments.GetOptions("--set"));
         var connect = context.Arguments.HasFlag("--connect");
-        // A flow that names its partitions is checked in the one --partition names, or in its only one.
-        var source = engine.Documents.LoadSource(flowPath).ForPartition(context.Arguments.GetOption("--partition"));
+        // A flow that works in partitions is checked in the one --partition names, or in the one a run would take.
+        var source = await CliPartitions.ResolveAsync(context, engine.Documents.LoadSource(flowPath), ct).ConfigureAwait(false);
         var named = context.Arguments.GetOption("--interface");
         var flows = named is null ? source.Interfaces : [source.Interface(named)];
 
@@ -355,11 +356,13 @@ internal static class DeliveryVerbs
             {
                 // A partition is often named ${env:...}, by a cache flow or on the command line; the cache is keyed by
                 // what that resolves to, as a capture and an import key it, so the partition is resolved first. A cache flow
-                // that names its partitions is listed for the one --partition names, or for every one it names.
+                // that works in partitions is listed for the one --partition names, or for every one it serves.
                 var scopes = new List<string>();
                 if (File.Exists(target))
                 {
-                    foreach (var bound in engine.Documents.LoadCache(target).ForRun(context.Arguments.GetOption("--partition")))
+                    var cache = engine.Documents.LoadCache(target);
+                    var requested = CliPartitions.Requested(context) ?? (cache.Partitioned ? PartitionNames.Every : null);
+                    foreach (var bound in await CliPartitions.ForRunAsync(context, cache, requested, ct).ConfigureAwait(false))
                     {
                         scopes.Add(await ResolvedScopeAsync(engine, bound.Scope, target, ct).ConfigureAwait(false));
                     }
@@ -401,9 +404,9 @@ internal static class DeliveryVerbs
                     return context.UsageError("name the directory the type files are in with --from-dir.");
                 }
 
-                // A cache flow that names several partitions is imported into the one --partition names: files hold one
-                // partition's records, whose ids name it.
-                var bound = engine.Documents.LoadCache(target).ForRun(context.Arguments.GetOption("--partition"));
+                // A cache flow that works in partitions is imported into the one --partition names, or the one a refresh
+                // would take: files hold one partition's records, whose ids name it.
+                var bound = await CliPartitions.ForRunAsync(context, engine.Documents.LoadCache(target), CliPartitions.Requested(context), ct).ConfigureAwait(false);
                 if (bound.Count > 1)
                 {
                     return context.UsageError(

@@ -50,6 +50,12 @@ public static class DeliveryInterfaceCatalog
         var flows = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         int added = 0, updated = 0, unchanged = 0;
 
+        // A source that leaves its partitions to the registry is described in every registered partition, each with the
+        // ledger it keeps there; a partition registered later is described at the next sync.
+        var registry = sources.Any(s => s.Source.FollowsRegistry)
+            ? await DeliveryPartitionRegistry.ReadAsync(context, ct).ConfigureAwait(false)
+            : RegisteredPartitions.None;
+
         foreach (var (relative, source, active) in sources)
         {
             if (!flows.TryAdd(source.Name, relative))
@@ -60,7 +66,7 @@ public static class DeliveryInterfaceCatalog
 
             var ordinals = source.Interfaces.Select((flow, ordinal) => (flow.Interface ?? string.Empty, ordinal))
                 .ToDictionary(i => i.Item1, i => i.ordinal, StringComparer.OrdinalIgnoreCase);
-            foreach (var flow in source.EveryLedger())
+            foreach (var flow in source.EveryLedger(registry))
             {
                 var name = flow.Interface ?? string.Empty;
                 var partition = flow.Partition ?? string.Empty;

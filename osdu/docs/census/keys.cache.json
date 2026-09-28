@@ -87,7 +87,7 @@
       "path": "partitions",
       "type": "list",
       "required": false,
-      "description": "The OSDU data partitions the flow builds a cache for, each by its `data-partition-id` written literally, never a reference: at least one, at most 64, none twice. Each partition's cache is kept apart, keyed by the name. A refresh that names a partition builds that partition's cache; one that names none builds every partition's in turn, each with the partition's values of the central configuration. With it, `source.headers` may not name `data-partition-id`: every refresh sets it. Leave it out for a flow that fills the cache of the partition its headers name."
+      "description": "The OSDU data partitions the flow builds a cache for, hard-coded: each by its `data-partition-id` written literally, never a reference, at least one, at most 64, none twice; they need not be registered. Each partition's cache is kept apart, keyed by the name. A refresh that names a partition builds that partition's cache; `*` builds every partition's in turn; one that names none builds the registry's default when the flow names it, else the flow's only partition. Each is built with the partition's values of the central configuration. With it, `source.headers` may not name `data-partition-id`: every refresh sets it. Leave it out, and `data-partition-id` too, for a flow that builds a cache for every partition registered with the catalog; or leave it out and name the partition in the header, for a flow of that one partition."
     },
     {
       "path": "partitions[]",
@@ -407,8 +407,8 @@
       "path": "source.headers",
       "type": "map",
       "required": false,
-      "description": "Headers sent with every request to the platform. A flow that names no `partitions` must declare `data-partition-id`: it names the partition whose cache the flow fills, and every search carries it. A flow that names its `partitions` leaves it out: every refresh sets it to the partition it builds.",
-      "appliesWhen": "Required, with `data-partition-id`, unless the flow names its `partitions`; then `data-partition-id` is refused."
+      "description": "Headers sent with every request to the platform. A non-empty `data-partition-id` hard-codes the one partition whose cache the flow fills, and every search carries it. A flow that names its `partitions`, or names neither and builds a cache for every registered partition, leaves it out: every refresh sets it to the partition it builds.",
+      "appliesWhen": "`data-partition-id` is refused beside `partitions`; left out with them, the flow builds a cache for every registered partition."
     },
     {
       "path": "source.headers.<name>",
@@ -513,8 +513,8 @@
       "path": "types[].partitions",
       "type": "list",
       "required": false,
-      "description": "The partitions of the flow this type is built for, when not all of them; each must be one of the flow's `partitions`. Type names are unique per partition, so two declarations may share a name when their partitions do not overlap (prod's `CurveDictionary` from another table than dev's), and every partition of the flow is built at least one type.",
-      "appliesWhen": "Only on a flow that names its `partitions`."
+      "description": "The partitions of the flow this type is built for, when not all of them: for a flow that names its `partitions`, some of them; for a flow that serves every registered partition, the partitions this type is built for (a type only prod holds). Type names are unique per partition, so two declarations may share a name when their partitions do not overlap (prod's `CurveDictionary` from another table than dev's); every partition a flow names is built at least one type.",
+      "appliesWhen": "Not on a flow whose partition is its `data-partition-id` header."
     },
     {
       "path": "types[].partitions[]",

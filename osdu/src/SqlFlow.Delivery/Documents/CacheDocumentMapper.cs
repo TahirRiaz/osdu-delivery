@@ -26,19 +26,22 @@ internal static class CacheMapper
                     $"{source}: source.headers names '{FlowMapper.PartitionHeader}', and the flow names its partitions: every refresh sets the header to the partition it builds. Remove the header.");
             }
         }
-        else
+        else if (headers.TryGetValue(FlowMapper.PartitionHeader, out var partition))
         {
-            // The search service requires the tenant header on every request; without it a refresh fails on its first
-            // search instead of at load.
-            if (!headers.TryGetValue(FlowMapper.PartitionHeader, out var partition) || string.IsNullOrWhiteSpace(partition))
+            // The partition is hard-coded in the header: it names the cache the flow fills, so it has to be one a cache can be
+            // kept under, and the search service requires it on every request.
+            if (string.IsNullOrWhiteSpace(partition))
             {
                 throw new FlowValidationException(
-                    $"{source}: source.headers must declare a non-empty '{FlowMapper.PartitionHeader}', or the flow must name the partitions it builds a cache for under 'partitions'. Every OSDU service requires the header and rejects a request without it.");
+                    $"{source}: source.headers.{FlowMapper.PartitionHeader} is empty. Name the partition the flow fills, or take the header out so the flow builds a cache for every partition registered with the catalog.");
             }
 
-            // The partition names the cache the flow fills, so it has to be one a cache can be kept under.
             _ = CacheScope.Normalize(partition, $"{source}: source.headers");
         }
+
+        // Neither a list nor a header: the flow builds a cache for every partition registered with the catalog, and every
+        // refresh sets the header to the one it builds.
+        var followsRegistry = partitions.Count == 0 && !headers.ContainsKey(FlowMapper.PartitionHeader);
 
         if (y.MakeCurrent is not null)
         {
@@ -50,14 +53,14 @@ internal static class CacheMapper
             kv => kv.Key,
             kv => new FlowParameter { Required = kv.Value.Required, Default = kv.Value.Default, Description = kv.Value.Description },
             StringComparer.Ordinal);
-        if (partitions.Count > 0 && parameters.ContainsKey(PartitionNames.RunValue))
+        if ((partitions.Count > 0 || followsRegistry) && parameters.ContainsKey(PartitionNames.RunValue))
         {
             throw new FlowValidationException(
-                $"{source}: parameters declares '{PartitionNames.RunValue}', and the flow names its partitions: a run names the partition it refreshes under that value. Rename the parameter.");
+                $"{source}: parameters declares '{PartitionNames.RunValue}', and the flow {(followsRegistry ? "serves every registered partition" : "names its partitions")}: a run names the partition it refreshes under that value. Rename the parameter.");
         }
 
         var defaultMode = FlowMapper.ParseEnum(y.OnChange, CacheChangeMode.Auto, "onChange", source);
-        var types = MapTypes(y.Types, defaultMode, parameters, partitions, source);
+        var types = MapTypes(y.Types, defaultMode, parameters, partitions, followsRegistry, source);
 
         // The platform is reached only for the types searched on it, so a flow of lookup tables alone needs no endpoint, and
         // a flow that names one it never searches is told so rather than left holding a setting that does nothing.
@@ -101,6 +104,7 @@ internal static class CacheMapper
             Batch = string.IsNullOrWhiteSpace(y.Batch) ? null : y.Batch!.Trim(),
             Parameters = parameters,
             Partitions = partitions,
+            FollowsRegistry = followsRegistry,
             Source = new CacheSource
             {
                 Endpoint = endpoint,
@@ -120,7 +124,7 @@ internal static class CacheMapper
     /// </summary>
     private static List<ReferenceTypeSpec> MapTypes(
         IReadOnlyList<CachedTypeYaml>? declared, CacheChangeMode defaultMode, IReadOnlyDictionary<string, FlowParameter> parameters,
-        IReadOnlyList<string> partitions, string source)
+        IReadOnlyList<string> partitions, bool followsRegistry, string source)
     {
         if (declared is null || declared.Count == 0)
         {
@@ -140,7 +144,7 @@ internal static class CacheMapper
                     $"{source}: {where} names more than one origin; a type has one: a kind searched on OSDU, a dictionary kept in the repository, or a table an ingestion flow loads.");
             }
 
-            var builtFor = MapTypePartitions(type.Partitions, partitions, where, source);
+            var builtFor = MapTypePartitions(type.Partitions, partitions, followsRegistry, where, source);
             if (!string.IsNullOrWhiteSpace(type.Dictionary))
             {
                 types.Add(Validated(DictionaryType(type, defaultMode, where, source) with { Partitions = builtFor }, where, source));
@@ -194,7 +198,7 @@ internal static class CacheMapper
             types.Add(Validated(spec, where, source));
         }
 
-        CheckTypeNames(types, partitions, source);
+        CheckTypeNames(types, partitions, followsRegistry, source);
         return types;
     }
 
@@ -215,20 +219,23 @@ internal static class CacheMapper
     }
 
     /// <summary>
-    /// The partitions a type narrows its flow's list to, in the spelling the flow names them in; empty when the type names
-    /// none and is built for every partition of its flow.
+    /// The partitions a type narrows its flow's partitions to: for a flow that names its partitions, some of them, in the
+    /// spelling the flow names them in; for a flow that serves every registered partition, the partitions this type is built
+    /// for (a partition-specific type, such as one that only prod holds). Empty when the type names none and is built for
+    /// every partition its flow serves.
     /// </summary>
-    private static IReadOnlyList<string> MapTypePartitions(IReadOnlyList<string>? declared, IReadOnlyList<string> partitions, string where, string source)
+    private static IReadOnlyList<string> MapTypePartitions(
+        IReadOnlyList<string>? declared, IReadOnlyList<string> partitions, bool followsRegistry, string where, string source)
     {
         if (declared is null)
         {
             return [];
         }
 
-        if (partitions.Count == 0)
+        if (partitions.Count == 0 && !followsRegistry)
         {
             throw new FlowValidationException(
-                $"{source}: {where}.partitions narrows the partitions of its flow, and the flow names none; name them under 'partitions' at the top of the document.");
+                $"{source}: {where}.partitions narrows the partitions of its flow, and the flow's one partition is its header's; name the partitions under 'partitions' at the top of the document, or take the header out so the flow serves every registered partition.");
         }
 
         var names = new List<string>(declared.Count);
@@ -236,8 +243,10 @@ internal static class CacheMapper
         {
             var at = string.Create(CultureInfo.InvariantCulture, $"{source}: {where}.partitions[{i}]");
             var name = PartitionNames.Check(declared[i], at);
-            names.Add(partitions.FirstOrDefault(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase))
-                ?? throw new FlowValidationException($"{at} '{name}' is not a partition of the flow; it names {PartitionNames.Listed(partitions)}."));
+            names.Add(followsRegistry
+                ? name
+                : partitions.FirstOrDefault(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new FlowValidationException($"{at} '{name}' is not a partition of the flow; it names {PartitionNames.Listed(partitions)}."));
         }
 
         PartitionNames.CheckList(names, $"{source}: {where}.partitions");
@@ -245,12 +254,30 @@ internal static class CacheMapper
     }
 
     /// <summary>
-    /// A mapping reads a type by its name, so a partition's cache holds each name once. A flow naming no partitions keeps
-    /// one cache and so unique names; one naming its partitions keeps them unique per partition, and each of its partitions
-    /// is built at least one type.
+    /// A mapping reads a type by its name, so a partition's cache holds each name once. A flow whose partition is its
+    /// header's keeps one cache and so unique names; one naming its partitions keeps them unique per partition, and each of
+    /// its partitions is built at least one type. One serving every registered partition keeps them unique in every
+    /// partition a type names and in every other, where only the types that name no partition are built.
     /// </summary>
-    private static void CheckTypeNames(IReadOnlyList<ReferenceTypeSpec> types, IReadOnlyList<string> partitions, string source)
+    private static void CheckTypeNames(IReadOnlyList<ReferenceTypeSpec> types, IReadOnlyList<string> partitions, bool followsRegistry, string source)
     {
+        if (followsRegistry)
+        {
+            var named = types.SelectMany(t => t.Partitions).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (var (partition, built) in named.Select(p => (p, types.Where(t => t.IsBuiltFor(p)).ToList()))
+                .Append(("any other registered partition", types.Where(t => t.Partitions.Count == 0).ToList())))
+            {
+                var twice = built.GroupBy(t => t.Name, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+                if (twice.Count > 0)
+                {
+                    throw new FlowValidationException(
+                        $"{source}: types declares {string.Join(", ", twice)} more than once for {(partition.Contains(' ', StringComparison.Ordinal) ? partition : $"partition '{partition}'")}; a mapping reads a type by its name, so a partition's cache holds each name once. Give the declarations partitions that do not overlap.");
+                }
+            }
+
+            return;
+        }
+
         if (partitions.Count == 0)
         {
             if (types.Select(t => t.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != types.Count)

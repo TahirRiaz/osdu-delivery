@@ -26,10 +26,11 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// Flows that name their partitions as the control plane serves them (docs/partitions-design.md sections 4, 5 and 8): the
+/// Flows that work in partitions as the control plane serves them (docs/partitions-design.md sections 2.1, 4, 5 and 8): the
 /// dispatcher gives a run every partition's configuration and a node task its own partition's, a flow is read one partition
-/// at a time and says so when a request names none, a record says the partition its ledger delivers to and the task queued
-/// for it acts there, and the cache listing names the partitions a cache flow builds.
+/// at a time and says so when a request settles none, a record says the partition its ledger delivers to and the task queued
+/// for it acts there, the cache listing names the partitions a cache flow builds, and the partition registry is kept
+/// through the API and settles the partition of a flow that leaves it open.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]
@@ -329,7 +330,7 @@ public sealed class DeliveryPartitionsApiTests
                 Assert.Equal(0, partition.GetProperty("pendingChanges").GetInt64());
             }
 
-            Assert.Equal(known.Select(p => p.GetProperty("name").GetString()).Order(StringComparer.Ordinal), known.Select(p => p.GetProperty("name").GetString()));
+            Assert.Equal(known.Select(p => p.GetProperty("name").GetString()).Order(StringComparer.OrdinalIgnoreCase), known.Select(p => p.GetProperty("name").GetString()));
 
             // The configuration is set and read per partition; a partition written as a reference names none.
             var admin = await TokenAsync(client, ["admin"]);
@@ -361,6 +362,242 @@ public sealed class DeliveryPartitionsApiTests
             await using (var db = CatalogDatabase.Create(cs))
             {
                 await db.ComputeTasks.Where(t => t.SourceRef == flowName).ExecuteDeleteAsync();
+                await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
+                await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task The_registry_is_kept_through_the_api_and_settles_the_partition_of_a_flow_that_names_none()
+    {
+        var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..10];
+        var flowName = "api-registry-" + suffix;
+        var (dev, test, prod, unregistered) = ("d" + suffix, "t" + suffix, "p" + suffix, "u" + suffix);
+        var repoId = FlowIdentity.FromName("repo/cp-registry-" + suffix);
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+        var devLedger = FlowId.Of(flowName);
+        var testLedger = FlowId.Of(flowName, test);
+        var (devKey, testKey) = (new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()));
+        var now = DateTime.UtcNow;
+
+        // A flow that names neither partitions nor a header serves every registered partition; the dev partition keeps the
+        // ledger it kept before.
+        var yaml = $$"""
+            flowType: delivery
+            name: {{flowName}}
+            keepLedger: {{dev}}
+            source:
+              connection: ${env:OSDU_DATA_DB}
+              record: { object: OsduData.arc.WellLog, key: [log_id] }
+              lastModified: update_date
+              work: ../.work/registry
+            render:
+              mapping: WellLog@1.4.0
+            target:
+              endpoint: ${env:OSDU_URL}
+              protocol: storage
+            """;
+
+        // The suites run one test at a time, so the registry is this test's while it runs.
+        var registry = new DeliveryPartitionRegistry(() => SampleEstate.Context(cs));
+        await using (var osdu = SampleEstate.Context(cs))
+        {
+            await osdu.DeliveryPartitions.ExecuteDeleteAsync();
+            osdu.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
+            {
+                Id = FlowIdentity.FromName($"delivery-cache/{repoId:N}/lookups/CurveDictionary@{unregistered}"),
+                RepoId = repoId,
+                FlowName = "lookups-" + suffix,
+                Scope = unregistered,
+                DeclaresPartitions = true,
+                Origin = "table",
+                Connection = "${env:OSDU_DATA_DB}",
+                SourceObject = "OsduData.arc.CurveDictionary",
+                KeyField = "mnemonic",
+                RelativePath = "cache/lookups.yaml",
+                Name = "CurveDictionary",
+                EntityType = "lookup--CurveDictionary",
+                FieldsJson = "[]",
+                FirstSeenUtc = now,
+                LastSeenUtc = now,
+            });
+            await osdu.SaveChangesAsync();
+        }
+
+        await registry.AddAsync(dev, "Development", makeDefault: false, "tests", now);
+        await registry.AddAsync(test, null, makeDefault: false, "tests", now);
+
+        await using (var db = CatalogDatabase.Create(cs))
+        {
+            db.Repos.Add(new CatalogRepo
+            {
+                Id = repoId, Name = "cp-registry-" + suffix, RemoteUrl = "https://example/cp-registry.git",
+                RootPath = Path.GetTempPath(), FirstSeenUtc = now, LastSyncUtc = now,
+            });
+            db.Pipelines.Add(new CatalogPipeline
+            {
+                Id = pipelineId,
+                RepoId = repoId,
+                Name = flowName,
+                Kind = "delivery",
+                RelativePath = "flows/" + flowName + ".yaml",
+                ContentHash = new string('0', 64),
+                Yaml = yaml,
+                DefinitionJson = string.Create(CultureInfo.InvariantCulture, $$"""{"name":"{{flowName}}","flowKind":"delivery"}"""),
+                Active = true,
+                Wave = 0,
+                FirstSeenUtc = now,
+                LastSeenUtc = now,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        foreach (var (flowId, key) in new[] { (devLedger, devKey), (testLedger, testKey) })
+        {
+            await ledger.UpsertPendingAsync(flowId,
+            [
+                new RecordState
+                {
+                    DeliveryKey = key,
+                    FlowId = flowId,
+                    SourceKey = "L-2001",
+                    Label = "L-2001",
+                    MappingName = "WellLog",
+                    Status = RecordStatus.Pending,
+                    PendingDocumentRef = "1:0:10",
+                    PendingMetadata = true,
+                },
+            ]);
+        }
+
+        try
+        {
+            await using var factory = new ControlPlaneAppFactory()
+                .WithCatalog(cs)
+                .WithModules(new DeliveryControlPlaneModule())
+                .WithSetting("ControlPlane:Worker:Enabled", "false")
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client, ["read", "operate"]);
+            var admin = await TokenAsync(client, ["admin"]);
+
+            // Described in every registered partition, each with its own ledger.
+            await WaitForInterfacesAsync(cs, repoId, 2);
+            var everywhere = (await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/interfaces")).EnumerateArray().ToList();
+            Assert.Equal(
+                [(devLedger, dev), (testLedger, test)],
+                everywhere.Select(i => (i.GetProperty("flowId").GetGuid(), i.GetProperty("partition").GetString())));
+
+            // A request that names no partition is read in the default; one naming a partition the registry does not hold is refused.
+            var inDefault = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/records");
+            Assert.Equal(devKey.Value, Assert.Single(inDefault.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
+            using (var outside = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/records?partition={prod}"))
+            {
+                var body = await outside.Content.ReadAsStringAsync();
+                Assert.Equal(HttpStatusCode.BadRequest, outside.StatusCode);
+                Assert.Contains("No such partition", body, StringComparison.Ordinal);
+                Assert.Contains($"'{prod}' is not registered", body, StringComparison.Ordinal);
+            }
+
+            // The registry is admin work to keep.
+            using (var refused = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/partitions", new DeliveryPartitionAddRequest(prod, null, null)))
+            {
+                Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+            }
+
+            using (var added = await SendAsync(client, admin, HttpMethod.Post, "/api/v1/delivery/partitions", new DeliveryPartitionAddRequest(prod, "Production", null)))
+            {
+                Assert.True(added.StatusCode == HttpStatusCode.Created, await added.Content.ReadAsStringAsync());
+                var row = JsonDocument.Parse(await added.Content.ReadAsStringAsync()).RootElement;
+                Assert.Equal((prod, "Production", false, true), (row.GetProperty("name").GetString(), row.GetProperty("description").GetString(), row.GetProperty("isDefault").GetBoolean(), row.GetProperty("registered").GetBoolean()));
+            }
+
+            using (var twice = await SendAsync(client, admin, HttpMethod.Post, "/api/v1/delivery/partitions", new DeliveryPartitionAddRequest(prod.ToUpperInvariant(), null, null)))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, twice.StatusCode);
+            }
+
+            using (var reference = await SendAsync(client, admin, HttpMethod.Post, "/api/v1/delivery/partitions", new DeliveryPartitionAddRequest("${env:PART}", null, null)))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, reference.StatusCode);
+            }
+
+            // The listing marks the default, and lists a partition something is kept under while the registry does not hold it.
+            var known = (await JsonAsync(client, token, "/api/v1/delivery/partitions")).EnumerateArray().ToList();
+            Assert.Equal([dev, prod, test, unregistered], known.Select(p => p.GetProperty("name").GetString()).Where(n => n!.EndsWith(suffix, StringComparison.Ordinal)).Order(StringComparer.Ordinal));
+            var devRow = Assert.Single(known, p => p.GetProperty("name").GetString() == dev);
+            Assert.Equal((true, true, "Development", "tests"), (devRow.GetProperty("isDefault").GetBoolean(), devRow.GetProperty("registered").GetBoolean(), devRow.GetProperty("description").GetString(), devRow.GetProperty("createdBy").GetString()));
+            Assert.Equal([flowName], devRow.GetProperty("deliveryFlows").EnumerateArray().Select(f => f.GetString()));
+            var unregisteredRow = Assert.Single(known, p => p.GetProperty("name").GetString() == unregistered);
+            Assert.Equal((false, false), (unregisteredRow.GetProperty("registered").GetBoolean(), unregisteredRow.GetProperty("isDefault").GetBoolean()));
+            Assert.Equal(JsonValueKind.Null, unregisteredRow.GetProperty("createdUtc").ValueKind);
+
+            using (var described = await SendAsync(client, admin, HttpMethod.Put, $"/api/v1/delivery/partitions/{test}", new DeliveryPartitionDescribeRequest("Test platform")))
+            {
+                Assert.True(described.StatusCode == HttpStatusCode.OK, await described.Content.ReadAsStringAsync());
+                Assert.Equal("Test platform", JsonDocument.Parse(await described.Content.ReadAsStringAsync()).RootElement.GetProperty("description").GetString());
+            }
+
+            using (var missing = await SendAsync(client, admin, HttpMethod.Put, $"/api/v1/delivery/partitions/{unregistered}", new DeliveryPartitionDescribeRequest("x")))
+            {
+                Assert.Equal(HttpStatusCode.NotFound, missing.StatusCode);
+            }
+
+            // Another default moves what a request that names no partition reads.
+            using (var moved = await SendAsync(client, admin, HttpMethod.Post, $"/api/v1/delivery/partitions/{test}/default"))
+            {
+                Assert.True(moved.StatusCode == HttpStatusCode.OK, await moved.Content.ReadAsStringAsync());
+                Assert.True(JsonDocument.Parse(await moved.Content.ReadAsStringAsync()).RootElement.GetProperty("isDefault").GetBoolean());
+            }
+
+            var inTest = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/records");
+            Assert.Equal(testKey.Value, Assert.Single(inTest.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
+
+            // The default is not removed while others are registered; another partition is, and keeps what it held.
+            using (var keepDefault = await SendAsync(client, admin, HttpMethod.Delete, $"/api/v1/delivery/partitions/{test}"))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, keepDefault.StatusCode);
+            }
+
+            using (var removed = await SendAsync(client, admin, HttpMethod.Delete, $"/api/v1/delivery/partitions/{dev}"))
+            {
+                Assert.Equal(HttpStatusCode.NoContent, removed.StatusCode);
+            }
+
+            using (var gone = await SendAsync(client, admin, HttpMethod.Delete, $"/api/v1/delivery/partitions/{dev}"))
+            {
+                Assert.Equal(HttpStatusCode.NotFound, gone.StatusCode);
+            }
+
+            using (var notServed = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/records?partition={dev}"))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, notServed.StatusCode);
+            }
+
+            // A record of a partition taken out of the registry is still read where its ledger says it was delivered.
+            var record = await JsonAsync(client, token, $"/api/v1/delivery/records/{devLedger:D}/{devKey.Value:D}");
+            Assert.Equal((pipelineId, dev), (record.GetProperty("pipelineId").GetGuid(), record.GetProperty("partition").GetString()));
+            var devStill = Assert.Single((await JsonAsync(client, token, "/api/v1/delivery/partitions")).EnumerateArray().ToList(), p => p.GetProperty("name").GetString() == dev);
+            Assert.False(devStill.GetProperty("registered").GetBoolean());
+        }
+        finally
+        {
+            await using (var osdu = SampleEstate.Context(cs))
+            {
+                await osdu.DeliveryRecords.Where(r => r.FlowId == devLedger || r.FlowId == testLedger).ExecuteDeleteAsync();
+                await osdu.DeliveryInterfaces.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
+                await osdu.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
+                await osdu.DeliveryPartitions.ExecuteDeleteAsync();
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
                 await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
                 await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
             }

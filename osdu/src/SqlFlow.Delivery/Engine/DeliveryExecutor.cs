@@ -76,7 +76,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         // The partition the run targets travels as a run value beside the flow's own, and never reaches its parameters: it
         // binds the source instead, so the ledger, the header, the cache and the configuration below are all that partition's.
         var (partition, values) = PartitionNames.SplitRunValues(
-            parameters.Values, keptAsParameter: !declared.DeclaresPartitions && declared.Parameters.ContainsKey(PartitionNames.RunValue));
+            parameters.Values, keptAsParameter: !declared.Partitioned && declared.Parameters.ContainsKey(PartitionNames.RunValue));
         parameters = parameters with { Values = values };
 
         var runId = options.RunId ?? Guid.CreateVersion7();
@@ -95,7 +95,12 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         LogStart(log, declared.Name, operation, parameters.Describe(), actor, runId);
         try
         {
-            var source = declared.ForPartition(partition);
+            // A hard-coded partition settles itself; a flow that leaves its partition to the registry runs in the one named,
+            // which the registry has to hold, or in the registry's default.
+            var registry = declared.NeedsRegistry(partition)
+                ? await context.PartitionRegistry.ReadAsync(ct).ConfigureAwait(false)
+                : RegisteredPartitions.None;
+            var source = declared.Resolve(partition, registry);
             if (source.Partition is { } bound)
             {
                 LogPartition(log, bound);
@@ -104,10 +109,10 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             // The control plane supplies what it holds centrally, the partition's own values first; the node answers the
             // rest from its own environment.
             var partitioned = context.WithSuppliedReferences(payload.ReferencesFor(source.Partition));
-            if (source.DeclaresPartitions && StartsWholeRun(payload))
+            if (source.Partitioned && StartsWholeRun(payload))
             {
                 await _provider.GetRequiredService<PartitionLedgers>()
-                    .CheckAsync(partitioned.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage), source, ct)
+                    .CheckAsync(partitioned.Ledger ?? throw new DeliveryException(DeliveryServices.NoLedgerMessage), source, declared.Served(registry), ct)
                     .ConfigureAwait(false);
             }
 

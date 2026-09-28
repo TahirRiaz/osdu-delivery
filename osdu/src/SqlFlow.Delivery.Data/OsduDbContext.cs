@@ -60,6 +60,9 @@ public sealed class OsduDbContext : DbContext
     /// <summary>The central configuration the control plane supplies to the runs it queues.</summary>
     public DbSet<DeliveryConfigProperty> DeliveryConfigProperties => Set<DeliveryConfigProperty>();
 
+    /// <summary>The OSDU partitions registered with the catalog, and the default one.</summary>
+    public DbSet<DeliveryPartition> DeliveryPartitions => Set<DeliveryPartition>();
+
     public DbSet<DeliveryCacheVersion> DeliveryCacheVersions => Set<DeliveryCacheVersion>();
 
     public DbSet<DeliveryCacheItem> DeliveryCacheItems => Set<DeliveryCacheItem>();

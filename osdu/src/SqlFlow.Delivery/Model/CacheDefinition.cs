@@ -50,14 +50,44 @@ public sealed record CacheDefinition
     public bool DeclaresPartitions => Partitions.Count > 0;
 
     /// <summary>
+    /// True for a cache flow that names neither its partitions nor a <c>data-partition-id</c> header: it builds a cache for
+    /// every partition registered with the catalog, and a refresh builds the one it targets, the registry's default when it
+    /// names none.
+    /// </summary>
+    public bool FollowsRegistry { get; init; }
+
+    /// <summary>True when the flow builds caches for partitions, named or registered.</summary>
+    public bool Partitioned => DeclaresPartitions || FollowsRegistry;
+
+    /// <summary>
+    /// Whether settling the partitions a refresh builds (<paramref name="requested"/>, or none) needs the registry: always for
+    /// a flow that follows it, and for one that names several partitions when none is named, to take the default among them.
+    /// A hard-coded partition is settled from the document alone.
+    /// </summary>
+    public bool NeedsRegistry(string? requested)
+        => FollowsRegistry || (DeclaresPartitions && string.IsNullOrWhiteSpace(requested) && Partitions.Count > 1);
+
+    /// <summary>
+    /// The partitions the flow builds a cache for: those it names, or for a flow that follows the registry, every registered
+    /// one; none for a flow whose partition is its header's.
+    /// </summary>
+    public IReadOnlyList<string> Served(RegisteredPartitions registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        return DeclaresPartitions ? Partitions : FollowsRegistry ? registry.Names : [];
+    }
+
+    /// <summary>
     /// The partition whose cache the flow fills: the partition it is bound to, or for a flow that names none, the
     /// <c>data-partition-id</c> its searches carry, as the document writes it.
     /// </summary>
     /// <exception cref="InvalidOperationException">The flow names its partitions and this definition is bound to none.</exception>
     public string Scope => Partition
-        ?? (DeclaresPartitions
+        ?? (Partitioned
             ? throw new InvalidOperationException(
-                $"Cache flow '{Name}' builds a cache for each of {PartitionNames.Listed(Partitions)}; bind it to the partition a refresh builds before asking for its scope.")
+                (DeclaresPartitions
+                    ? $"Cache flow '{Name}' builds a cache for each of {PartitionNames.Listed(Partitions)}; bind it to the partition a refresh builds before asking for its scope."
+                    : $"Cache flow '{Name}' builds a cache for every registered partition; bind it to the partition a refresh builds before asking for its scope."))
             : CacheScope.Of(Source.Headers, SourcePath ?? Name));
 
     /// <summary>
@@ -75,14 +105,18 @@ public sealed record CacheDefinition
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(partition);
         var wanted = partition.Trim();
-        if (!DeclaresPartitions)
+        if (!Partitioned)
         {
             throw new DeliveryException(
                 $"Cache flow '{Name}' names no partitions; it fills the cache of the partition its source.headers name, so it cannot be bound to '{wanted}'.");
         }
 
-        var declared = Partitions.FirstOrDefault(p => string.Equals(p, wanted, StringComparison.OrdinalIgnoreCase))
-            ?? throw new DeliveryException($"Cache flow '{Name}' builds no cache for partition '{wanted}'; it names {PartitionNames.Listed(Partitions)}.");
+        var declared = DeclaresPartitions
+            ? Partitions.FirstOrDefault(p => string.Equals(p, wanted, StringComparison.OrdinalIgnoreCase))
+                ?? throw new DeliveryException($"Cache flow '{Name}' builds no cache for partition '{wanted}'; it names {PartitionNames.Listed(Partitions)}.")
+            : CacheScope.IsPartitionId(wanted)
+                ? wanted
+                : throw new DeliveryException($"Cache flow '{Name}' cannot build a cache for '{wanted}': a partition is a data-partition-id (letters, digits, underscore, hyphen and dot).");
         var headers = new Dictionary<string, string>(Source.Headers, StringComparer.OrdinalIgnoreCase)
         {
             [CacheScope.PartitionHeader] = declared,
@@ -96,23 +130,56 @@ public sealed record CacheDefinition
     }
 
     /// <summary>
-    /// The flow as a run refreshes it (docs/partitions-design.md section 6): bound to the partition the run names, or to every
-    /// partition the flow names, in document order, when the run names none; a flow that names no partitions is refreshed as
-    /// it is. Each partition's cache is merged on its own, so refreshing them one after another never contends.
+    /// The flow as a run refreshes it (docs/partitions-design.md section 6). A flow hard-codes its partitions
+    /// (<c>partitions</c>) or leaves them to the registry, and serves those it names or every registered one. A run builds the
+    /// partition it names, which the flow has to serve (a partition a flow leaves to the registry has to be registered); every
+    /// partition the flow serves, one after another, when it names every partition (<see cref="PartitionNames.Every"/>); and
+    /// when it names none, the registry's default when the flow serves it, else the only partition the flow names. A flow
+    /// whose partition is its header's is refreshed as it is. Each partition's cache is merged on its own.
     /// </summary>
-    /// <exception cref="DeliveryException">A partition is named for a flow that names none, or the one named is not the flow's.</exception>
-    public IReadOnlyList<CacheDefinition> ForRun(string? partition)
+    /// <exception cref="DeliveryException">
+    /// A partition is named for a flow whose partition is its header's, the one named is not the flow's (or not registered,
+    /// for a flow that follows the registry), or none is named and neither the default nor a single partition settles it.
+    /// </exception>
+    public IReadOnlyList<CacheDefinition> ForRun(string? requested, RegisteredPartitions registry)
     {
-        var wanted = string.IsNullOrWhiteSpace(partition) ? null : partition.Trim();
-        if (!DeclaresPartitions)
+        ArgumentNullException.ThrowIfNull(registry);
+        var wanted = string.IsNullOrWhiteSpace(requested) ? null : requested.Trim();
+        if (!Partitioned)
         {
             return wanted is null
                 ? [this]
                 : throw new DeliveryException(
-                    $"Cache flow '{Name}' names no partitions; it fills the cache of the partition its source.headers name, so a run cannot target '{wanted}'. Leave the partition out, or name the flow's partitions under 'partitions'.");
+                    $"Cache flow '{Name}' names no partitions; it fills the cache of the partition its source.headers name, so a run cannot target '{wanted}'. Leave the partition out, or take the header out so the flow builds a cache for every registered partition.");
         }
 
-        return wanted is null ? Partitions.Select(ForPartition).ToList() : [ForPartition(wanted)];
+        var served = Served(registry);
+        if (wanted == PartitionNames.Every)
+        {
+            return served.Count > 0
+                ? served.Select(ForPartition).ToList()
+                : throw new DeliveryException($"No partition is registered with the catalog, so cache flow '{Name}' has none to build. Register one on the Partitions page or with 'sqlflow partition add <name>'.");
+        }
+
+        if (wanted is not null)
+        {
+            return [ForPartition(FollowsRegistry ? registry.Find(wanted) ?? throw new DeliveryException(registry.NotRegistered(wanted)) : wanted)];
+        }
+
+        if (registry.Default is { } fallback && served.Contains(fallback, StringComparer.OrdinalIgnoreCase))
+        {
+            return [ForPartition(fallback)];
+        }
+
+        if (DeclaresPartitions && Partitions.Count == 1)
+        {
+            return [ForPartition(Partitions[0])];
+        }
+
+        // A flow that names its partitions needs no registration; only a registry-driven one has nothing to build without it.
+        throw new DeliveryException(FollowsRegistry && registry.All.Count == 0
+            ? $"No partition is registered with the catalog, so cache flow '{Name}' has none to build. Register one on the Partitions page or with 'sqlflow partition add <name>'."
+            : $"Cache flow '{Name}' builds {PartitionNames.Listed(served)}, and {(registry.Default is null ? "no partition is the default" : $"the default partition '{registry.Default}' is not one of them")}; name the partition this refresh builds, or '{PartitionNames.Every}' for every one.");
     }
 
     /// <summary>The default <c>onChange</c> for the types that do not state one.</summary>

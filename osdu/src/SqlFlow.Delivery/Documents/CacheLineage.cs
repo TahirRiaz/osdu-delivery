@@ -52,7 +52,11 @@ public static class CacheLineage
             }
         }
 
-        var partition = OsduLineage.Partition(flow.Source.Headers, who, "source.headers", warnings);
+        // A flow that leaves its partitions to the registry is described once, under the partition that stands for every
+        // registered one: lineage is computed from the documents, and the registry is the catalog's.
+        var partition = flow.FollowsRegistry && flow.Partition is null
+            ? PartitionNames.Every
+            : OsduLineage.Partition(flow.Source.Headers, who, "source.headers", warnings);
         if (partition is not null)
         {
             foreach (var type in flow.Types)

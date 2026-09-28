@@ -690,9 +690,9 @@ public sealed class DeliveryCacheDefinition
     public string Scope { get; set; } = string.Empty;
 
     /// <summary>
-    /// True when the flow names the partitions it builds a cache for (docs/partitions-design.md section 2.2): it then has a
-    /// row per type and partition, and a refresh of it names the partition it builds. False for a flow whose partition is
-    /// its header's.
+    /// True when the flow works in partitions (docs/partitions-design.md section 2.2): it names the partitions it builds a
+    /// cache for, or leaves them to the registry. It then has a row per type and partition it serves, and a refresh of it
+    /// names the partition it builds. False for a flow whose partition is its header's.
     /// </summary>
     public bool DeclaresPartitions { get; set; }
 
@@ -1084,6 +1084,39 @@ public static partial class DeliveryConfigNames
 }
 
 /// <summary>
+/// An OSDU partition registered with the catalog (docs/partitions-design.md section 2.1): the partitions every run, cache and
+/// ledger of the module is keyed by. A flow that names no partitions serves every registered one, so the same documents
+/// deploy to every environment; a run that names none runs in the one marked the default. A flow that names its
+/// partitions serves those of them that are registered.
+/// </summary>
+/// <remarks>
+/// Removing a partition deletes nothing kept under it: its caches, ledgers and runs stay as they are, and no run can target
+/// it until it is registered again. At most one partition is the default, which a filtered unique index keeps.
+/// </remarks>
+public sealed class DeliveryPartition
+{
+    /// <summary>The widest description a partition keeps.</summary>
+    public const int MaxDescriptionLength = 400;
+
+    /// <summary>The data-partition-id, as runs name it and caches and ledgers are keyed by it.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>What the partition is for (the environment, the platform), in the words of whoever registered it.</summary>
+    public string? Description { get; set; }
+
+    /// <summary>True for the one partition a run that names none runs in.</summary>
+    public bool IsDefault { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    public string CreatedBy { get; set; } = string.Empty;
+
+    public DateTime UpdatedUtc { get; set; }
+
+    public string UpdatedBy { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// One property of the central configuration: a value the control plane supplies to the runs it queues, so a flow that
 /// names <c>${env:NAME}</c> resolves it from here rather than from whatever the node that picks the run up happens to
 /// hold. A property is set once for the whole control plane (<see cref="RepoId"/> null) and may be set again for one
@@ -1092,7 +1125,7 @@ public static partial class DeliveryConfigNames
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="Value"/> is a non-secret value (a partition, an entitlements group, a legal tag, a base URL) or a
+/// <see cref="Value"/> is a non-secret value (an entitlements group, a legal tag, a base URL) or a
 /// <c>${env:NAME}</c> or <c>${keyvault:vault/secret}</c> reference, which travels unresolved and is resolved on the node.
 /// A literal secret here is a defect: this row, and the run payload it is carried in, are ordinary catalog content.
 /// </para>
@@ -1530,6 +1563,18 @@ public static class DeliveryModel
             e.HasKey(c => new { c.SetId, c.Scope, c.TypeName, c.ItemId, c.Path, c.Kind });
             // The impact query: which sets hold this cached value of this partition's cache.
             e.HasIndex(c => new { c.Scope, c.TypeName, c.ItemId });
+        });
+
+        modelBuilder.Entity<DeliveryPartition>(e =>
+        {
+            e.ToTable("Partition", SchemaName);
+            e.HasKey(p => p.Name);
+            e.Property(p => p.Name).HasMaxLength(200).IsRequired();
+            e.Property(p => p.Description).HasMaxLength(DeliveryPartition.MaxDescriptionLength);
+            e.Property(p => p.CreatedBy).HasMaxLength(200).IsRequired();
+            e.Property(p => p.UpdatedBy).HasMaxLength(200).IsRequired();
+            // At most one partition is the default.
+            e.HasIndex(p => p.IsDefault).IsUnique().HasFilter("[IsDefault] = 1");
         });
 
         modelBuilder.Entity<DeliveryConfigProperty>(e =>

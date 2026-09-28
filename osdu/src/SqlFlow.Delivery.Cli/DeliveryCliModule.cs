@@ -11,7 +11,7 @@ namespace SqlFlow.Delivery.Cli;
 /// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval and cache flow kinds (so SQLFlow's own
 /// <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
 /// module's database, and the module's own verbs: <c>check</c>, <c>preview</c>, <c>fixtures</c>, <c>records</c>, <c>config</c>,
-/// <c>cache</c> and <c>template</c>.
+/// <c>partition</c>, <c>cache</c> and <c>template</c>.
 /// </summary>
 /// <remarks>
 /// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless
@@ -115,6 +115,26 @@ public sealed class DeliveryCliModule : ICliModule
         {
             Subcommands = ["list", "effective", "set", "remove"],
             ValueOptions = ["--repo", "--partition", "--value", "--description"],
+        },
+        new CliVerb(
+            "partition",
+            [
+                "sqlflow partition list",
+                "                                   The partition registry: the OSDU partitions a flow that names none serves,",
+                "                                   and the default one a run that names none runs in (needs --db)",
+                "sqlflow partition add <name> [--description <text>] [--default]",
+                "                                   Register a partition; the first one registered becomes the default. Each",
+                "                                   repository describes its registry-driven flows in it at its next sync",
+                "sqlflow partition describe <name> --description <text> | default <name> | remove <name>",
+                "                                   Say what a partition is for, make it the default, or take it out of the",
+                "                                   registry. Removing deletes nothing kept under it; the default is removed",
+                "                                   only when it is the last partition (needs --db)",
+            ],
+            DeliveryPartitionVerbs.PartitionAsync)
+        {
+            Subcommands = ["list", "add", "describe", "default", "remove"],
+            Flags = ["--default"],
+            ValueOptions = ["--description"],
         },
         new CliVerb(
             "cache",

@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 480,
+  "keyCount": 481,
   "keys": [
     {
       "path": "batch",
@@ -1451,6 +1451,13 @@
       "description": "The workflow as the partition registers it (letters, digits, `_`, `-` and `.`). The run's preflight asks the Workflow service for it."
     },
     {
+      "path": "keepLedger",
+      "type": "string",
+      "required": false,
+      "description": "For a flow that names neither `partitions` nor `data-partition-id`, and so serves every registered partition: the partition that keeps the ledger the flow kept before it served partitions (`keepLedger: dev`), so the records already delivered there are not delivered again as new. Every other partition keeps a ledger of its own, under `<ledger name>@<partition>`. A flow that names its partitions marks that partition with `keepLedger: true` on its entry instead.",
+      "appliesWhen": "Only on a flow that names neither `partitions` nor `data-partition-id`."
+    },
+    {
       "path": "name",
       "type": "string",
       "required": true,
@@ -1491,7 +1498,7 @@
       "path": "partitions",
       "type": "list",
       "required": false,
-      "description": "The OSDU data partitions the flow may deliver to, each by its `data-partition-id` written literally, never a reference: at least one, at most 64, none twice. Every run targets one of them (the trigger dialog's partition, a schedule's `values: { partition: ... }`, or the CLI's `--partition`; a flow naming one partition needs none named), and the engine sets `target.headers.data-partition-id` and the mapping's `dataPartition` to it, reads that partition's cache, resolves the partition's values of the central configuration first, and keeps a ledger per partition. With it, `target.headers` may not name `data-partition-id` and `render.parameters` may not set `dataPartition`. Leave it out for a flow that delivers to the partition its headers name."
+      "description": "The OSDU data partitions the flow may deliver to, hard-coded: each by its `data-partition-id` written literally, never a reference, at least one, at most 64, none twice; they need not be registered. Every run targets one of them (the trigger dialog's partition, a schedule's `values: { partition: ... }`, or the CLI's `--partition`); a run that names none takes the registry's default when the flow names it, else the flow's only partition. The engine sets `target.headers.data-partition-id` and the mapping's `dataPartition` to it, reads that partition's cache, resolves the partition's values of the central configuration first, and keeps a ledger per partition. With it, `target.headers` may not name `data-partition-id` and `render.parameters` may not set `dataPartition`. Leave it out, and `data-partition-id` too, for a flow that serves every partition registered with the catalog (`sqlflow partition`, the Partitions page), picked at run time; or leave it out and name the partition in the header, for a flow of that one partition."
     },
     {
       "path": "partitions[]",
@@ -2560,8 +2567,8 @@
       "path": "target.headers",
       "type": "map",
       "required": false,
-      "description": "Extra headers on every request. A flow that names no `partitions` must declare a non-empty `data-partition-id`, which every OSDU service requires; that partition's cache is the one the mapping reads. A flow that names its `partitions` leaves it out: every run sets it to the partition it targets.",
-      "appliesWhen": "Required, with `data-partition-id`, unless the flow names its `partitions`; then `data-partition-id` is refused."
+      "description": "Extra headers on every request. A non-empty `data-partition-id` hard-codes the one partition the flow delivers to, and that partition's cache is the one the mapping reads. A flow that names its `partitions`, or names neither and serves every registered partition, leaves it out: every run sets it to the partition it targets.",
+      "appliesWhen": "`data-partition-id` is refused beside `partitions`; left out with them, the flow serves every registered partition."
     },
     {
       "path": "target.headers.<name>",

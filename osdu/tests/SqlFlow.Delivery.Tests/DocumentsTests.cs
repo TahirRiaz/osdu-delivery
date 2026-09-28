@@ -68,12 +68,20 @@ public class YamlDocumentLoaderTests
     }
 
     [Fact]
-    public void A_flow_without_the_partition_header_is_refused_when_read()
+    public void A_flow_without_the_partition_header_serves_the_registry_and_leaves_the_data_partition_to_the_run()
     {
-        var yaml = Flow.Replace("headers: { data-partition-id: dev }", "headers: { }", StringComparison.Ordinal);
+        var yaml = Flow.ReplaceLineEndings("\n").Replace("headers: { data-partition-id: dev }", "headers: { }", StringComparison.Ordinal);
         Assert.DoesNotContain("data-partition-id", yaml, StringComparison.Ordinal);
+
+        // Without its header the flow serves every registered partition, so the partition it mints ids in is the run's.
         var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseFlow(yaml, "inline.yaml"));
-        Assert.Contains("data-partition-id", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("sets 'dataPartition'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("serves every partition registered with the catalog", ex.Message, StringComparison.Ordinal);
+
+        var flow = new DeliveryDocumentLoader().ParseFlow(
+            yaml.Replace("  parameters: { dataPartition: dev }\n", string.Empty, StringComparison.Ordinal), "inline.yaml");
+        Assert.True(flow.FollowsRegistry);
+        Assert.True(flow.IsUnbound);
     }
 
     [Theory]

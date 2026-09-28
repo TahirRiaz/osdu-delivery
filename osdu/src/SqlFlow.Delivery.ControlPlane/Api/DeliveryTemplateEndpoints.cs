@@ -503,8 +503,9 @@ public static class DeliveryTemplateEndpoints
     }
 
     private static async Task<Ok<IReadOnlyList<DeliveryBuilderRepoDto>>> ListBuilderReposAsync(
-        CatalogDbContext db, DeliveryDocumentLoader documents, EngineContext engine, DeliveryConfigStore config, CancellationToken ct)
+        CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, EngineContext engine, DeliveryConfigStore config, CancellationToken ct)
     {
+        RegisteredPartitions? registry = null;
         var repos = await db.Repos.AsNoTracking().OrderBy(r => r.Name).Select(r => new { r.Id, r.Name }).Take(MaxBuilderRepos).ToListAsync(ct).ConfigureAwait(false);
         var sources = await db.RepoSources.AsNoTracking().Select(s => new { s.Id, s.Name, s.Branch }).ToListAsync(ct).ConfigureAwait(false);
         var sourceByRepo = new Dictionary<Guid, (Guid Id, string Branch)>();
@@ -536,9 +537,16 @@ public static class DeliveryTemplateEndpoints
             {
                 try
                 {
-                    // A source offers one connection per interface, and a source that names its partitions one per interface
-                    // and partition: each pins its own mapping and render parameters, and reads its own partition's cache.
-                    foreach (var flow in documents.ParseSource(pipeline.Yaml, pipeline.RelativePath).EveryLedger())
+                    // A source offers one connection per interface, and a source that works in partitions one per interface
+                    // and partition it serves: each pins its own mapping and render parameters, and reads its own
+                    // partition's cache. The registry is read once, for the first source that serves it.
+                    var parsed = documents.ParseSource(pipeline.Yaml, pipeline.RelativePath);
+                    if (parsed.FollowsRegistry)
+                    {
+                        registry ??= await partitions.ReadAsync(ct).ConfigureAwait(false);
+                    }
+
+                    foreach (var flow in parsed.EveryLedger(registry ?? RegisteredPartitions.None))
                     {
                         var secrets = SqlFlow.Delivery.Http.SuppliedReferenceResolver.For(configuration.For(flow.Partition), engine.Secrets);
                         var (parameters, references) = await RenderParametersOfAsync(flow, secrets, ct).ConfigureAwait(false);

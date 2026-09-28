@@ -114,10 +114,11 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
     }
 
     /// <summary>
-    /// Runs the operation for the partition the run names, or for every partition the flow names, one after another, when
-    /// it names none (docs/partitions-design.md section 6). Each partition's cache is captured and merged on its own, with
-    /// the central configuration set for that partition, so a partition whose capture fails leaves the others refreshed and
-    /// the run ends failed naming it. A flow that names no partitions runs as it always did.
+    /// Runs the operation for the partition the run names, the default when it names none, or every partition the flow
+    /// serves, one after another, when it names every one (docs/partitions-design.md section 6). Each partition's cache is
+    /// captured and merged on its own, with the central configuration set for that partition, so a partition whose capture
+    /// fails leaves the others refreshed and the run ends failed naming it. A flow whose partition is its header's runs as it
+    /// always did.
     /// </summary>
     private static async Task<object> ExecuteOperationAsync(
         EngineContext context, CacheDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
@@ -130,9 +131,15 @@ public sealed class CacheExecutor : IFlowDocumentExecutor
         }
 
         var (partition, supplied) = PartitionNames.SplitRunValues(
-            parameters.Values, keptAsParameter: !flow.DeclaresPartitions && flow.Parameters.ContainsKey(PartitionNames.RunValue));
+            parameters.Values, keptAsParameter: !flow.Partitioned && flow.Parameters.ContainsKey(PartitionNames.RunValue));
         var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, supplied);
-        var bound = flow.ForRun(partition);
+
+        // A hard-coded partition settles itself; a flow that leaves its partitions to the registry builds the one named, which
+        // the registry has to hold, every registered one when the run names every partition, or else the registry's default.
+        var registry = flow.NeedsRegistry(partition)
+            ? await context.PartitionRegistry.ReadAsync(ct).ConfigureAwait(false)
+            : RegisteredPartitions.None;
+        var bound = flow.ForRun(partition, registry);
         if (bound.Count == 1)
         {
             // A cache and a retrieval flow name their platform and partition the same way a delivery flow does, so a run

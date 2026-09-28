@@ -782,7 +782,8 @@ public static class Samples
         ICacheStore? cache = null,
         IIngestionSourceFactory? sources = null,
         IPayloadFiles? payloads = null,
-        IRecordSearchFactory? searches = null)
+        IRecordSearchFactory? searches = null,
+        IPartitionRegistry? partitions = null)
     {
         var stores = Stores();
         var loader = new DeliveryDocumentLoader();
@@ -799,7 +800,8 @@ public static class Samples
             CompositeDeliveryListener.Empty,
             Templates: templates ?? SampleTemplates,
             Cache: cache ?? SampleCache,
-            Searches: searches ?? FixedRecordSearchFactory.SampleWellbores());
+            Searches: searches ?? FixedRecordSearchFactory.SampleWellbores(),
+            Partitions: partitions ?? FixedPartitionRegistry.Empty);
     }
 
     /// <summary>
@@ -1129,4 +1131,17 @@ public sealed class FixedRecordSearchFactory(params (string Field, string Value,
         Created.Enqueue(search);
         return search;
     }
+}
+
+/// <summary>A partition registry holding what a test gives it, for engines that run flows without the module's database.</summary>
+public sealed class FixedPartitionRegistry(RegisteredPartitions partitions) : IPartitionRegistry
+{
+    /// <summary>A registry that holds no partition.</summary>
+    public static readonly FixedPartitionRegistry Empty = new(RegisteredPartitions.None);
+
+    /// <summary>A registry holding <paramref name="names"/>, with <paramref name="fallback"/> the default when one is named.</summary>
+    public static FixedPartitionRegistry Of(string? fallback, params string[] names)
+        => new(new RegisteredPartitions(names.Select(name => new RegisteredPartition(name, null, string.Equals(name, fallback, StringComparison.OrdinalIgnoreCase)))));
+
+    public Task<RegisteredPartitions> ReadAsync(CancellationToken ct = default) => Task.FromResult(partitions);
 }

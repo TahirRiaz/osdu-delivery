@@ -6,6 +6,7 @@ using SqlFlow.Catalog;
 using SqlFlow.Core.Abstractions;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Listeners;
@@ -94,7 +95,8 @@ public static class DeliveryServices
             FanOut: null,
             sp.GetService<DeliveryLedgerSource>()?.Templates(sp),
             sp.GetService<DeliveryLedgerSource>()?.Cache(sp),
-            sp.GetRequiredService<IRecordSearchFactory>()));
+            sp.GetRequiredService<IRecordSearchFactory>(),
+            Partitions: sp.GetService<DeliveryLedgerSource>()?.Partitions(sp)));
 
         // Execution: the run executors behind the platform's document executor, and the ad-hoc compute operations
         // a node runs for the control plane (target probe, record read-back, source row read-back, record preview and removal).
@@ -131,6 +133,11 @@ public static class DeliveryServices
         // The central configuration is registered for every host, not the control plane alone: the control plane reads it
         // to supply the runs it queues, and the CLI reads and writes it so a deployment can configure an estate.
         services.AddSingleton(sp => new Catalog.DeliveryConfigStore(sp.GetRequiredService<DeliveryLedgerSource>().Contexts(sp)));
+
+        // The partition registry: which partitions a flow that names none serves, and the default a run that names none runs in.
+        // One registry per host, the one the engine reads: a host without the module's database gets one that says so when used.
+        services.AddSingleton(sp => sp.GetRequiredService<DeliveryLedgerSource>().Partitions(sp) ?? new DeliveryPartitionRegistry(null));
+        services.AddSingleton<IPartitionRegistry>(sp => sp.GetRequiredService<DeliveryPartitionRegistry>());
         return services;
     }
 
@@ -157,6 +164,7 @@ public sealed class DeliveryLedgerSource
     private ILedger? _ledger;
     private ITemplateStore? _templates;
     private OsduCacheStore? _cache;
+    private DeliveryPartitionRegistry? _partitions;
 
     public DeliveryLedgerSource(Func<IServiceProvider, Func<OsduDbContext>?> contexts)
     {
@@ -188,6 +196,14 @@ public sealed class DeliveryLedgerSource
         return _cache;
     }
 
+    /// <summary>The partition registry, or null when the host has no osdu database connection.</summary>
+    public DeliveryPartitionRegistry? Partitions(IServiceProvider provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        Resolve(provider);
+        return _partitions;
+    }
+
     /// <summary>The context factory, or null when the host has no osdu database connection.</summary>
     public Func<OsduDbContext>? Contexts(IServiceProvider provider)
     {
@@ -206,6 +222,7 @@ public sealed class DeliveryLedgerSource
                 _ledger = _factory is null ? null : new OsduLedger(_factory, provider.GetRequiredService<TimeProvider>());
                 _templates = _factory is null ? null : new OsduTemplateStore(_factory, provider.GetRequiredService<TimeProvider>());
                 _cache = _factory is null ? null : new OsduCacheStore(_factory);
+                _partitions = _factory is null ? null : new DeliveryPartitionRegistry(_factory);
                 _resolved = true;
             }
         }
