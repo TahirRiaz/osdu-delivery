@@ -191,6 +191,15 @@ Both are checked when a whole run starts (not a re-run of a submission, a record
 the whole run that started them already passed), and a check that passed is remembered by the host, so a flow that
 passes is read once per host rather than once per run.
 
+The ledger is keyed by partition ([ledger.md](../osdu/docs/ledger.md), Partitions). Every ledger table (records, their
+identities, attempts, submissions, work batches, leases, events, watermarks, activities, retrievals) carries the
+partition's number first in its primary key and in every index that serves a listing, and a directory (`osdu.Ledger`)
+holds the partition each ledger identity belongs to. A run registers its ledger in the partition it delivers to before it
+writes a row of it, and a registration naming another partition than the directory holds is refused, naming both: a
+header flow whose `${env:}` header resolves to another partition on another node stops before it mixes two partitions'
+records. The upgrade places each existing ledger from its interface rows or its records' OSDU ids; one it cannot place is
+adopted by its next run, unless its records were delivered elsewhere.
+
 ## 5. Central configuration per partition
 
 A property of the central configuration (`osdu.ConfigProperty`) may be set for the whole control plane, for one
@@ -244,6 +253,13 @@ even when there is one choice, because which partition a view is about is what a
   the choice, follows a page whose link names its partition, and links to the Partitions page.
 - The Partitions page lists the same partitions with who registered each and when, and gives an admin register,
   describe, make default and remove.
+- The title bar's partition is a global filter. Every call the GUI makes carries it (`X-Osdu-Partition`, a
+  `GuiModule.requestHeaders` contribution, a generic extension point of SQLFlow's GUI), and every read across flows
+  answers in it: the Records page's lookup, recent listing and flows to narrow to, the audit trail, and the search box.
+  The Delivery overview counts each flow in it, and dims a flow that delivers only to other partitions, saying where,
+  and leaves it out of the totals; a flow whose partition is its header's is counted in the partition its ledger is kept
+  under. A flow's pages say when the flow does not deliver to it. With no partition known, every read is every
+  partition's, and each row names its own.
 - The trigger dialog reads the partitions a flow serves through the pipeline it is launched for
   (`TriggerFieldsProps.pipelineId`, a generic extension point of SQLFlow's GUI). It opens on the partition a repeated run
   ran in, else the title bar's when the flow serves it, else the registry's default, marked as such. A delivery run
@@ -266,14 +282,22 @@ partition the flow does not serve. Two routes read the flow whole without one: t
 interface in every partition served, each row naming its partition, and the counts add every partition up and list the
 partitions. Record routes name the ledger's flow id and bind to the partition the ledger keeps, registered or not, so a
 record of a partition since taken out of the registry can still be read and acted on; a run it queues is settled again
-when it starts. A record, a submission, a lookup hit and a ledger choice name their partition. The configuration routes
-take `?partition=` to set, remove and read a partition's values.
+when it starts. The routes that read what a ledger kept (a flow's records, submissions, audit trail, counts and
+interfaces) also bind a partition taken out of the registry while the ledger's directory keeps a ledger of the flow in
+it; a run, a preview or a removal in it asks for it to be registered again. A record, a submission, an activity, a lookup
+hit and a ledger choice name their partition. A flow's counts name the partition a flow whose partition is its header's
+is kept under (`headerPartition`), which a request never names back. The configuration routes take `?partition=` to set,
+remove and read a partition's values.
+
+The reads across flows (`GET /delivery/records`, `/delivery/records/flows`, `/delivery/activities` without a flow, and
+the search box's records) take `?partition=`, else the `X-Osdu-Partition` header, else read every partition. A flow and
+a partition named together are both filters.
 
 The registry's routes:
 
 | Route | Does |
 | --- | --- |
-| `GET /delivery/partitions` | Every registered partition and every partition something is kept under, with `registered`, `isDefault`, `description`, who registered it, its cache and its flows. |
+| `GET /delivery/partitions` | Every registered partition and every partition something is kept under (a cache, a flow that names it, a ledger), with `registered`, `isDefault`, `description`, who registered it, its cache, its flows and how many ledgers it keeps. |
 | `POST /delivery/partitions` | Registers `{ name, description, isDefault }` (admin). 409 when registered already. |
 | `PUT /delivery/partitions/{name}` | Sets `{ description }` (admin). |
 | `POST /delivery/partitions/{name}/default` | Makes it the default (admin). |
@@ -291,7 +315,8 @@ next sync.
   and cache definition ids. Their partition need not be registered.
 - A document that named neither `partitions` nor the header was refused before; it is now registry-driven.
 - Retrieval flows keep their `data-partition-id` header, and refuse the `partition` run value.
-- Moving a flow between the paths is a change in the repository, never made by the engine. The Recall estate names
-  `partitions: [dev]` on its cache flows and `dev` keeping the delivery flow's ledger; moving it to the registry is
-  removing `partitions` and writing `keepLedger: dev` at the top of each delivery flow, with `dev` registered as the
-  default.
+- Moving a flow between the paths is a change in the repository, never made by the engine. The Recall estate made that
+  move: its cache flows name no partitions, and its delivery flow writes `keepLedger: dev` at the top, with `dev`
+  registered as the default, so every registered partition is served and `dev` keeps the ledger it always had.
+- The ledger's upgrade to partition keys (`LedgerPartitions`, module version 1.14.0) changes no ledger identity and
+  moves no record between ledgers: it records the partition each ledger already belongs to.

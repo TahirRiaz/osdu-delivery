@@ -420,6 +420,54 @@ An ingestion table can feed several OSDU flows, each rendering the rows with its
   index: the loser's slice of staging is rolled back, runs again, and then holds its record naming the winner. A slice
   the database ends as a deadlock victim is run again the same way (see [Many nodes, one table](#many-nodes-one-table)).
 
+## Partitions
+
+One control plane delivers to several OSDU partitions at once: a flow that names its partitions, or follows the registry,
+delivers some rows to `dev` and others to `test` from the same instance, and a flow whose partition is its
+`data-partition-id` header delivers to the one its header resolves to ([partitions-design.md](../../docs/partitions-design.md)).
+Every element of the ledger is therefore one partition's, and the partition is part of every ledger table's key.
+
+- **Every ledger table leads with the partition.** `osdu.Record`, `RecordIdentity`, `Attempt`, `Submission`,
+  `WorkBatch`, `Lease`, `RecordEvent`, `SourceWatermark`, `Activity` and `Retrieval` each carry `PartitionId`, and each
+  primary key starts with it, so one partition's rows are one range of every clustered index and of every index that
+  serves a listing. A partition's rows never interleave with another's, a partition's reads never touch another's pages,
+  and a partition can later be moved to a filegroup or a table partition of its own without a key change.
+- **The key is a number.** A data-partition-id is up to 200 characters; carried in every key it would push the
+  source-file index (`SourceFileName` is 800 characters) past SQL Server's 1,700-byte limit on a nonclustered key, and
+  widen every index of the largest tables. `osdu.LedgerPartition (PartitionId smallint identity, Name unique)` numbers
+  each partition once, the first time a ledger is kept under it, and the tables carry the two-byte number.
+- **The directory says which partition a ledger belongs to.** `osdu.Ledger (PartitionId, FlowId unique, Kind, FlowName,
+  Interface, LedgerName, RegisteredUtc)` holds one row per ledger identity. A ledger belongs to one partition for its
+  whole life: its records' OSDU ids, and every record a later run compares with, are that partition's. The ledger
+  resolves a flow id to its partition number once per process and keeps it.
+- **A run registers its ledger before it writes a row of it.** The runtime (`LedgerRegistration`) registers the ledger in
+  the partition it delivers to: the one the flow is bound to, or the one its header resolves to on the node. The first
+  registration creates the directory row; every later one confirms it. A registration naming another partition than the
+  directory holds is refused before anything runs, naming both: this is how a header that resolves differently than when
+  the ledger was written (an `${env:}` reference set otherwise on another node) is caught before it mixes two partitions'
+  records. A retrieval flow registers its ledger the same way, in the partition its source header names. The control
+  plane registers a ledger it writes to outside a run (a scheduled probe's activity, an intervention) the same way,
+  resolving the header with the central configuration as a run of the flow would. A write to a ledger no one registered
+  is refused; a read of one answers empty.
+- **The upgrade places what it can, and a run places the rest.** `LedgerPartitions` fills the directory from what the
+  ledger already says: the partition `osdu.Interface` describes a ledger in, else the one partition its records' OSDU ids
+  name. A ledger it cannot place (no interface row, and records in no partition or in several) is kept under partition
+  number 0, unassigned, with its rows intact. The first run that registers it adopts it: every row moves to the run's
+  partition, a slice of each table at a time, and then the directory row. Adoption is refused when the ledger holds
+  records delivered to another partition than the run's, since they would become that partition's records.
+- **Reads name their partition.** A read of one ledger reads its partition's range. A read across ledgers (the Records
+  page's lookup and recent listing, the audit trail, the submissions listing, the search box) takes a partition: the one
+  a request names, else the workbench's (the `X-Osdu-Partition` header every call from the GUI carries), else every
+  partition, each read through its own range of the partition-first index and merged. A ledger and a partition named
+  together are both filters: a ledger of another partition reads empty. Waits, holders and held ids are the partition's
+  of the ledger asked about, since an OSDU id is referred to within its partition.
+- **Records of a partition taken out of the registry stay readable.** Removing a partition from the registry deletes
+  nothing; its ledgers stay in the directory. A flow's pages, the Records page and the audit trail read them when that
+  partition is picked, and the Partitions page keeps listing the partition while a ledger is kept under it. A run in it
+  asks for it to be registered again.
+- **Telemetry is tagged by partition.** `osdu_delivery.records` and `osdu_delivery.probes` carry a `partition` tag, the
+  partition the record's ledger is kept under, so a dashboard reads one partition or adds them up.
+
 ## Leasing
 
 A worker does not write the record table while it delivers. It writes its lease row, the events it appends and the
@@ -525,27 +573,40 @@ every other one on those rows: a serialization point that grew with the fleet ra
 
 ## Indexes and search
 
-Listings are index-backed so the GUI answers in milliseconds at any estate size:
+Listings are index-backed so the GUI answers in milliseconds at any estate size. Every key and every index that serves
+a listing leads with `PartitionId` ([Partitions](#partitions)), so a partition's rows are one range of it; the few that
+do not are seeks on an id that is unique across partitions, where the partition would only widen the key.
 
 | Index | Serves |
 | --- | --- |
-| `Record (FlowId, Status, NextAttemptUtc) INCLUDE (LastSubmissionId, UpdatedUtc, PendingDocumentRef)`, `(FlowId, LastSubmissionId, Status, NextAttemptUtc) INCLUDE (UpdatedUtc)` | the worker's claim and its other reads (what is due next, the settled submissions with due work), for a flow and for one submission, from the index alone |
-| `Record (FlowId, Status, UpdatedUtc)`, `(FlowId, LastSubmissionId, UpdatedUtc)` | a status's or a submission's records, most recent first, read in index order |
-| `Record (LastSubmissionId, WorkBatch)`, `(LeaseOwner)`, `WorkBatch (FlowId, Status, CreatedUtc)`, `(SubmissionId, Status)` | the batch claim, its records, the records one lease holds (its hand-back, and the expiry a listing shows), the submission's batch list |
-| `Lease (FlowId, ExpiresUtc)`, `(SubmissionId, ExpiresUtc)` | the leases of a flow that ran out, for the recovery; the next expiry a run waits for, for a flow and for one submission |
-| `RecordEvent (LeaseToken, FlowId, DeliveryKey, EventId)`, `(FlowId, AtUtc) INCLUDE (LeaseToken)` | one lease's events in record order, a slice at a time, for its checkpoint; a flow's old events, for the recovery of those whose lease is gone |
-| `Retrieval (FlowId, StartedUtc)`, `(FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval flow's runs, the watermark chain (the last done run), the run's row |
-| `Record (FlowId, Label)`, `(FlowId, SourceKey)`, `(FlowId, TargetId)` | prefix search (`LIKE 'term%'`) on the three identity columns |
-| `Record (FlowId, UpdatedUtc)`, `(FlowId, LastDeliveredUtc)`, `(FlowId, LastVerifyOutcome)` | recency listings, the last delivery and the part-hour of the 24-hour count, drift |
-| `Record` primary key `(FlowId, DeliveryKey)` | one flow's record, and key-ordered walks of one flow: a removal's key list, a keys selection's pages |
-| `Record (DeliveryKey)` | the lookup across every flow by delivery key: one record per flow that reads the row |
-| `Record (ClaimedTargetId) WHERE ClaimedTargetId IS NOT NULL`, unique, binary collation | one flow per OSDU id: the claim check staging runs, and the database's refusal of a second claim |
-| `Record (CacheSetId, DeliveryKey, FlowId) WHERE CacheSetId IS NOT NULL` | a cache change's rollout, in key and then flow order from its cursor |
-| `Record (FlowId, SourceFileName, SourceRowNumber)`, global `(SourceFileName)` | "which records came from this file", inside one flow and across the estate |
-| `Record (FlowId, PlanRequestedUtc) WHERE PlanRequestedUtc IS NOT NULL` | the records the planner pages each run, so it stays as small as the backlog |
-| `Attempt (FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order |
-| `Activity (FlowId, StartedUtc)`, `(FlowId, DeliveryKey, StartedUtc)`, `(Kind, StartedUtc)`, `(Actor, StartedUtc)`, `(SubmissionId)`, `(RunId)` | the audit views and their filters, and one record's interventions |
+| `Record` primary key `(PartitionId, FlowId, DeliveryKey)` | one flow's record, and key-ordered walks of one flow: a removal's key list, a keys selection's pages, the identity backfill's cursor |
+| `Record (PartitionId, FlowId, Status, NextAttemptUtc) INCLUDE (LastSubmissionId, UpdatedUtc, PendingDocumentRef)`, `(PartitionId, FlowId, LastSubmissionId, Status, NextAttemptUtc) INCLUDE (UpdatedUtc)` | the worker's claim and its other reads (what is due next, the settled submissions with due work), for a flow and for one submission, from the index alone |
+| `Record (PartitionId, FlowId, Status, UpdatedUtc)`, `(PartitionId, FlowId, LastSubmissionId, UpdatedUtc)` | a status's or a submission's records, most recent first, read in index order |
+| `Record (PartitionId, FlowId, Label)`, `(PartitionId, FlowId, SourceKey)`, `(PartitionId, FlowId, TargetId)` | prefix search (`LIKE 'term%'`) on the three identity columns inside one flow |
+| `Record (PartitionId, FlowId, UpdatedUtc)`, `(PartitionId, FlowId, LastDeliveredUtc)`, `(PartitionId, FlowId, LastVerifiedUtc)`, `(PartitionId, FlowId, LastVerifyOutcome)` | recency listings, the last delivery and the part-hour of the 24-hour count, the verify sweep, drift |
+| `Record (PartitionId, DeliveryKey)`, `(PartitionId, TargetId)`, `(PartitionId, SourceKey)`, `(PartitionId, Label)` | the lookup across every flow of a partition: a delivery key (one record per flow that reads the row), and the prefixes the identity index does not hold yet |
+| `Record (PartitionId, UpdatedUtc)`, `(PartitionId, Status, UpdatedUtc)` | the Records page's recent listing, of a partition and of one custody state, newest first |
+| `Record (PartitionId, FlowId, SourceFileName, SourceRowNumber)`, `(PartitionId, SourceFileName)` | "which records came from this file", inside one flow and across a partition |
+| `Record (PartitionId, FlowId, PlanRequestedUtc) WHERE PlanRequestedUtc IS NOT NULL` | the records the planner pages each run, so it stays as small as the backlog |
+| `Record (PartitionId, WaitingFor) WHERE WaitingFor IS NOT NULL` | the records waiting for an id, released when the record holding it lands |
+| `Record (ClaimedTargetId) WHERE ClaimedTargetId IS NOT NULL`, unique, binary collation | one flow per OSDU id: the claim check staging runs, and the database's refusal of a second claim. An OSDU id names its partition, so it is unique without one |
+| `Record (CacheSetId, DeliveryKey, FlowId) WHERE CacheSetId IS NOT NULL` | a cache change's rollout, in key and then flow order from its cursor; a cache is one partition's, and so is a change to it |
+| `Record (LastSubmissionId, WorkBatch)`, `(LeaseOwner)` | a batch's records, the records one lease holds (its hand-back, and the expiry a listing shows); a submission and a lease token are unique across partitions |
+| `RecordIdentity` primary key `(PartitionId, Token, FlowId, DeliveryKey)`, `(PartitionId, FlowId, DeliveryKey)`, `(PartitionId, FlowId, Token)` | the lookup by what a record is known by, in a partition and in one flow; a record's rows, replaced as a set when it is staged |
+| `Submission (PartitionId, SubmissionId)` primary key, unique `(SubmissionId)`, `(PartitionId, FlowId, ReceivedUtc)`, `(PartitionId, FlowId, Status)`, `(PartitionId, FlowId, Kind, ReceivedUtc)`, `(PartitionId, ReceivedUtc)`, `(RunId)` | a submission by id from anywhere, a flow's submissions newest first, the open ones, the last of a kind, a partition's newest, a run's |
+| `WorkBatch (PartitionId, SubmissionId, Index)` primary key, unique `(SubmissionId, Index) INCLUDE (Status)`, `(PartitionId, FlowId, Status, CreatedUtc)` | the batch claim, and the submission's batch list |
+| `Lease (PartitionId, Token)` primary key, unique `(Token)`, `(PartitionId, FlowId, ExpiresUtc)`, `(SubmissionId, ExpiresUtc)` | a lease by token, the leases of a flow that ran out, for the recovery; the next expiry a run waits for, for a flow and for one submission |
+| `RecordEvent (PartitionId, EventId)` primary key, `(LeaseToken, FlowId, DeliveryKey, EventId)`, `(PartitionId, FlowId, AtUtc) INCLUDE (LeaseToken)` | one lease's events in record order, a slice at a time, for its checkpoint; a flow's old events, for the recovery of those whose lease is gone |
+| `Attempt (PartitionId, AttemptId)` primary key, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, PartitionId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order across every partition |
+| `Activity (PartitionId, ActivityId)` primary key, unique `(ActivityId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(PartitionId, Kind, StartedUtc)`, `(PartitionId, Actor, StartedUtc)`, `(PartitionId, StartedUtc)`, `(SubmissionId)`, `(RunId)` | an activity by id, the audit views and their filters in a partition, one record's interventions, a submission's and a run's |
+| `Retrieval (PartitionId, RetrievalId)` primary key, unique `(RetrievalId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval by id, a retrieval flow's runs, the watermark chain (the last done run), the run's row |
+| `SourceWatermark (PartitionId, FlowId, Scope)` primary key | a flow's watermark per scope |
+| `Ledger (PartitionId, FlowId)` primary key, unique `(FlowId)`, `LedgerPartition (Name)` unique | a ledger's partition, a partition's ledgers, a partition's number |
+| `UpdateTag (Scope, Status)` | a partition's cache changes waiting for a decision, counted for the switcher and the Partitions page |
 | `Run (SubmissionId)`, `Run (ResultSubmissionId)`, `Run (PipelineId, Operation)` | a submission's runs, a flow's runs by operation |
+
+The attempt table's primary key and start-time index, and the record event table's primary key, grow at their end as
+every drain appends; they are set to `OPTIMIZE_FOR_SEQUENTIAL_KEY` where the server has it.
 
 A search term that parses as a UUID matches the delivery key exactly (in a flow's listing, that flow's record; in the
 lookup across every flow, each flow's record of the row); anything else is a prefix over label, source key and target
@@ -658,6 +719,18 @@ sized by its row count, and runs while no host is up.
 inside the transaction of every write to the record table, and it grouped a flow into a handful of rows, so every node
 delivering that flow met every other one there. The statistics are counted from the records instead, and going back
 down recreates the view. It holds no data of its own, so nothing is lost either way.
+
+`LedgerPartitions` (module version 1.14.0) keys the ledger by partition (see [Partitions](#partitions)). It creates
+`osdu.LedgerPartition` and `osdu.Ledger` and fills them from what the ledger already says, before anything else changes:
+every ledger identity any ledger table holds gets a directory row, in the partition `osdu.Interface` describes it in when
+that is one partition, else the one partition its records' OSDU ids name, else unassigned (0), which the ledger's next
+run adopts. It then drops every nonclustered index of the ten ledger tables, adds `PartitionId` to each and fills it from
+the directory, stops (naming the table and the count) if a row belongs to no directory row, makes the column required,
+rebuilds each primary key with the partition first, and builds every index once, partition first, rather than
+rebuilding each as the keys change. It sets the attempt and event tables' ever-increasing keys to
+`OPTIMIZE_FOR_SEQUENTIAL_KEY` again, and adds `UpdateTag (Scope, Status)`. It rewrites every ledger table, so on a large
+ledger it needs log space for the largest of them, and runs while no host is up; a failed migration leaves the ledger
+as it was. Going back down restores the earlier keys and indexes and drops the directory.
 
 The ledger asks nothing of the database but its own schema. 1.5.0 to 1.7.0 read every listing, wait and claim in a
 snapshot transaction, so the database holding the `osdu` schema had to allow snapshot isolation, and one that did not
