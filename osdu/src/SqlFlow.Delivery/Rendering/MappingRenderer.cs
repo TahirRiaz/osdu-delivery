@@ -6,6 +6,7 @@ using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Templates;
 using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
 
 namespace SqlFlow.Delivery.Rendering;
@@ -263,26 +264,7 @@ public sealed class MappingRenderer
         // threads over one renderer.
         var searched = new RenderTrail();
 
-        var key = DeriveKey(record.Row, out var keyValues);
-        var sourceKey = SourceKey.Display(_mapping.Dataset.System, keyValues);
-        if (key is null)
-        {
-            holds.Add($"dataset key incomplete ({sourceKey}): every key column must be non-empty");
-        }
-
-        var document = new JsonObject
-        {
-            ["kind"] = _mapping.Kind,
-            ["data"] = new JsonObject(),
-        };
-
-        string? targetId = null;
-        if (key is { } dk)
-        {
-            targetId = TargetId.Compose(_context.DataPartition, _mapping.EntityType, dk);
-            document["id"] = targetId;
-        }
-
+        var (document, key, sourceKey, targetId) = Start(record, holds);
         Assemble(document, new RowValues(this, record, holds, usages, searched), holds);
 
         var normalized = (JsonObject)CanonicalJson.Normalize(document)!;
@@ -315,6 +297,76 @@ public sealed class MappingRenderer
             Unanswered = searched.Unanswered,
             Choices = searched.Chosen,
         };
+    }
+
+    /// <summary>
+    /// Renders one record the way <see cref="Render"/> does, entry by entry, and says what each entry of
+    /// <paramref name="selection"/> gave: the value it wrote, that it left the variable out and why, that its <c>$when</c>
+    /// does not hold, or the reasons it holds the record. The entries not selected are not evaluated at all, so a check of
+    /// one variable reads only what that variable needs. The record is assembled by the one pass a delivery assembles it
+    /// by; with every entry selected its document and holds are the ones <see cref="Render"/> writes and holds for.
+    /// </summary>
+    /// <remarks>
+    /// An entry waiting on a search the platform has not been asked yet is reported as waiting, with the question; the
+    /// caller asks <see cref="RecordInspection.Unanswered"/> and inspects the record again, as a plan renders it again.
+    /// </remarks>
+    public RecordInspection Inspect(SourceRecord record, EntrySelection selection)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(selection);
+        var holds = new List<string>();
+        var searched = new RenderTrail();
+        var trail = new InspectionTrail(selection);
+        var (document, key, sourceKey, _) = Start(record, holds);
+        Assemble(document, new RowValues(this, record, holds, [], searched), holds, trail);
+        return new RecordInspection
+        {
+            Key = key,
+            SourceKey = sourceKey,
+            Document = document,
+            Outcomes = trail.Outcomes,
+            Holds = holds,
+            Unanswered = searched.Unanswered,
+        };
+    }
+
+    /// <summary>
+    /// Why a record whose search never got an answer is held: the platform was asked and said nothing, so the references
+    /// that depend on the answer are unknown. A plan holds the record with it, and a check reports the entry that asked.
+    /// </summary>
+    public static string Unanswerable(SearchQuestion question)
+    {
+        ArgumentNullException.ThrowIfNull(question);
+        return $"searching {question.Kind} for {question.Field} '{question.Value}' got no answer from the platform";
+    }
+
+    /// <summary>
+    /// What every render of a record starts from: the delivery key (a hold when a key part is empty), the display key, and
+    /// the document with its kind, an empty data block and, when the key is complete, its id.
+    /// </summary>
+    private (JsonObject Document, DeliveryKey? Key, string SourceKey, string? TargetId) Start(SourceRecord record, List<string> holds)
+    {
+        var key = DeriveKey(record.Row, out var keyValues);
+        var sourceKey = SourceKey.Display(_mapping.Dataset.System, keyValues);
+        if (key is null)
+        {
+            holds.Add($"dataset key incomplete ({sourceKey}): every key column must be non-empty");
+        }
+
+        var document = new JsonObject
+        {
+            ["kind"] = _mapping.Kind,
+            ["data"] = new JsonObject(),
+        };
+
+        string? targetId = null;
+        if (key is { } dk)
+        {
+            targetId = TargetId.Compose(_context.DataPartition, _mapping.EntityType, dk);
+            document["id"] = targetId;
+        }
+
+        return (document, key, sourceKey, targetId);
     }
 
     /// <summary>
@@ -431,40 +483,103 @@ public sealed class MappingRenderer
     /// Writes every entry's value into <paramref name="document"/>: the list of attributes a DSPDM business object row owns
     /// (<see cref="DspdmKinds.OwnedProperty"/>), the record's own entries at their targets, then each repeater's array with one
     /// item per row, then the check that the data the schema requires is there. What a value cannot be written for is added
-    /// to <paramref name="holds"/>. The one assembly a render and a shape share.
+    /// to <paramref name="holds"/>. The one assembly a render, an inspection and a shape share.
     /// </summary>
-    private void Assemble(JsonObject document, IRecordValues values, List<string> holds)
+    /// <param name="document">The record being written.</param>
+    /// <param name="values">Where the values come from: a source record's rows, or a shape's placeholders.</param>
+    /// <param name="holds">What the record is held for.</param>
+    /// <param name="trail">
+    /// For an inspection: the entries to evaluate, and where what each gave is noted. Null evaluates every entry and notes
+    /// nothing, which is a render and a shape.
+    /// </param>
+    private void Assemble(JsonObject document, IRecordValues values, List<string> holds, InspectionTrail? trail = null)
     {
         if (_owned is not null)
         {
             document[DspdmKinds.OwnedProperty] = new JsonArray(_owned.Select(a => (JsonNode?)JsonValue.Create(a)).ToArray());
         }
 
+        var selection = trail?.Selection ?? EntrySelection.All;
         foreach (var entry in _recordEntries)
         {
-            if (values.Value(entry, item: null) is { } value)
-            {
-                SetPath(document, entry.Target.Segments.Select(s => s.Name).ToList(), value);
-            }
-        }
-
-        foreach (var (repeater, items) in _repeaters)
-        {
-            if (!values.Applies(repeater))
+            if (!selection.Includes(entry.Target.Text))
             {
                 continue;
             }
 
+            var held = holds.Count;
+            var asked = values.Asked.Count;
+            var value = values.Value(entry, item: null, out var applied);
+            if (value is not null)
+            {
+                SetPath(document, entry.Target.Segments.Select(s => s.Name).ToList(), value);
+            }
+
+            trail?.Add(Outcome(entry, null, null, value, applied, holds, held, values, asked));
+        }
+
+        foreach (var (repeater, items) in _repeaters)
+        {
+            var selected = selection.IsAll ? items : items.Where(item => selection.Includes(item.Target.Text)).ToList();
+            var whole = selection.Covers(repeater.Target.Text);
+            if (!whole && selected.Count == 0 && !selection.Includes(repeater.Target.Text))
+            {
+                continue;
+            }
+
+            // What the repeater itself is held for (a condition or a row filter it cannot test, no item where one is
+            // required), apart from what the entries of its items hold the record for.
+            var own = new List<string>();
+            var start = holds.Count;
+            if (!values.Applies(repeater))
+            {
+                own.AddRange(holds.Skip(start));
+                if (trail is not null)
+                {
+                    var why = own.Count > 0 ? own : [$"$when {repeater.AppliesWhen} does not hold"];
+                    if (whole)
+                    {
+                        trail.Add(new EntryOutcome
+                        {
+                            Target = repeater.Target.Text,
+                            Entry = repeater,
+                            Kind = own.Count > 0 ? EntryOutcomeKind.Held : EntryOutcomeKind.NotApplicable,
+                            Reasons = why,
+                        });
+                    }
+
+                    NoItem(trail, selected, $"{repeater.Target.Text} writes no item for the row: {string.Join("; ", why)}");
+                }
+
+                continue;
+            }
+
             var array = new JsonArray();
+            var ordinal = -1;
+            var kept = 0;
             foreach (var row in values.Items(repeater))
             {
-                var item = new JsonObject();
-                foreach (var entry in items)
+                ordinal++;
+                var filtered = holds.Count;
+                if (!values.Keeps(repeater, row))
                 {
-                    if (values.Value(entry, row) is { } value)
+                    own.AddRange(holds.Skip(filtered));
+                    continue;
+                }
+
+                kept++;
+                var item = new JsonObject();
+                foreach (var entry in selected)
+                {
+                    var held = holds.Count;
+                    var asked = values.Asked.Count;
+                    var value = values.Value(entry, row, out var applied);
+                    if (value is not null)
                     {
                         SetPath(item, entry.Target.WithinItem, value);
                     }
+
+                    trail?.Add(Outcome(entry, ordinal, row, value, applied, holds, held, values, asked));
                 }
 
                 if (item.Count > 0)
@@ -473,13 +588,44 @@ public sealed class MappingRenderer
                 }
             }
 
+            // An entry of the items met none because the row has no child row the repeater takes, or because testing its
+            // $where held the record; what the array as a whole is held for is the array's, not theirs.
+            if (trail is not null && kept == 0)
+            {
+                NoItem(trail, selected, own.Count > 0
+                    ? $"{repeater.Target.Text} writes no item for the row: {string.Join("; ", own)}"
+                    : $"the row has no child row in {repeater.Source}{(repeater.RowFilter is { } filter ? $" where {filter}" : string.Empty)}");
+            }
+
             if (array.Count > 0)
             {
                 SetPath(document, repeater.Target.Segments.Select(s => s.Name).ToList(), array);
             }
-            else if (repeater.Required)
+            else if (repeater.Required && whole)
             {
-                holds.Add($"{repeater.Target.Text}: {repeater.Source} has no rows with values, and the entry is required");
+                // Whether the array is empty is known only when every entry of its items was evaluated.
+                var none = $"{repeater.Target.Text}: {repeater.Source} has no rows with values, and the entry is required";
+                holds.Add(none);
+                own.Add(none);
+            }
+
+            if (trail is null)
+            {
+                continue;
+            }
+
+            if (whole)
+            {
+                trail.Add(new EntryOutcome
+                {
+                    Target = repeater.Target.Text,
+                    Entry = repeater,
+                    Kind = own.Count > 0 ? EntryOutcomeKind.Held : array.Count > 0 ? EntryOutcomeKind.Value : EntryOutcomeKind.Empty,
+                    Value = own.Count == 0 && array.Count > 0 ? array : null,
+                    Reasons = own.Count > 0 || array.Count > 0
+                        ? own
+                        : [kept == 0 ? $"{repeater.Source} has no rows{(repeater.RowFilter is { } where ? $" where {where}" : string.Empty)}" : $"no row of {repeater.Source} gives a value to any property of its item"],
+                });
             }
         }
 
@@ -487,11 +633,60 @@ public sealed class MappingRenderer
         {
             foreach (var required in _requiredData)
             {
-                if (data[required] is null)
+                var target = $"{TemplatePath.Prefix}.data.{required}";
+                if (!selection.Covers(target) || data[required] is not null)
                 {
-                    holds.Add($"schema-required property data.{required} rendered empty");
+                    continue;
                 }
+
+                var reason = $"schema-required property data.{required} rendered empty";
+                holds.Add(reason);
+                trail?.Required(target, reason);
             }
+        }
+    }
+
+    /// <summary>
+    /// What one entry gave, from what its evaluation left behind: a question it asked makes it wait, a hold it added holds
+    /// it, a condition that did not hold makes it not apply, and no value leaves the variable out, with why.
+    /// </summary>
+    private static EntryOutcome Outcome(
+        MappingEntry entry, int? item, SourceRow? row, JsonNode? value, bool applied, List<string> holds, int held, IRecordValues values, int asked)
+    {
+        var target = entry.Target.Text;
+        if (values.Asked.Count > asked)
+        {
+            return new EntryOutcome
+            {
+                Target = target,
+                Entry = entry,
+                Item = item,
+                Kind = EntryOutcomeKind.Waiting,
+                Reasons = values.Asked.Skip(asked).Select(Unanswerable).ToList(),
+            };
+        }
+
+        if (holds.Count > held)
+        {
+            return new EntryOutcome { Target = target, Entry = entry, Item = item, Kind = EntryOutcomeKind.Held, Reasons = holds.Skip(held).ToList() };
+        }
+
+        if (!applied)
+        {
+            return new EntryOutcome { Target = target, Entry = entry, Item = item, Kind = EntryOutcomeKind.NotApplicable, Reasons = [$"$when {entry.AppliesWhen} does not hold"] };
+        }
+
+        return value is null
+            ? new EntryOutcome { Target = target, Entry = entry, Item = item, Kind = EntryOutcomeKind.Empty, Reasons = [values.WhyEmpty(entry, row)] }
+            : new EntryOutcome { Target = target, Entry = entry, Item = item, Kind = EntryOutcomeKind.Value, Value = value };
+    }
+
+    /// <summary>Notes, for every selected entry of a repeated item, that the row gives it no item to write, and why.</summary>
+    private static void NoItem(InspectionTrail trail, IReadOnlyList<MappingEntry> selected, string reason)
+    {
+        foreach (var entry in selected)
+        {
+            trail.Add(new EntryOutcome { Target = entry.Target.Text, Entry = entry, Kind = EntryOutcomeKind.NotApplicable, Reasons = [reason] });
         }
     }
 
@@ -536,37 +731,55 @@ public sealed class MappingRenderer
     /// <summary>Where an assembled record's values come from: a source record's rows, or the placeholders of a shape.</summary>
     private interface IRecordValues
     {
-        /// <summary>The entry's value, for the record's row or for one item of a repeater; null leaves the variable out.</summary>
-        JsonNode? Value(MappingEntry entry, SourceRow? item);
+        /// <summary>
+        /// The entry's value, for the record's row or for one item of a repeater; null leaves the variable out.
+        /// <paramref name="applied"/> is false when the entry's <c>$when</c> does not hold for the row.
+        /// </summary>
+        JsonNode? Value(MappingEntry entry, SourceRow? item, out bool applied);
 
         /// <summary>Whether the repeater's condition lets it write its array.</summary>
         bool Applies(MappingEntry repeater);
 
-        /// <summary>The rows the repeater writes one item for.</summary>
+        /// <summary>The child rows the repeater reads, each of which <see cref="Keeps"/> decides on.</summary>
         IEnumerable<SourceRow?> Items(MappingEntry repeater);
+
+        /// <summary>Whether the repeater's <c>$where</c> lets <paramref name="row"/> become an item.</summary>
+        bool Keeps(MappingEntry repeater, SourceRow? row);
+
+        /// <summary>The questions the values met so far are waiting on the platform for, in the order they were asked.</summary>
+        IReadOnlyList<SearchQuestion> Asked { get; }
+
+        /// <summary>Why an entry that wrote nothing gave no value for the row, as a render holding it for that would say.</summary>
+        string WhyEmpty(MappingEntry entry, SourceRow? item);
     }
 
     /// <summary>A source record's values, as a delivery renders them.</summary>
     private sealed class RowValues(MappingRenderer renderer, SourceRecord record, List<string> holds, List<CacheUsage> usages, RenderTrail searched) : IRecordValues
     {
-        public JsonNode? Value(MappingEntry entry, SourceRow? item) => EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages, searched);
+        public JsonNode? Value(MappingEntry entry, SourceRow? item, out bool applied)
+            => EntryValues.Evaluate(entry, record.Row, item, renderer, holds, usages, searched, out applied);
 
         public bool Applies(MappingEntry repeater)
             => repeater.AppliesWhen is not { } condition || EntryValues.Applies(condition, record.Row, item: null, renderer, holds, repeater.Target.Text);
 
-        public IEnumerable<SourceRow?> Items(MappingEntry repeater)
-        {
-            var rows = record.ScopeRows(repeater.Source!.Child!);
-            return repeater.RowFilter is not { } filter
-                ? rows
-                : rows.Where(row => EntryValues.Applies(filter, record.Row, row, renderer, holds, repeater.Target.Text));
-        }
+        public IEnumerable<SourceRow?> Items(MappingEntry repeater) => record.ScopeRows(repeater.Source!.Child!);
+
+        public bool Keeps(MappingEntry repeater, SourceRow? row)
+            => repeater.RowFilter is not { } filter || EntryValues.Applies(filter, record.Row, row, renderer, holds, repeater.Target.Text);
+
+        public IReadOnlyList<SearchQuestion> Asked => searched.Unanswered;
+
+        public string WhyEmpty(MappingEntry entry, SourceRow? item) => EntryValues.WhyEmpty(entry, record.Row, item, renderer);
     }
 
     /// <summary>Placeholders in place of a record's values: one item per repeater, whatever its condition, with a note saying how many a record takes.</summary>
     private sealed class ShapeValues(MappingRenderer renderer, List<string> notes) : IRecordValues
     {
-        public JsonNode? Value(MappingEntry entry, SourceRow? item) => EntryValues.Describe(entry, renderer, notes);
+        public JsonNode? Value(MappingEntry entry, SourceRow? item, out bool applied)
+        {
+            applied = true;
+            return EntryValues.Describe(entry, renderer, notes);
+        }
 
         public bool Applies(MappingEntry repeater) => true;
 
@@ -578,6 +791,12 @@ public sealed class MappingRenderer
             notes.Add($"{repeater.Target.Text}: one item per row of {repeater.Source}{where}{when}; {none}");
             return [null];
         }
+
+        public bool Keeps(MappingEntry repeater, SourceRow? row) => true;
+
+        public IReadOnlyList<SearchQuestion> Asked => [];
+
+        public string WhyEmpty(MappingEntry entry, SourceRow? item) => "a shape reads no row";
     }
 }
 

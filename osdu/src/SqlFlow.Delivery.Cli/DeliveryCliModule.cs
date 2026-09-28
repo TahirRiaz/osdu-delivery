@@ -10,7 +10,7 @@ namespace SqlFlow.Delivery.Cli;
 /// <summary>
 /// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval and cache flow kinds (so SQLFlow's own
 /// <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
-/// module's database, and the module's own verbs: <c>check</c>, <c>preview</c>, <c>fixtures</c>, <c>records</c>, <c>config</c>,
+/// module's database, and the module's own verbs: <c>check</c>, <c>preview</c>, <c>values</c>, <c>fixtures</c>, <c>records</c>, <c>config</c>,
 /// <c>partition</c>, <c>cache</c> and <c>template</c>.
 /// </summary>
 /// <remarks>
@@ -56,6 +56,27 @@ public sealed class DeliveryCliModule : ICliModule
             DeliveryPreviewVerbs.PreviewAsync)
         {
             ValueOptions = ["--interface", "--partition", "--key", "--out"],
+        },
+        new CliVerb(
+            "values",
+            [
+                "sqlflow values   <flow.yaml> [--interface <name>] [--partition <id>] [--target <osdu.path>]... [--set k=v]",
+                "                 [--max-rows <n>] [--samples <n>] [--skip <n>] [--rows <file.csv>] [--out <file.json>]",
+                "                                   Find the rows that will not give the mapping's variables the values the",
+                "                                   template expects: every row of the scope rendered as a delivery renders it,",
+                "                                   and every value held to the template's rules. Says, variable by variable,",
+                "                                   how many rows hold the record, write a value the template does not accept,",
+                "                                   or leave the variable out, with each reason, the values behind it and",
+                "                                   example records (needs --db). --target checks one variable and what is",
+                "                                   inside it (repeat it for more); --max-rows reads that many rows (10,000 by",
+                "                                   default, 0 for the whole scope); --samples names that many examples per",
+                "                                   reason after the first --skip; --rows writes every failing row to CSV;",
+                "                                   --out writes the whole check as JSON. Exits 1 when a row is held or",
+                "                                   writes a value the template does not accept. Nothing is written elsewhere.",
+            ],
+            DeliveryValueCheckVerbs.ValuesAsync)
+        {
+            ValueOptions = ["--interface", "--partition", "--target", "--max-rows", "--samples", "--skip", "--rows", "--out"],
         },
         new CliVerb(
             "fixtures",

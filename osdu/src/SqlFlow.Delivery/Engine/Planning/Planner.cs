@@ -776,7 +776,7 @@ public sealed class Planner
     /// where the partition keeps a lowercased copy of text. A $coalesce node asks its searching alternatives one after
     /// another, so it counts the lines of all of them. Each round answers what the one before it asked.
     /// </summary>
-    private static int SearchRounds(MappingDefinition mapping)
+    internal static int SearchRounds(MappingDefinition mapping)
         => 2 * mapping.Entries
             .Select(e => e.ValueNodes.Where(node => node.Source?.Kind == MappingSourceKind.Search).Sum(node => node.FindBy.Count))
             .Where(lines => lines > 0)
@@ -851,7 +851,7 @@ public sealed class Planner
             // than sent without them.
             render = render with
             {
-                Holds = [.. render.Holds, .. render.Unanswered.Select(q => $"searching {q.Kind} for {q.Field} '{q.Value}' got no answer from the platform")],
+                Holds = [.. render.Holds, .. render.Unanswered.Select(MappingRenderer.Unanswerable)],
                 Unanswered = [],
             };
         }

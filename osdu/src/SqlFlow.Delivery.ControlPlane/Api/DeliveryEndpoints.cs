@@ -444,6 +444,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/activities/{activityId:long}", GetActivityAsync).WithName("GetDeliveryActivity");
         delivery.MapGet("/mappings", ListMappingsAsync).WithName("ListDeliveryMappings");
         delivery.MapGet("/mappings/{mappingId:guid}", GetMappingAsync).WithName("GetDeliveryMapping");
+        DeliveryValueCheckEndpoints.MapReads(delivery);
         delivery.MapGet("/caches", ListCachesAsync).WithName("ListDeliveryCaches");
         delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
         delivery.MapGet("/cache/versions", ListCacheVersionsAsync).WithName("ListDeliveryCacheVersions");
@@ -472,6 +473,7 @@ public static class DeliveryEndpoints
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/source", ReadSourceAsync).WithName("ReadDeliveryRecordSource");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/preview", PreviewRecordAsync).WithName("PreviewDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/preview", PreviewAsync).WithName("PreviewDeliveryFlowRecord");
+        DeliveryValueCheckEndpoints.MapWrites(delivery);
         delivery.MapPost("/flows/{pipelineId:guid}/osdu/read", ReadTargetAsync).WithName("ReadDeliveryOsduRecord");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
@@ -1870,7 +1872,7 @@ public static class DeliveryEndpoints
     /// Why the parameter values cannot read the flow's scope, or null when they can: a name the flow does not declare, or a
     /// required parameter without a default that is given no value.
     /// </summary>
-    private static string? ParameterProblem(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
+    internal static string? ParameterProblem(FlowDefinition flow, IReadOnlyDictionary<string, string> values)
     {
         var undeclared = values.Keys.Where(name => !flow.Parameters.ContainsKey(name)).ToList();
         if (undeclared.Count > 0)
@@ -1961,7 +1963,7 @@ public static class DeliveryEndpoints
         return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
     }
 
-    private static ProblemHttpResult Invalid(string detail)
+    internal static ProblemHttpResult Invalid(string detail)
         => TypedResults.Problem(detail: detail, statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
 
     /// <summary>

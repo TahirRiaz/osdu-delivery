@@ -20,6 +20,7 @@ import {
   ToggleLeft,
   TriangleAlert,
   Type,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +42,9 @@ import { usePersistentLayout } from "@/layout/workbench/usePersistentLayout";
 import { entryText, propertyRow } from "./mappingDraft";
 import { EntryDetail } from "./MappingEntryDetail";
 import { holderPath, roleLabel, shapeText, splitPath } from "./templateFormat";
+import { useValueCheckContext } from "./useValueCheck";
+import { CheckValuesButton, ValueCheckChip, VariableValueCheck } from "./ValueCheckResult";
+import { outcomeVisual } from "./valueCheck";
 import { withKeyVariables } from "./variableRows";
 
 /** One variable in the tree, with the variables it holds that survive the filter. */
@@ -301,6 +305,7 @@ function VariableLabel({ node }: { node: VariableNode }) {
           />
         </span>
       )}
+      <ValueCheckChip path={variable.path} />
       {role !== null && (
         <span
           role="img"
@@ -359,6 +364,13 @@ function VariableProperties({ variable, holds }: { variable: DeliveryTemplateVar
         <div className="flex min-w-0 items-center gap-1">
           <span className={cn("min-w-0 break-all font-mono text-[14px] font-semibold", role?.textClass)}>{leaf}</span>
           <CopyButton iconOnly label="Copy the path" text={variable.path} testId="templates-view-properties-copy" />
+          {/* A mapping laid over the template fills what it covers; what nothing fills has no values to check. */}
+          {covered !== undefined && (
+            <CheckValuesButton
+              path={variable.path}
+              checkable={covered.entry !== null || covered.writtenBy !== null || covered.state !== "Empty"}
+            />
+          )}
         </div>
         <span className="break-all font-mono text-[12px] text-muted-foreground" data-testid="templates-view-properties-path">
           {variable.path}
@@ -390,6 +402,8 @@ function VariableProperties({ variable, holds }: { variable: DeliveryTemplateVar
           {covered.finding.message}
         </p>
       )}
+
+      <VariableValueCheck path={variable.path} />
 
       {(variable.title !== null || variable.description !== null) && (
         <div className="flex flex-col gap-1">
@@ -498,6 +512,25 @@ export function TemplateVariableExplorer({ variables, mapping }: { variables: De
   );
   const layout = usePersistentLayout("sqlflow.templates.variables.layout");
 
+  // A value check of the mapping being looked at narrows the tree to what fails, and names attributes to show.
+  const valueCheck = useValueCheckContext();
+  const failingFilter = valueCheck?.filter ?? null;
+  const passesCheck = valueCheck?.passes;
+  const focus = valueCheck?.focus ?? null;
+  const [seenFocus, setSeenFocus] = useState<number | null>(focus?.nonce ?? null);
+  if (focus !== null && focus.nonce !== seenFocus) {
+    setSeenFocus(focus.nonce);
+    setSelectedId(focus.path);
+    setOpened((current) => {
+      const next = new Set(current);
+      for (let holder = holderPath(focus.path); holder !== null; holder = holderPath(holder)) {
+        next.add(holder);
+      }
+      return next;
+    });
+    setClosed(new Set());
+  }
+
   // What the mapping fills, by variable: the entry filling it, and the worst finding on it, an error over a warning.
   const covered = useMemo(() => {
     if (mapping === undefined) {
@@ -553,14 +586,15 @@ export function TemplateVariableExplorer({ variables, mapping }: { variables: De
   // Show missing and Show unfilled both ask about the whole template, so they step outside the overview rather than
   // narrowing what it has already left out.
   const overview = covered !== null && !showEverything && !showGaps && !showMissing;
-  const narrowed = term !== "" || showRequired || overview || ((showGaps || showMissing) && covered !== null);
+  const narrowed = term !== "" || showRequired || overview || ((showGaps || showMissing) && covered !== null) || failingFilter !== null;
   const matches = useMemo(
     () => (variable: DeliveryTemplateVariable) => (!showRequired || variable.required)
       && (!showMissing || covered === null || covered.get(variable.path)?.finding != null)
       && (!showGaps || covered === null || isGap(covered.get(variable.path)))
       && (!overview || !inOverview(covered?.get(variable.path)))
+      && (failingFilter === null || passesCheck === undefined || passesCheck(variable.path))
       && textMatches(variable, term, covered?.get(variable.path)),
-    [covered, overview, showGaps, showMissing, showRequired, term],
+    [covered, overview, showGaps, showMissing, showRequired, term, failingFilter, passesCheck],
   );
   const tree = useMemo(
     () => buildTree(
@@ -717,6 +751,18 @@ export function TemplateVariableExplorer({ variables, mapping }: { variables: De
             </Label>
           )}
           <div className="flex items-center gap-1 sm:ml-auto">
+            {failingFilter !== null && valueCheck !== null && (
+              <button
+                type="button"
+                onClick={() => valueCheck.setFilter(null)}
+                className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                title="Show every attribute again"
+                data-testid="templates-view-failing-filter"
+              >
+                {failingFilter === "any" ? "Failing only" : `${outcomeVisual(failingFilter).label} only`}
+                <X className="size-3" />
+              </button>
+            )}
             <span className="mr-1 text-xs text-muted-foreground" data-testid="templates-view-variables-count">
               {tree.matched} of {listed.length} variables{counts === null ? "" : `, ${counts.filled} filled, ${counts.gaps} required missing`}
             </span>
@@ -743,9 +789,11 @@ export function TemplateVariableExplorer({ variables, mapping }: { variables: De
                   {tree.roots.length === 0
                     ? (
                       <p className="px-2 py-3 text-[13px] text-muted-foreground" data-testid="templates-view-variables-empty">
-                        {showMissing && term === ""
-                          ? "Nothing the schema requires of this record is missing: every required variable the record reaches is filled on every row."
-                          : "No variable matches the filter."}
+                        {failingFilter !== null && term === ""
+                          ? "No attribute checked has rows that fail this way."
+                          : showMissing && term === ""
+                            ? "Nothing the schema requires of this record is missing: every required variable the record reaches is filled on every row."
+                            : "No variable matches the filter."}
                       </p>
                     )
                     : tree.roots.map((node) => <VariableBranch key={node.variable.path} node={node} />)}

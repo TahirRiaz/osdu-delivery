@@ -1,4 +1,4 @@
-# sqlflow check, preview, fixtures, cache, template, and the OSDU run options
+# sqlflow check, preview, values, fixtures, cache, template, and the OSDU run options
 
 ## check
 
@@ -75,6 +75,39 @@ mints). `--json` prints the preview as JSON; `--out` writes it to a file, whatev
 
 A source that declares interfaces is previewed one interface at a time, each with its own first record; `--interface`
 previews one, and a key needs it, since a key names a record of one interface.
+
+## values
+
+```text
+sqlflow values <flow.yaml> [--interface <name>] [--partition <name>] [--target <osdu.path>]... [--set name=value]...
+               [--max-rows <n>] [--samples <n>] [--skip <n>] [--rows <file.csv>] [--out <file.json>] [--db <ref>] [--json]
+```
+
+Finds the rows that will not give the mapping's attributes the values the template expects: the same check as Check
+values on the Mappings page ([operations.md](../../operations.md#checking-a-mappings-values)). It opens the flow's
+ingestion tables on this machine, through the flow's own connection reference, renders every row it reads as a delivery
+would (with the template and the cache version `check` reads, asking the platform's search only what the mapping's
+searches ask a run), and holds every value written to what the template says of its attribute. Nothing is written: not
+OSDU, not the ledger, not the work location. It needs `--db <ref>` or `SQLFLOW_CATALOG_DB`, as `check` does.
+
+`--target` names an attribute as a template path (`osdu.data.WellboreID`, `osdu.data.Curves[].CurveUnit`, or a group
+such as `osdu.data.VerticalMeasurement` for everything it holds); repeat it for more, and leave it out for every
+attribute. `--max-rows` reads that many rows of the scope in the order a run reads them (10,000 by default, 0 for the
+whole scope). `--samples` names that many example records for each reason (20 by default, at most 500), after the first
+`--skip`. `--set` fills the flow's parameters, the declared defaults filling the rest.
+
+The text answer says how many rows were checked and of how many, how many are held, write a value the template does not
+accept, leave an attribute out, or are clean, and why rows were passed over; then each attribute some row fails, with
+its rows by outcome, every reason with its count, the values behind it and the first example records. `--json` prints
+the whole check as JSON, and `--out` writes it to a file.
+
+`--rows` writes every failing row to a CSV file as the check meets it, however many there are: one line per row (or item
+of a repeated array) an attribute is held, invalid or empty for, with the columns `flow`, `variable`, `at`, `outcome`,
+`rule`, `reason`, `value`, `source_key`, `label`, `delivery_key`, `file`, `row` and `item`. It is the full list the
+answer's example records are the first of.
+
+A source that declares interfaces is checked one interface at a time; `--interface` checks one, and `--target` needs it,
+since an attribute is one of an interface's mapping.
 
 ## fixtures
 
@@ -242,5 +275,7 @@ says which, while the others stay refreshed.
 ## Exit codes
 
 `check`, `cache` and `template` exit 0 on success and 1 on a failure, which prints one `ERROR` line naming the
-problem. `preview` exits 1 as well when no record was found to preview, after saying why. `fixtures update` exits 1 as well when any fixture was skipped, after writing the others, so a script never
+problem. `preview` exits 1 as well when no record was found to preview, after saying why. `values` exits 1 as well when
+a row checked is held, writes a value the template does not accept, or has an empty key part; a row that leaves an
+optional attribute out is reported without failing it. `fixtures update` exits 1 as well when any fixture was skipped, after writing the others, so a script never
 takes a partial update for a complete one. `run` exits 0 when the run succeeded and 1 when it failed; Ctrl+C exits 130.

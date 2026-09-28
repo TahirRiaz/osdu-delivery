@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { CircleAlert, Eye, Loader2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -18,6 +19,25 @@ import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
 /** The longest key the control plane takes; a longer text is a paste of something else. */
 const MAX_KEY = 4000;
+
+/**
+ * The scope's values a link names (`previewValues`, a JSON object of strings), as a value check's record links carry them;
+ * none when the link names none or names them in any other form.
+ */
+function linkedValues(text: string | null): Record<string, string> {
+  if (text === null) {
+    return {};
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"))
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 /** The values a preview is sent: those given, trimmed; a parameter left empty takes its declared default on the node. */
 function valuesToSend(parameters: DeliveryParameter[], values: Record<string, string>): Record<string, string> {
@@ -40,8 +60,11 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
   } = useInterfaceChoice(pipelineId);
   const parameters = useMemo(() => current?.parameters ?? [], [current]);
   const keyColumns = current?.keyColumns ?? [];
-  const [key, setKey] = useState("");
-  const [values, setValues] = useState<Record<string, string>>({});
+  // A link to one record (a value check's) names its key and the scope's values, and the record is previewed on arrival.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedKey = searchParams.get("previewKey");
+  const [key, setKey] = useState(linkedKey ?? "");
+  const [values, setValues] = useState<Record<string, string>>(() => linkedValues(searchParams.get("previewValues")));
   const [taskId, setTaskId] = useState<string | null>(null);
   const task = useComputeTask(taskId);
 
@@ -65,10 +88,14 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
   const shownFor = current?.flowId ?? null;
   const [previewedFor, setPreviewedFor] = useState<string | null>(shownFor);
   if (shownFor !== previewedFor) {
+    // The flow first shown keeps what a link gave; another interface or partition starts afresh.
+    if (previewedFor !== null) {
+      setValues({});
+    }
+
     setPreviewedFor(shownFor);
     setTaskId(null);
     setOutcome(null);
-    setValues({});
   }
 
   const preview = useMutation({
@@ -88,6 +115,25 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
       preview.mutate();
     }
   };
+
+  // A linked record is previewed once, as soon as the interface and the scope's values let it be; the link's parameters
+  // then leave the address, so coming back to the tab does not preview it again.
+  const linkedRun = useRef(false);
+  const { mutate } = preview;
+  useEffect(() => {
+    if (linkedKey === null || linkedRun.current || blocked || current === undefined) {
+      return;
+    }
+
+    linkedRun.current = true;
+    mutate();
+    setSearchParams((existing) => {
+      const next = new URLSearchParams(existing);
+      next.delete("previewKey");
+      next.delete("previewValues");
+      return next;
+    }, { replace: true });
+  }, [linkedKey, blocked, current, mutate, setSearchParams]);
 
   const result = outcome?.result ?? null;
   const failure = outcome?.failure ?? null;

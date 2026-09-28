@@ -19,10 +19,21 @@ internal static partial class EntryValues
     /// <summary>The value of <paramref name="entry"/> for the row, converted to its variable's type, or null when the variable is left out.</summary>
     public static JsonNode? Evaluate(
         MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, RenderTrail searched)
+        => Evaluate(entry, root, item, renderer, holds, usages, searched, out _);
+
+    /// <summary>
+    /// The value of <paramref name="entry"/> for the row, as <see cref="Evaluate(MappingEntry, SourceRow, SourceRow?, MappingRenderer, List{string}, List{CacheUsage}, RenderTrail)"/>
+    /// gives it, with <paramref name="applied"/> false when the entry's <c>$when</c> does not hold for the row, which is
+    /// the one reason besides an empty value that a variable is left out.
+    /// </summary>
+    public static JsonNode? Evaluate(
+        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, RenderTrail searched, out bool applied)
     {
         var path = entry.Target.Text;
+        applied = true;
         if (entry.AppliesWhen is { } condition && !Applies(condition, root, item, renderer, holds, path))
         {
+            applied = false;
             return null;
         }
 
@@ -66,9 +77,7 @@ internal static partial class EntryValues
             {
                 if (entry.Required)
                 {
-                    holds.Add(entry.Source.Expression is { } computed
-                        ? $"{path}: {computed} gives no value, and the entry is required"
-                        : $"{path}: {entry.Source.Column} is empty, and the entry is required");
+                    holds.Add($"{path}: {EmptyRead(entry, read)}, and the entry is required");
                 }
 
                 return null;
@@ -162,6 +171,28 @@ internal static partial class EntryValues
     {
         ArgumentNullException.ThrowIfNull(entry);
         return [entry with { Alternatives = [], AppliesWhen = null, Required = false, Location = null }, .. entry.Alternatives];
+    }
+
+    /// <summary>
+    /// Why an optional entry that wrote nothing for the row gave no value: the entry is asked again as a required one, whose
+    /// render states why it would hold the record (an empty column, no record in the cache, a search that found nothing,
+    /// every alternative of a <c>$coalesce</c> and why each gave nothing), and that is said without the target and the
+    /// required clause. What the second evaluation reads is what the first already read, so it asks the platform nothing
+    /// new and records nothing.
+    /// </summary>
+    public static string WhyEmpty(MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        ArgumentNullException.ThrowIfNull(root);
+        ArgumentNullException.ThrowIfNull(renderer);
+        var said = new List<string>();
+        var value = Evaluate(entry with { Required = true, AppliesWhen = null }, root, item, renderer, said, [], new RenderTrail(), out _);
+        if (said.Count > 0)
+        {
+            return Reason(said[0], entry.Target.Text);
+        }
+
+        return entry.IsList && value is null ? $"none of the {entry.Parts.Count} items of the list gives a value" : "gives no value";
     }
 
     /// <summary>What an alternative said about why it gave nothing, without the target it names and the required clause it adds.</summary>
@@ -339,6 +370,22 @@ internal static partial class EntryValues
         => column.Child is null ? root.Get(column.Column) : item?.Get(column.Column);
 
     private static bool IsEmpty(object? value) => value is null || (value is string text && string.IsNullOrWhiteSpace(text));
+
+    /// <summary>
+    /// Why a value read from the row came to nothing: the column (or the expression) gave nothing, or it gave a value its
+    /// modifiers turned into nothing (a replace to <c>~</c>, a split with too few parts), which says the value it held.
+    /// </summary>
+    private static string EmptyRead(MappingEntry entry, object? read)
+    {
+        var source = entry.Source!;
+        if (IsEmpty(read))
+        {
+            return source.Expression is { } computed ? $"{computed} gives no value" : $"{source.Column} is empty";
+        }
+
+        var held = source.Expression is { } expression ? $"{expression} gives" : $"{source.Column} is";
+        return $"{held} '{Clip(SourceRow.Stringify(read) ?? string.Empty)}', which its modifiers ({ModifierText(entry.Modifiers)}) turn into no value";
+    }
 
     /// <summary>
     /// Applies the modifiers in order. False when a modifier could not read the value (a date that is not a date), which

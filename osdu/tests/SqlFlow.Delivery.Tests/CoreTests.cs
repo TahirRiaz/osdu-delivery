@@ -423,7 +423,8 @@ public class MappingRendererTests
         Assert.Equal("M", required.Render(Record(unit: "m")).Document["data"]!["Symbol"]!.GetValue<string>());
         var held = required.Render(Record(unit: " none "));
         Assert.True(held.IsHeld);
-        Assert.Contains("osdu.data.Symbol: dataset.unit is empty, and the entry is required", held.Holds, StringComparer.Ordinal);
+        // The column held a value, and the replace is what turned it into none, which the reason says rather than calling the column empty.
+        Assert.Contains("osdu.data.Symbol: dataset.unit is ' none ', which its modifiers (replace(NONE: ~, M: m) | upper) turn into no value, and the entry is required", held.Holds, StringComparer.Ordinal);
 
         var optional = Renderer("""
             Symbol:

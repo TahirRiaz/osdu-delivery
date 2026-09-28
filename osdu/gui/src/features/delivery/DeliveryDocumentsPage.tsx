@@ -197,6 +197,8 @@ export default function DeliveryDocumentsPage() {
                   </TabsList>
                   <TabsContent value="coverage" className="flex min-h-0 flex-col">
                     <MappingCoverageView
+                      mappingId={detail.mapping.id}
+                      reference={detail.mapping.reference}
                       yaml={detail.yaml}
                       path={detail.mapping.relativePath}
                       contentHash={detail.mapping.contentHash}

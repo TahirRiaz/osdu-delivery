@@ -113,6 +113,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
 | `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}` | read | The mapping documents the repositories hold. |
+| `GET /mappings/{id}/flows` | read | The interfaces of the repository's delivery flows that render with the mapping, as the last sync described them, in every partition: each one's pipeline, flow, interface, partition, ledger identity, record table and route. What a value check of the mapping reads the rows of ([Checking a mapping's values](#checking-a-mappings-values)). An interface the repository no longer declares, or whose pipeline the catalog does not hold as an active delivery flow, is left out. |
 | `GET /templates` | read | The saved template versions, by kind and newest first, each with where it came from, who saved it and how many synced mappings pin it ([mapping-templates.md](mapping-templates.md)). |
 | `GET /templates/detail`, `GET /templates/schema` | read | One saved version (`kind`, `version`): laid out variable by variable (type, shape, requiredness, who writes it, relationships, unit context and OSDU's description; with `scope`, the types of that partition's cache each variable can be read from), or the bundled schema itself. |
 | `POST /templates/preview` | read | A bundled schema (`kind`, `schema`, optional `scope` and `release`) laid out the same way without saving it, with the saved version when it is already saved. |
@@ -147,6 +148,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /records/{flowId}/{key}/source` | operate | Queue a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its system columns, its child datasets, and the origin file and row. Nothing is planned or delivered; poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{flowId}/{key}/read` | operate | Queue a read-back, on a node, of the OSDU record the flow's record claimed; a record that never queued a document has none to read. |
 | `POST /flows/{pipelineId}/preview` | operate | Queue a preview of one record on a node ([Previewing a record](#previewing-a-record)): `key` names it (a delivery key, an OSDU id the ledger holds, a source key as the Records page shows it, or a JSON array of the key's parts), or is left out for the first record of the scope; `values` fill the flow's parameters, the declared defaults filling the rest. The record is rendered as a delivery would render it and nothing is sent or written. An undeclared parameter, a required one without a value, a key with a control character or over 4,000 characters, and values over 4,000 characters as JSON are refused with 400 before anything is queued. Poll `GET /api/v1/compute/tasks/{taskId}`: a key that names no row is an answer (`found` false with the `reason`), not a failure. |
+| `POST /flows/{pipelineId}/check-values` | operate | Queue a value check of one interface's rows on a node ([Checking a mapping's values](#checking-a-mappings-values)): `targets` names the attributes to check as template paths (none checks every attribute; at most 200), `values` fill the flow's parameters, `maxRows` is how many rows to read (10,000 when left out, 0 for the whole scope), `samples` how many example records each finding names (20 when left out, at most 500) and `skipSamples` how many it passes over first, and `mapping` the mapping it is asked of (`Name@version`), which the flow must render with. Nothing is sent or written. A target that is not a template path, an undeclared parameter, a required one without a value, a negative count, and arguments over 4,000 characters as JSON are refused with 400 before anything is queued; a target no entry of the mapping reaches fails the task, naming it. Poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{flowId}/{key}/preview` | operate | The same preview for one record of the ledger, read in the scope it was last planned under: what the record renders to now, which its page compares with what OSDU holds. |
 | `POST /flows/{pipelineId}/osdu/read` | operate | Queue a read of any OSDU record by `targetId`, on a node, through the flow's route and credentials: a record a document refers to, which the ledger may never have delivered. A version or the trailing colon of a reference is dropped, and the record is read at its latest version. An id that is not `partition:group--Entity:unique` is refused with 400. Nothing is written. |
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
@@ -353,6 +355,60 @@ row and reads what OSDU holds, both on a node, and shows the two side by side wi
 `createUser`, `createTime`, `modifyUser`, `modifyTime`) set aside, keys in order, and a placeholder named as a value
 the platform gives rather than as a change. The ledger keeps what it sent as a hash, not as the document, so the
 comparison is with what the record renders to now.
+
+## Checking a mapping's values
+
+A preview shows one record. A value check answers the question across a flow's rows: "which rows will not give this
+attribute the value its template expects, and why?" It renders every row it reads on a node exactly as a delivery renders
+it (the render's own assembly, entry by entry, over the flow's ingestion tables, the partition's current cache version
+and the platform's search, asked in rounds as a run asks), and then holds every value written to what the template says
+of its attribute. Nothing is written anywhere: not OSDU, not the ledger, not the work location. Like a preview it is a
+node task, not a run.
+
+- **What each row comes to, for each attribute.** Every computation a mapping can make is covered, because the check is
+  the render: a column, an expression, a static value, a cache lookup (`$cache` with its `findBy` lines and a
+  `$findAll`), a platform search, a `$coalesce` and its alternatives, a list of values, a repeated array's items, and
+  every modifier (`trim`, `split`, `replace` from pairs or from the cache, `equals`, `date`, `number`, `id`, `ref`). An
+  attribute is:
+  - **held** when no value could be produced where one is needed, and the record is not delivered: a required column
+    that is empty, a date that is not a date, no cache record or search answer for a value, a reference to a record the
+    partition does not hold, several records answering one value, a data property the schema requires left empty. The
+    reason is the render's own hold reason.
+  - **invalid** when a value is written that breaks a rule of the template, and the record is still sent: its type,
+    `format` (RFC 3339 `date-time`, `date` and `time`, `uri`, `email`, `uuid`, an integer's `int32` or `int64` range),
+    `pattern`, `enum` and `const`, `minLength` and `maxLength`, `minimum`, `maximum` and their exclusive forms,
+    `multipleOf`, a list's `minItems`, `maxItems` and `uniqueItems`, the properties an object written whole requires
+    or does not allow, a value matching none of a `oneOf` or `anyOf`, and the entity types an `x-osdu-relationship`
+    allows a reference to point to. A value written whole (an object from a cached field, a static list) is checked all
+    the way down, and a problem inside it is reported at the property it is at
+    (`osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID`).
+  - **empty** when an optional entry gives no value, and the record is sent without the attribute. The reason says why
+    it gave none, as a required entry would have held for it: `dataset.log_run is empty`, `no UnitOfMeasure matches
+    'furlong' by Code in ...`, `dataset.unit is 'NONE', which its modifiers (replace(NONE: ~)) turn into no value`.
+  - **not applicable** when the mapping means no value for the row: the entry's `$when` does not hold, or an entry of a
+    repeated item meets a row with no child row its repeater takes. This is no failure.
+  - **valid** otherwise.
+- **One attribute or all of them.** A check names the attributes it is about, or none for every attribute. An attribute
+  checks every entry that fills it, something inside it (a group checks what it holds), or a value holding it (a list
+  written whole holds the properties of its items), and nothing else: a check of one attribute reads only what that
+  attribute needs, and asks the platform nothing for another. What the record checks as a whole (a data property the
+  schema requires, a required array with no item) is checked only when every entry that could fill it is.
+- **What it answers, and how it scales.** Every count is exact however many rows fail: each attribute's rows by outcome
+  (and an item attribute's items), and the rows as records (held, with an invalid value, leaving an attribute out,
+  clean, a key with an empty part, and the rows a delivery never renders, such as a row marked deleted). What is listed
+  is bounded, so the answer is the same size for a thousand failing rows as for a million: the reasons are grouped
+  (rows failing for one reason are one finding whatever value caused it), up to 50 a variable; each finding lists the
+  values behind it, the most frequent first, and names example records (the source key, the label, the file and row the
+  row was landed from, the item, the value and the reason), in the order the scope is read. A check pages further
+  examples of a finding (`skipSamples`), and `sqlflow values --rows` writes every failing row to CSV as it meets it.
+  The answer stays under the 8,000,000 characters a task result holds, cutting example records and then listed values
+  before any count, and saying so.
+- **Which rows.** The first 10,000 rows of the scope by default, in the order a run reads them, or any number, or the
+  whole scope. The flow's parameters fill the scope, as a preview's do.
+
+On the **Mappings** page the check is on the mapping's Properties tab (see [The GUI](#the-gui)). `POST
+/flows/{pipelineId}/check-values` queues one, and `GET /mappings/{id}/flows` lists the flows a mapping's rows can be
+read from.
 
 ## The GUI
 
@@ -561,6 +617,20 @@ Pipelines like any other flow.
   variable as well as its path and description, so a source column name answers which variables it reaches. A mapping
   pinning a template version nobody saved has no tree to lay itself over, and lists its own entries instead. The YAML
   tab is the document as written, and the Record shape tab draws the record the mapping renders.
+
+  Above the tree, **Check values** reads the rows of a flow that renders with the mapping in the title bar's partition
+  and finds the ones that will not give an attribute the value its template expects ([Checking a mapping's
+  values](#checking-a-mappings-values)). Pick the flow, fill its scope's parameters and how many rows to read, and
+  **Check all attributes**; or select an attribute and use its own **Check values** button, which checks it and what it
+  holds and names more example records. The answer sums the rows up (held, with an invalid value, leaving an attribute
+  out, clean), each count narrowing the tree to the attributes behind it, and names the attributes with the most
+  failing rows. Every checked row of the tree then carries its count of failing rows in the tone of the worst outcome
+  (the check's own glyph in green for one every row gives a valid value), and a group the worst of what it holds. An attribute's
+  properties show its rows as a bar by outcome (by item for a repeated array's property), then the rows that will not
+  give an expected value grouped by reason, each with the values behind it and, opened, its records: the source key,
+  the label, the file and row, the item and the value, each opening in the flow's Preview tab on that record, with the
+  next hundred listed on request and the loaded ones copied as keys or saved as CSV. Last come the values written, the
+  most frequent first. Each check ends with a notification.
 - **Templates**: browse the schemas OSDU publishes through a delivery flow's connection (a node runs the search and the
   fetch with the flow's credentials), look at one laid out as a template (every variable with its type, requiredness,
   relationships, unit context and OSDU's description), and save it; or import a bundled schema file. The saved
@@ -702,6 +772,7 @@ Pipelines like any other flow.
 | `sqlflow validate <flow.yaml>` | The platform's document validation (the CI gate for a folder). |
 | `sqlflow check <flow.yaml> [--interface <name>] [--partition <name>] [--connect] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the flow, its mappings, its templates and its payload roots. With `--connect` it opens the flow's source connection on this machine and reports the tables, their columns, the key types, the system columns, the current watermark window and the candidate counts. A source is checked one interface at a time, each with its route, its ledger, its wave, what it waits for and why, and the references it does not wait for, after a first line giving the order the interfaces run in; `--interface` checks one. Interfaces that wait for each other in a way nothing cuts fail the check, naming them. With `--json`, a source answers `flow`, `order` and one object per interface (with `wave`, `waitsFor` and `notWaitedFor`). |
 | `sqlflow preview <flow.yaml> [--interface <name>] [--partition <name>] [--key <key>] [--set name=value]... [--out <file.json>] [--db <ref>] [--json]` | One record rendered as a delivery would render it, and nothing sent ([Previewing a record](#previewing-a-record)): the first record of the scope, or the one `--key` names. It says what the next run would do with the record, lists the payload files and the route's requests, and prints the document as the route sends it. A source is previewed one interface at a time, each with its own first record; a key names a record of one interface, so it needs `--interface`. `--out` writes the whole preview as JSON, however large its document. Ends with 1 when no record was found. |
+| `sqlflow values <flow.yaml> [--interface <name>] [--partition <name>] [--target <osdu.path>]... [--set name=value]... [--max-rows <n>] [--samples <n>] [--skip <n>] [--rows <file.csv>] [--out <file.json>] [--db <ref>] [--json]` | The rows that will not give the mapping's attributes the values the template expects ([Checking a mapping's values](#checking-a-mappings-values)): each attribute's rows by outcome, every reason with the values behind it and example records. `--target` checks one attribute and what it holds (repeat it for more); `--max-rows` reads that many rows (10,000 by default, 0 for the whole scope); `--rows` writes every failing row to CSV, however many; `--out` writes the whole check as JSON. Ends with 1 when a row is held or writes a value the template does not accept. |
 | `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|intake\|drain\|replan\|sync\|retrieve\|refresh] [--set name=value]... [--payload <json>\|@<file>] [--db <ref>]` | A run on the workstation. The payload carries the delivery kind's arguments (`force`, `submissionId`, `recordKeys`, `redeliver`, `interface`, `interfaces`; [The API](#the-api)). A delivery flow's runs need the module database connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition and so needs it. `--set partition=<name>` names the partition a flow that works in partitions runs in; without it a run takes the registry's default when the flow serves it, else the flow's only listed partition. A cache flow given `--set partition=*` builds every partition it serves in turn. |
 | `sqlflow records list <flow.yaml> [--interface <name>] [--partition <name>] [--search <term>] [--contains] [--status <status>] [--max <n>] [--db <ref>] [--json]` | The interface's records from the ledger: the delivery key, the status, the source key, the OSDU id and version, what a waiting record waits for, and the last error of each. A source is read one interface at a time, and says which interfaces it has when it is not told. |
 | `sqlflow records show <flow.yaml> --key <delivery key \| source key> [--interface <name>] [--partition <name>] [--attempts <n>] [--db <ref>] [--json]` | One record and every try it took: the custody state and where the row came from, then each attempt with its outcome, what it delivered, how long it took, the steps it ran with what the target answered, and the error that stopped it. The source key finds the record as surely as the delivery key, because that is what an operator holds. |

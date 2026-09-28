@@ -13,6 +13,19 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Check a mapping's values against a flow's rows.** The Mappings page's Properties tab gains **Check values**: it
+  reads the rows of a flow that renders with the mapping, renders each on a node exactly as a delivery renders it
+  (columns, expressions, cache lookups and `$findAll`, searches, `$coalesce`, lists, repeated items and every
+  modifier), holds every value written to what the template says of its attribute (type, format, pattern, allowed
+  values, lengths, ranges, list sizes, required and unknown properties of an object written whole, the entity types a
+  reference may point to), and says for each attribute which rows are held, write a value the template does not
+  accept, leave it out, or are not meant to have it, with every reason, the values behind it and the records (source
+  key, label, file and row, item). One attribute is checked from its own properties, or every attribute at once; the
+  tree then marks each attribute with its failing rows and narrows to the ones that fail. Counts are exact and what is
+  listed is bounded, so a check reads the same for a million failing rows as for ten, and pages further records on
+  request. The API is `GET /api/v1/delivery/mappings/{id}/flows` and `POST /api/v1/delivery/flows/{pipelineId}/check-values`
+  (a node task, `delivery-check-values`); the CLI is `sqlflow values`, whose `--rows` writes every failing row to CSV.
+  Nothing is sent or written.
 - **Each cached type carries its own content hash.** A version of a partition's cache is the whole cache and is written
   when anything in it moves, so every type it held looked changed with it. Each type a version holds now records its
   own content hash (over exactly the bytes the type contributes to the version's hash), how it compares with the
@@ -429,6 +442,9 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A value its modifiers turn into nothing says so.** A required entry whose column holds a value that a `replace` to
+  `~` or a `split` with too few parts turns into nothing is held with `dataset.unit is 'NONE', which its modifiers
+  (replace(NONE: ~, M: m)) turn into no value`, where it said the column was empty.
 - **The cache page asks four questions, a tab each.** Records (what the cache holds), History (how it changed, was
   Versions), Deliveries (what it means for the records already in OSDU) and Setup (how it is filled). Deliveries holds
   the changes being carried out to delivered records (was Changes) and what delivered records were built without (was

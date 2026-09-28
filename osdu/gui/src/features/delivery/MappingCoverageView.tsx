@@ -7,9 +7,15 @@ import { MappingPropertiesView } from "./MappingPropertiesView";
 import { TemplateVariableExplorer } from "./TemplateVariableExplorer";
 import { ProblemView } from "./TemplateSheet";
 import { useParsedMapping } from "./useParsedMapping";
+import { ValueCheckContext, useValueCheckSession } from "./useValueCheck";
+import { ValueCheckBar } from "./ValueCheckBar";
 import { variableRows } from "./variableRows";
 
 interface MappingCoverageViewProps {
+  /** The mapping as the catalog holds it, whose flows a value check reads the rows of. */
+  mappingId: string;
+  /** Its reference (Name@version), which a flow checked must render with. */
+  reference: string;
   /** The mapping document as the catalog holds it. */
   yaml: string;
   /** Its path in the repository, which the messages name. */
@@ -22,9 +28,12 @@ interface MappingCoverageViewProps {
  * The template a mapping pins with the mapping laid over it: the record's tree, each variable saying what the document
  * fills it with and whether that reaches every row, and the required ones it leaves empty marked where they sit. It
  * opens on what the mapping fills and what a check names, which is what an author asks of a mapping, at a glance.
- * Nothing is rendered and no cache is read; this is the document against the schema alone.
+ * Nothing is rendered and no cache is read; this is the document against the schema alone, until a value check renders
+ * the rows of a flow that uses the mapping and says, attribute by attribute, which rows will not give it the value its
+ * template expects.
  */
-export function MappingCoverageView({ yaml, path, contentHash }: MappingCoverageViewProps) {
+export function MappingCoverageView({ mappingId, reference, yaml, path, contentHash }: MappingCoverageViewProps) {
+  const valueCheck = useValueCheckSession(mappingId, reference);
   const coverage = useQuery({
     queryKey: ["delivery", "mapping-coverage", path, contentHash],
     queryFn: () => deliveryApi.mappingCoverage(yaml, path),
@@ -89,7 +98,10 @@ export function MappingCoverageView({ yaml, path, contentHash }: MappingCoverage
       )}
 
       {template.data !== undefined && overlay !== undefined && (
-        <TemplateVariableExplorer variables={template.data.variables} mapping={overlay} />
+        <ValueCheckContext.Provider value={valueCheck}>
+          <ValueCheckBar session={valueCheck} />
+          <TemplateVariableExplorer variables={template.data.variables} mapping={overlay} />
+        </ValueCheckContext.Provider>
       )}
 
       {/*

@@ -1136,6 +1136,135 @@ export interface DeliveryRecordPreview {
   previewedUtc: string;
 }
 
+/**
+ * One interface of a delivery flow that renders with a mapping: what a mapping's value check reads the rows of. The
+ * partition is the one the interface is described in, null for a flow that names none.
+ */
+export interface DeliveryMappingFlow {
+  pipelineId: string;
+  flow: string;
+  interface: string | null;
+  partition: string | null;
+  ledgerFlowId: string;
+  recordObject: string;
+  route: string;
+}
+
+/**
+ * A value check of a flow's rows: the variables to check (none for every variable of the mapping), the scope's values,
+ * the rows to read (0 for the whole scope), the example records each finding names, how many it passes over first (the
+ * next page of a finding), and the mapping it is asked of, which the flow must render with.
+ */
+export interface DeliveryValueCheckRequest {
+  targets?: string[];
+  values?: Record<string, string>;
+  maxRows?: number;
+  samples?: number;
+  skipSamples?: number;
+  mapping?: string | null;
+}
+
+/** What a variable came to in a row that did not give it a value the template accepts, or that the mapping means no value for. */
+export type ValueCheckOutcome = "held" | "invalid" | "empty" | "notApplicable";
+
+/** A variable's rows (or items) by what they came to. */
+export interface DeliveryValueCheckCounts {
+  valid: number;
+  invalid: number;
+  empty: number;
+  notApplicable: number;
+  held: number;
+  total: number;
+}
+
+/** One record a check names: its key, where its row came from, and what the variable came to there. */
+export interface DeliveryValueCheckSample {
+  sourceKey: string;
+  label?: string | null;
+  deliveryKey?: string | null;
+  file?: string | null;
+  row?: number | null;
+  /** For an item of a repeated array, the child row it was written from, from 1. */
+  item?: number | null;
+  value?: string | null;
+  message?: string | null;
+}
+
+/** A value and how many times it was met. */
+export interface DeliveryValueCheckValue {
+  value: string;
+  count: number;
+}
+
+/** One reason a variable is not written with a value the template accepts, and every occurrence of it. */
+export interface DeliveryValueCheckFinding {
+  outcome: ValueCheckOutcome;
+  /** The variable the reason is about: the one checked, or a property inside the value written there. */
+  at: string;
+  /** For an invalid value, the rule of the template it breaks. */
+  rule?: string | null;
+  message: string;
+  /** Occurrences: once per row, or once per item of a repeated array. */
+  count: number;
+  rows: number;
+  values: DeliveryValueCheckValue[];
+  otherValues: number;
+  samples: DeliveryValueCheckSample[];
+  /** How many occurrences were passed over before the examples were taken. */
+  samplesFrom: number;
+}
+
+/** One variable checked: its rows by outcome, the values it was written with, and its findings. */
+export interface DeliveryValueCheckVariable {
+  target: string;
+  /** Where the mapping writes its entry; absent for a variable of data the schema requires that no entry fills directly. */
+  entry?: string | null;
+  required: boolean;
+  /** For an entry of a repeated item, the array its items are written into. */
+  repeater?: string | null;
+  rows: DeliveryValueCheckCounts;
+  items?: DeliveryValueCheckCounts | null;
+  values: DeliveryValueCheckValue[];
+  distinctValues: number;
+  moreValues: boolean;
+  findings: DeliveryValueCheckFinding[];
+  unlisted: number;
+}
+
+/** The rows a check read, and what became of them as records. */
+export interface DeliveryValueCheckRows {
+  scopeRecords?: number | null;
+  read: number;
+  checked: number;
+  complete: boolean;
+  passedOver: number;
+  passedOverWhy: { reason: string; count: number; samples: DeliveryValueCheckSample[] }[];
+  keyless: number;
+  keylessSamples: DeliveryValueCheckSample[];
+  clean: number;
+  withHeld: number;
+  withInvalid: number;
+  withEmpty: number;
+}
+
+/**
+ * The rows of a flow's scope that will not give the variables of its mapping the values the template expects: the
+ * `delivery-check-values` task's result. Counts are exact; what is listed is bounded.
+ */
+export interface DeliveryValueCheck {
+  flow: string;
+  interface?: string | null;
+  flowId: string;
+  inputs: { mapping: string; kind: string; templateVersion: string; cachePartition?: string | null; cacheVersion?: string | null };
+  asked: { targets: string[]; maxRows: number; samples: number; skipSamples: number; values: Record<string, string> };
+  rows: DeliveryValueCheckRows;
+  variables: DeliveryValueCheckVariable[];
+  issues: string[];
+  notes: string[];
+  startedUtc: string;
+  checkedUtc: string;
+}
+
 /** A record as OSDU holds it, read on a node through a flow's route: the `delivery-read` task's result. */
 export interface DeliveryOsduRead {
   flow: string;
@@ -2001,6 +2130,14 @@ export const deliveryApi = {
     post<ComputeTaskAccepted>(flowPath(pipelineId, "/preview", scope), request),
   /** Queues a preview of this record, rendered from its current source row as a delivery would render it now. */
   previewRecord: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/preview`),
+  /** The interfaces of the delivery flows that render with a mapping, in every partition: what its values are checked against. */
+  mappingFlows: (mappingId: string) => get<DeliveryMappingFlow[]>(`/api/v1/delivery/mappings/${mappingId}/flows`),
+  /**
+   * Queues a value check of one interface's rows on a node: the rows that will not give the variables named (every
+   * variable when none is named) the values the template expects, with the reasons and example records. Nothing is sent.
+   */
+  checkValues: (pipelineId: string, request: DeliveryValueCheckRequest, scope?: DeliveryFlowScope) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/check-values", scope), request),
   /** Queues a read of any OSDU record by id, through the flow's route and credentials. Poll the task. */
   readOsdu: (pipelineId: string, targetId: string, scope?: DeliveryFlowScope, version?: number) =>
     post<ComputeTaskAccepted>(flowPath(pipelineId, "/osdu/read", scope), version === undefined ? { targetId } : { targetId, version }),
