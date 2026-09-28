@@ -86,6 +86,13 @@ public sealed partial class CacheUpdateRolloutService : BackgroundService
         await using var scope = _services.CreateAsyncScope();
         var ledger = scope.ServiceProvider.GetRequiredService<ILedger>();
 
+        // A change whose records are all marked closes when the last flow reading it has rendered them again.
+        var settled = await ledger.SettleRolloutsAsync(_clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+        if (settled > 0)
+        {
+            LogSettled(settled);
+        }
+
         var queue = await ledger.ListRolloutQueueAsync(_options.BatchesPerPass, ct).ConfigureAwait(false);
         if (queue.Count == 0)
         {
@@ -112,14 +119,24 @@ public sealed partial class CacheUpdateRolloutService : BackgroundService
             {
                 LogCompleted(tag.TagId, tag.Describe(), batch.Processed);
             }
+            else if (batch.Marked < _options.BatchSize && batch.Processed > 0)
+            {
+                LogMarked(tag.TagId, tag.Describe(), batch.Processed);
+            }
         }
     }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Cache rollout marked {Marked} record(s) for redelivery from tag {TagId} ({Change}); {Processed} of {Affected} done.")]
     private partial void LogBatch(long marked, long tagId, string change, long processed, long affected);
 
-    [LoggerMessage(Level = LogLevel.Information, Message = "Cache rollout finished tag {TagId} ({Change}): {Processed} record(s) marked for redelivery.")]
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cache rollout marked every record of tag {TagId} ({Change}), {Processed} in all; it is rolled out when each flow reading them has rendered them again.")]
+    private partial void LogMarked(long tagId, string change, long processed);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cache rollout finished tag {TagId} ({Change}): {Processed} record(s) delivered again.")]
     private partial void LogCompleted(long tagId, string change, long processed);
+
+    [LoggerMessage(Level = LogLevel.Information, Message = "Cache rollout closed {Settled} change(s): every flow reading them has rendered their records again.")]
+    private partial void LogSettled(int settled);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Cache rollout pass error: {Error}")]
     private partial void LogPassError(string error);

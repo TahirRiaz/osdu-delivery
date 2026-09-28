@@ -446,6 +446,7 @@ function CacheWorkbench({ cache, tab, section, node, onNode, type, onTab, onType
   const scoped = type === null ? null : types.find((candidate) => candidate.name === type) ?? null;
   const approvalTypes = cache.types.filter((candidate) => candidate.onChange === "approve").map((candidate) => candidate.name);
   const records = types.reduce((sum, candidate) => sum + candidate.items, 0);
+  const heldTypes = types.filter((candidate) => candidate.items > 0).length;
   const current = cache.current;
   const schedules = cache.flows.flatMap((flow) => flow.schedules);
   const typeOptions: FilterOption[] = types.map((candidate) => ({
@@ -458,7 +459,7 @@ function CacheWorkbench({ cache, tab, section, node, onNode, type, onTab, onType
     ? {
       label: "Changes",
       value: "automatic",
-      caption: "a changed value goes out on the next run",
+      caption: "each flow carries a change on its next run",
       onClick: () => onTab("deliveries"),
       testId: "delivery-cache-approval",
     }
@@ -488,7 +489,9 @@ function CacheWorkbench({ cache, tab, section, node, onNode, type, onTab, onType
           {
             label: "Records",
             value: records.toLocaleString(),
-            caption: `in ${types.length} type${types.length === 1 ? "" : "s"}`,
+            caption: heldTypes === types.length
+              ? `in ${types.length} type${types.length === 1 ? "" : "s"}`
+              : `in ${heldTypes} of the ${types.length} types declared; the others hold nothing yet`,
             onClick: () => {
               onView("records", null);
             },
@@ -580,7 +583,7 @@ function CacheWorkbench({ cache, tab, section, node, onNode, type, onTab, onType
           <TabSection
             id="updates"
             title="Updated by the cache"
-            about="Records already in OSDU that the cache has changed or will change. Missing from cache: records built without something the cache did not hold when they were rendered (a wellbore loaded after its logs, an access group not listed yet for a field, a reference written unverified); nothing needs doing, since the refresh that brings it lists them as a change. The other states are those changes: a type set to onChange: auto, the default, is approved as found and each record is updated on its flow's next delivery; a type set to onChange: approve waits for someone to approve or reject the change. Fix the source when something should not be missing at all."
+            about="Records already in OSDU that the cache has changed or will change. Missing from cache: records built without something the cache did not hold when they were rendered (a wellbore loaded after its logs, an access group not listed yet for a field, a reference written unverified); nothing needs doing, since the refresh that brings it lists them as a change. The other states are those changes: a type set to onChange: auto, the default, is approved as found and each record is updated on its flow's next delivery; a type set to onChange: approve waits for someone to approve or reject the change. A change is rolling out until every flow that read the value has rendered its records again, since several flows can read one cache, and rolled out once the last of them has. Fix the source when something should not be missing at all."
           >
             <DeliveryCacheApprovals
               scope={cache.scope}

@@ -647,19 +647,32 @@ export interface DeliveryUpdateTag {
   toVersion: string;
   /** auto or approve. */
   mode: string;
-  /** pending, approved, rolling, rejected or applied. */
+  /** pending, approved, rolling (records being marked), delivering (all marked, some flows yet to run), rejected or applied. */
   status: string;
   summary: string;
   /** Delivered records built from the old value. */
   affectedRecords: number;
   /** How many of them the rollout has marked for redelivery. */
   processed: number;
+  /** How many are still to be marked. */
   remaining: number;
+  /** How many, of every flow, are still built from the old value: their flow has not rendered them again yet. */
+  waiting: number;
+  /** The flows those records belong to, most waiting first. */
+  waitingFlows: DeliveryUpdateTagFlow[];
   detectedUtc: string;
   decidedUtc: string | null;
   decidedBy: string | null;
   startedUtc: string | null;
   completedUtc: string | null;
+}
+
+/** The records of one flow a cache change still waits for; pipelineId and flowName are null for a ledger no synced flow holds. */
+export interface DeliveryUpdateTagFlow {
+  flowId: string;
+  pipelineId: string | null;
+  flowName: string | null;
+  records: number;
 }
 
 /** One cached value a record was built from. */

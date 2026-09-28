@@ -386,7 +386,7 @@ public sealed class CacheChangeTests : IAsyncLifetime, IDisposable
 
         var third = await Ledger.RollOutTagAsync(tag.TagId, batchSize: 2, Now);
         Assert.Equal(1, third.Marked);
-        Assert.True(third.Completed);
+        Assert.False(third.Completed);
         Assert.Equal(5, third.Processed);
 
         // Every record is now due for a metadata redelivery, and no payload was touched.
@@ -397,9 +397,23 @@ public sealed class CacheChangeTests : IAsyncLifetime, IDisposable
             Assert.Contains("cache change", state.LastError!, StringComparison.Ordinal);
         }
 
-        // Nothing is left to do, and a further pass is a no-op rather than a rescan.
+        // Marked is not delivered: the change waits, still rolling out, for the flow to render its records again.
+        var waiting = Assert.Single(await Ledger.ListTagsAsync("rolling", 10, 0));
+        Assert.Equal("delivering", waiting.Status);
+        Assert.Equal(5, waiting.Waiting);
+        Assert.Equal(5, waiting.WaitingByFlow[_flow]);
+
+        // Nothing is left to mark, and a further pass is a no-op rather than a rescan.
         Assert.Empty(await Ledger.ListRolloutQueueAsync(10));
         Assert.Equal(0, (await Ledger.RollOutTagAsync(tag.TagId, batchSize: 2, Now)).Marked);
+        Assert.Equal(0, await Ledger.SettleRolloutsAsync(Now));
+
+        // The flow runs: its records are built from the new value, and the change is rolled out.
+        await DeliveredAsync(5, Reads("Name", "meter"));
+        Assert.Equal(1, await Ledger.SettleRolloutsAsync(Now));
+        var applied = Assert.Single(await Ledger.ListTagsAsync("applied", 10, 0));
+        Assert.Equal(0, applied.Waiting);
+        Assert.NotNull(applied.CompletedUtc);
     }
 
     [Fact]
@@ -424,7 +438,7 @@ public sealed class CacheChangeTests : IAsyncLifetime, IDisposable
         }
 
         Assert.Equal(4, marked);
-        Assert.True((await Ledger.RollOutTagAsync(tag.TagId, batchSize: 1, Now)).Completed);
+        Assert.False((await Ledger.RollOutTagAsync(tag.TagId, batchSize: 1, Now)).Completed);
         foreach (var flow in new[] { _flow, other })
         {
             foreach (var key in keys)
@@ -434,6 +448,39 @@ public sealed class CacheChangeTests : IAsyncLifetime, IDisposable
                 Assert.NotNull(state.PlanRequestedUtc);
             }
         }
+
+        // Both flows read the cache, so the change is rolled out only when the second of them has run too.
+        var both = Assert.Single(await Ledger.ListTagsAsync("rolling", 10, 0));
+        Assert.Equal(2, both.WaitingByFlow[_flow]);
+        Assert.Equal(2, both.WaitingByFlow[other]);
+
+        await DeliveredAsync(_flow, "test-flow", "x", Scope, "WELL", 2, Reads("Name", "meter"));
+        Assert.Equal(0, await Ledger.SettleRolloutsAsync(Now));
+        var one = Assert.Single(await Ledger.ListTagsAsync("rolling", 10, 0));
+        Assert.Equal(other, Assert.Single(one.WaitingByFlow).Key);
+        Assert.Equal(2, one.Waiting);
+
+        await DeliveredAsync(other, "test-flow-wellbores", "y", Scope, "WELL", 2, Reads("Name", "meter"));
+        Assert.Equal(1, await Ledger.SettleRolloutsAsync(Now));
+        Assert.Empty(await Ledger.ListTagsAsync("rolling", 10, 0));
+        Assert.Single(await Ledger.ListTagsAsync("applied", 10, 0));
+    }
+
+    [Fact]
+    public async Task A_value_that_moves_again_while_its_flows_catch_up_marks_its_records_again()
+    {
+        await DeliveredAsync(2, Reads("Name", "metre"));
+        await AnalyzeAsync(Units("metre"), Units("meter"), CacheChangeMode.Auto);
+        var tag = Assert.Single(await Ledger.ListRolloutQueueAsync(10));
+        Assert.False((await Ledger.RollOutTagAsync(tag.TagId, batchSize: 10, Now)).Completed);
+
+        // The flow has not run, and the name moves again: the records still read the first value and are marked afresh.
+        await AnalyzeAsync(Units("metre"), Units("metres"), CacheChangeMode.Auto);
+        var again = Assert.Single(await Ledger.ListRolloutQueueAsync(10));
+        Assert.Equal(tag.TagId, again.TagId);
+        Assert.Equal("approved", again.Status);
+        Assert.Equal(0, again.Processed);
+        Assert.Equal(2, (await Ledger.RollOutTagAsync(tag.TagId, batchSize: 10, Now)).Marked);
     }
 
     [Fact]

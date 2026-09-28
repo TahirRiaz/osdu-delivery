@@ -449,7 +449,11 @@ records for redelivery in delivery-key order from the tag's own cursor, then sto
 the next tick. A change over millions of records drains at a set pace instead of in one
 statement, an interrupted rollout resumes where it stopped rather than starting over, and
 the marking is metadata only: a corrected reference value rewrites the manifest row and
-never re-uploads the payload that was delivered with it.
+never re-uploads the payload that was delivered with it. Marked is not delivered: the change
+waits (`delivering`) until no record is still built from the sets holding the old value, which
+happens as each flow reading the cache renders its own records on its next run. Only when the
+last of them has is the change rolled out (`applied`); the counts per flow come from the
+records' own sets, so a flow that has not run is named until it does.
 
 **And the run has to happen.** The whole-run gate (tier 0) skips a run when no source row
 changed in its window, and rows that did not change are never in a window. So the watermark

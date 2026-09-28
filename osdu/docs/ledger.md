@@ -304,7 +304,8 @@ without case as the cached record, with the field a row would have given as the 
 were built from: the partition (`Scope`), the type, the cached record, the
 path, `Change` (`changed`, `removed`, `unmatched`, or `listed` for a key a lookup table now lists), the value before
 and after, the versions it moved between, `Mode` (`approve` or `auto`), `Status` (`pending`,
-`approved`, `rejected`, `rolling`, `applied`), how many delivered records it reaches and how far the rollout has got
+`approved`, `rejected`, `rolling` while its records are marked, `delivering` once all are marked and some flow still
+builds one from the old value, `applied` when none does), how many delivered records it reaches and how far the rollout has got
 ([design.md](design.md) section 6.2).
 
 ### `osdu.Template`: the templates mappings pin

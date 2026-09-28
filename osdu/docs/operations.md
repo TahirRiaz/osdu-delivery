@@ -135,7 +135,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /cache/versions` | read | The versions of one partition's cache (`scope`), newest first, each with whether it is current, the cache flow that wrote it, when it was captured, by whom and in which run, where its content came from, its types and record counts, and the partition's `systemProperties` the capture found (each a `service`, `name`, `state` of `Enabled`, `Disabled` or `Unknown`, the `source` the service took it from and the `detail` saying why it is unknown), which are settings of the platform rather than cached records ([documents.md](documents.md#cache-flow)). |
 | `GET /cache/history` | read | The versions of one partition's cache (`scope`), newest first, each with the version captured before it and how many records it changed, added and removed; `type` narrows the counts to one cached type. |
 | `GET /cache/diff` | read | What changed in one partition's cache (`scope`) between two versions: `from` (required) and `to` (the current version when omitted), counts per type, and a page of the records that changed, were added or were removed, with the captured values on each side. Narrowed by `type`, `search`, and `change` (the items only). 404 for a version the cache does not hold. |
-| `GET /cache/tags` | read | The cache changes delivered records were built from, paged, by `status` (pending, approved, rolling, rejected, applied), each naming the partition whose cache the refresh found it in, with what it reaches and how far the rollout has carried it; `scope` narrows the list to one partition. |
+| `GET /cache/tags` | read | The cache changes delivered records were built from, paged, by `status` (pending, approved, rolling, rejected, applied; `rolling` includes the changes whose records are all marked and wait for their flows, reported as `delivering`), each naming the partition whose cache the refresh found it in, with what it reaches, how many records are marked (`processed`), and how many of which flows are still built from the old value (`waiting`, `waitingFlows`); `scope` narrows the list to one partition. |
 | `POST /cache/tags/decide` | operate | Approves or rejects changes (`tagIds`, `approve`). Approving hands the change to the batched rollout; rejecting leaves OSDU as it is. |
 | `GET /cache/gaps` | read | What delivered records of the partition `scope` names were built without, most records first, paged (`page`, `pageSize`) with the count of every gap: each value no cached record answered to (`unlisted`, a wellbore the cache does not hold yet), each key a `$findAll` found no row under in any form it was asked for (`listed`, a field no access group lists; a reference with and without its version separator is one key), and each id written without its record (`unverified`), with how many records were built so; `type` narrows to one cached type, and `empty=true` adds the paths read that held nothing (a wellbore without a field). Every gap is filled by the refresh that brings what is missing, which tags the records and redelivers them. |
 | `GET /records/{flowId}/{key}/cache` | read | What one record read out of the cache when it was rendered: the partition, the cached item, the path and the value. |
@@ -637,25 +637,32 @@ Pipelines like any other flow.
   holds, narrowed by a change kind and a search. A row opens both sides. History covers the whole cache, which is
   what separates it from Deliveries: Deliveries holds only what reaches records already delivered, so a refresh that
   moved values nothing was built from shows in the history and leaves Deliveries empty.
-- **Deliveries.** What the cache means for the records already in OSDU, in two sections, each with what it is for on
-  its info mark. With `onChange: auto`, the default, neither asks anything of anyone: the next delivery of each record
-  carries the change.
-  - *Updated by cache changes*: the changes this cache's refreshes found in values delivered records were built from,
-    by state (waiting for approval, approved, rolling out, rolled out, rejected, or all), each with the value before and
-    after, how many delivered records it reaches and how far the rollout has carried it. A line above the list says
+- **Deliveries.** What the cache means for the records already in OSDU, in one list, *Updated by the cache*, filtered by
+  state: Missing from cache, then the states of a change. With `onChange: auto`, the default, neither asks anything of
+  anyone: the next delivery of each record carries the change.
+  - *Changes* (waiting for approval, approved, rolling out, rolled out, rejected, or all changes): the changes this
+    cache's refreshes found in values delivered records were built from, each with the value before and after, how many
+    delivered records it reaches and how many of them their flows have rendered again. A change is rolling out from
+    the moment its records are marked for redelivery until no flow still builds one of them from the old value: several
+    flows can read one cache, each renders its own records on its own next run, and the change is rolled out when the
+    last of them has. Its row says how many flows are still to run, and its panel names each with its records and a
+    link to the pipeline. A line above the list says
     which types ask for approval. A type set to `onChange: auto` has its change approved as it is found, and it shows
-    here as a rollout that reaches each record on its next delivery, so the list opens on all changes; when a type asks
+    here as a rollout that reaches each record on its next delivery; when a type asks
     for approval (`onChange: approve`) the list opens on the changes waiting, and each waiting row carries Approve and
     Reject. Picking a change raises it in the bottom panel with both values in full, the versions it moved between, who
     decided it and when, and the same decision while it is still open. Selecting waiting changes raises a toolbar that
     says how many delivered records the decision would redeliver, and approves or rejects them in bulk.
-  - *Missing from cache*: what records already in OSDU were built without, because the cache did not hold it when they
-    were rendered, most records first: a value no cached record answered to (not found: a wellbore loaded after its
-    logs), a key a `$findAll` found no row under (no rows: a field no access group lists yet), and an id written without
+  - *Missing from cache* (what the list opens on when nothing waits for approval and something is missing): what records
+    already in OSDU were built without, because the cache did not hold it when they
+    were rendered, most records first, paged: a value no cached record answered to (not found: a wellbore loaded after its
+    logs), a `$findAll` none of whose keys found a row (no rows: a field no access group lists yet; a key that found
+    nothing beside one that found rows, such as a wellbore's second GeoPoliticalEntity, is none), and an id written without
     its record because the mapping says `$unverified` (unverified), each with its type, what was looked for and how many
     records were built so. Include paths read empty adds the paths that held nothing (a wellbore without a field).
-    Nothing needs doing here: once a refresh brings what was missing, the records are tagged and updated like any other
-    cache change, on their next delivery. A gap that should not be there points at the source.
+    Nothing needs doing here: once a refresh brings what was missing, it leaves this list for the changes, and the
+    records are updated like any other cache change, on their next delivery. A gap that should not be there points at
+    the source.
 - **Setup.** How the cache is filled, as a navigator rather than one long page: a tree on the left of the partition, each
   cache flow with the types it declares under it (a type several flows declare is under each), and the partition's
   OSDU feature flags and how a mapping reads the cache; the part picked is on the right, each with what it is for on its

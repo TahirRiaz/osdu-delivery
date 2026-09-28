@@ -713,7 +713,7 @@ public sealed record UpdateTag
     /// <summary>auto or approve.</summary>
     public required string Mode { get; init; }
 
-    /// <summary>pending, approved, rejected, rolling or applied.</summary>
+    /// <summary>pending, approved, rejected, rolling (records being marked), delivering (every record marked, some not yet rendered again by their flow) or applied.</summary>
     public string Status { get; init; } = "pending";
 
     /// <summary>The cache sets holding the value that moved.</summary>
@@ -738,6 +738,15 @@ public sealed record UpdateTag
 
     /// <summary>Records still to be marked for redelivery.</summary>
     public long Remaining => Math.Max(0, AffectedRecords - Processed);
+
+    /// <summary>
+    /// The records of each flow still built from the value that moved, as the ledger listed the change: the flows that have
+    /// not rendered them again since. Empty for a change rolled out or rejected.
+    /// </summary>
+    public IReadOnlyDictionary<Guid, long> WaitingByFlow { get; init; } = new Dictionary<Guid, long>();
+
+    /// <summary>The records, of every flow, still built from the value that moved.</summary>
+    public long Waiting => WaitingByFlow.Values.Sum();
 
     public string Describe() => Change switch
     {
@@ -1585,7 +1594,11 @@ public interface ILedger
     /// <summary>The gated sets, which a plan reads once per run to know which records are held back.</summary>
     Task<IReadOnlyList<long>> GatedCacheSetsAsync(CancellationToken ct = default);
 
-    /// <summary>The tags in a status, newest first; with a cache name, only the changes that cache's refreshes found.</summary>
+    /// <summary>
+    /// The tags in a status, newest first; with a cache name, only the changes that cache's refreshes found. <c>rolling</c>
+    /// covers the changes being marked and the ones waiting for their flows. Each open change carries the records of each flow
+    /// still built from the value that moved.
+    /// </summary>
     Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? scope = null, CancellationToken ct = default);
 
     Task<int> CountTagsAsync(string? status, string? scope = null, CancellationToken ct = default);
@@ -1600,12 +1613,19 @@ public interface ILedger
     /// Carries one batch of an approved tag: marks up to <paramref name="batchSize"/> of its records, of every flow, for
     /// redelivery in key and then flow order from the tag's cursor (asking each flow's next run to plan them again),
     /// advances the cursor and reports what is left. A change over millions of records is drained a batch at a time by a caller that decides
-    /// the pace.
+    /// the pace. Once every record is marked the change waits (<c>delivering</c>) until no flow still builds one of them from
+    /// the old value, and only then is it rolled out (<c>applied</c>); a call on a waiting change checks that again.
     /// </summary>
     Task<UpdateRolloutBatch> RollOutTagAsync(long tagId, int batchSize, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>The approved tags with rollout still to do, oldest decision first.</summary>
     Task<IReadOnlyList<UpdateTag>> ListRolloutQueueAsync(int max, CancellationToken ct = default);
+
+    /// <summary>
+    /// Closes every change whose records are all marked and none of which any flow still builds from the old value: the
+    /// last flow reading it has run. Returns how many it closed.
+    /// </summary>
+    Task<int> SettleRolloutsAsync(DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>The watermark of one flow scope, or null when no whole-scope plan of it has completed.</summary>
     Task<SourceWatermark?> GetWatermarkAsync(Guid flowId, string scope, CancellationToken ct = default);

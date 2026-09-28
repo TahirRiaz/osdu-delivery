@@ -23,6 +23,11 @@ public sealed partial class OsduLedger : ILedger
     /// <summary>Cached item ids or set ids per lookup, well inside the parameter ceiling of one command.</summary>
     private const int LookupChunk = 500;
 
+    /// <summary>A change whose records are all marked, waiting for the flows that build them to render them again.</summary>
+    private const string Delivering = "delivering";
+
+    private const string DeletedStatus = "deleted";
+
     /// <summary>
     /// Cache sets this ledger has already resolved, by hash. A run stages hundreds of thousands of records across
     /// a handful of distinct dependency sets, so this turns the trail into a few queries rather than one per record.
@@ -2063,6 +2068,8 @@ public sealed partial class OsduLedger : ILedger
         var unverified = KindText(Snapshots.CacheUsageKind.Unverified);
         var listed = KindText(Snapshots.CacheUsageKind.Listed);
         var emptied = KindText(Snapshots.CacheUsageKind.Empty);
+        // Stands for every key of a $findAll: a change to what one key finds changes what the whole node found.
+        const string AnyListing = "\n";
         return await ReadAsync(
             async db =>
             {
@@ -2078,13 +2085,12 @@ public sealed partial class OsduLedger : ILedger
                     .Select(e => new { e.SetId, e.TypeName, e.Path, e.Kind, e.ItemId, e.ValueText })
                     .ToListAsync(ct).ConfigureAwait(false);
                 var records = new Dictionary<long, long>();
-                var answered = new HashSet<(long SetId, string TypeName, string Path, string Record)>();
+                var answered = new HashSet<(long SetId, string TypeName, string Path)>();
                 var listedSets = held.Where(e => e.Kind == listed).Select(e => e.SetId).Distinct().ToHashSet();
                 foreach (var chunk in held.Select(e => e.SetId).Distinct().Chunk(LookupChunk))
                 {
                     var ids = chunk.ToList();
-                    var counts = await db.DeliveryRecords
-                        .Where(r => r.CacheSetId != null && ids.Contains(r.CacheSetId!.Value))
+                    var counts = await WaitingRecords(db, ids)
                         .GroupBy(r => r.CacheSetId!.Value)
                         .Select(g => new { SetId = g.Key, Records = g.LongCount() })
                         .ToListAsync(ct).ConfigureAwait(false);
@@ -2093,8 +2099,9 @@ public sealed partial class OsduLedger : ILedger
                         records[count.SetId] = count.Records;
                     }
 
-                    // A $findAll asks for a reference with and without its version separator, and records each form: a form
-                    // that found no row is no gap when another form of the same record found rows in the same set.
+                    // A $findAll reads the rows of every key it is given (each form of a reference, each of a wellbore's
+                    // countries) and is missing only when none of them found a row, as the render judged it: a key that found
+                    // nothing beside one that found rows left the record wanting nothing.
                     var withListings = ids.Where(listedSets.Contains).ToList();
                     if (withListings.Count == 0)
                     {
@@ -2103,17 +2110,48 @@ public sealed partial class OsduLedger : ILedger
 
                     var found = await db.DeliveryCacheSetEntries
                         .Where(e => e.Scope == scope && e.Kind == listed && e.ValueText != string.Empty && withListings.Contains(e.SetId))
-                        .Select(e => new { e.SetId, e.TypeName, e.Path, e.ItemId })
+                        .Select(e => new { e.SetId, e.TypeName, e.Path })
+                        .Distinct()
                         .ToListAsync(ct).ConfigureAwait(false);
                     foreach (var listing in found)
                     {
-                        answered.Add((listing.SetId, listing.TypeName, listing.Path, ListedRecord(listing.ItemId)));
+                        answered.Add((listing.SetId, listing.TypeName, listing.Path));
+                    }
+                }
+
+                // What a refresh has since brought is no longer missing from the cache: it is a change, listed with the
+                // changes, and leaves the record's set when the record's flow renders it again.
+                var types = held.Select(e => e.TypeName).Distinct().ToList();
+                var tags = await db.DeliveryUpdateTags.AsNoTracking()
+                    .Where(t => t.Scope == scope && types.Contains(t.TypeName))
+                    .Select(t => new { t.TypeName, t.Path, t.ItemId, t.Change, t.OldValue, t.SetIds })
+                    .ToListAsync(ct).ConfigureAwait(false);
+                var brought = new HashSet<(long SetId, string TypeName, string Path, string Key)>();
+                foreach (var tag in tags)
+                {
+                    var keys = new List<string> { tag.ItemId };
+                    if (tag.Change == "relisted")
+                    {
+                        keys.Add(AnyListing);
+                    }
+                    else if (tag.Change == "listed" && tag.OldValue is { Length: > 0 } looked)
+                    {
+                        keys.AddRange(looked.Split(", ").Append(looked).Select(Snapshots.CacheUsage.ListingKey));
+                    }
+
+                    foreach (var set in ParseSets(tag.SetIds))
+                    {
+                        foreach (var key in keys)
+                        {
+                            brought.Add((set, tag.TypeName, tag.Path, key));
+                        }
                     }
                 }
 
                 var gaps = held
                     .Where(e => records.ContainsKey(e.SetId)
-                        && (e.Kind != listed || !answered.Contains((e.SetId, e.TypeName, e.Path, ListedRecord(e.ItemId)))))
+                        && !brought.Contains((e.SetId, e.TypeName, e.Path, e.Kind == listed ? AnyListing : e.ItemId))
+                        && (e.Kind != listed || !answered.Contains((e.SetId, e.TypeName, e.Path))))
                     .GroupBy(e => (e.TypeName, e.Path, e.Kind, Key: e.Kind == listed ? ListedKey(e.ItemId) : e.ItemId, e.ValueText))
                     .Select(g => new CacheGap(g.Key.TypeName, g.Key.Path, ToKind(g.Key.Kind), g.Key.Key, g.Key.ValueText, g.Select(e => e.SetId).Distinct().Sum(s => records[s])))
                     .ToList();
@@ -2131,8 +2169,7 @@ public sealed partial class OsduLedger : ILedger
             },
             ct).ConfigureAwait(false);
 
-        // The record a listed key names, whichever form of it was looked up, and the form it is shown by: as a reference is written.
-        static string ListedRecord(string key) => Rendering.CachedReferences.Parse(key)?.Id ?? key;
+        // The record a listed key names is shown as a reference is written, whichever form of it was looked up.
         static string ListedKey(string key) => Rendering.CachedReferences.Parse(key) is { } reference ? Rendering.CachedReferences.Written(reference.Id) : key;
     }
 
@@ -2155,10 +2192,20 @@ public sealed partial class OsduLedger : ILedger
             var path = UpdateTag.Kept(tag.Path, UpdateTag.MaxTextLength);
             var open = await db.DeliveryUpdateTags.FirstOrDefaultAsync(
                 t => t.Scope == tag.Scope && t.TypeName == tag.TypeName && t.ItemId == itemId && t.Path == path
-                     && (t.Status == "pending" || t.Status == "approved" || t.Status == "rolling"),
+                     && (t.Status == "pending" || t.Status == "approved" || t.Status == "rolling" || t.Status == Delivering),
                 ct).ConfigureAwait(false);
             if (open is not null)
             {
+                if (open.Status == Delivering)
+                {
+                    // Every record was marked, and the value moved again: the sets holding it now are marked from the start.
+                    open.Status = "approved";
+                    open.Cursor = null;
+                    open.CursorFlowId = null;
+                    open.Processed = 0;
+                    open.CompletedUtc = null;
+                }
+
                 // The same value moved again. An approval was for what someone looked at, so a further move
                 // reopens the question rather than riding on the old decision.
                 var moved = !string.Equals(open.NewValue, UpdateTag.Kept(tag.NewValue, UpdateTag.MaxTextLength), StringComparison.Ordinal);
@@ -2217,13 +2264,27 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<UpdateTag>> ListTagsAsync(string? status, int max, int offset, string? scope = null, CancellationToken ct = default)
     {
-        var rows = await ReadAsync(
-            db => TagQuery(db, status, scope)
-                .OrderByDescending(t => t.TagId)
-                .Skip(Math.Max(0, offset)).Take(Math.Clamp(max, 1, 1000))
-                .ToListAsync(ct),
+        return await ReadAsync(
+            async db =>
+            {
+                var rows = await TagQuery(db, status, scope)
+                    .OrderByDescending(t => t.TagId)
+                    .Skip(Math.Max(0, offset)).Take(Math.Clamp(max, 1, 1000))
+                    .ToListAsync(ct).ConfigureAwait(false);
+                var open = rows.Where(t => t.Status is not ("applied" or "rejected")).ToList();
+                var waiting = await WaitingBySetAsync(db, open.SelectMany(t => ParseSets(t.SetIds)).Distinct().ToList(), ct).ConfigureAwait(false);
+                return (IReadOnlyList<UpdateTag>)rows.Select(t =>
+                {
+                    var flows = t.Status is "applied" or "rejected"
+                        ? new Dictionary<Guid, long>()
+                        : ParseSets(t.SetIds)
+                            .SelectMany(s => waiting.GetValueOrDefault(s) ?? [])
+                            .GroupBy(f => f.Key)
+                            .ToDictionary(g => g.Key, g => g.Sum(f => f.Value));
+                    return ToTag(t) with { WaitingByFlow = flows };
+                }).ToList();
+            },
             ct).ConfigureAwait(false);
-        return rows.Select(ToTag).ToList();
     }
 
     public Task<int> CountTagsAsync(string? status, string? scope = null, CancellationToken ct = default)
@@ -2258,18 +2319,17 @@ public sealed partial class OsduLedger : ILedger
         await using var db = Open();
         var tag = await db.DeliveryUpdateTags.FirstOrDefaultAsync(t => t.TagId == tagId, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"Update tag {tagId} is not in the ledger.");
-        if (tag.Status is not ("approved" or "rolling"))
+        if (tag.Status is not ("approved" or "rolling" or Delivering))
         {
             return new UpdateRolloutBatch(tagId, 0, tag.Processed, tag.AffectedRecords, tag.Status == "applied");
         }
 
         var sets = ParseSets(tag.SetIds);
-        if (sets.Count == 0)
+        if (sets.Count == 0 || tag.Status == Delivering)
         {
-            tag.Status = "applied";
-            tag.CompletedUtc = nowUtc;
+            var settled = await SettleAsync(db, tag, sets, nowUtc, ct).ConfigureAwait(false);
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
-            return new UpdateRolloutBatch(tagId, 0, tag.Processed, tag.AffectedRecords, true);
+            return new UpdateRolloutBatch(tagId, 0, tag.Processed, tag.AffectedRecords, settled);
         }
 
         // One bounded page of records, in key and then flow order from where the last pass stopped: a change over millions
@@ -2301,14 +2361,73 @@ public sealed partial class OsduLedger : ILedger
         }
 
         tag.StartedUtc ??= nowUtc;
-        tag.Status = page.Count < size ? "applied" : "rolling";
-        if (tag.Status == "applied")
+        tag.Status = "rolling";
+        var completed = page.Count < size && await SettleAsync(db, tag, sets, nowUtc, ct).ConfigureAwait(false);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return new UpdateRolloutBatch(tagId, page.Count, tag.Processed, tag.AffectedRecords, completed);
+    }
+
+    /// <summary>
+    /// A change whose records are all marked: waiting for the flows that build them to render them again, until none is
+    /// still built from the sets holding the old value. Each flow renders its own on its next run, so a cache many flows read
+    /// is rolled out when the last of them has run. True when the change is rolled out.
+    /// </summary>
+    private static async Task<bool> SettleAsync(OsduDbContext db, DeliveryUpdateTag tag, IReadOnlyList<long> sets, DateTime nowUtc, CancellationToken ct)
+    {
+        var waiting = sets.Count == 0 ? 0 : await WaitingRecords(db, sets).LongCountAsync(ct).ConfigureAwait(false);
+        tag.Status = waiting == 0 ? "applied" : Delivering;
+        tag.CompletedUtc = waiting == 0 ? nowUtc : null;
+        return waiting == 0;
+    }
+
+    /// <summary>The records still built from any of <paramref name="sets"/>: not rendered again since, and not deleted from OSDU.</summary>
+    private static IQueryable<DeliveryRecord> WaitingRecords(OsduDbContext db, IReadOnlyList<long> sets)
+        => db.DeliveryRecords.AsNoTracking().Where(r => r.CacheSetId != null && sets.Contains(r.CacheSetId!.Value) && r.Status != DeletedStatus);
+
+    public async Task<int> SettleRolloutsAsync(DateTime nowUtc, CancellationToken ct = default)
+    {
+        await using var db = Open();
+        var tags = await db.DeliveryUpdateTags.Where(t => t.Status == Delivering).ToListAsync(ct).ConfigureAwait(false);
+        if (tags.Count == 0)
         {
+            return 0;
+        }
+
+        var waiting = await WaitingBySetAsync(db, tags.SelectMany(t => ParseSets(t.SetIds)).Distinct().ToList(), ct).ConfigureAwait(false);
+        var settled = 0;
+        foreach (var tag in tags.Where(t => ParseSets(t.SetIds).All(s => !waiting.ContainsKey(s))))
+        {
+            tag.Status = "applied";
             tag.CompletedUtc = nowUtc;
+            settled++;
         }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return new UpdateRolloutBatch(tagId, page.Count, tag.Processed, tag.AffectedRecords, tag.Status == "applied");
+        return settled;
+    }
+
+    /// <summary>How many records of each flow are still built from each of <paramref name="sets"/>, by set.</summary>
+    private static async Task<Dictionary<long, Dictionary<Guid, long>>> WaitingBySetAsync(OsduDbContext db, IReadOnlyList<long> sets, CancellationToken ct)
+    {
+        var result = new Dictionary<long, Dictionary<Guid, long>>();
+        foreach (var chunk in sets.Chunk(LookupChunk))
+        {
+            var counts = await WaitingRecords(db, chunk)
+                .GroupBy(r => new { SetId = r.CacheSetId!.Value, r.FlowId })
+                .Select(g => new { g.Key.SetId, g.Key.FlowId, Records = g.LongCount() })
+                .ToListAsync(ct).ConfigureAwait(false);
+            foreach (var count in counts)
+            {
+                if (!result.TryGetValue(count.SetId, out var flows))
+                {
+                    result[count.SetId] = flows = [];
+                }
+
+                flows[count.FlowId] = count.Records;
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -2375,8 +2494,11 @@ public sealed partial class OsduLedger : ILedger
         var query = db.DeliveryUpdateTags.AsNoTracking().AsQueryable();
         if (!string.IsNullOrWhiteSpace(status))
         {
+            // Rolling out covers both halves of it: records being marked, and marked records waiting for their flows.
             var s = status.Trim().ToLowerInvariant();
-            query = query.Where(t => t.Status == s);
+            query = s == "rolling"
+                ? query.Where(t => t.Status == "rolling" || t.Status == Delivering)
+                : query.Where(t => t.Status == s);
         }
 
         if (!string.IsNullOrWhiteSpace(scope))

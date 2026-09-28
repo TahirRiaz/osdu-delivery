@@ -6,7 +6,7 @@ import { PagedTable, type Column } from "@/components/PagedTable";
 /** What each kind of gap means for the records built without it, as the table's tooltip says it. */
 const GAP_MEANING: Record<string, string> = {
   unlisted: "No cached record answered to the value, so the records were built without one: a wellbore the cache does not hold yet.",
-  listed: "No row was listed under the key a $findAll read every row of: a field or a country no access group lists yet.",
+  listed: "No row was listed under any key a $findAll read (a wellbore's field, every one of its countries): a field or a country no access group lists yet.",
   unverified: "The records reference an id the cache holds no record under, written because the mapping says $unverified.",
   empty: "The path read held nothing, so the records were built without a value there: a wellbore without a field, or an empty field a $findAll asked for.",
 };

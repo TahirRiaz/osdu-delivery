@@ -227,12 +227,17 @@ public sealed record DeliveryCacheDto(
 
 /// <summary>
 /// One cache change and what happens about it: the partition, the cached record and path that moved, the value before and
-/// after, how many delivered manifest rows it reaches, and how far the rollout has carried it.
+/// after, how many delivered manifest rows it reaches, how many are marked for redelivery (<c>Processed</c>), and how many,
+/// of which flows, are still built from the old value (<c>Waiting</c>, <c>WaitingFlows</c>): the flows yet to run.
 /// </summary>
 public sealed record DeliveryUpdateTagDto(
     long TagId, string Kind, string Scope, string TypeName, string ItemId, string Path, string Change, string? OldValue, string? NewValue,
     string? FromVersion, string ToVersion, string Mode, string Status, string Summary, long AffectedRecords, long Processed,
-    long Remaining, DateTime DetectedUtc, DateTime? DecidedUtc, string? DecidedBy, DateTime? StartedUtc, DateTime? CompletedUtc);
+    long Remaining, long Waiting, IReadOnlyList<DeliveryUpdateTagFlowDto> WaitingFlows, DateTime DetectedUtc, DateTime? DecidedUtc,
+    string? DecidedBy, DateTime? StartedUtc, DateTime? CompletedUtc);
+
+/// <summary>The records of one flow a cache change still waits for; the pipeline is null for a ledger no synced flow holds.</summary>
+public sealed record DeliveryUpdateTagFlowDto(Guid FlowId, Guid? PipelineId, string? FlowName, long Records);
 
 /// <summary>A decision on a set of tags: approve lets the next run carry the update, reject leaves OSDU as it is.</summary>
 public sealed record DeliveryTagDecisionRequest(IReadOnlyList<long> TagIds, bool Approve);
@@ -1447,12 +1452,13 @@ public static class DeliveryEndpoints
     /// partition's cache.
     /// </summary>
     private static async Task<Ok<PagedResult<DeliveryUpdateTagDto>>> ListUpdateTagsAsync(
-        string? status, string? scope, int? page, int? pageSize, ILedger ledger, CancellationToken ct)
+        string? status, string? scope, int? page, int? pageSize, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
     {
         var (p, size) = PageRequest.Normalize(page, pageSize);
         var tags = await ledger.ListTagsAsync(status, size, (p - 1) * size, scope, ct).ConfigureAwait(false);
         var total = await ledger.CountTagsAsync(status, scope, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new PagedResult<DeliveryUpdateTagDto>(tags.Select(ToDto).ToList(), p, size, total));
+        var pipelines = await DeliveryPipelines.ForLedgersAsync(db, osdu, tags.SelectMany(t => t.WaitingByFlow.Keys).Distinct().ToList(), ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<DeliveryUpdateTagDto>(tags.Select(t => ToDto(t, pipelines)).ToList(), p, size, total));
     }
 
     /// <summary>
@@ -2679,10 +2685,21 @@ public static class DeliveryEndpoints
         m.Id, m.RepoId, m.Reference, m.Name, m.Version, m.Kind, m.RelativePath, m.ContentHash, m.Status, m.Message, ParseJson(m.SummaryJson),
         m.FirstSeenUtc, m.LastSeenUtc);
 
-    private static DeliveryUpdateTagDto ToDto(UpdateTag t) => new(
+    private static DeliveryUpdateTagDto ToDto(UpdateTag t, IReadOnlyDictionary<Guid, LedgerPipeline> pipelines) => new(
         t.TagId, t.Kind, t.Scope, t.TypeName, t.ItemId, t.Path, t.Change, t.OldValue, t.NewValue, t.FromVersion, t.ToVersion, t.Mode,
-        t.Status, t.Describe(), t.AffectedRecords, t.Processed, t.Remaining, t.DetectedUtc, t.DecidedUtc, t.DecidedBy,
-        t.StartedUtc, t.CompletedUtc);
+        t.Status, t.Describe(), t.AffectedRecords, t.Processed, t.Remaining, t.Waiting,
+        t.WaitingByFlow
+            .Select(f => pipelines.TryGetValue(f.Key, out var found)
+                ? new DeliveryUpdateTagFlowDto(f.Key, found.Pipeline.Id, NamedFlow(found), f.Value)
+                : new DeliveryUpdateTagFlowDto(f.Key, null, null, f.Value))
+            .OrderByDescending(f => f.Records)
+            .ThenBy(f => f.FlowName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ToList(),
+        t.DetectedUtc, t.DecidedUtc, t.DecidedBy, t.StartedUtc, t.CompletedUtc);
+
+    /// <summary>A flow as a change names it: the pipeline, and the interface when the ledger is one of several.</summary>
+    private static string NamedFlow(LedgerPipeline found)
+        => NamedInterface(found) is { } name ? $"{found.Pipeline.Name} ({name})" : found.Pipeline.Name;
 
     private static JsonElement? ParseJsonOrNull(string? json)
     {

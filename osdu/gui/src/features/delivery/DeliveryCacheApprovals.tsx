@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link as RouterLink } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Check, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
@@ -37,7 +38,7 @@ const statuses: { value: string; label: string }[] = [
   { value: ALL, label: "All changes" },
 ];
 
-const statusLabel = Object.fromEntries(statuses.map((s) => [s.value, s.label])) as Record<string, string>;
+const statusLabel = { ...Object.fromEntries(statuses.map((s) => [s.value, s.label])), delivering: "Rolling out" } as Record<string, string>;
 
 const changeTone: Record<string, string> = {
   changed: "bg-info/15 text-info",
@@ -109,7 +110,7 @@ function NewValue({ tag, maxWidth }: { tag: DeliveryUpdateTag; maxWidth?: number
     : <span className="font-mono text-[12px] text-destructive">gone</span>;
 }
 
-/** How far the rollout has carried the change, or why it has not started. */
+/** How far the rollout has carried the change: the records rendered again by their flow, and the flows still to run. */
 function Rollout({ row }: { row: DeliveryUpdateTag }) {
   if (row.status === "pending") {
     return <span className="text-[12px] text-warning">waiting for a decision</span>;
@@ -119,9 +120,15 @@ function Rollout({ row }: { row: DeliveryUpdateTag }) {
     return <span className="text-[12px] text-muted-foreground">not sent</span>;
   }
 
-  const done = row.affectedRecords === 0 ? 1 : row.processed / row.affectedRecords;
+  const delivered = Math.max(0, row.affectedRecords - row.waiting);
+  const done = row.affectedRecords === 0 ? 1 : delivered / row.affectedRecords;
+  const flows = row.waitingFlows.length;
   return (
-    <span className="inline-flex items-center gap-2">
+    <span
+      className="inline-flex items-center gap-2"
+      title={flows === 0 ? undefined : `Waiting for ${row.waitingFlows.map((f) => `${f.flowName ?? f.flowId} (${f.records.toLocaleString()})`).join(", ")}`}
+      data-testid="delivery-cache-tag-rollout"
+    >
       <span className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
         <span
           className={cn("block h-full", row.status === "applied" ? "bg-success" : "bg-primary")}
@@ -129,9 +136,34 @@ function Rollout({ row }: { row: DeliveryUpdateTag }) {
         />
       </span>
       <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-        {row.processed.toLocaleString()} / {row.affectedRecords.toLocaleString()}
+        {delivered.toLocaleString()} / {row.affectedRecords.toLocaleString()}
       </span>
+      {flows > 0 && (
+        <span className="text-[11px] text-muted-foreground">
+          {flows} flow{flows === 1 ? "" : "s"} to run
+        </span>
+      )}
     </span>
+  );
+}
+
+/** The flows a change still waits for, each with its records and a link to the pipeline that runs it. */
+function WaitingFlows({ tag }: { tag: DeliveryUpdateTag }) {
+  if (tag.waitingFlows.length === 0) {
+    return <span className="text-[12px] text-muted-foreground">{tag.status === "applied" ? "none: every flow has run" : "none"}</span>;
+  }
+
+  return (
+    <ul className="flex flex-col gap-0.5 text-[12px]" data-testid="delivery-cache-tag-waiting-flows">
+      {tag.waitingFlows.map((flow) => (
+        <li key={flow.flowId} className="flex items-baseline gap-2">
+          {flow.pipelineId === null
+            ? <span className="font-mono text-muted-foreground">{flow.flowId}</span>
+            : <RouterLink to={`/pipelines/${flow.pipelineId}`} className="text-primary hover:underline">{flow.flowName}</RouterLink>}
+          <span className="font-mono tabular-nums text-muted-foreground">{flow.records.toLocaleString()}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -268,8 +300,15 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
         <DetailPair label="Delivered records reached">
           <span className="font-mono tabular-nums">{tag.affectedRecords.toLocaleString()}</span>
           <span className="text-[12px] text-muted-foreground">
-            {pending ? " held back until decided" : ` · ${tag.remaining.toLocaleString()} remaining`}
+            {pending
+              ? " held back until decided"
+              : tag.status === "rejected"
+              ? " · left as they are"
+              : ` · ${Math.max(0, tag.affectedRecords - tag.waiting).toLocaleString()} rendered again, ${tag.waiting.toLocaleString()} waiting`}
           </span>
+        </DetailPair>
+        <DetailPair label="Waiting for">
+          <WaitingFlows tag={tag} />
         </DetailPair>
         <DetailPair label="Rollout"><Rollout row={tag} /></DetailPair>
         <DetailPair label="Mode">{tag.mode === "auto" ? "automatic: approved as found" : "needs approval"}</DetailPair>
@@ -300,7 +339,8 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
 /**
  * What the cache does to the delivered records of one partition, in one list: the records built without a value the cache
  * did not hold (Missing from cache), and the changes refreshes found in values delivered records were built from, with
- * what became of each. By default a change goes out on the next run on its own and shows here as a rollout; a type whose
+ * what became of each. By default a change goes out on the next run on its own and shows here as a rollout, which lasts
+ * until every flow reading the value has rendered its records again; a type whose
  * cache flow asks for approval holds its changes here until someone decides, with Approve and Reject in the row, in bulk
  * from a selection, and in the panel a row opens. The list opens on the changes waiting for a decision when there can be
  * any, else on what is missing when anything is, and on every change otherwise.
@@ -425,6 +465,10 @@ export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal, ope
         <span className="text-[12px] text-muted-foreground" data-testid="delivery-cache-approval-rule">
           {status === MISSING
             ? "Records built without a value the cache did not hold. The refresh that brings it lists them as a change, and they are updated on their next delivery."
+            : status === "rolling"
+            ? "Each flow reading a change renders its records again on its next run; a change stays here until the last of them has."
+            : status === "applied"
+            ? "Every flow that read these values has rendered its records again with the new ones."
             : approvalTypes.length === 0
             ? "Every type updates automatically: a change reaches its records on their next delivery."
             : `Approval is on for ${approvalTypes.join(", ")}; every other type updates automatically on the next delivery.`}

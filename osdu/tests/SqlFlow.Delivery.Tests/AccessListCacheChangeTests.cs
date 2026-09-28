@@ -181,12 +181,17 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
     [Fact]
     public async Task The_gaps_name_what_logs_were_built_without_and_how_many_most_records_first()
     {
-        // Three logs of a field no group lists yet, two of a wellbore the cache does not hold, one complete.
+        // Three logs of a field no group lists yet, two of a wellbore the cache does not hold, one complete, and one of a
+        // wellbore whose GeoContexts name its country and an area no access group names.
         await DeliveredAsync("NO 2/2-N", 3, cache: Cache(Wellbores(Item("dev:master-data--Wellbore:new1",
             ("FacilityName", "\"NO 2/2-N\""),
             ("GeoContexts.FieldID", "[\"dev:master-data--Field:NEW:\"]")))));
         await DeliveredAsync("NO 99/9-Z-9", 2, optionalWellbore: true);
         await DeliveredAsync("NO 16/3-A-1", 1);
+        await DeliveredAsync("NO 33/9-1", 1, cache: Cache(Wellbores(Item("dev:master-data--Wellbore:tampen",
+            ("FacilityName", "\"NO 33/9-1\""),
+            ("GeoContexts.FieldID", $"[\"{MartinLinge}\"]"),
+            ("GeoContexts.GeoPoliticalEntityID", $"[\"{Norway}\", \"dev:master-data--GeoPoliticalEntity:TAMPEN:\"]")))));
 
         var listing = await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 50, skip: 0);
         var gaps = listing.Items;
@@ -209,6 +214,9 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
         // A key no form of which found a row is one gap, not one per form.
         Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey("dev:master-data--Field:NEW"));
 
+        // The country's groups were found, so the area beside it, which no group names, left the log wanting nothing.
+        Assert.DoesNotContain(gaps, g => g.Key.Contains("TAMPEN", StringComparison.Ordinal));
+
         // A page is a slice of the same order, and every page counts them all.
         var second = await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 1, skip: 1);
         Assert.Equal(listing.Total, second.Total);
@@ -219,6 +227,14 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
         Assert.All((await _ledger.ListCacheGapsAsync(Scope, "Wellbore", empty: false, take: 50, skip: 0)).Items, g => Assert.Equal("Wellbore", g.TypeName));
         var withEmpty = (await _ledger.ListCacheGapsAsync(Scope, "Wellbore", empty: true, take: 50, skip: 0)).Items;
         Assert.Contains(withEmpty, g => g.Kind == CacheUsageKind.Empty && g.Path == "GeoContexts.GeoPoliticalEntityID" && g.Key == "dev:master-data--Wellbore:new1");
+
+        // The data office lists a group for the new field: the refresh raises a change for the three logs, and what was
+        // missing is listed with the changes from then on, not as missing.
+        await AnalyzeAsync(Groups(), Groups(Item("dev:data-governance--AccessGroupMap:new",
+            ("FieldIDList", "[\"dev:master-data--Field:NEW:\"]"), ("FieldList", "[\"NEW\"]"),
+            ("EntitlementGroupEmail", "\"data.office.new.viewers@x\""))));
+        Assert.Equal(3, Assert.Single(await _ledger.ListTagsAsync("approved", 10, 0), t => t.Path == "FieldIDList").AffectedRecords);
+        Assert.DoesNotContain((await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 50, skip: 0)).Items, g => g.Path == "FieldIDList");
     }
 
     [Fact]
