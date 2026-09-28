@@ -432,12 +432,14 @@ internal static class DeliveryVerbs
                         ["written"] = write.Written,
                         ["types"] = write.Snapshot.Types.Count,
                         ["records"] = records,
+                        ["typesMoved"] = new JsonArray(write.Changes.Moved.Select(name => (JsonNode)JsonValue.Create(name)).ToArray()),
+                        ["typesRemoved"] = new JsonArray(write.Changes.Removed.Select(name => (JsonNode)JsonValue.Create(name)).ToArray()),
                     }));
                     return 0;
                 }
 
                 context.Out.WriteLine(write.Written
-                    ? $"cache of partition {importScope}: version {write.Snapshot.Version} written from cache flow {cache.Name}, holding {write.Snapshot.Types.Count} type(s) and {records} record(s), now current"
+                    ? $"cache of partition {importScope}: version {write.Snapshot.Version} written from cache flow {cache.Name}, holding {write.Snapshot.Types.Count} type(s) and {records} record(s), now current; {(write.Changes.Moved.Count == 0 ? "no type changed" : "types moved: " + string.Join(", ", write.Changes.Moved))}"
                     : $"cache of partition {importScope}: the files add nothing version {write.Snapshot.Version} does not already hold, so nothing was written");
                 return 0;
             }
@@ -469,6 +471,20 @@ internal static class DeliveryVerbs
             var run = v.RunId is { } runId ? $" in run {runId:D}" : string.Empty;
             context.Out.WriteLine(
                 $"{v.Version}  {(v.Current ? "current" : "       ")}  {v.Items} record(s) in {v.Types.Count} type(s), written by cache flow {v.FlowName} at {v.CapturedUtc.ToString("u", CultureInfo.InvariantCulture)} for {v.CapturedBy}{run}");
+
+            // Which of its types the version moved, by each type's content hash; a version written before types were hashed
+            // recorded none, and says nothing here.
+            if (v.Types.Any(t => t.Change is not null))
+            {
+                var moved = v.Types
+                    .Where(t => t.Change is CacheTypeChange.Added or CacheTypeChange.Changed)
+                    .OrderBy(t => t.Name, StringComparer.Ordinal)
+                    .Select(t => $"{t.Name} ({CacheTypeChanges.Text(t.Change!.Value)})")
+                    .ToList();
+                context.Out.WriteLine(moved.Count == 0
+                    ? "  no type changed"
+                    : $"  types moved: {string.Join(", ", moved)}; {v.Types.Count - moved.Count} unchanged");
+            }
         }
 
         if (versions.FirstOrDefault(v => v.Current) is not { } current)
@@ -505,7 +521,15 @@ internal static class DeliveryVerbs
         ["origin"] = v.Origin,
         ["previousVersion"] = v.PreviousVersion,
         ["records"] = v.Items,
-        ["types"] = new JsonArray(v.Types.Select(t => (JsonNode)new JsonObject { ["name"] = t.Name, ["entityType"] = t.EntityType, ["records"] = t.Items }).ToArray()),
+        ["types"] = new JsonArray(v.Types.Select(t => (JsonNode)new JsonObject
+        {
+            ["name"] = t.Name,
+            ["entityType"] = t.EntityType,
+            ["records"] = t.Items,
+            ["hash"] = t.Hash,
+            ["change"] = t.Change is { } change ? CacheTypeChanges.Text(change) : null,
+            ["since"] = t.Since,
+        }).ToArray()),
         ["systemProperties"] = new JsonArray(v.SystemProperties.Select(p => (JsonNode)new JsonObject
         {
             ["service"] = p.Service,

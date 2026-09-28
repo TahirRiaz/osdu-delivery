@@ -253,8 +253,14 @@ public sealed record DeliveryCacheGapDto(string TypeName, string Path, string Ki
 public sealed record DeliveryCachedItemDto(
     long ItemId, string Scope, string Version, string TypeName, string EntityType, string RecordId, JsonElement Fields);
 
-/// <summary>One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under.</summary>
-public sealed record DeliveryCacheVersionTypeDto(string Name, string EntityType, long Items, string? Key = null);
+/// <summary>
+/// One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under; with the
+/// type's own content hash, how it compares with the version before (<c>added</c>, <c>changed</c> or <c>unchanged</c>), and
+/// the version its content dates from. The version moves when anything in the partition's cache does; these move only when
+/// the type does. The three are null for a version written before types were hashed, and <c>since</c> when it cannot be told.
+/// </summary>
+public sealed record DeliveryCacheVersionTypeDto(
+    string Name, string EntityType, long Items, string? Key = null, string? Hash = null, string? Change = null, string? Since = null);
 
 /// <summary>
 /// One of the partition's system properties as a cache version holds it: a setting of the platform for the partition,
@@ -290,8 +296,15 @@ public sealed record DeliveryCacheDiffTypeDto(string TypeName, long Changed, lon
 public sealed record DeliveryCacheDiffItemDto(
     string TypeName, string EntityType, string RecordId, string Change, JsonElement? Before, JsonElement? After, IReadOnlyList<string> ChangedFields);
 
-/// <summary>One version in a cache's history: the version captured before it, and how many records it changed, added and removed against that one.</summary>
-public sealed record DeliveryCacheHistoryEntryDto(DeliveryCacheVersionDto Version, string? Before, long Changed, long Added, long Removed);
+/// <summary>
+/// One version in a cache's history: the version captured before it, how many records it changed, added and removed against
+/// that one, and which types it moved. A type that only rode along with another's change is not listed.
+/// </summary>
+public sealed record DeliveryCacheHistoryEntryDto(
+    DeliveryCacheVersionDto Version, string? Before, long Changed, long Added, long Removed, IReadOnlyList<DeliveryCacheHistoryTypeDto> Types);
+
+/// <summary>One type a version moved: <c>added</c>, <c>changed</c> or <c>removed</c>, with how many of its records changed, arrived and left.</summary>
+public sealed record DeliveryCacheHistoryTypeDto(string Name, string Change, long Changed, long Added, long Removed);
 
 /// <summary>A run was queued for a record-scoped operation (redeliver, verify).</summary>
 public sealed record DeliveryRunAccepted(Guid RunId, string Status);
@@ -1326,14 +1339,18 @@ public static class DeliveryEndpoints
 
         var history = await CacheVersions.HistoryAsync(osdu, scope.Trim(), string.IsNullOrWhiteSpace(type) ? null : type.Trim(), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>(history
-            .Select(h => new DeliveryCacheHistoryEntryDto(ToVersionDto(h.Version), h.Before, h.Changes.Changed, h.Changes.Added, h.Changes.Removed))
+            .Select(h => new DeliveryCacheHistoryEntryDto(
+                ToVersionDto(h.Version), h.Before, h.Changes.Changed, h.Changes.Added, h.Changes.Removed,
+                h.Types.Select(t => new DeliveryCacheHistoryTypeDto(t.TypeName, t.Change, t.Counts.Changed, t.Counts.Added, t.Counts.Removed)).ToList()))
             .ToList());
     }
 
     private static DeliveryCacheVersionDto ToVersionDto(CacheVersionInfo version)
         => new(
             version.Scope, version.Version, version.Sequence, version.CapturedUtc, version.Current, version.PreviousVersion, version.FlowName, version.RunId,
-            version.CapturedBy, version.Origin, version.Items, version.Types.Select(t => new DeliveryCacheVersionTypeDto(t.Name, t.EntityType, t.Items, t.Key)).ToList(),
+            version.CapturedBy, version.Origin, version.Items,
+            version.Types.Select(t => new DeliveryCacheVersionTypeDto(
+                t.Name, t.EntityType, t.Items, t.Key, t.Hash, t.Change is { } change ? CacheTypeChanges.Text(change) : null, t.Since)).ToList(),
             version.SystemProperties.Select(p => new DeliveryCacheSystemPropertyDto(p.Service, p.Name, p.State.ToString(), p.Source, p.Detail)).ToList());
 
     private static ProblemHttpResult NoCacheNamed()

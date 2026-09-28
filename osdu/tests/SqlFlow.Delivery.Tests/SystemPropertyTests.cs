@@ -127,10 +127,16 @@ public sealed class SystemPropertyTests : IDisposable
         var units = Units("m", "ft");
         var snapshot = new ReferenceSnapshot("v1", DateTimeOffset.UnixEpoch, [units]);
 
-        // The hash every version written before system properties carried: the types alone, by name.
-        var before = Hashing.ContentHash.Of(CanonicalJson.ToBytes(new JsonObject { [units.Name] = units.ToJson() }));
+        // The hash every version written before system properties carried: the types alone, by name, each type's records in
+        // ordinal order of their ids, the order every version is written and loaded in.
+        var stored = new ReferenceType(units.Name, units.EntityType, units.Items.OrderBy(i => i.Id, StringComparer.Ordinal));
+        var before = Hashing.ContentHash.Of(CanonicalJson.ToBytes(new JsonObject { [units.Name] = stored.ToJson() }));
 
         Assert.Equal(before, snapshot.ContentHash());
+
+        // The order a capture found the records in does not move it.
+        Assert.Equal(before, new ReferenceSnapshot("v1", DateTimeOffset.UnixEpoch, [stored]).ContentHash());
+        Assert.Equal(before, snapshot.Normalized().ContentHash());
     }
 
     [Fact]

@@ -16,8 +16,11 @@ namespace SqlFlow.Delivery.Catalog;
 /// each record of the captured types, merges the capture in, and when the cached content moved writes the version row
 /// first, which claims the partition's next sequence so a concurrent write fails instead of interleaving, then the records
 /// that changed, arrived or left, then the membership and the current flag. A record whose values did not change is not
-/// written again: its open range already covers the new version, however many flows captured it. Versions never change once
-/// written, so the most recently loaded ones are kept in memory.
+/// written again: its open range already covers the new version, however many flows captured it. The version is the whole
+/// partition's cache and moves when anything in it does; each type it holds carries its own content hash, how it compares
+/// with the version before and the version its content dates from, so a type that only rode along with another's change is
+/// told apart, and its records are not even read. Versions never change once written, so the most recently loaded ones are
+/// kept in memory.
 /// </summary>
 public sealed class OsduCacheStore : ICacheStore
 {
@@ -232,7 +235,7 @@ public sealed class OsduCacheStore : ICacheStore
                 {
                     await WriteMembersAsync(db, scope, flowName, captured, plan, ct).ConfigureAwait(false);
                     await transaction.CommitAsync(ct).ConfigureAwait(false);
-                    return new CacheWrite(current, current, Written: false);
+                    return new CacheWrite(current, current, Written: false, CacheTypeChanges.None(current));
                 }
 
                 var sequence = (await db.DeliveryCacheVersions
@@ -245,6 +248,12 @@ public sealed class OsduCacheStore : ICacheStore
                     ? plan.Snapshot
                     : new ReferenceSnapshot(version, capturedUtc, plan.Snapshot.Types, plan.Snapshot.SystemProperties);
                 var types = snapshot.Types.OrderBy(t => t.Name, StringComparer.Ordinal).ToList();
+
+                // The version moves because something in the partition's cache did; each type's own hash says whether it
+                // was that type. Read before any record is written, since a version written before types were hashed is
+                // dated from the ranges its records hold.
+                var changes = CacheTypeChanges.Compare(current, snapshot);
+                var since = await SinceAsync(db, currentRow, version, types, changes, ct).ConfigureAwait(false);
 
                 // The row goes in first: the unique sequence is what a concurrent write of the same partition collides on.
                 var row = new DeliveryCacheVersion
@@ -261,14 +270,14 @@ public sealed class OsduCacheStore : ICacheStore
                     RunId = capture.RunId,
                     CapturedBy = Clip(capture.CapturedBy, 200),
                     Origin = Clip(capture.Origin, 1000),
-                    TypesJson = TypesJson(types),
+                    TypesJson = TypesJson(types, changes, since),
                     SystemPropertiesJson = SystemPropertiesJson(snapshot.SystemProperties),
                     Items = types.Sum(t => (long)t.Items.Count),
                 };
                 db.DeliveryCacheVersions.Add(row);
                 await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-                await WriteItemsAsync(db, scope, sequence, types, ct).ConfigureAwait(false);
+                await WriteItemsAsync(db, scope, sequence, types, changes, ct).ConfigureAwait(false);
                 await WriteMembersAsync(db, scope, flowName, captured, plan, ct).ConfigureAwait(false);
 
                 await db.DeliveryCacheVersions
@@ -279,7 +288,7 @@ public sealed class OsduCacheStore : ICacheStore
                     .ExecuteUpdateAsync(set => set.SetProperty(v => v.Current, true), ct).ConfigureAwait(false);
 
                 await transaction.CommitAsync(ct).ConfigureAwait(false);
-                return new CacheWrite(snapshot, current, Written: true);
+                return new CacheWrite(snapshot, current, Written: true, changes);
             }).ConfigureAwait(false);
 
             if (write.Written)
@@ -385,7 +394,11 @@ public sealed class OsduCacheStore : ICacheStore
         }
     }
 
-    /// <summary>One version with every record whose range covers its sequence, checked against the hash it was written with.</summary>
+    /// <summary>
+    /// One version with every record whose range covers its sequence, checked against the hash it was written with and, for a
+    /// version written since types were hashed, each type against its own: one pass over the records answers both, and a
+    /// type that no longer matches is named.
+    /// </summary>
     private static async Task<ReferenceSnapshot> ReadAsync(OsduDbContext db, DeliveryCacheVersion row, CancellationToken ct)
     {
         var scope = row.Scope;
@@ -401,7 +414,8 @@ public sealed class OsduCacheStore : ICacheStore
 
         // The version row lists every type, a type that holds no record included, so the loaded version holds exactly the
         // types the merge left and hashes as it did.
-        var types = ParseTypes(row.TypesJson, scope, row.Version)
+        var listed = ParseTypes(row.TypesJson, scope, row.Version);
+        var types = listed
             .Select(type => new ReferenceType(
                 type.Name,
                 type.EntityType,
@@ -415,23 +429,49 @@ public sealed class OsduCacheStore : ICacheStore
             new DateTimeOffset(DateTime.SpecifyKind(row.CapturedUtc, DateTimeKind.Utc)),
             types,
             ParseSystemProperties(row.SystemPropertiesJson, scope, row.Version));
-        if (!string.Equals(snapshot.ContentHash(), row.ContentHash, StringComparison.Ordinal))
+        var hashes = snapshot.Hashes();
+        var altered = listed
+            .Where(type => type.Hash is not null && !string.Equals(type.Hash, hashes.Of(type.Name), StringComparison.Ordinal))
+            .Select(type => type.Name)
+            .ToList();
+        if (!string.Equals(hashes.Content, row.ContentHash, StringComparison.Ordinal) || altered.Count > 0)
         {
+            var which = altered.Count == 0 ? string.Empty : $" (the records of {string.Join(", ", altered)} no longer match the hash the version recorded for them)";
             throw new DeliveryException(
-                $"Version {row.Version} of the cache of partition '{scope}' does not match the content hash it was written with: its records were altered after the version was written, so nothing renders against it.");
+                $"Version {row.Version} of the cache of partition '{scope}' does not match the content hash it was written with{which}: its records were altered after the version was written, so nothing renders against it.");
         }
 
         return snapshot;
     }
 
     /// <summary>
-    /// Compares the new version against what the newest one holds, record by record over every type: a record that changed
-    /// ends its open range and begins another, one that arrived begins one, and one that left ends its range.
+    /// Compares the new version against what the newest one holds, record by record over every type that arrived, changed or
+    /// left: a record that changed ends its open range and begins another, one that arrived begins one, and one that left
+    /// ends its range. A type whose content hash did not move is not read at all: the newest version was loaded from exactly
+    /// its open ranges and checked against its hash, so they already cover the new version as they stand.
     /// </summary>
-    private static async Task WriteItemsAsync(OsduDbContext db, string scope, int sequence, IReadOnlyList<ReferenceType> types, CancellationToken ct)
+    private static async Task WriteItemsAsync(
+        OsduDbContext db, string scope, int sequence, IReadOnlyList<ReferenceType> types, CacheTypeChanges changes, CancellationToken ct)
     {
+        var moved = types.Where(type => changes.Of(type.Name) is not CacheTypeChange.Unchanged).ToList();
+        var touched = moved.Select(type => type.Name).Concat(changes.Removed).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (touched.Count == 0)
+        {
+            // Only the partition's system properties moved.
+            return;
+        }
+
+        // The type names as the open ranges spell them, matched here without regard to case whatever the database's collation,
+        // so the query below finds a type's ranges however an earlier version spelled it.
+        var spelled = (await db.DeliveryCacheItems.AsNoTracking()
+                .Where(i => i.Scope == scope && i.ToSequence == null)
+                .Select(i => i.TypeName)
+                .Distinct()
+                .ToListAsync(ct).ConfigureAwait(false))
+            .Where(touched.Contains)
+            .ToList();
         var open = await db.DeliveryCacheItems.AsNoTracking()
-            .Where(i => i.Scope == scope && i.ToSequence == null)
+            .Where(i => i.Scope == scope && i.ToSequence == null && spelled.Contains(i.TypeName))
             .Select(i => new { i.ItemId, i.TypeName, i.EntityType, i.RecordId, i.FieldsJson })
             .ToListAsync(ct).ConfigureAwait(false);
         var held = open.ToDictionary(o => (Type: o.TypeName.ToUpperInvariant(), o.RecordId));
@@ -439,7 +479,7 @@ public sealed class OsduCacheStore : ICacheStore
         var closing = new List<long>();
         var arriving = new List<DeliveryCacheItem>();
         var seen = new HashSet<(string Type, string RecordId)>();
-        foreach (var type in types)
+        foreach (var type in moved)
         {
             foreach (var item in type.Items)
             {
@@ -524,7 +564,11 @@ public sealed class OsduCacheStore : ICacheStore
     private static string Terms(ReferenceItem item)
         => string.Join('\n', item.Fields.Values.SelectMany(v => v.Terms).Distinct(StringComparer.OrdinalIgnoreCase));
 
-    private static string TypesJson(IEnumerable<ReferenceType> types)
+    /// <summary>
+    /// The version's types as its row lists them: each with its entity type, its record count and a lookup table's key, and
+    /// its content hash, how it compares with the version before, and the version its content dates from.
+    /// </summary>
+    private static string TypesJson(IEnumerable<ReferenceType> types, CacheTypeChanges changes, IReadOnlyDictionary<string, string?> since)
     {
         var array = new JsonArray();
         foreach (var type in types)
@@ -535,10 +579,114 @@ public sealed class OsduCacheStore : ICacheStore
                 entry["key"] = type.Key;
             }
 
+            entry["hash"] = type.ContentHash();
+            entry["change"] = CacheTypeChanges.Text(changes.Of(type.Name)
+                ?? throw new InvalidOperationException($"The merge compared no type {type.Name} with the version before, and it writes one."));
+            if (since.GetValueOrDefault(type.Name) is { } from)
+            {
+                entry["since"] = from;
+            }
+
             array.Add(entry);
         }
 
         return array.ToJsonString();
+    }
+
+    /// <summary>
+    /// The version each type of a new version dates from: the new version for a type that arrived or changed, and for one
+    /// that did not, the version the current one says it dates from. A current version written before types were hashed
+    /// says nothing, so the type is dated from what the partition's records and versions hold: the latest version at which
+    /// a record of it began or ended its range, or at which the type came back into the cache, whichever is later. A type
+    /// neither can date is left undated rather than guessed.
+    /// </summary>
+    private static async Task<Dictionary<string, string?>> SinceAsync(
+        OsduDbContext db, DeliveryCacheVersion? currentRow, string version, IReadOnlyList<ReferenceType> types, CacheTypeChanges changes, CancellationToken ct)
+    {
+        var since = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var carried = currentRow is null
+            ? new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            : ParseTypes(currentRow.TypesJson, currentRow.Scope, currentRow.Version).ToDictionary(t => t.Name, t => t.Since, StringComparer.OrdinalIgnoreCase);
+        var undated = new List<string>();
+        foreach (var type in types)
+        {
+            if (changes.Of(type.Name) is not CacheTypeChange.Unchanged)
+            {
+                since[type.Name] = version;
+            }
+            else if (carried.GetValueOrDefault(type.Name) is { } known)
+            {
+                since[type.Name] = known;
+            }
+            else
+            {
+                undated.Add(type.Name);
+            }
+        }
+
+        if (undated.Count == 0 || currentRow is null)
+        {
+            return since;
+        }
+
+        // Where each undated type's stay in the cache began: walking back from the current version, the oldest version of the
+        // unbroken run that lists it. The walk stops as soon as every type's run has ended.
+        var scope = currentRow.Scope;
+        var labels = new Dictionary<int, string>();
+        var began = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var running = new HashSet<string>(undated, StringComparer.OrdinalIgnoreCase);
+        var versions = db.DeliveryCacheVersions.AsNoTracking()
+            .Where(v => v.Scope == scope && v.Sequence <= currentRow.Sequence)
+            .OrderByDescending(v => v.Sequence)
+            .Select(v => new { v.Sequence, v.Version, v.TypesJson })
+            .AsAsyncEnumerable();
+        await foreach (var row in versions.WithCancellation(ct).ConfigureAwait(false))
+        {
+            labels[row.Sequence] = row.Version;
+            var names = ParseTypes(row.TypesJson, scope, row.Version).Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var name in running.ToList())
+            {
+                if (names.Contains(name))
+                {
+                    began[name] = row.Sequence;
+                }
+                else
+                {
+                    running.Remove(name);
+                }
+            }
+
+            if (running.Count == 0)
+            {
+                break;
+            }
+        }
+
+        // The latest version at which a record of each undated type began or ended a range: a change of the type. The names
+        // are taken as the ranges spell them, matched without regard to case whatever the database's collation.
+        var wanted = new HashSet<string>(undated, StringComparer.OrdinalIgnoreCase);
+        var spelled = (await db.DeliveryCacheItems.AsNoTracking()
+                .Where(i => i.Scope == scope)
+                .Select(i => i.TypeName)
+                .Distinct()
+                .ToListAsync(ct).ConfigureAwait(false))
+            .Where(wanted.Contains)
+            .ToList();
+        var ranges = (await db.DeliveryCacheItems.AsNoTracking()
+                .Where(i => i.Scope == scope && spelled.Contains(i.TypeName))
+                .GroupBy(i => i.TypeName)
+                .Select(g => new { Type = g.Key, Began = g.Max(i => i.FromSequence), Ended = g.Max(i => i.ToSequence) })
+                .ToListAsync(ct).ConfigureAwait(false))
+            .GroupBy(r => r.Type, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Max(r => Math.Max(r.Began, r.Ended ?? 0)), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var name in undated)
+        {
+            var at = Math.Max(began.GetValueOrDefault(name), ranges.GetValueOrDefault(name));
+            since[name] = at > 0 && labels.TryGetValue(at, out var label) ? label : null;
+        }
+
+        return since;
     }
 
     /// <summary>A version's system properties as the row stores them, in the order they are hashed.</summary>
@@ -597,17 +745,43 @@ public sealed class OsduCacheStore : ICacheStore
         }
     }
 
+    /// <summary>
+    /// A version's types as its row lists them. The hash, the change and the version a type dates from are absent from a
+    /// version written before types were hashed; one that is there and says something the store never writes (a hash that
+    /// is not 64 lower-case hex digits, a change it does not name) is refused rather than taken on trust.
+    /// </summary>
     private static List<CacheVersionType> ParseTypes(string json, string scope, string version)
     {
         try
         {
             return (JsonNode.Parse(json) as JsonArray ?? [])
                 .OfType<JsonObject>()
-                .Select(type => new CacheVersionType(
-                    type["name"]?.GetValue<string>() ?? throw new DeliveryException($"Version {version} of the cache of partition '{scope}' lists a type without a name."),
-                    type["entityType"]?.GetValue<string>() ?? string.Empty,
-                    type["items"]?.GetValue<long>() ?? 0,
-                    type["key"]?.GetValue<string>()))
+                .Select(type =>
+                {
+                    var name = type["name"]?.GetValue<string>() ?? throw new DeliveryException($"Version {version} of the cache of partition '{scope}' lists a type without a name.");
+                    var hash = type["hash"]?.GetValue<string>();
+                    if (hash is not null && !IsHash(hash))
+                    {
+                        throw new DeliveryException($"Version {version} of the cache of partition '{scope}' records a hash for {name} that is not a content hash ('{Clip(hash, 80)}').");
+                    }
+
+                    var changeText = type["change"]?.GetValue<string>();
+                    var change = CacheTypeChanges.Parse(changeText);
+                    if (changeText is not null && change is null)
+                    {
+                        throw new DeliveryException(
+                            $"Version {version} of the cache of partition '{scope}' records {name} as '{Clip(changeText, 80)}', which is not a change (added, changed or unchanged).");
+                    }
+
+                    return new CacheVersionType(
+                        name,
+                        type["entityType"]?.GetValue<string>() ?? string.Empty,
+                        type["items"]?.GetValue<long>() ?? 0,
+                        type["key"]?.GetValue<string>(),
+                        hash,
+                        change,
+                        type["since"]?.GetValue<string>());
+                })
                 .ToList();
         }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
@@ -615,6 +789,9 @@ public sealed class OsduCacheStore : ICacheStore
             throw new DeliveryException($"Version {version} of the cache of partition '{scope}' has a type list that is not valid JSON ({ex.Message}).", ex);
         }
     }
+
+    private static bool IsHash(string text)
+        => text.Length == Hashing.ContentHash.HexLength && text.All(c => c is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
 
     private static ReferenceFields Fields(string json, string scope, string version, StringPool pool)
     {

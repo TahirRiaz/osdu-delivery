@@ -105,12 +105,17 @@ public sealed class CacheImpactAnalyzer
         // One tag per changed value, whatever the number of sets or records behind it: an operator decides about a
         // corrected unit once, not once per record. Each set is judged by the value it holds, because sets built against
         // different versions of the cache hold different values of the same path: a set already holding the new value is
-        // not touched, and one still holding an older value is, whichever of them the lookup lists first.
+        // not touched, and one still holding an older value is, whichever of them the lookup lists first. And a set is
+        // judged only where this refresh moved what it reads: a cached record is asked about as a whole when any of its
+        // values moved, so a path of it that reads in the new version exactly as in the version before changed nothing
+        // here, whatever the set holds. That keeps a change an earlier refresh raised, and someone rejected, from being
+        // raised again because another value of the same record moved, and a path that held nothing then and holds
+        // nothing now from being told as a change.
         var tags = new List<UpdateTag>();
         long records = 0;
         var touched = holders
             .Select(use => (Use: use, Outcome: Describe(use, after.GetValueOrDefault(use.ItemId), current)))
-            .Where(held => held.Outcome is not null)
+            .Where(held => held.Outcome is not null && Moved(held.Use, previous, before, current, after))
             .GroupBy(held => (held.Use.ItemId, held.Use.Path, held.Use.Kind));
         foreach (var change in touched)
         {
@@ -268,6 +273,53 @@ public sealed class CacheImpactAnalyzer
             ? held.Text
             : uses.MaxBy(u => u.SetId)!.ValueText;
     }
+
+    /// <summary>
+    /// Whether the refresh moved what <paramref name="use"/> reads: the answer the version before gives it differs from the
+    /// one the new version gives. The answer is what a render would take for the use from a version: for a value read out of
+    /// a cached record, matched by, or read empty, whether the record is there and what the path holds; for a record written
+    /// unverified, whether the version holds it; for a key or a value no record answered to, which record answers to it now
+    /// and what it gives; for a <c>$findAll</c>, the rows the key finds.
+    /// </summary>
+    private static bool Moved(
+        CacheSetUse use, ReferenceType previous, IReadOnlyDictionary<string, ReferenceItem> before, ReferenceType current, IReadOnlyDictionary<string, ReferenceItem> after)
+        => Reading(use, previous, before) != Reading(use, current, after);
+
+    /// <summary>What <paramref name="use"/> reads from one version of its type, as <see cref="Moved"/> compares it.</summary>
+    private static Answer Reading(CacheSetUse use, ReferenceType type, IReadOnlyDictionary<string, ReferenceItem> items)
+    {
+        switch (use.Kind)
+        {
+            case CacheUsageKind.Listed:
+                return new Answer(true, null, CacheUsage.ListedIds(type.FindAll(use.Path, use.ItemId).Select(row => row.Id)));
+
+            case CacheUsageKind.Unlisted when !type.IsLookup:
+                return Found(type, type.Find(use.Path, use.ValueText), use.Path);
+
+            case CacheUsageKind.Unlisted:
+                return type.Key is null ? default : Found(type, type.Find(type.Key, use.ValueText), use.Path);
+
+            case CacheUsageKind.Unverified:
+                return new Answer(items.ContainsKey(use.ItemId), null, null);
+
+            default:
+                return items.TryGetValue(use.ItemId, out var item) ? new Answer(true, item.Id, type.Value(item, use.Path)?.Text) : default;
+        }
+
+        static Answer Found(ReferenceType type, ReferenceMatch match, string path)
+        {
+            if (match.Item is { } item)
+            {
+                return new Answer(true, item.Id, type.Value(item, path)?.Text);
+            }
+
+            // Several records answering is an answer too: the render is held on it, and which ones answer can move.
+            return match.IsCaseAmbiguous ? new Answer(true, null, string.Join('\n', match.CaseVariants.Select(v => v.Id))) : default;
+        }
+    }
+
+    /// <summary>What a use reads from one version: whether anything answers it, which record, and the text it gives.</summary>
+    private readonly record struct Answer(bool Holds, string? Id, string? Text);
 
     /// <summary>True when any cached path of the item reads differently in the new version.</summary>
     private static bool Differs(ReferenceType previous, ReferenceItem before, ReferenceType current, ReferenceItem after)

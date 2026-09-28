@@ -100,8 +100,11 @@ public sealed class CacheRefresher
                 continue;
             }
 
+            // The version moved because something in the partition's cache did; a type whose own hash did not holds exactly
+            // what the version before held, so nothing built from it can have moved and nothing of it is analysed or tagged.
+            var change = write.Changes.Of(type.Name) ?? CacheTypeChange.Unchanged;
             var mode = declaration.ModeOf(typeSpec.Name, typeSpec.OnChange);
-            var impact = !write.Written || _context.Ledger is null
+            var impact = !write.Written || _context.Ledger is null || change == CacheTypeChange.Unchanged
                 ? new CacheImpactResult(type.Name, 0, 0, 0, 0)
                 : await new CacheImpactAnalyzer(_context.Ledger, _context.Time, _logger)
                     .AnalyzeAsync(scope, write.Previous?.Type(type.Name), type, mode, previousVersion, snapshot.Version, ct)
@@ -110,17 +113,49 @@ public sealed class CacheRefresher
             var fields = typeSpec.IsLookup ? type.FieldNames.ToList() : typeSpec.Fields.Select(f => f.Name).ToList();
             types.Add(new CachedTypeOutcome(
                 type.Name, type.EntityType, CacheOrigins.Text(typeSpec.Origin), typeSpec.Describe(), typeSpec.Kind, type.Items.Count,
-                fields, ModeText(mode), impact.ChangedItems, impact.Changes, impact.AffectedRecords));
+                fields, ModeText(mode), impact.ChangedItems, impact.Changes, impact.AffectedRecords, CacheTypeChanges.Text(change), type.ContentHash()));
         }
 
         var outcome = new CacheRefreshOutcome(
             DeliveryOperations.Refresh, scope, flow.Name, snapshot.Version, previousVersion, write.Written, snapshot.CapturedUtc.UtcDateTime, types,
             snapshot.SystemProperties);
+        var moved = write.Changes.Moved;
         _logger.LogInformation(
-            "Cache of partition {Scope} refreshed by {Flow}: {Outcome}, {Types} type(s), {Items} record(s). {Changed} cached record(s) moved, reaching {Records} delivered record(s) through {Changes} change(s).",
+            "Cache of partition {Scope} refreshed by {Flow}: {Outcome}, {Types} type(s), {Items} record(s); {Moved}. {Changed} cached record(s) moved, reaching {Records} delivered record(s) through {Changes} change(s).",
             scope, flow.Name, write.Written ? $"version {snapshot.Version} written and made current" : $"unchanged at version {snapshot.Version}",
-            types.Count, outcome.Items, types.Sum(t => t.ChangedItems), outcome.AffectedRecords, types.Sum(t => t.Changes));
+            types.Count, outcome.Items,
+            !write.Written ? "no type changed" : moved.Count == 0 && write.Changes.Removed.Count == 0
+                ? "no type changed, only the partition's system properties"
+                : Describe(write.Changes),
+            types.Sum(t => t.ChangedItems), outcome.AffectedRecords, types.Sum(t => t.Changes));
         return outcome;
+    }
+
+    /// <summary>Which types a written version added, changed and removed, for the refresh's log line.</summary>
+    private static string Describe(CacheTypeChanges changes)
+    {
+        var parts = new List<string>();
+        foreach (var kind in new[] { CacheTypeChange.Added, CacheTypeChange.Changed })
+        {
+            var names = changes.Types.Where(t => t.Value == kind).Select(t => t.Key).Order(StringComparer.Ordinal).ToList();
+            if (names.Count > 0)
+            {
+                parts.Add($"{CacheTypeChanges.Text(kind)} {string.Join(", ", names)}");
+            }
+        }
+
+        if (changes.Removed.Count > 0)
+        {
+            parts.Add($"removed {string.Join(", ", changes.Removed)}");
+        }
+
+        var unchanged = changes.Types.Count(t => t.Value == CacheTypeChange.Unchanged);
+        if (unchanged > 0)
+        {
+            parts.Add($"{unchanged} type(s) unchanged");
+        }
+
+        return string.Join("; ", parts);
     }
 
     /// <summary>
@@ -246,11 +281,13 @@ public sealed record CacheRefreshOutcome(
 
 /// <summary>
 /// One cached type as the refresh left it, with what its changes did to the delivered estate: its origin (osdu, table or
-/// dictionary), where its records came from as a person reads it, and for an OSDU type the kind searched.
+/// dictionary), where its records came from as a person reads it, for an OSDU type the kind searched, its content hash, and
+/// by that hash how the version the refresh left holds it against the version before: <paramref name="Change"/> is added,
+/// changed or unchanged. Only a type that was added or changed is analysed for what it reaches.
 /// </summary>
 public sealed record CachedTypeOutcome(
     string Name, string EntityType, string Origin, string Source, string? Kind, int Items, IReadOnlyList<string> Fields, string OnChange,
-    int ChangedItems, int Changes, long AffectedRecords);
+    int ChangedItems, int Changes, long AffectedRecords, string Change, string Hash);
 
 /// <summary>One declared type as a plan counts it; <paramref name="Kind"/> and <paramref name="Query"/> are an OSDU type's search.</summary>
 public sealed record CachePlanType(string Name, string Origin, string Source, string? Kind, string Query, IReadOnlyList<string> Fields, long Records);

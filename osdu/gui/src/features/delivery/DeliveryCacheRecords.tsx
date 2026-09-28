@@ -285,9 +285,38 @@ function TypeHeader({ type, matches, idPrefix }: {
             <span className="font-mono">{idPrefix}</span>
           </>
         )}
+        {type.change !== null && (
+          <>
+            <span className="text-muted-foreground/60">·</span>
+            <RichTooltip title="Content" body={contentNote(type)}>
+              <span className="underline decoration-dotted underline-offset-2" data-testid="delivery-cache-type-since">
+                {type.change === "unchanged"
+                  ? (type.since === null ? "unchanged in this version" : <>unchanged since <span className="font-mono text-foreground">{type.since}</span></>)
+                  : `${type.change} in this version`}
+              </span>
+            </RichTooltip>
+          </>
+        )}
       </div>
     </div>
   );
+}
+
+/**
+ * What the version being read holds of a type, as the hover over its change explains it: a version is the whole partition's
+ * cache and moves when anything in it does, so a type unchanged in it holds exactly what the version it dates from captured.
+ */
+function contentNote(type: BrowsedType): string {
+  const hash = type.hash === null ? "" : `\nContent hash ${type.hash}`;
+  if (type.change === "unchanged") {
+    const since = type.since === null ? "the version before" : `version ${type.since}`;
+    return `${type.name} holds exactly the records and values ${since} held of it: its content hash did not move. `
+      + `The versions written since changed other types or the partition's OSDU feature flags, so nothing built from ${type.name} renders differently.${hash}`;
+  }
+
+  return type.change === "added"
+    ? `${type.name} arrived with this version: the version before held none of it.${hash}`
+    : `A record of ${type.name} arrived, left or holds other values in this version.${hash}`;
 }
 
 /**

@@ -267,7 +267,7 @@ render context names the version it was rendered against.
 | `CapturedUtc`, `CapturedBy`, `RunId`, `Origin` | When it was captured; who asked (the run's trigger, or `cli:<user>` for an import); the platform run that captured it, null for an import; the endpoint reference searched or the directory imported. |
 | `ContentHash` | The hash of the whole content, checked on every load: a version whose records were altered after it was written is refused, and nothing renders against it. |
 | `PreviousVersion`, `Current` | The version that was current when this one was written, which the capture was merged onto, and whether this is the newest version, the one deliveries render against unless a flow pins another. |
-| `TypesJson`, `Items` | The types the version holds, each with its entity type and record count, and the records across them. |
+| `TypesJson`, `Items` | The types the version holds, each with its entity type, record count and (for a lookup table) key, and the records across them. Each type also carries its own content hash (`hash`, over exactly the bytes the type contributes to `ContentHash`), how it compares with the version before by that hash (`change`: `added`, `changed` or `unchanged`), and the version its content dates from (`since`: the version that last added or changed it). The version moves whenever anything in the partition's cache does; a type's `hash` and `since` move only when that type does, so a type that only rode along with another type's change, or with a changed system property, is told apart. A load checks every type against its `hash` as well as the whole against `ContentHash`, and names the type whose records no longer match. A version written before types were hashed has none of the three; it loads by `ContentHash` alone, and the next version dates its types from what the records' ranges and the earlier versions hold. |
 | `SystemPropertiesJson` | The partition's system properties the capture found: the settings the platform's indexer and search service report for the partition, each a `service`, `name` and `state` (`Enabled`, `Disabled` or `Unknown`), with the `source` the service took it from and the `detail` saying why it is unknown. They are not cached records and have no record id; they enter `ContentHash` by service, name and state, so a changed setting is a new version. `[]` for a version written before captures recorded them, which hashes as it always did ([documents.md](documents.md#cache-flow)). |
 
 `osdu.CacheItem` keeps the cached records by version range rather than by copy. A row is one record of one partition's cache
@@ -275,7 +275,9 @@ render context names the version it was rendered against.
 as a run of consecutive versions held them: from the version at `FromSequence` up to, and not including, the one at
 `ToSequence`, which is null while the newest version still holds the record unchanged. A record is stored once per
 partition however many cache flows capture it, and a merge writes rows only for the records that changed, arrived or
-left, so keeping every version costs rows in proportion to what moved.
+left, so keeping every version costs rows in proportion to what moved. A merge reads and compares the rows of the types
+whose content hash moved alone: a type whose hash did not move keeps its open ranges exactly as they stand, since the
+version it is merged onto was loaded from them and checked against that hash.
 
 Both tables are stored in partition order: `osdu.CacheVersion` is clustered on `(Scope, Sequence)` and
 `osdu.CacheItem` on `(Scope, ItemId)`, with their ids as nonclustered primary keys, and `osdu.CacheMember`'s key starts

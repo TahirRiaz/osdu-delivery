@@ -437,6 +437,101 @@ public sealed class CacheChangeTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task A_rejected_change_is_not_raised_again_when_another_value_of_the_same_cached_record_moves()
+    {
+        await DeliveredAsync(2, Reads("Name", "metre"));
+        await AnalyzeAsync(Units("metre"), Units("meter"), CacheChangeMode.Approve);
+        var tag = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+        await Ledger.DecideTagsAsync([tag.TagId], approve: false, "tahir", Now);
+
+        // The metre gains an alias. The record is asked about again because one of its values moved, and its name reads
+        // exactly as it did in the version before: the refresh changed nothing the records read, so it raises nothing.
+        var impact = await AnalyzeAsync(Units("meter"), Units("meter", "m."), CacheChangeMode.Approve);
+        Assert.Equal(1, impact.ChangedItems);
+        Assert.Equal(0, impact.Changes);
+        Assert.Empty(await Ledger.ListTagsAsync("pending", 10, 0));
+        Assert.Single(await Ledger.ListTagsAsync("rejected", 10, 0));
+        Assert.Empty(await Ledger.GatedCacheSetsAsync());
+    }
+
+    [Fact]
+    public async Task A_change_waiting_for_a_decision_keeps_the_version_it_was_found_in_when_another_value_of_the_record_moves()
+    {
+        await DeliveredAsync(2, Reads("Name", "metre"));
+        await AnalyzeAsync(Units("metre"), Units("meter"), CacheChangeMode.Approve);
+        var found = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+
+        _clock.Advance(TimeSpan.FromHours(1));
+        var impact = await new CacheImpactAnalyzer(Ledger, _clock, NullLogger.Instance)
+            .AnalyzeAsync(Scope, Units("meter"), Units("meter", "m."), CacheChangeMode.Approve, "v2", "v3");
+        Assert.Equal(0, impact.Changes);
+
+        // The change still reads as found in v2, when it was, and not as a change a later refresh made.
+        var standing = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+        Assert.Equal(found.TagId, standing.TagId);
+        Assert.Equal("v2", standing.ToVersion);
+        Assert.Equal(found.DetectedUtc, standing.DetectedUtc);
+        Assert.Equal(found.SetIds, standing.SetIds);
+    }
+
+    [Fact]
+    public async Task A_path_that_held_nothing_and_still_holds_nothing_is_not_told_as_a_change()
+    {
+        // Built when the metre's aliases were an empty set: the documents carry none.
+        await DeliveredAsync(2, Reads("Aliases", string.Empty, CacheUsageKind.Empty));
+
+        // The metre is renamed and its aliases are still an empty set: nothing the records read moved.
+        var impact = await AnalyzeAsync(Aliased("metre", "[]"), Aliased("meter", "[]"), CacheChangeMode.Approve);
+        Assert.Equal(1, impact.ChangedItems);
+        Assert.Equal(0, impact.Changes);
+        Assert.Empty(await Ledger.ListTagsAsync("pending", 10, 0));
+
+        // Aliases that arrive are a change of the documents.
+        var arrived = await AnalyzeAsync(Aliased("meter", "[]"), Aliased("meter", """["m."]"""), CacheChangeMode.Approve);
+        Assert.Equal(1, arrived.Changes);
+        var tag = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+        Assert.Equal("Aliases", tag.Path);
+        Assert.Equal("m.", tag.NewValue);
+
+        static ReferenceType Aliased(string name, string aliases) => new(
+            "UnitOfMeasure", "reference-data--UnitOfMeasure",
+            [
+                new ReferenceItem("dev:reference-data--UnitOfMeasure:m", new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["Code"] = ReferenceValue.Of("m"),
+                    ["Name"] = ReferenceValue.Of(name),
+                    ["Aliases"] = ReferenceValue.From(JsonNode.Parse(aliases)!),
+                }),
+            ]);
+    }
+
+    [Fact]
+    public async Task A_change_to_a_path_longer_than_the_ledger_keeps_is_found_again_rather_than_raised_twice()
+    {
+        var set = await Ledger.EnsureCacheSetAsync(Scope, [Reads("Name", "metre")]);
+        var tag = new UpdateTag
+        {
+            Scope = Scope,
+            TypeName = "UnitOfMeasure",
+            ItemId = "dev:reference-data--UnitOfMeasure:m",
+            Path = "Name." + new string('p', 450),
+            Change = "changed",
+            OldValue = "metre",
+            NewValue = "meter",
+            ToVersion = "v2",
+            Mode = "approve",
+            SetIds = [set],
+            AffectedRecords = 1,
+        };
+
+        Assert.Equal(1, await Ledger.TagUpdatesAsync([tag], Now));
+        Assert.Equal(0, await Ledger.TagUpdatesAsync([tag with { ToVersion = "v3" }], Now));
+        var standing = Assert.Single(await Ledger.ListTagsAsync("pending", 10, 0));
+        Assert.Equal(UpdateTag.MaxTextLength, standing.Path.Length);
+        Assert.Equal("v3", standing.ToVersion);
+    }
+
+    [Fact]
     public async Task A_rejected_change_is_never_rolled_out()
     {
         var keys = await DeliveredAsync(2, Reads("Name", "metre"));

@@ -13,6 +13,17 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Each cached type carries its own content hash.** A version of a partition's cache is the whole cache and is written
+  when anything in it moves, so every type it held looked changed with it. Each type a version holds now records its
+  own content hash (over exactly the bytes the type contributes to the version's hash), how it compares with the
+  version before (`added`, `changed` or `unchanged`) and the version its content dates from, in `osdu.CacheVersion`'s
+  type list, the version API, `sqlflow cache list` and a refresh's result. A merge reads and rewrites only the records
+  of the types that moved, a refresh analyses only those types for what they reach, and a load checks every type
+  against its own hash and names the one whose records were altered. The Versions tab lists the types each version
+  moved, and a type's header on the Records tab says whether the version being read changed it or holds it unchanged
+  since an earlier one. Versions written before are read as they were, and the next version dates their types from the
+  records' ranges.
+
 - **A property no entry of its own fills says what does.** The coverage of a mapping (`POST
   /api/v1/delivery/mapping-builder/coverage`) names, for every variable an entry further up writes, that entry
   (`writtenBy`) and the values a static value gives it (`values`), so the Mappings view shows the
@@ -628,6 +639,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   together with rows of its own, went with it.
 
 ### Fixed
+
+- **A refresh no longer tags delivered records whose cached values did not move.** A cached record is asked about as
+  a whole when any of its values moves, and each set was judged only against the new version, so a path that read the
+  same before and after was told as a change whenever the set held something else: a change someone had rejected was
+  raised again (as the same value to the same value) when another field of the record moved, a change waiting for a
+  decision was rewritten as found in the later version, and a path holding an empty set was told as changed to `[]`. A
+  set is now judged only where the refresh moved what it reads. A change whose path or item is longer than the ledger
+  keeps is also found again instead of raised as a new one on every refresh.
 
 - **An incremental run reads a record row marked deleted.** SQLFlow's key match stamps `DeletedDate_DW` without
   touching `UpdatedDate_DW`, and the incremental read windowed on the update column alone, so a deleted row was held

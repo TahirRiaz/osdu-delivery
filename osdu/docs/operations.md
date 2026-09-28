@@ -605,7 +605,9 @@ Pipelines like any other flow.
   list counts the matches in every type and steps back the types nothing matches in, only the types with matches keep a
   section (the others are named under them), and every match is marked in its cell. A row opens the record: its captured values by name, how a mapping reads it (each source, `cache.<Type>.id` and
   `cache.<Type>.<name>`, next to the value it reads for this record, and a `source` plus `findBy` entry to copy that
-  selects the record by one of its values), the JSON as captured, and the version it is the record as of.
+  selects the record by one of its values), the JSON as captured, and the version it is the record as of. A type's
+  header also says how the version being read holds it: changed or added in this version, or unchanged since the
+  version that last changed it, with its content hash on hover.
 - **Reading the cache as it stood.** The version picker opens on the current version, the one deliveries render
   against unless a flow pins another; picking an earlier one says so above the table, because nothing shown then is
   what a render would read today. Every version the partition's cache flows wrote stays readable.
@@ -616,9 +618,12 @@ Pipelines like any other flow.
   flows together declare it: the kind and query each flow searches it with, every path kept (the source that reads it
   and the flows declaring it on hover), and what a changed value does (next run, or needs approval when any flow asks).
 - **Versions.** Every version, newest first, each with the cache flow that wrote it and what captured it (the run and
-  who asked, or an import from files) and what it changed compared with the version captured before it (so many changed, added, removed, or no
-  changes), with the counts for the type in scope when one is picked and the versions that left it untouched folded
-  away. Picking a version raises its changes in the workbench bottom panel, so the list stays in view: changed
+  who asked, or an import from files), the types it changed (each tinted by whether it arrived, changed or left, the
+  rest counted and named on hover, or no type changed when the version was written for something else, such as a
+  changed OSDU feature flag), and what it changed compared with the version captured before it (so many changed, added,
+  removed, or no changes), with the counts for the type in scope when one is picked and the versions that left it
+  untouched folded away. A version is the whole partition's cache and is written when anything in it moves, so a type
+  is listed only when its own content hash moved: a type that rode along with another's change is not. Picking a version raises its changes in the workbench bottom panel, so the list stays in view: changed
   records with the captured values that moved, before and after, records the version added, and records it no longer
   holds, narrowed by a change kind and a search. A row opens both sides. Versions covers the whole cache, which is
   what separates it from Changes: Changes holds only the changes that reach records already delivered, so a refresh

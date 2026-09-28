@@ -275,6 +275,54 @@ public sealed class DictionaryTests : IDisposable
         Assert.Equal(2, (await store.ListVersionsAsync("dev")).Count);
     }
 
+    [Fact]
+    public async Task A_refresh_says_which_of_its_types_moved_and_a_type_that_did_not_keeps_its_hash_and_its_date()
+    {
+        var flowPath = Write("cache/lookups.yaml", """
+            flowType: cache
+            name: lookups
+            source:
+              headers: { data-partition-id: dev }
+            types:
+              - dictionary: RecallUnits
+              - dictionary: RecallDepthUnits
+            """);
+        Write("dictionaries/RecallUnits.yaml", "documentType: dictionary\nname: RecallUnits\nentries:\n  M: m\n  FT: ft\n");
+        Write("dictionaries/RecallDepthUnits.yaml", "documentType: dictionary\nname: RecallDepthUnits\nentries:\n  MD: m\n");
+        var clock = new TestClock();
+        var store = _db.Caches();
+        var engine = Samples.Engine(_db.Ledger(clock), clock, cache: store);
+        var flow = new DeliveryDocumentLoader().LoadCache(flowPath);
+        var refresher = new CacheRefresher(engine, Samples.Logger<CacheRefresher>());
+
+        var first = await refresher.RefreshAsync(flow, new Dictionary<string, string>(), Guid.NewGuid(), "manual:tester", CancellationToken.None);
+        Assert.All(first.Types, t => Assert.Equal("added", t.Change));
+
+        // One of the two dictionaries is edited: the refresh writes a version, and says the other rode along unchanged.
+        Write("dictionaries/RecallUnits.yaml", "documentType: dictionary\nname: RecallUnits\nentries:\n  M: metre\n  FT: ft\n");
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var edited = await refresher.RefreshAsync(flow, new Dictionary<string, string>(), Guid.NewGuid(), "manual:tester", CancellationToken.None);
+        Assert.True(edited.Written);
+        var units = Assert.Single(edited.Types, t => t.Name == "RecallUnits");
+        var depths = Assert.Single(edited.Types, t => t.Name == "RecallDepthUnits");
+        Assert.Equal("changed", units.Change);
+        Assert.Equal(1, units.ChangedItems);
+        Assert.Equal("unchanged", depths.Change);
+        Assert.Equal(0, depths.ChangedItems);
+        Assert.Equal(Assert.Single(first.Types, t => t.Name == "RecallDepthUnits").Hash, depths.Hash);
+        Assert.NotEqual(Assert.Single(first.Types, t => t.Name == "RecallUnits").Hash, units.Hash);
+
+        var current = Assert.Single(await store.ListVersionsAsync("dev"), v => v.Current);
+        Assert.Equal(edited.Version, Assert.Single(current.Types, t => t.Name == "RecallUnits").Since);
+        Assert.Equal(first.Version, Assert.Single(current.Types, t => t.Name == "RecallDepthUnits").Since);
+
+        // A refresh that finds nothing new writes no version, and says every type is unchanged.
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var again = await refresher.RefreshAsync(flow, new Dictionary<string, string>(), Guid.NewGuid(), "manual:tester", CancellationToken.None);
+        Assert.False(again.Written);
+        Assert.All(again.Types, t => Assert.Equal("unchanged", t.Change));
+    }
+
     /// <summary>Delivers <paramref name="count"/> records that read one row of the RecallUnits table by its key.</summary>
     private static async Task DeliveredAsync(OsduLedger ledger, TestClock clock, string key, string value, int count)
     {

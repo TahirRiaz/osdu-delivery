@@ -12,7 +12,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { isApiError } from "@/api/client";
 import {
-  deliveryApi, type DeliveryCacheChange, type DeliveryCacheDiffItem, type DeliveryCacheHistoryEntry,
+  deliveryApi, type DeliveryCacheChange, type DeliveryCacheDiffItem, type DeliveryCacheHistoryEntry, type DeliveryCacheHistoryType,
 } from "../../api/delivery";
 import { CodeView } from "@/components/CodeView";
 import { CorrelationError } from "@/components/CorrelationError";
@@ -20,6 +20,7 @@ import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PagedTable } from "@/components/PagedTable";
 import { RelativeTime } from "@/components/RelativeTime";
+import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
@@ -60,9 +61,66 @@ function totalOf(entry: DeliveryCacheHistoryEntry): number {
   return entry.changed + entry.added + entry.removed;
 }
 
-/** Whether the version changed something (in the type picked, when one is). */
+/**
+ * Whether the version changed something (in the type picked, when one is): a type it moved, by the type's own content hash,
+ * or a record it changed. A version is written when anything in the partition's cache moves, so a type that only rode along
+ * with another's change does not count.
+ */
 function changedSomething(entry: DeliveryCacheHistoryEntry): boolean {
-  return totalOf(entry) > 0;
+  return entry.types.length > 0 || totalOf(entry) > 0;
+}
+
+/** How many type chips the versions list shows before it counts the rest. */
+const SHOWN_TYPES = 3;
+
+const typeTone: Record<DeliveryCacheHistoryType["change"], string> = {
+  added: "bg-success/15 text-success",
+  changed: "bg-info/15 text-info",
+  removed: "bg-destructive/15 text-destructive",
+};
+
+/** One type a version moved and how, as a hover names it. */
+function movedText(type: DeliveryCacheHistoryType): string {
+  const counts = (["changed", "added", "removed"] as const)
+    .filter((kind) => type[kind] > 0)
+    .map((kind) => `${type[kind].toLocaleString()} ${kind}`);
+  return `${type.name}: ${type.change}${counts.length > 0 ? ` (${counts.join(", ")} records)` : ""}`;
+}
+
+/**
+ * The types one version moved, each tinted by how (added, changed, removed); the rest are counted, and named on hover. A
+ * version that moved no type says so, with why it was written on hover.
+ */
+function TypesMoved({ entry }: { entry: DeliveryCacheHistoryEntry }) {
+  if (entry.types.length === 0) {
+    return (
+      <RichTooltip
+        title="No type changed"
+        body={"Every type holds exactly the records and values the version before held. The version was written for a change outside the cached records, such as the partition's OSDU feature flags, so nothing built from these types renders differently."}
+      >
+        <span className="text-[12px] text-muted-foreground" data-testid="delivery-cache-history-no-type">no type changed</span>
+      </RichTooltip>
+    );
+  }
+
+  const shown = entry.types.slice(0, SHOWN_TYPES);
+  const rest = entry.types.length - shown.length;
+  return (
+    <span className="flex flex-wrap items-center gap-1" data-testid="delivery-cache-history-types">
+      {shown.map((type) => (
+        <RichTooltip key={type.name} body={movedText(type)} mono>
+          <Badge variant="secondary" className={cn("font-mono text-[11px]", typeTone[type.change])} data-testid="delivery-cache-history-type">
+            {type.name}
+          </Badge>
+        </RichTooltip>
+      ))}
+      {rest > 0 && (
+        <RichTooltip title="Also moved" body={entry.types.slice(SHOWN_TYPES).map(movedText).join("\n")} mono>
+          <span className="font-mono text-[11px] tabular-nums text-muted-foreground">+{rest}</span>
+        </RichTooltip>
+      )}
+    </span>
+  );
 }
 
 /** What one version changed, as tinted counts. */
@@ -493,6 +551,9 @@ export function DeliveryCacheHistory({ scope, type }: { scope: string; type: str
       align: "right",
       render: (entry) => <span className="font-mono tabular-nums">{entry.version.items.toLocaleString()}</span>,
     },
+    ...(type
+      ? []
+      : [{ id: "types", header: "Types changed", render: (entry: DeliveryCacheHistoryEntry) => <TypesMoved entry={entry} /> }]),
     { id: "changes", header: type ? `Changes to ${type}` : "Changes", render: (entry) => <ChangeCounts entry={entry} /> },
   ];
 

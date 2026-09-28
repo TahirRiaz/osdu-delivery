@@ -1,4 +1,4 @@
-import { deliveryApi, type DeliveryCacheVersion, type DeliveryCachedItem } from "../../api/delivery";
+import { deliveryApi, type DeliveryCacheTypeChange, type DeliveryCacheVersion, type DeliveryCachedItem } from "../../api/delivery";
 import { compareFamilies, entityFamily, type CachedTypeSummary } from "./cacheFormat";
 
 /** How many records a type's section on the records tab shows before it points at the type's own table. */
@@ -18,6 +18,15 @@ export interface BrowsedType {
   items: number;
   /** The type as the cache flows declare it now; null for a type only an older version holds. */
   declared: CachedTypeSummary | null;
+  /**
+   * How the version being read holds the type against the version before it, by the type's content hash; null before the
+   * versions have loaded, and for a version written before types were hashed.
+   */
+  change: DeliveryCacheTypeChange | null;
+  /** The version that last added or changed the type, whose content the version being read holds unchanged; null when it cannot be told. */
+  since: string | null;
+  /** The type's content hash in the version being read; null when it cannot be told. */
+  hash: string | null;
 }
 
 /**
@@ -35,6 +44,9 @@ export function browsedTypes(summaries: CachedTypeSummary[], version: DeliveryCa
       key: summary.key,
       items: summary.items,
       declared: summary,
+      change: null,
+      since: null,
+      hash: null,
     }))
     : version.types.map((type): BrowsedType => ({
       name: type.name,
@@ -43,6 +55,9 @@ export function browsedTypes(summaries: CachedTypeSummary[], version: DeliveryCa
       key: type.key,
       items: type.items,
       declared: declared.get(type.name) ?? null,
+      change: type.change,
+      since: type.since,
+      hash: type.hash,
     }));
 
   const names = new Set(held.map((type) => type.name));
@@ -55,6 +70,9 @@ export function browsedTypes(summaries: CachedTypeSummary[], version: DeliveryCa
       key: summary.key,
       items: 0,
       declared: summary,
+      change: null,
+      since: null,
+      hash: null,
     }));
 
   return [...held, ...waiting].sort((a, b) => compareFamilies(a.family, b.family) || a.name.localeCompare(b.name));

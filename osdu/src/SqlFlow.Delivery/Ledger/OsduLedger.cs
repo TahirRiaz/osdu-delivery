@@ -2101,16 +2101,20 @@ public sealed partial class OsduLedger : ILedger
         await using var db = Open();
         foreach (var tag in tags)
         {
+            // The standing tag is found by the item and the path as the ledger keeps them, so one longer than its column is
+            // still found rather than raised again on every refresh.
+            var itemId = UpdateTag.Kept(tag.ItemId, UpdateTag.MaxItemIdLength);
+            var path = UpdateTag.Kept(tag.Path, UpdateTag.MaxTextLength);
             var open = await db.DeliveryUpdateTags.FirstOrDefaultAsync(
-                t => t.Scope == tag.Scope && t.TypeName == tag.TypeName && t.ItemId == tag.ItemId && t.Path == tag.Path
+                t => t.Scope == tag.Scope && t.TypeName == tag.TypeName && t.ItemId == itemId && t.Path == path
                      && (t.Status == "pending" || t.Status == "approved" || t.Status == "rolling"),
                 ct).ConfigureAwait(false);
             if (open is not null)
             {
                 // The same value moved again. An approval was for what someone looked at, so a further move
                 // reopens the question rather than riding on the old decision.
-                var moved = !string.Equals(open.NewValue, Truncate(tag.NewValue, 400), StringComparison.Ordinal);
-                open.NewValue = Truncate(tag.NewValue, 400);
+                var moved = !string.Equals(open.NewValue, UpdateTag.Kept(tag.NewValue, UpdateTag.MaxTextLength), StringComparison.Ordinal);
+                open.NewValue = UpdateTag.Kept(tag.NewValue, UpdateTag.MaxTextLength);
                 open.ToVersion = tag.ToVersion;
                 open.Change = tag.Change;
                 open.DetectedUtc = nowUtc;
@@ -2133,11 +2137,11 @@ public sealed partial class OsduLedger : ILedger
                 Kind = tag.Kind,
                 Scope = tag.Scope,
                 TypeName = tag.TypeName,
-                ItemId = Truncate(tag.ItemId, 512)!,
-                Path = Truncate(tag.Path, 400)!,
+                ItemId = UpdateTag.Kept(tag.ItemId, UpdateTag.MaxItemIdLength)!,
+                Path = UpdateTag.Kept(tag.Path, UpdateTag.MaxTextLength)!,
                 Change = tag.Change,
-                OldValue = Truncate(tag.OldValue, 400),
-                NewValue = Truncate(tag.NewValue, 400),
+                OldValue = UpdateTag.Kept(tag.OldValue, UpdateTag.MaxTextLength),
+                NewValue = UpdateTag.Kept(tag.NewValue, UpdateTag.MaxTextLength),
                 FromVersion = tag.FromVersion,
                 ToVersion = tag.ToVersion,
                 Mode = tag.Mode,

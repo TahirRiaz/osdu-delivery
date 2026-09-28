@@ -1211,7 +1211,12 @@ this flow declares, and those any other synced cache flow of the partition decla
 then merges the capture into the partition's cache and writes the next version, labelled from the capture instant
 (`20260908T212727Z`, with the sequence appended when two captures of the partition share a second, as in
 `20260908T212727Z-7`), unless the merge changes no cached content: then no version is written, and nothing built from
-the cache renders again. The newest version is always the current one. A version records the cache flow that wrote it,
+the cache renders again. A version is the whole partition's cache, so it moves when any type, or any system property,
+does. Each type it holds therefore carries its own content hash, over exactly what the type contributes to the version's
+hash, with how it compares with the version before (`added`, `changed` or `unchanged`) and the version its content dates
+from: a type that only rode along with another type's change keeps its hash and its date, its records are neither read
+nor rewritten by the merge, and it is not analysed for what it reaches. A refresh's result lists every type it captured
+with its `change` and `hash`, and its log line names the types that moved. The newest version is always the current one. A version records the cache flow that wrote it,
 the run that captured it and who asked, and it is kept for as long as the catalog exists, because the render context
 of a delivered record names the version it was rendered against. A refresh therefore needs the catalog connection.
 Nothing about a cache is written to the repository: the files define what is cached, and their runs fill the catalog
@@ -1243,7 +1248,11 @@ A refresh does not only write a version. Every delivered record points at the se
 from, so the refresh compares the new version against the one it replaces and raises one tag per changed value: the
 partition, the cached record, the path, the value the replaced version held and the one the new version holds, and how
 many delivered records it reaches. Each set is judged by the value it holds, so a set already built from the new value
-is not touched. A tag under `approve` holds those records back (a plan skips them, so OSDU keeps the documents it has)
+is not touched, and only where the refresh moved what it reads: a cached record is asked about as a whole when any of
+its values moved, and a path of it that reads in the new version exactly as it did in the one before raises nothing,
+whatever the set holds. So a change someone rejected is not raised again because another value of the same record
+moved, a change waiting for a decision keeps the version it was found in, and a path that held an empty set and still
+does is not told as a change. A tag under `approve` holds those records back (a plan skips them, so OSDU keeps the documents it has)
 until someone approves or rejects it; a tag under `auto` is approved as it is written. If a value moves again after
 approval but before the rollout carried it, the tag reopens, because the approval was for the value someone looked
 at.

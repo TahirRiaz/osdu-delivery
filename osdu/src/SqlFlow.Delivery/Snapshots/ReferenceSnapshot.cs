@@ -61,20 +61,39 @@ public sealed class ReferenceSnapshot
     /// failed read explained them with, which change without the property changing. A version without system properties
     /// hashes as every version did before a capture recorded them, so the versions written then still load.
     /// </summary>
-    public string ContentHash()
+    public string ContentHash() => Hashes().Content;
+
+    /// <summary>
+    /// The hash of the whole content (<see cref="ContentHash"/>) and of each type's content
+    /// (<see cref="ReferenceType.ContentHash"/>), from one pass over the records: a type's hash is taken over exactly the bytes
+    /// the type contributes to the whole, so the two never disagree about what a type holds. The whole hash says whether a
+    /// version changed at all; a type's hash says whether that type did, whatever else the version changed. Worked out once
+    /// per snapshot, which never changes once built.
+    /// </summary>
+    public SnapshotHashes Hashes() => LazyInitializer.EnsureInitialized(ref _hashes, ComputeHashes);
+
+    private SnapshotHashes? _hashes;
+
+    private SnapshotHashes ComputeHashes()
     {
         // The document is { <type>: { entityType, items: [...], key? } } by type name, or with system properties
         // { systemProperties: [...], types: { ... } }, in canonical JSON. It is written a record at a time into the hash
         // rather than built whole: a type of hundreds of thousands of records would otherwise be drawn as JSON twice over
         // on every load. The bytes are the ones the whole document would give, so every version written before still loads.
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var types = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var buffer = new ArrayBufferWriter<byte>(64 * 1024);
         using (var writer = CanonicalJson.CreateWriter(buffer))
         {
+            // While a type's value is being written its bytes go to the type's own hash as well as to the whole one. The
+            // writer is not indented, so the property name and the separator before it are drained before the value
+            // starts, and the value's bytes are exactly those the type written on its own gives.
+            IncrementalHash? typeHash = null;
             void Drain()
             {
                 writer.Flush();
                 hash.AppendData(buffer.WrittenSpan);
+                typeHash?.AppendData(buffer.WrittenSpan);
                 buffer.ResetWrittenCount();
             }
 
@@ -101,7 +120,22 @@ public sealed class ReferenceSnapshot
             foreach (var type in _types.Values.OrderBy(t => t.Name, StringComparer.Ordinal))
             {
                 writer.WritePropertyName(type.Name);
-                type.WriteCanonical(writer, Drain);
+                Drain();
+                using var own = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                typeHash = own;
+                try
+                {
+                    type.WriteCanonical(writer, Drain);
+                    Drain();
+                }
+                finally
+                {
+                    typeHash = null;
+                }
+
+                var typed = Convert.ToHexStringLower(own.GetHashAndReset());
+                type.KeepContentHash(typed);
+                types[type.Name] = typed;
             }
 
             if (SystemProperties.Count > 0)
@@ -113,7 +147,7 @@ public sealed class ReferenceSnapshot
             Drain();
         }
 
-        return Convert.ToHexStringLower(hash.GetHashAndReset());
+        return new SnapshotHashes(Convert.ToHexStringLower(hash.GetHashAndReset()), types);
     }
 
     /// <summary>
@@ -145,6 +179,20 @@ public sealed class ReferenceSnapshot
     }
 }
 
+/// <summary>
+/// A snapshot's content hashes: <see cref="Content"/> over everything it holds, which the version is checked against, and
+/// one per type by name (ignoring case, as mappings name types), over what that type holds.
+/// </summary>
+public sealed record SnapshotHashes(string Content, IReadOnlyDictionary<string, string> Types)
+{
+    /// <summary>The content hash of the type <paramref name="name"/>, or null when the snapshot holds no such type.</summary>
+    public string? Of(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        return Types.GetValueOrDefault(name);
+    }
+}
+
 /// <summary>All items of one reference (or master-data) type, indexed on the fields a mapping may match by.</summary>
 public sealed class ReferenceType
 {
@@ -163,6 +211,8 @@ public sealed class ReferenceType
     private readonly ConcurrentDictionary<string, bool> _recordIdPaths = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<string>? _fieldNames;
     private Dictionary<string, ReferenceItem>? _byId;
+    private IReadOnlyList<ReferenceItem>? _ordered;
+    private string? _contentHash;
 
     /// <param name="name">The short name mappings use.</param>
     /// <param name="entityType">The OSDU entity type, or <see cref="LookupEntityType"/> of the name for a lookup table.</param>
@@ -453,20 +503,59 @@ public sealed class ReferenceType
     }
 
     /// <summary>
+    /// Hash of what the type holds: its entity type, for a lookup table the name its key is kept under, and every record with
+    /// the values captured for it, the records in ordinal order of their ids, so the order a capture found them in does not
+    /// move it. It is taken over the bytes the type contributes to <see cref="ReferenceSnapshot.ContentHash"/>, and it does
+    /// not cover the type's name, which the version keeps it under. Two versions whose hashes of a type agree hold exactly
+    /// the same records of it with exactly the same values, however much else changed between them.
+    /// </summary>
+    public string ContentHash()
+    {
+        if (Volatile.Read(ref _contentHash) is { } known)
+        {
+            return known;
+        }
+
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new ArrayBufferWriter<byte>(64 * 1024);
+        using (var writer = CanonicalJson.CreateWriter(buffer))
+        {
+            void Drain()
+            {
+                writer.Flush();
+                hash.AppendData(buffer.WrittenSpan);
+                buffer.ResetWrittenCount();
+            }
+
+            WriteCanonical(writer, Drain);
+            Drain();
+        }
+
+        var computed = Convert.ToHexStringLower(hash.GetHashAndReset());
+        KeepContentHash(computed);
+        return computed;
+    }
+
+    /// <summary>Keeps the hash a pass over the whole snapshot took of this type's bytes, so asking for it again costs nothing.</summary>
+    internal void KeepContentHash(string hash) => Volatile.Write(ref _contentHash, hash);
+
+    /// <summary>
     /// Writes <see cref="ToJson"/> in canonical form, a record at a time, calling <paramref name="drain"/> every so many
-    /// records so the writer's output can be taken away: the bytes <c>CanonicalJson.ToBytes(ToJson())</c> gives, without
-    /// drawing the whole type as JSON first.
+    /// records so the writer's output can be taken away: the bytes <c>CanonicalJson.ToBytes(ToJson())</c> gives for the
+    /// records in ordinal order of their ids, without drawing the whole type as JSON first. A type the store wrote or loaded
+    /// already holds its records in that order, so what every version written before hashed to is what it hashes to now.
     /// </summary>
     internal void WriteCanonical(Utf8JsonWriter writer, Action drain)
     {
         const int RecordsPerDrain = 1024;
+        var items = Ordered();
         writer.WriteStartObject();
         writer.WriteString("entityType", EntityType);
         writer.WritePropertyName("items");
         writer.WriteStartArray();
-        for (var i = 0; i < _items.Count; i++)
+        for (var i = 0; i < items.Count; i++)
         {
-            CanonicalJson.WriteTo(writer, ItemJson(_items[i]));
+            CanonicalJson.WriteTo(writer, ItemJson(items[i]));
             if (i % RecordsPerDrain == RecordsPerDrain - 1)
             {
                 drain();
@@ -481,6 +570,24 @@ public sealed class ReferenceType
 
         writer.WriteEndObject();
     }
+
+    /// <summary>
+    /// The records in ordinal order of their ids: the list itself when it is in that order already, as every type the store
+    /// writes or loads is, and otherwise a copy sorted once (stably, so records sharing an id keep the order they came in).
+    /// </summary>
+    private IReadOnlyList<ReferenceItem> Ordered()
+        => LazyInitializer.EnsureInitialized(ref _ordered, () =>
+        {
+            for (var i = 1; i < _items.Count; i++)
+            {
+                if (string.CompareOrdinal(_items[i - 1].Id, _items[i].Id) > 0)
+                {
+                    return _items.OrderBy(item => item.Id, StringComparer.Ordinal).ToList();
+                }
+            }
+
+            return _items;
+        });
 
     private static JsonObject ItemJson(ReferenceItem item)
     {

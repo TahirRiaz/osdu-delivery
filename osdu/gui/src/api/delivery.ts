@@ -484,12 +484,25 @@ export interface DeliveryCachedItem {
   fields: Record<string, unknown>;
 }
 
-/** One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under. */
+/** How one type a cache version holds compares with the version before it, by the type's own content hash. */
+export type DeliveryCacheTypeChange = "added" | "changed" | "unchanged";
+
+/**
+ * One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under; with the
+ * type's own content hash, how it compares with the version before, and the version its content dates from. The version moves
+ * whenever anything in the partition's cache does; these move only when the type does.
+ */
 export interface DeliveryCacheVersionType {
   name: string;
   entityType: string;
   items: number;
   key: string | null;
+  /** The type's content hash; null for a version written before types were hashed. */
+  hash: string | null;
+  /** How the type compares with the version before; null for a version written before types were hashed. */
+  change: DeliveryCacheTypeChange | null;
+  /** The version that last added or changed the type, whose content this version holds unchanged; null when it cannot be told. */
+  since: string | null;
 }
 
 /** Whether a platform service reports a system property on for the partition. */
@@ -586,7 +599,19 @@ export interface DeliveryCacheDiff {
   items: PagedResult<DeliveryCacheDiffItem>;
 }
 
-/** One version in a cache's history: the version captured before it, and how many records it changed, added and removed against that one. */
+/** One type a version moved: added, changed or removed, with how many of its records changed, arrived and left. */
+export interface DeliveryCacheHistoryType {
+  name: string;
+  change: "added" | "changed" | "removed";
+  changed: number;
+  added: number;
+  removed: number;
+}
+
+/**
+ * One version in a cache's history: the version captured before it, how many records it changed, added and removed against
+ * that one, and which types it moved. A type that only rode along with another's change is not listed.
+ */
 export interface DeliveryCacheHistoryEntry {
   version: DeliveryCacheVersion;
   /** The version captured before it; null for the first version, whose records all arrived with it. */
@@ -594,6 +619,8 @@ export interface DeliveryCacheHistoryEntry {
   changed: number;
   added: number;
   removed: number;
+  /** The types the version added, changed or removed (the type in scope alone, when one is named). */
+  types: DeliveryCacheHistoryType[];
 }
 
 /** One cache change and what happens about it: it covers every delivered record built from the value that moved. */

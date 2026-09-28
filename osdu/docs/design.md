@@ -413,7 +413,10 @@ moved it asks which sets hold their values. A set is touched when a value a reco
 into its document now reads differently, when the cached record it used is gone, when
 the value it matched by no longer resolves, or when a field it read and found empty now
 gives a value; anything else the change does not touch, including a record that only ever
-read the id of an item whose name changed. A lookup table is asked about the keys it newly
+read the id of an item whose name changed. Only the types whose own content hash moved are
+compared at all, and within them a set is touched only where what it reads moved between
+the version replaced and the new one: a record asked about because one of its values moved
+raises nothing for a path that reads as it did. A lookup table is asked about the keys it newly
 lists too: a replace that looked a key up and found no row records the key, so a table
 that comes to list it touches the records built without it. A type of OSDU records is asked
 the same about every value its arriving or moving records hold: a node that found no record

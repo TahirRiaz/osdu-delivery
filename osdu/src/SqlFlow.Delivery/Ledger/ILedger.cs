@@ -669,6 +669,15 @@ public sealed record UpdateRolloutBatch(long TagId, long Marked, long Processed,
 /// <summary>One cache change and what happens about it, covering every record built from the value that moved.</summary>
 public sealed record UpdateTag
 {
+    /// <summary>The most characters of <see cref="ItemId"/> the ledger keeps.</summary>
+    public const int MaxItemIdLength = 512;
+
+    /// <summary>The most characters of <see cref="Path"/>, <see cref="OldValue"/> and <see cref="NewValue"/> the ledger keeps.</summary>
+    public const int MaxTextLength = 400;
+
+    /// <summary>A text as the ledger keeps it: whole when it fits, else its first <paramref name="max"/> characters.</summary>
+    public static string? Kept(string? text, int max) => text is null ? null : text.Length <= max ? text : text[..max];
+
     public long TagId { get; init; }
 
     public string Kind { get; init; } = "cache";

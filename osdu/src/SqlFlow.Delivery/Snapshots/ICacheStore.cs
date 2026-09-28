@@ -6,8 +6,24 @@ namespace SqlFlow.Delivery.Snapshots;
 /// <param name="Origin">Where the content came from: the OSDU endpoint reference searched, or the directory imported.</param>
 public sealed record CacheCapture(Guid? RunId, string CapturedBy, string Origin);
 
-/// <summary>One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under.</summary>
-public sealed record CacheVersionType(string Name, string EntityType, long Items, string? Key = null);
+/// <summary>
+/// One type a cache version holds, how many records of it, and for a lookup table the name its key is kept under; with the
+/// type's own content hash, how it compares with the version before, and the version its content dates from. A version is
+/// the whole partition's cache, so it moves whenever any type or the partition's system properties do; a type's hash and
+/// <paramref name="Since"/> move only when that type does.
+/// </summary>
+/// <param name="Name">The name mappings read the type by.</param>
+/// <param name="EntityType">The OSDU entity type, or <c>lookup--&lt;Name&gt;</c> for a lookup table.</param>
+/// <param name="Items">How many records of the type the version holds.</param>
+/// <param name="Key">For a lookup table, the name its key is kept under; null for a type of OSDU records.</param>
+/// <param name="Hash">The type's content hash (<see cref="ReferenceType.ContentHash"/>); null for a version written before types were hashed.</param>
+/// <param name="Change">How the type compares with the version before; null for a version written before types were hashed.</param>
+/// <param name="Since">
+/// The version that last added or changed the type, whose content this version holds of it unchanged; this version itself
+/// when it added or changed the type. Null when a version written before types were hashed cannot say.
+/// </param>
+public sealed record CacheVersionType(
+    string Name, string EntityType, long Items, string? Key = null, string? Hash = null, CacheTypeChange? Change = null, string? Since = null);
 
 /// <summary>
 /// A version of a partition's cache as its row describes it, without its records: <c>Scope</c> is the partition whose cache
@@ -33,7 +49,12 @@ public sealed record CacheVersionInfo(
 /// <param name="Snapshot">The version written, or the current version when the merge changed no cached content.</param>
 /// <param name="Previous">The version that was current before the merge; null for the partition's first version.</param>
 /// <param name="Written">False when the merge changed no cached content, so no version was written.</param>
-public sealed record CacheWrite(ReferenceSnapshot Snapshot, ReferenceSnapshot? Previous, bool Written);
+/// <param name="Changes">
+/// What the merge did to each type, by its content hash: which arrived, which changed and which the version holds exactly as
+/// <paramref name="Previous"/> did, and which it no longer holds. Every type is unchanged when no version was written. A
+/// version is written when anything moved, so this is what tells a type that moved from one that only rode along.
+/// </param>
+public sealed record CacheWrite(ReferenceSnapshot Snapshot, ReferenceSnapshot? Previous, bool Written, CacheTypeChanges Changes);
 
 /// <summary>
 /// Where every cache lives (design.md section 6.2): the catalog, one cache per OSDU data partition. Every cache flow that

@@ -46,10 +46,22 @@ public sealed record CacheChangeCounts(long Changed, long Added, long Removed)
 }
 
 /// <summary>
-/// One version in a cache's history: the version captured before it, and what it changed against that version. The
-/// counts are those of the type in scope when one was named.
+/// One version in a cache's history: the version captured before it, what it changed against that version, and which types
+/// it added, changed or removed. The counts and the types are those of the type in scope when one was named. A version is
+/// written when anything in the partition's cache moved, so <see cref="Types"/> is what says which types moved with it: one
+/// that only rode along is not listed.
 /// </summary>
-public sealed record CacheHistoryEntry(CacheVersionInfo Version, string? Before, CacheChangeCounts Changes);
+public sealed record CacheHistoryEntry(CacheVersionInfo Version, string? Before, CacheChangeCounts Changes, IReadOnlyList<CacheHistoryType> Types);
+
+/// <summary>
+/// One type a version moved: <see cref="Change"/> is added (the version before did not hold it), changed (it held other
+/// content) or removed (the version no longer holds it), with how many of its records changed, arrived and left.
+/// </summary>
+public sealed record CacheHistoryType(string TypeName, string Change, CacheChangeCounts Counts)
+{
+    /// <summary>What <see cref="Change"/> says of a type the version no longer holds.</summary>
+    public const string Removed = "removed";
+}
 
 /// <summary>How many records of one cached type changed, arrived and left between the two versions.</summary>
 public sealed record CacheComparisonTypeCount(string TypeName, long Changed, long Added, long Removed);
@@ -123,10 +135,16 @@ public static class CacheVersions
     }
 
     /// <summary>
-    /// The cache's history, newest first: each version with the version captured before it and how many records it
-    /// changed, added and removed against that version. With a <paramref name="type"/> the counts cover that type alone,
-    /// which is what lets a reader find the versions that changed it. Three grouped queries answer every version at once.
+    /// The cache's history, newest first: each version with the version captured before it, how many records it changed,
+    /// added and removed against that version, and which types it added, changed or removed. With a <paramref name="type"/>
+    /// the counts and the types cover that type alone, which is what lets a reader find the versions that changed it. Three
+    /// grouped queries answer every version at once.
     /// </summary>
+    /// <remarks>
+    /// A type's change is what the version recorded by the type's content hash. A version written before types were hashed
+    /// recorded none, and its types are read from what the records and the versions hold instead: a type the version before
+    /// did not list arrived, and one whose records began or ended a range at the version changed.
+    /// </remarks>
     public static async Task<IReadOnlyList<CacheHistoryEntry>> HistoryAsync(OsduDbContext db, string scope, string? type, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
@@ -137,45 +155,133 @@ public static class CacheVersions
             return [];
         }
 
+        var named = string.IsNullOrWhiteSpace(type) ? null : type.Trim();
         var items = db.DeliveryCacheItems.AsNoTracking().Where(i => i.Scope == scope);
-        if (!string.IsNullOrWhiteSpace(type))
+        if (named is not null)
         {
-            var name = type.Trim();
-            items = items.Where(i => i.TypeName == name);
+            items = items.Where(i => i.TypeName == named);
         }
 
-        var arrived = (await items
-            .GroupBy(i => i.FromSequence)
-            .Select(g => new { Sequence = g.Key, Count = g.LongCount() })
-            .ToListAsync(ct).ConfigureAwait(false)).ToDictionary(g => g.Sequence, g => g.Count);
-        var departed = (await items
+        var arrived = Counted(await items
+            .GroupBy(i => new { i.TypeName, i.FromSequence })
+            .Select(g => new { g.Key.TypeName, Sequence = g.Key.FromSequence, Count = g.LongCount() })
+            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
+        var departed = Counted(await items
             .Where(i => i.ToSequence != null)
-            .GroupBy(i => i.ToSequence!.Value)
-            .Select(g => new { Sequence = g.Key, Count = g.LongCount() })
-            .ToListAsync(ct).ConfigureAwait(false)).ToDictionary(g => g.Sequence, g => g.Count);
+            .GroupBy(i => new { i.TypeName, Sequence = i.ToSequence!.Value })
+            .Select(g => new { g.Key.TypeName, g.Key.Sequence, Count = g.LongCount() })
+            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
 
         // A record that changed at a version ended one row and began another there.
-        var changed = (await items
+        var changed = Counted(await items
             .Join(
                 items.Where(d => d.ToSequence != null),
                 a => new { a.TypeName, a.RecordId, Sequence = (int?)a.FromSequence },
                 d => new { d.TypeName, d.RecordId, Sequence = d.ToSequence },
-                (a, d) => a.FromSequence)
-            .GroupBy(sequence => sequence)
-            .Select(g => new { Sequence = g.Key, Count = g.LongCount() })
-            .ToListAsync(ct).ConfigureAwait(false)).ToDictionary(g => g.Sequence, g => g.Count);
+                (a, d) => new { a.TypeName, a.FromSequence })
+            .GroupBy(x => new { x.TypeName, x.FromSequence })
+            .Select(g => new { g.Key.TypeName, Sequence = g.Key.FromSequence, Count = g.LongCount() })
+            .ToListAsync(ct).ConfigureAwait(false), g => (g.TypeName, g.Sequence), g => g.Count);
 
-        var labels = versions.ToDictionary(v => v.Sequence, v => v.Version);
+        // The types of the version before each listed one: the listing's next entry, and for the oldest listed, its own
+        // predecessor, read when the listing stopped short of the first version.
+        var bySequence = versions.ToDictionary(v => v.Sequence);
+        var oldest = versions[^1];
+        if (oldest.Sequence > 1 && await ResolveBySequenceAsync(db, scope, oldest.Sequence - 1, ct).ConfigureAwait(false) is { } predecessor)
+        {
+            bySequence[predecessor.Sequence] = OsduCacheStore.Info(predecessor);
+        }
+
         return versions
             .Select(version =>
             {
-                var both = changed.GetValueOrDefault(version.Sequence);
+                var before = bySequence.GetValueOrDefault(version.Sequence - 1);
                 return new CacheHistoryEntry(
-                    version,
-                    labels.GetValueOrDefault(version.Sequence - 1),
-                    new CacheChangeCounts(both, arrived.GetValueOrDefault(version.Sequence) - both, departed.GetValueOrDefault(version.Sequence) - both));
+                    version, before?.Version, Total(version.Sequence, arrived, departed, changed), TypesMoved(version, before, named, arrived, departed, changed));
             })
             .ToList();
+    }
+
+    /// <summary>A version row by its place in the partition's history, or null when there is none.</summary>
+    private static Task<DeliveryCacheVersion?> ResolveBySequenceAsync(OsduDbContext db, string scope, int sequence, CancellationToken ct)
+        => db.DeliveryCacheVersions.AsNoTracking().FirstOrDefaultAsync(v => v.Scope == scope && v.Sequence == sequence, ct);
+
+    /// <summary>Grouped counts keyed by type (ignoring case, as types are named) and sequence, summed across the spellings the ranges hold.</summary>
+    private static Dictionary<(string Type, int Sequence), long> Counted<T>(IEnumerable<T> groups, Func<T, (string Type, int Sequence)> key, Func<T, long> count)
+    {
+        var counted = new Dictionary<(string Type, int Sequence), long>(TypeSequenceComparer.Instance);
+        foreach (var group in groups)
+        {
+            var at = key(group);
+            counted[at] = counted.GetValueOrDefault(at) + count(group);
+        }
+
+        return counted;
+    }
+
+    /// <summary>How many records of <paramref name="typeName"/> changed, arrived and left at <paramref name="sequence"/>.</summary>
+    private static CacheChangeCounts CountsOf(
+        string typeName, int sequence,
+        Dictionary<(string Type, int Sequence), long> arrived, Dictionary<(string Type, int Sequence), long> departed, Dictionary<(string Type, int Sequence), long> changed)
+    {
+        var both = changed.GetValueOrDefault((typeName, sequence));
+        return new CacheChangeCounts(both, arrived.GetValueOrDefault((typeName, sequence)) - both, departed.GetValueOrDefault((typeName, sequence)) - both);
+    }
+
+    /// <summary>
+    /// The types <paramref name="version"/> added, changed or removed, in ordinal order: by the change the version recorded
+    /// for a type when it recorded one, and otherwise by what the version before listed and what the records' ranges hold.
+    /// </summary>
+    private static List<CacheHistoryType> TypesMoved(
+        CacheVersionInfo version, CacheVersionInfo? before, string? named,
+        Dictionary<(string Type, int Sequence), long> arrived, Dictionary<(string Type, int Sequence), long> departed, Dictionary<(string Type, int Sequence), long> changed)
+    {
+        bool InScope(string name) => named is null || string.Equals(name, named, StringComparison.OrdinalIgnoreCase);
+        var earlier = before?.Types.Select(t => t.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var moved = new List<CacheHistoryType>();
+        foreach (var held in version.Types.Where(t => InScope(t.Name)))
+        {
+            var counts = CountsOf(held.Name, version.Sequence, arrived, departed, changed);
+            var change = held.Change
+                ?? (earlier is null
+                    ? version.Sequence == 1 ? CacheTypeChange.Added : counts.Total > 0 ? CacheTypeChange.Changed : CacheTypeChange.Unchanged
+                    : !earlier.Contains(held.Name) ? CacheTypeChange.Added : counts.Total > 0 ? CacheTypeChange.Changed : CacheTypeChange.Unchanged);
+            if (change != CacheTypeChange.Unchanged)
+            {
+                moved.Add(new CacheHistoryType(held.Name, CacheTypeChanges.Text(change), counts));
+            }
+        }
+
+        foreach (var left in (before?.Types ?? []).Where(t => InScope(t.Name) && !version.Types.Any(held => held.Name.Equals(t.Name, StringComparison.OrdinalIgnoreCase))))
+        {
+            moved.Add(new CacheHistoryType(left.Name, CacheHistoryType.Removed, CountsOf(left.Name, version.Sequence, arrived, departed, changed)));
+        }
+
+        return moved.OrderBy(t => t.TypeName, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>How many records of every type in scope changed, arrived and left at <paramref name="sequence"/>.</summary>
+    private static CacheChangeCounts Total(
+        int sequence,
+        Dictionary<(string Type, int Sequence), long> arrived, Dictionary<(string Type, int Sequence), long> departed, Dictionary<(string Type, int Sequence), long> changed)
+    {
+        static long At(Dictionary<(string Type, int Sequence), long> counted, int sequence)
+            => counted.Where(c => c.Key.Sequence == sequence).Sum(c => c.Value);
+
+        var both = At(changed, sequence);
+        return new CacheChangeCounts(both, At(arrived, sequence) - both, At(departed, sequence) - both);
+    }
+
+    /// <summary>Compares a type and a sequence as the history keys them: the type without regard to case.</summary>
+    private sealed class TypeSequenceComparer : IEqualityComparer<(string Type, int Sequence)>
+    {
+        public static TypeSequenceComparer Instance { get; } = new();
+
+        public bool Equals((string Type, int Sequence) x, (string Type, int Sequence) y)
+            => x.Sequence == y.Sequence && string.Equals(x.Type, y.Type, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string Type, int Sequence) obj)
+            => HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Type), obj.Sequence);
     }
 
     /// <summary>
