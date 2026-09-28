@@ -429,6 +429,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The cache page's header and tabs are quieter.** The header says on one line which partition it is and which cache
+  flow files fill it, by file name with each path on hover, and puts what a cache flow is and how to change what it
+  holds behind an info mark; Cache files and Refresh sit at its top right, where every page header keeps its actions
+  now however long its subtitle runs. No tab carries a count any more: the cache page's Versions, Changes and OSDU
+  feature flags, a record preview's Steps, Payload and References, and a template comparison's Changes are named for
+  what they hold, which each says once it is open, and what waits for approval is in the cache page's summary and
+  banner.
+
 - **The OSDU cache page's records read one type at a time, and its System properties tab is OSDU feature flags.** The
   records over every type folded each record's values into one column of name and value pairs, which read as noise.
   The types are now listed beside the records by family, with their counts, and every table reads one type in its own

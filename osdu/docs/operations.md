@@ -574,8 +574,11 @@ Pipelines like any other flow.
   required flag, and the YAML and its checks against the template and the cache's current version follow every edit. The mapping is copied, or proposed to the repository as a pull request through the proposal endpoint
   (`POST /api/v1/repos/sources/{id}/proposals`). An existing synced mapping opens with its entries filled in.
 - **Cache** (OSDU): the reference and master data every delivered document is built from, one cache per OSDU
-  partition. The header names the partition and the cache flow file that fills it (or how many flows fill it, with
-  every file on hover), with Cache files and Refresh now. Cache files opens Pipelines filtered to the cache flows
+  partition. The header names the partition and, on one line, the cache flow files that fill it by file name, each
+  with its path in the repository on hover (or how many when more than three fill it, every file on hover), with an
+  info mark that says what a cache flow is, who reads the cache and how to change what it holds, and Cache files and
+  Refresh now at its top right. The tabs are named for what they hold and carry no counts: what waits for a decision is
+  in the summary row and the banner. Cache files opens Pipelines filtered to the cache flows
   (`?kind=cache`, and `?repo=` when one repository holds every flow filling the partition), since a partition can be
   filled by several files; Refresh now opens the trigger dialog on the cache flow with the refresh operation, and is a
   menu naming the flows when several fill the partition, since a refresh runs one flow's capture. A link to Pipelines

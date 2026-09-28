@@ -379,18 +379,9 @@ export function RecordPreviewView({ preview }: { preview: DeliveryRecordPreview 
       <Tabs defaultValue={document !== null ? "document" : "source"}>
         <TabsList data-testid="preview-tabs">
           <TabsTrigger value="document" disabled={document === null} data-testid="preview-tab-document">Document</TabsTrigger>
-          <TabsTrigger value="steps" disabled={preview.steps.length === 0} data-testid="preview-tab-steps">
-            Steps
-            {preview.steps.length > 0 && <Badge variant="secondary" className="ml-1">{preview.steps.length}</Badge>}
-          </TabsTrigger>
-          <TabsTrigger value="payload" data-testid="preview-tab-payload">
-            Payload
-            {preview.payload.length > 0 && <Badge variant="secondary" className="ml-1">{preview.payload.reduce((sum, part) => sum + part.totalFiles, 0)}</Badge>}
-          </TabsTrigger>
-          <TabsTrigger value="references" data-testid="preview-tab-references">
-            References
-            {preview.referenceCount > 0 && <Badge variant="secondary" className="ml-1">{preview.referenceCount}</Badge>}
-          </TabsTrigger>
+          <TabsTrigger value="steps" disabled={preview.steps.length === 0} data-testid="preview-tab-steps">Steps</TabsTrigger>
+          <TabsTrigger value="payload" data-testid="preview-tab-payload">Payload</TabsTrigger>
+          <TabsTrigger value="references" data-testid="preview-tab-references">References</TabsTrigger>
           <TabsTrigger value="source" data-testid="preview-tab-source">Source row</TabsTrigger>
         </TabsList>
 

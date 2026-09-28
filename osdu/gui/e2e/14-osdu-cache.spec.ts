@@ -18,11 +18,12 @@ test.describe.serial("osdu cache", () => {
     await expect(adminPage.getByTestId("page-delivery-cache")).toBeVisible();
 
     await expect(adminPage.getByTestId("delivery-cache-name")).toHaveText(PARTITION, { timeout: 30_000 });
-    // Three cache flows fill the partition, and the header names every file rather than counting them.
+    // Three cache flows fill the partition, and the header names every file rather than counting them: by its file name,
+    // with its path in the repository on hover.
     const definedIn = adminPage.getByTestId("delivery-cache-defined-in");
-    await expect(definedIn).toContainText(`${SOURCE}/cache/${CACHE}.yaml`);
-    await expect(definedIn).toContainText(`${SOURCE}/cache/${REFERENCE}.yaml`);
-    await expect(definedIn).toContainText(`${SOURCE}/cache/${LOOKUPS}.yaml`);
+    for (const flow of [CACHE, REFERENCE, LOOKUPS]) {
+      await expect(definedIn.locator(`[data-path="${SOURCE}/cache/${flow}.yaml"]`)).toHaveText(`${flow}.yaml`);
+    }
 
     // The summary: the version deliveries read, how much it holds, how it is refreshed, and that changes need no one. The
     // suite's database is reused, and a capture that adds nothing writes no version, so which of the three flows wrote the

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, DatabaseZap, Play, ScrollText, ShieldAlert } from "lucide-react";
+import { ChevronDown, DatabaseZap, Info, Play, ScrollText, ShieldAlert } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -19,6 +19,7 @@ import { FilterCombobox, type FilterOption } from "@/components/FilterCombobox";
 import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { RelativeTime } from "@/components/RelativeTime";
+import { RichTooltip } from "@/components/RichTooltip";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
 import { TriggerRunDialog } from "@/features/runs/TriggerRunDialog";
 import { scheduleCadence, summarizeTypes, type CachedTypeSummary } from "./cacheFormat";
@@ -198,35 +199,51 @@ export default function DeliveryCachePage() {
   );
 }
 
+/** How many cache flow files the header names before it counts them instead. */
+const NAMED_FILES = 3;
+
+/** A cache flow file as the header names it: its file name, the folders above it being on hover. */
+function fileName(path: string): string {
+  return path.split("/").at(-1) ?? path;
+}
+
 /**
- * The partition, the files that fill its cache, and where to change what is cached. A few files are named, since a cache is
- * often filled by one flow capturing OSDU reference data and one holding the estate's own lookup tables; many are counted.
+ * The partition and the cache flow files that fill its cache, on one line: each file by name with its path in the
+ * repository on hover, or how many when there are more than a few. What a cache flow is, who reads the cache and how to
+ * change what it holds are on the info mark rather than spelled out under the title.
  */
 function CacheSubtitle({ cache }: { cache: DeliveryCache }) {
   const paths = cache.flows.map((flow) => flow.relativePath);
-  const files = paths.join(", ");
   return (
     <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
       <span>Partition</span>
       <span className="font-mono text-foreground" data-testid="delivery-cache-name">{cache.scope}</span>
-      <span>is filled by</span>
-      {paths.length <= 3
-        ? (
-          <span className="text-foreground" data-testid="delivery-cache-defined-in">
-            {paths.map((path, index) => (
-              <span key={path}>
-                {index > 0 && <span className="text-muted-foreground">{index === paths.length - 1 ? " and " : ", "}</span>}
-                <span className="font-mono">{path}</span>
-              </span>
-            ))}
+      <span className="-ml-1.5">,</span>
+      <span className="inline-flex min-w-0 flex-wrap items-baseline gap-x-1.5" data-testid="delivery-cache-defined-in">
+        <span>filled by</span>
+        {paths.length <= NAMED_FILES
+          ? paths.map((path, index) => (
+            <span key={path} className="inline-flex items-baseline">
+              <RichTooltip title="Cache flow file" body={path} mono>
+                <span className="font-mono text-foreground" data-path={path}>{fileName(path)}</span>
+              </RichTooltip>
+              {index < paths.length - 1 && <span>,</span>}
+            </span>
+          ))
+          : (
+            <RichTooltip title="Cache flow files" body={paths.join("\n")} mono>
+              <span className="text-foreground underline decoration-dotted underline-offset-2">{paths.length} cache flows</span>
+            </RichTooltip>
+          )}
+        <RichTooltip
+          title="How the cache is filled"
+          body={`Cache flows are YAML files in a repository that list the OSDU types, dictionaries and ingestion tables to cache for the partition. Every delivery flow that delivers to ${cache.scope} reads this cache. To change what it holds, edit a cache flow file and sync its repository; Cache files lists them, and Refresh runs one.`}
+        >
+          <span className="inline-flex self-center text-muted-foreground" data-testid="delivery-cache-about">
+            <Info className="size-3.5" aria-label="How the cache is filled" />
           </span>
-        )
-        : (
-          <span className="text-foreground" title={files} data-testid="delivery-cache-defined-in">
-            {paths.length} cache flows
-          </span>
-        )}
-      <span>and read by every delivery flow that delivers to it. Edit a cache flow file to change what it caches.</span>
+        </RichTooltip>
+      </span>
     </span>
   );
 }
@@ -436,24 +453,13 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
             <TabsTrigger value="records" data-testid="delivery-cache-tab-records">
               {scoped === null ? "Records" : `${scoped.name} records`}
             </TabsTrigger>
-            <TabsTrigger value="versions" data-testid="delivery-cache-tab-versions">
-              Versions
-              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{cache.versions}</span>
-            </TabsTrigger>
-            <TabsTrigger value="changes" data-testid="delivery-cache-tab-changes">
-              Changes
-              {pendingTotal > 0 && (
-                <span className="rounded-full bg-warning/15 px-1.5 font-mono text-[11px] tabular-nums text-warning">{pendingTotal}</span>
-              )}
-            </TabsTrigger>
+            {/* A tab is named for what it holds and carries no count: what waits for a decision is said by the summary
+                and the banner above, and every tab says how much it holds once it is open. */}
+            <TabsTrigger value="versions" data-testid="delivery-cache-tab-versions">Versions</TabsTrigger>
+            <TabsTrigger value="changes" data-testid="delivery-cache-tab-changes">Changes</TabsTrigger>
             <TabsTrigger value="gaps" data-testid="delivery-cache-tab-gaps">Built without</TabsTrigger>
             <TabsTrigger value="definition" data-testid="delivery-cache-tab-definition">Definition</TabsTrigger>
-            <TabsTrigger value="flags" data-testid="delivery-cache-tab-flags">
-              OSDU feature flags
-              {current !== null && current.systemProperties.length > 0 && (
-                <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{current.systemProperties.length}</span>
-              )}
-            </TabsTrigger>
+            <TabsTrigger value="flags" data-testid="delivery-cache-tab-flags">OSDU feature flags</TabsTrigger>
           </TabsList>
           {/* The type narrows the records, the versions and what records were built without; the changes and the definition
               always cover the whole cache. The records pick it from the list beside them, which gives way to this picker on a

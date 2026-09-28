@@ -638,9 +638,7 @@ export function TemplateCompareSheet({ start, onClose }: TemplateCompareSheetPro
               <Verdict data={data} />
               <Tabs defaultValue="changes">
                 <TabsList data-testid="templates-compare-tabs">
-                  <TabsTrigger value="changes" data-testid="templates-compare-tab-changes">
-                    {`Changes (${data.changes.length.toLocaleString()})`}
-                  </TabsTrigger>
+                  <TabsTrigger value="changes" data-testid="templates-compare-tab-changes">Changes</TabsTrigger>
                   <TabsTrigger value="files" data-testid="templates-compare-tab-files">Published files</TabsTrigger>
                 </TabsList>
                 <TabsContent value="changes" className="flex flex-col gap-3 pt-1">
