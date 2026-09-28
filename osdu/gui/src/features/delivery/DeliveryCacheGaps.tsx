@@ -1,12 +1,7 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { CircleSlash } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
-import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryCacheGap } from "../../api/delivery";
-import { CorrelationError } from "@/components/CorrelationError";
-import { DataTable, type Column } from "@/components/DataTable";
-import { EmptyState } from "@/components/EmptyState";
+import { PagedTable, type Column } from "@/components/PagedTable";
 
 /** What each kind of gap means for the records built without it, as the table's tooltip says it. */
 const GAP_MEANING: Record<string, string> = {
@@ -31,10 +26,6 @@ const GAP_LABEL: Record<string, string> = {
  */
 export function DeliveryCacheGaps({ scope, type }: { scope: string; type: string | null }) {
   const [empty, setEmpty] = useState(false);
-  const gaps = useQuery({
-    queryKey: ["delivery", "cache", "gaps", scope, type, empty],
-    queryFn: () => deliveryApi.cacheGaps({ scope, type: type ?? undefined, empty }),
-  });
 
   const columns: Column<DeliveryCacheGap>[] = [
     {
@@ -71,39 +62,20 @@ export function DeliveryCacheGaps({ scope, type }: { scope: string; type: string
     },
   ];
 
-  if (gaps.isError) {
-    return isApiError(gaps.error)
-      ? <CorrelationError error={gaps.error} />
-      : <p className="text-[13px] text-destructive">{String(gaps.error)}</p>;
-  }
-
   const toolbar = (
-    <label className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
+    <label className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-[12.5px] text-muted-foreground">
       <Switch checked={empty} onCheckedChange={setEmpty} data-testid="delivery-cache-gaps-empty" />
       Include paths read empty
     </label>
   );
 
-  if (gaps.data !== undefined && gaps.data.length === 0) {
-    return (
-      <div className="flex flex-col gap-3">
-        {toolbar}
-        <EmptyState
-          icon={<CircleSlash className="size-5" />}
-          title="Nothing missing"
-          description="Every delivered record found what it looked for in this partition's cache."
-          data-testid="delivery-cache-gaps-empty-state"
-        />
-      </div>
-    );
-  }
-
   return (
-    <DataTable
+    <PagedTable
+      queryKey={["delivery", "cache", "gaps", scope, type, empty]}
+      fetchPage={(page, pageSize) => deliveryApi.cacheGaps({ scope, type: type ?? undefined, empty, page, pageSize })}
       columns={columns}
-      rows={gaps.data}
-      rowKey={(gap) => `${gap.typeName}|${gap.path}|${gap.kind}|${gap.key}`}
-      emptyMessage="Nothing missing."
+      rowKey={(gap) => `${gap.typeName}|${gap.path}|${gap.kind}|${gap.key}|${gap.value}`}
+      emptyMessage="Nothing missing: every delivered record found what it looked for in this partition's cache."
       toolbar={toolbar}
       data-testid="delivery-cache-gaps-table"
     />

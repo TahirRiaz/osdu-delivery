@@ -2054,10 +2054,11 @@ public sealed partial class OsduLedger : ILedger
             ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<CacheGap>> ListCacheGapsAsync(string scope, string? typeName, bool empty, int take, CancellationToken ct = default)
+    public async Task<CacheGapPage> ListCacheGapsAsync(string scope, string? typeName, bool empty, int take, int skip, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(scope);
         ArgumentOutOfRangeException.ThrowIfLessThan(take, 1);
+        ArgumentOutOfRangeException.ThrowIfNegative(skip);
         var unlisted = KindText(Snapshots.CacheUsageKind.Unlisted);
         var unverified = KindText(Snapshots.CacheUsageKind.Unverified);
         var listed = KindText(Snapshots.CacheUsageKind.Listed);
@@ -2110,17 +2111,23 @@ public sealed partial class OsduLedger : ILedger
                     }
                 }
 
-                return (IReadOnlyList<CacheGap>)held
+                var gaps = held
                     .Where(e => records.ContainsKey(e.SetId)
                         && (e.Kind != listed || !answered.Contains((e.SetId, e.TypeName, e.Path, ListedRecord(e.ItemId)))))
                     .GroupBy(e => (e.TypeName, e.Path, e.Kind, Key: e.Kind == listed ? ListedKey(e.ItemId) : e.ItemId, e.ValueText))
                     .Select(g => new CacheGap(g.Key.TypeName, g.Key.Path, ToKind(g.Key.Kind), g.Key.Key, g.Key.ValueText, g.Select(e => e.SetId).Distinct().Sum(s => records[s])))
+                    .ToList();
+                var page = gaps
                     .OrderByDescending(g => g.Records)
                     .ThenBy(g => g.TypeName, StringComparer.Ordinal)
                     .ThenBy(g => g.Path, StringComparer.Ordinal)
                     .ThenBy(g => g.Key, StringComparer.Ordinal)
+                    .ThenBy(g => g.Value, StringComparer.Ordinal)
+                    .ThenBy(g => g.Kind)
+                    .Skip(skip)
                     .Take(take)
                     .ToList();
+                return new CacheGapPage(page, gaps.Count);
             },
             ct).ConfigureAwait(false);
 

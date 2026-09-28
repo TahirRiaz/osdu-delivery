@@ -188,7 +188,9 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
         await DeliveredAsync("NO 99/9-Z-9", 2, optionalWellbore: true);
         await DeliveredAsync("NO 16/3-A-1", 1);
 
-        var gaps = await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 50);
+        var listing = await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 50, skip: 0);
+        var gaps = listing.Items;
+        Assert.Equal(gaps.Count, listing.Total);
 
         var field = Assert.Single(gaps, g => g.TypeName == "AccessGroupMap" && g.Path == "FieldIDList" && g.Key == CacheUsage.ListingKey("dev:master-data--Field:NEW:"));
         Assert.Equal(CacheUsageKind.Listed, field.Kind);
@@ -207,9 +209,15 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
         // A key no form of which found a row is one gap, not one per form.
         Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey("dev:master-data--Field:NEW"));
 
+        // A page is a slice of the same order, and every page counts them all.
+        var second = await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 1, skip: 1);
+        Assert.Equal(listing.Total, second.Total);
+        Assert.Equal(gaps[1], Assert.Single(second.Items));
+        Assert.Empty((await _ledger.ListCacheGapsAsync(Scope, typeName: null, empty: false, take: 50, skip: listing.Total)).Items);
+
         // One type's gaps, and the paths read empty beside them: the wellbore the new field's log lies in has no country.
-        Assert.All(await _ledger.ListCacheGapsAsync(Scope, "Wellbore", empty: false, take: 50), g => Assert.Equal("Wellbore", g.TypeName));
-        var withEmpty = await _ledger.ListCacheGapsAsync(Scope, "Wellbore", empty: true, take: 50);
+        Assert.All((await _ledger.ListCacheGapsAsync(Scope, "Wellbore", empty: false, take: 50, skip: 0)).Items, g => Assert.Equal("Wellbore", g.TypeName));
+        var withEmpty = (await _ledger.ListCacheGapsAsync(Scope, "Wellbore", empty: true, take: 50, skip: 0)).Items;
         Assert.Contains(withEmpty, g => g.Kind == CacheUsageKind.Empty && g.Path == "GeoContexts.GeoPoliticalEntityID" && g.Key == "dev:master-data--Wellbore:new1");
     }
 

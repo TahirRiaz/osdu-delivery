@@ -316,12 +316,12 @@ export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal, ope
   openMissing?: boolean;
 }) {
   const [chosen, setChosen] = useState<string | null>(openMissing ? MISSING : null);
-  // The same query the missing list reads, so opening it costs nothing more.
+  // The count alone: a one-row page carries the total of what is missing.
   const gaps = useQuery({
-    queryKey: ["delivery", "cache", "gaps", scope, null, false],
-    queryFn: () => deliveryApi.cacheGaps({ scope, type: undefined, empty: false }),
+    queryKey: ["delivery", "cache", "gaps", "count", scope],
+    queryFn: () => deliveryApi.cacheGaps({ scope, page: 1, pageSize: 1 }),
   });
-  const missingTotal = gaps.data?.length ?? 0;
+  const missingTotal = gaps.data?.total ?? 0;
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [openTag, setOpenTag] = useState<DeliveryUpdateTag | null>(null);
   // The affected counts of every row seen so far, so a selection that spans pages still adds up.

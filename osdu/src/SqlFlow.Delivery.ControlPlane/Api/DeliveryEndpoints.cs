@@ -1455,27 +1455,24 @@ public static class DeliveryEndpoints
         return TypedResults.Ok(new PagedResult<DeliveryUpdateTagDto>(tags.Select(ToDto).ToList(), p, size, total));
     }
 
-    /// <summary>Most gaps a listing answers with; the ones reaching the most records come first.</summary>
-    private const int MaxCacheGaps = 1000;
-
     /// <summary>
-    /// What delivered records of one partition were built without, most records first: the flag for records that went out
-    /// without a value the cache did not hold yet (a wellbore, the access group of a field), each filled by the refresh that
-    /// brings it. <c>type</c> narrows to one cached type; <c>empty</c> adds the paths read that held nothing.
+    /// What delivered records of one partition were built without, most records first, a page at a time: the flag for records
+    /// that went out without a value the cache did not hold yet (a wellbore, the access group of a field), each filled by the
+    /// refresh that brings it. <c>type</c> narrows to one cached type; <c>empty</c> adds the paths read that held nothing.
     /// </summary>
-    private static async Task<Results<Ok<IReadOnlyList<DeliveryCacheGapDto>>, ProblemHttpResult>> ListCacheGapsAsync(
-        string? scope, string? type, bool? empty, int? take, ILedger ledger, CancellationToken ct)
+    private static async Task<Results<Ok<PagedResult<DeliveryCacheGapDto>>, ProblemHttpResult>> ListCacheGapsAsync(
+        string? scope, string? type, bool? empty, int? page, int? pageSize, ILedger ledger, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(scope))
         {
             return TypedResults.Problem(title: "No partition", detail: "Name the partition whose cache the gaps are read in, as scope.", statusCode: StatusCodes.Status400BadRequest);
         }
 
-        var count = Math.Clamp(take ?? 200, 1, MaxCacheGaps);
-        var gaps = await ledger.ListCacheGapsAsync(scope.Trim(), string.IsNullOrWhiteSpace(type) ? null : type.Trim(), empty ?? false, count, ct).ConfigureAwait(false);
-        return TypedResults.Ok<IReadOnlyList<DeliveryCacheGapDto>>(gaps
-            .Select(g => new DeliveryCacheGapDto(g.TypeName, g.Path, g.Kind.ToString().ToLowerInvariant(), g.Key, g.Value, g.Records))
-            .ToList());
+        var (p, size) = PageRequest.Normalize(page, pageSize);
+        var gaps = await ledger.ListCacheGapsAsync(scope.Trim(), string.IsNullOrWhiteSpace(type) ? null : type.Trim(), empty ?? false, size, (p - 1) * size, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new PagedResult<DeliveryCacheGapDto>(
+            gaps.Items.Select(g => new DeliveryCacheGapDto(g.TypeName, g.Path, g.Kind.ToString().ToLowerInvariant(), g.Key, g.Value, g.Records)).ToList(),
+            p, size, gaps.Total));
     }
 
     /// <summary>Approves or rejects tags. Approving releases the records so the next run carries the new document.</summary>

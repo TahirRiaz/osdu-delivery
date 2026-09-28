@@ -663,6 +663,9 @@ public sealed record CacheSetUse(long SetId, string Scope, string TypeName, stri
 /// </summary>
 public sealed record CacheGap(string TypeName, string Path, Snapshots.CacheUsageKind Kind, string Key, string Value, long Records);
 
+/// <summary>One page of the gaps of a partition's cache, and how many there are in all.</summary>
+public sealed record CacheGapPage(IReadOnlyList<CacheGap> Items, int Total);
+
 /// <summary>What one rollout pass did, and what is left of the tag.</summary>
 public sealed record UpdateRolloutBatch(long TagId, long Marked, long Processed, long Affected, bool Completed);
 
@@ -1567,9 +1570,10 @@ public interface ILedger
     /// once, and each id written without the record it names, with how many records were built so. With
     /// <paramref name="typeName"/>, the gaps of one cached type; with <paramref name="empty"/>, the paths read that held
     /// nothing as well (a wellbore without a field), which include the empty fields a <c>$findAll</c> asked for. Every gap
-    /// is filled by the refresh that brings what is missing, which tags the records and redelivers them.
+    /// is filled by the refresh that brings what is missing, which tags the records and redelivers them. Paged by
+    /// <paramref name="skip"/> and <paramref name="take"/> in that order, with the count of every gap.
     /// </summary>
-    Task<IReadOnlyList<CacheGap>> ListCacheGapsAsync(string scope, string? typeName, bool empty, int take, CancellationToken ct = default);
+    Task<CacheGapPage> ListCacheGapsAsync(string scope, string? typeName, bool empty, int take, int skip, CancellationToken ct = default);
 
     /// <summary>
     /// Writes the tags a cache change produced, one per change rather than one per record, and gates the sets an

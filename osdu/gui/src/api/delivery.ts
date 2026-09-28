@@ -1947,9 +1947,9 @@ export const deliveryApi = {
     post<{ decided: number; approved: boolean }>("/api/v1/delivery/cache/tags/decide", { tagIds, approve }),
   /** What one record read out of the cache when it was rendered. */
   recordCacheUses: (record: DeliveryRecordRef) => get<DeliveryCacheUse[]>(`${recordApiPath(record)}/cache`),
-  /** What delivered records of a partition were built without, most records first. */
-  cacheGaps: (query: { scope: string; type?: string; empty?: boolean; take?: number }) =>
-    get<DeliveryCacheGap[]>("/api/v1/delivery/cache/gaps", query as QueryParams),
+  /** What delivered records of a partition were built without, most records first, a page at a time. */
+  cacheGaps: (query: PageQuery & { scope: string; type?: string; empty?: boolean }) =>
+    get<PagedResult<DeliveryCacheGap>>("/api/v1/delivery/cache/gaps", query as unknown as QueryParams),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
   releaseFlow: (pipelineId: string, keys?: string[], scope?: DeliveryFlowScope) =>
     post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", scope), { keys: keys ?? null }),
