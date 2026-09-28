@@ -242,6 +242,13 @@ public sealed record DeliveryTagDecisionResult(int Decided, bool Approved);
 /// <summary>One cached value a record was built from, for its history page: the partition, the cached record and path, and what it held.</summary>
 public sealed record DeliveryCacheUseDto(string Scope, string TypeName, string ItemId, string Path, string Kind, string Value);
 
+/// <summary>
+/// One thing delivered records of a partition were built without, and how many were: a value no cached record answered to
+/// (<c>unlisted</c>), a key no row was listed under (<c>listed</c>), an id written without its record (<c>unverified</c>),
+/// or a path that held nothing (<c>empty</c>). The refresh that brings it tags and redelivers them.
+/// </summary>
+public sealed record DeliveryCacheGapDto(string TypeName, string Path, string Kind, string Key, string Value, long Records);
+
 /// <summary>One cached record: its OSDU id and the values captured at the declared paths, as one version of its partition's cache holds it.</summary>
 public sealed record DeliveryCachedItemDto(
     long ItemId, string Scope, string Version, string TypeName, string EntityType, string RecordId, JsonElement Fields);
@@ -421,6 +428,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/cache/diff", CompareCacheVersionsAsync).WithName("CompareDeliveryCacheVersions");
         delivery.MapGet("/cache/history", ListCacheHistoryAsync).WithName("ListDeliveryCacheHistory");
         delivery.MapGet("/cache/tags", ListUpdateTagsAsync).WithName("ListDeliveryUpdateTags");
+        delivery.MapGet("/cache/gaps", ListCacheGapsAsync).WithName("ListDeliveryCacheGaps");
         delivery.MapGet("/records/{flowId:guid}/{key:guid}/cache", ListRecordCacheUsesAsync).WithName("ListDeliveryRecordCacheUses");
         return group;
     }
@@ -1424,6 +1432,29 @@ public static class DeliveryEndpoints
         var tags = await ledger.ListTagsAsync(status, size, (p - 1) * size, scope, ct).ConfigureAwait(false);
         var total = await ledger.CountTagsAsync(status, scope, ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryUpdateTagDto>(tags.Select(ToDto).ToList(), p, size, total));
+    }
+
+    /// <summary>Most gaps a listing answers with; the ones reaching the most records come first.</summary>
+    private const int MaxCacheGaps = 1000;
+
+    /// <summary>
+    /// What delivered records of one partition were built without, most records first: the flag for records that went out
+    /// without a value the cache did not hold yet (a wellbore, the access group of a field), each filled by the refresh that
+    /// brings it. <c>type</c> narrows to one cached type; <c>empty</c> adds the paths read that held nothing.
+    /// </summary>
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryCacheGapDto>>, ProblemHttpResult>> ListCacheGapsAsync(
+        string? scope, string? type, bool? empty, int? take, ILedger ledger, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(scope))
+        {
+            return TypedResults.Problem(title: "No partition", detail: "Name the partition whose cache the gaps are read in, as scope.", statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var count = Math.Clamp(take ?? 200, 1, MaxCacheGaps);
+        var gaps = await ledger.ListCacheGapsAsync(scope.Trim(), string.IsNullOrWhiteSpace(type) ? null : type.Trim(), empty ?? false, count, ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryCacheGapDto>>(gaps
+            .Select(g => new DeliveryCacheGapDto(g.TypeName, g.Path, g.Kind.ToString().ToLowerInvariant(), g.Key, g.Value, g.Records))
+            .ToList());
     }
 
     /// <summary>Approves or rejects tags. Approving releases the records so the next run carries the new document.</summary>

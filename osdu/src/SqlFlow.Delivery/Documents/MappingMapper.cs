@@ -24,6 +24,12 @@ internal static partial class MappingMapper
         ("osdu.legal.otherRelevantDataCountries", "countries", "record.legal.otherRelevantDataCountries"),
     ];
 
+    /// <summary>
+    /// The envelope lists a mapping may add values to with nodes, after the literal values every record carries: the access
+    /// lists, which a record's own data can widen (the groups of the field a wellbore lies in).
+    /// </summary>
+    private static readonly string[] AccessTargets = ["osdu.acl.owners", "osdu.acl.viewers"];
+
     public static MappingDefinition Map(MappingYaml y, string source)
     {
         var name = FlowMapper.Require(y.Name, "name", source);
@@ -80,9 +86,11 @@ internal static partial class MappingMapper
             kv => ParseSearch(kv.Key, kv.Value, source),
             StringComparer.Ordinal);
 
-        var entries = ReadRecord(y.Record, source);
+        var lookups = ReadLookups(y.Lookups, source);
+        var entries = ReadRecord(y.Record, lookups, source);
         Validate(entries, parameters, source);
         ValidateSearches(entries, searches, source);
+        ValidateLookups(entries, lookups, source);
         var fixtureParameters = FixtureDefaults(y, source);
 
         return new MappingDefinition
@@ -101,6 +109,7 @@ internal static partial class MappingMapper
             },
             Parameters = parameters,
             Searches = searches,
+            Lookups = lookups,
             Entries = entries,
             Envelope = Envelope(entries, kind, source),
             FixtureParameters = fixtureParameters,
@@ -114,6 +123,7 @@ internal static partial class MappingMapper
                     StringComparer.Ordinal),
                 Parameters = WithDefaults(fixtureParameters, f.Parameters),
                 Searches = FixtureSearches(f.Searches, searches, entries, $"{source}: fixtures[{i}]"),
+                Cache = FixtureCache(f.Cache, entries, $"{source}: fixtures[{i}]"),
                 Expected = FlowMapper.Require(f.Expected, $"fixtures[{i}].expected", source),
             }).ToList(),
         };
@@ -224,6 +234,81 @@ internal static partial class MappingMapper
         }
 
         return answers;
+    }
+
+    /// <summary>Every lookup the mapping declares is read by a node: one nothing reads says something no record uses.</summary>
+    private static void ValidateLookups(IReadOnlyList<MappingEntry> entries, IReadOnlyDictionary<string, MappingLookup> lookups, string source)
+    {
+        var read = entries
+            .SelectMany(e => e.ValueNodes)
+            .SelectMany(node => new[] { node.Source?.Lookup, node.FindAll?.Operand.Lookup?.Name })
+            .OfType<string>()
+            .ToHashSet(StringComparer.Ordinal);
+        foreach (var name in lookups.Keys.Where(name => !read.Contains(name)).Order(StringComparer.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"{source}: lookups.{name} is read by no node; read it with {LookupKey}: {name}.<field> or in a {FindAllKey} line as {LookupReference}.{name}.<field>, or remove it.");
+        }
+    }
+
+    /// <summary>
+    /// A fixture's <c>cache</c> block: for each cached type it names, the rows the fixture renders against in place of what
+    /// the partition's cache holds of that type. A type is one the mapping reads, and each row an object with its record
+    /// <c>id</c>, named once in its type, and the fields it holds.
+    /// </summary>
+    private static Dictionary<string, IReadOnlyList<JsonObject>> FixtureCache(
+        Dictionary<string, object?>? written, IReadOnlyList<MappingEntry> entries, string where)
+    {
+        var cache = new Dictionary<string, IReadOnlyList<JsonObject>>(StringComparer.Ordinal);
+        if (written is null)
+        {
+            return cache;
+        }
+
+        var readTypes = MappingDefinition.CacheTypesReadBy(entries);
+        foreach (var (type, value) in written)
+        {
+            var at = $"{where} cache.{type}";
+            if (!readTypes.Contains(type, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new FlowValidationException(readTypes.Count == 0
+                    ? $"{at}: the mapping reads nothing from the cache, so a fixture has no cached rows to declare."
+                    : $"{at}: the mapping reads no cached type '{type}'; it reads {string.Join(", ", readTypes)}.");
+            }
+
+            if (value is not IEnumerable<object> rows || value is IDictionary<object, object>)
+            {
+                throw new FlowValidationException($"{at} lists the rows the fixture assumes, each with its id and fields, such as [{{ id: \"dev:master-data--Wellbore:1234\", FacilityName: NO 15/9-F-1 }}]; write [] for a type that holds none.");
+            }
+
+            var items = new List<JsonObject>();
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (row, i) in rows.Select((row, i) => (row, i)))
+            {
+                var rowAt = $"{at}[{i.ToString(CultureInfo.InvariantCulture)}]";
+                if (StaticValue(row, rowAt) is not JsonObject item)
+                {
+                    throw new FlowValidationException($"{rowAt} is a row: an object with its id and fields.");
+                }
+
+                var id = item["id"] is JsonValue idValue && idValue.TryGetValue<string>(out var text) ? text.Trim() : null;
+                if (string.IsNullOrEmpty(id))
+                {
+                    throw new FlowValidationException($"{rowAt} names no id; every cached row is kept under its record id.");
+                }
+
+                if (!ids.Add(id))
+                {
+                    throw new FlowValidationException($"{rowAt} is '{id}' again; a type holds a record once.");
+                }
+
+                items.Add(item);
+            }
+
+            cache[readTypes.First(t => t.Equals(type, StringComparison.OrdinalIgnoreCase))] = items;
+        }
+
+        return cache;
     }
 
     /// <summary>Every text inside a static value, where parameter tokens can appear.</summary>
@@ -358,10 +443,21 @@ internal static partial class MappingMapper
         {
             var entry = entries.FirstOrDefault(e => e.Target.Text == target)
                 ?? throw new FlowValidationException($"{source}: every OSDU record carries {name}, so the mapping lays out {location} as a list of at least one text value.");
+            var access = AccessTargets.Contains(target, StringComparer.Ordinal);
+            if (entry.IsList && !access)
+            {
+                // The legal service checks a record's tags and countries before a run, which it can only do for a list that
+                // is the same on every record.
+                throw new FlowValidationException(
+                    $"{source}: {entry.Where} reads values with {string.Join(" and ", entry.Parts.Where(p => !p.IsStatic).Select(p => p.Where))}, and the {name} are a literal list: the legal service checks them before a run, for every record alike.");
+            }
+
             if (entry.Static is not JsonArray array || array.Count == 0
                 || array.Any(v => v is not JsonValue value || !value.TryGetValue<string>(out var text) || string.IsNullOrWhiteSpace(text)))
             {
-                throw new FlowValidationException($"{source}: {entry.Where} must be a literal list of at least one text value, such as [value].");
+                throw new FlowValidationException(entry.IsList
+                    ? $"{source}: {entry.Where} must list at least one literal text value, which every record carries whatever its nodes find, such as [\"{{$param.aclViewer}}\", {{ {CacheKey}: ... }}]."
+                    : $"{source}: {entry.Where} must be a literal list of at least one text value, such as [value].");
             }
 
             if (entry.AppliesWhen is not null)

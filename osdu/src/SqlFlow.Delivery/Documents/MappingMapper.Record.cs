@@ -41,6 +41,11 @@ internal static partial class MappingMapper
     internal const string DescriptionKey = "$description";
     internal const string CoalesceKey = "$coalesce";
     internal const string UnverifiedKey = "$unverified";
+    internal const string LookupKey = "$lookup";
+    internal const string FindAllKey = "$findAll";
+
+    /// <summary>How a <c>$findAll</c> operand reads a path of the record a lookup finds: <c>$lookup.wellbore.GeoContexts.FieldID</c>.</summary>
+    internal const string LookupReference = Marker + MappingLookup.Prefix;
 
     /// <summary>How a column of the dataset's own row is named from anywhere in the tree: <c>$dataset.log_id</c>.</summary>
     internal const string DatasetReference = Marker + DatasetColumn.Prefix;
@@ -49,10 +54,16 @@ internal static partial class MappingMapper
     internal const string CacheReference = Marker + MappingSource.CachePrefix;
 
     /// <summary>The keys a value node reads its value with; naming one of them makes a map a value node.</summary>
-    internal static readonly IReadOnlyList<string> SourceKeys = [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, CoalesceKey];
+    internal static readonly IReadOnlyList<string> SourceKeys = [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, LookupKey, CoalesceKey];
 
     /// <summary>The settings a value node takes beside the key it reads its value with.</summary>
-    internal static readonly IReadOnlyList<string> ValueSettings = [FindByKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, DescriptionKey];
+    internal static readonly IReadOnlyList<string> ValueSettings = [FindByKey, FindAllKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, DescriptionKey];
+
+    /// <summary>The settings a <c>$lookup</c> node takes beside it: the lookup says how its record is found.</summary>
+    internal static readonly IReadOnlyList<string> LookupSettings = [WhenKey, RequiredKey, DescriptionKey];
+
+    /// <summary>The keys a lookup of the <c>lookups</c> block is written with.</summary>
+    internal static readonly IReadOnlyList<string> LookupKeys = [CacheKey, FindByKey, ModifiersKey, IgnoreSeparatorsKey, DescriptionKey];
 
     /// <summary>The settings a <c>$coalesce</c> node takes beside its alternatives: those that decide for all of them.</summary>
     internal static readonly IReadOnlyList<string> CoalesceSettings = [WhenKey, RequiredKey, DescriptionKey];
@@ -62,15 +73,22 @@ internal static partial class MappingMapper
 
     /// <summary>Every word of the mapping language a key of the record tree can be.</summary>
     internal static readonly IReadOnlyList<string> NodeKeys =
-        [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, CoalesceKey, ForEachKey, ItemKey, WhereKey, FindByKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, DescriptionKey];
+        [FromKey, ExprKey, ValueKey, CacheKey, SearchKey, LookupKey, CoalesceKey, ForEachKey, ItemKey, WhereKey, FindByKey, FindAllKey, ModifiersKey, WhenKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey, DescriptionKey];
 
     /// <summary>The value keys, as a message lists them.</summary>
     private static string SourceList => string.Join(", ", SourceKeys.Take(SourceKeys.Count - 1)) + " or " + SourceKeys[^1];
 
-    /// <summary>What a column a node names reads: the dataset's own row, or the item row of the <c>$forEach</c> the node is under.</summary>
+    /// <summary>
+    /// What a column a node names reads: the dataset's own row, or the item row of the <c>$forEach</c> the node is under;
+    /// and the mapping's lookups, which a node anywhere in the tree reads by name.
+    /// </summary>
     private sealed record TreeScope(string? Child)
     {
+        private static readonly IReadOnlyDictionary<string, MappingLookup> NoLookups = new Dictionary<string, MappingLookup>(StringComparer.Ordinal);
+
         public static TreeScope Root { get; } = new((string?)null);
+
+        public IReadOnlyDictionary<string, MappingLookup> Lookups { get; init; } = NoLookups;
 
         public string Rows => Child is null ? "the dataset's own row" : $"the rows of {Child}, which the enclosing {ForEachKey} repeats";
     }
@@ -85,7 +103,7 @@ internal static partial class MappingMapper
     internal static string KeyOfProperty(string property) => property.StartsWith(Marker, StringComparison.Ordinal) ? Marker + property : property;
 
     /// <summary>Reads the record block into one entry per variable, in document order.</summary>
-    private static List<MappingEntry> ReadRecord(Dictionary<string, object?>? record, string source)
+    private static List<MappingEntry> ReadRecord(Dictionary<string, object?>? record, IReadOnlyDictionary<string, MappingLookup> lookups, string source)
     {
         if (record is null || record.Count == 0)
         {
@@ -99,14 +117,84 @@ internal static partial class MappingMapper
                 $"{source}: record holds '{word}', and record itself is the object the mapping renders: its keys are the record's properties (acl, legal, tags, data), and each of them holds a node.");
         }
 
+        var root = TreeScope.Root with { Lookups = lookups };
         var entries = new List<MappingEntry>();
         foreach (var (key, node) in record)
         {
             var location = "record." + key;
-            Node(node, [PropertyName(key, $"{source}: {location}")], location, TreeScope.Root, entries, source);
+            Node(node, [PropertyName(key, $"{source}: {location}")], location, root, entries, source);
         }
 
         return entries;
+    }
+
+    /// <summary>
+    /// The <c>lookups</c> block: each lookup names the cached type its record is found in (<c>$cache: Wellbore</c>) and the
+    /// findBy lines that find it, read against the dataset's own row, with the modifiers and the separator fold a cache
+    /// node takes. A lookup nothing reads is refused, since it says something no record uses.
+    /// </summary>
+    private static Dictionary<string, MappingLookup> ReadLookups(Dictionary<string, object?>? written, string source)
+    {
+        var lookups = new Dictionary<string, MappingLookup>(StringComparer.Ordinal);
+        const string Example = $"lookups: {{ wellbore: {{ {CacheKey}: Wellbore, {FindByKey}: FacilityName = wellbore_uwi }} }}";
+        foreach (var (name, node) in written ?? [])
+        {
+            var at = $"{source}: lookups.{name}";
+            if (!NamePattern().IsMatch(name))
+            {
+                throw new FlowValidationException($"{at}: a lookup is named by letters, digits, underscores and hyphens, such as {Example}.");
+            }
+
+            if (node is not IDictionary<object, object> { Count: > 0 } map)
+            {
+                throw new FlowValidationException($"{at} names the cached type its record is found in and how, such as {Example}.");
+            }
+
+            foreach (var key in map.Keys.Select(KeyText).Where(key => !LookupKeys.Contains(key)))
+            {
+                throw new FlowValidationException(key == WhenKey || key == RequiredKey
+                    ? $"{at}: {key} decides for the node that reads a lookup, not for the lookup; write it beside {LookupKey} where the record reads it."
+                    : $"{at}: a lookup takes {SettingList(LookupKeys)}, not '{key}'.");
+            }
+
+            var type = RequiredText(map, CacheKey, at);
+            if (!NamePattern().IsMatch(type))
+            {
+                throw new FlowValidationException(
+                    $"{at}: {CacheKey} names the cached type the record is found in, such as {CacheKey}: Wellbore; '{type}' is not one. The field is read where the record reads the lookup, with {LookupKey}: {name}.<field>.");
+            }
+
+            var read = new MappingSource { Kind = MappingSourceKind.Cache, CacheType = type, CacheField = "id" };
+            var findBy = FindByLines(Get(map, FindByKey), read, TreeScope.Root, at);
+            if (findBy.Count == 0)
+            {
+                throw new FlowValidationException($"{at}: a lookup needs {FindByKey}, which says how the row finds its record, such as {FindByKey}: FacilityName = wellbore_uwi.");
+            }
+
+            var modifiers = Modifiers(Get(map, ModifiersKey), Has(map, ModifiersKey), TreeScope.Root, at);
+            if (modifiers.Count > 0 && findBy.All(f => f.Column is null))
+            {
+                throw new FlowValidationException($"{at}: {ModifiersKey} change incoming dataset values, and this lookup's {FindByKey} reads none; cache values are never modified.");
+            }
+
+            if (modifiers.FirstOrDefault(m => m.BuildsId) is { } builder)
+            {
+                throw new FlowValidationException(
+                    $"{at}: the {Word(builder)} modifier builds an id to write, and a lookup finds a record in the cache; the record's id is read with {LookupKey}: {name}.id.");
+            }
+
+            lookups[name] = new MappingLookup
+            {
+                Name = name,
+                CacheType = type,
+                FindBy = findBy,
+                Modifiers = modifiers,
+                IgnoreSeparators = Flag(map, IgnoreSeparatorsKey, at) ?? false,
+                Description = Text(map, DescriptionKey, at),
+            };
+        }
+
+        return lookups;
     }
 
     private static void Node(object? node, IReadOnlyList<string> path, string location, TreeScope scope, List<MappingEntry> entries, string source)
@@ -140,11 +228,10 @@ internal static partial class MappingMapper
                 return;
 
             case IEnumerable<object> list:
-                if (MappedItem(list, string.Empty) is { } mapped)
+                if (MappedItem(list, string.Empty) is not null)
                 {
-                    throw new FlowValidationException(
-                        $"{at} is a list, and a list is written whole, as the literal it is; its item {mapped} is a node of the mapping language, which a list does not hold yet. "
-                        + $"An array whose items come from rows is a {ForEachKey} node: {{ {ForEachKey}: <child dataset>, {ItemKey}: {{ ... }} }}.");
+                    entries.Add(ListOfValues(list.ToList(), path, location, scope, entries.Count, source));
+                    return;
                 }
 
                 entries.Add(Literal(TreeLiteral(list, at), path, location, entries.Count, source));
@@ -203,6 +290,73 @@ internal static partial class MappingMapper
         };
 
     /// <summary>
+    /// A list of values some of whose items are value nodes: each item is a literal value or a node that reads one value or,
+    /// with <c>$findAll</c>, many, and the list is what they give in the order they are written, a value given twice
+    /// written once. An item is never an object or a list of its own: a list of objects whose items come from rows is a
+    /// <c>$forEach</c> node.
+    /// </summary>
+    private static MappingEntry ListOfValues(List<object> list, IReadOnlyList<string> path, string location, TreeScope scope, int index, string source)
+    {
+        var at = $"{source}: {location}";
+        var target = Target(path, at);
+        var parts = new List<MappingEntry>(list.Count);
+        var literals = new JsonArray();
+        for (var i = 0; i < list.Count; i++)
+        {
+            var itemLocation = $"{location}[{i.ToString(CultureInfo.InvariantCulture)}]";
+            var itemAt = $"{source}: {itemLocation}";
+            switch (list[i])
+            {
+                case null:
+                    throw new FlowValidationException($"{itemAt} is empty; give the item a value, or remove it.");
+
+                case IDictionary<object, object> map when map.Keys.Select(KeyText).Any(IsNodeKey):
+                    _ = IsNode(map, itemAt);
+                    if (Has(map, ForEachKey) || Has(map, ItemKey))
+                    {
+                        throw new FlowValidationException(
+                            $"{itemAt} repeats rows with {ForEachKey}, and an item of a list of values reads values; an array of objects whose items come from rows is a {ForEachKey} node of its own.");
+                    }
+
+                    if (Has(map, CoalesceKey))
+                    {
+                        throw new FlowValidationException(
+                            $"{itemAt} takes the first of its alternatives with {CoalesceKey}, and an item of a list gives what it reads; write each alternative as an item of its own, since the list keeps every value its items give.");
+                    }
+
+                    var part = Value(map, path, itemLocation, scope, index, source);
+                    if (part.IsPlainLiteral)
+                    {
+                        // A $value without a condition is a literal every record carries, like a bare item.
+                        literals.Add(part.Static!.DeepClone());
+                    }
+
+                    parts.Add(part);
+                    break;
+
+                case IDictionary<object, object> or IEnumerable<object>:
+                    throw new FlowValidationException(
+                        $"{itemAt} is {(list[i] is IDictionary<object, object> ? "an object" : "a list")}, and a list with value nodes among its items is a list of values: each item is a literal value or a node that reads values.");
+
+                default:
+                    var literal = TreeLiteral(list[i]!, itemAt);
+                    literals.Add(literal.DeepClone());
+                    parts.Add(new MappingEntry { Index = index, Location = itemLocation, Target = target, Static = literal });
+                    break;
+            }
+        }
+
+        return new MappingEntry
+        {
+            Index = index,
+            Location = location,
+            Target = target,
+            Static = literals,
+            Parts = parts,
+        };
+    }
+
+    /// <summary>
     /// A <c>$forEach</c> node: an entry that repeats the child dataset's rows as the array's items, then the entries of the
     /// item, each reading the item's row. Its own <c>$when</c> and <c>$required</c> read the row the node is in, since they
     /// decide for the whole array; its <c>$where</c> reads each child row, and keeps the rows it holds for.
@@ -242,7 +396,7 @@ internal static partial class MappingMapper
             Target = Target(path, at),
             Source = new MappingSource { Kind = MappingSourceKind.DatasetRows, Child = child },
             AppliesWhen = Has(map, WhenKey) ? Condition(Get(map, WhenKey), WhenKey, scope, at) : null,
-            RowFilter = Has(map, WhereKey) ? Condition(Get(map, WhereKey), WhereKey, new TreeScope(child), at) : null,
+            RowFilter = Has(map, WhereKey) ? Condition(Get(map, WhereKey), WhereKey, scope with { Child = child }, at) : null,
             Required = Flag(map, RequiredKey, at) ?? true,
             Description = Text(map, DescriptionKey, at),
         });
@@ -261,7 +415,7 @@ internal static partial class MappingMapper
             _ => throw new FlowValidationException($"{at}.{ItemKey} names each property a row fills, such as {ItemExample}."),
         };
 
-        var itemScope = new TreeScope(child);
+        var itemScope = scope with { Child = child };
         var itemPath = path.Take(path.Count - 1).Append(path[^1] + "[]").ToList();
         foreach (var (key, node) in item)
         {
@@ -304,10 +458,10 @@ internal static partial class MappingMapper
 
         if (named[0] == ValueKey)
         {
-            if (new[] { FindByKey, ModifiersKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey }.Any(key => Has(map, key)))
+            if (new[] { FindByKey, FindAllKey, ModifiersKey, RequiredKey, IgnoreSeparatorsKey, UnverifiedKey }.Any(key => Has(map, key)))
             {
                 throw new FlowValidationException(
-                    $"{at}: a literal {ValueKey} takes only {WhenKey} and {DescriptionKey} beside it; {FindByKey}, {ModifiersKey}, {RequiredKey}, {IgnoreSeparatorsKey} and {UnverifiedKey} belong to a node that reads the dataset, the cache or a search.");
+                    $"{at}: a literal {ValueKey} takes only {WhenKey} and {DescriptionKey} beside it; {FindByKey}, {FindAllKey}, {ModifiersKey}, {RequiredKey}, {IgnoreSeparatorsKey} and {UnverifiedKey} belong to a node that reads the dataset, the cache or a search.");
             }
 
             var literal = StaticValue(Get(map, ValueKey), at)
@@ -322,6 +476,11 @@ internal static partial class MappingMapper
                 AppliesWhen = condition,
                 Description = description,
             };
+        }
+
+        if (named[0] == LookupKey)
+        {
+            return LookupNode(map, target, location, scope, index, condition, description, at);
         }
 
         var read = named[0] switch
@@ -344,18 +503,44 @@ internal static partial class MappingMapper
             throw new FlowValidationException($"{at}: {IgnoreSeparatorsKey} loosens how a value is matched against the cache, so it only applies to a {CacheKey} node.");
         }
 
-        var findBy = read.Resolves ? FindByLines(Get(map, FindByKey), read, scope, at) : [];
-        if (read.Resolves && findBy.Count == 0)
+        FindAllQuery? findAll = null;
+        if (Has(map, FindAllKey))
         {
-            throw new FlowValidationException(
-                $"{at}: a {Marker}{read.Prefix} node needs {FindByKey}, which says which record to read, such as {FindByKey}: {FindByExample(read.Prefix)}.");
+            if (read.Kind != MappingSourceKind.Cache)
+            {
+                throw new FlowValidationException(
+                    $"{at}: {FindAllKey} reads every row of a cached type that matches, so it belongs to a {CacheKey} node; this node reads {read}.");
+            }
+
+            if (Has(map, FindByKey))
+            {
+                throw new FlowValidationException(
+                    $"{at} finds its record with {FindByKey} and reads every matching row with {FindAllKey}; a node does one of them: {FindByKey} reads one record, {FindAllKey} a list from all of them.");
+            }
+
+            if (Has(map, IgnoreSeparatorsKey))
+            {
+                throw new FlowValidationException(
+                    $"{at}: {IgnoreSeparatorsKey} loosens how one record is found by name, and {FindAllKey} reads every row whose key holds the value, ignoring case only; remove {IgnoreSeparatorsKey}.");
+            }
+
+            findAll = FindAllLines(Get(map, FindAllKey), read, scope, at);
+        }
+
+        var findBy = read.Resolves && findAll is null ? FindByLines(Get(map, FindByKey), read, scope, at) : [];
+        if (read.Resolves && findBy.Count == 0 && findAll is null)
+        {
+            throw new FlowValidationException(read.Kind == MappingSourceKind.Cache
+                ? $"{at}: a {CacheKey} node needs {FindByKey}, which says which record to read, such as {FindByKey}: {FindByExample(read.Prefix)}, or {FindAllKey}, which reads every row that matches, such as {FindAllKey}: FieldIDList = $lookup.wellbore.GeoContexts.FieldID."
+                : $"{at}: a {Marker}{read.Prefix} node needs {FindByKey}, which says which record to read, such as {FindByKey}: {FindByExample(read.Prefix)}.");
         }
 
         var modifiers = Modifiers(Get(map, ModifiersKey), Has(map, ModifiersKey), scope, at);
-        if (modifiers.Count > 0 && read.Resolves && findBy.All(f => f.Column is null))
+        var comparesColumn = findAll is not null ? findAll.Operand.Column is not null : findBy.Any(f => f.Column is not null);
+        if (modifiers.Count > 0 && read.Resolves && !comparesColumn)
         {
             var found = read.Kind == MappingSourceKind.Search ? "what a search finds is" : "cache values are";
-            throw new FlowValidationException($"{at}: {ModifiersKey} change incoming dataset values, and this node's {FindByKey} reads none; {found} never modified.");
+            throw new FlowValidationException($"{at}: {ModifiersKey} change incoming dataset values, and this node's {(findAll is null ? FindByKey : FindAllKey)} reads none; {found} never modified.");
         }
 
         // id and ref both build the id a node writes, so the same rules hold for either.
@@ -394,6 +579,7 @@ internal static partial class MappingMapper
             Target = target,
             Source = read,
             FindBy = findBy,
+            FindAll = findAll,
             Modifiers = modifiers,
             AppliesWhen = condition,
             Required = Flag(map, RequiredKey, at) ?? true,
@@ -401,6 +587,161 @@ internal static partial class MappingMapper
             Unverified = unverified,
             Description = description,
         };
+    }
+
+    /// <summary>
+    /// A <c>$lookup</c> node: <c>$lookup: wellbore.id</c> reads a field of the record the lookup finds, which is the node
+    /// the lookup's type and findBy lines would be as a <c>$cache</c> node of its own. It takes <c>$when</c>,
+    /// <c>$required</c> and <c>$description</c>; how the record is found is the lookup's to say.
+    /// </summary>
+    private static MappingEntry LookupNode(
+        IDictionary<object, object> map, TemplatePath target, string location, TreeScope scope, int index, MappingExpression? condition, string? description, string at)
+    {
+        foreach (var key in map.Keys.Select(KeyText).Where(key => key != LookupKey && !LookupSettings.Contains(key)))
+        {
+            throw new FlowValidationException(key is FindByKey or FindAllKey or ModifiersKey or IgnoreSeparatorsKey
+                ? $"{at}: {key} says how a record is found, and a {LookupKey} node reads the record its lookup finds; write {key} on the lookup under lookups."
+                : $"{at}: a {LookupKey} node takes {SettingList(LookupSettings)} beside it, not '{key}'.");
+        }
+
+        var (lookup, path) = LookupPath(RequiredText(map, LookupKey, at), scope, $"{at}: {LookupKey}", LookupKey + ": wellbore.id");
+        return new MappingEntry
+        {
+            Index = index,
+            Location = location,
+            Target = target,
+            Source = new MappingSource { Kind = MappingSourceKind.Cache, CacheType = lookup.CacheType, CacheField = path, Lookup = lookup.Name },
+            FindBy = lookup.FindBy,
+            Modifiers = lookup.Modifiers,
+            IgnoreSeparators = lookup.IgnoreSeparators,
+            AppliesWhen = condition,
+            Required = Flag(map, RequiredKey, at) ?? true,
+            Description = description,
+        };
+    }
+
+    /// <summary>
+    /// A lookup and a path of its record, written <c>&lt;lookup&gt;.&lt;field&gt;</c>: <c>wellbore.id</c>,
+    /// <c>wellbore.GeoContexts.FieldID</c>. The lookup is one the <c>lookups</c> block declares.
+    /// </summary>
+    private static (MappingLookup Lookup, string Path) LookupPath(string text, TreeScope scope, string at, string example)
+    {
+        var parts = text.Trim().Split('.');
+        if (parts.Length < 2 || !NamePattern().IsMatch(parts[0]) || parts.Skip(1).Any(p => !FieldPattern().IsMatch(p)))
+        {
+            throw new FlowValidationException($"{at} names a lookup and the field of its record it reads, such as {example}; '{text}' is not one.");
+        }
+
+        if (!scope.Lookups.TryGetValue(parts[0], out var lookup))
+        {
+            throw new FlowValidationException(scope.Lookups.Count == 0
+                ? $"{at} reads lookup '{parts[0]}', and the mapping declares no lookups; declare it under lookups, such as lookups: {{ {parts[0]}: {{ {CacheKey}: Wellbore, {FindByKey}: FacilityName = wellbore_uwi }} }}."
+                : $"{at} reads lookup '{parts[0]}', which the mapping does not declare; it declares {string.Join(", ", scope.Lookups.Keys.Order(StringComparer.Ordinal))}.");
+        }
+
+        return (lookup, string.Join('.', parts.Skip(1)));
+    }
+
+    /// <summary>
+    /// A cache node's <c>$findAll</c>: one line or a list of them, which a row must hold every one of. Exactly one line is
+    /// the key, <c>&lt;field&gt; = &lt;operand&gt;</c>, comparing a field of the row with a column, a quoted text or a path
+    /// of the record a lookup finds (<c>$lookup.wellbore.GeoContexts.FieldID</c>); every other line is
+    /// <c>&lt;field&gt; is empty</c>, which a row holding nothing under that field meets.
+    /// </summary>
+    private static FindAllQuery FindAllLines(object? value, MappingSource read, TreeScope scope, string at)
+    {
+        const string Example = "FieldIDList = $lookup.wellbore.GeoContexts.FieldID";
+        List<string> lines = value switch
+        {
+            string one => [one],
+            IEnumerable<object> many => many.Select(line => line as string
+                ?? throw new FlowValidationException($"{at}: each {FindAllKey} line is text, such as {Example} or FieldList is empty.")).ToList(),
+            _ => throw new FlowValidationException($"{at}: {FindAllKey} is one line or a list of lines, such as {FindAllKey}: {Example}."),
+        };
+
+        (string Field, FindAllOperand Operand)? key = null;
+        var empty = new List<string>();
+        foreach (var line in lines)
+        {
+            if (EmptyLinePattern().Match(line) is { Success: true } emptiness)
+            {
+                var emptyField = CachedField(emptiness.Groups["field"].Value, line, at);
+                if (empty.Contains(emptyField, StringComparer.OrdinalIgnoreCase))
+                {
+                    throw new FlowValidationException($"{at}: {FindAllKey} '{line}' says it a second time.");
+                }
+
+                empty.Add(emptyField);
+                continue;
+            }
+
+            var match = FindByPattern().Match(line);
+            if (!match.Success)
+            {
+                throw new FlowValidationException(
+                    $"{at}: {FindAllKey} '{line}' must read <field> = <column>, <field> = 'text', <field> = {LookupReference}.<lookup>.<field>, or <field> is empty, such as {Example}.");
+            }
+
+            if (key is not null)
+            {
+                throw new FlowValidationException(
+                    $"{at}: {FindAllKey} compares a field with a value on '{line}' and on '{key.Value.Field} = {key.Value.Operand}'; it takes one such line, the key the rows are found by, and any number of <field> is empty.");
+            }
+
+            var field = CachedField(match.Groups["field"].Value, line, at);
+            var operand = match.Groups["operand"].Value.Trim();
+            if (Quoted(operand) is { } literal)
+            {
+                if (literal.Length == 0)
+                {
+                    throw new FlowValidationException($"{at}: {FindAllKey} '{line}' compares with empty text.");
+                }
+
+                key = (field, new FindAllOperand(null, literal, null, null));
+            }
+            else if (operand.StartsWith(LookupReference + ".", StringComparison.Ordinal))
+            {
+                var (lookup, path) = LookupPath(operand[(LookupReference.Length + 1)..], scope, $"{at}: {FindAllKey} '{line}'", LookupReference + ".wellbore.GeoContexts.FieldID");
+                if (string.Equals(lookup.CacheType, read.CacheType, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new FlowValidationException(
+                        $"{at}: {FindAllKey} '{line}' finds {read.CacheType} rows by a value of the {read.CacheType} record lookup '{lookup.Name}' finds; read that record's field with {LookupKey}: {lookup.Name}.<field> instead.");
+                }
+
+                key = (field, new FindAllOperand(null, null, lookup, path));
+            }
+            else
+            {
+                key = (field, new FindAllOperand(Column(operand, scope, $"{at}: {FindAllKey} '{line}'"), null, null, null));
+            }
+        }
+
+        if (key is not { } found)
+        {
+            throw new FlowValidationException(
+                $"{at}: {FindAllKey} needs the line the rows are found by, <field> = <value>, such as {Example}; '<field> is empty' only narrows the rows that line finds.");
+        }
+
+        if (empty.Contains(found.Field, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException($"{at}: {FindAllKey} finds rows by {found.Field} and asks for {found.Field} to be empty; no row holds both.");
+        }
+
+        return new FindAllQuery(read.CacheType!, found.Field, found.Operand, empty);
+    }
+
+    /// <summary>A field of a cached row as a <c>$findAll</c> line names it: dotted names, never the language's own words.</summary>
+    private static string CachedField(string field, string line, string at)
+    {
+        if (field.StartsWith(Marker, StringComparison.Ordinal)
+            || field.StartsWith(MappingSource.CachePrefix + ".", StringComparison.Ordinal)
+            || field.Split('.').Any(p => !FieldPattern().IsMatch(p)))
+        {
+            throw new FlowValidationException(
+                $"{at}: {FindAllKey} '{line}' names '{field}'; a line names a field of the rows the node reads, written as the cache names it, such as FieldIDList.");
+        }
+
+        return field;
     }
 
     /// <summary>
@@ -909,6 +1250,10 @@ internal static partial class MappingMapper
 
     [GeneratedRegex(@"^[^\.\[\]\s]+$")]
     private static partial Regex PropertyPattern();
+
+    /// <summary>A <c>$findAll</c> line a row meets by holding nothing under a field: <c>FieldList is empty</c>.</summary>
+    [GeneratedRegex(@"^\s*(?<field>[^\s=]+)\s+is\s+empty\s*$")]
+    private static partial Regex EmptyLinePattern();
 
     /// <summary>A token in braces, as a label, an id or a literal writes one.</summary>
     [GeneratedRegex(@"\{(?<token>[^{}]*)\}")]

@@ -215,12 +215,13 @@ public static partial class Preflight
             return;
         }
 
-        // A $coalesce node fills its variable with whichever alternative gives a value, so each alternative is checked as a
-        // node of its own against the variable, and named by where it is written.
+        // A $coalesce node fills its variable with whichever alternative gives a value, and a list with what every item
+        // gives, so each alternative or item is checked as a node of its own against the variable, and named by where it is
+        // written.
         foreach (var node in entry.ValueNodes)
         {
-            // The node itself is checked without its alternatives, whose expressions it would otherwise count as its own.
-            CheckValueNode(ReferenceEquals(node, entry) ? entry with { Alternatives = [] } : node, variable, references, renderer, issues, ReferenceEquals(node, entry) ? name : $"{where}: {node.Where}");
+            // The node itself is checked without its alternatives or items, whose expressions it would otherwise count as its own.
+            CheckValueNode(ReferenceEquals(node, entry) ? entry with { Alternatives = [], Parts = [] } : node, variable, references, renderer, issues, ReferenceEquals(node, entry) ? name : $"{where}: {node.Where}");
         }
     }
 
@@ -359,6 +360,13 @@ public static partial class Preflight
                 : $"{entry.Source} is the id of the record a search finds, and {target} is {Describe(variable)}.";
         }
 
+        if (entry.FindAll is not null)
+        {
+            return shape is TemplateVariableShape.ValueList || (shape == TemplateVariableShape.Whole && variable.Type is "array" or "any")
+                ? null
+                : $"{entry.Source} with $findAll gives a list, one value from every row it finds, and {target} is {Describe(variable)}.";
+        }
+
         return shape == TemplateVariableShape.GroupList
             ? $"{target} is {Describe(variable)}, which a $forEach fills from a child dataset, not a cache value."
             : null;
@@ -476,17 +484,25 @@ public static partial class Preflight
         }
 
         var cachedFields = string.Join(", ", cached.FieldNames.Prepend("id"));
-        var fields = entry.FindBy.Select(f => f.Field).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var known = fields.Where(f => cached.HasField(f) || cached.MeansRecordId(f)).ToList();
-        if (known.Count == 0)
+        if (entry.FindAll is { } findAll)
         {
-            issues.Add(ValidationIssue.Error($"{name} finds {cached.Name} by {string.Join(" or ", fields)}, and cache version '{references.Version}' caches none of those. Cached: {cachedFields}."));
+            // A $findAll node compares its key and its empty fields, not findBy lines.
+            CheckFindAll(entry, findAll, cached, references, issues, name);
         }
         else
         {
-            foreach (var field in fields.Except(known, StringComparer.OrdinalIgnoreCase))
+            var fields = entry.FindBy.Select(f => f.Field).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var known = fields.Where(f => cached.HasField(f) || cached.MeansRecordId(f)).ToList();
+            if (known.Count == 0)
             {
-                issues.Add(ValidationIssue.Warning($"{name} finds {cached.Name} by '{field}', which cache version '{references.Version}' does not cache. Cached: {cachedFields}."));
+                issues.Add(ValidationIssue.Error($"{name} finds {cached.Name} by {string.Join(" or ", fields)}, and cache version '{references.Version}' caches none of those. Cached: {cachedFields}."));
+            }
+            else
+            {
+                foreach (var field in fields.Except(known, StringComparer.OrdinalIgnoreCase))
+                {
+                    issues.Add(ValidationIssue.Warning($"{name} finds {cached.Name} by '{field}', which cache version '{references.Version}' does not cache. Cached: {cachedFields}."));
+                }
             }
         }
 
@@ -525,6 +541,60 @@ public static partial class Preflight
         else if (variable.Pattern is null)
         {
             issues.Add(ValidationIssue.Warning($"{name} writes an OSDU reference, but the template does not mark {entry.Target.Text} as a relationship."));
+        }
+    }
+
+    /// <summary>
+    /// 7d. A <c>$findAll</c>: the cache holds the field its key compares, and every row it reads is judged by fields the
+    /// cache captures. A field no row of a type holds reads as empty on every row, so asking for it to be empty would let
+    /// every row the key finds through (the field groups of a country, taken for its country groups) where the likelier
+    /// truth is that the cache flow does not capture it; that is refused. A lookup operand reads a type the cache holds, by
+    /// fields it caches, at a path its records hold.
+    /// </summary>
+    private static void CheckFindAll(MappingEntry entry, FindAllQuery findAll, ReferenceType cached, ReferenceSnapshot references, List<ValidationIssue> issues, string name)
+    {
+        var cachedFields = string.Join(", ", cached.FieldNames.Prepend("id"));
+        if (!cached.HasField(findAll.Field) && !cached.MeansRecordId(findAll.Field))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name} reads every {cached.Name} row whose {findAll.Field} holds {findAll.Operand}, and cache version '{references.Version}' caches no {findAll.Field}. Cached: {cachedFields}."));
+        }
+
+        foreach (var field in findAll.Empty)
+        {
+            if (cached.Items.Count > 0 && cached.Items.All(item => cached.HoldsNothing(item, field)))
+            {
+                issues.Add(ValidationIssue.Error(
+                    $"{name} reads only the {cached.Name} rows whose {field} is empty, and no row of cache version '{references.Version}' holds a {field}, so every row would pass. "
+                    + $"Capture data.{ReferenceField.Normalize(field)} in the cache flow that fills {cached.Name}. Cached: {cachedFields}."));
+            }
+        }
+
+        if (findAll.Operand.Lookup is not { } lookup)
+        {
+            return;
+        }
+
+        if (references.Type(lookup.CacheType) is not { } found)
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name} reads {findAll.Operand} from lookup '{lookup.Name}', which finds a {lookup.CacheType}, and cache version '{references.Version}' does not hold {lookup.CacheType}."));
+            return;
+        }
+
+        var foundFields = string.Join(", ", found.FieldNames.Prepend("id"));
+        var findFields = lookup.FindBy.Select(f => f.Field).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (!findFields.Any(f => found.HasField(f) || found.MeansRecordId(f)))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name}: lookup '{lookup.Name}' finds {found.Name} by {string.Join(" or ", findFields)}, and cache version '{references.Version}' caches none of those. Cached: {foundFields}."));
+        }
+
+        var path = findAll.Operand.LookupPath!;
+        if (!found.MeansRecordId(path) && found.Items.All(item => found.Value(item, path) is null))
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name} reads {findAll.Operand}, and no {found.Name} record of cache version '{references.Version}' holds '{path}'. Cached: {foundFields}."));
         }
     }
 
@@ -1035,6 +1105,19 @@ public static partial class Preflight
                 };
             }
 
+            // A fixture that declares the rows of a cached type renders against exactly those, whatever the partition holds of
+            // it: the business data it reads (wellbores, access groups) changes daily, and the fixture checks the mapping.
+            if (fixture.Cache.Count > 0)
+            {
+                if (FixtureRows(fixture, fixtureCache ?? renderer.References, out var problem) is not { } declared)
+                {
+                    renders.Add(new FixtureRender(fixture, null, problem));
+                    continue;
+                }
+
+                fixtureCache = declared;
+            }
+
             // A fixture renders against the answers it declares, never the platform: what it checks is the mapping.
             var fixtureRenderer = renderer.With(fixtureContext, new FixtureSearch(mapping, fixture), fixtureCache);
 
@@ -1063,6 +1146,43 @@ public static partial class Preflight
         }
 
         return renders;
+    }
+
+    /// <summary>
+    /// The cache a fixture declaring rows renders against: <paramref name="cache"/> with each type the fixture names holding
+    /// exactly the rows it declares. A type keeps the entity type (and a lookup table its key) the cache gives it; one the
+    /// cache does not hold takes the entity type its rows' ids name. Null, with why, when that cannot be told.
+    /// </summary>
+    private static ReferenceSnapshot? FixtureRows(MappingFixture fixture, ReferenceSnapshot cache, out string? problem)
+    {
+        var types = new List<ReferenceType>(fixture.Cache.Count);
+        foreach (var (name, rows) in fixture.Cache)
+        {
+            var existing = cache.Type(name);
+            var items = rows.Select(row => new ReferenceItem(
+                row["id"]!.GetValue<string>().Trim(),
+                row.Where(kv => kv.Key != "id" && kv.Value is not null)
+                    .ToDictionary(kv => ReferenceField.Normalize(kv.Key), kv => ReferenceValue.From(kv.Value!), StringComparer.OrdinalIgnoreCase))).ToList();
+            var entityType = existing?.EntityType;
+            if (entityType is null)
+            {
+                var named = items.Select(i => CachedReferences.Parse(i.Id)?.EntityType).Distinct(StringComparer.Ordinal).ToList();
+                if (named.Count != 1 || named[0] is null)
+                {
+                    problem = items.Count == 0
+                        ? $"declares no rows of {name}, which the cache does not hold either, so nothing says what {name} is a type of; declare a row of it, or leave {name} out."
+                        : $"declares rows of {name}, which the cache does not hold, whose ids do not all name records of one entity type ({string.Join(", ", items.Select(i => i.Id))}).";
+                    return null;
+                }
+
+                entityType = named[0];
+            }
+
+            types.Add(new ReferenceType(existing?.Name ?? name, entityType!, items, existing?.Key));
+        }
+
+        problem = null;
+        return cache.WithTypes(types);
     }
 
     private static void CheckFixtures(MappingDefinition mapping, MappingRenderer renderer, List<ValidationIssue> issues, string where)

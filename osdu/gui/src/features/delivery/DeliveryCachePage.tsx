@@ -26,6 +26,7 @@ import { isPartitionId, useActivePartition } from "./activePartition";
 import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheDefinition } from "./DeliveryCacheDefinition";
 import { DeliveryCacheFlags } from "./DeliveryCacheFlags";
+import { DeliveryCacheGaps } from "./DeliveryCacheGaps";
 import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
 import { DeliveryCacheRecords } from "./DeliveryCacheRecords";
 
@@ -41,9 +42,9 @@ function typeHint(type: CachedTypeSummary): string {
   return held + (type.onChange === "approve" ? " · changes need approval" : "");
 }
 
-type Tab = "records" | "versions" | "changes" | "definition" | "flags";
+type Tab = "records" | "versions" | "changes" | "gaps" | "definition" | "flags";
 
-const TABS: readonly string[] = ["records", "versions", "changes", "definition", "flags"];
+const TABS: readonly string[] = ["records", "versions", "changes", "gaps", "definition", "flags"];
 
 function isTab(value: string | null): value is Tab {
   return value !== null && TABS.includes(value);
@@ -433,6 +434,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
                 <span className="rounded-full bg-warning/15 px-1.5 font-mono text-[11px] tabular-nums text-warning">{pendingTotal}</span>
               )}
             </TabsTrigger>
+            <TabsTrigger value="gaps" data-testid="delivery-cache-tab-gaps">Built without</TabsTrigger>
             <TabsTrigger value="definition" data-testid="delivery-cache-tab-definition">Definition</TabsTrigger>
             <TabsTrigger value="flags" data-testid="delivery-cache-tab-flags">
               OSDU feature flags
@@ -441,9 +443,10 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
               )}
             </TabsTrigger>
           </TabsList>
-          {/* The type narrows the records and the versions; the changes and the definition always cover the whole cache. The
-              records pick it from the list beside them, which gives way to this picker on a narrow screen. */}
-          {(tab === "records" || tab === "versions") && (
+          {/* The type narrows the records, the versions and what records were built without; the changes and the definition
+              always cover the whole cache. The records pick it from the list beside them, which gives way to this picker on a
+              narrow screen. */}
+          {(tab === "records" || tab === "versions" || tab === "gaps") && (
             <FilterCombobox
               options={typeOptions}
               value={scoped?.name ?? ""}
@@ -474,6 +477,10 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
 
         <TabsContent value="changes">
           <DeliveryCacheApprovals scope={cache.scope} approvalTypes={approvalTypes} pendingTotal={pending.data?.total} />
+        </TabsContent>
+
+        <TabsContent value="gaps">
+          <DeliveryCacheGaps scope={cache.scope} type={scoped?.name ?? null} />
         </TabsContent>
 
         <TabsContent value="definition">

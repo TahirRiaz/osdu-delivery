@@ -29,6 +29,15 @@ public enum CacheUsageKind
     /// the id as written. If a later version holds the record, the reference is verified, and the record is built again.
     /// </summary>
     Unverified,
+
+    /// <summary>
+    /// The rows a <c>$findAll</c> found by one key: every record of the type whose field holds the key, whatever case either
+    /// is written in. The item is the key as <see cref="CacheUsage.ListingKey"/> folds it, the path the field compared, and
+    /// the value the ids of the rows found, in ordinal order and joined by <see cref="CacheUsage.ListedSeparator"/>, empty
+    /// when none was. It is recorded whether or not a row was found, so a later version that lists another row under the
+    /// key, drops one, or lists the first, reaches every record built without it.
+    /// </summary>
+    Listed,
 }
 
 /// <summary>
@@ -53,5 +62,28 @@ public sealed record CacheUsage(string TypeName, string ItemId, string Path, str
     {
         ArgumentNullException.ThrowIfNull(key);
         return key.Trim().ToUpperInvariant();
+    }
+
+    /// <summary>What separates the ids a <see cref="CacheUsageKind.Listed"/> usage holds.</summary>
+    public const string ListedSeparator = ", ";
+
+    /// <summary>
+    /// The usage a <c>$findAll</c> records for one key: the rows it found under <paramref name="field"/>, by id in ordinal
+    /// order, however many (none included).
+    /// </summary>
+    public static CacheUsage Listing(string typeName, string field, string key, IEnumerable<string> ids)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(typeName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(field);
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        ArgumentNullException.ThrowIfNull(ids);
+        return new CacheUsage(typeName, ListingKey(key), field, ListedIds(ids), CacheUsageKind.Listed);
+    }
+
+    /// <summary>The ids a listing holds, as <see cref="Listing"/> writes them: distinct, in ordinal order, joined.</summary>
+    public static string ListedIds(IEnumerable<string> ids)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        return string.Join(ListedSeparator, ids.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
     }
 }

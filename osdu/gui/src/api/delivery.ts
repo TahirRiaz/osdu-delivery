@@ -637,10 +637,29 @@ export interface DeliveryCacheUse {
   path: string;
   /**
    * match (what it resolved by), value (what went into the document), empty (a field read that held nothing), unlisted
-   * (a key a lookup table listed no row under) or unverified (an id written without a record the cache holds).
+   * (a value no cached row answered to: a key a lookup table does not list, a wellbore the cache does not hold yet),
+   * unverified (an id written without a record the cache holds) or listed (the rows a $findAll found by one key, their
+   * ids in value, empty when none was: an access group a data office has not listed for the field yet).
    */
   kind: string;
   value: string;
+}
+
+/**
+ * One thing delivered records of a partition were built without, and how many were: a value no cached record answered to
+ * (unlisted: a wellbore the cache does not hold yet), a key a $findAll found no row under (listed: a field no access group
+ * lists), an id written without its record (unverified), or a path read that held nothing (empty). The refresh that brings
+ * it tags the records and redelivers them.
+ */
+export interface DeliveryCacheGap {
+  typeName: string;
+  path: string;
+  kind: string;
+  /** What was looked for: the key, or the record whose path held nothing. */
+  key: string;
+  /** The value as it was looked up, for a value no record answered to. */
+  value: string;
+  records: number;
 }
 
 export interface DeliveryRunAccepted {
@@ -1894,6 +1913,9 @@ export const deliveryApi = {
     post<{ decided: number; approved: boolean }>("/api/v1/delivery/cache/tags/decide", { tagIds, approve }),
   /** What one record read out of the cache when it was rendered. */
   recordCacheUses: (record: DeliveryRecordRef) => get<DeliveryCacheUse[]>(`${recordApiPath(record)}/cache`),
+  /** What delivered records of a partition were built without, most records first. */
+  cacheGaps: (query: { scope: string; type?: string; empty?: boolean; take?: number }) =>
+    get<DeliveryCacheGap[]>("/api/v1/delivery/cache/gaps", query as QueryParams),
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
   releaseFlow: (pipelineId: string, keys?: string[], scope?: DeliveryFlowScope) =>
     post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", scope), { keys: keys ?? null }),

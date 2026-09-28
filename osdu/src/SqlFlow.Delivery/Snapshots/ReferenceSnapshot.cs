@@ -1,5 +1,8 @@
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Hashing;
 using SqlFlow.Delivery.Json;
@@ -60,29 +63,57 @@ public sealed class ReferenceSnapshot
     /// </summary>
     public string ContentHash()
     {
-        var doc = new JsonObject();
-        foreach (var type in _types.Values.OrderBy(t => t.Name, StringComparer.Ordinal))
+        // The document is { <type>: { entityType, items: [...], key? } } by type name, or with system properties
+        // { systemProperties: [...], types: { ... } }, in canonical JSON. It is written a record at a time into the hash
+        // rather than built whole: a type of hundreds of thousands of records would otherwise be drawn as JSON twice over
+        // on every load. The bytes are the ones the whole document would give, so every version written before still loads.
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new ArrayBufferWriter<byte>(64 * 1024);
+        using (var writer = CanonicalJson.CreateWriter(buffer))
         {
-            doc[type.Name] = type.ToJson();
-        }
-
-        if (SystemProperties.Count == 0)
-        {
-            return Hashing.ContentHash.Of(CanonicalJson.ToBytes(doc));
-        }
-
-        var properties = new JsonArray();
-        foreach (var property in SystemProperties)
-        {
-            properties.Add(new JsonObject
+            void Drain()
             {
-                ["service"] = property.Service,
-                ["name"] = property.Name,
-                ["state"] = property.State.ToString(),
-            });
+                writer.Flush();
+                hash.AppendData(buffer.WrittenSpan);
+                buffer.ResetWrittenCount();
+            }
+
+            writer.WriteStartObject();
+            if (SystemProperties.Count > 0)
+            {
+                var properties = new JsonArray();
+                foreach (var property in SystemProperties)
+                {
+                    properties.Add(new JsonObject
+                    {
+                        ["service"] = property.Service,
+                        ["name"] = property.Name,
+                        ["state"] = property.State.ToString(),
+                    });
+                }
+
+                writer.WritePropertyName("systemProperties");
+                CanonicalJson.WriteTo(writer, properties);
+                writer.WritePropertyName("types");
+                writer.WriteStartObject();
+            }
+
+            foreach (var type in _types.Values.OrderBy(t => t.Name, StringComparer.Ordinal))
+            {
+                writer.WritePropertyName(type.Name);
+                type.WriteCanonical(writer, Drain);
+            }
+
+            if (SystemProperties.Count > 0)
+            {
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndObject();
+            Drain();
         }
 
-        return Hashing.ContentHash.Of(CanonicalJson.ToBytes(new JsonObject { ["types"] = doc, ["systemProperties"] = properties }));
+        return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
 
     /// <summary>
@@ -95,6 +126,23 @@ public sealed class ReferenceSnapshot
             CapturedUtc,
             _types.Values.Select(t => new ReferenceType(t.Name, t.EntityType, t.Items.OrderBy(i => i.Id, StringComparer.Ordinal), t.Key)),
             SystemProperties);
+
+    /// <summary>
+    /// This version with <paramref name="types"/> in place of the types of the same names, and beside the rest: what a
+    /// fixture renders against when it declares the rows of a type it assumes. The version label and the system
+    /// properties stay, so a render against it reads as a render against the version it was drawn from.
+    /// </summary>
+    public ReferenceSnapshot WithTypes(IEnumerable<ReferenceType> types)
+    {
+        ArgumentNullException.ThrowIfNull(types);
+        var replaced = new Dictionary<string, ReferenceType>(_types, StringComparer.OrdinalIgnoreCase);
+        foreach (var type in types)
+        {
+            replaced[type.Name] = type;
+        }
+
+        return new ReferenceSnapshot(Version, CapturedUtc, replaced.Values, SystemProperties);
+    }
 }
 
 /// <summary>All items of one reference (or master-data) type, indexed on the fields a mapping may match by.</summary>
@@ -112,6 +160,7 @@ public sealed class ReferenceType
     // because one snapshot is shared by every render worker of a run. A GetOrAdd race builds the index twice and
     // keeps one; the loser is discarded, which is wasted work rather than a wrong answer.
     private readonly ConcurrentDictionary<string, FieldIndex> _indexes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, bool> _recordIdPaths = new(StringComparer.OrdinalIgnoreCase);
     private IReadOnlyList<string>? _fieldNames;
     private Dictionary<string, ReferenceItem>? _byId;
 
@@ -210,8 +259,9 @@ public sealed class ReferenceType
             return false;
         }
 
+        // Asked of every value read by id, so each spelling is answered once rather than by a pass over every item.
         var name = ReferenceField.Normalize(path);
-        return !_items.Any(item => item.Fields.ContainsKey(name));
+        return _recordIdPaths.GetOrAdd(name, n => !_items.Any(item => item.Fields.ContainsKey(n)));
     }
 
     /// <summary>
@@ -249,6 +299,25 @@ public sealed class ReferenceType
     public bool IsAmbiguous(string field) => Index(field).Ambiguous;
 
     /// <summary>
+    /// Every item whose <paramref name="field"/> holds <paramref name="value"/> (trimmed) without regard to case, in
+    /// snapshot order: a field holding a set is held by an item when any one of its values is. Where <see cref="Find"/>
+    /// names the one record a value stands for, this reads every record keyed by it: the access groups a data office lists
+    /// for a field, however many there are. None when nothing holds the value.
+    /// </summary>
+    public IReadOnlyList<ReferenceItem> FindAll(string field, string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(field);
+        return string.IsNullOrWhiteSpace(value) ? [] : Index(field).All(value.Trim());
+    }
+
+    /// <summary>True when <paramref name="item"/> holds nothing under <paramref name="field"/>: no value, or a set without one.</summary>
+    public bool HoldsNothing(ReferenceItem item, string field)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        return Value(item, field) is not { } value || value.Terms.Count == 0;
+    }
+
+    /// <summary>
     /// The item whose record id is exactly <paramref name="id"/>, whatever the type caches under a field of its own called
     /// <c>ID</c>: where a value already is an OSDU record id, the record it names is looked for by that id, never by a
     /// captured field that happens to share the name. Built once, on first use, and shared by every render worker.
@@ -269,12 +338,41 @@ public sealed class ReferenceType
         var exact = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
         // Terms that more than one distinct item holds exactly, with every such item in snapshot order.
         var duplicates = new Dictionary<string, List<ReferenceItem>>(StringComparer.Ordinal);
-        var folded = new Dictionary<string, List<ReferenceItem>>(StringComparer.OrdinalIgnoreCase);
-        // Built with the other two rather than on demand: it costs one dictionary per indexed field, and building it
-        // later would mean a second pass over every item of a type that can hold hundreds of thousands of them.
-        var separatorFolded = new Dictionary<string, List<ReferenceItem>>(StringComparer.Ordinal);
+        // The same term under folded case, every distinct item that holds it, in snapshot order: a lookup that has no exact
+        // match takes it only when there is exactly one. Nearly every term of a large type is held by one item, which is
+        // kept as itself; a list is made only for a term several items hold.
+        var folded = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         var ambiguous = false;
         var recordId = MeansRecordId(field);
+        foreach (var (item, term) in Terms(field, recordId))
+        {
+            if (!exact.TryAdd(term, item) && exact[term] != item)
+            {
+                ambiguous = true;
+                if (!duplicates.TryGetValue(term, out var holders))
+                {
+                    holders = [exact[term]];
+                    duplicates[term] = holders;
+                }
+
+                if (!holders.Contains(item))
+                {
+                    holders.Add(item);
+                }
+            }
+
+            FieldIndex.Add(folded, term, item);
+        }
+
+        return new FieldIndex(exact, duplicates, folded, ambiguous, () => SeparatorIndex(field, recordId));
+    }
+
+    /// <summary>
+    /// Every term the field gives, with the item that gives it, in snapshot order: a scalar contributes one, a set one per
+    /// element, so an item with three aliases is found by any of them. The record id is found by its code as well.
+    /// </summary>
+    private IEnumerable<(ReferenceItem Item, string Term)> Terms(string field, bool recordId)
+    {
         foreach (var item in _items)
         {
             if (Value(item, field) is not { } value)
@@ -282,57 +380,31 @@ public sealed class ReferenceType
                 continue;
             }
 
-            // Every value the field holds is a term: a scalar contributes one, a set one per element, so an item
-            // with three aliases is found by any of them. The record id is found by its code as well.
             foreach (var term in recordId ? RecordIdTerms(item.Id) : value.Terms)
             {
-                if (!exact.TryAdd(term, item) && exact[term] != item)
-                {
-                    ambiguous = true;
-                    if (!duplicates.TryGetValue(term, out var holders))
-                    {
-                        holders = [exact[term]];
-                        duplicates[term] = holders;
-                    }
+                yield return (item, term);
+            }
+        }
+    }
 
-                    if (!holders.Contains(item))
-                    {
-                        holders.Add(item);
-                    }
-                }
-
-                // The same term under folded case, every distinct item that holds it, in snapshot order: a lookup
-                // that has no exact match takes it only when there is exactly one.
-                if (!folded.TryGetValue(term, out var variants))
-                {
-                    variants = [];
-                    folded[term] = variants;
-                }
-
-                if (!variants.Contains(item))
-                {
-                    variants.Add(item);
-                }
-
-                // A term that folds to nothing (punctuation only) would collect every such term under one empty key and
-                // make the fold tier useless, so it contributes nothing to it.
-                if (ReferenceKeyFold.Separators(term) is { Length: > 0 } key)
-                {
-                    if (!separatorFolded.TryGetValue(key, out var byKey))
-                    {
-                        byKey = [];
-                        separatorFolded[key] = byKey;
-                    }
-
-                    if (!byKey.Contains(item))
-                    {
-                        byKey.Add(item);
-                    }
-                }
+    /// <summary>
+    /// The field's terms with punctuation and spacing folded away, for the last matching tier: built the first time a
+    /// mapping asks for that tier, since most never do and it holds a folded key for every term of the field.
+    /// </summary>
+    private Dictionary<string, object> SeparatorIndex(string field, bool recordId)
+    {
+        var separatorFolded = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var (item, term) in Terms(field, recordId))
+        {
+            // A term that folds to nothing (punctuation only) would collect every such term under one empty key and make
+            // the fold tier useless, so it contributes nothing to it.
+            if (ReferenceKeyFold.Separators(term) is { Length: > 0 } key)
+            {
+                FieldIndex.Add(separatorFolded, key, item);
             }
         }
 
-        return new FieldIndex(exact, duplicates, folded, separatorFolded, ambiguous);
+        return separatorFolded;
     }
 
     /// <summary>
@@ -365,13 +437,7 @@ public sealed class ReferenceType
         var items = new JsonArray();
         foreach (var item in _items)
         {
-            var o = new JsonObject { ["id"] = item.Id };
-            foreach (var f in item.Fields.OrderBy(f => f.Key, StringComparer.Ordinal))
-            {
-                o[f.Key] = f.Value.Node.DeepClone();
-            }
-
-            items.Add(o);
+            items.Add(ItemJson(item));
         }
 
         // The key is written only for a lookup table, so a type of OSDU records hashes as it always has and every version
@@ -386,11 +452,53 @@ public sealed class ReferenceType
         return json;
     }
 
+    /// <summary>
+    /// Writes <see cref="ToJson"/> in canonical form, a record at a time, calling <paramref name="drain"/> every so many
+    /// records so the writer's output can be taken away: the bytes <c>CanonicalJson.ToBytes(ToJson())</c> gives, without
+    /// drawing the whole type as JSON first.
+    /// </summary>
+    internal void WriteCanonical(Utf8JsonWriter writer, Action drain)
+    {
+        const int RecordsPerDrain = 1024;
+        writer.WriteStartObject();
+        writer.WriteString("entityType", EntityType);
+        writer.WritePropertyName("items");
+        writer.WriteStartArray();
+        for (var i = 0; i < _items.Count; i++)
+        {
+            CanonicalJson.WriteTo(writer, ItemJson(_items[i]));
+            if (i % RecordsPerDrain == RecordsPerDrain - 1)
+            {
+                drain();
+            }
+        }
+
+        writer.WriteEndArray();
+        if (Key is not null)
+        {
+            writer.WriteString("key", Key);
+        }
+
+        writer.WriteEndObject();
+    }
+
+    private static JsonObject ItemJson(ReferenceItem item)
+    {
+        var o = new JsonObject { ["id"] = item.Id };
+        foreach (var f in item.Fields.OrderBy(f => f.Key, StringComparer.Ordinal))
+        {
+            o[f.Key] = f.Value.Node.DeepClone();
+        }
+
+        return o;
+    }
+
     public static ReferenceType FromJson(string name, JsonObject node)
     {
         ArgumentNullException.ThrowIfNull(node);
         var entityType = node["entityType"]?.GetValue<string>() ?? throw new DeliveryException($"Reference type '{name}' has no entityType.");
         var items = new List<ReferenceItem>();
+        var pool = new StringPool();
         if (node["items"] is JsonArray arr)
         {
             foreach (var element in arr.OfType<JsonObject>())
@@ -402,38 +510,66 @@ public sealed class ReferenceType
                     // Any JSON shape survives the round trip: a scalar, a set of values, or a nested object.
                     if (kv.Key != "id" && kv.Value is { } value)
                     {
-                        fields[kv.Key] = ReferenceValue.From(value);
+                        fields[kv.Key] = ReferenceValue.From(value, pool);
                     }
                 }
 
-                items.Add(new ReferenceItem(id, fields));
+                items.Add(new ReferenceItem(id, ReferenceFields.Of(fields, pool)));
             }
         }
 
         return new ReferenceType(name, entityType, items, node["key"]?.GetValue<string>());
     }
 
+    /// <summary>
+    /// One field's index: its terms exactly, the terms several items hold, and the terms under folded case, each naming one
+    /// item as itself or several as a list; and, built on first use, the terms with punctuation and spacing folded away.
+    /// </summary>
     private sealed class FieldIndex
     {
         private readonly Dictionary<string, ReferenceItem> _exact;
         private readonly Dictionary<string, List<ReferenceItem>> _duplicates;
-        private readonly Dictionary<string, List<ReferenceItem>> _folded;
-        private readonly Dictionary<string, List<ReferenceItem>> _separatorFolded;
+        private readonly Dictionary<string, object> _folded;
+        private readonly Func<Dictionary<string, object>> _buildSeparatorFolded;
+        private Dictionary<string, object>? _separatorFolded;
 
         public FieldIndex(
-            Dictionary<string, ReferenceItem> exact, Dictionary<string, List<ReferenceItem>> duplicates, Dictionary<string, List<ReferenceItem>> folded,
-            Dictionary<string, List<ReferenceItem>> separatorFolded, bool ambiguous)
+            Dictionary<string, ReferenceItem> exact, Dictionary<string, List<ReferenceItem>> duplicates, Dictionary<string, object> folded,
+            bool ambiguous, Func<Dictionary<string, object>> buildSeparatorFolded)
         {
             _exact = exact;
             _duplicates = duplicates;
             _folded = folded;
-            _separatorFolded = separatorFolded;
+            _buildSeparatorFolded = buildSeparatorFolded;
             Ambiguous = ambiguous;
         }
 
         public int Count => _exact.Count;
 
         public bool Ambiguous { get; }
+
+        /// <summary>Adds <paramref name="item"/> to the items <paramref name="key"/> names, once, keeping them in the order they are added.</summary>
+        public static void Add(Dictionary<string, object> index, string key, ReferenceItem item)
+        {
+            if (!index.TryGetValue(key, out var held))
+            {
+                index[key] = item;
+            }
+            else if (held is ReferenceItem one)
+            {
+                if (one != item)
+                {
+                    index[key] = new List<ReferenceItem>(2) { one, item };
+                }
+            }
+            else if (held is List<ReferenceItem> many && !many.Contains(item))
+            {
+                many.Add(item);
+            }
+        }
+
+        /// <summary>Every distinct item holding the term under folded case, in snapshot order.</summary>
+        public IReadOnlyList<ReferenceItem> All(string term) => Items(_folded, term);
 
         public ReferenceMatch Lookup(string term, bool ignoreSeparators)
         {
@@ -447,7 +583,7 @@ public sealed class ReferenceType
                 return ReferenceMatch.Of(item, ReferenceMatchKind.Exact);
             }
 
-            if (_folded.TryGetValue(term, out var variants))
+            if (Items(_folded, term) is { Count: > 0 } variants)
             {
                 return variants.Count == 1
                     ? ReferenceMatch.Of(variants[0], ReferenceMatchKind.IgnoringCase)
@@ -461,7 +597,9 @@ public sealed class ReferenceType
                 return ReferenceMatch.None;
             }
 
-            if (!_separatorFolded.TryGetValue(key, out var folded))
+            // Built once and shared by every render worker; a race builds it twice and keeps one.
+            var separatorFolded = LazyInitializer.EnsureInitialized(ref _separatorFolded, _buildSeparatorFolded);
+            if (Items(separatorFolded, key) is not { Count: > 0 } folded)
             {
                 return ReferenceMatch.None;
             }
@@ -470,6 +608,15 @@ public sealed class ReferenceType
                 ? ReferenceMatch.Of(folded[0], ReferenceMatchKind.IgnoringSeparators)
                 : new ReferenceMatch(null, folded, ReferenceMatchKind.IgnoringSeparators);
         }
+
+        private static IReadOnlyList<ReferenceItem> Items(Dictionary<string, object> index, string key) => index.TryGetValue(key, out var held)
+            ? held switch
+            {
+                ReferenceItem one => [one],
+                List<ReferenceItem> many => many,
+                _ => [],
+            }
+            : [];
     }
 }
 
@@ -615,33 +762,67 @@ public sealed record ReferenceItem(string Id, IReadOnlyDictionary<string, Refere
     }
 }
 
-/// <summary>One captured value: any JSON the path yielded, with the text and terms the cache matches and renders by.</summary>
+/// <summary>
+/// One captured value: any JSON the path yielded, with the text and terms the cache matches and renders by. Nearly every
+/// cached value is a string or a set of strings, and a cache of hundreds of thousands of records (every wellbore of a
+/// partition) holds millions of them, so those two are kept as the strings themselves and their JSON is drawn when it
+/// is asked for; anything else is kept as the JSON it is.
+/// </summary>
 public sealed class ReferenceValue
 {
-    private readonly JsonNode _node;
+    private readonly string? _text;
+    private readonly string[]? _texts;
+    private readonly JsonNode? _node;
     private IReadOnlyList<string>? _terms;
+
+    private ReferenceValue(string text) => _text = text;
+
+    private ReferenceValue(string[] texts) => _texts = texts;
 
     private ReferenceValue(JsonNode node) => _node = node;
 
-    /// <summary>The captured JSON: a scalar, an array (a set of values), or an object.</summary>
-    public JsonNode Node => _node;
+    /// <summary>
+    /// The captured JSON: a scalar, an array (a set of values), or an object. A string or a set of strings is drawn afresh
+    /// on every read, so what a caller does with it never reaches the cache.
+    /// </summary>
+    public JsonNode Node => _text is not null
+        ? JsonValue.Create(_text)
+        : _texts is not null
+            ? new JsonArray(_texts.Select(text => (JsonNode?)JsonValue.Create(text)).ToArray())
+            : _node!;
 
     /// <summary>True when the value holds a set rather than a single value.</summary>
-    public bool IsSet => _node is JsonArray;
+    public bool IsSet => _texts is not null || _node is JsonArray;
 
     /// <summary>How many values the set holds; 1 for a scalar or an object.</summary>
-    public int Count => _node is JsonArray array ? array.Count : 1;
+    public int Count => _texts?.Length ?? (_node is JsonArray array ? array.Count : 1);
 
     /// <summary>
     /// The value as one string: the scalar itself, the single element of a one-element set, or canonical JSON for
     /// anything composite. Never null, so it is always renderable and always loggable.
     /// </summary>
-    public string Text => _node switch
+    public string Text
     {
-        JsonValue value => Scalar(value) ?? CanonicalJson.ToString(_node),
-        JsonArray { Count: 1 } single when single[0] is JsonValue only => Scalar(only) ?? CanonicalJson.ToString(_node),
-        _ => CanonicalJson.ToString(_node),
-    };
+        get
+        {
+            if (_text is not null)
+            {
+                return _text;
+            }
+
+            if (_texts is not null)
+            {
+                return _texts.Length == 1 ? _texts[0] : CanonicalJson.ToString(Node);
+            }
+
+            return _node switch
+            {
+                JsonValue value => Scalar(value) ?? CanonicalJson.ToString(_node),
+                JsonArray { Count: 1 } single when single[0] is JsonValue only => Scalar(only) ?? CanonicalJson.ToString(_node),
+                _ => CanonicalJson.ToString(_node),
+            };
+        }
+    }
 
     /// <summary>
     /// Every scalar the value holds, flattened out of arrays and objects, trimmed, without blanks or duplicates.
@@ -651,13 +832,33 @@ public sealed class ReferenceValue
     {
         get
         {
+            // A string's or a set's terms are worked out when asked rather than kept: they are asked for once, when a
+            // field is indexed, and keeping them would double what a large cache holds.
+            if (_text is not null)
+            {
+                return string.IsNullOrWhiteSpace(_text) ? [] : [_text.Trim()];
+            }
+
+            var terms = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (_texts is not null)
+            {
+                foreach (var text in _texts)
+                {
+                    if (!string.IsNullOrWhiteSpace(text) && seen.Add(text.Trim()))
+                    {
+                        terms.Add(text.Trim());
+                    }
+                }
+
+                return terms;
+            }
+
             if (_terms is not null)
             {
                 return _terms;
             }
 
-            var terms = new List<string>();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             Flatten(_node, terms, seen);
             _terms = terms;
             return terms;
@@ -668,39 +869,81 @@ public sealed class ReferenceValue
     public ReferenceValue? Select(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        var hits = JsonPathReader.SelectNodes(_node, path);
+        var hits = JsonPathReader.SelectNodes(Node, path);
         return hits.Count switch
         {
             0 => null,
             1 => From(hits[0]),
-            _ => new ReferenceValue(new JsonArray(hits.Select(h => h.DeepClone()).ToArray())),
+            _ => OfMany(hits),
         };
     }
 
     /// <summary>Captures a node as a value. The node is cloned, so the snapshot never aliases the response it came from.</summary>
-    public static ReferenceValue From(JsonNode node)
+    public static ReferenceValue From(JsonNode node) => From(node, null);
+
+    /// <summary>
+    /// Captures a node as a value, taking its strings from <paramref name="pool"/>: a capture or a load of a large type hands
+    /// every value one pool, so a string many records hold (the field a thousand wellbores lie in) is kept once.
+    /// </summary>
+    internal static ReferenceValue From(JsonNode node, StringPool? pool)
     {
         ArgumentNullException.ThrowIfNull(node);
+        if (node is JsonValue value && value.GetValueKind() == JsonValueKind.String)
+        {
+            return new ReferenceValue(Pooled(value.GetValue<string>(), pool));
+        }
+
+        if (node is JsonArray array && Strings(array, pool) is { } texts)
+        {
+            return new ReferenceValue(texts);
+        }
+
         return new ReferenceValue(node.DeepClone());
     }
 
     /// <summary>Captures the nodes a path selected: one value, or a set when the path fanned out.</summary>
-    public static ReferenceValue OfMany(IReadOnlyList<JsonNode> nodes)
+    public static ReferenceValue OfMany(IReadOnlyList<JsonNode> nodes) => OfMany(nodes, null);
+
+    /// <summary>Captures the nodes a path selected, taking their strings from <paramref name="pool"/>.</summary>
+    internal static ReferenceValue OfMany(IReadOnlyList<JsonNode> nodes, StringPool? pool)
     {
         ArgumentNullException.ThrowIfNull(nodes);
-        return nodes.Count == 1
-            ? From(nodes[0])
-            : new ReferenceValue(new JsonArray(nodes.Select(n => n.DeepClone()).ToArray()));
+        if (nodes.Count == 1)
+        {
+            return From(nodes[0], pool);
+        }
+
+        var array = new JsonArray(nodes.Select(n => n.DeepClone()).ToArray());
+        return Strings(array, pool) is { } texts ? new ReferenceValue(texts) : new ReferenceValue(array);
     }
 
     /// <summary>Captures plain text.</summary>
     public static ReferenceValue Of(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        return new ReferenceValue(JsonValue.Create(text));
+        return new ReferenceValue(text);
     }
 
     public override string ToString() => Text;
+
+    /// <summary>The strings of an array that holds nothing but strings, or null for any other array.</summary>
+    private static string[]? Strings(JsonArray array, StringPool? pool)
+    {
+        var texts = new string[array.Count];
+        for (var i = 0; i < array.Count; i++)
+        {
+            if (array[i] is not JsonValue element || element.GetValueKind() != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            texts[i] = Pooled(element.GetValue<string>(), pool);
+        }
+
+        return texts;
+    }
+
+    private static string Pooled(string text, StringPool? pool) => pool is null ? text : pool.Get(text);
 
     private static void Flatten(JsonNode? node, List<string> terms, HashSet<string> seen)
     {
@@ -748,6 +991,96 @@ public sealed class ReferenceValue
 
         return CanonicalJson.ToString(value);
     }
+}
+
+/// <summary>
+/// The strings one capture or one load of a cache version has met, so each distinct string is kept once however many
+/// records hold it. It belongs to the one capture or load that fills it, never to a snapshot, and is not shared between
+/// threads.
+/// </summary>
+internal sealed class StringPool
+{
+    private readonly Dictionary<string, string> _strings = new(StringComparer.Ordinal);
+
+    public string Get(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (_strings.TryGetValue(text, out var kept))
+        {
+            return kept;
+        }
+
+        _strings[text] = text;
+        return text;
+    }
+}
+
+/// <summary>
+/// A record's captured fields, kept as one array of names and values rather than a dictionary: a record captures a
+/// handful of paths, so reading one by name is a short scan, and a cache of hundreds of thousands of records keeps a
+/// dictionary's buckets and entries for none of them. Names compare without regard to case, as a dictionary of captured
+/// fields always has.
+/// </summary>
+internal sealed class ReferenceFields : IReadOnlyDictionary<string, ReferenceValue>
+{
+    private readonly KeyValuePair<string, ReferenceValue>[] _fields;
+
+    private ReferenceFields(KeyValuePair<string, ReferenceValue>[] fields) => _fields = fields;
+
+    /// <summary>
+    /// The fields <paramref name="fields"/> gives, a name given twice (in any case) keeping its last value, as setting a
+    /// dictionary by name would, with the names taken from <paramref name="pool"/>.
+    /// </summary>
+    public static ReferenceFields Of(IEnumerable<KeyValuePair<string, ReferenceValue>> fields, StringPool? pool = null)
+    {
+        ArgumentNullException.ThrowIfNull(fields);
+        var kept = new List<KeyValuePair<string, ReferenceValue>>();
+        foreach (var (name, value) in fields)
+        {
+            var at = kept.FindIndex(f => string.Equals(f.Key, name, StringComparison.OrdinalIgnoreCase));
+            var entry = new KeyValuePair<string, ReferenceValue>(pool is null ? name : pool.Get(name), value);
+            if (at >= 0)
+            {
+                kept[at] = entry;
+            }
+            else
+            {
+                kept.Add(entry);
+            }
+        }
+
+        return new ReferenceFields([.. kept]);
+    }
+
+    public ReferenceValue this[string key] => TryGetValue(key, out var value) ? value : throw new KeyNotFoundException($"The record captures no field '{key}'.");
+
+    public IEnumerable<string> Keys => _fields.Select(f => f.Key);
+
+    public IEnumerable<ReferenceValue> Values => _fields.Select(f => f.Value);
+
+    public int Count => _fields.Length;
+
+    public bool ContainsKey(string key) => TryGetValue(key, out _);
+
+    public bool TryGetValue(string key, [System.Diagnostics.CodeAnalysis.MaybeNullWhen(false)] out ReferenceValue value)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        foreach (var (name, held) in _fields)
+        {
+            if (string.Equals(name, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = held;
+                return true;
+            }
+        }
+
+        value = null;
+        return false;
+    }
+
+    public IEnumerator<KeyValuePair<string, ReferenceValue>> GetEnumerator() => ((IEnumerable<KeyValuePair<string, ReferenceValue>>)_fields).GetEnumerator();
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 }
 
 /// <summary>

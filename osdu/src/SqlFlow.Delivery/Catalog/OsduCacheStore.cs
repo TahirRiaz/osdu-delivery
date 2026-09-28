@@ -396,6 +396,9 @@ public sealed class OsduCacheStore : ICacheStore
             .ToListAsync(ct).ConfigureAwait(false);
         var byType = items.GroupBy(i => i.TypeName, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
+        // One pool for the version: a value many records hold (the field a thousand wellbores lie in) is kept once.
+        var pool = new StringPool();
+
         // The version row lists every type, a type that holds no record included, so the loaded version holds exactly the
         // types the merge left and hashes as it did.
         var types = ParseTypes(row.TypesJson, scope, row.Version)
@@ -404,7 +407,7 @@ public sealed class OsduCacheStore : ICacheStore
                 type.EntityType,
                 (byType.GetValueOrDefault(type.Name) ?? [])
                     .OrderBy(i => i.RecordId, StringComparer.Ordinal)
-                    .Select(i => new ReferenceItem(i.RecordId, Fields(i.FieldsJson, scope, row.Version))),
+                    .Select(i => new ReferenceItem(i.RecordId, Fields(i.FieldsJson, scope, row.Version, pool))),
                 type.Key))
             .ToList();
         var snapshot = new ReferenceSnapshot(
@@ -613,7 +616,7 @@ public sealed class OsduCacheStore : ICacheStore
         }
     }
 
-    private static Dictionary<string, ReferenceValue> Fields(string json, string scope, string version)
+    private static ReferenceFields Fields(string json, string scope, string version, StringPool pool)
     {
         JsonObject? node;
         try
@@ -625,16 +628,9 @@ public sealed class OsduCacheStore : ICacheStore
             throw new DeliveryException($"A record of version {version} of the cache of partition '{scope}' holds values that are not valid JSON ({ex.Message}).", ex);
         }
 
-        var fields = new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, value) in node ?? [])
-        {
-            if (value is not null)
-            {
-                fields[name] = ReferenceValue.From(value);
-            }
-        }
-
-        return fields;
+        return ReferenceFields.Of(
+            (node ?? []).Where(field => field.Value is not null).Select(field => KeyValuePair.Create(field.Key, ReferenceValue.From(field.Value!, pool))),
+            pool);
     }
 
     private static string Clip(string text, int length) => text.Length <= length ? text : text[..length];

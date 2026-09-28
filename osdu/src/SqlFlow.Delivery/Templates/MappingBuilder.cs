@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 
@@ -647,10 +648,25 @@ public static partial class MappingBuilder
         return yaml.ToString();
     }
 
-    /// <summary>The draft of a loaded mapping, for opening it in the builder.</summary>
+    /// <summary>
+    /// The draft of a loaded mapping, for opening it in the builder. A mapping that reads lookups, reads every matching row
+    /// with <c>$findAll</c>, or lists values some of which nodes read, is refused rather than opened: the draft has no place
+    /// for those, and writing it back would drop them without a word.
+    /// </summary>
     public static MappingDraft FromDefinition(MappingDefinition mapping)
     {
         ArgumentNullException.ThrowIfNull(mapping);
+        var written = mapping.Entries.SelectMany(e => e.ValueNodes.Prepend(e)).ToList();
+        var construct = mapping.Lookups.Count > 0 ? $"declares lookups ({string.Join(", ", mapping.Lookups.Keys.Order(StringComparer.Ordinal))})"
+            : written.FirstOrDefault(e => e.FindAll is not null) is { } all ? $"reads every matching row with $findAll at {all.Where}"
+            : written.FirstOrDefault(e => e.IsList) is { } list ? $"lists values that nodes read at {list.Where}"
+            : null;
+        if (construct is not null)
+        {
+            throw new FlowValidationException(
+                $"{mapping.SourcePath ?? mapping.Reference}: the mapping {construct}, which the builder does not lay out; edit the mapping document itself.");
+        }
+
         return new MappingDraft
         {
             Name = mapping.Name,

@@ -41,6 +41,24 @@ public static class CanonicalJson
     /// <summary>Serialises a node to a canonical string.</summary>
     public static string ToString(JsonNode? node) => Encoding.UTF8.GetString(ToBytes(node));
 
+    /// <summary>
+    /// A writer that writes what <see cref="WriteTo"/> and its own calls give exactly as <see cref="ToBytes"/> would, for a
+    /// document too large to be built whole before it is written: a caller laying out the document part by part writes
+    /// the same bytes, provided it writes an object's properties in ordinal order of their names and no null property.
+    /// </summary>
+    public static Utf8JsonWriter CreateWriter(IBufferWriter<byte> output)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        return new Utf8JsonWriter(output, WriterOptions);
+    }
+
+    /// <summary>Writes a node in canonical form to a writer <see cref="CreateWriter"/> made.</summary>
+    public static void WriteTo(Utf8JsonWriter writer, JsonNode? node)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        Write(writer, node);
+    }
+
     /// <summary>Parses arbitrary JSON text and returns its canonical form.</summary>
     public static string Canonicalize(string json) => ToString(JsonNode.Parse(json));
 

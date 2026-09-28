@@ -2054,6 +2054,40 @@ public sealed partial class OsduLedger : ILedger
             ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<CacheGap>> ListCacheGapsAsync(string scope, string? typeName, bool empty, int take, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentOutOfRangeException.ThrowIfLessThan(take, 1);
+        var unlisted = KindText(Snapshots.CacheUsageKind.Unlisted);
+        var unverified = KindText(Snapshots.CacheUsageKind.Unverified);
+        var listed = KindText(Snapshots.CacheUsageKind.Listed);
+        var emptied = KindText(Snapshots.CacheUsageKind.Empty);
+        var rows = await ReadAsync(
+            db =>
+            {
+                var entries = db.DeliveryCacheSetEntries.Where(e => e.Scope == scope
+                    && (e.Kind == unlisted || e.Kind == unverified || (e.Kind == listed && e.ValueText == string.Empty) || (empty && e.Kind == emptied)));
+                if (typeName is not null)
+                {
+                    entries = entries.Where(e => e.TypeName == typeName);
+                }
+
+                // A gap counts the records built without it, through the sets that hold it: the sets number in the thousands.
+                return entries
+                    .Join(db.DeliveryRecords, e => (long?)e.SetId, r => r.CacheSetId, (e, r) => new { e.TypeName, e.Path, e.Kind, e.ItemId, e.ValueText })
+                    .GroupBy(g => new { g.TypeName, g.Path, g.Kind, g.ItemId, g.ValueText })
+                    .Select(g => new { g.Key.TypeName, g.Key.Path, g.Key.Kind, g.Key.ItemId, g.Key.ValueText, Records = g.LongCount() })
+                    .OrderByDescending(g => g.Records)
+                    .ThenBy(g => g.TypeName)
+                    .ThenBy(g => g.Path)
+                    .ThenBy(g => g.ItemId)
+                    .Take(take)
+                    .ToListAsync(ct);
+            },
+            ct).ConfigureAwait(false);
+        return rows.Select(r => new CacheGap(r.TypeName, r.Path, ToKind(r.Kind), r.ItemId, r.ValueText, r.Records)).ToList();
+    }
+
     public async Task<int> TagUpdatesAsync(IReadOnlyList<UpdateTag> tags, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(tags);
@@ -2322,6 +2356,7 @@ public sealed partial class OsduLedger : ILedger
         Snapshots.CacheUsageKind.Empty => "empty",
         Snapshots.CacheUsageKind.Unlisted => "unlisted",
         Snapshots.CacheUsageKind.Unverified => "unverified",
+        Snapshots.CacheUsageKind.Listed => "listed",
         _ => "value",
     };
 
@@ -2330,6 +2365,7 @@ public sealed partial class OsduLedger : ILedger
             : kind.Equals("empty", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Empty
             : kind.Equals("unlisted", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Unlisted
             : kind.Equals("unverified", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Unverified
+            : kind.Equals("listed", StringComparison.OrdinalIgnoreCase) ? Snapshots.CacheUsageKind.Listed
             : Snapshots.CacheUsageKind.Value;
 
     private static List<long> ParseSets(string setIds)

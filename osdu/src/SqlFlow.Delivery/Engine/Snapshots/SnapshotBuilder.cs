@@ -252,6 +252,8 @@ public sealed partial class SnapshotBuilder
         typeSpec.Validate();
 
         var items = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
+        // One pool for the capture: a value many records hold (the field a thousand wellbores lie in) is kept once.
+        var pool = new StringPool();
         var repeated = 0;
         var barren = 0;
         var coverage = typeSpec.Fields.ToDictionary(f => f.Name, _ => 0, StringComparer.OrdinalIgnoreCase);
@@ -285,7 +287,7 @@ public sealed partial class SnapshotBuilder
                 {
                     foreach (var hit in results.OfType<JsonObject>())
                     {
-                        if (Project(hit, typeSpec.Fields) is not { } item)
+                        if (Project(hit, typeSpec.Fields, pool) is not { } item)
                         {
                             continue;
                         }
@@ -389,7 +391,7 @@ public sealed partial class SnapshotBuilder
     }
 
     /// <summary>Projects one search hit onto the declared paths, keeping whatever shape each path yields.</summary>
-    private static ReferenceItem? Project(JsonObject hit, IReadOnlyList<ReferenceFieldSpec> fields)
+    private static ReferenceItem? Project(JsonObject hit, IReadOnlyList<ReferenceFieldSpec> fields, StringPool pool)
     {
         var id = hit["id"]?.GetValue<string>();
         if (string.IsNullOrWhiteSpace(id))
@@ -397,7 +399,7 @@ public sealed partial class SnapshotBuilder
             return null;
         }
 
-        var values = new Dictionary<string, ReferenceValue>(StringComparer.OrdinalIgnoreCase);
+        var values = new List<KeyValuePair<string, ReferenceValue>>(fields.Count);
         foreach (var field in fields)
         {
             var hits = JsonPathReader.SelectNodes(hit, field.Path);
@@ -406,10 +408,10 @@ public sealed partial class SnapshotBuilder
                 continue;
             }
 
-            values[field.Name] = ReferenceValue.OfMany(hits);
+            values.Add(KeyValuePair.Create(field.Name, ReferenceValue.OfMany(hits, pool)));
         }
 
-        return new ReferenceItem(id, values);
+        return new ReferenceItem(id, ReferenceFields.Of(values, pool));
     }
 }
 

@@ -53,11 +53,14 @@ public sealed class CacheImpactAnalyzer
         // Only the items that actually moved are worth asking the ledger about, and, for a lookup table, the keys it lists
         // now and did not before: a record that looked one of them up found no row, and was built without it. For a type
         // of OSDU records, the records it holds now and did not before: a record that wrote an id of one of them as an
-        // unverified reference was built without finding it.
+        // unverified reference was built without finding it. And for a type of OSDU records, every value an item that
+        // arrived or moved holds, before and after: a record that found no item by one of them, or read every item keyed by
+        // one, may find another now.
         var moved = before.Keys.Where(id => !after.ContainsKey(id) || Differs(previous, before[id], current, after[id])).ToList();
         var added = after.Keys.Where(id => !before.ContainsKey(id)).ToList();
         var listed = current.IsLookup ? added.Select(CacheUsage.ListingKey).Distinct(StringComparer.Ordinal).ToList() : [];
         var found = current.IsLookup ? [] : added;
+        var keyed = current.IsLookup ? [] : Keys(moved.Select(id => before[id]).Concat(moved.Where(after.ContainsKey).Concat(added).Select(id => after[id])));
         if (moved.Count == 0 && listed.Count == 0 && found.Count == 0)
         {
             return new CacheImpactResult(current.Name, 0, 0, 0, 0);
@@ -69,7 +72,7 @@ public sealed class CacheImpactAnalyzer
         if (moved.Count > 0)
         {
             holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, moved, ct).ConfigureAwait(false))
-                .Where(use => use.Kind is not (CacheUsageKind.Unlisted or CacheUsageKind.Unverified)));
+                .Where(use => use.Kind is not (CacheUsageKind.Unlisted or CacheUsageKind.Unverified or CacheUsageKind.Listed)));
         }
 
         if (listed.Count > 0)
@@ -82,6 +85,12 @@ public sealed class CacheImpactAnalyzer
         {
             holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, found, ct).ConfigureAwait(false))
                 .Where(use => use.Kind == CacheUsageKind.Unverified));
+        }
+
+        if (keyed.Count > 0)
+        {
+            holders.AddRange((await _ledger.FindCacheSetsAsync(scope, current.Name, keyed, ct).ConfigureAwait(false))
+                .Where(use => use.Kind is CacheUsageKind.Unlisted or CacheUsageKind.Listed));
         }
 
         var changedItems = moved.Count + listed.Count + found.Count;
@@ -147,6 +156,27 @@ public sealed class CacheImpactAnalyzer
     /// </summary>
     private static (string Change, string? NewValue, string ItemId)? Describe(CacheSetUse use, ReferenceItem? item, ReferenceType current)
     {
+        if (use.Kind == CacheUsageKind.Listed)
+        {
+            // The rows a $findAll read under a key: the record changes when the rows the key finds now are not the ones it
+            // was built from, a row listed or unlisted under it (the access group a data office adds for a field).
+            var ids = CacheUsage.ListedIds(current.FindAll(use.Path, use.ItemId).Select(row => row.Id));
+            return string.Equals(Hashing.ContentHash.Of(ids), use.ValueHash, StringComparison.Ordinal) ? null : ("relisted", ids, use.ItemId);
+        }
+
+        if (use.Kind == CacheUsageKind.Unlisted && !current.IsLookup)
+        {
+            // A value no record of the type answered to: one does now when the value finds exactly one, or several, which
+            // holds the record and so changes it as surely.
+            var answered = current.Find(use.Path, use.ValueText);
+            if (answered.Item is { } record)
+            {
+                return ("listed", current.Value(record, use.Path)?.Text, record.Id);
+            }
+
+            return answered.IsCaseAmbiguous ? ("listed", null, answered.CaseVariants[0].Id) : null;
+        }
+
         if (use.Kind == CacheUsageKind.Unlisted)
         {
             // A key no row was listed under: the table lists it now when a render would find a row for it. What that row
@@ -223,6 +253,12 @@ public sealed class CacheImpactAnalyzer
             return null;
         }
 
+        if (sample.Kind == CacheUsageKind.Listed)
+        {
+            // The rows the key found when the most recently built of the sets was.
+            return uses.MaxBy(u => u.SetId)!.ValueText;
+        }
+
         if (sample.Kind is CacheUsageKind.Match or CacheUsageKind.Unlisted or CacheUsageKind.Unverified)
         {
             return string.Join(", ", uses.Select(u => u.ValueText).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase));
@@ -248,6 +284,33 @@ public sealed class CacheImpactAnalyzer
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Every value the items hold under any of their fields, folded as a key is kept: what a record that found none of them
+    /// by a value, or read every item keyed by one, recorded, so the sets to judge again are found by the keys alone. A value
+    /// that is an OSDU reference is also asked for without its version separator and with it, as a render looks it up.
+    /// </summary>
+    private static List<string> Keys(IEnumerable<ReferenceItem> items)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in items)
+        {
+            foreach (var value in item.Fields.Values)
+            {
+                foreach (var term in value.Terms)
+                {
+                    keys.Add(CacheUsage.ListingKey(term));
+                    if (CachedReferences.Parse(term) is { } reference)
+                    {
+                        keys.Add(CacheUsage.ListingKey(reference.Id));
+                        keys.Add(CacheUsage.ListingKey(reference.Id + ":"));
+                    }
+                }
+            }
+        }
+
+        return [.. keys];
     }
 
     private static string ModeText(CacheChangeMode mode) => mode == CacheChangeMode.Auto ? "auto" : "approve";

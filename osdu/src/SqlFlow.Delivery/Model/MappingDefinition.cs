@@ -36,6 +36,12 @@ public sealed record MappingDefinition
     /// </summary>
     public IReadOnlyDictionary<string, MappingSearch> Searches { get; init; } = new Dictionary<string, MappingSearch>(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The records a row is matched to once and read wherever the record needs them (<c>lookups.&lt;name&gt;</c>), by the name
+    /// nodes write them as. Empty for a mapping that finds every record where it reads it.
+    /// </summary>
+    public IReadOnlyDictionary<string, MappingLookup> Lookups { get; init; } = new Dictionary<string, MappingLookup>(StringComparer.Ordinal);
+
     /// <summary>The entries, in the order the document lists them.</summary>
     public required IReadOnlyList<MappingEntry> Entries { get; init; }
 
@@ -46,10 +52,14 @@ public sealed record MappingDefinition
     /// them renders against no cache at all; one that reads any renders against a version, whose label enters its records'
     /// render context. The render, lineage and the intake all ask this one question, so none of them misses a type.
     /// </summary>
-    public IReadOnlyList<string> CacheTypesRead()
+    public IReadOnlyList<string> CacheTypesRead() => CacheTypesReadBy(Entries);
+
+    /// <summary>The cached types <paramref name="entries"/> read, as <see cref="CacheTypesRead"/> counts them.</summary>
+    public static IReadOnlyList<string> CacheTypesReadBy(IEnumerable<MappingEntry> entries)
     {
+        ArgumentNullException.ThrowIfNull(entries);
         var types = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var entry in Entries.SelectMany(e => e.ValueNodes))
+        foreach (var entry in entries.SelectMany(e => e.ValueNodes))
         {
             if (entry.Source is { Kind: MappingSourceKind.Cache, CacheType: { } type })
             {
@@ -60,7 +70,13 @@ public sealed record MappingDefinition
                 }
             }
 
-            foreach (var modifier in entry.Modifiers)
+            var operandLookup = entry.FindAll?.Operand.Lookup;
+            if (operandLookup is not null)
+            {
+                types.Add(operandLookup.CacheType);
+            }
+
+            foreach (var modifier in entry.Modifiers.Concat(operandLookup?.Modifiers ?? []))
             {
                 if (modifier.Table is { } table)
                 {
@@ -203,6 +219,13 @@ public sealed record MappingSource
     /// <summary>The cached field a cache source reads: <c>id</c> for the record id, or a field or path into one.</summary>
     public string? CacheField { get; init; }
 
+    /// <summary>
+    /// For a node written with <c>$lookup</c>, the lookup it reads (<see cref="MappingDefinition.Lookups"/>): its cached type
+    /// is the lookup's, and the entry carries the lookup's findBy lines and modifiers, so it finds the record every other
+    /// reader of the lookup finds. Null for any other source.
+    /// </summary>
+    public string? Lookup { get; init; }
+
     /// <summary>The prefix this source is written with: <c>cache</c> or <c>search</c>.</summary>
     public string Prefix => Kind == MappingSourceKind.Search ? SearchPrefix : CachePrefix;
 
@@ -211,6 +234,7 @@ public sealed record MappingSource
         MappingSourceKind.DatasetColumn => Column!.ToString(),
         MappingSourceKind.DatasetRows => $"{DatasetColumn.Prefix}.{Child}",
         MappingSourceKind.Expression => Expression!.Text,
+        _ when Lookup is not null => $"{MappingLookup.Prefix}.{Lookup}.{CacheField}",
         _ => $"{Prefix}.{CacheType}.{CacheField}",
     };
 
@@ -236,6 +260,67 @@ public sealed record FindBy(string Type, string Field, DatasetColumn? Column, st
 
     public override string ToString()
         => $"{Prefix}.{Type}.{Field} = {(Column is not null ? Column.ToString() : "'" + Literal + "'")}";
+}
+
+/// <summary>
+/// A record a mapping finds once for a row and reads wherever the record needs it (<c>lookups.&lt;name&gt;</c>): a cached
+/// type, and the findBy lines, tried in order, that find the row's record in it. Every node reading the lookup reads the
+/// record those lines find, so an id the record writes and a value derived from that record never come from two
+/// different records. A lookup reads the dataset's own row.
+/// </summary>
+public sealed record MappingLookup
+{
+    /// <summary>How a lookup is named where it is read: <c>$lookup: wellbore.id</c>, <c>$lookup.wellbore.GeoContexts.FieldID</c>.</summary>
+    public const string Prefix = "lookup";
+
+    /// <summary>The name nodes read the lookup by.</summary>
+    public required string Name { get; init; }
+
+    /// <summary>The cached type the record is found in.</summary>
+    public required string CacheType { get; init; }
+
+    /// <summary>The lines that find the record, tried in order until one finds exactly one.</summary>
+    public required IReadOnlyList<FindBy> FindBy { get; init; }
+
+    /// <summary>The modifiers applied to the dataset value each line compares.</summary>
+    public IReadOnlyList<Modifier> Modifiers { get; init; } = [];
+
+    /// <summary>A last matching attempt with punctuation and spacing folded away, for names.</summary>
+    public bool IgnoreSeparators { get; init; }
+
+    public string? Description { get; init; }
+
+    /// <summary>Every dataset column the lookup's lines and modifiers read.</summary>
+    public IEnumerable<DatasetColumn> Columns
+        => FindBy.Where(f => f.Column is not null).Select(f => f.Column!)
+            .Concat(Modifiers.Where(m => m.Id is not null).SelectMany(m => m.Id!.Columns));
+}
+
+/// <summary>
+/// What the key condition of a <c>$findAll</c> compares a cached field with: a dataset column, a fixed text, or a path of
+/// the record a lookup finds (<c>$lookup.wellbore.GeoContexts.FieldID</c>), whose every value is a key of its own.
+/// </summary>
+public sealed record FindAllOperand(DatasetColumn? Column, string? Literal, MappingLookup? Lookup, string? LookupPath)
+{
+    public override string ToString() => Column is not null
+        ? Column.ToString()
+        : Lookup is not null ? $"${MappingLookup.Prefix}.{Lookup.Name}.{LookupPath}" : $"'{Literal}'";
+}
+
+/// <summary>
+/// A <c>$findAll</c>: the rows of a cached type a node reads every one of. A row is read when its <see cref="Field"/> holds
+/// one of the values <see cref="Operand"/> gives (without regard to case, since a key names the same thing however it is
+/// written) and every field <see cref="Empty"/> names holds nothing. The node gives the field it reads from each of those
+/// rows, as a list.
+/// </summary>
+/// <param name="Type">The cached type whose rows are read.</param>
+/// <param name="Field">The field the key condition compares.</param>
+/// <param name="Operand">What the field must hold.</param>
+/// <param name="Empty">The fields a row must hold nothing under, in the order they are written.</param>
+public sealed record FindAllQuery(string Type, string Field, FindAllOperand Operand, IReadOnlyList<string> Empty)
+{
+    public override string ToString()
+        => string.Join(" and ", Empty.Select(field => $"{field} is empty").Prepend($"{Field} = {Operand}"));
 }
 
 public enum ModifierKind
@@ -399,6 +484,12 @@ public sealed partial record MappingEntry
 
     public IReadOnlyList<FindBy> FindBy { get; init; } = [];
 
+    /// <summary>
+    /// For a cache node written with <c>$findAll</c> in place of <c>$findBy</c>: the rows it reads every one of, giving the
+    /// field it reads from each as a list. Null for any other node.
+    /// </summary>
+    public FindAllQuery? FindAll { get; init; }
+
     public IReadOnlyList<Modifier> Modifiers { get; init; } = [];
 
     /// <summary>
@@ -434,16 +525,34 @@ public sealed partial record MappingEntry
     /// </summary>
     public IReadOnlyList<MappingEntry> Alternatives { get; init; } = [];
 
+    /// <summary>
+    /// For a list of values whose items are not all literal (<c>viewers: ["{$param.aclViewer}", {$cache: ...}]</c>): every
+    /// item, in the order the list writes them, each a literal or a value node with the list's target. The list is what they
+    /// give, one after another, with a value given twice (whatever its case) written once. <see cref="Static"/> holds the
+    /// literal items alone, which is what anything that reads a list's fixed part (the envelope, the gate) reads. Empty for
+    /// any other entry.
+    /// </summary>
+    public IReadOnlyList<MappingEntry> Parts { get; init; } = [];
+
     public string? Description { get; init; }
 
     /// <summary>True for a <c>$coalesce</c> node: one whose value is the first of its alternatives that gives one.</summary>
     public bool IsCoalesce => Alternatives.Count > 0;
 
+    /// <summary>True for a list of values some of whose items are value nodes.</summary>
+    public bool IsList => Parts.Count > 0;
+
     /// <summary>
-    /// The value nodes the entry reads its value with: the entry itself, then its alternatives for a <c>$coalesce</c> node.
-    /// Anything that asks what an entry reads (columns, cached types, searches, the ids it builds) asks each of them.
+    /// The value nodes the entry reads its value with: the entry itself, then its alternatives for a <c>$coalesce</c> node,
+    /// or the value nodes among its items for a list. Anything that asks what an entry reads (columns, cached types,
+    /// searches, the ids it builds) asks each of them.
     /// </summary>
-    public IEnumerable<MappingEntry> ValueNodes => Alternatives.Count == 0 ? [this] : [this, .. Alternatives];
+    public IEnumerable<MappingEntry> ValueNodes => Alternatives.Count > 0
+        ? [this, .. Alternatives]
+        : Parts.Count > 0 ? [this, .. Parts.Where(part => !part.IsPlainLiteral)] : [this];
+
+    /// <summary>An item of a list written as the literal it is: no source, and no condition of its own.</summary>
+    public bool IsPlainLiteral => Source is null && AppliesWhen is null;
 
     public bool IsStatic => Source is null;
 
@@ -472,7 +581,7 @@ public sealed partial record MappingEntry
                 yield return filter;
             }
 
-            foreach (var alternative in Alternatives)
+            foreach (var alternative in Alternatives.Concat(Parts))
             {
                 foreach (var expression in alternative.Expressions)
                 {
@@ -484,13 +593,14 @@ public sealed partial record MappingEntry
 
     /// <summary>
     /// Every dataset column the entry reads: the column its source reads, those its expressions read, its findBy values
-    /// and the tokens of an id it builds, and for a <c>$coalesce</c> node those of every alternative.
+    /// and the tokens of an id it builds, a <c>$findAll</c> operand and what its lookup reads, and for a <c>$coalesce</c>
+    /// node or a list those of every alternative or item.
     /// </summary>
     public IEnumerable<DatasetColumn> Columns
     {
         get
         {
-            // The expressions include the alternatives' own, so their columns come through here once.
+            // The expressions include the alternatives' and the items' own, so their columns come through here once.
             foreach (var expressionColumn in Expressions.SelectMany(e => e.Columns))
             {
                 yield return expressionColumn;
@@ -508,6 +618,19 @@ public sealed partial record MappingEntry
                     if (find.Column is { } findColumn)
                     {
                         yield return findColumn;
+                    }
+                }
+
+                if (node.FindAll?.Operand is { } operand)
+                {
+                    if (operand.Column is { } operandColumn)
+                    {
+                        yield return operandColumn;
+                    }
+
+                    foreach (var lookupColumn in operand.Lookup?.Columns ?? [])
+                    {
+                        yield return lookupColumn;
                     }
                 }
 
@@ -566,6 +689,16 @@ public sealed record MappingFixture
     /// never the platform's data of the day. A render asking a question the fixture does not answer fails the fixture.
     /// </summary>
     public IReadOnlyList<FixtureSearchAnswer> Searches { get; init; } = [];
+
+    /// <summary>
+    /// The cached records the fixture assumes, by cached type: for each type named here the fixture renders against exactly
+    /// these rows, whatever the partition's cache holds of it, so a fixture reading business data that changes every day
+    /// (wellbores, the access groups a data office maintains) checks the mapping and never the data of the day. Each row
+    /// is an object with its record <c>id</c> and the fields it holds, named as the cache names them. Types the fixture
+    /// does not name are read from the partition's cache.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<JsonObject>> Cache { get; init; }
+        = new Dictionary<string, IReadOnlyList<JsonObject>>(StringComparer.Ordinal);
 
     /// <summary>The expected record (JSON text, compared canonically).</summary>
     public required string Expected { get; init; }

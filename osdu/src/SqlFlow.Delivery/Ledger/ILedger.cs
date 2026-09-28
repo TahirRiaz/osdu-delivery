@@ -655,6 +655,14 @@ public sealed record CacheUse(string Scope, string TypeName, string ItemId, stri
 /// <summary>A cache set that holds one cached value, for the impact query.</summary>
 public sealed record CacheSetUse(long SetId, string Scope, string TypeName, string ItemId, string Path, Snapshots.CacheUsageKind Kind, string ValueHash, string ValueText);
 
+/// <summary>
+/// One thing records were built without: a value no record of the type answered to (<c>unlisted</c>), a key no row was
+/// listed under (<c>listed</c>, with no rows), an id written without its record (<c>unverified</c>), or a path that held
+/// nothing (<c>empty</c>). <see cref="Key"/> is what was looked for (the record id for a path read empty or an unverified
+/// id), <see cref="Path"/> the field it was looked for under, and <see cref="Records"/> how many records were built so.
+/// </summary>
+public sealed record CacheGap(string TypeName, string Path, Snapshots.CacheUsageKind Kind, string Key, string Value, long Records);
+
 /// <summary>What one rollout pass did, and what is left of the tag.</summary>
 public sealed record UpdateRolloutBatch(long TagId, long Marked, long Processed, long Affected, bool Completed);
 
@@ -675,8 +683,10 @@ public sealed record UpdateTag
     public required string Path { get; init; }
 
     /// <summary>
-    /// changed, removed, unmatched, listed (a lookup table now lists a key records looked up and found no row under), or
-    /// found (the cache now holds a record records reference as an unverified id).
+    /// changed, removed, unmatched, listed (a lookup table now lists a key records looked up and found no row under, or a
+    /// type of OSDU records now holds a record by a value records found none by), relisted (the rows a key finds are no
+    /// longer the ones records read every one of), or found (the cache now holds a record records reference as an
+    /// unverified id).
     /// </summary>
     public required string Change { get; init; }
 
@@ -725,9 +735,13 @@ public sealed record UpdateTag
         "listed" => NewValue is null
             ? $"{TypeName} now lists '{OldValue}' as '{ItemId}', which gives no {Path}"
             : $"{TypeName} now lists '{OldValue}' as '{ItemId}', giving {Path} = '{NewValue}'",
+        "relisted" => $"{TypeName} rows whose {Path} holds '{ItemId}' are now {Rows(NewValue)}, where they were {Rows(OldValue)}",
         _ when OldValue is null => $"{TypeName} '{ItemId}': {Path} gave no value and now gives '{NewValue}'",
         _ => $"{TypeName} '{ItemId}': {Path} changed from '{OldValue}' to '{NewValue}'",
     };
+
+    /// <summary>The rows a listing names, as a description reads them.</summary>
+    private static string Rows(string? ids) => string.IsNullOrEmpty(ids) ? "none" : ids;
 }
 
 /// <summary>What is uploaded and what is not, per flow: the numbers an operator looks at first.</summary>
@@ -1536,6 +1550,16 @@ public interface ILedger
 
     /// <summary>How many delivered records were built from these sets.</summary>
     Task<long> CountRecordsInSetsAsync(IReadOnlyList<long> setIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// What records of <paramref name="scope"/>'s cache were built without, most records first: each value a node found no
+    /// cached record by (a wellbore the cache does not hold), each key a <c>$findAll</c> found no row under (a field no
+    /// access group lists), and each id written without the record it names, with how many records were built so. With
+    /// <paramref name="typeName"/>, the gaps of one cached type; with <paramref name="empty"/>, the paths read that held
+    /// nothing as well (a wellbore without a field), which include the empty fields a <c>$findAll</c> asked for. Every gap
+    /// is filled by the refresh that brings what is missing, which tags the records and redelivers them.
+    /// </summary>
+    Task<IReadOnlyList<CacheGap>> ListCacheGapsAsync(string scope, string? typeName, bool empty, int take, CancellationToken ct = default);
 
     /// <summary>
     /// Writes the tags a cache change produced, one per change rather than one per record, and gates the sets an

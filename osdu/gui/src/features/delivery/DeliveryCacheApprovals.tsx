@@ -39,6 +39,7 @@ const changeTone: Record<string, string> = {
   removed: "bg-destructive/15 text-destructive",
   unmatched: "bg-warning/15 text-warning",
   listed: "bg-info/15 text-info",
+  relisted: "bg-info/15 text-info",
   found: "bg-success/15 text-success",
 };
 
@@ -47,7 +48,8 @@ const changeMeaning: Record<string, string> = {
   changed: "A value delivered records were built from reads differently in the new version of the cache.",
   removed: "The cached record delivered records were built from is no longer in the cache.",
   unmatched: "The value delivered records found this cached record by no longer matches it.",
-  listed: "The lookup table now lists a key delivered records looked up and found no row under, so they were built without what the row gives.",
+  listed: "The cache now holds a row under a value delivered records looked up and found none under (a key a lookup table did not list, or a record such as a wellbore loaded after them), so they were built without what it gives.",
+  relisted: "The rows a key finds are no longer the ones delivered records read every one of ($findAll): a row was listed under the key, such as an access group a data office adds for a field, or one no longer is.",
   found: "The cache now holds a record delivered records reference as an unverified id: they were built without finding it, and are built again against it.",
 };
 

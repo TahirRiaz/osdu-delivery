@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using SqlFlow.Delivery.Expressions;
+using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Search;
 using SqlFlow.Delivery.Snapshots;
@@ -28,6 +29,11 @@ internal static partial class EntryValues
         if (entry.IsCoalesce)
         {
             return Coalesced(entry, root, item, renderer, holds, usages, searched);
+        }
+
+        if (entry.IsList)
+        {
+            return Listed(entry, root, item, renderer, holds, usages, searched);
         }
 
         object? raw;
@@ -78,7 +84,9 @@ internal static partial class EntryValues
         }
         else
         {
-            raw = Cached(entry, root, item, renderer, holds, usages);
+            raw = entry.FindAll is not null
+                ? CachedAll(entry, root, item, renderer, holds, usages)
+                : Cached(entry, root, item, renderer, holds, usages);
             if (raw is null)
             {
                 return null;
@@ -174,6 +182,25 @@ internal static partial class EntryValues
     {
         var path = entry.Target.Text;
         var property = renderer.Schema.Resolve(entry.Target.SchemaPath);
+        if (entry.IsList)
+        {
+            // Each item as it is drawn on its own, one after another: a literal as it renders, a node as its placeholder.
+            var items = new JsonArray();
+            foreach (var part in entry.Parts)
+            {
+                var drawn = Describe(part, renderer, notes);
+                foreach (var value in drawn is JsonArray set ? set.ToList() : [drawn])
+                {
+                    if (value is not null)
+                    {
+                        items.Add(value.DeepClone());
+                    }
+                }
+            }
+
+            return items.Count > 0 ? items : null;
+        }
+
         if (entry.Static is { } fixedValue)
         {
             return Convert(Expand(fixedValue, renderer), property, path, notes);
@@ -229,10 +256,25 @@ internal static partial class EntryValues
         }
 
         var source = node.Source!;
+        if (node.FindAll is { } findAll)
+        {
+            return $"{source} of every {findAll.Type} row where {FindAllText(node, findAll)}";
+        }
+
         var origin = source.Resolves
             ? node.FindBy.Count == 0 ? source.ToString() : $"{source} by {FindText(node)}"
             : node.Modifiers.Count == 0 ? source.ToString() : $"{source} | {ModifierText(node.Modifiers)}";
         return node.Unverified ? origin + " (unverified)" : origin;
+    }
+
+    /// <summary>A <c>$findAll</c>'s lines as one phrase, its column operand with the modifiers that change it.</summary>
+    private static string FindAllText(MappingEntry node, FindAllQuery findAll)
+    {
+        var operand = findAll.Operand.Column is { } column && node.Modifiers.Count > 0
+            ? $"({column} | {ModifierText(node.Modifiers)})"
+            : findAll.Operand.ToString();
+        return string.Join(" and ", findAll.Empty.Select(field => $"{ReferenceField.Normalize(field)} is empty")
+            .Prepend($"{ReferenceField.Normalize(findAll.Field)} = {operand}"));
     }
 
     /// <summary>
@@ -741,16 +783,30 @@ internal static partial class EntryValues
     private static object? Cached(MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
     {
         var path = entry.Target.Text;
-        var source = entry.Source!;
-        var typeName = source.CacheType!;
-        var version = CacheLabel(renderer.Context);
+        var typeName = entry.Source!.CacheType!;
         var type = renderer.References.Type(typeName);
         if (type is null)
         {
-            holds.Add($"{path}: the cache holds no type '{typeName}' in {version}");
+            holds.Add($"{path}: the cache holds no type '{typeName}' in {CacheLabel(renderer.Context)}");
             return null;
         }
 
+        var located = Locate(entry, type, root, item, renderer, holds, usages);
+        return located.Item is { } hit ? Select(entry, type, hit, renderer, holds, usages) : located.Written;
+    }
+
+    /// <summary>
+    /// What a cache node's findBy lines find: the one record the first line that finds one names, or an id the cache does
+    /// not hold that the node writes as it is (<see cref="Located.Written"/>), or nothing, with the reason held or left out
+    /// as the node's required flag says. Several records answering to a value hold the record whatever the flag says.
+    /// </summary>
+    private static Located Locate(
+        MappingEntry entry, ReferenceType type, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
+    {
+        var path = entry.Target.Text;
+        var source = entry.Source!;
+        var typeName = type.Name;
+        var version = CacheLabel(renderer.Context);
         var tried = new List<(FindBy Find, string Value)>();
         (FindBy Find, string Value, ReferenceMatch Found)? undecided = null;
         foreach (var find in entry.FindBy)
@@ -764,7 +820,7 @@ internal static partial class EntryValues
             {
                 if (!TryModify(entry, Read(find.Column!, root, item), root, item, renderer, holds, usages, out var modified))
                 {
-                    return null;
+                    return Located.Nothing;
                 }
 
                 value = modified is bool flag ? (flag ? "true" : "false") : SourceRow.Stringify(modified);
@@ -786,22 +842,23 @@ internal static partial class EntryValues
                 if (CachedReferences.Parse(value) is { } named && type.ById(named.Id) is { } byId)
                 {
                     usages.Add(new CacheUsage(typeName, byId.Id, "id", value, CacheUsageKind.Match));
-                    return Select(entry, type, byId, renderer, holds, usages);
+                    return new Located(byId, null);
                 }
 
                 if (source.ReadsRecordId)
                 {
-                    return WithVersionSeparator(value);
+                    return new Located(null, WithVersionSeparator(value));
                 }
 
-                return Missing(entry, $"{path}: '{value}' is already an OSDU id that {version} does not hold, so '{source.CacheField}' cannot be read from the cache", holds);
+                Missing(entry, $"{path}: '{value}' is already an OSDU id that {version} does not hold, so '{source.CacheField}' cannot be read from the cache", holds);
+                return Located.Nothing;
             }
 
             var found = type.Find(find.Field, value, entry.IgnoreSeparators);
             if (found.Item is { } hit)
             {
                 usages.Add(new CacheUsage(typeName, hit.Id, ReferenceField.Normalize(find.Field), value, CacheUsageKind.Match));
-                return Select(entry, type, hit, renderer, holds, usages);
+                return new Located(hit, null);
             }
 
             if (found.IsCaseAmbiguous)
@@ -817,7 +874,7 @@ internal static partial class EntryValues
             var candidates = string.Join(", ", choice.Found.CaseVariants.Select(c => c.Id));
             holds.Add(
                 $"{path}: '{choice.Value}' matches {choice.Found.CaseVariants.Count} {typeName} records by {ReferenceField.Normalize(choice.Find.Field)} {choice.Found.Loosening} ({candidates}) in {version}; make the incoming value exact with a replace modifier");
-            return null;
+            return Located.Nothing;
         }
 
         if (tried.Count == 0)
@@ -828,14 +885,303 @@ internal static partial class EntryValues
                 holds.Add($"{path}: {operands} is empty, so there is nothing to find in the cache, and the entry is required");
             }
 
-            return null;
+            return Located.Nothing;
+        }
+
+        if (!type.IsLookup)
+        {
+            // Each value no record answered to is recorded, so a later version holding a record it finds (a wellbore loaded
+            // after the logs that name it) reaches the records built without one.
+            foreach (var (find, value) in tried)
+            {
+                usages.Add(new CacheUsage(typeName, CacheUsage.ListingKey(value), ReferenceField.Normalize(find.Field), value, CacheUsageKind.Unlisted));
+            }
         }
 
         var fold = entry.IgnoreSeparators ? ", even with punctuation and spacing ignored" : string.Empty;
         var described = tried.Select(t => t.Value).Distinct(StringComparer.Ordinal).Count() == 1
             ? $"'{tried[0].Value}' by {string.Join("/", tried.Select(t => ReferenceField.Normalize(t.Find.Field)))}"
             : string.Join(" or ", tried.Select(t => $"{ReferenceField.Normalize(t.Find.Field)} '{t.Value}'"));
-        return Missing(entry, $"{path}: no {typeName} matches {described}{fold} in {version}", holds);
+        Missing(entry, $"{path}: no {typeName} matches {described}{fold} in {version}", holds);
+        return Located.Nothing;
+    }
+
+    /// <summary>
+    /// What a cache node's lines found: the record they name, or an id the node writes without a record the cache holds,
+    /// or neither.
+    /// </summary>
+    private readonly record struct Located(ReferenceItem? Item, object? Written)
+    {
+        public static Located Nothing => default;
+    }
+
+    /// <summary>
+    /// The value of a list of values: what each item gives, one after another in the order the list writes them, a value
+    /// given twice (whatever its case) written once, where it is first given. An item that gives nothing adds nothing; one
+    /// that holds holds the record, as it would on its own. A list none of whose items gives a value is left out.
+    /// </summary>
+    private static JsonNode? Listed(
+        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, RenderTrail searched)
+    {
+        var values = new JsonArray();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var part in entry.Parts)
+        {
+            if (Evaluate(part, root, item, renderer, holds, usages, searched) is not { } given)
+            {
+                continue;
+            }
+
+            foreach (var value in given is JsonArray set ? set.ToList() : [given])
+            {
+                if (value is null)
+                {
+                    continue;
+                }
+
+                var key = value is JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text.Trim() : CanonicalJson.ToString(value);
+                if (seen.Add(key))
+                {
+                    values.Add(value.DeepClone());
+                }
+            }
+        }
+
+        return values.Count > 0 ? values : null;
+    }
+
+    /// <summary>
+    /// The value of a <c>$findAll</c> node: the field it reads from every row of its type whose key field holds a value its
+    /// operand gives and whose every field the node asks to be empty holds nothing, as a list in the order of the rows' ids,
+    /// a value two rows give written once. Every key is recorded with the rows it found, none included, and so is every
+    /// field a row was read or passed over for, so a later version that lists another row under a key, drops one, or
+    /// changes what one gives, reaches every record built from it. A key that is an OSDU reference finds the rows that name
+    /// the record with or without the version separator, since both name the same record.
+    /// </summary>
+    private static object? CachedAll(MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages)
+    {
+        var path = entry.Target.Text;
+        var query = entry.FindAll!;
+        var source = entry.Source!;
+        var version = CacheLabel(renderer.Context);
+        var type = renderer.References.Type(query.Type);
+        if (type is null)
+        {
+            holds.Add($"{path}: the cache holds no type '{query.Type}' in {version}");
+            return null;
+        }
+
+        if (!TryKeys(entry, query.Operand, root, item, renderer, holds, usages, out var keys))
+        {
+            return null;
+        }
+
+        if (keys.Count == 0)
+        {
+            return Missing(entry, $"{path}: {query.Operand} gives no value, so no {type.Name} row is found by {ReferenceField.Normalize(query.Field)}", holds);
+        }
+
+        var field = ReferenceField.Normalize(query.Field);
+        var rows = new List<ReferenceItem>();
+        foreach (var key in keys.SelectMany(KeyForms).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var found = type.FindAll(query.Field, key);
+            usages.Add(CacheUsage.Listing(type.Name, field, key, found.Select(row => row.Id)));
+            foreach (var row in found)
+            {
+                if (!rows.Contains(row) && Passes(type, row, query.Empty, usages))
+                {
+                    rows.Add(row);
+                }
+            }
+        }
+
+        var values = new JsonArray();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows.OrderBy(row => row.Id, StringComparer.Ordinal))
+        {
+            if (source.ReadsRecordId && !type.IsLookup)
+            {
+                usages.Add(new CacheUsage(type.Name, row.Id, "id", row.Id, CacheUsageKind.Value));
+                Add(JsonValue.Create(WithVersionSeparator(row.Id)));
+                continue;
+            }
+
+            if (type.Value(row, source.CacheField!) is not { } cached)
+            {
+                // Built without a value here, so a later version giving the row one changes the record.
+                usages.Add(new CacheUsage(type.Name, row.Id, ReferenceField.Normalize(source.CacheField!), string.Empty, CacheUsageKind.Empty));
+                continue;
+            }
+
+            usages.Add(new CacheUsage(type.Name, row.Id, ReferenceField.Normalize(source.CacheField!), cached.Text, CacheUsageKind.Value));
+            foreach (var value in cached.Node is JsonArray set ? set.ToList() : [cached.Node])
+            {
+                if (value is not null)
+                {
+                    Add(value);
+                }
+            }
+        }
+
+        if (values.Count > 0)
+        {
+            return values;
+        }
+
+        var keysText = string.Join(", ", keys.Select(k => $"'{k}'"));
+        var narrowed = query.Empty.Count == 0 ? string.Empty : $" with {string.Join(" and ", query.Empty.Select(f => $"{ReferenceField.Normalize(f)} empty"))}";
+        return Missing(entry, rows.Count == 0
+            ? $"{path}: no {type.Name} row{narrowed} holds {keysText} under {field} in {version}"
+            : $"{path}: the {rows.Count} {type.Name} row(s) holding {keysText} under {field} give nothing at '{source.CacheField}' in {version}", holds);
+
+        void Add(JsonNode value)
+        {
+            var key = value is JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text.Trim() : CanonicalJson.ToString(value);
+            if (key.Length > 0 && seen.Add(key))
+            {
+                values.Add(value.DeepClone());
+            }
+        }
+    }
+
+    /// <summary>
+    /// The keys a <c>$findAll</c> operand gives for the row: a literal, a column's value after the node's modifiers, or every
+    /// value the path of a lookup's record holds. False when finding them held the record: a column a modifier refused, or
+    /// a lookup several records answer to, which holds the record whatever the node's required flag says.
+    /// </summary>
+    private static bool TryKeys(
+        MappingEntry entry, FindAllOperand operand, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, out List<string> keys)
+    {
+        keys = [];
+        if (operand.Literal is { } literal)
+        {
+            keys.Add(literal.Trim());
+            return true;
+        }
+
+        if (operand.Column is { } column)
+        {
+            if (!TryModify(entry, Read(column, root, item), root, item, renderer, holds, usages, out var modified))
+            {
+                return false;
+            }
+
+            var text = (modified is bool flag ? (flag ? "true" : "false") : SourceRow.Stringify(modified))?.Trim();
+            if (!string.IsNullOrEmpty(text))
+            {
+                keys.Add(text);
+            }
+
+            return true;
+        }
+
+        var lookup = operand.Lookup!;
+        var type = renderer.References.Type(lookup.CacheType);
+        if (type is null)
+        {
+            holds.Add($"{entry.Target.Text}: lookup {lookup.Name} reads {lookup.CacheType}, and the cache holds no type '{lookup.CacheType}' in {CacheLabel(renderer.Context)}");
+            return false;
+        }
+
+        // The lookup is asked as the optional node it would be on its own: finding no record gives no keys, and the node
+        // that reads them says what that means.
+        var reader = new MappingEntry
+        {
+            Index = entry.Index,
+            Location = entry.Location,
+            Target = entry.Target,
+            Source = new MappingSource { Kind = MappingSourceKind.Cache, CacheType = lookup.CacheType, CacheField = operand.LookupPath, Lookup = lookup.Name },
+            FindBy = lookup.FindBy,
+            Modifiers = lookup.Modifiers,
+            IgnoreSeparators = lookup.IgnoreSeparators,
+            Required = false,
+        };
+        var mistakes = new List<string>();
+        var located = Locate(reader, type, root, item, renderer, mistakes, usages);
+        if (mistakes.Count > 0)
+        {
+            holds.AddRange(mistakes);
+            return false;
+        }
+
+        if (located.Item is not { } record)
+        {
+            // An id the cache does not hold names its record by itself, and only its id can be read from it.
+            if (located.Written is string id && ReferenceField.IsId(operand.LookupPath!))
+            {
+                keys.Add(id);
+            }
+
+            return true;
+        }
+
+        var field = ReferenceField.Normalize(operand.LookupPath!);
+        if (ReferenceField.IsId(field) && type.MeansRecordId(field))
+        {
+            usages.Add(new CacheUsage(type.Name, record.Id, "id", record.Id, CacheUsageKind.Value));
+            keys.Add(record.Id);
+            return true;
+        }
+
+        if (type.Value(record, field) is not { } value || value.Terms.Count == 0)
+        {
+            // Built without a value here, so a later version giving the record one (a wellbore given its field) changes it.
+            usages.Add(new CacheUsage(type.Name, record.Id, field, string.Empty, CacheUsageKind.Empty));
+            return true;
+        }
+
+        usages.Add(new CacheUsage(type.Name, record.Id, field, value.Text, CacheUsageKind.Value));
+        keys.AddRange(value.Terms);
+        return true;
+    }
+
+    /// <summary>
+    /// The forms a key finds rows by: the key, and for an OSDU reference the same reference with and without the separator
+    /// before its version, since <c>dev:master-data--Field:1234:</c> and <c>dev:master-data--Field:1234</c> name one record.
+    /// </summary>
+    private static IEnumerable<string> KeyForms(string key)
+    {
+        yield return key;
+        if (!OsduId().IsMatch(key) || CachedReferences.Parse(key) is not { } reference)
+        {
+            yield break;
+        }
+
+        var bare = reference.Id;
+        if (!string.Equals(bare, key, StringComparison.Ordinal))
+        {
+            yield return bare;
+        }
+
+        var written = WithVersionSeparator(bare);
+        if (!string.Equals(written, key, StringComparison.Ordinal))
+        {
+            yield return written;
+        }
+    }
+
+    /// <summary>
+    /// Whether a row a <c>$findAll</c> key found holds nothing under every field the node asks to be empty. Each field a row
+    /// passed on is recorded as read empty, and the first it failed on with what it held, so a later version that fills one
+    /// or empties the other reaches the record.
+    /// </summary>
+    private static bool Passes(ReferenceType type, ReferenceItem row, IReadOnlyList<string> empty, List<CacheUsage> usages)
+    {
+        foreach (var field in empty)
+        {
+            var name = ReferenceField.Normalize(field);
+            if (type.HoldsNothing(row, field))
+            {
+                usages.Add(new CacheUsage(type.Name, row.Id, name, string.Empty, CacheUsageKind.Empty));
+                continue;
+            }
+
+            usages.Add(new CacheUsage(type.Name, row.Id, name, type.Value(row, field)!.Text, CacheUsageKind.Value));
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>The cache version a render read, as a hold reason names it: "version 20260910T165153Z of the cache of partition 'dev'".</summary>
