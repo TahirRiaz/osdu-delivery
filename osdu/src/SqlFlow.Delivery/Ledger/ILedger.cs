@@ -1563,7 +1563,8 @@ public interface ILedger
     /// <summary>
     /// What records of <paramref name="scope"/>'s cache were built without, most records first: each value a node found no
     /// cached record by (a wellbore the cache does not hold), each key a <c>$findAll</c> found no row under (a field no
-    /// access group lists), and each id written without the record it names, with how many records were built so. With
+    /// access group lists) in any of the forms it was asked for, a reference with and without its version separator, shown
+    /// once, and each id written without the record it names, with how many records were built so. With
     /// <paramref name="typeName"/>, the gaps of one cached type; with <paramref name="empty"/>, the paths read that held
     /// nothing as well (a wellbore without a field), which include the empty fields a <c>$findAll</c> asked for. Every gap
     /// is filled by the refresh that brings what is missing, which tags the records and redelivers them.

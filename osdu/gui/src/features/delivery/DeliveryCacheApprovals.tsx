@@ -440,7 +440,7 @@ export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal }: {
             toolbar={toolbar}
             onPageLoaded={onPageLoaded}
             emptyMessage={status === ALL
-              ? "No refresh of this cache has changed a value a delivered record was built from."
+              ? "No refresh of this cache has changed a value a delivered record was built from. Records built without a value the cache did not hold are under Missing from cache, and move here once a refresh brings it."
               : "No changes in this state."}
             data-testid="delivery-cache-tags-table"
           />

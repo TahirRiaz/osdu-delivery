@@ -199,8 +199,13 @@ public sealed class AccessListCacheChangeTests : IAsyncLifetime, IDisposable
         Assert.Equal(2, wellbore.Records);
         Assert.Equal(gaps.Max(g => g.Records), gaps[0].Records);
 
-        // A complete log leaves no gap, and a key that found its rows is none either.
-        Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey(MartinLinge.TrimEnd(':')));
+        // A complete log leaves no gap, and a key that found its rows is none either, in whichever form it found them: the
+        // field's groups name it without the version separator and the country's with it.
+        Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey(MartinLinge.TrimEnd(':')) || g.Key == CacheUsage.ListingKey(MartinLinge));
+        Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey(Norway.TrimEnd(':')) || g.Key == CacheUsage.ListingKey(Norway));
+
+        // A key no form of which found a row is one gap, not one per form.
+        Assert.DoesNotContain(gaps, g => g.Key == CacheUsage.ListingKey("dev:master-data--Field:NEW"));
 
         // One type's gaps, and the paths read empty beside them: the wellbore the new field's log lies in has no country.
         Assert.All(await _ledger.ListCacheGapsAsync(Scope, "Wellbore", empty: false, take: 50), g => Assert.Equal("Wellbore", g.TypeName));

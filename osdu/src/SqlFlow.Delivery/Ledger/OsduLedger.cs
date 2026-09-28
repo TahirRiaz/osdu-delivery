@@ -2062,8 +2062,8 @@ public sealed partial class OsduLedger : ILedger
         var unverified = KindText(Snapshots.CacheUsageKind.Unverified);
         var listed = KindText(Snapshots.CacheUsageKind.Listed);
         var emptied = KindText(Snapshots.CacheUsageKind.Empty);
-        var rows = await ReadAsync(
-            db =>
+        return await ReadAsync(
+            async db =>
             {
                 var entries = db.DeliveryCacheSetEntries.Where(e => e.Scope == scope
                     && (e.Kind == unlisted || e.Kind == unverified || (e.Kind == listed && e.ValueText == string.Empty) || (empty && e.Kind == emptied)));
@@ -2072,20 +2072,61 @@ public sealed partial class OsduLedger : ILedger
                     entries = entries.Where(e => e.TypeName == typeName);
                 }
 
-                // A gap counts the records built without it, through the sets that hold it: the sets number in the thousands.
-                return entries
-                    .Join(db.DeliveryRecords, e => (long?)e.SetId, r => r.CacheSetId, (e, r) => new { e.TypeName, e.Path, e.Kind, e.ItemId, e.ValueText })
-                    .GroupBy(g => new { g.TypeName, g.Path, g.Kind, g.ItemId, g.ValueText })
-                    .Select(g => new { g.Key.TypeName, g.Key.Path, g.Key.Kind, g.Key.ItemId, g.Key.ValueText, Records = g.LongCount() })
+                // A gap is held per set, and counts the records built without it through the sets: they number in the thousands.
+                var held = await entries
+                    .Select(e => new { e.SetId, e.TypeName, e.Path, e.Kind, e.ItemId, e.ValueText })
+                    .ToListAsync(ct).ConfigureAwait(false);
+                var records = new Dictionary<long, long>();
+                var answered = new HashSet<(long SetId, string TypeName, string Path, string Record)>();
+                var listedSets = held.Where(e => e.Kind == listed).Select(e => e.SetId).Distinct().ToHashSet();
+                foreach (var chunk in held.Select(e => e.SetId).Distinct().Chunk(LookupChunk))
+                {
+                    var ids = chunk.ToList();
+                    var counts = await db.DeliveryRecords
+                        .Where(r => r.CacheSetId != null && ids.Contains(r.CacheSetId!.Value))
+                        .GroupBy(r => r.CacheSetId!.Value)
+                        .Select(g => new { SetId = g.Key, Records = g.LongCount() })
+                        .ToListAsync(ct).ConfigureAwait(false);
+                    foreach (var count in counts)
+                    {
+                        records[count.SetId] = count.Records;
+                    }
+
+                    // A $findAll asks for a reference with and without its version separator, and records each form: a form
+                    // that found no row is no gap when another form of the same record found rows in the same set.
+                    var withListings = ids.Where(listedSets.Contains).ToList();
+                    if (withListings.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var found = await db.DeliveryCacheSetEntries
+                        .Where(e => e.Scope == scope && e.Kind == listed && e.ValueText != string.Empty && withListings.Contains(e.SetId))
+                        .Select(e => new { e.SetId, e.TypeName, e.Path, e.ItemId })
+                        .ToListAsync(ct).ConfigureAwait(false);
+                    foreach (var listing in found)
+                    {
+                        answered.Add((listing.SetId, listing.TypeName, listing.Path, ListedRecord(listing.ItemId)));
+                    }
+                }
+
+                return (IReadOnlyList<CacheGap>)held
+                    .Where(e => records.ContainsKey(e.SetId)
+                        && (e.Kind != listed || !answered.Contains((e.SetId, e.TypeName, e.Path, ListedRecord(e.ItemId)))))
+                    .GroupBy(e => (e.TypeName, e.Path, e.Kind, Key: e.Kind == listed ? ListedKey(e.ItemId) : e.ItemId, e.ValueText))
+                    .Select(g => new CacheGap(g.Key.TypeName, g.Key.Path, ToKind(g.Key.Kind), g.Key.Key, g.Key.ValueText, g.Select(e => e.SetId).Distinct().Sum(s => records[s])))
                     .OrderByDescending(g => g.Records)
-                    .ThenBy(g => g.TypeName)
-                    .ThenBy(g => g.Path)
-                    .ThenBy(g => g.ItemId)
+                    .ThenBy(g => g.TypeName, StringComparer.Ordinal)
+                    .ThenBy(g => g.Path, StringComparer.Ordinal)
+                    .ThenBy(g => g.Key, StringComparer.Ordinal)
                     .Take(take)
-                    .ToListAsync(ct);
+                    .ToList();
             },
             ct).ConfigureAwait(false);
-        return rows.Select(r => new CacheGap(r.TypeName, r.Path, ToKind(r.Kind), r.ItemId, r.ValueText, r.Records)).ToList();
+
+        // The record a listed key names, whichever form of it was looked up, and the form it is shown by: as a reference is written.
+        static string ListedRecord(string key) => Rendering.CachedReferences.Parse(key)?.Id ?? key;
+        static string ListedKey(string key) => Rendering.CachedReferences.Parse(key) is { } reference ? Rendering.CachedReferences.Written(reference.Id) : key;
     }
 
     public async Task<int> TagUpdatesAsync(IReadOnlyList<UpdateTag> tags, DateTime nowUtc, CancellationToken ct = default)
