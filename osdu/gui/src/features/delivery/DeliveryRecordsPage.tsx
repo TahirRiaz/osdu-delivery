@@ -14,6 +14,7 @@ import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { PagedTable } from "@/components/PagedTable";
 import { SearchInput } from "@/components/SearchInput";
+import { useActivePartition } from "./activePartition";
 import { RecordStatusBadge } from "./DeliveryBadges";
 import { CompactTime, OsduTarget, RecordIdentity } from "./RecordCells";
 
@@ -187,12 +188,15 @@ export default function DeliveryRecordsPage() {
   // The flow is a ledger identity holding records: one per interface of a source and partition of a flow that names its
   // partitions. An interface's choice leads with the interface, since a source's interfaces share the flow's name and the
   // picker is too narrow to show both whole; a partition follows the flow as its ledger is named (flow@partition).
+  // Every read here is the workbench partition's: the flows to narrow to are the ledgers it keeps, and the records are its.
+  // With no partition picked (a catalog that knows none), every partition's, each flow naming its own.
+  const [active] = useActivePartition();
   const flow = searchParams.get("flow") ?? "";
-  const flows = useQuery({ queryKey: ["delivery", "record-flows"], queryFn: deliveryApi.recordFlows });
+  const flows = useQuery({ queryKey: ["delivery", "record-flows", active], queryFn: () => deliveryApi.recordFlows(active) });
   const flowOptions = useMemo<FilterOption[]>(() => {
     const named = (flows.data ?? []).map((f) => ({
       value: f.flowId,
-      label: `${f.interface ? `${f.interface} · ${f.flowName}` : f.flowName}${f.partition ? `@${f.partition}` : ""}`,
+      label: `${f.interface ? `${f.interface} · ${f.flowName}` : f.flowName}${f.partition && active === null ? `@${f.partition}` : ""}`,
     }));
     // Two identities named alike (a ledger an interface stopped adopting, say) are told apart by the identity itself.
     const shared = new Set(named.map((o) => o.label).filter((label, i, all) => all.indexOf(label) !== i));
@@ -200,9 +204,9 @@ export default function DeliveryRecordsPage() {
     // A link can name a flow the list leaves out, because it holds no records or no synced pipeline names it any more;
     // the filter still applies, and says so.
     return flow !== "" && flows.isSuccess && !options.some((o) => o.value === flow)
-      ? [{ value: flow, label: "Flow not listed", hint: `${flow}: no records, or no longer synced` }, ...options]
+      ? [{ value: flow, label: "Flow not listed", hint: `${flow}: no records${active === null ? "" : ` in ${active}`}, or no longer synced` }, ...options]
       : options;
-  }, [flows.data, flows.isSuccess, flow]);
+  }, [flows.data, flows.isSuccess, flow, active]);
 
   const setParam = (name: string, next: string | null) => setSearchParams((current) => {
     const params = new URLSearchParams(current);
@@ -221,7 +225,7 @@ export default function DeliveryRecordsPage() {
     <Page data-testid="page-delivery-records">
       <PageHeader
         title="Records"
-        subtitle="The records of every flow, newest first, and a way back to any one of them: a wellbore id or well name the mapping declares, a source key or label, an OSDU id, a delivery key, or the ingestion file it came from. Every flow is searched unless one is chosen, and each hit says which value matched."
+        subtitle={`The records of every flow${active === null ? "" : ` in ${active}`}, newest first, and a way back to any one of them: a wellbore id or well name the mapping declares, a source key or label, an OSDU id, a delivery key, or the ingestion file it came from. Every flow is searched unless one is chosen, and each hit says which value matched.`}
       />
       <FilterBar>
         <SearchInput
@@ -263,11 +267,12 @@ export default function DeliveryRecordsPage() {
         </p>
       )}
       <PagedTable
-        queryKey={["delivery", "lookup", term, status, flow]}
+        queryKey={["delivery", "lookup", term, status, flow, active]}
         fetchPage={(page, pageSize) => deliveryApi.lookupRecords({
           search: searching ? term : undefined,
           status: status === ALL ? undefined : (status as DeliveryRecordStatus),
           flowId: flow === "" ? undefined : flow,
+          partition: active ?? undefined,
           page,
           pageSize,
         })}

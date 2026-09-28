@@ -35,6 +35,14 @@ function snapshot(): string | null {
 }
 
 /**
+ * The partition the workbench works in now, read outside React: what every call to the control plane carries in the
+ * `X-Osdu-Partition` header, so a read across flows (the Records page, the audit trail, the search) is that partition's.
+ */
+export function activePartition(): string | null {
+  return active !== null && isPartitionId(active) ? active : null;
+}
+
+/**
  * Makes `next` the partition every OSDU page is read in, and remembers it. The title bar's switcher sets it, and so does a
  * page opened on a link that names its partition (`?partition=`), so the title bar always says which partition the page
  * in view is about.

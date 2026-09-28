@@ -54,6 +54,12 @@ export interface DeliveryFlowStats {
   partition?: string | null;
   /** The partitions the counts cover, for a flow that names its partitions; null for one that names none. */
   partitions?: string[] | null;
+  /**
+   * For a flow whose partition is its data-partition-id header, the partition its ledger is kept under, as the ledger's
+   * directory holds it; null until it has run, and for a flow that names or follows partitions. Never sent back as a
+   * request's partition: such a flow takes none.
+   */
+  headerPartition?: string | null;
 }
 
 /** One submission as the ledger received it and what became of it. */
@@ -104,6 +110,8 @@ export interface DeliverySubmission {
   sourceWindow: Record<string, unknown> | null;
   /** The run that coordinated the submission. */
   runId: string | null;
+  /** The partition the submission's ledger is kept under. */
+  partition?: string | null;
 }
 
 /** One work batch of a submission: a file of rendered documents and how far its drain got. */
@@ -200,6 +208,8 @@ export interface DeliveryRecord {
   planRequestedUtc: string | null;
   /** While the record is waiting: the OSDU id of the record it waits for. */
   waitingFor: string | null;
+  /** The partition the record's ledger is kept under, whichever way its flow names it. */
+  partition?: string | null;
   /** The OSDU ids the pending document refers to, each with the property that holds it. */
   references: DeliveryRecordReference[] | null;
 }
@@ -344,6 +354,8 @@ export interface DeliveryActivity {
   summary: string | null;
   /** The captured log; only the detail endpoint fills it. */
   log: string | null;
+  /** The partition the activity's ledger is kept under. */
+  partition?: string | null;
 }
 
 /** A mapping document as the sync found it in a repository. */
@@ -748,6 +760,8 @@ export interface DeliveryRecordLookupQuery extends PageQuery {
   status?: DeliveryRecordStatus;
   /** The ledger identity of one flow (a {@link DeliveryRecordFlow}'s `flowId`); left out, every flow. */
   flowId?: string;
+  /** The partition whose ledgers are read; left out, the workbench's, which every call carries. */
+  partition?: string;
 }
 
 /**
@@ -1132,7 +1146,10 @@ export interface DeliveryActivityListQuery extends PageQuery {
   pipelineId?: string;
   /** Which interface of that source; required when it delivers more than one. */
   interface?: string;
-  /** Which partition of that flow; required when it names its partitions. */
+  /**
+   * Which partition of that flow, required when it names its partitions; with no flow, the partition whose trail is read,
+   * the workbench's when left out.
+   */
   partition?: string;
   submissionId?: string;
   runId?: string;
@@ -1674,6 +1691,8 @@ export interface DeliveryPartition {
   deliveryFlows: string[];
   /** Cache changes found in it that wait for a decision. */
   pendingChanges: number;
+  /** How many ledgers the ledger's directory keeps under it: one per interface that delivered or retrieved there. */
+  ledgers?: number;
 }
 
 /**
@@ -1762,8 +1781,9 @@ export const deliveryApi = {
    */
   lookupRecords: (query: DeliveryRecordLookupQuery) =>
     get<PagedResult<DeliveryRecordHit>>("/api/v1/delivery/records", query as unknown as QueryParams),
-  /** The flows the lookup can be narrowed to, one per interface of a source, ordered by flow. */
-  recordFlows: () => get<DeliveryRecordFlow[]>("/api/v1/delivery/records/flows"),
+  /** The flows the lookup can be narrowed to, one per interface of a source, ordered by flow: of one partition's ledgers, when named. */
+  recordFlows: (partition?: string | null) =>
+    get<DeliveryRecordFlow[]>("/api/v1/delivery/records/flows", partition ? { partition } : {}),
   /** A flow's submissions in one ledger, newest first. */
   submissions: (pipelineId: string, max?: number, scope?: DeliveryFlowScope) =>
     get<DeliverySubmission[]>(`/api/v1/delivery/flows/${pipelineId}/submissions`, {

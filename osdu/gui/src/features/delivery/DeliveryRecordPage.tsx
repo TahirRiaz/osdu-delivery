@@ -280,7 +280,9 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
             />
           )}
           {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={flowLabel} to={flowLedgerRoute(detail.pipelineId, flowScope)} testId="record-pipeline-link" copyTestId="copy-record-pipeline" />}
-          {detail.partition && <IdChip label="partition" value={detail.partition} testId="record-partition" copyTestId="copy-record-partition" />}
+          {(detail.record.partition ?? detail.partition) && (
+            <IdChip label="partition" value={(detail.record.partition ?? detail.partition)!} testId="record-partition" copyTestId="copy-record-partition" />
+          )}
           {record.lastSubmissionId && <IdChip label="submission" value={record.lastSubmissionId} to={`/delivery/submissions/${record.lastSubmissionId}`} testId="record-submission-link" copyTestId="copy-record-submission" />}
         </div>
         <RecordSituation record={record} waitsOn={detail.waitsOn} waitedOnBy={detail.waitedOnBy ?? []} />

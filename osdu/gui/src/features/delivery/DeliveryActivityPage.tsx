@@ -14,6 +14,7 @@ import { PagedTable, type Column } from "@/components/PagedTable";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
+import { useActivePartition } from "./activePartition";
 import { prettyJson } from "./prettyJson";
 
 const ALL = "all";
@@ -31,10 +32,11 @@ function OutcomeBadge({ outcome }: { outcome: DeliveryActivity["outcome"] }) {
   return <Badge variant="secondary" className={className}>{outcome}</Badge>;
 }
 
-/** The audit trail across every delivery flow: who did what, when, with which inputs, and how it ended. Each entry
- * opens with its recorded parameters and, for runs, the captured log. */
+/** The audit trail across every delivery flow in the workbench's partition: who did what, when, with which inputs, and how
+ * it ended. Each entry opens with its recorded parameters and, for runs, the captured log. */
 export default function DeliveryActivityPage() {
   const navigate = useNavigate();
+  const [active] = useActivePartition();
   const [actor, setActor] = useLocalStorageState("sqlflow.filters.delivery-activity.actor", "");
   const [kind, setKind] = useLocalStorageState("sqlflow.filters.delivery-activity.kind", ALL);
   const [outcome, setOutcome] = useLocalStorageState("sqlflow.filters.delivery-activity.outcome", ALL);
@@ -48,7 +50,19 @@ export default function DeliveryActivityPage() {
 
   const columns: Column<DeliveryActivity>[] = [
     { id: "started", header: "When", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
-    { id: "flow", header: "Flow", render: (row) => <span className="font-mono text-[12px] font-medium">{row.flowName}</span> },
+    {
+      id: "flow",
+      header: "Flow",
+      render: (row) => (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="font-mono text-[12px] font-medium">{row.flowName}</span>
+          {/* Every row is the workbench partition's when one is picked; with none, each says which it is. */}
+          {active === null && row.partition && (
+            <Badge variant="secondary" className="font-mono text-[10px]" title="The OSDU partition this activity's ledger is kept under">{row.partition}</Badge>
+          )}
+        </span>
+      ),
+    },
     { id: "kind", header: "Action", render: (row) => row.kind },
     { id: "actor", header: "By", render: (row) => <span className="font-mono text-[12px]">{row.actor}</span> },
     { id: "outcome", header: "Outcome", render: (row) => <OutcomeBadge outcome={row.outcome} /> },
@@ -84,7 +98,10 @@ export default function DeliveryActivityPage() {
 
   return (
     <Page data-testid="page-delivery-activity">
-      <PageHeader title="Delivery audit trail" subtitle="Every run and intervention on every delivery flow, by actor, newest first." />
+      <PageHeader
+        title="Delivery audit trail"
+        subtitle={`Every run and intervention on every delivery flow${active === null ? "" : ` in ${active}`}, by actor, newest first.`}
+      />
       <FilterBar>
         <SearchInput value={actor} onChange={setActor} placeholder="Actor (user:name, schedule, manual)" label="Filter by actor" testId="delivery-activity-actor" className="sm:w-72" />
         <Select value={kind} onValueChange={setKind}>
@@ -103,10 +120,11 @@ export default function DeliveryActivityPage() {
         </Select>
       </FilterBar>
       <PagedTable
-        queryKey={["delivery", "activities", actor, kind, outcome]}
+        queryKey={["delivery", "activities", actor, kind, outcome, active]}
         fetchPage={(page, pageSize) => deliveryApi.activities({
           page,
           pageSize,
+          partition: active ?? undefined,
           actor: actor.trim() === "" ? undefined : actor.trim(),
           kind: kind === ALL ? undefined : kind,
           outcome: outcome === ALL ? undefined : outcome,
@@ -124,7 +142,9 @@ export default function DeliveryActivityPage() {
           <SheetHeader>
             <SheetTitle>{detail.data ? `${detail.data.kind} on ${detail.data.flowName}` : "Activity"}</SheetTitle>
             <SheetDescription>
-              {detail.data ? `${detail.data.actor}, started ${detail.data.startedUtc}, ${detail.data.outcome}.` : "Loading."}
+              {detail.data
+                ? `${detail.data.actor}, started ${detail.data.startedUtc}, ${detail.data.outcome}${detail.data.partition ? `, in ${detail.data.partition}` : ""}.`
+                : "Loading."}
             </SheetDescription>
           </SheetHeader>
           {detail.data && (

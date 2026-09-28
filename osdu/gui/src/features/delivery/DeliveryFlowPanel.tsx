@@ -91,7 +91,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const runFilter = searchParams.get("run");
   // The chips point at records of the ledger that was showing; another interface's or partition's records are not those.
   const {
-    rows, names, many, interfaceName, partitions, partition, outside, scope, ready, selectInterface, selectPartition,
+    rows, names, many, interfaceName, partitions, partition, headerPartition, outside, scope, ready, selectInterface, selectPartition,
   } = useInterfaceChoice(pipelineId, SCOPED_TO_LEDGER);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string>(ALL);
@@ -228,6 +228,12 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
               ? "the one partition this flow delivers to; it keeps its own ledger"
               : `of ${partitions.length} partitions; each keeps its own ledger, and every count and action below is this one's`}
         />
+      )}
+      {partitions.length === 0 && headerPartition !== null && (
+        <p className="text-[13px] text-muted-foreground" data-testid="delivery-header-partition">
+          Delivers to <span className="font-mono text-foreground">{headerPartition}</span>, the partition its target.headers name
+          {outside !== null ? `; the workbench is in ${outside}, and nothing shown here is that partition's` : ""}.
+        </p>
       )}
       {many && (
         <InterfacePicker

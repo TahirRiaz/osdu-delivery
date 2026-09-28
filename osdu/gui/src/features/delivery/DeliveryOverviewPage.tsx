@@ -30,22 +30,41 @@ function Count({ label, value, tone }: { label: string; value: number; tone?: "s
 }
 
 /**
- * One delivery flow's card. A flow that names the workbench's partition is counted in it, and its partition badges mark
- * that one; a flow that works in partitions but not that one is counted across all of them, and says so.
+ * The partitions a flow's counts say it delivers to: those it names or serves, or the one its header's ledger is kept
+ * under; null while that is not known (a flow whose partition is its header's, before it has run).
  */
-function FlowCard({ pipeline, stats, active, onOpen }: {
+function deliversTo(stats: DeliveryFlowStats | undefined): string[] | null {
+  if (stats === undefined) {
+    return null;
+  }
+
+  return stats.partitions ?? (stats.headerPartition ? [stats.headerPartition] : null);
+}
+
+/**
+ * One delivery flow's card, in the workbench's partition. A flow that delivers there is counted there, and its partition
+ * badges mark that one; a flow that delivers only to other partitions says where, and shows no counts, since none of its
+ * records are the workbench partition's.
+ */
+function FlowCard({ pipeline, stats, active, elsewhere, onOpen }: {
   pipeline: PipelineSummary;
   stats: DeliveryFlowStats | undefined;
   active: string | null;
+  elsewhere: boolean;
   onOpen: () => void;
 }) {
-  const partitions = stats?.partitions ?? [];
-  const inActive = stats?.partition !== undefined && stats.partition !== null;
+  const partitions = deliversTo(stats) ?? [];
+  const counted = stats?.partition ?? stats?.headerPartition ?? null;
   const total = stats?.total ?? 0;
   const delivered = stats?.delivered ?? 0;
   const ratio = total === 0 ? 0 : Math.round((delivered / total) * 100);
   return (
-    <Card className="cursor-pointer gap-3 rounded-lg p-4 hover:bg-muted/40" onClick={onOpen} data-testid={`delivery-flow-${pipeline.id}`}>
+    <Card
+      className={`cursor-pointer gap-3 rounded-lg p-4 hover:bg-muted/40 ${elsewhere ? "opacity-60" : ""}`}
+      onClick={onOpen}
+      data-testid={`delivery-flow-${pipeline.id}`}
+      data-elsewhere={elsewhere ? "true" : undefined}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-[13px] font-medium">{pipeline.name}</span>
         <Badge variant="outline">{pipeline.batch ?? "default"}</Badge>
@@ -54,15 +73,17 @@ function FlowCard({ pipeline, stats, active, onOpen }: {
         {partitions.length > 0 && (
           <span
             className="ml-auto flex flex-wrap items-center gap-1"
-            title={inActive
-              ? `The OSDU partitions this flow delivers to; the counts are ${stats!.partition}'s, the workbench's partition.`
-              : `The OSDU partitions this flow delivers to${active === null ? "" : `, of which ${active} is not one`}; the counts add every partition's ledger up.`}
+            title={elsewhere
+              ? `The partitions this flow delivers to; ${active} is not one of them.`
+              : counted !== null
+                ? `The partitions this flow delivers to; the counts are ${counted}'s.`
+                : "The partitions this flow delivers to; the counts add every partition's ledger up."}
             data-testid={`delivery-flow-${pipeline.id}-partitions`}
           >
             {partitions.map((name) => (
               <Badge
                 key={name}
-                variant={name === stats?.partition ? "default" : "secondary"}
+                variant={name === counted ? "default" : "secondary"}
                 className="font-mono text-[11px]"
               >
                 {name}
@@ -73,6 +94,10 @@ function FlowCard({ pipeline, stats, active, onOpen }: {
       </div>
       {stats === undefined ? (
         <Skeleton className="h-14 w-full" />
+      ) : elsewhere ? (
+        <p className="text-[12px] text-muted-foreground" data-testid={`delivery-flow-${pipeline.id}-elsewhere`}>
+          Delivers to {partitions.join(", ")}, not {active}. Pick one of those in the title bar for its counts.
+        </p>
       ) : (
         <>
           <div className="h-2 w-full overflow-hidden rounded bg-muted">
@@ -131,7 +156,17 @@ function FindRecordForm() {
   );
 }
 
-/** Every delivery flow with what it has delivered: the "uploaded versus not" view across the estate. */
+/** The page's one line of totals: the flows that deliver to the workbench's partition, and what they hold there. */
+function subtitle(flows: number, active: string | null, totals: { total: number; delivered: number; pending: number; held: number; failed: number; drifted: number }) {
+  const where = active === null ? "" : ` in ${active}`;
+  return `${flows} delivery flow${flows === 1 ? "" : "s"}${where}: ${totals.delivered.toLocaleString()} of ${totals.total.toLocaleString()} records delivered, `
+    + `${totals.pending.toLocaleString()} pending, ${totals.held.toLocaleString()} held, ${totals.failed.toLocaleString()} failed, ${totals.drifted.toLocaleString()} drifted.`;
+}
+
+/**
+ * Every delivery flow with what it has delivered in the workbench's partition: the "uploaded versus not" view. A flow that
+ * delivers only to other partitions is listed, dimmed, with where it delivers, and left out of the totals.
+ */
 export default function DeliveryOverviewPage() {
   const navigate = useNavigate();
   const flows = useQuery({
@@ -147,16 +182,25 @@ export default function DeliveryOverviewPage() {
       refetchInterval: 15000,
     })),
   });
-  // A flow that names the workbench's partition is counted in it; the whole flow's counts say which partitions it names.
+  // A flow that names or serves the workbench's partition is counted in it, unless its whole counts already are that
+  // partition's (a flow of one partition, or one whose partition is its header's); the whole flow's counts say which
+  // partitions it delivers to. A flow that delivers only elsewhere is not the workbench partition's, and is not added up.
   const inActive = useQueries({
-    queries: pipelines.map((pipeline, index) => ({
-      queryKey: ["delivery", "stats", pipeline.id, null, active],
-      queryFn: () => deliveryApi.stats(pipeline.id, { partition: active }),
-      enabled: active !== null && (whole[index]?.data?.partitions ?? []).includes(active),
-      refetchInterval: 15000,
-    })),
+    queries: pipelines.map((pipeline, index) => {
+      const counted = whole[index]?.data;
+      return {
+        queryKey: ["delivery", "stats", pipeline.id, null, active],
+        queryFn: () => deliveryApi.stats(pipeline.id, { partition: active }),
+        enabled: active !== null && (counted?.partitions ?? []).includes(active) && counted?.partition !== active,
+        refetchInterval: 15000,
+      };
+    }),
   });
   const stats = pipelines.map((_, index) => (inActive[index]?.data !== undefined ? inActive[index] : whole[index]));
+  const elsewhere = pipelines.map((_, index) => {
+    const delivers = deliversTo(whole[index]?.data);
+    return active !== null && delivers !== null && !delivers.includes(active);
+  });
 
   if (flows.isError) {
     return (
@@ -167,9 +211,9 @@ export default function DeliveryOverviewPage() {
   }
 
   const totals = stats.reduce(
-    (acc, q) => {
+    (acc, q, index) => {
       const s = q.data;
-      if (!s) {
+      if (!s || elsewhere[index]) {
         return acc;
       }
 
@@ -182,7 +226,7 @@ export default function DeliveryOverviewPage() {
     <Page data-testid="page-delivery">
       <PageHeader
         title="Delivery"
-        subtitle={flows.data ? `${pipelines.length} delivery flow${pipelines.length === 1 ? "" : "s"}: ${totals.delivered.toLocaleString()} of ${totals.total.toLocaleString()} records delivered, ${totals.pending.toLocaleString()} pending, ${totals.held.toLocaleString()} held, ${totals.failed.toLocaleString()} failed, ${totals.drifted.toLocaleString()} drifted.` : undefined}
+        subtitle={flows.data ? subtitle(pipelines.length - elsewhere.filter(Boolean).length, active, totals) : undefined}
         actions={<FindRecordForm />}
       />
       {flows.data === undefined ? (
@@ -202,6 +246,7 @@ export default function DeliveryOverviewPage() {
               pipeline={pipeline}
               stats={stats[index]?.data}
               active={active}
+              elsewhere={elsewhere[index] ?? false}
               onOpen={() => navigate(`/pipelines/${pipeline.id}?tab=delivery${stats[index]?.data?.partition ? `&partition=${encodeURIComponent(stats[index]!.data!.partition!)}` : ""}`)}
             />
           ))}

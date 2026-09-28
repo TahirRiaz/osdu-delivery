@@ -15,8 +15,10 @@ import { usePartitions } from "./usePartitions";
  * its header's has `partitions` empty and `partition` null. A flow that works in partitions (the ones it names, or every
  * registered one) is shown in the partition the URL names, else in the workbench's partition (the title bar's) when the
  * flow serves it, else in the registry's default when it serves that, else in the first it serves; `outside` is then the
- * workbench's partition the flow does not deliver to, for the view to say so. A partition the URL names, or one
- * picked here, becomes the workbench's. `current` is the interface in view either way, once the listing has loaded, and
+ * workbench's partition the flow does not deliver to, for the view to say so. A flow whose partition is its header's
+ * delivers to the partition its ledger is kept under (`headerPartition`, from its counts; null until it has run), and is
+ * `outside` the workbench's partition when that is another. A partition the URL names, or one picked here, becomes the
+ * workbench's. `current` is the interface in view either way, once the listing has loaded, and
  * `scope` is what every flow-level request of the view carries. `clearOnChange` names the URL parameters that meant
  * something only for the ledger that was showing.
  */
@@ -43,7 +45,14 @@ export function useInterfaceChoice(pipelineId: string, clearOnChange: readonly s
       : active !== null && partitions.includes(active)
         ? active
         : defaultPartition !== null && partitions.includes(defaultPartition) ? defaultPartition : partitions[0];
-  const outside = partitions.length > 0 && active !== null && !partitions.includes(active) ? active : null;
+  const headerPartition = partitions.length > 0
+    ? null
+    : (interfaces.data ?? []).map((row) => row.stats.headerPartition ?? null).find((name): name is string => name !== null) ?? null;
+  const outside = active === null
+    ? null
+    : partitions.length > 0
+      ? (partitions.includes(active) ? null : active)
+      : headerPartition !== null && headerPartition !== active ? active : null;
 
   // A link that names the partition makes it the workbench's, so the title bar says which partition the page is about.
   useEffect(() => {
@@ -82,6 +91,6 @@ export function useInterfaceChoice(pipelineId: string, clearOnChange: readonly s
     setActive(next);
   }, [choose, setActive]);
   return {
-    interfaces, rows, names, many, interfaceName, current, partitions, partition, outside, scope, ready, selectInterface, selectPartition,
+    interfaces, rows, names, many, interfaceName, current, partitions, partition, headerPartition, outside, scope, ready, selectInterface, selectPartition,
   };
 }

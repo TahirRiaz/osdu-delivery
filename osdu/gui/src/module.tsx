@@ -10,6 +10,7 @@ import type { FlowKindContribution, GuiModule, RunDetailContribution } from "@/m
 import { Deferred } from "./features/delivery/Deferred";
 import { CacheRunActions, DeliveryRunActions, DeliveryRunCounts, DeliveryRunMeta } from "./features/delivery/DeliveryRunHeader";
 import { DeliveryTriggerFields } from "./features/delivery/DeliveryTriggerFields";
+import { activePartition } from "./features/delivery/activePartition";
 import { PartitionSwitcher } from "./features/delivery/PartitionSwitcher";
 
 // The OSDU Delivery module: its pages, its navigation, the panels of the delivery, retrieval and cache kinds on SQLFlow's
@@ -229,8 +230,10 @@ export const osduDeliveryModule: GuiModule = {
     },
   ],
   census,
-  // The OSDU partition every OSDU page is read in, picked once for the whole workbench.
+  // The OSDU partition every OSDU page is read in, picked once for the whole workbench, and carried by every call so each
+  // read across flows answers in it.
   titleBar: [{ id: "osdu-partition", component: PartitionSwitcher }],
+  requestHeaders: [{ name: "X-Osdu-Partition", value: activePartition }],
   branding: {
     productName: "OSDU Delivery",
     attribution: "powered by SQLFlow",
