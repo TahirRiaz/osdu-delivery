@@ -361,7 +361,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
               </Button>
             )}
           </FilterBar>
-          {/* A flow that names its partitions has no records until the partition in view is known. */}
+          {/* A flow that works in partitions has no records until the partition in view is known. */}
           {!ready ? <Skeleton className="h-40 w-full rounded-lg" /> : (
           <PagedTable
             queryKey={["delivery", "records", pipelineId, interfaceName, partition, search, status, drifted, contains, submissionFilter, deliveredFilter, runFilter]}

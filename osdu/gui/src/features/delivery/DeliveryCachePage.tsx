@@ -151,7 +151,7 @@ export default function DeliveryCachePage() {
               <EmptyState
                 icon={<DatabaseZap />}
                 title="No cache is defined yet"
-                description="A cache is filled by cache flows: YAML files in a repository with flowType: cache, listing the OSDU types to cache and the paths of each record to keep, and the dictionaries and ingestion tables to hold as lookup tables. Each fills the cache of every partition it names under partitions, or of the one in its data-partition-id. Sync the repository and each partition's cache appears here; refresh a flow to capture the first version."
+                description="A cache is filled by cache flows: YAML files in a repository with flowType: cache, listing the OSDU types to cache and the paths of each record to keep, and the dictionaries and ingestion tables to hold as lookup tables. Each fills the cache of every partition it names under partitions, of the one in its data-partition-id, or when it names neither, of every registered partition. Sync the repository and each partition's cache appears here; refresh a flow to capture the first version."
                 data-testid="delivery-cache-none"
               />
             </Card>
@@ -234,7 +234,7 @@ function cacheFilesLink(flows: DeliveryCacheFlow[]): string {
 /**
  * The header's actions for the cache flows filling the partition: Cache files opens them as a filter on Pipelines, and
  * Refresh runs one flow's capture (a button when one flow fills the partition, a menu naming the flows when several do,
- * because a refresh captures what one flow declares, not the partition's whole cache). A flow that names its partitions
+ * because a refresh captures what one flow declares, not the partition's whole cache). A flow that works in partitions
  * refreshes the partition in view: the dialog opens on it, and says which others the flow builds.
  */
 function CacheFlowActions({ flows, scope, onRefresh }: {

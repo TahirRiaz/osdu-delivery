@@ -51,7 +51,7 @@ function bareColumn(text: string): string {
 
 /**
  * Where a check value was prefilled from: the reference the flow's run reads it from, or, when the control plane cannot
- * resolve that reference, which one it is and that the check needs a value in its place. A flow that names its partitions
+ * resolve that reference, which one it is and that the check needs a value in its place. A flow that works in partitions
  * supplies the partition itself, so its dataPartition is said to be that partition. Nothing is said for a value the flow
  * writes out, or once the author has typed their own.
  */
@@ -155,7 +155,7 @@ export default function MappingBuilderPage() {
   const chosenTemplate = parseTemplateKey(templateChoice);
 
   const reference = `${name.trim()}@${mappingVersion.trim()}`;
-  // A flow that names its partitions is offered once per partition, each with that partition's values; the check takes the
+  // A flow that works in partitions is offered once per partition, each with that partition's values; the check takes the
   // one for the partition whose cache is picked, so the values it renders with and the cache it reads agree.
   const usingMapping = repo === null ? [] : repo.flows.filter((flow) => flow.mapping === reference);
   const preferred = cacheChoice !== ""

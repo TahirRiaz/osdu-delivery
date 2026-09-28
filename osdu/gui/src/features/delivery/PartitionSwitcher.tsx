@@ -1,10 +1,10 @@
 import { useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { ChevronDown, Layers } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { ChevronDown, Layers, Settings2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -12,8 +12,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { RelativeTime } from "@/components/RelativeTime";
-import { deliveryApi, type DeliveryPartition } from "../../api/delivery";
+import type { DeliveryPartition } from "../../api/delivery";
 import { useActivePartition } from "./activePartition";
+import { usePartitions } from "./usePartitions";
 
 /** What a partition's cache serves, in a few words. */
 function cacheLine(partition: DeliveryPartition) {
@@ -31,26 +32,22 @@ function cacheLine(partition: DeliveryPartition) {
 
 /**
  * The OSDU partition the workbench works in, picked in the title bar (docs/partitions-design.md section 7). It lists every
- * partition the catalog keeps a cache for or a delivery flow names, each with what its cache serves, how many delivery
- * flows deliver there and how many cache changes wait for a decision, so another partition is one choice away and says
- * what it holds before it is picked. The choice is remembered, and a page that names its partition in its link
- * (`?partition=`) follows it. Nothing shows while the catalog knows no partition.
+ * registered partition, and every one something is still kept under, each with what it is for, what its cache serves,
+ * how many delivery flows deliver there and how many cache changes wait for a decision, so another partition is one
+ * choice away and says what it holds before it is picked. It starts at the registry's default; the choice is remembered,
+ * and a page that names its partition in its link (`?partition=`) follows it. Nothing shows while the catalog knows no
+ * partition.
  */
 export function PartitionSwitcher() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [active, setActive] = useActivePartition();
-  const partitions = useQuery({
-    queryKey: ["delivery", "partitions"],
-    queryFn: deliveryApi.partitions,
-    staleTime: 30000,
-    refetchInterval: 60000,
-  });
-  const list = partitions.data ?? [];
+  const { partitions, list, defaultPartition } = usePartitions();
   const known = active !== null && list.some((partition) => partition.name === active);
-  const shown = known ? active : list[0]?.name ?? null;
+  const shown = known ? active : defaultPartition ?? list[0]?.name ?? null;
 
-  // A partition remembered from a catalog that no longer knows it gives way to the first one this catalog knows, so the
-  // title bar and the pages that read it always agree on one.
+  // A partition remembered from a catalog that no longer knows it gives way to the default, else the first one this
+  // catalog knows, so the title bar and the pages that read it always agree on one.
   useEffect(() => {
     if (partitions.data !== undefined && shown !== null && shown !== active) {
       setActive(shown);
@@ -111,22 +108,36 @@ export function PartitionSwitcher() {
               <span className="flex min-w-0 flex-col gap-0.5">
                 <span className="flex items-center gap-2">
                   <span className="font-mono text-[13px] font-medium">{partition.name}</span>
+                  {partition.isDefault && <span className="text-[11px] text-muted-foreground">default</span>}
+                  {!partition.registered && (
+                    <span className="text-[11px] text-warning" title="Not in the registry: a flow hard-codes it, or something is kept under it from before it was removed">
+                      not registered
+                    </span>
+                  )}
                   {partition.pendingChanges > 0 && (
                     <span className="text-[11px] text-warning">
                       {partition.pendingChanges.toLocaleString()} {partition.pendingChanges === 1 ? "change waits" : "changes wait"}
                     </span>
                   )}
                 </span>
+                {partition.description !== null && (
+                  <span className="truncate text-[11px] text-foreground/80" title={partition.description}>{partition.description}</span>
+                )}
                 <span className="text-[11px] text-muted-foreground">{cacheLine(partition)}</span>
                 <span className="text-[11px] text-muted-foreground">
                   {partition.deliveryFlows.length === 0
-                    ? "no delivery flow names it"
+                    ? "no delivery flow delivers here"
                     : `${partition.deliveryFlows.length.toLocaleString()} delivery ${partition.deliveryFlows.length === 1 ? "flow delivers" : "flows deliver"} here`}
                 </span>
               </span>
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={() => navigate("/delivery/partitions")} data-testid="osdu-partition-manage">
+          <Settings2 className="size-3.5" />
+          Partitions
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

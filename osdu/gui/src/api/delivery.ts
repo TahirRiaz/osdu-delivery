@@ -3,7 +3,7 @@
 // redeliver, verify, read back, delete). Same conventions as endpoints.ts: one function per endpoint, pages compose them
 // with TanStack Query.
 
-import { del, get, getText, post, type QueryParams } from "@/api/client";
+import { del, get, getText, post, put, type QueryParams } from "@/api/client";
 import type { ComputeTaskAccepted, PagedResult, RunStatus } from "@/api/types";
 import type { PageQuery } from "@/api/endpoints";
 
@@ -1645,11 +1645,24 @@ export const deliveryRecordRoute = ({ flowId, deliveryKey }: DeliveryRecordRef) 
   `/delivery/records/${encodeURIComponent(flowId)}/${encodeURIComponent(deliveryKey)}`;
 
 /**
- * One OSDU partition the catalog knows: what its cache serves and the delivery flows that name it. What the title bar's
- * partition switcher lists.
+ * One OSDU partition: whether the registry holds it and whether it is the default, and what it holds (its cache, the
+ * delivery flows that deliver to it). What the title bar's partition switcher and the Partitions page list.
  */
 export interface DeliveryPartition {
   name: string;
+  /** What it is for, in the words of whoever registered it. */
+  description: string | null;
+  /** The partition a run that names none runs in. */
+  isDefault: boolean;
+  /**
+   * Whether the registry holds it. An unregistered partition is listed while something is kept under it: a flow that
+   * hard-codes it, or a cache or ledger left from before it was removed.
+   */
+  registered: boolean;
+  createdUtc: string | null;
+  createdBy: string | null;
+  updatedUtc: string | null;
+  updatedBy: string | null;
   /** The version of its cache deliveries read, or null while it holds none. */
   currentVersion: string | null;
   capturedUtc: string | null;
@@ -1657,7 +1670,7 @@ export interface DeliveryPartition {
   items: number;
   /** The cache flows that fill its cache. */
   cacheFlows: string[];
-  /** The delivery flows that name it under `partitions`. */
+  /** The delivery flows that deliver to it. */
   deliveryFlows: string[];
   /** Cache changes found in it that wait for a decision. */
   pendingChanges: number;
@@ -1711,8 +1724,22 @@ const flowPath = (pipelineId: string, suffix: string, scope?: DeliveryFlowScope)
 };
 
 export const deliveryApi = {
-  /** Every partition a cache is kept for or a delivery flow names, with what its cache serves and what waits in it. */
+  /**
+   * Every registered partition, and every partition something is still kept under, with what its cache serves and what
+   * waits in it.
+   */
   partitions: () => get<DeliveryPartition[]>("/api/v1/delivery/partitions"),
+  /** Registers a partition; the first one registered becomes the default. Admin only. */
+  addPartition: (request: { name: string; description?: string | null; isDefault?: boolean }) =>
+    post<DeliveryPartition>("/api/v1/delivery/partitions", request),
+  /** Sets what a registered partition is for; empty clears it. Admin only. */
+  describePartition: (name: string, description: string | null) =>
+    put<DeliveryPartition>(`/api/v1/delivery/partitions/${encodeURIComponent(name)}`, { description }),
+  /** Makes a registered partition the one a run that names none runs in. Admin only. */
+  makeDefaultPartition: (name: string) =>
+    post<DeliveryPartition>(`/api/v1/delivery/partitions/${encodeURIComponent(name)}/default`),
+  /** Takes a partition out of the registry; nothing kept under it is deleted. Admin only. */
+  removePartition: (name: string) => del<void>(`/api/v1/delivery/partitions/${encodeURIComponent(name)}`),
   /**
    * The counts of one interface, or of the whole source when the scope names none; of one partition, or of every partition
    * added up when the scope names none.

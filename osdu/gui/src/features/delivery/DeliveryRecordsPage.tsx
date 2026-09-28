@@ -80,7 +80,7 @@ const recordColumn = (searching: boolean): Column<DeliveryRecordHit> => ({
 /**
  * The flow that delivers the record, named in full: which pipeline delivered a record is what an operator reads a row
  * by, next to the record itself. A source's interfaces share the flow's name, so an interface is named under it, and so
- * is the partition of a flow that names its partitions, which keeps a ledger per partition.
+ * is the partition of a flow that works in partitions, which keeps a ledger per partition.
  */
 const flowColumn: Column<DeliveryRecordHit> = {
   id: "flow",

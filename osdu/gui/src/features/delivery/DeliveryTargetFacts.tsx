@@ -9,7 +9,7 @@ import { deliveryApi } from "../../api/delivery";
  * Where a delivery source delivers, in its pipeline header: the endpoint and data partition as the flow declares them,
  * secret references and all, since the reference is what names the environment. They stand in for the catalog's target
  * server, which for a flow whose target is not a database says only "file". Every interface of a source shares its
- * target, so the first interface answers for the source. A flow that names its partitions delivers to each of them, and
+ * target, so the first interface answers for the source. A flow that works in partitions delivers to each of them, and
  * the header lists them all, in the order the flow names them.
  */
 export function DeliveryTargetFacts({ pipelineId }: { pipelineId: string }) {

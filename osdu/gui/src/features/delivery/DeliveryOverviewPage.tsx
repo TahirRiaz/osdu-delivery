@@ -31,7 +31,7 @@ function Count({ label, value, tone }: { label: string; value: number; tone?: "s
 
 /**
  * One delivery flow's card. A flow that names the workbench's partition is counted in it, and its partition badges mark
- * that one; a flow that names its partitions but not that one is counted across all of them, and says so.
+ * that one; a flow that works in partitions but not that one is counted across all of them, and says so.
  */
 function FlowCard({ pipeline, stats, active, onOpen }: {
   pipeline: PipelineSummary;

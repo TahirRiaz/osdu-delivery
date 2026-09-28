@@ -43,7 +43,7 @@ interface RemovalDialogProps {
   pipelineId: string;
   /**
    * The ledger whose records these are: the interface of a source (null for the single form) and the partition of a flow
-   * that names its partitions (null for one that names none).
+   * that works in partitions (null for one whose partition is its header's).
    */
   flowScope?: DeliveryFlowScope;
   flowName: string;

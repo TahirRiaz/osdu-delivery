@@ -26,6 +26,7 @@ const DeliveryDocumentsPage = lazyRoute("DeliveryDocumentsPage", () => import(".
 const TemplatesPage = lazyRoute("TemplatesPage", () => import("./features/delivery/TemplatesPage"));
 const MappingBuilderPage = lazyRoute("MappingBuilderPage", () => import("./features/delivery/MappingBuilderPage"));
 const DeliveryCachePage = lazyRoute("DeliveryCachePage", () => import("./features/delivery/DeliveryCachePage"));
+const DeliveryPartitionsPage = lazyRoute("DeliveryPartitionsPage", () => import("./features/delivery/DeliveryPartitionsPage"));
 
 const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
@@ -198,6 +199,7 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/templates", component: TemplatesPage },
     { path: "/delivery/mappings/build", component: MappingBuilderPage },
     { path: "/delivery/cache", component: DeliveryCachePage },
+    { path: "/delivery/partitions", component: DeliveryPartitionsPage },
   ],
   // Everything this product adds is one group of its own, rather than seven entries threaded through the platform's
   // generic ones. It sits straight after Operate, and its entries read in the order the work is done: what has been
@@ -213,6 +215,7 @@ export const osduDeliveryModule: GuiModule = {
     { group: OSDU_GROUP, label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
     { group: OSDU_GROUP, label: "Mapping builder", to: "/delivery/mappings/build", icon: PencilRuler, testId: "nav-delivery-mapping-builder" },
     { group: OSDU_GROUP, label: "Cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache" },
+    { group: OSDU_GROUP, label: "Partitions", to: "/delivery/partitions", icon: Layers, testId: "nav-delivery-partitions" },
   ],
   detailTitles: [
     { pattern: /^\/delivery\/records\/[^/]+/, title: () => "Record" },
