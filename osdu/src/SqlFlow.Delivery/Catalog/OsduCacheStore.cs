@@ -1,6 +1,8 @@
+using System.Data;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Core.Identity;
@@ -199,6 +201,10 @@ public sealed class OsduCacheStore : ICacheStore
                 db.ChangeTracker.Clear();
                 await using var transaction = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
 
+                // Refreshes of one partition merge one after another: a second waits for the first to commit and then merges
+                // onto the version it wrote, instead of both claiming the next version and one failing.
+                await LockPartitionAsync(db, scope, flowName, ct).ConfigureAwait(false);
+
                 var currentRow = await db.DeliveryCacheVersions.AsNoTracking()
                     .Where(v => v.Scope == scope && v.Current)
                     .FirstOrDefaultAsync(ct).ConfigureAwait(false);
@@ -286,8 +292,47 @@ public sealed class OsduCacheStore : ICacheStore
         catch (DbUpdateException ex)
         {
             throw new DeliveryException(
-                $"Cache flow '{flowName}' could not write a version of the cache of partition '{scope}', most likely because another refresh of the partition wrote one at the same time. Nothing of this capture was kept; run the refresh again.",
+                $"Cache flow '{flowName}' could not write a version of the cache of partition '{scope}' ({ex.GetBaseException().Message}). Nothing of this capture was kept; run the refresh again.",
                 ex);
+        }
+    }
+
+    /// <summary>How long a merge waits for another merge of the same partition to finish before it gives up.</summary>
+    public static readonly TimeSpan PartitionLockWait = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Takes the partition's merge lock for the rest of the transaction (<c>sp_getapplock</c>, exclusive, owned by the
+    /// transaction, released when it commits or rolls back). The capture a refresh searched or read is already in hand, so
+    /// what waits is only another merge's database work.
+    /// </summary>
+    private static async Task LockPartitionAsync(OsduDbContext db, string scope, string flowName, CancellationToken ct)
+    {
+        var result = new SqlParameter("@result", SqlDbType.Int) { Direction = ParameterDirection.Output };
+        var previousTimeout = db.Database.GetCommandTimeout();
+        db.Database.SetCommandTimeout(PartitionLockWait + TimeSpan.FromSeconds(30));
+        try
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "EXEC @result = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = @timeout;",
+                [
+                    result,
+                    new SqlParameter("@resource", SqlDbType.NVarChar, 255) { Value = "osdu-cache:" + scope },
+                    new SqlParameter("@timeout", SqlDbType.Int) { Value = (int)PartitionLockWait.TotalMilliseconds },
+                ],
+                ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            db.Database.SetCommandTimeout(previousTimeout);
+        }
+
+        // 0 and 1 grant the lock (at once, or after waiting); a negative answer is a timeout, a cancel, a deadlock or an error.
+        if (result.Value is not int granted || granted < 0)
+        {
+            throw new DeliveryException(result.Value is -1
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $"Cache flow '{flowName}' waited {PartitionLockWait.TotalMinutes:0} minutes for another refresh of partition '{scope}' to finish merging, and it had not. Nothing of this capture was kept; run the refresh again once the other has finished.")
+                : $"Cache flow '{flowName}' could not take the merge lock of partition '{scope}' (sp_getapplock answered {result.Value}). Nothing of this capture was kept; run the refresh again.");
         }
     }
 
