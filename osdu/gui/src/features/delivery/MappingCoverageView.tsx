@@ -59,14 +59,26 @@ export function MappingCoverageView({ mappingId, reference, yaml, path, contentH
       : variableRows(template.data, draft).filter((row) => row.kind === "outside");
   }, [template.data, parsed.data]);
 
-  const overlay = coverage.data !== undefined && parsed.data?.draft != null && coverage.data.variables.length > 0
-    ? { coverage: coverage.data, entries: parsed.data.draft.entries }
+  // A document the builder cannot draft (lookups, $findAll, lists) is still laid over its template, without its entries.
+  const refused = parsed.isSuccess && parsed.data.draft === null;
+  const overlay = coverage.data !== undefined && coverage.data.variables.length > 0 && (parsed.data?.draft != null || refused)
+    ? { coverage: coverage.data, entries: parsed.data?.draft?.entries ?? [] }
     : undefined;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3" data-testid="delivery-mapping-coverage">
       {coverage.isError && <ProblemView error={coverage.error} testId="delivery-mapping-coverage-error" />}
       {template.isError && <ProblemView error={template.error} testId="delivery-mapping-coverage-template-error" />}
+      {parsed.isError && <ProblemView error={parsed.error} testId="delivery-mapping-coverage-parse-error" />}
+      {refused && overlay !== undefined && (
+        <p className="flex items-start gap-1.5 text-[13px] text-muted-foreground" data-testid="delivery-mapping-coverage-entries-unread">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            The tree shows what the mapping fills, but not the entry filling each property:{" "}
+            {parsed.data?.issues.map((issue) => issue.message).join(" ")} The YAML tab has the document as written.
+          </span>
+        </p>
+      )}
       {issues.map((issue, index) => (
         <p
           key={`${index}-${issue.message}`}
