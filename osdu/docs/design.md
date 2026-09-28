@@ -127,8 +127,12 @@ mutually inconsistent.
 The three non-source inputs are pinned together as a **render context**:
 
 ```
-renderContext = (mappingVersion, cache partition and cacheVersion, templateVersion)
+renderContext = (mappingVersion, mappingFingerprint, cache partition and cacheVersion, templateVersion)
 ```
+
+The mapping fingerprint is what the mapping document says about how records render: the document as YAML, without its
+comments and its fixtures, hashed. A mapping edited in place under the same name and version therefore still moves the
+context, while a comment or a fixture's expected record does not.
 
 A run reads the cache of the partition it delivers to (section 6.2): the one it is bound to among the partitions its flow
 names (`partitions`), or its `target.headers.data-partition-id` for a flow that names none. A render reads the version
@@ -444,11 +448,15 @@ statement, an interrupted rollout resumes where it stopped rather than starting 
 the marking is metadata only: a corrected reference value rewrites the manifest row and
 never re-uploads the payload that was delivered with it.
 
-**And the run has to happen.** The whole-run gate (tier 0) used to skip a run when no
-source table advanced, which is the case a cache refresh produces: the source is exactly
-where it was, and everything about how it renders has changed. The watermark now carries
-the render context of the run that wrote it, so a moved cache, mapping or template version
-plans the scope rather than skipping it.
+**And the run has to happen.** The whole-run gate (tier 0) skips a run when no source row
+changed in its window, and rows that did not change are never in a window. So the watermark
+carries the hash of the rules the scope was planned under: the render context without its
+cache version (the mapping and its fingerprint, the template, the parameters and the pinned
+system properties). The next ordinary run under other rules reads the whole scope instead of
+a window, renders every record again and sends only what renders differently; once it
+completes, the watermark carries the new rules and runs are incremental again. No operator
+step is needed after a mapping edit. A moved cache version does not read the scope whole,
+since the cache rollout above already asks for exactly the records a cache change reaches.
 
 ### 6.3 Two hashes, decided independently
 

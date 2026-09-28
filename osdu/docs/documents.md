@@ -191,9 +191,10 @@ verify: { reconcile: false }       # whether the verify pass re-queues drifted o
 
 Only `render.*`, and the template version the pinned mapping names, enter the render context. Everything else changes how a document gets there: raising
 `reliability.concurrency` or changing `target.endpoint` never redelivers a record. A moved render context (a new
-mapping version, template version or cache version, or a changed system property a mapping's searches rely on) renders
-the record again, and whether it is sent is still
+mapping version, an edit to the mapping that can change a record, a template version or cache version, or a changed
+system property a mapping's searches rely on) renders the record again, and whether it is sent is still
 decided by the hash of the rendered document alone, so a new cache version that renders the same document sends nothing.
+A mapping, template or parameter change is picked up by the flow's next ordinary run, which reads its whole scope once.
 
 ### The cache a flow renders with
 
