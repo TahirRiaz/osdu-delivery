@@ -429,6 +429,18 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The cache page asks four questions, a tab each.** Records (what the cache holds), History (how it changed, was
+  Versions), Deliveries (what it means for the records already in OSDU) and Setup (how it is filled). Deliveries holds
+  the changes being carried out to delivered records (was Changes) and what delivered records were built without (was
+  Built without, now Missing from cache), and says that with `onChange: auto` neither needs anyone: the next delivery
+  carries the change. Setup (was Definition and OSDU feature flags) is a navigator rather than one long page: a tree of
+  the cache flows with the types each declares, and the partition's feature flags and how a mapping reads the cache,
+  beside the one part picked, opening on a few lines about the partition whose every name opens its part. A type's part
+  holds everything about it, down to the mapping entry that reads it, and opens it on Records or History. Each tab says
+  what it is for on hover of its name, each section on its info mark, and a link to an earlier tab lands on the tab
+  that holds it now, scrolled to its section. The cache streams API names the new tabs in its notices' `action`
+  (`history`, `deliveries`).
+
 - **The cache page's header and tabs are quieter.** The header says on one line which partition it is and which cache
   flow files fill it, by file name with each path on hover, and puts what a cache flow is and how to change what it
   holds behind an info mark; Cache files and Refresh sit at its top right, where every page header keeps its actions

@@ -24,7 +24,7 @@ function matchValue(value: unknown): string | null {
 }
 
 /** A snippet of mapping YAML with its copy button. */
-function Snippet({ text, testId }: { text: string; testId: string }) {
+export function Snippet({ text, testId }: { text: string; testId: string }) {
   return (
     <div className="flex items-start gap-1 rounded-md border border-border bg-muted/40 px-3 py-2">
       <pre className="min-w-0 flex-1 overflow-x-auto font-mono text-[12px] leading-5" data-testid={testId}>{text}</pre>
@@ -164,7 +164,7 @@ function LookupRowReference({ item, names }: { item: DeliveryCachedItem; names: 
 }
 
 /**
- * How a mapping reads the partition's cache, for the Definition tab: the $cache and $findBy forms, with a working node for
+ * How a mapping reads the partition's cache, for the Setup tab's cache flows and types: the $cache and $findBy forms, with a working node for
  * an OSDU type and one for a lookup table when the cache holds either, since every name the table lists is readable as
  * $cache: <Type>.<name>.
  */

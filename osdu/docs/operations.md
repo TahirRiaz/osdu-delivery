@@ -577,8 +577,10 @@ Pipelines like any other flow.
   partition. The header names the partition and, on one line, the cache flow files that fill it by file name, each
   with its path in the repository on hover (or how many when more than three fill it, every file on hover), with an
   info mark that says what a cache flow is, who reads the cache and how to change what it holds, and Cache files and
-  Refresh now at its top right. The tabs are named for what they hold and carry no counts: what waits for a decision is
-  in the summary row and the banner. Cache files opens Pipelines filtered to the cache flows
+  Refresh now at its top right. Four tabs follow, each answering one question, with what it is for on hover of its
+  name: Records (what the cache holds), History (how it changed), Deliveries (what it means for the records already in
+  OSDU) and Setup (how it is filled). They carry no counts: what waits for a decision is in the summary row and the
+  banner. Cache files opens Pipelines filtered to the cache flows
   (`?kind=cache`, and `?repo=` when one repository holds every flow filling the partition), since a partition can be
   filled by several files; Refresh now opens the trigger dialog on the cache flow with the refresh operation, and is a
   menu naming the flows when several fill the partition, since a refresh runs one flow's capture. A link to Pipelines
@@ -589,12 +591,14 @@ Pipelines like any other flow.
   records it holds in how many types, whether a schedule refreshes it, and either that changes are automatic or how
   many wait for approval. Whenever a change waits, a banner says so with Review changes. The Records tab lists the
   types beside the records, grouped by family, each with its record count and a shield when its changes need approval;
-  the Versions tab keeps a searchable type picker at the end of the tab bar that lists the types with their family,
+  the History tab keeps a searchable type picker at the end of the tab bar that lists the types with their family,
   record count and whether their changes need approval, as the Records tab does on a screen too narrow for the list.
   Picking a type scopes those tabs; All types, or Clear filter in the picker, lifts the scope. The tab and the type are
-  in the URL, so a link opens the same view; a link naming a partition (`?partition=`) or a cache flow (`?flow=`, as a
-  cache run's page uses) makes that partition the title bar's. The definition is read-only because it lives in the cache
-  flow files in git; the decision on a change is the one thing made here.
+  in the URL, so a link opens the same view, and a link from when the page had other tabs (`?tab=versions`, `changes`,
+  `gaps`, `definition`, `flags` or `system`) lands on the tab that holds it now, scrolled to its section. A link naming a
+  partition (`?partition=`) or a cache flow (`?flow=`, as a cache run's page uses) makes that partition the title bar's.
+  The setup is read-only because it lives in the cache flow files in git; the decision on a change waiting for approval
+  is the one thing made here.
 - **Records.** The cached records at the version being read, with the search over every value they hold (id, code,
   name, alias) and the version picker in the tab's own toolbar. Every table reads one type in that type's own columns:
   what tells the records apart first (the part of the OSDU id after the partition and entity type, which the type's
@@ -619,13 +623,7 @@ Pipelines like any other flow.
   Current version stands for it, and any version picked holds other records or values of the type than the current
   one: Compare with current always has a change to show. A version whose content came back to what the current one
   holds is marked as the same as current, and offers no comparison.
-- **Definition.** What the partition's cache flow files declare, as the last sync found them. A guide says how a
-  mapping reads the cache (`$cache: <Type>.id` or `$cache: <Type>.<name>`, and `$findBy` lines), with a node to
-  copy, and that a mapping never names the cache. The cache flows follow, each with its repository, file, the endpoint
-  it searches, its schedules and the types it declares, with View YAML and Refresh in its row; then each type as the
-  flows together declare it: the kind and query each flow searches it with, every path kept (the source that reads it
-  and the flows declaring it on hover), and what a changed value does (next run, or needs approval when any flow asks).
-- **Versions.** Every version, newest first, each with the cache flow that wrote it and what captured it (the run and
+- **History.** Every version, newest first, each with the cache flow that wrote it and what captured it (the run and
   who asked, or an import from files), the types it changed (each tinted by whether it arrived, changed or left, the
   rest counted and named on hover, or no type changed when the version was written for something else, such as a
   changed OSDU feature flag), and what it changed compared with the version captured before it (so many changed, added,
@@ -636,21 +634,51 @@ Pipelines like any other flow.
   holds the type, and picking one compares it with the version of the type before it. A version is the whole partition's cache and is written when anything in it moves, so a type
   is listed only when its own content hash moved: a type that rode along with another's change is not. Picking a version raises its changes in the workbench bottom panel, so the list stays in view: changed
   records with the captured values that moved, before and after, records the version added, and records it no longer
-  holds, narrowed by a change kind and a search. A row opens both sides. Versions covers the whole cache, which is
-  what separates it from Changes: Changes holds only the changes that reach records already delivered, so a refresh
-  that moved values nothing was built from shows in the versions and leaves Changes empty.
-- **Changes.** The changes this cache's refreshes found in values delivered records were built from, by state
-  (waiting for approval, approved, rolling out, rolled out, rejected, or all), each with the value before and after,
-  how many delivered records it reaches and how far the rollout has carried it. A line above the list says which types
-  ask for approval. By default every type updates automatically (`onChange: auto`), so a change is approved as it is
-  found and shows here as a rollout, and the list opens on all changes; when a type asks for approval
-  (`onChange: approve`) the list opens on the changes waiting, and each waiting row carries Approve and Reject.
-  Picking a change raises it in the bottom panel with both values in full, the versions it moved between, who decided
-  it and when, and the same decision while it is still open. Selecting waiting changes raises a toolbar that says how
-  many delivered records the decision would redeliver, and approves or rejects them in bulk.
-- **OSDU feature flags.** The partition's feature flags as the current version holds them: settings of the OSDU
-  platform, which OSDU Delivery reads with every refresh and never changes (the tab was called System properties, and a
-  link to `?tab=system` still opens it). One block per service names the endpoint the flags were read from (the
+  holds, narrowed by a change kind and a search. A row opens both sides. History covers the whole cache, which is
+  what separates it from Deliveries: Deliveries holds only what reaches records already delivered, so a refresh that
+  moved values nothing was built from shows in the history and leaves Deliveries empty.
+- **Deliveries.** What the cache means for the records already in OSDU, in two sections, each with what it is for on
+  its info mark. With `onChange: auto`, the default, neither asks anything of anyone: the next delivery of each record
+  carries the change.
+  - *Updated by cache changes*: the changes this cache's refreshes found in values delivered records were built from,
+    by state (waiting for approval, approved, rolling out, rolled out, rejected, or all), each with the value before and
+    after, how many delivered records it reaches and how far the rollout has carried it. A line above the list says
+    which types ask for approval. A type set to `onChange: auto` has its change approved as it is found, and it shows
+    here as a rollout that reaches each record on its next delivery, so the list opens on all changes; when a type asks
+    for approval (`onChange: approve`) the list opens on the changes waiting, and each waiting row carries Approve and
+    Reject. Picking a change raises it in the bottom panel with both values in full, the versions it moved between, who
+    decided it and when, and the same decision while it is still open. Selecting waiting changes raises a toolbar that
+    says how many delivered records the decision would redeliver, and approves or rejects them in bulk.
+  - *Missing from cache*: what records already in OSDU were built without, because the cache did not hold it when they
+    were rendered, most records first: a value no cached record answered to (not found: a wellbore loaded after its
+    logs), a key a `$findAll` found no row under (no rows: a field no access group lists yet), and an id written without
+    its record because the mapping says `$unverified` (unverified), each with its type, what was looked for and how many
+    records were built so. Include paths read empty adds the paths that held nothing (a wellbore without a field).
+    Nothing needs doing here: once a refresh brings what was missing, the records are tagged and updated like any other
+    cache change, on their next delivery. A gap that should not be there points at the source.
+- **Setup.** How the cache is filled, as a navigator rather than one long page: a tree on the left of the partition, each
+  cache flow with the types it declares under it (a type several flows declare is under each), and the partition's
+  OSDU feature flags and how a mapping reads the cache; the part picked is on the right, each with what it is for on its
+  info mark. On a screen too narrow for the tree beside it, the tree is a picker over the part. The part picked is in
+  the URL (`?node=overview`, `flow:<name>`, `type:<name>`, `flags` or `mapping`), and a link to `?tab=flags` or
+  `?tab=system` opens the flags.
+  - *The partition* (what Setup opens on): one line each for the cache flows that fill it, the types they declare, what
+    a changed value does (updated on each record's next delivery, or the types that wait for approval), when a new
+    version is written, the feature flag the engine reads and its state, and how a mapping reads the cache. Every name
+    opens its part.
+  - *A cache flow*: its file and repository, where it captures from, when it runs, the partitions it builds, and the
+    types it declares with where each comes from, what it keeps and what a changed value does, with View YAML and
+    Refresh.
+  - *A type*: where its records come from, per flow declaring it (the kind searched and its query, or the ingestion
+    table or dictionary and its key), what a changed value does, how many records the current version holds, every
+    value kept by the name a mapping reads it by (`$cache: <Type>.<name>`) with the path it is read from and the flows
+    declaring it, and the mapping entry that reads it, ready to copy (with the replace a lookup table translates a value
+    by). Records and History open the type on those tabs.
+  - *Reading it in a mapping*: how a mapping reads the cache (`$cache: <Type>.id` or `$cache: <Type>.<name>`, and
+    `$findBy` lines), with a node to copy, and that a mapping never names the cache.
+  - *OSDU feature flags*: the partition's feature flags as the current version holds them: settings of the OSDU
+    platform, which OSDU Delivery reads with every refresh and never changes (they were once a tab called System
+    properties, and a link to `?tab=system` still lands on them). One block per service names the endpoint the flags were read from (the
   indexer's `GET /api/indexer/v2/info`, the search service's `GET /api/search/v2/info`), with how many are on and off,
   and lists each flag with its state, the configuration the service says set it, and the version whose refresh found it
   in that state; a line says so once when no flag has changed since it was first read. The flag OSDU Delivery reads

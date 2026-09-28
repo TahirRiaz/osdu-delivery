@@ -198,12 +198,12 @@ public sealed class DeliveryCacheStreamsTests
             Assert.Equal([new DeliveryCacheLeftTypeDto("LogType", "reference-data--LogType", 12, $"v1-{s}")], streams.Left);
             var notices = streams.Notices.ToDictionary(n => n.Kind + "|" + (n.Type ?? n.Flow ?? string.Empty));
             Assert.Contains("LogType", notices["removed|"].Message, StringComparison.Ordinal);
-            Assert.Equal("versions", notices["removed|"].Action);
+            Assert.Equal("history", notices["removed|"].Action);
             Assert.Contains("down from 40", notices["shrunk|Units"].Message, StringComparison.Ordinal);
             Assert.Equal("warning", notices["failed|Units"].Severity);
             Assert.Equal(("error", delivery), (notices["unfilled|logcurvefamily"].Severity, notices["unfilled|logcurvefamily"].Flow));
             Assert.DoesNotContain(streams.Notices, n => n.Kind == "unfilled" && n.Type == "curvedictionary");
-            Assert.Equal("changes", notices["pending|"].Action);
+            Assert.Equal("deliveries", notices["pending|"].Action);
             Assert.DoesNotContain(streams.Notices, n => n.Kind == "failed" && n.Flow == reference);
 
             // A partition no cache flow fills says so, and holds nothing.

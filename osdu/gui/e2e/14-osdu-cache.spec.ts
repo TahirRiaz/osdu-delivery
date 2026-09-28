@@ -1,9 +1,10 @@
 import { CACHE, DELIVERY_FLOW, LOOKUPS, REFERENCE, SOURCE } from "./global-setup";
 import { expect, test } from "./helpers";
 
-// The OSDU cache page: the header names the cache and the file that defines it, a summary row says which version is
-// read and what it holds, and the records, versions, changes, definition and OSDU feature flags are tabs. The records
-// are browsed from a list of the types beside them; the versions keep a searchable type picker in the tab bar. Runs after the seed (03), so the fixture repo is synced, and its three cache flows declare thirteen types
+// The OSDU cache page: the header names the cache and the files that fill it, a summary row says which version is read
+// and what it holds, and four tabs answer one question each: Records (what it holds), History (its versions), Deliveries
+// (what it means for the records already in OSDU) and Setup (its cache flows and the OSDU feature flags). The records are
+// browsed from a list of the types beside them; the history keeps a searchable type picker in the tab bar. Runs after the seed (03), so the fixture repo is synced, and its three cache flows declare thirteen types
 // (none asking for approval): the reference data the fixture mappings read and the partition's reference data the well
 // log mapping checks its ids against, both declaring UnitOfMeasure, whose records were imported through the CLI as the
 // first two versions, and the lookup tables the well log mapping translates through, whose refresh (the unit maps and
@@ -58,8 +59,8 @@ test.describe.serial("osdu cache", () => {
     await section("CurveDictionary").scrollIntoViewIfNeeded();
     await expect(section("CurveDictionary").getByRole("columnheader", { name: "mnemonic (key)" })).toBeVisible({ timeout: 30_000 });
 
-    // The versions keep the searchable type picker in the tab bar, each type with its family and how many records it holds.
-    await adminPage.getByTestId("delivery-cache-tab-versions").click();
+    // The history keeps the searchable type picker in the tab bar, each type with its family and how many records it holds.
+    await adminPage.getByTestId("delivery-cache-tab-history").click();
     const picker = adminPage.getByTestId("delivery-cache-type");
     await expect(picker).toHaveText(/All types/);
     await picker.click();
@@ -71,27 +72,45 @@ test.describe.serial("osdu cache", () => {
     await adminPage.keyboard.press("Escape");
   });
 
-  test("the definition tab reads back the file, and the header opens its YAML and refreshes it", async ({ adminPage }) => {
+  test("setup reads back how the cache is filled a part at a time, and the header opens its YAML and refreshes it", async ({ adminPage }) => {
+    // A link from when this was the Definition tab lands on Setup, which opens on the partition's overview beside a tree of
+    // the cache flows with the types each declares.
     await adminPage.goto("/delivery/cache?tab=definition");
-    const definition = adminPage.getByTestId("delivery-cache-definition");
-    await expect(definition).toContainText(`${SOURCE}/cache/${CACHE}.yaml`, { timeout: 30_000 });
-    await expect(definition).toContainText("goes out on the next run");
-    const rows = definition.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
-    await expect(rows).toHaveCount(13);
-    // Each kept path shows by the name a mapping reads it by, with the path it reads on hover.
-    const units = rows.filter({ hasText: "reference-data--UnitOfMeasure" });
-    await expect(units).toContainText("Code");
-    await expect(units.getByTitle("$cache: UnitOfMeasure.Code reads data.Code")).toBeVisible();
-    await expect(rows.filter({ hasText: "master-data--Wellbore" })).toHaveCount(0);
+    await expect(adminPage.getByTestId("delivery-cache-tab-setup")).toHaveAttribute("data-state", "active", { timeout: 30_000 });
+    const setup = adminPage.getByTestId("delivery-cache-definition");
+    const tree = setup.getByTestId("delivery-cache-setup-tree");
+    await expect(tree.getByTestId("delivery-cache-setup-flow")).toHaveCount(3, { timeout: 30_000 });
+    const summary = setup.getByTestId("delivery-cache-setup-summary");
+    await expect(summary.getByTestId("delivery-cache-setup-fact-flows")).toContainText(CACHE);
+    await expect(summary.getByTestId("delivery-cache-setup-fact-types").getByRole("button")).toHaveCount(13);
+    await expect(summary).toContainText("updated on their next delivery");
+    await expect(tree.getByTestId("delivery-cache-setup-type").filter({ hasText: /^Wellbore$/ })).toHaveCount(0);
+
+    // A flow: its file, and the types it declares.
+    await tree.getByTestId("delivery-cache-setup-flow").filter({ hasText: CACHE }).click();
+    const flow = setup.getByTestId("delivery-cache-setup-flow-detail");
+    await expect(flow).toContainText(`${SOURCE}/cache/${CACHE}.yaml`);
+    await expect(flow.getByTestId("delivery-cache-definition-flows").getByTestId("table-row").first()).toBeVisible();
+
+    // A type: every value it keeps by the name a mapping reads it by, with the path it reads, and an entry to copy.
+    await tree.getByTestId("delivery-cache-setup-type").filter({ hasText: /^UnitOfMeasure$/ }).first().click();
+    const type = setup.getByTestId("delivery-cache-setup-type-detail");
+    await expect(type).toContainText("reference-data--UnitOfMeasure");
+    const kept = type.getByTestId("delivery-cache-definition-types").getByTestId("table-row");
+    await expect(kept.filter({ hasText: "$cache: UnitOfMeasure.Code" })).toContainText("data.Code");
+    await expect(type.getByTestId("delivery-cache-setup-type-entry")).toContainText("$cache: UnitOfMeasure.id");
+
     // A lookup table says where its rows come from and what they are kept under.
-    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("[arc].[CacheRecallUnits]");
-    await expect(rows.filter({ hasText: "RecallUnits" })).toContainText("source_unit");
-    await expect(rows.filter({ hasText: "CurveDictionary" })).toContainText("[arc].[CacheCurveDictionary]");
-    await expect(definition.getByTestId("delivery-cache-definition-flows").getByTestId("table-row")).toHaveCount(3);
+    await tree.getByTestId("delivery-cache-setup-type").filter({ hasText: /^RecallUnits$/ }).first().click();
+    await expect(type).toContainText("[arc].[CacheRecallUnits]");
+    await expect(type).toContainText("source_unit");
+    await tree.getByTestId("delivery-cache-setup-type").filter({ hasText: /^CurveDictionary$/ }).first().click();
+    await expect(type).toContainText("[arc].[CacheCurveDictionary]");
 
     // The guide says how a mapping reads the cache, with an entry to start from, and never names the cache; a lookup table
     // is read by a findBy on its key, or translates a value as a replace.
-    const guide = definition.getByTestId("delivery-cache-mapping-guide");
+    await tree.getByTestId("delivery-cache-setup-mapping").click();
+    const guide = setup.getByTestId("delivery-cache-mapping-guide");
     await expect(guide).toContainText(PARTITION);
     await expect(guide.getByTestId("delivery-cache-mapping-guide-entry")).toContainText(/\$cache: \w+\.id/);
     await expect(guide.getByTestId("delivery-cache-mapping-guide-replace-entry")).toContainText(/- replace: \$cache\.\w+/);
@@ -233,7 +252,7 @@ test.describe.serial("osdu cache", () => {
 
   test("versions list who captured each one and what the one picked changed", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
-    await adminPage.getByTestId("delivery-cache-tab-versions").click();
+    await adminPage.getByTestId("delivery-cache-tab-history").click();
 
     // Three versions: the fixture records' import first, then the reference records' import and the lookups flow's
     // refresh, in whichever order the suite's reused database first saw them, each adding what the one before lacked.
@@ -266,10 +285,12 @@ test.describe.serial("osdu cache", () => {
   });
 
   test("the OSDU feature flags say whose they are and which service reported them", async ({ adminPage }) => {
-    // A link from when the tab was called System properties still lands on it.
+    // A link from when the flags were a tab of their own, called System properties, still lands on them: on Setup, with
+    // the flags in view.
     await adminPage.goto("/delivery/cache?tab=system");
-    await expect(adminPage.getByTestId("delivery-cache-tab-flags")).toHaveAttribute("data-state", "active", { timeout: 30_000 });
-    await expect(adminPage.getByTestId("delivery-cache-tab-flags")).toContainText("OSDU feature flags");
+    await expect(adminPage.getByTestId("delivery-cache-tab-setup")).toHaveAttribute("data-state", "active", { timeout: 30_000 });
+    await expect(adminPage.getByTestId("delivery-cache-part-flags")).toContainText("OSDU feature flags");
+    await expect(adminPage.getByTestId("delivery-cache-setup-flags")).toHaveAttribute("aria-current", "true");
 
     // Set on the platform, not by OSDU Delivery, and read from each service's info endpoint, one block per service.
     const flags = adminPage.getByTestId("delivery-cache-flags");
@@ -281,11 +302,16 @@ test.describe.serial("osdu cache", () => {
 
   test("changes go out automatically unless a type asks for approval, and the page says so", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
-    await adminPage.getByTestId("delivery-cache-tab-changes").click();
+    await adminPage.getByTestId("delivery-cache-tab-deliveries").click();
+
+    // Deliveries holds both ways the cache reaches records already in OSDU: the changes being carried out, and what
+    // records were built without.
+    await expect(adminPage.getByTestId("delivery-cache-part-updates")).toContainText("Updated by cache changes");
+    await expect(adminPage.getByTestId("delivery-cache-part-gaps")).toContainText("Missing from cache");
 
     // No type asks for approval, so the list opens on every change rather than on an approval queue.
     await expect(adminPage.getByTestId("delivery-cache-tag-status-all")).toHaveAttribute("data-state", "on", { timeout: 30_000 });
-    await expect(adminPage.getByTestId("delivery-cache-approval-rule")).toHaveText("Every type updates automatically.");
+    await expect(adminPage.getByTestId("delivery-cache-approval-rule")).toHaveText("Every type updates automatically: a change reaches its records on their next delivery.");
     await expect(adminPage.getByTestId("delivery-cache-tags-table")).toContainText("No refresh of this cache has changed a value", { timeout: 30_000 });
 
     // The approval queue is empty, and says how to switch approval on for a type.

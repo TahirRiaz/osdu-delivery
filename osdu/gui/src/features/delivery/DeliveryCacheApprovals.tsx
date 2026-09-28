@@ -407,8 +407,8 @@ export function DeliveryCacheApprovals({ scope, approvalTypes, pendingTotal }: {
         </ToggleGroup>
         <span className="text-[12px] text-muted-foreground" data-testid="delivery-cache-approval-rule">
           {approvalTypes.length === 0
-            ? "Every type updates automatically."
-            : `Approval is on for ${approvalTypes.join(", ")}.`}
+            ? "Every type updates automatically: a change reaches its records on their next delivery."
+            : `Approval is on for ${approvalTypes.join(", ")}; every other type updates automatically on the next delivery.`}
         </span>
       </div>
 

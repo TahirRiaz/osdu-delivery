@@ -58,7 +58,8 @@ public sealed record DeliveryCacheCheckDto(
 /// Something about the partition's cache that needs reading, in one sentence: a version that removed or shrank types, a
 /// refresh or a load that failed, a type a delivery flow reads that no cache flow captures, changes that wait for a
 /// decision, or a cache with no version. <c>Severity</c> is error, warning or info; <c>Type</c> and <c>Flow</c> name what
-/// it is about, and <c>Action</c> the tab or step that settles it.
+/// it is about, and <c>Action</c> the cache page tab or the step that settles it: <c>history</c>, <c>deliveries</c>,
+/// <c>streams</c> or <c>refresh</c>.
 /// </summary>
 public sealed record DeliveryCacheNoticeDto(string Kind, string Severity, string Message, string? Type, string? Flow, string? Action);
 
@@ -307,7 +308,7 @@ public static class DeliveryCacheStreams
                 "removed", "warning",
                 string.Create(CultureInfo.InvariantCulture,
                     $"Version {current.Version} no longer holds {left.Count} type(s) version {previous!.Version} held ({string.Join(", ", left.Select(l => l.Type))}), {left.Sum(l => l.Items):N0} entries; a delivery that reads one of them holds its records."),
-                null, null, "versions"));
+                null, null, "history"));
         }
 
         foreach (var stream in streams.Where(s => s.Items is { } now && s.PreviousItems is { } before && before >= ShrinkFloor && now < before * ShrinkShare))
@@ -315,7 +316,7 @@ public static class DeliveryCacheStreams
             notices.Add(new DeliveryCacheNoticeDto(
                 "shrunk", "warning",
                 string.Create(CultureInfo.InvariantCulture, $"{stream.Type} holds {stream.Items:N0} entries, down from {stream.PreviousItems:N0} in the version before."),
-                stream.Type, null, "versions"));
+                stream.Type, null, "history"));
         }
 
         // A type a delivery flow reads in this partition that no cache flow of it declares: its records hold at render.
@@ -331,7 +332,7 @@ public static class DeliveryCacheStreams
             notices.Add(new DeliveryCacheNoticeDto(
                 "pending", "info",
                 string.Create(CultureInfo.InvariantCulture, $"{pending:N0} cache change(s) wait for a decision before the records built from them are delivered again."),
-                null, null, "changes"));
+                null, null, "deliveries"));
         }
 
         return notices;

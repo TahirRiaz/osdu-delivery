@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link as RouterLink, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, DatabaseZap, Info, Play, ScrollText, ShieldAlert } from "lucide-react";
@@ -25,8 +25,8 @@ import { TriggerRunDialog } from "@/features/runs/TriggerRunDialog";
 import { scheduleCadence, summarizeTypes, type CachedTypeSummary } from "./cacheFormat";
 import { isPartitionId, useActivePartition } from "./activePartition";
 import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
-import { DeliveryCacheDefinition } from "./DeliveryCacheDefinition";
-import { DeliveryCacheFlags } from "./DeliveryCacheFlags";
+import { DeliveryCacheSetup } from "./DeliveryCacheSetup";
+import { parseSetupNode, type SetupNode } from "./cacheSetupNode";
 import { DeliveryCacheGaps } from "./DeliveryCacheGaps";
 import { CacheCompareDialog, DeliveryCacheHistory } from "./DeliveryCacheHistory";
 import { DeliveryCacheRecords } from "./DeliveryCacheRecords";
@@ -43,31 +43,87 @@ function typeHint(type: CachedTypeSummary): string {
   return held + (type.onChange === "approve" ? " · changes need approval" : "");
 }
 
-type Tab = "records" | "versions" | "changes" | "gaps" | "definition" | "flags";
+/**
+ * The four questions the page answers, a tab each: what the cache holds, how it changed, what it means for the records
+ * already in OSDU, and how it is filled.
+ */
+type Tab = "records" | "history" | "deliveries" | "setup";
 
-const TABS: readonly string[] = ["records", "versions", "changes", "gaps", "definition", "flags"];
+/** A section of a tab a link can land on: what records were built without, and the partition's OSDU feature flags. */
+type Section = "gaps" | "flags";
 
-function isTab(value: string | null): value is Tab {
-  return value !== null && TABS.includes(value);
+/**
+ * The tab a link names, and the section of it the link pointed at. The tabs were once Versions, Changes, Built without,
+ * Definition and OSDU feature flags (and before that System properties), and a link from then still lands where it
+ * pointed: on the tab that holds it now, scrolled to its section.
+ */
+function linkedTab(value: string | null): { tab: Tab; section: Section | null } {
+  switch (value) {
+    case "history":
+    case "versions":
+      return { tab: "history", section: null };
+    case "deliveries":
+    case "changes":
+      return { tab: "deliveries", section: null };
+    case "gaps":
+      return { tab: "deliveries", section: "gaps" };
+    case "setup":
+    case "definition":
+      return { tab: "setup", section: null };
+    case "flags":
+    case "system":
+      return { tab: "setup", section: "flags" };
+    default:
+      return { tab: "records", section: null };
+  }
 }
 
-/** The tab a link names; the flags were once the "system" tab, and a link from then still lands on them. */
-function linkedTab(value: string | null): Tab {
-  if (value === "system") {
-    return "flags";
-  }
+/** What each tab is for, as hovering its name says it. */
+const TAB_PURPOSE: Record<Tab, string> = {
+  records: "What the cache holds, a type at a time: now, or as an earlier version held it.",
+  history: "Every version of the cache: which refresh wrote it and which types it changed. Pick a type to see its own versions.",
+  deliveries: "What the cache means for records already in OSDU: those a cache change updates, which happens on their next delivery unless the type asks for approval, and those built without a value the cache did not hold yet.",
+  setup: "How the cache is filled: the cache flows and the types each declares, the partition's OSDU feature flags, and how a mapping reads the cache, one at a time from the list beside them.",
+};
 
-  return isTab(value) ? value : "records";
+/** A tab's name, with what the tab is for on hover. The hover sits on the name, so it never touches the tab's own state. */
+function TabName({ tab, children }: { tab: Tab; children: ReactNode }) {
+  return (
+    <RichTooltip body={TAB_PURPOSE[tab]}>
+      <span>{children}</span>
+    </RichTooltip>
+  );
+}
+
+/**
+ * One section of a tab: its title, what it is for on the info mark beside it, and its content. A link that named the
+ * section by an earlier tab scrolls it into view.
+ */
+function TabSection({ id, title, about, children }: { id: Section | "updates"; title: string; about: string; children: ReactNode }) {
+  return (
+    <section id={`delivery-cache-part-${id}`} className="flex scroll-mt-4 flex-col gap-2" data-testid={`delivery-cache-part-${id}`}>
+      <h2 className="flex items-center gap-1.5 text-[14px] font-medium">
+        {title}
+        <RichTooltip title={title} body={about}>
+          <span className="inline-flex text-muted-foreground">
+            <Info className="size-3.5" aria-label={`What ${title} is`} />
+          </span>
+        </RichTooltip>
+      </h2>
+      {children}
+    </section>
+  );
 }
 
 /**
  * The OSDU cache: the reference data, master data and lookup tables every delivered document is built from, one cache per OSDU partition. The
  * header names the partition and the cache flow files that fill it, with Cache files and Refresh for them; a summary row says
  * which version deliveries read, how much it holds, how it is refreshed and whether anything waits for a decision. Below
- * are the working tabs: the records (browsed a type at a time, from a list of the types beside them), the versions, the
- * changes a refresh found, the definition, and the partition's OSDU feature flags (settings of the platform, as its services
- * report them), with a searchable type picker in the tab bar for the versions (and for the records on a screen too narrow
- * for the list). The partition is the one picked in the title bar, which every page follows: the page has no partition
+ * are four tabs, one per question: Records (what the cache holds, browsed a type at a time from a list of the types beside
+ * them), History (its versions, and with a type picked that type's own), Deliveries (what the cache means for the records
+ * already in OSDU: those a change updates, and those built without a value the cache did not hold) and Setup (the cache
+ * flows and types, and the partition's OSDU feature flags), with a searchable type picker in the tab bar for the history
+ * (and for the records on a screen too narrow for the list). The partition is the one picked in the title bar, which every page follows: the page has no partition
  * picker of its own. The tab and the type live in the URL, so a link lands on the same view; a link that names a partition
  * (?partition=) or a cache flow (?flow=) makes that partition the title bar's, so it lands on the cache it names.
  */
@@ -89,7 +145,7 @@ export default function DeliveryCachePage() {
     ?? all.find((candidate) => candidate.scope === active)
     ?? null;
 
-  const tab = linkedTab(searchParams.get("tab"));
+  const { tab, section } = linkedTab(searchParams.get("tab"));
 
   const update = (changes: Record<string, string | null>) => setSearchParams((current) => {
     const next = new URLSearchParams(current);
@@ -177,9 +233,13 @@ export default function DeliveryCachePage() {
               key={cache.scope}
               cache={cache}
               tab={tab}
+              section={section}
+              node={parseSetupNode(searchParams.get("node") ?? (section === "flags" ? "flags" : null))}
+              onNode={(next) => update({ node: next === "overview" ? null : next })}
               type={searchParams.get("type")}
               onTab={(next) => update({ tab: next === "records" ? null : next })}
               onType={(name) => update({ type: name })}
+              onView={(next, name) => update({ tab: next === "records" ? null : next, type: name })}
               onRefresh={setRefreshing}
             />
           )}
@@ -251,7 +311,7 @@ function CacheSubtitle({ cache }: { cache: DeliveryCache }) {
 /**
  * Where the cache flow files are, as a filter on Pipelines: every cache flow, narrowed to the repository when one repository
  * holds every flow filling the partition. A partition can be filled by several files, so the header points at the list of
- * them rather than at one file; each row of the Definition tab still opens its own file.
+ * them rather than at one file; each cache flow on the Setup tab still opens its own file.
  */
 function cacheFilesLink(flows: DeliveryCacheFlow[]): string {
   const repos = new Set(flows.map((flow) => flow.repoId));
@@ -346,13 +406,23 @@ function CacheFlowActions({ flows, scope, onRefresh }: {
 }
 
 /** One partition cache's summary and its working tabs. Keyed by the partition, so another partition starts from a clean view. */
-function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
+function CacheWorkbench({ cache, tab, section, node, onNode, type, onTab, onType, onView, onRefresh }: {
   cache: DeliveryCache;
   tab: Tab;
+  /** The section of the tab a link pointed at by an earlier tab's name, scrolled into view; null for none. */
+  section: Section | null;
+  /** The part of the setup in view. */
+  node: SetupNode;
+  onNode: (node: SetupNode) => void;
   /** The type in scope from the URL; a name the cache does not hold scopes nothing. */
   type: string | null;
   onTab: (tab: Tab) => void;
   onType: (type: string | null) => void;
+  /**
+   * Opens a tab with a type in scope (or none), in one change of the URL: two changes made one after the other in the same
+   * event each start from the URL as it was, so the second would undo the first.
+   */
+  onView: (tab: Tab, type: string | null) => void;
   onRefresh: (flow: DeliveryCacheFlow) => void;
 }) {
   const versions = useQuery({
@@ -365,6 +435,13 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
   });
   const pendingTotal = pending.data?.total ?? 0;
   const [comparing, setComparing] = useState<string | null>(null);
+
+  // A link that named a section by an earlier tab lands on the tab holding it, with the section in view.
+  useEffect(() => {
+    if (section !== null) {
+      document.getElementById(`delivery-cache-part-${section}`)?.scrollIntoView({ block: "start" });
+    }
+  }, [section]);
 
   const types = summarizeTypes(cache);
   const scoped = type === null ? null : types.find((candidate) => candidate.name === type) ?? null;
@@ -383,7 +460,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
       label: "Changes",
       value: "automatic",
       caption: "a changed value goes out on the next run",
-      onClick: () => onTab("changes"),
+      onClick: () => onTab("deliveries"),
       testId: "delivery-cache-approval",
     }
     : {
@@ -391,7 +468,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
       value: pendingTotal.toLocaleString(),
       tone: pendingTotal > 0 ? "warning" : undefined,
       caption: `${approvalTypes.length} of ${types.length} type${types.length === 1 ? "" : "s"} ask for approval`,
-      onClick: () => onTab("changes"),
+      onClick: () => onTab("deliveries"),
       testId: "delivery-cache-approval",
     };
 
@@ -406,7 +483,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
             caption: current === null
               ? "refresh a cache flow to capture one"
               : <>written by {current.flow} <RelativeTime value={current.capturedUtc} absolute={false} /> for {current.capturedBy}</>,
-            onClick: () => onTab("versions"),
+            onClick: () => onTab("history"),
             testId: "delivery-cache-current",
           },
           {
@@ -414,8 +491,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
             value: records.toLocaleString(),
             caption: `in ${types.length} type${types.length === 1 ? "" : "s"}`,
             onClick: () => {
-              onType(null);
-              onTab("records");
+              onView("records", null);
             },
             testId: "delivery-cache-records",
           },
@@ -425,7 +501,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
             caption: cache.flows.length > 1
               ? `by ${cache.flows.length} cache flows`
               : schedules.length === 0 ? "no schedule; use Refresh now" : schedules.map(scheduleCadence).join("; "),
-            onClick: () => onTab("definition"),
+            onClick: () => onTab("setup"),
             testId: "delivery-cache-schedules",
           },
           changesCell,
@@ -440,7 +516,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
           </AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span>The delivered records built from these values are held back until each change is approved or rejected.</span>
-            <Button size="xs" variant="outline" onClick={() => onTab("changes")} data-testid="delivery-cache-review-changes">
+            <Button size="xs" variant="outline" onClick={() => onTab("deliveries")} data-testid="delivery-cache-review-changes">
               Review changes
             </Button>
           </AlertDescription>
@@ -451,20 +527,18 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border">
           <TabsList variant="line" data-testid="delivery-cache-tabs">
             <TabsTrigger value="records" data-testid="delivery-cache-tab-records">
-              {scoped === null ? "Records" : `${scoped.name} records`}
+              <TabName tab="records">{scoped === null ? "Records" : `${scoped.name} records`}</TabName>
             </TabsTrigger>
-            {/* A tab is named for what it holds and carries no count: what waits for a decision is said by the summary
-                and the banner above, and every tab says how much it holds once it is open. */}
-            <TabsTrigger value="versions" data-testid="delivery-cache-tab-versions">Versions</TabsTrigger>
-            <TabsTrigger value="changes" data-testid="delivery-cache-tab-changes">Changes</TabsTrigger>
-            <TabsTrigger value="gaps" data-testid="delivery-cache-tab-gaps">Built without</TabsTrigger>
-            <TabsTrigger value="definition" data-testid="delivery-cache-tab-definition">Definition</TabsTrigger>
-            <TabsTrigger value="flags" data-testid="delivery-cache-tab-flags">OSDU feature flags</TabsTrigger>
+            {/* A tab is named for the question it answers and carries no count: what waits for a decision is said by the
+                summary and the banner above, and every tab says how much it holds once it is open. */}
+            <TabsTrigger value="history" data-testid="delivery-cache-tab-history"><TabName tab="history">History</TabName></TabsTrigger>
+            <TabsTrigger value="deliveries" data-testid="delivery-cache-tab-deliveries"><TabName tab="deliveries">Deliveries</TabName></TabsTrigger>
+            <TabsTrigger value="setup" data-testid="delivery-cache-tab-setup"><TabName tab="setup">Setup</TabName></TabsTrigger>
           </TabsList>
-          {/* The type narrows the records, the versions and what records were built without; the changes and the definition
-              always cover the whole cache. The records pick it from the list beside them, which gives way to this picker on a
-              narrow screen. */}
-          {(tab === "records" || tab === "versions" || tab === "gaps") && (
+          {/* The type narrows the records and the history; what the cache means for deliveries, and how it is set up, always
+              cover the whole cache, and name each row's type. The records pick it from the list beside them, which gives
+              way to this picker on a narrow screen. */}
+          {(tab === "records" || tab === "history") && (
             <FilterCombobox
               options={typeOptions}
               value={scoped?.name ?? ""}
@@ -499,24 +573,37 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
           )}
         </TabsContent>
 
-        <TabsContent value="versions">
+        <TabsContent value="history">
           <DeliveryCacheHistory scope={cache.scope} type={scoped?.name ?? null} />
         </TabsContent>
 
-        <TabsContent value="changes">
-          <DeliveryCacheApprovals scope={cache.scope} approvalTypes={approvalTypes} pendingTotal={pending.data?.total} />
+        <TabsContent value="deliveries" className="flex flex-col gap-8">
+          <TabSection
+            id="updates"
+            title="Updated by cache changes"
+            about="Records already in OSDU that were built from a cached value a refresh has since changed. A type set to onChange: auto, the default, needs nothing from anyone: the change is approved as it is found and each record is updated on its flow's next delivery, and this list shows that being carried out. A type set to onChange: approve waits here until someone approves or rejects the change."
+          >
+            <DeliveryCacheApprovals scope={cache.scope} approvalTypes={approvalTypes} pendingTotal={pending.data?.total} />
+          </TabSection>
+          <TabSection
+            id="gaps"
+            title="Missing from cache"
+            about="Records already in OSDU that were built without something the cache did not hold when they were rendered: a wellbore loaded after its logs, an access group not listed yet for a field, a reference written unverified. Nothing needs doing here: once a refresh brings what was missing, the records are updated like any other cache change, on their next delivery. Fix the source when a gap should not be there at all."
+          >
+            <DeliveryCacheGaps scope={cache.scope} type={null} />
+          </TabSection>
         </TabsContent>
 
-        <TabsContent value="gaps">
-          <DeliveryCacheGaps scope={cache.scope} type={scoped?.name ?? null} />
-        </TabsContent>
-
-        <TabsContent value="definition">
-          <DeliveryCacheDefinition cache={cache} onRefresh={onRefresh} />
-        </TabsContent>
-
-        <TabsContent value="flags">
-          <DeliveryCacheFlags scope={cache.scope} version={current} versions={versions.data ?? []} />
+        <TabsContent value="setup">
+          <DeliveryCacheSetup
+            cache={cache}
+            version={current}
+            versions={versions.data ?? []}
+            node={node}
+            onNode={onNode}
+            onRefresh={onRefresh}
+            onOpen={(name, next) => onView(next, name)}
+          />
         </TabsContent>
       </Tabs>
     </>
