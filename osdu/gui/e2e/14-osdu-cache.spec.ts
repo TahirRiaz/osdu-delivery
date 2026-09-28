@@ -2,8 +2,8 @@ import { CACHE, DELIVERY_FLOW, LOOKUPS, REFERENCE, SOURCE } from "./global-setup
 import { expect, test } from "./helpers";
 
 // The OSDU cache page: the header names the cache and the file that defines it, a summary row says which version is
-// read and what it holds, and the records, versions, changes and definition are tabs, with a searchable type picker in
-// the tab bar. Runs after the seed (03), so the fixture repo is synced, and its three cache flows declare thirteen types
+// read and what it holds, and the records, versions, changes, definition and OSDU feature flags are tabs. The records
+// are browsed from a list of the types beside them; the versions keep a searchable type picker in the tab bar. Runs after the seed (03), so the fixture repo is synced, and its three cache flows declare thirteen types
 // (none asking for approval): the reference data the fixture mappings read and the partition's reference data the well
 // log mapping checks its ids against, both declaring UnitOfMeasure, whose records were imported through the CLI as the
 // first two versions, and the lookup tables the well log mapping translates through, whose refresh (the unit maps and
@@ -34,26 +34,40 @@ test.describe.serial("osdu cache", () => {
     await expect(adminPage.getByTestId("delivery-cache-approval-value")).toHaveText("automatic", { timeout: 30_000 });
     await expect(adminPage.getByTestId("delivery-cache-pending-banner")).toHaveCount(0);
 
-    // The types, in the searchable picker in the tab bar, each with its family and how many records it holds.
+    // The types, listed beside the records by family, each with how many records the current version holds of it, and
+    // every type to begin with.
+    const rail = adminPage.getByTestId("delivery-cache-type-rail");
+    await expect(rail.getByTestId("delivery-cache-type-all")).toHaveAttribute("aria-current", "true");
+    await expect(rail).toContainText("Reference data");
+    await expect(rail).toContainText("Lookup tables");
+    for (const name of ["UnitOfMeasure", "TrajectoryStationPropertyType", "LogCurveType", "LogCurveFamily", "RecallUnits", "RecallDepthUnits", "CurveDictionary"]) {
+      await expect(rail.locator(`[data-type="${name}"]`)).toBeVisible();
+    }
+    await expect(rail.locator('[data-type="UnitOfMeasure"]').getByTestId("delivery-cache-type-item-count")).toHaveText(/^\d/);
+
+    // Wellbores are searched for on the platform as a record needs one, never captured.
+    await expect(rail.locator('[data-type="Wellbore"]')).toHaveCount(0);
+
+    // Every type's first records, each type in a section of its own columns: a reference data type by its OSDU id and
+    // the names it caches, a lookup table by its key.
+    const section = (name: string) => adminPage.locator(`[data-testid="delivery-cache-section"][data-type="${name}"]`);
+    await section("UnitOfMeasure").scrollIntoViewIfNeeded();
+    await expect(section("UnitOfMeasure").getByRole("columnheader", { name: "Code" })).toBeVisible({ timeout: 30_000 });
+    await expect(section("UnitOfMeasure").getByTestId("table-row").first()).toBeVisible();
+    await section("CurveDictionary").scrollIntoViewIfNeeded();
+    await expect(section("CurveDictionary").getByRole("columnheader", { name: "mnemonic (key)" })).toBeVisible({ timeout: 30_000 });
+
+    // The versions keep the searchable type picker in the tab bar, each type with its family and how many records it holds.
+    await adminPage.getByTestId("delivery-cache-tab-versions").click();
     const picker = adminPage.getByTestId("delivery-cache-type");
     await expect(picker).toHaveText(/All types/);
     await picker.click();
     const options = adminPage.getByRole("listbox");
-    for (const name of ["UnitOfMeasure", "TrajectoryStationPropertyType", "LogCurveType", "LogCurveFamily", "RecallUnits", "RecallDepthUnits", "CurveDictionary"]) {
-      await expect(options.getByRole("option").filter({ hasText: name }).first()).toBeVisible();
-    }
+    await expect(options.getByRole("option").filter({ hasText: "UnitOfMeasure" }).first()).toBeVisible();
     await expect(options.getByText(/reference data · \d+ records?/).first()).toBeVisible();
     // A lookup table says where its rows come from, and counts rows: they are kept under their keys, not OSDU records.
     await expect(options.getByText(/lookup table from an ingestion table · \d+ rows?/).first()).toBeVisible();
-
-    // Wellbores are searched for on the platform as a record needs one, never captured.
-    await expect(options.getByRole("option").filter({ hasText: "Wellbore" })).toHaveCount(0);
     await adminPage.keyboard.press("Escape");
-
-    // The records of every type, out of the current version, a page at a time in the order of their types' names: the
-    // curve dictionary's rows come first.
-    const items = adminPage.getByTestId("delivery-cache-items-table");
-    await expect(items.getByTestId("table-row").first()).toContainText("CurveDictionary", { timeout: 30_000 });
   });
 
   test("the definition tab reads back the file, and the header opens its YAML and refreshes it", async ({ adminPage }) => {
@@ -132,18 +146,21 @@ test.describe.serial("osdu cache", () => {
 
   test("picking a type scopes the records, and a row opens what it caches", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
-    const picker = adminPage.getByTestId("delivery-cache-type");
-    await picker.click();
-    await adminPage.getByRole("option").filter({ hasText: "UnitOfMeasure" }).first().click();
-    await expect(picker).toHaveText(/UnitOfMeasure/);
+    const rail = adminPage.getByTestId("delivery-cache-type-rail");
+    await rail.locator('[data-type="UnitOfMeasure"]').click();
+    await expect(rail.locator('[data-type="UnitOfMeasure"]')).toHaveAttribute("aria-current", "true");
     await expect(adminPage.getByTestId("delivery-cache-tab-records")).toHaveText("UnitOfMeasure records");
+    await expect(adminPage.getByTestId("delivery-cache-type-name")).toHaveText("UnitOfMeasure");
 
-    // A type in scope gives the table a column per captured name.
+    // A type in scope gives the table a column per captured name. The id column shows what tells the records apart, and
+    // the header the partition and entity type every id repeats.
     const items = adminPage.getByTestId("delivery-cache-items-table");
     await expect(items.getByRole("columnheader", { name: "Code" })).toBeVisible({ timeout: 30_000 });
-    await expect(items.getByText("reference-data--UnitOfMeasure:dega").first()).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByTestId("delivery-cache-type-header")).toContainText("reference-data--UnitOfMeasure:", { timeout: 30_000 });
+    const dega = items.getByTestId("delivery-cache-item-id").filter({ hasText: /^dega$/ });
+    await expect(dega.first()).toBeVisible({ timeout: 30_000 });
 
-    await items.getByText("reference-data--UnitOfMeasure:dega").first().click();
+    await dega.first().click();
     const detail = adminPage.getByTestId("delivery-cache-item-detail");
     await expect(detail).toBeVisible();
     await expect(detail).toContainText("Captured values");
@@ -165,30 +182,36 @@ test.describe.serial("osdu cache", () => {
     await expect(mapping.getByTestId("delivery-cache-item-entry")).toContainText("$findBy: ");
     await detail.getByRole("button", { name: "Close" }).click();
 
-    // Clearing the picker lifts the scope.
-    await picker.click();
-    await adminPage.getByRole("option").filter({ hasText: "Clear filter" }).click();
-    await expect(picker).toHaveText(/All types/);
+    // All types lifts the scope: every type's section again.
+    await rail.getByTestId("delivery-cache-type-all").click();
     await expect(adminPage.getByTestId("delivery-cache-tab-records")).toHaveText("Records");
-    await expect(items.getByTestId("table-row").first()).toContainText("CurveDictionary", { timeout: 30_000 });
+    await expect(adminPage.getByTestId("delivery-cache-section").first()).toBeVisible({ timeout: 30_000 });
   });
 
   test("search finds a cached record by a value it holds rather than its id", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
 
-    // "metre" is the Name of the metre unit, not part of its id: the search covers every cached value.
+    // "metre" is the Name of the metre unit, not part of its id: the search covers every cached value, and marks it.
     await adminPage.getByTestId("delivery-cache-search").fill("metre");
-    const rows = adminPage.getByTestId("delivery-cache-items-table").getByTestId("table-row");
-    await expect(rows.filter({ hasText: "metre" }).first()).toBeVisible({ timeout: 30_000 });
-    await expect(rows.filter({ hasText: "TrajectoryStationPropertyType" })).toHaveCount(0);
+    const rows = adminPage.getByTestId("delivery-cache-sections").getByTestId("table-row");
+    const metre = rows.filter({ hasText: "metre" }).first();
+    await expect(metre).toBeVisible({ timeout: 30_000 });
+    await expect(metre.locator("mark").first()).toHaveText(/metre/i);
+
+    // Only the types something matches in keep a section; the list counts the matches in each, and the types nothing
+    // matches in are named under the sections.
+    const units = adminPage.getByTestId("delivery-cache-type-rail").locator('[data-type="UnitOfMeasure"]');
+    await expect(units.getByTestId("delivery-cache-type-item-count")).toHaveText(/^[1-9]/);
+    await expect(adminPage.locator('[data-testid="delivery-cache-section"][data-type="TrajectoryStationPropertyType"]')).toHaveCount(0);
+    await expect(adminPage.getByTestId("delivery-cache-unmatched")).toContainText("TrajectoryStationPropertyType");
   });
 
   test("the version picker reads the cache at one named version", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-cache").click();
 
-    // The metre unit, found by its name: the lookup tables' rows come before the units in the unfiltered records.
+    // The metre unit, found by its name.
     await adminPage.getByTestId("delivery-cache-search").fill("metre");
-    const rows = adminPage.getByTestId("delivery-cache-items-table").getByTestId("table-row");
+    const rows = adminPage.getByTestId("delivery-cache-sections").getByTestId("table-row");
     await expect(rows.filter({ hasText: "metre" }).first()).toBeVisible({ timeout: 30_000 });
 
     // The records open on whichever version is current, and the picker offers the versions by label.
@@ -239,6 +262,20 @@ test.describe.serial("osdu cache", () => {
     await expect(detail).toBeVisible();
     await adminPage.getByTestId("delivery-cache-tab-records").click();
     await expect(detail).toHaveCount(0);
+  });
+
+  test("the OSDU feature flags say whose they are and which service reported them", async ({ adminPage }) => {
+    // A link from when the tab was called System properties still lands on it.
+    await adminPage.goto("/delivery/cache?tab=system");
+    await expect(adminPage.getByTestId("delivery-cache-tab-flags")).toHaveAttribute("data-state", "active", { timeout: 30_000 });
+    await expect(adminPage.getByTestId("delivery-cache-tab-flags")).toContainText("OSDU feature flags");
+
+    // Set on the platform, not by OSDU Delivery, and read from each service's info endpoint, one block per service.
+    const flags = adminPage.getByTestId("delivery-cache-flags");
+    await expect(flags.getByTestId("delivery-cache-flags-read")).toContainText("Set on the OSDU platform for");
+    await expect(flags.getByTestId("delivery-cache-flags-read")).toContainText("never changed by OSDU Delivery");
+    await expect(flags.getByTestId("delivery-cache-flags-indexer")).toContainText("GET /api/indexer/v2/info");
+    await expect(flags.getByTestId("delivery-cache-flags-search")).toContainText("GET /api/search/v2/info");
   });
 
   test("changes go out automatically unless a type asks for approval, and the page says so", async ({ adminPage }) => {

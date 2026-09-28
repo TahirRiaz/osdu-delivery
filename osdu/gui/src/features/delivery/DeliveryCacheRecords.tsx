@@ -1,26 +1,42 @@
 import { useMemo, useState } from "react";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { History, Pin } from "lucide-react";
+import { ArrowRight, BookOpen, DatabaseZap, History, Pin, Search, ShieldCheck, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { deliveryApi, type DeliveryCacheVersion, type DeliveryCachedItem } from "../../api/delivery";
+import { isApiError } from "@/api/client";
+import { deliveryApi, type DeliveryCacheTypeSource, type DeliveryCacheVersion, type DeliveryCachedItem } from "../../api/delivery";
 import { CodeView } from "@/components/CodeView";
 import { CopyButton } from "@/components/CopyButton";
+import { CorrelationError } from "@/components/CorrelationError";
+import { DataTable } from "@/components/DataTable";
 import { DetailPair } from "@/components/DetailPair";
+import { EmptyState } from "@/components/EmptyState";
 import { PagedTable, type Column } from "@/components/PagedTable";
 import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
 import { StatePill } from "@/components/StatusBadge";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useClipped } from "@/components/useClipped";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { parseUtc } from "@/lib/time";
 import { RecordMappingReference } from "./CacheMappingReference";
-import { cachedCell, isLookupEntityType, splitRecordId } from "./cacheFormat";
+import { CacheTypeRail } from "./CacheTypeRail";
+import { CachedValueText } from "./CachedValueText";
+import { KindText } from "./KindText";
+import { cachedCell, isLookupEntityType, recordIdentity, splitRecordId, type CachedTypeSummary } from "./cacheFormat";
+import { SECTION_ROWS, browsedTypes, columnNames, typeSampleQuery, type BrowsedType } from "./cacheRecordsModel";
+import { useNearViewport } from "./useNearViewport";
 
 /** The picker's value for "whichever version is current", which is what the records open on. */
 export const CURRENT = "current";
+
+/** How long a typed search rests before it is asked: every type is counted for it, so a keystroke is not a request. */
+const SEARCH_DELAY_MS = 300;
 
 /**
  * An OSDU record id with its repeated part stepped back: the partition and entity type in muted text, the part that
@@ -72,26 +88,6 @@ export function CachedRecordId({ id, entityType, maxWidth = 360, tailOnly = fals
     : <RecordId id={id} maxWidth={maxWidth} tailOnly={tailOnly} />;
 }
 
-/** The captured values of one record, name by name, for the view over every type where the columns cannot be fixed. */
-function FieldPairs({ fields }: { fields: Record<string, unknown> }) {
-  const entries = Object.entries(fields);
-  if (entries.length === 0) {
-    return <span className="text-muted-foreground">-</span>;
-  }
-
-  // The pairs share the width the table leaves; the last ones clip, and the record's sheet lists every value.
-  return (
-    <span className="flex min-w-0 items-baseline gap-3 overflow-hidden">
-      {entries.map(([name, value]) => (
-        <span key={name} className="inline-flex shrink-0 items-baseline gap-1">
-          <span className="text-[11px] text-muted-foreground">{name}</span>
-          <TruncatedText text={cachedCell(value)} mono maxWidth={160} />
-        </span>
-      ))}
-    </span>
-  );
-}
-
 /** The version picker: the current version by default, or any version of the cache by label, with when it was captured. */
 export function CacheVersionPicker({ versions, value, onChange, className }: {
   versions: DeliveryCacheVersion[];
@@ -126,25 +122,341 @@ export function CacheVersionPicker({ versions, value, onChange, className }: {
   );
 }
 
+/** A count and the word for what it counts: a lookup table holds rows, an OSDU type records. */
+function counted(count: number, type: BrowsedType | null): string {
+  const noun = type !== null && type.key !== null ? "row" : "record";
+  return `${count.toLocaleString()} ${noun}${count === 1 ? "" : "s"}`;
+}
+
 /**
- * The records of one cache, with the search and the version to read in the tab's own toolbar: they narrow these records
- * and nothing else on the page. The current version is read by default. With a type in scope the table has one column
- * per captured name, so a unit's code, name and id read down the page; over every type the values fold into one column,
- * since the names differ from type to type.
+ * The columns a type's records read in: what tells the records apart first (an OSDU id past its repeated partition and
+ * type, or a lookup row's key), then one column per captured name. A value that only repeats the record's identity or a
+ * value to its left steps back, and the search's matches are marked, so each row says what is new in it and why the search
+ * found it.
  */
-export function DeliveryCacheRecords({ scope, type, keyName = null, fields, versions }: {
+function recordColumns(
+  type: BrowsedType, names: string[], search: string, rows: DeliveryCachedItem[] | undefined,
+): Column<DeliveryCachedItem>[] {
+  const identity: Column<DeliveryCachedItem> = {
+    id: "recordId",
+    header: type.key === null ? "OSDU id" : `${type.key} (key)`,
+    render: (row) => (
+      <CachedValueText
+        value={type.key === null ? splitRecordId(row.recordId).tail : row.recordId}
+        search={search}
+        strong
+        maxWidth={260}
+        testId="delivery-cache-item-id"
+      />
+    ),
+  };
+
+  // Each value column is as wide as the values it holds need, up to a cap, and packs to the left, so a row reads across in
+  // one sweep; the last takes what the others leave. A lookup table with many names fits its card rather than pushing its
+  // last columns out of view, and a value longer than its column clips, whole on hover.
+  const values = names.map((name, index): Column<DeliveryCachedItem> => {
+    const width = columnWidth(name, rows);
+    const last = index === names.length - 1;
+    return {
+      id: `field:${name}`,
+      header: name,
+      fill: last,
+      floor: last ? width : undefined,
+      render: (row) => (
+        <CachedValueText
+          value={row.fields[name]}
+          seen={said(row, names.slice(0, index))}
+          search={search}
+          maxWidth={width - CELL_PADDING}
+          fill={last}
+        />
+      ),
+    };
+  });
+
+  return values.length === 0 ? [{ ...identity, fill: true, floor: 200 }] : [identity, ...values];
+}
+
+/** A table cell's horizontal padding, in pixels. */
+const CELL_PADDING = 24;
+
+/**
+ * How wide a value column is: room for the longest value the rows given hold under it, or its name, between bounds that
+ * keep a short column legible and a long one from crowding out the rest. A mono character at 12px is about 7.2px wide.
+ */
+function columnWidth(name: string, rows: DeliveryCachedItem[] | undefined): number {
+  const longest = Math.max(name.length, ...(rows ?? []).map((row) => cachedCell(row.fields[name])?.length ?? 0));
+  return Math.min(240, Math.max(88, Math.round(longest * 7.2) + CELL_PADDING));
+}
+
+/** What a row says before the values of `names`: the record's identity, then those values, each as a cell reads it. */
+function said(row: DeliveryCachedItem, earlier: string[]): string[] {
+  const values = earlier.map((name) => cachedCell(row.fields[name])).filter((value): value is string => value !== null);
+  return [recordIdentity(row.recordId, row.entityType), ...values];
+}
+
+/**
+ * Where one cache flow's declaration of a type takes its records from, in a line: the kind it searches on OSDU, or the
+ * ingestion table or dictionary it holds, with the name a lookup row is keyed by.
+ */
+function SourceLine({ source }: { source: DeliveryCacheTypeSource }) {
+  switch (source.origin) {
+    case "table":
+      return (
+        <>
+          <Table2 className="size-3.5 shrink-0" />
+          <span>Ingestion table</span>
+          <span className="font-mono text-foreground">{source.sourceObject}</span>
+          <span>keyed by</span>
+          <span className="font-mono text-foreground">{source.keyField}</span>
+        </>
+      );
+    case "dictionary":
+      return (
+        <>
+          <BookOpen className="size-3.5 shrink-0" />
+          <span>Dictionary</span>
+          <span className="font-mono text-foreground">{source.dictionaryPath}</span>
+          <span>keyed by</span>
+          <span className="font-mono text-foreground">{source.keyField}</span>
+        </>
+      );
+    default:
+      return (
+        <>
+          <Search className="size-3.5 shrink-0" />
+          <span>Searched on OSDU</span>
+          {source.kind !== null && <span className="min-w-0 max-w-[420px] text-foreground"><KindText kind={source.kind} /></span>}
+        </>
+      );
+  }
+}
+
+/**
+ * The head of a type's table: its name and entity type, how many records the version being read holds (and, with a
+ * search, how many of them match), where the records come from and which cache flow declares the type, and the prefix
+ * every id repeats, which the id column leaves out.
+ */
+function TypeHeader({ type, matches, idPrefix }: {
+  type: BrowsedType;
+  /** How many records match the search; undefined while counting, null without a search. */
+  matches: number | null | undefined;
+  /** The partition and entity type every id of the type starts with, when the records read show one. */
+  idPrefix: string | null;
+}) {
+  const sources = type.declared?.sources ?? [];
+  const source = sources.at(0);
+  return (
+    <div className="flex flex-col gap-1" data-testid="delivery-cache-type-header">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 className="text-base font-medium" data-testid="delivery-cache-type-name">{type.name}</h2>
+        <span className="font-mono text-[12px] text-muted-foreground">{type.entityType}</span>
+        {type.declared?.onChange === "approve" && (
+          <StatePill tone="warning" label="changes need approval" icon={ShieldCheck} testId="delivery-cache-type-approve" />
+        )}
+        <span className="ml-auto font-mono text-[12px] tabular-nums text-muted-foreground" data-testid="delivery-cache-type-count">
+          {matches === null
+            ? counted(type.items, type)
+            : matches === undefined
+              ? <Skeleton className="inline-block h-3 w-24 align-middle" />
+              : `${matches.toLocaleString()} of ${counted(type.items, type)} match`}
+        </span>
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] text-muted-foreground">
+        {source === undefined
+          ? <span>Only older versions hold this type: no cache flow declares it now.</span>
+          : (
+            <>
+              <SourceLine source={source} />
+              <span className="text-muted-foreground/60">·</span>
+              <span>declared by</span>
+              <span className="font-mono text-foreground">{source.flow}</span>
+              {sources.length > 1 && (
+                <RichTooltip body={sources.slice(1).map((other) => other.flow).join("\n")} title="Also declared by" mono>
+                  <span className="underline decoration-dotted underline-offset-2">and {sources.length - 1} more</span>
+                </RichTooltip>
+              )}
+            </>
+          )}
+        {idPrefix !== null && (
+          <>
+            <span className="text-muted-foreground/60">·</span>
+            <span>ids</span>
+            <span className="font-mono">{idPrefix}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One type among every type's records: its name (which opens its table), how many records it holds or match the search,
+ * and its first records in its own columns. It fetches them as it scrolls into view, or at once when the search is
+ * counting every type anyway.
+ */
+function TypeSection({ scope, type, search, version, eager, onOpen, onItem }: {
+  scope: string;
+  type: BrowsedType;
+  search: string;
+  version: string | undefined;
+  /** Fetch now rather than when the section nears the viewport. */
+  eager: boolean;
+  onOpen: () => void;
+  onItem: (item: DeliveryCachedItem) => void;
+}) {
+  const [ref, near] = useNearViewport<HTMLDivElement>();
+  const sample = useQuery({ ...typeSampleQuery(scope, type.name, search, version), enabled: eager || near });
+  const rows = sample.data?.items;
+  const total = sample.data?.total;
+  const columns = useMemo(() => recordColumns(type, columnNames(type, rows), search, rows), [type, rows, search]);
+  const searching = search !== "";
+
+  const header = (
+    <div className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-2">
+      <button
+        type="button"
+        onClick={onOpen}
+        className="truncate text-[13px] font-medium outline-none underline-offset-4 hover:text-primary hover:underline focus-visible:underline"
+        data-testid="delivery-cache-section-open"
+      >
+        {type.name}
+      </button>
+      <span className="hidden min-w-0 truncate font-mono text-[11px] text-muted-foreground sm:inline">{type.entityType}</span>
+      <span className="ml-auto shrink-0 font-mono text-[12px] tabular-nums text-muted-foreground" data-testid="delivery-cache-section-count">
+        {!searching
+          ? counted(type.items, type)
+          : total === undefined
+            ? <Skeleton className="inline-block h-3 w-16 align-middle" />
+            : `${total.toLocaleString()} match${total === 1 ? "" : "es"}`}
+      </span>
+    </div>
+  );
+
+  const more = rows !== undefined && total !== undefined && total > rows.length;
+  const footer = more
+    ? (
+      <div className="flex items-center justify-between gap-3 border-t border-border px-3 py-1 text-xs text-muted-foreground">
+        <span className="font-mono tabular-nums">{rows.length} of {total.toLocaleString()}</span>
+        <Button variant="ghost" size="xs" onClick={onOpen} data-testid="delivery-cache-section-more">
+          Open {type.name}
+          <ArrowRight />
+        </Button>
+      </div>
+    )
+    : undefined;
+
+  return (
+    <div ref={ref} data-testid="delivery-cache-section" data-type={type.name}>
+      {sample.isError
+        ? (
+          <Card className="gap-0 overflow-hidden rounded-lg p-0">
+            {header}
+            <div className="p-3">
+              {isApiError(sample.error)
+                ? <CorrelationError error={sample.error} />
+                : <p className="text-[13px] text-destructive">{String(sample.error)}</p>}
+            </div>
+          </Card>
+        )
+        : (
+          <DataTable
+            columns={columns}
+            rows={rows}
+            rowKey={(row) => row.itemId}
+            onRowClick={onItem}
+            emptyMessage={searching ? `No ${type.name} record matches the search.` : `The version being read holds no ${type.name} records.`}
+            toolbar={header}
+            footer={footer}
+            skeletonRows={Math.max(1, Math.min(SECTION_ROWS, type.items))}
+            data-testid="delivery-cache-section-table"
+          />
+        )}
+    </div>
+  );
+}
+
+/**
+ * The partition and entity type every id among `rows` starts with, which a type's id column leaves out; null when the rows
+ * do not agree on one or have none.
+ */
+function sharedIdPrefix(rows: DeliveryCachedItem[] | undefined): string | null {
+  const prefixes = new Set((rows ?? []).map((row) => splitRecordId(row.recordId).prefix));
+  const [only] = prefixes;
+  return prefixes.size === 1 && only !== "" ? only : null;
+}
+
+/**
+ * One type's records, a page at a time, in the type's own columns: the view a type opens on, whether it was picked in the
+ * list or opened from its section.
+ */
+function TypeTable({ scope, type, search, version, sampleRows, onItem }: {
+  scope: string;
+  type: BrowsedType;
+  search: string;
+  version: string | undefined;
+  /** The type's first records, for the names its table needs a column for beyond the declared ones. */
+  sampleRows: DeliveryCachedItem[] | undefined;
+  onItem: (item: DeliveryCachedItem) => void;
+}) {
+  const columns = useMemo(() => recordColumns(type, columnNames(type, sampleRows), search, sampleRows), [type, sampleRows, search]);
+  return (
+    <PagedTable
+      queryKey={["delivery", "cache", "items", scope, type.name, search, version ?? null]}
+      fetchPage={(page, pageSize) => deliveryApi.cachedItems({
+        page, pageSize, scope, type: type.name, search: search === "" ? undefined : search, version,
+      })}
+      columns={columns}
+      rowKey={(row) => row.itemId}
+      onRowClick={onItem}
+      emptyMessage={search !== ""
+        ? `No ${type.name} record holds a value, id or alias matching the search.`
+        : `The version being read holds no ${type.name} records: the search the cache flow declares for the type matched none.`}
+      data-testid="delivery-cache-items-table"
+    />
+  );
+}
+
+/** A quiet line naming the types a view leaves out, so an absent type reads as nothing to show rather than as missing. */
+function LeftOut({ label, types, testId }: { label: string; types: BrowsedType[]; testId: string }) {
+  if (types.length === 0) {
+    return null;
+  }
+
+  return (
+    <p className="text-[12px] text-muted-foreground" data-testid={testId}>
+      {label}{" "}
+      {types.map((type, index) => (
+        <span key={type.name}>
+          {index > 0 && ", "}
+          <span className="font-mono">{type.name}</span>
+        </span>
+      ))}
+    </p>
+  );
+}
+
+/**
+ * The records of a partition's cache, browsed a type at a time. The types are listed beside the records, grouped by family,
+ * with how many records the version being read holds of each; every type's records share one search and one version,
+ * both in the toolbar over them. All types shows each type as a section of its own, its first records in its own columns,
+ * rather than one list whose rows cannot share columns; a type opens its whole table. While a search is typed the list
+ * counts the matches in every type, the sections of types nothing matches in give way, and every match is marked.
+ */
+export function DeliveryCacheRecords({ scope, types, type, onType, versions }: {
   /** The partition whose cache the records belong to. */
   scope: string;
+  /** The types the cache flows declare, as the page summarizes them. */
+  types: CachedTypeSummary[];
+  /** The type in scope; null for every type. */
   type: string | null;
-  /** For a lookup table in scope, the name its rows' keys are kept under; null for OSDU records or no type in scope. */
-  keyName?: string | null;
-  /** The names the type in scope caches its paths under, in declaration order; empty without a type in scope. */
-  fields: string[];
+  onType: (type: string | null) => void;
   /** The cache's versions, newest first, for the version picker. */
   versions: DeliveryCacheVersion[];
 }) {
   const [item, setItem] = useState<DeliveryCachedItem | null>(null);
-  const [search, setSearch] = useState("");
+  const [typed, setTyped] = useState("");
+  const search = useDebouncedValue(typed.trim(), SEARCH_DELAY_MS);
   // The picker holds a version label; CURRENT follows whichever version is current rather than freezing on one.
   const [picked, setPicked] = useState<string>(CURRENT);
 
@@ -154,101 +466,149 @@ export function DeliveryCacheRecords({ scope, type, keyName = null, fields, vers
   const historic = reading !== undefined && !reading.current ? reading : null;
   const version = versionFilter === CURRENT ? undefined : versionFilter;
 
-  const columns = useMemo<Column<DeliveryCachedItem>[]>(() => {
-    if (type !== null && fields.length > 0) {
-      // One column per captured name: the id takes the width the values leave, its repeated prefix giving way first.
-      return [
-        {
-          id: "recordId",
-          header: keyName === null ? "OSDU id" : `Key (${keyName})`,
-          fill: true,
-          floor: 200,
-          render: (row) => <CachedRecordId id={row.recordId} entityType={row.entityType} maxWidth={1200} />,
-        },
-        ...fields.map((name): Column<DeliveryCachedItem> => ({
-          id: `field:${name}`,
-          header: name,
-          render: (row) => <TruncatedText text={cachedCell(row.fields[name])} mono maxWidth={200} />,
-        })),
-      ];
+  const browsed = useMemo(() => browsedTypes(types, reading), [types, reading]);
+  const selected = type === null ? null : browsed.find((candidate) => candidate.name === type) ?? null;
+  const searching = search !== "";
+
+  // While a search is typed, every type is asked how many of its records match: the list counts them, and each type's
+  // section and table reads the same answer rather than asking again.
+  const counts = useQueries({
+    queries: browsed.map((candidate) => ({ ...typeSampleQuery(scope, candidate.name, search, version), enabled: searching })),
+  });
+  const matches = useMemo(() => {
+    if (!searching) {
+      return null;
     }
 
-    // The values fold into one column, which takes the width the id leaves. Over every type the row already names the
-    // type, so the id shows only the part that tells the records apart.
-    const id: Column<DeliveryCachedItem> = {
-      id: "recordId",
-      header: type === null ? "Record" : keyName === null ? "OSDU id" : `Key (${keyName})`,
-      render: (row) => (type === null
-        ? <CachedRecordId id={row.recordId} entityType={row.entityType} maxWidth={220} tailOnly />
-        : <CachedRecordId id={row.recordId} entityType={row.entityType} maxWidth={240} />),
-    };
-    const values: Column<DeliveryCachedItem> = {
-      id: "values", header: "Cached values", fill: true, floor: 200, render: (row) => <FieldPairs fields={row.fields} />,
-    };
-    return type === null
-      ? [{ id: "type", header: "Type", render: (row) => <span className="font-mono text-[12px]">{row.typeName}</span> }, id, values]
-      : [id, values];
-  }, [type, keyName, fields]);
+    return new Map(browsed.map((candidate, index) => [candidate.name, counts[index]?.data?.total]));
+  }, [searching, browsed, counts]);
+
+  // The first records of the type in view: the id prefix its header states, and any name its table needs a column for
+  // that no cache flow declares. The same request the list's count makes while a search is typed.
+  const typeSample = useQuery({ ...typeSampleQuery(scope, selected?.name ?? "", search, version), enabled: selected !== null });
+  const sampleRows = selected === null ? undefined : typeSample.data?.items;
 
   // The sheet lists the declared names first, in their order, then anything else the record carries.
+  const itemType = item === null ? null : browsed.find((candidate) => candidate.name === item.typeName) ?? null;
+  const declaredNames = itemType?.declared?.fields.map((field) => field.as) ?? [];
   const detailNames = item === null
     ? []
-    : [...fields, ...Object.keys(item.fields).filter((name) => !fields.includes(name))];
+    : [...declaredNames, ...Object.keys(item.fields).filter((name) => !declaredNames.includes(name))];
 
-  const emptyMessage = search !== ""
-    ? "No cached record holds a value, id or alias matching the search."
-    : type !== null
-      ? `The version being read holds no ${type} records: the search the cache flow declares for the type matched none.`
-      : "No cached records yet. Refresh the cache to capture its first version.";
+  const shown = browsed.filter((candidate) => (searching ? matches?.get(candidate.name) !== 0 : candidate.items > 0));
+  const unmatched = searching ? browsed.filter((candidate) => matches?.get(candidate.name) === 0) : [];
+  const empty = searching ? [] : browsed.filter((candidate) => candidate.items === 0);
+  const totalRecords = browsed.reduce((sum, candidate) => sum + candidate.items, 0);
+  const matchTotal = matches === null || [...matches.values()].some((value) => value === undefined)
+    ? undefined
+    : [...matches.values()].reduce<number>((sum, value) => sum + (value ?? 0), 0);
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <SearchInput
-          value={search}
-          onChange={setSearch}
-          placeholder="Search values, ids and aliases"
-          label="Search cached records"
-          className="sm:w-80"
-          testId="delivery-cache-search"
-        />
-        <CacheVersionPicker versions={versions} value={versionFilter} onChange={setPicked} className="w-full sm:w-64" />
-      </div>
-
-      {historic !== null && (
-        <div
-          role="status"
-          className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/8 px-3 py-2 text-[12.5px]"
-          data-testid="delivery-cache-historic"
-        >
-          <History className="size-4 shrink-0 text-warning" />
-          <span>
-            Reading the cache as it stood at <span className="font-mono">{historic.version}</span>. Deliveries read the
-            current version.
-          </span>
-          <Button
-            variant="outline"
-            size="xs"
-            className="ml-auto"
-            onClick={() => setPicked(CURRENT)}
-            data-testid="delivery-cache-back-to-current"
-          >
-            Back to current
-          </Button>
-        </div>
-      )}
-
-      <PagedTable
-        queryKey={["delivery", "cache", "items", scope, type, search, version]}
-        fetchPage={(page, pageSize) => deliveryApi.cachedItems({
-          page, pageSize, scope, type: type ?? undefined, search: search || undefined, version,
-        })}
-        columns={columns}
-        rowKey={(row) => row.itemId}
-        onRowClick={setItem}
-        emptyMessage={emptyMessage}
-        data-testid="delivery-cache-items-table"
+    <div className="grid items-start gap-4 lg:grid-cols-[15rem_minmax(0,1fr)]">
+      <CacheTypeRail
+        types={browsed}
+        selected={selected?.name ?? null}
+        onSelect={onType}
+        matches={matches}
+        className="hidden lg:sticky lg:top-0 lg:flex lg:max-h-[calc(100dvh-14rem)]"
       />
+
+      <div className="flex min-w-0 flex-col gap-3">
+        {selected !== null && (
+          <TypeHeader
+            type={selected}
+            matches={matches === null ? null : matches.get(selected.name)}
+            idPrefix={selected.key === null ? sharedIdPrefix(sampleRows) : null}
+          />
+        )}
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <SearchInput
+            value={typed}
+            onChange={setTyped}
+            placeholder={selected === null ? "Search every type: values, ids and aliases" : `Search ${selected.name}: values, ids and aliases`}
+            label="Search cached records"
+            className="sm:w-96"
+            testId="delivery-cache-search"
+          />
+          <CacheVersionPicker versions={versions} value={versionFilter} onChange={setPicked} className="w-full sm:w-64" />
+          {selected === null && (
+            <span className="whitespace-nowrap font-mono text-[12px] tabular-nums text-muted-foreground sm:ml-auto" data-testid="delivery-cache-records-count">
+              {!searching
+                ? `${totalRecords.toLocaleString()} in ${browsed.length} type${browsed.length === 1 ? "" : "s"}`
+                : matchTotal === undefined
+                  ? <Skeleton className="inline-block h-3 w-32 align-middle" />
+                  : `${matchTotal.toLocaleString()} match${matchTotal === 1 ? "" : "es"} in ${shown.length} type${shown.length === 1 ? "" : "s"}`}
+            </span>
+          )}
+        </div>
+
+        {historic !== null && (
+          <div
+            role="status"
+            className="flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/8 px-3 py-2 text-[12.5px]"
+            data-testid="delivery-cache-historic"
+          >
+            <History className="size-4 shrink-0 text-warning" />
+            <span>
+              Reading the cache as it stood at <span className="font-mono">{historic.version}</span>. Deliveries read the
+              current version.
+            </span>
+            <Button
+              variant="outline"
+              size="xs"
+              className="ml-auto"
+              onClick={() => setPicked(CURRENT)}
+              data-testid="delivery-cache-back-to-current"
+            >
+              Back to current
+            </Button>
+          </div>
+        )}
+
+        {selected !== null
+          ? (
+            <TypeTable
+              scope={scope}
+              type={selected}
+              search={search}
+              version={version}
+              sampleRows={sampleRows}
+              onItem={setItem}
+            />
+          )
+          : shown.length === 0
+            ? (
+              <Card className="gap-0 rounded-lg p-0">
+                <EmptyState
+                  icon={<DatabaseZap />}
+                  title={searching ? "No cached record matches the search" : "No cached records yet"}
+                  description={searching
+                    ? "Nothing in any type holds a value, id or alias containing it."
+                    : "Refresh a cache flow of the partition to capture its first version."}
+                  data-testid="delivery-cache-records-empty"
+                />
+              </Card>
+            )
+            : (
+              <div className="flex flex-col gap-3" data-testid="delivery-cache-sections">
+                {shown.map((candidate) => (
+                  <TypeSection
+                    key={candidate.name}
+                    scope={scope}
+                    type={candidate}
+                    search={search}
+                    version={version}
+                    eager={searching}
+                    onOpen={() => onType(candidate.name)}
+                    onItem={setItem}
+                  />
+                ))}
+                <LeftOut label="Nothing matches in" types={unmatched} testId="delivery-cache-unmatched" />
+                <LeftOut label="The version being read holds nothing yet of" types={empty} testId="delivery-cache-empty-types" />
+              </div>
+            )}
+      </div>
 
       <Sheet open={item !== null} onOpenChange={(open) => { if (!open) { setItem(null); } }}>
         <SheetContent

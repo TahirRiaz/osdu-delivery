@@ -1234,8 +1234,9 @@ them: where keywordLower is on, a search that finds no record exactly asks again
   One read that fails never writes a version.
 - `sqlflow cache import` asks no platform and keeps the current properties.
 
-The OSDU cache page lists them on its System properties tab, with the service that reported each, its state, what it was
-taken from and why it is unknown, and `sqlflow cache list <partition>` prints those of the current version.
+The OSDU cache page lists them on its OSDU feature flags tab, one block per service with the endpoint they were read
+from: each flag's state, where the service says it was set, why it is unknown, and the version whose refresh found it in
+that state, with the flag the engine relies on marked, and `sqlflow cache list <partition>` prints those of the current version.
 
 A refresh does not only write a version. Every delivered record points at the set of cached values it was built
 from, so the refresh compares the new version against the one it replaces and raises one tag per changed value: the

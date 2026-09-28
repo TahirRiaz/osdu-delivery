@@ -99,6 +99,85 @@ export function splitRecordId(id: string): { prefix: string; tail: string } {
   return { prefix: id.slice(0, at + 1), tail: id.slice(at + 1) };
 }
 
+/**
+ * What tells a cached record apart within its type, as a reader would say it: a lookup row's key, or the part of an OSDU
+ * id past its partition and entity type with its escapes undone (UnitOfMeasure:%25 is "%"). A value a record holds that
+ * reads the same only repeats the record's identity.
+ */
+export function recordIdentity(recordId: string, entityType: string): string {
+  if (isLookupEntityType(entityType)) {
+    return recordId;
+  }
+
+  const { tail } = splitRecordId(recordId);
+  try {
+    return decodeURIComponent(tail);
+  } catch {
+    // A lone % or a broken escape is not an escape: the tail is read as it is written.
+    return tail;
+  }
+}
+
+/** One run of a cached value as a cell draws it: a percent escape, a stretch the search matched, both, or plain text. */
+export interface ValueSegment {
+  text: string;
+  /** Part of a percent escape (%20, %5B), kept as captured but stepped back so the words between read. */
+  escape: boolean;
+  /** Part of a stretch the search term matched, regardless of case. */
+  match: boolean;
+}
+
+const PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/g;
+
+/**
+ * A cached value cut into the runs a cell draws. The value is never changed: an id minted from a code keeps its escapes
+ * (EQ-Bad%20Hole%20Flag), and a value copied from the cell must be the value a mapping reads. The escapes are marked so
+ * the cell can step them back, and the stretches the search matched are marked so a row says why the search found it.
+ */
+export function valueSegments(text: string, search: string): ValueSegment[] {
+  if (text === "") {
+    return [];
+  }
+
+  const escape = new Uint8Array(text.length);
+  for (const found of text.matchAll(PERCENT_ESCAPE)) {
+    escape.fill(1, found.index, found.index + found[0].length);
+  }
+
+  // A search is matched regardless of case, as the cache search is. Lowercasing can change a string's length (a dotted
+  // capital I becomes two code units), and then no index of the lowered text points into the value: nothing is marked.
+  const match = new Uint8Array(text.length);
+  const term = search.trim().toLowerCase();
+  const lower = text.toLowerCase();
+  if (term !== "" && lower.length === text.length) {
+    for (let at = lower.indexOf(term); at >= 0; at = lower.indexOf(term, at + term.length)) {
+      match.fill(1, at, at + term.length);
+    }
+  }
+
+  const segments: ValueSegment[] = [];
+  let start = 0;
+  for (let at = 1; at <= text.length; at++) {
+    if (at === text.length || escape[at] !== escape[start] || match[at] !== match[start]) {
+      segments.push({ text: text.slice(start, at), escape: escape[start] === 1, match: match[start] === 1 });
+      start = at;
+    }
+  }
+
+  return segments;
+}
+
+/**
+ * A platform feature flag's name in three parts: the affixes the services repeat on most names (featureFlag. before,
+ * .enabled or -enabled after) and the part that says what the flag is (keywordLower, index-augmenter).
+ */
+export function splitFlagName(name: string): { head: string; core: string; tail: string } {
+  const parts = /^(featureFlag\.)?(.+?)([.-]enabled)?$/.exec(name);
+  return parts === null
+    ? { head: "", core: name, tail: "" }
+    : { head: parts[1] ?? "", core: parts[2], tail: parts[3] ?? "" };
+}
+
 /** The family an entity type belongs to, as a group heading: reference-data--UnitOfMeasure is "Reference data". */
 export function entityFamily(entityType: string): string {
   if (isLookupEntityType(entityType)) {

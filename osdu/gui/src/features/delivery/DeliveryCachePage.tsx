@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import { isApiError } from "@/api/client";
 import { deliveryApi, type DeliveryCache, type DeliveryCacheFlow } from "../../api/delivery";
 import { CorrelationError } from "@/components/CorrelationError";
@@ -24,9 +25,9 @@ import { scheduleCadence, summarizeTypes, type CachedTypeSummary } from "./cache
 import { isPartitionId, useActivePartition } from "./activePartition";
 import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheDefinition } from "./DeliveryCacheDefinition";
+import { DeliveryCacheFlags } from "./DeliveryCacheFlags";
 import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
 import { DeliveryCacheRecords } from "./DeliveryCacheRecords";
-import { DeliveryCacheSystemProperties } from "./DeliveryCacheSystemProperties";
 
 /**
  * What the type picker says beside a type: its family and how much the current version holds of it. A lookup table says
@@ -40,21 +41,31 @@ function typeHint(type: CachedTypeSummary): string {
   return held + (type.onChange === "approve" ? " · changes need approval" : "");
 }
 
-type Tab = "records" | "versions" | "changes" | "definition" | "system";
+type Tab = "records" | "versions" | "changes" | "definition" | "flags";
 
-const TABS: readonly string[] = ["records", "versions", "changes", "definition", "system"];
+const TABS: readonly string[] = ["records", "versions", "changes", "definition", "flags"];
 
 function isTab(value: string | null): value is Tab {
   return value !== null && TABS.includes(value);
+}
+
+/** The tab a link names; the flags were once the "system" tab, and a link from then still lands on them. */
+function linkedTab(value: string | null): Tab {
+  if (value === "system") {
+    return "flags";
+  }
+
+  return isTab(value) ? value : "records";
 }
 
 /**
  * The OSDU cache: the reference data, master data and lookup tables every delivered document is built from, one cache per OSDU partition. The
  * header names the partition and the cache flow files that fill it, with Cache files and Refresh for them; a summary row says
  * which version deliveries read, how much it holds, how it is refreshed and whether anything waits for a decision. Below
- * are the working tabs: the records, the versions, the changes a refresh found, the definition, and the partition's system
- * properties (its settings, as the platform reports them), with a searchable type picker in the tab bar for the tabs a
- * type narrows. The partition is the one picked in the title bar, which every page follows: the page has no partition
+ * are the working tabs: the records (browsed a type at a time, from a list of the types beside them), the versions, the
+ * changes a refresh found, the definition, and the partition's OSDU feature flags (settings of the platform, as its services
+ * report them), with a searchable type picker in the tab bar for the versions (and for the records on a screen too narrow
+ * for the list). The partition is the one picked in the title bar, which every page follows: the page has no partition
  * picker of its own. The tab and the type live in the URL, so a link lands on the same view; a link that names a partition
  * (?partition=) or a cache flow (?flow=) makes that partition the title bar's, so it lands on the cache it names.
  */
@@ -76,8 +87,7 @@ export default function DeliveryCachePage() {
     ?? all.find((candidate) => candidate.scope === active)
     ?? null;
 
-  const tabParam = searchParams.get("tab");
-  const tab: Tab = isTab(tabParam) ? tabParam : "records";
+  const tab = linkedTab(searchParams.get("tab"));
 
   const update = (changes: Record<string, string | null>) => setSearchParams((current) => {
     const next = new URLSearchParams(current);
@@ -424,9 +434,15 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
               )}
             </TabsTrigger>
             <TabsTrigger value="definition" data-testid="delivery-cache-tab-definition">Definition</TabsTrigger>
-            <TabsTrigger value="system" data-testid="delivery-cache-tab-system">System properties</TabsTrigger>
+            <TabsTrigger value="flags" data-testid="delivery-cache-tab-flags">
+              OSDU feature flags
+              {current !== null && current.systemProperties.length > 0 && (
+                <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{current.systemProperties.length}</span>
+              )}
+            </TabsTrigger>
           </TabsList>
-          {/* The type narrows the records and the versions; the changes and the definition always cover the whole cache. */}
+          {/* The type narrows the records and the versions; the changes and the definition always cover the whole cache. The
+              records pick it from the list beside them, which gives way to this picker on a narrow screen. */}
           {(tab === "records" || tab === "versions") && (
             <FilterCombobox
               options={typeOptions}
@@ -437,7 +453,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
               emptyText="No cached type matches."
               ariaLabel="Cached type"
               testId="delivery-cache-type"
-              className="mb-1 w-60"
+              className={cn("mb-1 w-60", tab === "records" && "lg:hidden")}
             />
           )}
         </div>
@@ -445,9 +461,9 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
         <TabsContent value="records">
           <DeliveryCacheRecords
             scope={cache.scope}
+            types={types}
             type={scoped?.name ?? null}
-            keyName={scoped?.key ?? null}
-            fields={scoped?.fields.map((field) => field.as) ?? []}
+            onType={onType}
             versions={versions.data ?? []}
           />
         </TabsContent>
@@ -464,8 +480,8 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
           <DeliveryCacheDefinition cache={cache} onRefresh={onRefresh} />
         </TabsContent>
 
-        <TabsContent value="system">
-          <DeliveryCacheSystemProperties version={current} />
+        <TabsContent value="flags">
+          <DeliveryCacheFlags scope={cache.scope} version={current} versions={versions.data ?? []} />
         </TabsContent>
       </Tabs>
     </>

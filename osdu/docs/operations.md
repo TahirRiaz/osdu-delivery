@@ -583,17 +583,26 @@ Pipelines like any other flow.
   cache says so. A cache flow that names its partitions says which it builds, and its Refresh builds the title bar's
   partition. A summary row follows: the current version with the flow that wrote it, when and for whom, how many
   records it holds in how many types, whether a schedule refreshes it, and either that changes are automatic or how
-  many wait for approval. Whenever a change waits, a banner says so with Review changes. A searchable type picker at
-  the end of the tab bar, on the Records and Versions tabs, lists the types with their family, record count and whether
-  their changes need approval; picking one scopes those tabs, and Clear filter lifts the scope. The tab and the type are
+  many wait for approval. Whenever a change waits, a banner says so with Review changes. The Records tab lists the
+  types beside the records, grouped by family, each with its record count and a shield when its changes need approval;
+  the Versions tab keeps a searchable type picker at the end of the tab bar that lists the types with their family,
+  record count and whether their changes need approval, as the Records tab does on a screen too narrow for the list.
+  Picking a type scopes those tabs; All types, or Clear filter in the picker, lifts the scope. The tab and the type are
   in the URL, so a link opens the same view; a link naming a partition (`?partition=`) or a cache flow (`?flow=`, as a
   cache run's page uses) makes that partition the title bar's. The definition is read-only because it lives in the cache
   flow files in git; the decision on a change is the one thing made here.
 - **Records.** The cached records at the version being read, with the search over every value they hold (id, code,
-  name, alias) and the version picker in the tab's own toolbar. With a type in scope the table has one column per
-  captured name, so a unit's code, name and id read down the page; over every type each row names its type, shows the
-  part of the id that tells the records apart (the whole id on hover) and folds the values into one column. A row
-  opens the record: its captured values by name, how a mapping reads it (each source, `cache.<Type>.id` and
+  name, alias) and the version picker in the tab's own toolbar. Every table reads one type in that type's own columns:
+  what tells the records apart first (the part of the OSDU id after the partition and entity type, which the type's
+  header states once, or a lookup table's key), then one column per captured name, each as wide as its values need so a
+  lookup table with many names fits the page. A value that only repeats the row's identity or a value to its left (a
+  Code equal to the id, an ID equal to the Code) is drawn muted, so the values that say something new stand out, and
+  the escapes an id carries (`%20`, `%5B`) are kept as captured but stepped back so the words between them read. All
+  types shows each type as a section with its first five records and how many it holds, and opens the type's own paged
+  table from there. The type's header says where its records come from (the kind searched on OSDU, or the ingestion
+  table or dictionary and the key it holds them by) and which cache flow declares it. While a search is typed, the type
+  list counts the matches in every type and steps back the types nothing matches in, only the types with matches keep a
+  section (the others are named under them), and every match is marked in its cell. A row opens the record: its captured values by name, how a mapping reads it (each source, `cache.<Type>.id` and
   `cache.<Type>.<name>`, next to the value it reads for this record, and a `source` plus `findBy` entry to copy that
   selects the record by one of its values), the JSON as captured, and the version it is the record as of.
 - **Reading the cache as it stood.** The version picker opens on the current version, the one deliveries render
@@ -622,6 +631,14 @@ Pipelines like any other flow.
   Picking a change raises it in the bottom panel with both values in full, the versions it moved between, who decided
   it and when, and the same decision while it is still open. Selecting waiting changes raises a toolbar that says how
   many delivered records the decision would redeliver, and approves or rejects them in bulk.
+- **OSDU feature flags.** The partition's feature flags as the current version holds them: settings of the OSDU
+  platform, which OSDU Delivery reads with every refresh and never changes (the tab was called System properties, and a
+  link to `?tab=system` still opens it). One block per service names the endpoint the flags were read from (the
+  indexer's `GET /api/indexer/v2/info`, the search service's `GET /api/search/v2/info`), with how many are on and off,
+  and lists each flag with its state, the configuration the service says set it, and the version whose refresh found it
+  in that state; a line says so once when no flag has changed since it was first read. The flag OSDU Delivery reads
+  (`featureFlag.keywordLower.enabled`) is marked, with what it changes on hover. A service that gave the version no
+  flags says so in a line: it reported none for the partition, or could not be asked, which the refresh's log says.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
   The trigger dialog offers the operations the flow's kind runs.

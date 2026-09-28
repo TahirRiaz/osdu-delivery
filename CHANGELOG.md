@@ -413,6 +413,19 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The OSDU cache page's records read one type at a time, and its System properties tab is OSDU feature flags.** The
+  records over every type folded each record's values into one column of name and value pairs, which read as noise.
+  The types are now listed beside the records by family, with their counts, and every table reads one type in its own
+  columns: the record's identity first (the part of its OSDU id after the partition and entity type, stated once in the
+  type's header, or a lookup table's key), then one column per captured name, sized to its values. A value that only
+  repeats the identity or a value to its left is muted, and an id's `%20`-style escapes step back, so what is new in a
+  row stands out. All types shows each type as a section of its first records that opens the type's own table. A search
+  counts the matches in every type in the list, keeps a section only for the types with matches, and marks each match.
+  The tab that listed the partition's system properties did not say whose settings they were; it is now OSDU feature
+  flags, and says they are set on the OSDU platform and never changed by OSDU Delivery. It gives one block per service
+  with the endpoint read, each flag's state as an on or off chip, where the service says it was set, and the version
+  whose refresh found it so, and marks the flag OSDU Delivery reads with what it changes. A `?tab=system` link still
+  opens it ([osdu/docs/operations.md](osdu/docs/operations.md)).
 - **A record's Document and Compare tabs are one tab, Render.** The Document tab showed the ledger's bookkeeping about
   a document it could not show: where a waiting document sat in its work batch (already on the situation line), three
   hashes (already on each dispatch in the timeline), the ids OSDU returned (already in the header and on the
