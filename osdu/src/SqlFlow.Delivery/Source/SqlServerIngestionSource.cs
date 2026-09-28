@@ -233,6 +233,40 @@ public sealed class SqlServerIngestionSource : IIngestionSource
         return command;
     }
 
+    public async Task<IReadOnlyList<ScopeParameterValues>> ScopeValuesAsync(int max, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
+        await using var connection = await IngestionConnection.OpenAsync(_flow.Source.Connection, _flow.Name, _secrets, ct).ConfigureAwait(false);
+
+        // What a scope can be given is listed before any value is: the check of a scope's rows is a run's, not this read's.
+        var layout = await BuildLayoutAsync(connection, ct, guardScope: false).ConfigureAwait(false);
+        var record = _tables[SourceDatasets.Record];
+        var where = KeyPaths.Where(_flow);
+        var listed = new List<ScopeParameterValues>(layout.Scope.Count);
+        foreach (var (column, parameter) in layout.Scope)
+        {
+            var declared = Column(record, layout.Record, column, $"{where}: {_keys.Name("source.record.scope")} binds parameter '{parameter}' to column '{column}'");
+            await using var command = Command(connection, IngestionSql.ScopeValues(layout, declared.Name));
+            // One value past the ones listed says the column holds more.
+            command.Parameters.Add(new SqlParameter(IngestionSql.TopParameter, SqlDbType.Int) { Value = max + 1 });
+            var values = new List<ScopeValue>(Math.Min(max + 1, 1000));
+            await using (var reader = await ExecuteReaderAsync(command, $"list the values of {declared.Name}", ct).ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    if (SourceRow.Stringify(SourceValues.Normalize(reader.GetValue(0))) is { } text)
+                    {
+                        values.Add(new ScopeValue(text, reader.GetInt64(1)));
+                    }
+                }
+            }
+
+            listed.Add(new ScopeParameterValues(parameter, declared.Name, values.Take(max).ToList(), values.Count > max));
+        }
+
+        return listed;
+    }
+
     private async Task<DateTime> NowAsync(SqlConnection connection, CancellationToken ct)
     {
         await using var command = Command(connection, IngestionSql.UpperBound());
@@ -242,7 +276,12 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             : throw new DeliveryException($"Flow '{_flow.Label}': the source database did not answer with a moment for the read's upper bound.");
     }
 
-    private async Task<IngestionLayout> BuildLayoutAsync(SqlConnection connection, CancellationToken ct)
+    /// <summary>
+    /// Reads the tables' shape and checks the flow's declarations against it. <paramref name="guardScope"/> false leaves out
+    /// the check that no row of the run's scope has an unknown key, which reads the scope and so needs its values: for a
+    /// caller that reads no row of a scope (the listing of the values a scope can be given).
+    /// </summary>
+    private async Task<IngestionLayout> BuildLayoutAsync(SqlConnection connection, CancellationToken ct, bool guardScope = true)
     {
         var source = _flow.Source;
         var where = KeyPaths.Where(_flow);
@@ -372,7 +411,7 @@ public sealed class SqlServerIngestionSource : IIngestionSource
             await GuardPrimaryKeyAsync(connection, _layout, recordName, where, ct).ConfigureAwait(false);
         }
 
-        if (nullableKeys.Count > 0)
+        if (guardScope && nullableKeys.Count > 0)
         {
             await GuardKnownKeysAsync(connection, _layout, recordName, nullableKeys, where, ct).ConfigureAwait(false);
         }

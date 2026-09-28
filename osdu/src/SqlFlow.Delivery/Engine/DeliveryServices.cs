@@ -99,7 +99,7 @@ public static class DeliveryServices
             Partitions: sp.GetService<DeliveryLedgerSource>()?.Partitions(sp)));
 
         // Execution: the run executors behind the platform's document executor, and the ad-hoc compute operations
-        // a node runs for the control plane (target probe, record read-back, source row read-back, record preview, value check and removal).
+        // a node runs for the control plane (target probe, record read-back, source row read-back, record preview, value check, scope values and removal).
         services.TryAddSingleton<PartitionLedgers>();
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
@@ -109,6 +109,7 @@ public static class DeliveryServices
         services.AddSingleton<IComputeOperation, ReadSourceRowOperation>();
         services.AddSingleton<IComputeOperation, PreviewRecordOperation>();
         services.AddSingleton<IComputeOperation, CheckValuesOperation>();
+        services.AddSingleton<IComputeOperation, ScopeValuesOperation>();
         services.AddSingleton<IComputeOperation, DeleteRecordOperation>();
 
         return services;

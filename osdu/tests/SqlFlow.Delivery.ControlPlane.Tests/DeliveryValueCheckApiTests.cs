@@ -18,8 +18,8 @@ namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
 /// The value check as the API serves it: the interfaces of the flows that render with a mapping, which is what a mapping's
-/// page checks its values against, and a check of one interface's rows queued for a node with the variables, the scope's
-/// values, the row budget and the example records it asks for. Every request a node would refuse is answered as a 400
+/// page checks its values against, a check of one interface's rows queued for a node with the variables, the scope's
+/// values, the row budget and the example records it asks for, and the read of the values the scope's parameters can take. Every request a node would refuse is answered as a 400
 /// before anything is queued. Nothing here reaches an OSDU: the tasks are queued and read back from the catalog, not run.
 /// </summary>
 [Trait("Category", "Integration")]
@@ -64,7 +64,7 @@ public sealed class DeliveryValueCheckApiTests
                 record: { object: OsduData.arc.Wellbore, key: [facility_name] }
                 mapping: Wellbore@1.0.0
               welllogs:
-                record: { object: OsduData.arc.WellLog, key: [source_project, log_id] }
+                record: { object: OsduData.arc.WellLog, key: [source_project, log_id], scope: { log_source: logSource } }
                 bulk: { root: ../data/curves, locationColumn: curve_folder, hashColumn: payload_hash }
                 mapping: WellLog@1.4.0
             """;
@@ -150,6 +150,18 @@ public sealed class DeliveryValueCheckApiTests
                 Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
             }
 
+            // The flow's parameters say which column of the record table each scopes by, so a page offers that column's
+            // values for it; a parameter the scope does not read (the work location's) is typed.
+            using (var interfaces = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/interfaces"))
+            {
+                Assert.Equal(HttpStatusCode.OK, interfaces.StatusCode);
+                var logs = JsonDocument.Parse(await interfaces.Content.ReadAsStringAsync()).RootElement.EnumerateArray()
+                    .Single(i => i.GetProperty("interface").GetString() == "welllogs");
+                var parameters = logs.GetProperty("parameters").EnumerateArray().ToDictionary(p => p.GetProperty("name").GetString()!, p => p);
+                Assert.Equal("log_source", parameters["logSource"].GetProperty("scopeColumn").GetString());
+                Assert.Equal(JsonValueKind.Null, parameters["project"].GetProperty("scopeColumn").ValueKind);
+            }
+
             // A check of named variables, with the scope's values, a row budget and a page of examples.
             var path = $"/api/v1/delivery/flows/{pipelineId:D}/check-values?interface=welllogs";
             var values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" };
@@ -189,6 +201,15 @@ public sealed class DeliveryValueCheckApiTests
             await RefusedAsync(client, token, path, new { values, skipSamples = -1 }, "a count from 0");
             await RefusedAsync(client, token, path, new { values, mapping = "WellLog@9.9.9" }, "renders with mapping WellLog@1.4.0, not WellLog@9.9.9");
             await RefusedAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/check-values", new { values }, "name the one this request is about with ?interface=");
+
+            // What a scope's parameters can be set to is read on a node, from the columns the flow binds them to; it needs no
+            // value itself, since it is what a value is picked from.
+            var scopeValues = await QueuedAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/scope-values?interface=welllogs", null);
+            Assert.Equal("delivery-scope-values", scopeValues.Operation);
+            Assert.Equal(flowName, scopeValues.SourceRef);
+            Assert.Equal("welllogs", scopeValues.Argument("interface"));
+            Assert.Null(scopeValues.Argument("values"));
+            await RefusedAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/scope-values", new { }, "name the one this request is about with ?interface=");
         }
         finally
         {

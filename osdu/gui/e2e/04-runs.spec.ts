@@ -25,7 +25,9 @@ test.describe.serial("runs", () => {
     // The flow declares logSource as required: it fills the scope predicate the plan reads the ingestion table with.
     await adminPage.getByTestId("trigger-operation").click();
     await adminPage.getByRole("option", { name: /^Plan/ }).click();
-    await adminPage.getByTestId("trigger-values").fill(`logSource=${LOG_SOURCE}`);
+    // A delivery flow's parameters are fields; the one its scope reads offers the log sources the record table holds.
+    await adminPage.getByTestId("trigger-parameter-logSource").fill(LOG_SOURCE);
+    await adminPage.getByTestId("trigger-parameters").getByText("Flow parameters").click();
     await adminPage.getByTestId("trigger-submit").click();
 
     // 202 accepted: the dialog navigates to the run detail, which polls to a terminal state.

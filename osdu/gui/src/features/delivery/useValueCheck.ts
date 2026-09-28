@@ -192,6 +192,8 @@ export interface ValueCheckSession {
   /** The rows a check reads; 0 for the whole scope. */
   maxRows: number;
   setMaxRows: (rows: number) => void;
+  /** Whether the reader may queue node work: a check, and the read of the scope's values. */
+  canOperate: boolean;
   /** Whether a check can be run now, and why not when it cannot. */
   ready: boolean;
   blocked: string | null;
@@ -440,6 +442,7 @@ export function useValueCheckSession(mappingId: string, reference: string): Valu
     setValue: (name, value) => setValues((current) => ({ ...current, [name]: value })),
     maxRows,
     setMaxRows,
+    canOperate,
     ready: blocked === null,
     blocked,
     check,

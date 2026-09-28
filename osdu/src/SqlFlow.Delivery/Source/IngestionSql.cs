@@ -98,6 +98,9 @@ public static class IngestionSql
     /// <summary>The parameter naming the table whose columns are read.</summary>
     public const string ObjectParameter = "@object";
 
+    /// <summary>The parameter holding how many values a listing of a scope column's values returns.</summary>
+    public const string TopParameter = "@top";
+
     /// <summary>Which bounds a candidate query carries beyond its selection.</summary>
     /// <param name="After">A keyset bound: only values above the page's last one, in the order the read pages in.</param>
     /// <param name="From">A slice's exclusive lower bound.</param>
@@ -205,6 +208,26 @@ public static class IngestionSql
             SELECT TOP (1) {string.Join(", ", nullableKeys.Select(k => $"CAST(CASE WHEN r.{SourceObjectName.Quote(k)} IS NULL THEN 1 ELSE 0 END AS int) AS {SourceObjectName.Quote(k)}"))}
             FROM {layout.Record.Quoted} r
             WHERE {(scope.Length == 0 ? "1 = 1" : scope)} AND ({unknown});
+            """;
+    }
+
+    /// <summary>
+    /// The distinct values one column of the scope predicate holds, with how many rows hold each, the most rows first, at
+    /// most <c>@top</c> of them: over the record table's rows not marked deleted, and never a null, which no parameter
+    /// value selects.
+    /// </summary>
+    public static string ScopeValues(IngestionLayout layout, string column)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        ArgumentException.ThrowIfNullOrWhiteSpace(column);
+        var value = "r." + SourceObjectName.Quote(column);
+        var live = layout.Deleted is { } deleted ? $" AND r.{SourceObjectName.Quote(deleted)} IS NULL" : string.Empty;
+        return $"""
+            SELECT TOP ({TopParameter}) {value} AS scope_value, COUNT_BIG(*) AS scope_rows
+            FROM {layout.Record.Quoted} r
+            WHERE {value} IS NOT NULL{live}
+            GROUP BY {value}
+            ORDER BY COUNT_BIG(*) DESC, {value};
             """;
     }
 

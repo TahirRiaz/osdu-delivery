@@ -66,8 +66,12 @@ public sealed record DeliveryInterfaceDto(
     string? OrderProblem = null, IReadOnlyList<DeliveryParameterDto>? Parameters = null, IReadOnlyList<string>? KeyColumns = null,
     string? Partition = null);
 
-/// <summary>A parameter the flow declares, whose value fills its record scope: its name, whether a value is required, its default.</summary>
-public sealed record DeliveryParameterDto(string Name, bool Required, string? Default, string? Description);
+/// <summary>
+/// A parameter the flow declares, whose value fills its record scope: its name, whether a value is required, its default,
+/// and the record table's column <c>source.record.scope</c> binds it to (null for a parameter the scope does not read, such
+/// as one naming the work location), whose values a page can offer for it.
+/// </summary>
+public sealed record DeliveryParameterDto(string Name, bool Required, string? Default, string? Description, string? ScopeColumn = null);
 
 /// <summary>
 /// A preview of one record of a flow: the record's key, or none for the scope's first record, and the flow parameter values
@@ -473,6 +477,7 @@ public static class DeliveryEndpoints
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/source", ReadSourceAsync).WithName("ReadDeliveryRecordSource");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/preview", PreviewRecordAsync).WithName("PreviewDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/preview", PreviewAsync).WithName("PreviewDeliveryFlowRecord");
+        delivery.MapPost("/flows/{pipelineId:guid}/scope-values", ScopeValuesAsync).WithName("ListDeliveryFlowScopeValues");
         DeliveryValueCheckEndpoints.MapWrites(delivery);
         delivery.MapPost("/flows/{pipelineId:guid}/osdu/read", ReadTargetAsync).WithName("ReadDeliveryOsduRecord");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
@@ -618,7 +623,9 @@ public static class DeliveryEndpoints
                 order.WaitsFor(name).Select(d => Wait(d, d.DependsOn)).ToList(),
                 order.NotWaitedFor.Where(d => string.Equals(d.Interface, name, StringComparison.OrdinalIgnoreCase)).Select(d => Wait(d, d.DependsOn)).ToList(),
                 orderProblem,
-                flow.Parameters.Select(p => new DeliveryParameterDto(p.Key, p.Value.Required, p.Value.Default, p.Value.Description)).ToList(),
+                flow.Parameters.Select(p => new DeliveryParameterDto(
+                    p.Key, p.Value.Required, p.Value.Default, p.Value.Description,
+                    flow.Source.Record.Scope.FirstOrDefault(s => string.Equals(s.Value, p.Key, StringComparison.Ordinal)).Key)).ToList(),
                 flow.Source.Record.Key,
                 flow.Partition));
         }
@@ -1866,6 +1873,25 @@ public static class DeliveryEndpoints
         }
 
         return await EnqueueOperationAsync(db, dispatcher, flow, PreviewRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The values each parameter of an interface's scope predicate can take, read on a node from the column
+    /// <c>source.record.scope</c> binds it to in the flow's own record table: what a page offers for a scope's value rather
+    /// than having it typed. Nothing is written.
+    /// </summary>
+    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ScopeValuesAsync(
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
+        IPartitionRegistry partitions, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        return await EnqueueOperationAsync(
+            db, dispatcher, flow, ScopeValuesOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), user, ct).ConfigureAwait(false);
     }
 
     /// <summary>

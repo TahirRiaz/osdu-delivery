@@ -160,6 +160,25 @@ public sealed class MemoryIngestionTables : IIngestionSourceFactory
 
         private string? PrimaryKey => _flow.Source.Record.PrimaryKey;
 
+        public Task<IReadOnlyList<ScopeParameterValues>> ScopeValuesAsync(int max, CancellationToken ct = default)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
+            var listed = _flow.Source.Record.Scope.Select(scope =>
+            {
+                var values = _tables.Records
+                    .Where(r => r.DeletedUtc is null)
+                    .Select(r => SourceRow.Stringify(r.Row.TryGetValue(scope.Key, out var value) ? value : null))
+                    .OfType<string>()
+                    .GroupBy(v => v, StringComparer.Ordinal)
+                    .Select(g => new ScopeValue(g.Key, g.LongCount()))
+                    .OrderByDescending(v => v.Rows)
+                    .ThenBy(v => v.Value, StringComparer.Ordinal)
+                    .ToList();
+                return new ScopeParameterValues(scope.Value, scope.Key, values.Take(max).ToList(), values.Count > max);
+            }).ToList();
+            return Task.FromResult<IReadOnlyList<ScopeParameterValues>>(listed);
+        }
+
         public Task<IReadOnlyList<KeyRange>> SliceBoundsAsync(SourceHeader header, int slices, CancellationToken ct = default)
         {
             ArgumentNullException.ThrowIfNull(header);

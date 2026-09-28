@@ -13,6 +13,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A flow's scope offers the values its column holds.** A parameter a delivery flow's `source.record.scope` binds to a
+  column of its record table is a pick list wherever the scope is given its values: a flow's Preview tab, a mapping's
+  Check values, and the trigger dialog, which asks for each parameter the flow declares instead of `name=value` lines.
+  The list is the distinct values the column holds in rows not marked deleted, the most rows first with each one's row
+  count, read on a node from the flow's own table with its own connection (`POST
+  /api/v1/delivery/flows/{pipelineId}/scope-values`, a node task `delivery-scope-values`), so a source scoping by any
+  column offers its own values and no list is kept to go stale. A value can still be typed, and one the column holds no
+  row of is flagged. The interfaces listing names each parameter's `scopeColumn`.
 - **Check a mapping's values against a flow's rows.** The Mappings page's Properties tab gains **Check values**: it
   reads the rows of a flow that renders with the mapping, renders each on a node exactly as a delivery renders it
   (columns, expressions, cache lookups and `$findAll`, searches, `$coalesce`, lists, repeated items and every

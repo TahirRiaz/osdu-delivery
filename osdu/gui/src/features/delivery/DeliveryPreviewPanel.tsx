@@ -14,6 +14,7 @@ import { InterfacePicker } from "./InterfacePicker";
 import { OutsidePartition } from "./PartitionNotice";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RecordPreviewView } from "./RecordPreviewView";
+import { ScopeParameterFields } from "./ScopeParameterFields";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
@@ -198,24 +199,15 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
               {tooLong && <p className="text-[12px] text-destructive">{`The key is ${key.trim().length.toLocaleString()} characters; a record key is at most ${MAX_KEY.toLocaleString()}.`}</p>}
               {parameters.length > 0 && (
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3" data-testid="preview-parameters">
-                  {parameters.map((parameter) => (
-                    <div key={parameter.name} className="flex flex-col gap-1">
-                      <Label htmlFor={`preview-parameter-${parameter.name}`} className="text-[12px] text-muted-foreground" title={parameter.description ?? undefined}>
-                        <span className="font-mono">{parameter.name}</span>
-                        {parameter.required && (parameter.default === null || parameter.default === undefined) && <span className="text-destructive">*</span>}
-                      </Label>
-                      <Input
-                        id={`preview-parameter-${parameter.name}`}
-                        value={values[parameter.name] ?? ""}
-                        onChange={(event) => setValues((was) => ({ ...was, [parameter.name]: event.target.value }))}
-                        placeholder={parameter.default ?? (parameter.required ? "required" : "optional")}
-                        className="h-8 font-mono text-[13px]"
-                        spellCheck={false}
-                        autoComplete="off"
-                        data-testid={`preview-parameter-${parameter.name}`}
-                      />
-                    </div>
-                  ))}
+                  <ScopeParameterFields
+                    pipelineId={pipelineId}
+                    scope={scope}
+                    parameters={parameters}
+                    values={values}
+                    onChange={(name, value) => setValues((was) => ({ ...was, [name]: value }))}
+                    canRead={canOperate && current !== undefined}
+                    prefix="preview"
+                  />
                 </div>
               )}
               {missing.length > 0 && (

@@ -226,4 +226,24 @@ public interface IIngestionSource
     /// its ingestion fingerprint and its key as the source read it.
     /// </summary>
     IAsyncEnumerable<SourceRecord> ReadAsync(SourceHeader header, KeyRange? range, CancellationToken ct = default);
+
+    /// <summary>
+    /// The values each parameter of the scope predicate (<c>source.record.scope</c>) can take: the distinct values the
+    /// column it is bound to holds in the record table, with how many rows not marked deleted hold each, the most rows
+    /// first, at most <paramref name="max"/> a parameter. What a page offers for the parameter's value, whatever the
+    /// source and whatever column it scopes by; it needs no parameter value itself, and reads no row of the scope.
+    /// </summary>
+    Task<IReadOnlyList<ScopeParameterValues>> ScopeValuesAsync(int max, CancellationToken ct = default);
 }
+
+/// <summary>One value a scope parameter can take, and how many rows of the record table not marked deleted hold it.</summary>
+/// <param name="Value">The value as the parameter is given it: the column's value as invariant text.</param>
+/// <param name="Rows">How many rows hold it.</param>
+public sealed record ScopeValue(string Value, long Rows);
+
+/// <summary>The values a parameter of the scope predicate can take, read from the column it is bound to.</summary>
+/// <param name="Parameter">The flow parameter.</param>
+/// <param name="Column">The record table's column it is bound to.</param>
+/// <param name="Values">The values, the most rows first, then by value.</param>
+/// <param name="More">True when the column holds more distinct values than were listed.</param>
+public sealed record ScopeParameterValues(string Parameter, string Column, IReadOnlyList<ScopeValue> Values, bool More);

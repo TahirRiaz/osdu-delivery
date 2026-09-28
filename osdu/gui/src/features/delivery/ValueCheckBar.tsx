@@ -2,7 +2,6 @@ import { CircleAlert, Info, Loader2, ScanSearch } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -12,7 +11,8 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
 import { ProblemView } from "./TemplateSheet";
 import { splitPath } from "./templateFormat";
-import type { FailingFilter, ValueCheckSession } from "./useValueCheck";
+import { ScopeParameterFields } from "./ScopeParameterFields";
+import { flowScope, type FailingFilter, type ValueCheckSession } from "./useValueCheck";
 import { ROW_BUDGETS, compactCount, failingOf, flowKey, flowLabel, formatCount, outcomeVisual, percent, worstOf } from "./valueCheck";
 
 /** How many of the attributes with failing rows the bar names; the tree's filter shows every one. */
@@ -107,7 +107,7 @@ export function ValueCheckBar({ session }: { session: ValueCheckSession }) {
       {session.flowsError !== null && <ProblemView error={session.flowsError} testId="value-check-flows-error" />}
 
       {session.flows.length > 0 && (
-        <div className="flex flex-wrap items-end gap-2" data-testid="value-check-controls">
+        <div className="flex flex-wrap items-start gap-2" data-testid="value-check-controls">
           <div className="flex min-w-0 flex-col gap-1">
             <Label className="text-[12px] text-muted-foreground" htmlFor="value-check-flow">Rows of</Label>
             <Select value={session.flow === null ? undefined : flowKey(session.flow)} onValueChange={session.chooseFlow}>
@@ -124,24 +124,16 @@ export function ValueCheckBar({ session }: { session: ValueCheckSession }) {
               </SelectContent>
             </Select>
           </div>
-          {session.parameters.map((parameter) => (
-            <div key={parameter.name} className="flex flex-col gap-1">
-              <Label htmlFor={`value-check-parameter-${parameter.name}`} className="text-[12px] text-muted-foreground" title={parameter.description ?? undefined}>
-                <span className="font-mono">{parameter.name}</span>
-                {parameter.required && (parameter.default === null || parameter.default === undefined) && <span className="text-destructive">*</span>}
-              </Label>
-              <Input
-                id={`value-check-parameter-${parameter.name}`}
-                value={session.values[parameter.name] ?? ""}
-                onChange={(event) => session.setValue(parameter.name, event.target.value)}
-                placeholder={parameter.default ?? (parameter.required ? "required" : "optional")}
-                className="h-8 w-40 font-mono text-[12px]"
-                spellCheck={false}
-                autoComplete="off"
-                data-testid={`value-check-parameter-${parameter.name}`}
-              />
-            </div>
-          ))}
+          <ScopeParameterFields
+            pipelineId={session.flow?.pipelineId ?? null}
+            scope={session.flow === null ? {} : flowScope(session.flow)}
+            parameters={session.parameters}
+            values={session.values}
+            onChange={session.setValue}
+            canRead={session.canOperate}
+            prefix="value-check"
+            inputClassName="w-48"
+          />
           <div className="flex flex-col gap-1">
             <Label className="text-[12px] text-muted-foreground" htmlFor="value-check-rows">Read</Label>
             <Select value={String(session.maxRows)} onValueChange={(value) => session.setMaxRows(Number(value))}>

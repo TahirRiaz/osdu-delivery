@@ -5,9 +5,11 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { useAuth } from "@/auth/AuthContext";
 import type { TriggerBodyContribution, TriggerFieldsProps } from "@/modules/registry";
-import { deliveryApi } from "../../api/delivery";
+import { deliveryApi, type DeliveryFlowScope, type DeliveryParameter } from "../../api/delivery";
 import { useActivePartition } from "./activePartition";
+import { ScopeParameterFields } from "./ScopeParameterFields";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -84,7 +86,25 @@ function useFlowPartitions(flowKind: string, pipelineId: string | null) {
   }, [flowKind, delivery.data, caches.data, pipelineId]);
   const loading = pipelineId !== null
     && ((flowKind === "delivery" && delivery.isPending) || (flowKind === "cache" && caches.isPending));
-  return { partitions, headerPartition, loading };
+  return { partitions, headerPartition, loading, interfaces: flowKind === "delivery" ? delivery.data : undefined };
+}
+
+/**
+ * The parameters a delivery flow declares, as the interface of it in `partition` that reads its scope by a column
+ * describes them (the one whose values the fields offer), with that interface's scope; undefined while the flow's
+ * interfaces are unknown, or from a control plane that does not say which column a parameter scopes by.
+ */
+function declaredParameters(
+  interfaces: readonly { interface: string | null; partition?: string | null; parameters?: DeliveryParameter[] | null }[] | undefined,
+  partition: string | null,
+): { parameters: DeliveryParameter[]; scope: DeliveryFlowScope } | undefined {
+  const rows = (interfaces ?? []).filter((row) => (row.partition ?? null) === partition);
+  const described = rows.find((row) => (row.parameters ?? []).some((parameter) => parameter.scopeColumn)) ?? rows[0];
+  if (described?.parameters === null || described?.parameters === undefined || !described.parameters.every((p) => "scopeColumn" in p)) {
+    return undefined;
+  }
+
+  return { parameters: described.parameters, scope: { interfaceName: described.interface, partition: described.partition ?? null } };
 }
 
 /** The partitions of a list as a sentence names them: "dev", "dev and test", "dev, test and prod". */
@@ -108,6 +128,28 @@ function isRedeliverScope(value: unknown): value is RedeliverScope {
 /** The non-blank, trimmed lines of a textarea. */
 function lines(text: string): string[] {
   return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+}
+
+/**
+ * The values of a flow's parameter fields as a run takes them: each given value trimmed, an empty one left out so the
+ * parameter's default applies, and a required parameter without a default and without a value the error.
+ */
+function fieldsToValues(parameters: DeliveryParameter[], fields: Record<string, string>): { values: Record<string, string>; error: string | null } {
+  const values: Record<string, string> = {};
+  for (const parameter of parameters) {
+    const value = (fields[parameter.name] ?? "").trim();
+    if (value !== "") {
+      values[parameter.name] = value;
+    }
+  }
+
+  const missing = parameters.filter((p) => p.required && (p.default === null || p.default === undefined) && values[p.name] === undefined);
+  return {
+    values,
+    error: missing.length === 0
+      ? null
+      : `The flow's scope needs ${missing.map((p) => p.name).join(", ")}: the flow declares ${missing.length === 1 ? "it" : "them"} required, with no default.`,
+  };
 }
 
 /** Parses "name=value" lines into the flow's parameter values; the first malformed line is the error. */
@@ -144,6 +186,12 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   const [valuesText, setValuesText] = useState(
     () => Object.entries(initialValues).filter(([name]) => name !== PARTITION).map(([name, value]) => `${name}=${value}`).join("\n"),
   );
+  // A delivery flow's parameters are fields, each offering what the flow's scope reads it against; a run being repeated
+  // opens with the values it was given.
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>(
+    () => Object.fromEntries(Object.entries(initialValues).filter(([name]) => name !== PARTITION)),
+  );
+  const { hasScope } = useAuth();
   const [submissionId, setSubmissionId] = useState(
     () => (typeof initialPayload?.submissionId === "string" ? initialPayload.submissionId : ""),
   );
@@ -182,11 +230,12 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   const takesRedeliver = takesRecordScope && effectiveOperation === "deliver" && recordKeys.length > 0;
   const takesInterfaces = deliveryKind && effectiveOperation !== null;
   const interfaceNames = useMemo(() => lines(interfacesText), [interfacesText]);
-  const { partitions, headerPartition, loading: partitionsLoading } = useFlowPartitions(flowKind, pipelineId);
+  const { partitions, headerPartition, loading: partitionsLoading, interfaces } = useFlowPartitions(flowKind, pipelineId);
   const takesPartition = partitions.length > 0;
   // A flow that works in partitions runs in the title bar's partition when it serves it, and not at all otherwise; a flow
   // whose partition is its header's takes none, and runs only while the title bar is on the partition its header names.
   const partition = takesPartition && active !== null && partitions.includes(active) ? active : null;
+  const declared = useMemo(() => (deliveryKind ? declaredParameters(interfaces, partition) : undefined), [deliveryKind, interfaces, partition]);
   const verb = deliveryKind ? "deliver to" : "build a cache for";
   const partitionError = partitionsLoading
     ? "Reading the partitions the flow serves."
@@ -202,7 +251,11 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   const carriesLedgerWork = (takesSubmission && submissionId.trim() !== "") || (takesRecordScope && recordKeys.length > 0);
 
   const body = useMemo<TriggerBodyContribution>(() => {
-    const parsed = takesValues ? parseValues(valuesText) : { values: {}, error: null };
+    const parsed = !takesValues
+      ? { values: {}, error: null }
+      : declared !== undefined
+        ? fieldsToValues(declared.parameters, fieldValues)
+        : parseValues(valuesText);
     const trimmedSubmission = submissionId.trim();
     // Client-side mirror of the kind's own validation, so obvious mistakes are caught before the round trip; the control
     // plane validates authoritatively and its problem details still render if anything slips through.
@@ -256,7 +309,7 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
     };
   }, [
     carried, carriesLedgerWork, force, interfaceNames, movedFrom, partition, partitionError, recordKeys, redeliver, submissionId, takesForce,
-    takesInterfaces, takesRecordScope, takesRedeliver, takesSubmission, takesValues, valuesText,
+    takesInterfaces, takesRecordScope, takesRedeliver, takesSubmission, takesValues, valuesText, declared, fieldValues,
   ]);
 
   useEffect(() => {
@@ -294,7 +347,32 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
           </p>
         </div>
       )}
-      {takesValues && (
+      {takesValues && declared !== undefined && (
+        <div className="flex flex-col gap-1.5" data-testid="trigger-parameters">
+          <span className="text-[13px] font-medium">Flow parameters</span>
+          {declared.parameters.length === 0
+            ? <p className="text-xs text-muted-foreground">The flow declares no parameters.</p>
+            : (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <ScopeParameterFields
+                  pipelineId={pipelineId}
+                  scope={declared.scope}
+                  parameters={declared.parameters}
+                  values={fieldValues}
+                  onChange={(name, value) => setFieldValues((was) => ({ ...was, [name]: value }))}
+                  canRead={hasScope("operate")}
+                  prefix="trigger"
+                />
+              </div>
+            )}
+          {declared.parameters.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              The values fill the flow&apos;s record scope; a parameter the scope reads offers the values its column holds.
+            </p>
+          )}
+        </div>
+      )}
+      {takesValues && declared === undefined && (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-values`}>Flow parameters</Label>
           <Textarea

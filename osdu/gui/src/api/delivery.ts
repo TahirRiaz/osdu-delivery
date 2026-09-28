@@ -918,6 +918,36 @@ export interface DeliveryParameter {
   required: boolean;
   default?: string | null;
   description?: string | null;
+  /**
+   * The record table's column the scope predicate binds the parameter to (`source.record.scope`), whose values a page
+   * offers for it; null for a parameter the scope does not read. Absent from a control plane that predates it.
+   */
+  scopeColumn?: string | null;
+}
+
+/** One value a scope parameter can take, and how many rows of the record table not marked deleted hold it. */
+export interface DeliveryScopeValue {
+  value: string;
+  rows: number;
+}
+
+/** The values a parameter of a flow's scope can take, read from the column the scope binds it to. */
+export interface DeliveryScopeParameterValues {
+  parameter: string;
+  column: string;
+  /** The values, the most rows first. */
+  values: DeliveryScopeValue[];
+  /** True when the column holds more distinct values than were listed. */
+  more: boolean;
+}
+
+/** What the `delivery-scope-values` task answers: the values each parameter of an interface's scope can take. */
+export interface DeliveryScopeValues {
+  flow: string;
+  interface?: string | null;
+  recordObject: string;
+  parameters: DeliveryScopeParameterValues[];
+  readUtc: string;
 }
 
 /** How a record preview read the key it was given. */
@@ -2130,6 +2160,13 @@ export const deliveryApi = {
     post<ComputeTaskAccepted>(flowPath(pipelineId, "/preview", scope), request),
   /** Queues a preview of this record, rendered from its current source row as a delivery would render it now. */
   previewRecord: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/preview`),
+  /**
+   * Queues a read of the values each parameter of an interface's scope can take, on a node: the distinct values of the
+   * column the scope binds it to in the flow's record table, with how many rows hold each. What a page offers for a
+   * scope's value rather than having it typed.
+   */
+  scopeValues: (pipelineId: string, scope?: DeliveryFlowScope) =>
+    post<ComputeTaskAccepted>(flowPath(pipelineId, "/scope-values", scope)),
   /** The interfaces of the delivery flows that render with a mapping, in every partition: what its values are checked against. */
   mappingFlows: (mappingId: string) => get<DeliveryMappingFlow[]>(`/api/v1/delivery/mappings/${mappingId}/flows`),
   /**

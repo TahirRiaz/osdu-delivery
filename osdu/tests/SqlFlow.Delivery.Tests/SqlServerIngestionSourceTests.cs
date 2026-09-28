@@ -239,6 +239,73 @@ public sealed class SqlServerIngestionSourceTests
         Assert.Equal(0, await CountRangesAsync(good));
     }
 
+    [Fact]
+    public async Task A_scope_parameter_offers_the_values_its_column_holds_most_rows_first_and_each_one_reads_its_rows()
+    {
+        await using var estate = await SqlServerIngestionFixture.StartAsync();
+        var table = await CreateTableAsync(
+            estate,
+            "Scoped",
+            "[RecId] bigint IDENTITY(1, 1) NOT NULL CONSTRAINT [PK_Scoped] PRIMARY KEY CLUSTERED, [item_key] nvarchar(50) NULL, [log_source] nvarchar(40) NULL, "
+            + "[region_id] int NULL, [UpdatedDate_DW] datetime NULL, [DeletedDate_DW] datetime NULL",
+            "CREATE UNIQUE NONCLUSTERED INDEX [NCI_KeyColumn] ON {0} ([item_key]);");
+
+        // Three STAT_COMP rows, two STAT_CPI, one with no source, and a STAT_CORE row the ingestion flow marked deleted. The
+        // key column may hold a null, as SQLFlow's ingestion leaves it: a run checks its scope's rows for one, which needs the
+        // scope's values, and the listing of what those values can be must not.
+        await ExecuteAsync(estate, $"""
+            INSERT INTO {table} ([item_key], [log_source], [region_id], [UpdatedDate_DW], [DeletedDate_DW])
+            VALUES (N'a', N'STAT_COMP', 7, @loaded, NULL), (N'b', N'STAT_COMP', 7, @loaded, NULL), (N'c', N'STAT_COMP', 9, @loaded, NULL),
+                   (N'd', N'STAT_CPI', 9, @loaded, NULL), (N'e', N'STAT_CPI', NULL, @loaded, NULL), (N'f', NULL, 7, @loaded, NULL),
+                   (N'g', N'STAT_CORE', 7, @loaded, @changed);
+            """);
+        var item = ItemFlow(estate, "Scoped");
+        var flow = item with
+        {
+            Parameters = new Dictionary<string, FlowParameter>(StringComparer.Ordinal)
+            {
+                ["logSource"] = new FlowParameter { Required = true },
+                ["region"] = new FlowParameter { Required = true },
+            },
+            Source = item.Source with
+            {
+                Record = item.Source.Record with
+                {
+                    Scope = new Dictionary<string, string>(StringComparer.Ordinal) { ["log_source"] = "logSource", ["region_id"] = "region" },
+                },
+            },
+        };
+
+        var listed = await estate.Engine.Sources.Open(flow, NoValues, NullLoggerFactory.Instance).ScopeValuesAsync(10);
+        Assert.Equal(["logSource", "region"], listed.Select(p => p.Parameter));
+        var logSource = listed[0];
+        Assert.Equal("log_source", logSource.Column);
+        Assert.Equal([new ScopeValue("STAT_COMP", 3), new ScopeValue("STAT_CPI", 2)], logSource.Values);
+        Assert.False(logSource.More);
+        Assert.Equal([new ScopeValue("7", 3), new ScopeValue("9", 2)], listed[1].Values);
+
+        // A listing capped below what the column holds says there is more.
+        var capped = (await estate.Engine.Sources.Open(flow, NoValues, NullLoggerFactory.Instance).ScopeValuesAsync(1))[0];
+        Assert.Equal([new ScopeValue("STAT_COMP", 3)], capped.Values);
+        Assert.True(capped.More);
+
+        // A value listed is one the scope reads by: STAT_CPI in region 9 is one row.
+        var scoped = estate.Engine.Sources.Open(
+            flow, new Dictionary<string, string>(StringComparer.Ordinal) { ["logSource"] = "STAT_CPI", ["region"] = "9" }, NullLoggerFactory.Instance);
+        Assert.Equal(1, (await scoped.OpenAsync(SourceSelection.Full(), null)).EstimatedCandidates);
+
+        // A scope bound to a column the table does not hold is refused, naming the column and the parameter.
+        var missing = flow with
+        {
+            Source = flow.Source with
+            {
+                Record = flow.Source.Record with { Scope = new Dictionary<string, string>(StringComparer.Ordinal) { ["source_name"] = "logSource" } },
+            },
+        };
+        var refused = await Assert.ThrowsAsync<FlowValidationException>(() => estate.Engine.Sources.Open(missing, NoValues, NullLoggerFactory.Instance).ScopeValuesAsync(10));
+        Assert.Contains("binds parameter 'logSource' to column 'source_name', which the table", refused.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>The sample flow, reading one of this test's tables by its item key and its identity primary key.</summary>
     private static FlowDefinition ItemFlow(SqlServerIngestionFixture estate, string table, int pageSize = FlowIncremental.DefaultPageSize)
     {

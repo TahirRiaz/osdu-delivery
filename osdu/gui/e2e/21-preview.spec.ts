@@ -40,6 +40,7 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(adminPage.getByTestId("preview-missing")).toContainText("logSource");
     await expect(run).toBeDisabled();
     await adminPage.getByTestId("preview-parameter-logSource").fill(LOG_SOURCE);
+    await adminPage.getByTestId("preview-parameter-logSource").press("Escape");
     await expect(run).toBeEnabled();
 
     // No key: the scope's first record, rendered on a node as a delivery would render it.
