@@ -23,6 +23,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   moved, and a type's header on the Records tab says whether the version being read changed it or holds it unchanged
   since an earlier one. Versions written before are read as they were, and the next version dates their types from the
   records' ranges.
+- **A type's own versions on the cache page.** With a type in view, the Versions tab lists the versions of the cache at
+  which the type's content hash moved (its hash, its record count, and what it added, changed or removed), each
+  compared with the version of the type before it, and the Records tab's version picker offers those versions alone,
+  so any two versions of a type picked there differ. The cache history API gives each type a version moved its hash
+  and record count there (`hash`, `items`).
 
 - **A property no entry of its own fills says what does.** The coverage of a mapping (`POST
   /api/v1/delivery/mapping-builder/coverage`) names, for every variable an entry further up writes, that entry

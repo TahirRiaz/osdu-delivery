@@ -55,9 +55,16 @@ public sealed record CacheHistoryEntry(CacheVersionInfo Version, string? Before,
 
 /// <summary>
 /// One type a version moved: <see cref="Change"/> is added (the version before did not hold it), changed (it held other
-/// content) or removed (the version no longer holds it), with how many of its records changed, arrived and left.
+/// content) or removed (the version no longer holds it), with how many of its records changed, arrived and left. Each
+/// such version is a version of the type: <see cref="Hash"/> is the type's content hash in it, which differs from the one
+/// the version before held, and <see cref="Items"/> how many records of the type it holds.
 /// </summary>
-public sealed record CacheHistoryType(string TypeName, string Change, CacheChangeCounts Counts)
+/// <param name="TypeName">The type, by the name the version holds it under (or held it under, for a type it removed).</param>
+/// <param name="Change">added, changed or removed.</param>
+/// <param name="Counts">How many of the type's records the version changed, added and removed.</param>
+/// <param name="Hash">The type's content hash in the version; null when the version removed it, or was written before types were hashed.</param>
+/// <param name="Items">How many records of the type the version holds; 0 when it removed the type.</param>
+public sealed record CacheHistoryType(string TypeName, string Change, CacheChangeCounts Counts, string? Hash, long Items)
 {
     /// <summary>What <see cref="Change"/> says of a type the version no longer holds.</summary>
     public const string Removed = "removed";
@@ -248,13 +255,13 @@ public static class CacheVersions
                     : !earlier.Contains(held.Name) ? CacheTypeChange.Added : counts.Total > 0 ? CacheTypeChange.Changed : CacheTypeChange.Unchanged);
             if (change != CacheTypeChange.Unchanged)
             {
-                moved.Add(new CacheHistoryType(held.Name, CacheTypeChanges.Text(change), counts));
+                moved.Add(new CacheHistoryType(held.Name, CacheTypeChanges.Text(change), counts, held.Hash, held.Items));
             }
         }
 
         foreach (var left in (before?.Types ?? []).Where(t => InScope(t.Name) && !version.Types.Any(held => held.Name.Equals(t.Name, StringComparison.OrdinalIgnoreCase))))
         {
-            moved.Add(new CacheHistoryType(left.Name, CacheHistoryType.Removed, CountsOf(left.Name, version.Sequence, arrived, departed, changed)));
+            moved.Add(new CacheHistoryType(left.Name, CacheHistoryType.Removed, CountsOf(left.Name, version.Sequence, arrived, departed, changed), null, 0));
         }
 
         return moved.OrderBy(t => t.TypeName, StringComparer.Ordinal).ToList();

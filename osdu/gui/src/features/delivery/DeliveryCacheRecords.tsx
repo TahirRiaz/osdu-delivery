@@ -30,6 +30,7 @@ import { CachedValueText } from "./CachedValueText";
 import { KindText } from "./KindText";
 import { cachedCell, isLookupEntityType, recordIdentity, splitRecordId, type CachedTypeSummary } from "./cacheFormat";
 import { SECTION_ROWS, browsedTypes, columnNames, typeSampleQuery, type BrowsedType } from "./cacheRecordsModel";
+import { earlierTypeVersions, shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
 import { useNearViewport } from "./useNearViewport";
 
 /** The picker's value for "whichever version is current", which is what the records open on. */
@@ -115,6 +116,58 @@ export function CacheVersionPicker({ versions, value, onChange, className }: {
             <span className="font-mono text-[12px]">{option.version}</span>
             <span className="text-[11px] text-muted-foreground">{format(parseUtc(option.capturedUtc), "MMM d, HH:mm")}</span>
             {option.current && <span className="text-[11px] font-medium text-primary">current</span>}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
+/**
+ * The version picker for one type: the current version, and the type's own earlier versions, the versions of the cache
+ * at which its content hash moved. The newest of those holds what the current version holds, so Current version stands
+ * for it; any version picked here holds other records or values of the type than the current one, so comparing the two
+ * shows a change, except for a version marked the same as current, whose content came back.
+ */
+export function TypeVersionPicker({ type, versions, value, onChange, className }: {
+  type: string;
+  /** The type's versions, newest first. */
+  versions: CacheTypeVersion[];
+  value: string;
+  onChange: (version: string) => void;
+  className?: string;
+}) {
+  const head = versions.find((candidate) => candidate.holdsCurrent);
+  const earlier = earlierTypeVersions(versions);
+  return (
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger
+        size="sm"
+        className={cn("h-8 text-left *:data-[slot=select-value]:flex-1 *:data-[slot=select-value]:justify-start", className)}
+        active={value !== CURRENT}
+        aria-label={`Version of ${type} to read`}
+        data-testid="delivery-cache-version"
+      >
+        <History />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={CURRENT}>
+          Current version
+          {head?.hash != null && <span className="font-mono text-[11px] text-muted-foreground">{shortHash(head.hash)}</span>}
+        </SelectItem>
+        {earlier.length === 0 && (
+          <div className="px-2 py-1.5 text-[12px] text-muted-foreground" data-testid="delivery-cache-type-versions-none">
+            No earlier version of {type}
+          </div>
+        )}
+        {earlier.map((option) => (
+          <SelectItem key={option.version} value={option.version} data-testid="delivery-cache-type-version-option">
+            <span className="font-mono text-[12px]">{option.version}</span>
+            {option.hash !== null && <span className="font-mono text-[11px] text-muted-foreground">{shortHash(option.hash)}</span>}
+            {/* The label is the capture instant already, so the option says how the version moved the type instead. */}
+            <span className="text-[11px] text-muted-foreground">{option.change}</span>
+            {option.sameAsCurrent && <span className="text-[11px] text-muted-foreground">same as current</span>}
           </SelectItem>
         ))}
       </SelectContent>
@@ -491,8 +544,25 @@ export function DeliveryCacheRecords({ scope, types, type, onType, versions, onC
   // The picker holds a version label; CURRENT follows whichever version is current rather than freezing on one.
   const [picked, setPicked] = useState<string>(CURRENT);
 
-  // A label the cache no longer lists would read as an empty cache rather than a stale pick, so it falls back to current.
-  const versionFilter = picked === CURRENT || versions.some((v) => v.version === picked) ? picked : CURRENT;
+  // With a type in view the picker offers the type's own versions, the versions of the cache at which its content hash
+  // moved, so any version picked holds something of the type the current version does not. The versions tab reads the
+  // same history, so the two share one request.
+  const typeHistory = useQuery({
+    queryKey: ["delivery", "cache", "history", scope, type],
+    queryFn: () => deliveryApi.cacheHistory(scope, type ?? undefined),
+    enabled: type !== null,
+  });
+  const ofType = useMemo(
+    () => (type === null || typeHistory.data === undefined ? null : typeVersions(typeHistory.data, type)),
+    [type, typeHistory.data],
+  );
+  const earlier = ofType === null ? null : earlierTypeVersions(ofType);
+
+  // A label the picker does not offer (one the cache no longer lists, or a version of the cache that left the type in view
+  // as the current one holds it) would read as a stale pick, so it falls back to current.
+  const offered = earlier === null ? versions.map((v) => v.version) : earlier.map((v) => v.version);
+  const versionFilter = picked === CURRENT || offered.includes(picked) ? picked : CURRENT;
+  const typeVersion = earlier?.find((candidate) => candidate.version === versionFilter) ?? null;
   const reading = versions.find((v) => (versionFilter === CURRENT ? v.current : v.version === versionFilter));
   const historic = reading !== undefined && !reading.current ? reading : null;
   const hasCurrent = versions.some((v) => v.current);
@@ -563,7 +633,9 @@ export function DeliveryCacheRecords({ scope, types, type, onType, versions, onC
             className="sm:w-96"
             testId="delivery-cache-search"
           />
-          <CacheVersionPicker versions={versions} value={versionFilter} onChange={setPicked} className="w-full sm:w-64" />
+          {type !== null && ofType !== null
+            ? <TypeVersionPicker type={type} versions={ofType} value={versionFilter} onChange={setPicked} className="w-full sm:w-96" />
+            : <CacheVersionPicker versions={versions} value={versionFilter} onChange={setPicked} className="w-full sm:w-64" />}
           {selected === null && (
             <span className="whitespace-nowrap font-mono text-[12px] tabular-nums text-muted-foreground sm:ml-auto" data-testid="delivery-cache-records-count">
               {!searching
@@ -582,11 +654,27 @@ export function DeliveryCacheRecords({ scope, types, type, onType, versions, onC
             data-testid="delivery-cache-historic"
           >
             <History className="size-4 shrink-0 text-warning" />
-            <span>
-              Reading the cache as it stood at <span className="font-mono">{historic.version}</span>. Deliveries read the
-              current version.
-            </span>
-            {hasCurrent && (
+            {typeVersion === null
+              ? (
+                <span>
+                  Reading the cache as it stood at <span className="font-mono">{historic.version}</span>. Deliveries read the
+                  current version.
+                </span>
+              )
+              : (
+                <span>
+                  Reading <span className="font-mono">{type}</span> as version <span className="font-mono">{historic.version}</span>{" "}
+                  {typeVersion.change} it
+                  {typeVersion.hash !== null && <> (<span className="font-mono">{shortHash(typeVersion.hash)}</span>)</>}.
+                  Deliveries read the current version.
+                </span>
+              )}
+            {typeVersion?.sameAsCurrent === true && (
+              <span className="ml-auto text-muted-foreground" data-testid="delivery-cache-same-as-current">
+                The same {type} records and values as the current version
+              </span>
+            )}
+            {hasCurrent && typeVersion?.sameAsCurrent !== true && (
               <Button
                 variant="outline"
                 size="xs"

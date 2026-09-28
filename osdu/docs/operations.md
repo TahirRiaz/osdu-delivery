@@ -610,7 +610,12 @@ Pipelines like any other flow.
   version that last changed it, with its content hash on hover.
 - **Reading the cache as it stood.** The version picker opens on the current version, the one deliveries render
   against unless a flow pins another; picking an earlier one says so above the table, because nothing shown then is
-  what a render would read today. Every version the partition's cache flows wrote stays readable.
+  what a render would read today. Every version the partition's cache flows wrote stays readable. With a type in view
+  the picker offers that type's own versions instead: the versions of the cache at which its content hash moved, each
+  with its hash and whether it added or changed the type. The newest of them holds what the current version holds, so
+  Current version stands for it, and any version picked holds other records or values of the type than the current
+  one: Compare with current always has a change to show. A version whose content came back to what the current one
+  holds is marked as the same as current, and offers no comparison.
 - **Definition.** What the partition's cache flow files declare, as the last sync found them. A guide says how a
   mapping reads the cache (`$cache: <Type>.id` or `$cache: <Type>.<name>`, and `$findBy` lines), with a node to
   copy, and that a mapping never names the cache. The cache flows follow, each with its repository, file, the endpoint
@@ -621,8 +626,11 @@ Pipelines like any other flow.
   who asked, or an import from files), the types it changed (each tinted by whether it arrived, changed or left, the
   rest counted and named on hover, or no type changed when the version was written for something else, such as a
   changed OSDU feature flag), and what it changed compared with the version captured before it (so many changed, added,
-  removed, or no changes), with the counts for the type in scope when one is picked and the versions that left it
-  untouched folded away. A version is the whole partition's cache and is written when anything in it moves, so a type
+  removed, or no changes). With a type in scope the list is that type's own versions: the versions of the cache at
+  which its content hash moved, each with the hash, how many records of the type it holds, and whether it added,
+  changed or removed the type with how many records; the versions that held it unchanged are counted above the list
+  and left out, since comparing them would show nothing. The newest is marked current when the current version still
+  holds the type, and picking one compares it with the version of the type before it. A version is the whole partition's cache and is written when anything in it moves, so a type
   is listed only when its own content hash moved: a type that rode along with another's change is not. Picking a version raises its changes in the workbench bottom panel, so the list stays in view: changed
   records with the captured values that moved, before and after, records the version added, and records it no longer
   holds, narrowed by a change kind and a search. A row opens both sides. Versions covers the whole cache, which is

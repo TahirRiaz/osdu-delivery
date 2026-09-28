@@ -370,6 +370,8 @@ public sealed class CacheTypeVersionTests : IDisposable
         var legacyHistory = await ReadHistoryAsync(null);
         Assert.Equal([("LogType", "added"), ("UnitOfMeasure", "added")], Moved(legacyHistory[v1.Snapshot.Version]));
         Assert.Equal([("UnitOfMeasure", "changed"), ("Wellbore", "added")], Moved(legacyHistory[v2.Snapshot.Version]));
+        Assert.All(legacyHistory.Values.SelectMany(h => h.Types), t => Assert.Null(t.Hash));
+        Assert.Equal(1, Assert.Single(legacyHistory[v2.Snapshot.Version].Types, t => t.TypeName == "Wellbore").Items);
 
         // A version written for the system properties alone: every type is unchanged, and each is dated from what the
         // partition holds, the units from the version that renamed the metre, the wellbores from the version that brought them,
@@ -424,8 +426,18 @@ public sealed class CacheTypeVersionTests : IDisposable
         Assert.Equal([("Wellbore", "removed")], Moved(history[v4.Snapshot.Version]));
         var left = Assert.Single(history[v4.Snapshot.Version].Types);
         Assert.Equal(new CacheChangeCounts(0, 0, 1), left.Counts);
-        Assert.Equal(new CacheChangeCounts(1, 0, 0), Assert.Single(history[v2.Snapshot.Version].Types).Counts);
+        Assert.Null(left.Hash);
+        Assert.Equal(0, left.Items);
+        var renamed = Assert.Single(history[v2.Snapshot.Version].Types);
+        Assert.Equal(new CacheChangeCounts(1, 0, 0), renamed.Counts);
         Assert.Equal(v1.Snapshot.Version, history[v2.Snapshot.Version].Before);
+
+        // Each version that moved a type is a version of the type: its hash there, never the one the version before held.
+        Assert.Equal(v2.Snapshot.Type("UnitOfMeasure")!.ContentHash(), renamed.Hash);
+        Assert.Equal(2, renamed.Items);
+        var arrived = Assert.Single(history[v1.Snapshot.Version].Types, t => t.TypeName == "UnitOfMeasure");
+        Assert.Equal(v1.Snapshot.Type("UnitOfMeasure")!.ContentHash(), arrived.Hash);
+        Assert.NotEqual(arrived.Hash, renamed.Hash);
 
         // Narrowed to the wellbores, only the versions that moved them name anything.
         var narrowed = await ReadHistoryAsync("Wellbore");

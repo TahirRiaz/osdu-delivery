@@ -303,8 +303,12 @@ public sealed record DeliveryCacheDiffItemDto(
 public sealed record DeliveryCacheHistoryEntryDto(
     DeliveryCacheVersionDto Version, string? Before, long Changed, long Added, long Removed, IReadOnlyList<DeliveryCacheHistoryTypeDto> Types);
 
-/// <summary>One type a version moved: <c>added</c>, <c>changed</c> or <c>removed</c>, with how many of its records changed, arrived and left.</summary>
-public sealed record DeliveryCacheHistoryTypeDto(string Name, string Change, long Changed, long Added, long Removed);
+/// <summary>
+/// One type a version moved: <c>added</c>, <c>changed</c> or <c>removed</c>, with how many of its records changed, arrived and
+/// left. Such a version is a version of the type: <c>hash</c> is the type's content hash in it (null when the version removed
+/// the type, or was written before types were hashed) and <c>items</c> how many records of the type it holds.
+/// </summary>
+public sealed record DeliveryCacheHistoryTypeDto(string Name, string Change, long Changed, long Added, long Removed, string? Hash, long Items);
 
 /// <summary>A run was queued for a record-scoped operation (redeliver, verify).</summary>
 public sealed record DeliveryRunAccepted(Guid RunId, string Status);
@@ -1341,7 +1345,7 @@ public static class DeliveryEndpoints
         return TypedResults.Ok<IReadOnlyList<DeliveryCacheHistoryEntryDto>>(history
             .Select(h => new DeliveryCacheHistoryEntryDto(
                 ToVersionDto(h.Version), h.Before, h.Changes.Changed, h.Changes.Added, h.Changes.Removed,
-                h.Types.Select(t => new DeliveryCacheHistoryTypeDto(t.TypeName, t.Change, t.Counts.Changed, t.Counts.Added, t.Counts.Removed)).ToList()))
+                h.Types.Select(t => new DeliveryCacheHistoryTypeDto(t.TypeName, t.Change, t.Counts.Changed, t.Counts.Added, t.Counts.Removed, t.Hash, t.Items)).ToList()))
             .ToList());
     }
 

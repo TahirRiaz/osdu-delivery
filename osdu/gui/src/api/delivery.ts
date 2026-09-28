@@ -599,13 +599,20 @@ export interface DeliveryCacheDiff {
   items: PagedResult<DeliveryCacheDiffItem>;
 }
 
-/** One type a version moved: added, changed or removed, with how many of its records changed, arrived and left. */
+/**
+ * One type a version moved: added, changed or removed, with how many of its records changed, arrived and left. Such a version
+ * is a version of the type, whose content hash differs from the one the version before held.
+ */
 export interface DeliveryCacheHistoryType {
   name: string;
   change: "added" | "changed" | "removed";
   changed: number;
   added: number;
   removed: number;
+  /** The type's content hash in the version; null when the version removed the type, or was written before types were hashed. */
+  hash: string | null;
+  /** How many records of the type the version holds; 0 when it removed the type. */
+  items: number;
 }
 
 /**

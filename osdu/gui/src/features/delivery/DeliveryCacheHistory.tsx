@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, GitCommitHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -26,6 +25,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cachedFieldsText, cachedText } from "./cacheFormat";
 import { CachedRecordId } from "./DeliveryCacheRecords";
+import { shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
 
 const ALL = "all";
 
@@ -57,27 +57,8 @@ function keyOf(entry: DeliveryCacheHistoryEntry): string {
   return `${entry.version.scope}:${entry.version.version}`;
 }
 
-function totalOf(entry: DeliveryCacheHistoryEntry): number {
-  return entry.changed + entry.added + entry.removed;
-}
-
-/**
- * Whether the version changed something (in the type picked, when one is): a type it moved, by the type's own content hash,
- * or a record it changed. A version is written when anything in the partition's cache moves, so a type that only rode along
- * with another's change does not count.
- */
-function changedSomething(entry: DeliveryCacheHistoryEntry): boolean {
-  return entry.types.length > 0 || totalOf(entry) > 0;
-}
-
 /** How many type chips the versions list shows before it counts the rest. */
 const SHOWN_TYPES = 3;
-
-const typeTone: Record<DeliveryCacheHistoryType["change"], string> = {
-  added: "bg-success/15 text-success",
-  changed: "bg-info/15 text-info",
-  removed: "bg-destructive/15 text-destructive",
-};
 
 /** One type a version moved and how, as a hover names it. */
 function movedText(type: DeliveryCacheHistoryType): string {
@@ -109,7 +90,7 @@ function TypesMoved({ entry }: { entry: DeliveryCacheHistoryEntry }) {
     <span className="flex flex-wrap items-center gap-1" data-testid="delivery-cache-history-types">
       {shown.map((type) => (
         <RichTooltip key={type.name} body={movedText(type)} mono>
-          <Badge variant="secondary" className={cn("font-mono text-[11px]", typeTone[type.change])} data-testid="delivery-cache-history-type">
+          <Badge variant="secondary" className={cn("font-mono text-[11px]", changeTone[type.change])} data-testid="delivery-cache-history-type">
             {type.name}
           </Badge>
         </RichTooltip>
@@ -389,17 +370,16 @@ export function CacheCompareDialog({ scope, from, to, type, onClose }: {
 }
 
 /**
- * The changes one version made to the cache (to the type in scope, when one is), compared with the version before
- * it: the bottom panel's content once a version is picked.
+ * The changes one version made to the cache, compared with the version before it: the bottom panel's content once a
+ * version is picked.
  */
-function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; type: string | null }) {
+function VersionChanges({ entry }: { entry: DeliveryCacheHistoryEntry }) {
   const { version, before } = entry;
 
   const header = (
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
       <h3 className="text-[13px] font-medium">
-        {type ? <>Changes to <span className="font-mono">{type}</span> in </> : "Changes in "}
-        <span className="font-mono">{version.version}</span>
+        Changes in <span className="font-mono">{version.version}</span>
       </h3>
       {before && (
         <span className="text-[12px] text-muted-foreground">
@@ -431,50 +411,111 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
         scope={version.scope}
         from={before}
         to={version.version}
-        type={type}
+        type={null}
         counts={entry}
         header={header}
-        unchanged={type
-          ? `This version holds the same ${type} records with the same values as the one before it.`
-          : "This version holds the same cached records with the same values as the one before it."}
+        unchanged="This version holds the same cached records with the same values as the one before it."
       />
     </div>
   );
 }
 
 /**
+ * What one version of a type changed in it, compared with the version of the type before it: the bottom panel's content
+ * once a version of the type is picked. The type's hash moved between the two, so there is always something to show.
+ */
+function TypeVersionChanges({ scope, type, version }: { scope: string; type: string; version: CacheTypeVersion }) {
+  const header = (
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+      <h3 className="text-[13px] font-medium">
+        Changes to <span className="font-mono">{type}</span> in <span className="font-mono">{version.version}</span>
+      </h3>
+      {version.previous && (
+        <span className="text-[12px] text-muted-foreground">
+          compared with <span className="font-mono">{version.previous}</span>,{" "}
+          {version.previousOfType ? `the version of ${type} before it` : "the version of the cache before it"}
+        </span>
+      )}
+    </div>
+  );
+
+  if (version.previous === null) {
+    return (
+      <div className="flex flex-col gap-3 p-3" data-testid="delivery-cache-history-detail">
+        {header}
+        <Card className="gap-0 rounded-lg p-0">
+          <EmptyState
+            icon={<GitCommitHorizontal />}
+            title="Nothing to compare"
+            description={`This is the first version of the cache, so there is nothing before it to compare with. Its ${type} records are under Records.`}
+            data-testid="delivery-cache-history-uncomparable"
+          />
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col p-3" data-testid="delivery-cache-history-detail">
+      <CacheChanges
+        scope={scope}
+        from={version.previous}
+        to={version.version}
+        type={type}
+        counts={version}
+        header={header}
+        unchanged={`This version holds the same ${type} records with the same values as the version of ${type} before it.`}
+      />
+    </div>
+  );
+}
+
+/** Who wrote a version: the run and who asked, or the import from files, and the cache flow. */
+function WrittenBy({ entry }: { entry: DeliveryCacheHistoryEntry }) {
+  return (
+    <span className="flex flex-col">
+      {entry.version.runId !== null
+        ? (
+          <RouterLink
+            to={`/runs/${entry.version.runId}`}
+            className="font-mono text-[12px] text-primary hover:underline"
+            onClick={(event) => event.stopPropagation()}
+            data-testid="delivery-cache-history-run"
+          >
+            run {entry.version.runId.slice(0, 8)}
+          </RouterLink>
+        )
+        : <TruncatedText text={entry.version.origin} maxWidth={1200} className="text-[12px]" />}
+      <span className="text-[11px] text-muted-foreground">{entry.version.flow} · {entry.version.capturedBy}</span>
+    </span>
+  );
+}
+
+/** A version's label with a dot, marked when it is the one deliveries read. */
+function VersionLabel({ label, current, note }: { label: string; current: boolean; note?: ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span aria-hidden className={cn("size-2 shrink-0 rounded-full", current ? "bg-primary" : "bg-muted-foreground/40")} />
+      <span className="font-mono text-[12.5px]">{label}</span>
+      {current && <span className="rounded-sm bg-primary/12 px-1.5 text-[11px] font-medium text-primary">current</span>}
+      {note}
+    </span>
+  );
+}
+
+/**
  * One cache's version history: every version, newest first, with what captured it (the run and who asked, or the import
- * from files) and what it changed compared with the version captured before it. Picking a version raises its changes in
- * the workbench bottom panel, where they can be filtered, searched and opened record by record while the list stays in
- * view. With a type in scope the counts are that type's alone, and the versions that left it untouched can be folded
- * away. It covers the whole cache, where Approvals covers only the changes that reach records already delivered.
+ * from files), the types it moved and what it changed compared with the version captured before it. Picking a version
+ * raises its changes in the workbench bottom panel, where they can be filtered, searched and opened record by record while
+ * the list stays in view. With a type in scope the list is that type's own versions instead: the versions at which its
+ * content hash moved, each compared with the version of the type before it. It covers the whole cache, where Approvals
+ * covers only the changes that reach records already delivered.
  */
 export function DeliveryCacheHistory({ scope, type }: { scope: string; type: string | null }) {
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [onlyChanged, setOnlyChanged] = useState(true);
-  const { ownedId, show } = useOwnedPanel(PANEL);
   const history = useQuery({
     queryKey: ["delivery", "cache", "history", scope, type],
     queryFn: () => deliveryApi.cacheHistory(scope, type ?? undefined),
   });
-
-  const entries = history.data ?? [];
-  const selected = entries.find((entry) => keyOf(entry) === selectedKey);
-
-  const raise = useCallback((entry: DeliveryCacheHistoryEntry) => show(
-    `${keyOf(entry)}:${type ?? ""}`,
-    `Changes · ${entry.version.version}`,
-    <VersionChanges entry={entry} type={type} />,
-  ), [show, type]);
-
-  // While the panel shows this surface's content, keep it on the version picked with the data as it is now: a
-  // scope change or a refetch re-raises it rather than leaving a stale copy open.
-  const open = ownedId !== null;
-  useEffect(() => {
-    if (open && selected !== undefined) {
-      raise(selected);
-    }
-  }, [open, selected, raise]);
 
   if (history.isPending) {
     return <Skeleton className="h-40 w-full rounded-lg" />;
@@ -486,7 +527,7 @@ export function DeliveryCacheHistory({ scope, type }: { scope: string; type: str
       : <p className="text-[13px] text-destructive">{String(history.error)}</p>;
   }
 
-  if (entries.length === 0) {
+  if (history.data.length === 0) {
     return (
       <Card className="gap-0 rounded-lg p-0">
         <EmptyState
@@ -499,95 +540,189 @@ export function DeliveryCacheHistory({ scope, type }: { scope: string; type: str
     );
   }
 
-  const changedType = type ? entries.filter(changedSomething) : entries;
-  const others = entries.length - changedType.length;
-  const rows = type && onlyChanged ? changedType : entries;
-  const highlighted = open ? selectedKey : null;
+  return type === null
+    ? <CacheVersionList entries={history.data} />
+    : <TypeVersionList scope={scope} type={type} entries={history.data} />;
+}
+
+/**
+ * The raised panel's state for one list: which row is picked, and the panel kept on it with the data as it is now. While
+ * the panel shows this surface's content, a scope change or a refetch re-raises it rather than leaving a stale copy open.
+ */
+function usePickedPanel<T>(rows: T[], keyOf: (row: T) => string, content: (row: T) => { title: string; body: ReactNode }) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const { ownedId, show } = useOwnedPanel(PANEL);
+  const selected = rows.find((row) => keyOf(row) === selectedKey);
+
+  const raise = useCallback((row: T) => {
+    const { title, body } = content(row);
+    show(keyOf(row), title, body);
+  }, [show, keyOf, content]);
+
+  const open = ownedId !== null;
+  useEffect(() => {
+    if (open && selected !== undefined) {
+      raise(selected);
+    }
+  }, [open, selected, raise]);
+
+  return {
+    highlighted: open ? selectedKey : null,
+    pick: (row: T) => {
+      setSelectedKey(keyOf(row));
+      raise(row);
+    },
+  };
+}
+
+/** Every version of the cache, with the types each moved and what it changed against the version before it. */
+function CacheVersionList({ entries }: { entries: DeliveryCacheHistoryEntry[] }) {
+  const content = useCallback((entry: DeliveryCacheHistoryEntry) => ({
+    title: `Changes · ${entry.version.version}`,
+    body: <VersionChanges entry={entry} />,
+  }), []);
+  const { highlighted, pick } = usePickedPanel(entries, keyOf, content);
 
   const columns: Column<DeliveryCacheHistoryEntry>[] = [
-    {
-      id: "version",
-      header: "Version",
-      render: (entry) => (
-        <span className="inline-flex items-center gap-2">
-          <span
-            aria-hidden
-            className={cn("size-2 shrink-0 rounded-full", entry.version.current ? "bg-primary" : "bg-muted-foreground/40")}
-          />
-          <span className="font-mono text-[12.5px]">{entry.version.version}</span>
-          {entry.version.current && (
-            <span className="rounded-sm bg-primary/12 px-1.5 text-[11px] font-medium text-primary">current</span>
-          )}
-        </span>
-      ),
-    },
+    { id: "version", header: "Version", render: (entry) => <VersionLabel label={entry.version.version} current={entry.version.current} /> },
     { id: "captured", header: "Captured", render: (entry) => <RelativeTime value={entry.version.capturedUtc} /> },
-    {
-      id: "capturedBy",
-      header: "Written by",
-      fill: true,
-      floor: 160,
-      render: (entry) => (
-        <span className="flex flex-col">
-          {entry.version.runId !== null
-            ? (
-              <RouterLink
-                to={`/runs/${entry.version.runId}`}
-                className="font-mono text-[12px] text-primary hover:underline"
-                onClick={(event) => event.stopPropagation()}
-                data-testid="delivery-cache-history-run"
-              >
-                run {entry.version.runId.slice(0, 8)}
-              </RouterLink>
-            )
-            : <TruncatedText text={entry.version.origin} maxWidth={1200} className="text-[12px]" />}
-          <span className="text-[11px] text-muted-foreground">{entry.version.flow} · {entry.version.capturedBy}</span>
-        </span>
-      ),
-    },
+    { id: "capturedBy", header: "Written by", fill: true, floor: 160, render: (entry) => <WrittenBy entry={entry} /> },
     {
       id: "records",
       header: "Records",
       align: "right",
       render: (entry) => <span className="font-mono tabular-nums">{entry.version.items.toLocaleString()}</span>,
     },
-    ...(type
-      ? []
-      : [{ id: "types", header: "Types changed", render: (entry: DeliveryCacheHistoryEntry) => <TypesMoved entry={entry} /> }]),
-    { id: "changes", header: type ? `Changes to ${type}` : "Changes", render: (entry) => <ChangeCounts entry={entry} /> },
+    { id: "types", header: "Types changed", render: (entry) => <TypesMoved entry={entry} /> },
+    { id: "changes", header: "Changes", render: (entry) => <ChangeCounts entry={entry} /> },
+  ];
+
+  return (
+    <div className="flex flex-col gap-2" data-testid="delivery-cache-history">
+      <span className="text-[12px] text-muted-foreground">
+        {entries.length.toLocaleString()} version{entries.length === 1 ? "" : "s"}; pick one to see what it changed.
+      </span>
+      <DataTable
+        columns={columns}
+        rows={entries}
+        rowKey={keyOf}
+        onRowClick={pick}
+        rowSx={(entry) => (keyOf(entry) === highlighted ? { backgroundColor: "var(--accent)" } : undefined)}
+        emptyMessage="No versions."
+        data-testid="delivery-cache-history-versions"
+      />
+    </div>
+  );
+}
+
+function typeVersionKey(version: CacheTypeVersion): string {
+  return `${version.entry.version.scope}:${version.version}`;
+}
+
+/** A type's content hash, shortened, with the whole on hover; what a version that removed the type or predates hashes shows instead. */
+function TypeHash({ version }: { version: CacheTypeVersion }) {
+  if (version.change === "removed") {
+    return <span className="text-[12px] text-muted-foreground">removed</span>;
+  }
+
+  if (version.hash === null) {
+    return (
+      <RichTooltip title="Content hash" body="Written before types were hashed: the change is read from the records the version wrote.">
+        <span className="text-[12px] text-muted-foreground">not recorded</span>
+      </RichTooltip>
+    );
+  }
+
+  return (
+    <RichTooltip title="Content hash" body={version.hash} mono>
+      <span className="font-mono text-[12px]" data-testid="delivery-cache-type-version-hash">{shortHash(version.hash)}</span>
+    </RichTooltip>
+  );
+}
+
+/** How a version of a type moved it, and how many of its records. */
+function TypeChange({ version }: { version: CacheTypeVersion }) {
+  const counts = (["changed", "added", "removed"] as const).filter((kind) => version[kind] > 0);
+  return (
+    <span className="inline-flex items-center gap-2 whitespace-nowrap">
+      <Badge variant="secondary" className={changeTone[version.change]}>{version.change}</Badge>
+      {counts.map((kind) => (
+        <span key={kind} className={cn("font-mono text-[12px] tabular-nums", countTone[kind])}>
+          {version[kind].toLocaleString()} {kind}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/**
+ * One type's own versions, newest first: the versions of the cache at which the type's content hash moved, each with the
+ * hash, how many records of the type it holds, and what it changed against the version of the type before it. The
+ * versions of the cache that held the type unchanged are counted and not listed, since comparing them would show nothing.
+ */
+function TypeVersionList({ scope, type, entries }: { scope: string; type: string; entries: DeliveryCacheHistoryEntry[] }) {
+  const versions = useMemo(() => typeVersions(entries, type), [entries, type]);
+  const content = useCallback((version: CacheTypeVersion) => ({
+    title: `${type} · ${version.version}`,
+    body: <TypeVersionChanges scope={scope} type={type} version={version} />,
+  }), [scope, type]);
+  const { highlighted, pick } = usePickedPanel(versions, typeVersionKey, content);
+  const rodeAlong = entries.length - versions.length;
+
+  const columns: Column<CacheTypeVersion>[] = [
+    {
+      id: "version",
+      header: `Version of ${type}`,
+      render: (version) => (
+        <VersionLabel
+          label={version.version}
+          current={version.holdsCurrent}
+          note={version.sameAsCurrent && (
+            <RichTooltip body={`This version holds the same ${type} records and values as the current version: its content came back.`}>
+              <span className="rounded-sm bg-muted px-1.5 text-[11px] text-muted-foreground">same as current</span>
+            </RichTooltip>
+          )}
+        />
+      ),
+    },
+    { id: "hash", header: "Content hash", render: (version) => <TypeHash version={version} /> },
+    { id: "captured", header: "Captured", render: (version) => <RelativeTime value={version.capturedUtc} /> },
+    { id: "capturedBy", header: "Written by", fill: true, floor: 160, render: (version) => <WrittenBy entry={version.entry} /> },
+    {
+      id: "records",
+      header: "Records",
+      align: "right",
+      render: (version) => <span className="font-mono tabular-nums">{version.items.toLocaleString()}</span>,
+    },
+    { id: "change", header: "Change", render: (version) => <TypeChange version={version} /> },
   ];
 
   return (
     <div className="flex flex-col gap-2" data-testid="delivery-cache-history">
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
-        <span>
-          {rows.length.toLocaleString()} version{rows.length === 1 ? "" : "s"}; pick one to see what it changed.
+        <span data-testid="delivery-cache-type-versions-count">
+          {versions.length === 0
+            ? `No version changed ${type}.`
+            : `${versions.length.toLocaleString()} version${versions.length === 1 ? "" : "s"} of ${type}; pick one to see what it changed.`}
         </span>
-        {type && changedType.length === 0 && (
-          <span data-testid="delivery-cache-history-none">No version changed {type}.</span>
-        )}
-        {type && others > 0 && (
-          <Button
-            variant="ghost"
-            size="xs"
-            className="text-muted-foreground"
-            onClick={() => setOnlyChanged(!onlyChanged)}
-            data-testid="delivery-cache-history-toggle-others"
+        {rodeAlong > 0 && (
+          <RichTooltip
+            title={`Versions that held ${type} unchanged`}
+            body={`The cache writes a version whenever anything in it moves. These ${rodeAlong.toLocaleString()} held ${type} exactly as the version before them did (its content hash did not move), so they are not versions of ${type}, and comparing them would show no change.`}
           >
-            {onlyChanged ? `Show the other ${others} version${others === 1 ? "" : "s"}` : "Show only the versions that changed it"}
-          </Button>
+            <span className="underline decoration-dotted underline-offset-2" data-testid="delivery-cache-type-versions-rode-along">
+              {rodeAlong.toLocaleString()} other version{rodeAlong === 1 ? "" : "s"} of the cache held it unchanged
+            </span>
+          </RichTooltip>
         )}
       </div>
       <DataTable
         columns={columns}
-        rows={rows}
-        rowKey={keyOf}
-        onRowClick={(entry) => {
-          setSelectedKey(keyOf(entry));
-          raise(entry);
-        }}
-        rowSx={(entry) => (keyOf(entry) === highlighted ? { backgroundColor: "var(--accent)" } : undefined)}
-        emptyMessage={type ? `No version changed ${type}.` : "No versions."}
+        rows={versions}
+        rowKey={typeVersionKey}
+        onRowClick={pick}
+        rowSx={(version) => (typeVersionKey(version) === highlighted ? { backgroundColor: "var(--accent)" } : undefined)}
+        emptyMessage={`No version changed ${type}.`}
         data-testid="delivery-cache-history-versions"
       />
     </div>
