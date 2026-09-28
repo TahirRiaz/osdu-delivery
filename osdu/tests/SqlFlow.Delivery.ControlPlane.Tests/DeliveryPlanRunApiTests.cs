@@ -148,6 +148,7 @@ public sealed class DeliveryPlanRunApiTests
         var present = new DeliveryKey(Guid.NewGuid());
         var gone = new DeliveryKey(Guid.NewGuid());
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(flowId);
 
         try
         {

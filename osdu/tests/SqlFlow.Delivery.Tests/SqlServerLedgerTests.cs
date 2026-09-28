@@ -38,10 +38,13 @@ public class SqlServerLedgerTests
     /// <summary>A context over the module's schema in the suites' test database.</summary>
     private static OsduDbContext Database() => new(OsduDbContext.SqlServerOptions(OsduTestServer.ConnectionString));
 
-    private static async Task<OsduLedger> LedgerAsync(TimeProvider clock)
+    /// <summary>The ledger over the suites' test database, with this test's flow registered in it as a run would register it.</summary>
+    private async Task<OsduLedger> LedgerAsync(TimeProvider clock)
     {
         await Migrated.Value;
-        return new OsduLedger(Database, clock);
+        var ledger = new OsduLedger(Database, clock);
+        await ledger.RegisterAsync(_flow);
+        return ledger;
     }
 
     private static async Task<OsduCacheStore> CachesAsync()
@@ -294,7 +297,7 @@ public class SqlServerLedgerTests
         Assert.Equal(RecordStatus.Waiting, waitingState!.Status);
         Assert.Equal(0, waitingState.AttemptCount);
         Assert.Equal(1, (await ledger.StatsAsync(_flow, Now)).Waiting);
-        Assert.Equal(waiter.DeliveryKey, Assert.Single(await ledger.ListWaitingForAsync(holder.TargetId!, 10)).DeliveryKey);
+        Assert.Equal(waiter.DeliveryKey, Assert.Single(await ledger.ListWaitingForAsync(_flow, holder.TargetId!, 10)).DeliveryKey);
 
         // Nothing releases a wait while the record it waits for has not landed.
         Assert.Equal(0, await ledger.ReleaseResolvedWaitsAsync(_flow, null, Now));
@@ -466,6 +469,7 @@ public class SqlServerLedgerTests
     {
         var ledger = await LedgerAsync(_clock);
         var other = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        await ledger.RegisterAsync(other);
         var s1 = Guid.NewGuid();
         var s2 = Guid.NewGuid();
         await ledger.RegisterSubmissionAsync(new SubmissionState
@@ -498,6 +502,7 @@ public class SqlServerLedgerTests
         // A third flow rendering the first flow's ids is refused, record by record, with the owner named; a flow restaging
         // its own ids is not, and neither is the second flow, whose records keep the ids they were first given.
         var third = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        await ledger.RegisterAsync(third);
         var refused = await ledger.UpsertPendingAsync(third, [
             Work("a", s2, "0:0:10", "mh", Now) with { FlowId = third },
             Work("c", s2, "0:10:10", "mh", Now) with { FlowId = third, TargetId = "dev:z:" + _run + "c" },
@@ -534,6 +539,7 @@ public class SqlServerLedgerTests
         // The attempts are dated before anything else the shared database holds, so the prune reaches this test's alone.
         var ledger = await LedgerAsync(_clock);
         var other = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        await ledger.RegisterAsync(other);
         var s1 = Guid.NewGuid();
         await ledger.UpsertPendingAsync(_flow, [Work("old", s1, "0:0:10", "mh", Now)]);
         await ledger.UpsertPendingAsync(other, [Work("old", s1, "0:0:10", "mh", Now) with { FlowId = other, TargetId = "dev:y:" + _run + "old" }]);
@@ -568,6 +574,7 @@ public class SqlServerLedgerTests
         for (var round = 0; round < 5; round++)
         {
             var flows = new[] { FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N")), FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N")) };
+            await ledger.RegisterAsync(flows);
             var prefix = $"{round}-";
             var results = await Task.WhenAll(flows.Select(flow => Task.Run(() => ledger.UpsertPendingAsync(
                 flow,
@@ -592,6 +599,7 @@ public class SqlServerLedgerTests
         var ledger = await LedgerAsync(_clock);
         var sliced = new OsduLedger(Database, _clock) { WriteSlice = 3 };
         var owner = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        await ledger.RegisterAsync(owner);
         await ledger.UpsertPendingAsync(owner, [Work("claimed", Guid.NewGuid(), "0:0:10", "mh", Now) with { FlowId = owner }]);
         var s1 = Guid.NewGuid();
         await ledger.UpsertPendingAsync(_flow, [Work("newer-0", s1, "0:0:10", "mh", Now), Work("newer-1", s1, "0:10:10", "mh", Now)]);
@@ -663,6 +671,7 @@ public class SqlServerLedgerTests
         // database of its own, where the only escalations possible are the ones it caused.
         await using var scratch = await ScratchLedgerAsync();
         var ledger = new OsduLedger(scratch.Context, _clock);
+        await ledger.RegisterAsync(_flow);
         const int Records = 6_000;
         var s1 = Guid.NewGuid();
         var records = Enumerable.Range(0, Records).Select(i => Work($"bulk-{i:D5}", s1, $"0:{i * 10}:10", "mh", Now.AddDays(-1))).ToList();
@@ -725,6 +734,7 @@ public class SqlServerLedgerTests
         // about to insert.
         var ledger = await LedgerAsync(_clock);
         var owner = FlowId.Of("sqlserver-ledger-" + Guid.NewGuid().ToString("N"));
+        await ledger.RegisterAsync(owner);
         var owned = Guid.NewGuid();
         await ledger.RegisterSubmissionAsync(new SubmissionState
         {
@@ -741,7 +751,14 @@ public class SqlServerLedgerTests
         await using (var hold = other.CreateCommand())
         {
             hold.Transaction = transaction;
-            hold.CommandText = "SELECT [SubmissionId] FROM [osdu].[Submission] WITH (XLOCK, ROWLOCK) WHERE [SubmissionId] = @id; SELECT @@SPID;";
+            // The submission's row itself, under the key the claim check seeks (its partition and its id), rather than the
+            // entry of the unique index on its id alone, which covers this query and would be all it locked.
+            hold.CommandText = """
+                SELECT s.[SubmissionId] FROM [osdu].[Submission] AS s WITH (XLOCK, ROWLOCK, INDEX([PK_Submission]))
+                WHERE s.[PartitionId] = (SELECT l.[PartitionId] FROM [osdu].[Ledger] AS l WHERE l.[FlowId] = @owner) AND s.[SubmissionId] = @id;
+                SELECT @@SPID;
+                """;
+            hold.Parameters.Add(new SqlParameter("@owner", System.Data.SqlDbType.UniqueIdentifier) { Value = owner });
             hold.Parameters.Add(new SqlParameter("@id", System.Data.SqlDbType.UniqueIdentifier) { Value = owned });
             await using var reader = await hold.ExecuteReaderAsync();
             Assert.True(await reader.ReadAsync());
@@ -751,13 +768,18 @@ public class SqlServerLedgerTests
 
         var staging = Task.Run(() => ledger.UpsertPendingAsync(_flow, [older, Work("claimed", s1, "0:0:10", "mh", Now)]));
         await WaitUntilBlockedAsync(session, staging);
+        short partition;
+        await using (var read = Database())
+        {
+            partition = await read.DeliveryLedgers.Where(l => l.FlowId == _flow).Select(l => l.PartitionId).SingleAsync();
+        }
 
         await using (var db = new OsduDbContext(OsduDbContext.SqlServerOptions(other)))
         {
             await db.Database.UseTransactionAsync(transaction);
             db.DeliveryRecords.Add(new DeliveryRecord
             {
-                FlowId = _flow, DeliveryKey = older.DeliveryKey.Value, SourceKey = older.SourceKey, MappingName = older.MappingName, Status = "pending",
+                PartitionId = partition, FlowId = _flow, DeliveryKey = older.DeliveryKey.Value, SourceKey = older.SourceKey, MappingName = older.MappingName, Status = "pending",
                 TargetId = older.TargetId, ClaimedTargetId = older.TargetId, LastSubmissionId = Guid.NewGuid(), PendingDocumentRef = "9:0:10",
                 PendingSourceModifiedUtc = Now.AddDays(-1), PendingMetadataHash = "mh-newer", CreatedUtc = Now, UpdatedUtc = Now,
             });

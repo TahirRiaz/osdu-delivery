@@ -272,13 +272,18 @@ public class RemovalProtocolTests
 
 /// <summary>What each scope does to the ledger, which is not the same question as what it does to OSDU.</summary>
 [Collection(SqlServerSuite.Name)]
-public class RemovalLedgerTests : IDisposable
+public class RemovalLedgerTests : IAsyncLifetime, IDisposable
 {
     private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
 
     private OsduLedger Ledger => _db.Ledger(_clock);
+
+    /// <summary>Registers the ledgers the tests write to directly, as a run registers its own before it writes a row of it.</summary>
+    public Task InitializeAsync() => Ledger.RegisterAsync(_flow);
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
@@ -541,6 +546,7 @@ public class RemovalRuntimeTests : IDisposable
         var engine = Samples.Engine(ledger, _clock, new FixedProtocolFactory(protocol), sources: tables);
         var flow = Samples.LocalFlow(_root);
         var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        await ledger.RegisterAsync(runtime.Flow);
         var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
         Assert.False(intake.NothingToDo);
         _submission = intake.Submission.SubmissionId;

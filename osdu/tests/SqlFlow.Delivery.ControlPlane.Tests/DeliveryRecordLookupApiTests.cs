@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Delivery.ControlPlane;
+using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -41,6 +42,7 @@ public sealed class DeliveryRecordLookupApiTests
         var elsewhere = new DeliveryKey(Guid.NewGuid());
         var when = new DateTime(2026, 9, 3, 8, 0, 0, DateTimeKind.Utc);
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(flowId, otherFlow);
 
         try
         {
@@ -152,6 +154,7 @@ public sealed class DeliveryRecordLookupApiTests
         var marker = "RC" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
         var keys = new[] { new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()) };
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(flowId);
 
         try
         {
@@ -215,6 +218,7 @@ public sealed class DeliveryRecordLookupApiTests
         var sourcePipeline = Guid.NewGuid();
         var keys = new[] { new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()) };
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(singleFlow, headerFlow);
 
         try
         {
@@ -314,6 +318,101 @@ public sealed class DeliveryRecordLookupApiTests
         RelativePath = $"flows/{name}.yaml",
         Active = true,
     };
+
+    /// <summary>
+    /// The partition picked in the title bar is a filter on every read across flows (docs/partitions-design.md section 7):
+    /// every call carries it in <c>X-Osdu-Partition</c>, a partition the request names wins over it, and without either every
+    /// partition is read, each hit naming its own. The Records page's lookup, the audit trail, the search box's records and
+    /// the Partitions page all follow it.
+    /// </summary>
+    [Fact]
+    public async Task The_workbench_partition_filters_every_read_across_flows()
+    {
+        var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+
+        var marker = "WP" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        var (first, second) = ("pa" + marker.ToLowerInvariant(), "pb" + marker.ToLowerInvariant());
+        var (inFirst, inSecond) = (FlowId.Of($"{marker}-first"), FlowId.Of($"{marker}-second"));
+        var (a, b) = (new DeliveryKey(Guid.NewGuid()), new DeliveryKey(Guid.NewGuid()));
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(first, inFirst);
+        await ledger.RegisterAsync(second, inSecond);
+        try
+        {
+            await ledger.UpsertPendingAsync(inFirst, [Record(inFirst, a, $"{marker}-A", $"{first}:master-data--Well:{marker}-A", marker + "_a.csv", 1)]);
+            await ledger.UpsertPendingAsync(inSecond, [Record(inSecond, b, $"{marker}-B", $"{second}:master-data--Well:{marker}-B", marker + "_b.csv", 1)]);
+            foreach (var flow in new[] { inFirst, inSecond })
+            {
+                await ledger.StartActivityAsync(new ActivityRecord { FlowId = flow, FlowName = marker, Kind = "release", Actor = "user:" + marker, StartedUtc = DateTime.UtcNow });
+            }
+
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            // Without a partition, every partition's records, each naming its own.
+            var every = await ReadAsync(client, token, $"/api/v1/delivery/records?search={marker}-", null);
+            Assert.Equal(2, every.GetProperty("total").GetInt64());
+            Assert.Equal(
+                [first, second],
+                every.GetProperty("items").EnumerateArray().Select(h => h.GetProperty("partition").GetString()).Order(StringComparer.Ordinal));
+
+            // The workbench's partition narrows them, and one the request names wins over it.
+            var inWorkbench = await ReadAsync(client, token, $"/api/v1/delivery/records?search={marker}-", second);
+            Assert.Equal(b.Value, Assert.Single(inWorkbench.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
+            var named = await ReadAsync(client, token, $"/api/v1/delivery/records?search={marker}-&partition={first}", second);
+            Assert.Equal(a.Value, Assert.Single(named.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
+
+            // A flow of another partition than the workbench's reads empty.
+            var elsewhere = await ReadAsync(client, token, $"/api/v1/delivery/records?flowId={inFirst}", second);
+            Assert.Equal(0, elsewhere.GetProperty("total").GetInt64());
+
+            // The audit trail across flows, and the search box's records, follow the same partition.
+            var trail = await ReadAsync(client, token, $"/api/v1/delivery/activities?actor=user:{marker}", first);
+            var entry = Assert.Single(trail.GetProperty("items").EnumerateArray().ToList());
+            Assert.Equal((inFirst, first), (entry.GetProperty("flowId").GetGuid(), entry.GetProperty("partition").GetString()));
+            Assert.Equal(2, (await ReadAsync(client, token, $"/api/v1/delivery/activities?actor=user:{marker}", null)).GetProperty("total").GetInt64());
+            var searched = await ReadAsync(client, token, $"/api/v1/search/categories/records?q={marker}-", second);
+            Assert.Equal(1, searched.GetProperty("total").GetInt64());
+
+            // A partition only a ledger is kept under is listed, unregistered, with the ledgers it keeps.
+            using var listing = await GetAsync(client, token, "/api/v1/delivery/partitions");
+            using var partitions = JsonDocument.Parse(await listing.Content.ReadAsStringAsync());
+            var listed = Assert.Single(partitions.RootElement.EnumerateArray().ToList(), p => p.GetProperty("name").GetString() == first);
+            Assert.Equal((false, 1), (listed.GetProperty("registered").GetBoolean(), listed.GetProperty("ledgers").GetInt32()));
+
+            // A workbench partition that is no data-partition-id is ignored rather than trusted.
+            Assert.Equal(2, (await ReadAsync(client, token, $"/api/v1/delivery/records?search={marker}-", "not a partition")).GetProperty("total").GetInt64());
+        }
+        finally
+        {
+            await using var osdu = SampleEstate.Context(cs);
+            var flows = new[] { inFirst, inSecond };
+            await osdu.DeliveryRecordIdentities.Where(i => flows.Contains(i.FlowId)).ExecuteDeleteAsync();
+            await osdu.DeliveryRecords.Where(r => flows.Contains(r.FlowId)).ExecuteDeleteAsync();
+            await osdu.DeliveryActivities.Where(r => flows.Contains(r.FlowId)).ExecuteDeleteAsync();
+            await osdu.DeliveryLedgers.Where(l => flows.Contains(l.FlowId)).ExecuteDeleteAsync();
+            await osdu.DeliveryLedgerPartitions.Where(p => p.Name == first || p.Name == second).ExecuteDeleteAsync();
+        }
+    }
+
+    /// <summary>A read of <paramref name="path"/> in the workbench partition <paramref name="partition"/>, or in none.</summary>
+    private static async Task<JsonElement> ReadAsync(HttpClient client, string token, string path, string? partition)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(path, UriKind.Relative));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        if (partition is not null)
+        {
+            request.Headers.TryAddWithoutValidation(WorkbenchPartition.Header, partition);
+        }
+
+        using var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return json.RootElement.Clone();
+    }
 
     private static RecordState Record(Guid flowId, DeliveryKey key, string sourceKey, string targetId, string file, long row) => new()
     {

@@ -37,11 +37,18 @@ public sealed partial class OsduLedger
     private sealed record WaitDecision(Guid DeliveryKey, string DocumentRef, string WaitingFor, string Reason);
 
     public async Task<int> ReleaseResolvedWaitsAsync(Guid flowId, IReadOnlyCollection<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default)
-        => (await ReleaseResolvedAsync(flowId, keys?.Select(k => k.Value).ToList(), nowUtc, ct).ConfigureAwait(false)).Count;
+        => await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is { } partition
+            ? (await ReleaseResolvedAsync(partition, flowId, keys?.Select(k => k.Value).ToList(), nowUtc, ct).ConfigureAwait(false)).Count
+            : 0;
 
-    public async Task<IReadOnlyList<RecordState>> ListWaitingForAsync(string targetId, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecordState>> ListWaitingForAsync(Guid flowId, string targetId, int max, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         var waiting = StatusText.Of(RecordStatus.Waiting);
         var take = Math.Clamp(max, 1, 1000);
         return await ReadAsync(
@@ -50,7 +57,7 @@ public sealed partial class OsduLedger
                 (await ReadLeasedAsync(
                     db,
                     db.DeliveryRecords
-                        .Where(r => r.WaitingFor != null && r.WaitingFor == targetId && r.Status == waiting)
+                        .Where(r => r.PartitionId == partition && r.WaitingFor != null && r.WaitingFor == targetId && r.Status == waiting)
                         .OrderByDescending(r => r.UpdatedUtc)
                         .Take(take),
                     ct).ConfigureAwait(false))
@@ -58,16 +65,16 @@ public sealed partial class OsduLedger
             ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlySet<string>> HeldIdsAsync(IReadOnlyCollection<string> ids, CancellationToken ct = default)
+    public async Task<IReadOnlySet<string>> HeldIdsAsync(Guid flowId, IReadOnlyCollection<string> ids, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(ids);
         var wanted = ids.Distinct(StringComparer.Ordinal).ToList();
-        if (wanted.Count == 0)
+        if (wanted.Count == 0 || await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
         {
             return new HashSet<string>(StringComparer.Ordinal);
         }
 
-        var holders = await ReadAsync(db => HoldersAsync(db, wanted, ct), ct).ConfigureAwait(false);
+        var holders = await ReadAsync(db => HoldersAsync(db, partition, wanted, ct), ct).ConfigureAwait(false);
         var deleted = StatusText.Of(RecordStatus.Deleted);
         return holders
             .Where(h => h.Value.Any(r => r.Status != deleted))
@@ -75,9 +82,14 @@ public sealed partial class OsduLedger
             .ToHashSet(StringComparer.Ordinal);
     }
 
-    public async Task<IReadOnlyList<RecordState>> ListHoldersAsync(string targetId, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecordState>> ListHoldersAsync(Guid flowId, string targetId, int max, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         var take = Math.Clamp(max, 1, 100);
         return await ReadAsync(
             // The ordinal check is the database's case-insensitive match narrowed to the id asked for.
@@ -85,7 +97,7 @@ public sealed partial class OsduLedger
                 (await ReadLeasedAsync(
                     db,
                     db.DeliveryRecords
-                        .Where(r => r.TargetId != null && r.TargetId == targetId)
+                        .Where(r => r.PartitionId == partition && r.TargetId != null && r.TargetId == targetId)
                         .OrderBy(r => r.ClaimedTargetId == null)
                         .ThenBy(r => r.FlowId)
                         .Take(take),
@@ -100,7 +112,7 @@ public sealed partial class OsduLedger
     /// waiting. Nothing is locked when none of them has anything to wait for, which is what a claim finds almost always.
     /// </summary>
     private async Task<IReadOnlyList<WaitingRecord>> LeaveWaitingAsync(
-        Guid flowId, Func<OsduDbContext, IQueryable<DeliveryRecord>> due, WaitRules rules, DateTime nowUtc, CancellationToken ct)
+        short partition, Guid flowId, Func<OsduDbContext, IQueryable<DeliveryRecord>> due, WaitRules rules, DateTime nowUtc, CancellationToken ct)
     {
         var rows = await ReadAsync(
             db => due(db)
@@ -119,7 +131,7 @@ public sealed partial class OsduLedger
             .OrderBy(c => c.DeliveryKey)
             .ToList();
         var ids = candidates.SelectMany(c => c.References).Select(r => r.Id).Distinct(StringComparer.Ordinal).ToList();
-        var holders = await ReadAsync(db => HoldersAsync(db, ids, ct), ct).ConfigureAwait(false);
+        var holders = await ReadAsync(db => HoldersAsync(db, partition, ids, ct), ct).ConfigureAwait(false);
         if (!candidates.Any(c => c.References.Any(r => Waitable(flowId, c, r.Id, holders, rules) is not null)))
         {
             return [];
@@ -133,10 +145,10 @@ public sealed partial class OsduLedger
                 async () =>
                 {
                     // Read again under the lock: another claim may have decided, or a record landed, since the check above.
-                    var fresh = await HoldersAsync(db, ids, ct).ConfigureAwait(false);
-                    var chains = await WaitChainsAsync(db, fresh.Values.SelectMany(h => h), ct).ConfigureAwait(false);
+                    var fresh = await HoldersAsync(db, partition, ids, ct).ConfigureAwait(false);
+                    var chains = await WaitChainsAsync(db, partition, fresh.Values.SelectMany(h => h), ct).ConfigureAwait(false);
                     var decisions = Decide(flowId, candidates, fresh, chains, rules);
-                    var marked = await MarkWaitingAsync(db, flowId, decisions, nowUtc, ct).ConfigureAwait(false);
+                    var marked = await MarkWaitingAsync(db, partition, flowId, decisions, nowUtc, ct).ConfigureAwait(false);
                     return decisions.Where(d => marked.Contains(d.DeliveryKey)).ToList();
                 },
                 ct).ConfigureAwait(false);
@@ -149,7 +161,7 @@ public sealed partial class OsduLedger
 
         // A record whose wait ended between the read above and the commit goes back to pending at once, and the claim
         // that follows takes it. A record landing later releases its waiters itself.
-        var released = (await ReleaseResolvedAsync(flowId, decided.Select(d => d.DeliveryKey).ToList(), nowUtc, ct).ConfigureAwait(false)).ToHashSet();
+        var released = (await ReleaseResolvedAsync(partition, flowId, decided.Select(d => d.DeliveryKey).ToList(), nowUtc, ct).ConfigureAwait(false)).ToHashSet();
         return decided
             .Where(d => !released.Contains(d.DeliveryKey))
             .Select(d => new WaitingRecord(new DeliveryKey(d.DeliveryKey), d.WaitingFor, d.Reason))
@@ -253,10 +265,11 @@ public sealed partial class OsduLedger
     }
 
     /// <summary>
-    /// The records holding each of <paramref name="ids"/>, compared exactly as OSDU compares ids. A record holds the id it
-    /// is delivered to whether or not it claimed it: a record the intake held keeps its id without claiming it.
+    /// The records of <paramref name="partition"/> holding each of <paramref name="ids"/>, compared exactly as OSDU compares
+    /// ids. A record holds the id it is delivered to whether or not it claimed it: a record the intake held keeps its id
+    /// without claiming it. An id is referred to within its partition, so its holders are that partition's records.
     /// </summary>
-    private static async Task<Dictionary<string, List<IdHolder>>> HoldersAsync(OsduDbContext db, IReadOnlyList<string> ids, CancellationToken ct)
+    private static async Task<Dictionary<string, List<IdHolder>>> HoldersAsync(OsduDbContext db, short partition, IReadOnlyList<string> ids, CancellationToken ct)
     {
         var delivered = StatusText.Of(RecordStatus.Delivered);
         var holders = new Dictionary<string, List<IdHolder>>(StringComparer.Ordinal);
@@ -264,7 +277,7 @@ public sealed partial class OsduLedger
         {
             var wanted = chunk.ToList();
             var rows = await db.DeliveryRecords.AsNoTracking()
-                .Where(r => r.TargetId != null && wanted.Contains(r.TargetId))
+                .Where(r => r.PartitionId == partition && r.TargetId != null && wanted.Contains(r.TargetId))
                 .Select(r => new
                 {
                     r.FlowId,
@@ -276,7 +289,7 @@ public sealed partial class OsduLedger
                     r.WaitingFor,
                     r.Label,
                     r.SourceKey,
-                    FlowName = db.DeliverySubmissions.Where(s => s.SubmissionId == r.LastSubmissionId).Select(s => s.FlowName).FirstOrDefault(),
+                    FlowName = db.DeliverySubmissions.Where(s => s.PartitionId == r.PartitionId && s.SubmissionId == r.LastSubmissionId).Select(s => s.FlowName).FirstOrDefault(),
                 })
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
@@ -298,7 +311,7 @@ public sealed partial class OsduLedger
     /// The waits the database already holds that a decision may follow, from the waiting records among
     /// <paramref name="holders"/> onwards: each waiting record's id, and the id it waits for, a level of the chain per read.
     /// </summary>
-    private static async Task<Dictionary<string, string>> WaitChainsAsync(OsduDbContext db, IEnumerable<IdHolder> holders, CancellationToken ct)
+    private static async Task<Dictionary<string, string>> WaitChainsAsync(OsduDbContext db, short partition, IEnumerable<IdHolder> holders, CancellationToken ct)
     {
         var waiting = StatusText.Of(RecordStatus.Waiting);
         var chains = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -316,7 +329,7 @@ public sealed partial class OsduLedger
             {
                 var wanted = chunk.ToList();
                 var rows = await db.DeliveryRecords.AsNoTracking()
-                    .Where(r => r.Status == waiting && r.TargetId != null && wanted.Contains(r.TargetId) && r.WaitingFor != null)
+                    .Where(r => r.PartitionId == partition && r.Status == waiting && r.TargetId != null && wanted.Contains(r.TargetId) && r.WaitingFor != null)
                     .Select(r => new { TargetId = r.TargetId!, WaitingFor = r.WaitingFor! })
                     .ToListAsync(ct)
                     .ConfigureAwait(false);
@@ -356,7 +369,7 @@ public sealed partial class OsduLedger
     /// Marks the decided records waiting, a slice at a time, each only while it is still pending with the document the
     /// decision read and no lease holds it. Returns the records marked.
     /// </summary>
-    private async Task<HashSet<Guid>> MarkWaitingAsync(OsduDbContext db, Guid flowId, IReadOnlyList<WaitDecision> decisions, DateTime nowUtc, CancellationToken ct)
+    private async Task<HashSet<Guid>> MarkWaitingAsync(OsduDbContext db, short partition, Guid flowId, IReadOnlyList<WaitDecision> decisions, DateTime nowUtc, CancellationToken ct)
     {
         var marked = new HashSet<Guid>();
         if (decisions.Count == 0)
@@ -367,18 +380,19 @@ public sealed partial class OsduLedger
         foreach (var slice in decisions.Chunk(WriteSlice))
         {
             marked.UnionWith(await SqlServerLedgerBulk.MarkWaitingAsync(
-                db, flowId, slice.Select(d => (d.DeliveryKey, d.DocumentRef, d.WaitingFor, d.Reason)).ToList(), nowUtc, ct).ConfigureAwait(false));
+                db, partition, flowId, slice.Select(d => (d.DeliveryKey, d.DocumentRef, d.WaitingFor, d.Reason)).ToList(), nowUtc, ct).ConfigureAwait(false));
         }
 
         return marked;
     }
 
     /// <summary>
-    /// Sends back to pending the records waiting for any of <paramref name="landed"/>, the ids of records that just landed,
-    /// in whatever flow they are: found through the index of what records wait for, and written a slice at a time. The
-    /// next claim of each decides again, so a record that still refers to another undelivered record waits again.
+    /// Sends back to pending the records of <paramref name="partition"/> waiting for any of <paramref name="landed"/>, the
+    /// ids of records that just landed there, in whatever flow they are: found through the partition's index of what records
+    /// wait for, and written a slice at a time. The next claim of each decides again, so a record that still refers to
+    /// another undelivered record waits again.
     /// </summary>
-    private async Task<int> ReleaseWaitersOfAsync(IReadOnlyCollection<string> landed, DateTime nowUtc, CancellationToken ct)
+    private async Task<int> ReleaseWaitersOfAsync(short partition, IReadOnlyCollection<string> landed, DateTime nowUtc, CancellationToken ct)
     {
         if (landed.Count == 0)
         {
@@ -392,7 +406,7 @@ public sealed partial class OsduLedger
         foreach (var chunk in landed.Distinct(StringComparer.Ordinal).Chunk(LookupChunk))
         {
             var ids = chunk.ToList();
-            var waiters = db.DeliveryRecords.Where(r => r.WaitingFor != null && ids.Contains(r.WaitingFor) && r.Status == waiting);
+            var waiters = db.DeliveryRecords.Where(r => r.PartitionId == partition && r.WaitingFor != null && ids.Contains(r.WaitingFor) && r.Status == waiting);
             released += await WriteEachAsync(
                 waiters,
                 slice => slice.ExecuteUpdateAsync(
@@ -413,7 +427,7 @@ public sealed partial class OsduLedger
     /// Sends back to pending the flow's waiting records (the ones named, or all of them) whose wait is over: the record they
     /// wait for landed, or no record the ledger holds (other than a removed one) holds the id any more. Returns their keys.
     /// </summary>
-    private async Task<IReadOnlyList<Guid>> ReleaseResolvedAsync(Guid flowId, IReadOnlyList<Guid>? keys, DateTime nowUtc, CancellationToken ct)
+    private async Task<IReadOnlyList<Guid>> ReleaseResolvedAsync(short partition, Guid flowId, IReadOnlyList<Guid>? keys, DateTime nowUtc, CancellationToken ct)
     {
         await using var db = Open();
         var released = new List<Guid>();
@@ -423,7 +437,7 @@ public sealed partial class OsduLedger
             while (true)
             {
                 var written = await RetryDeadlockAsync(
-                    () => SqlServerLedgerBulk.ReleaseResolvedWaitsAsync(db, flowId, slice, WriteSlice, nowUtc, ct), ct).ConfigureAwait(false);
+                    () => SqlServerLedgerBulk.ReleaseResolvedWaitsAsync(db, partition, flowId, slice, WriteSlice, nowUtc, ct), ct).ConfigureAwait(false);
                 released.AddRange(written);
                 if (written.Count < WriteSlice)
                 {

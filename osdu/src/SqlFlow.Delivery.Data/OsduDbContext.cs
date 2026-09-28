@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.13.0";
+    public const string ModuleVersion = "1.14.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -28,6 +28,12 @@ public sealed class OsduDbContext : DbContext
         : base(options)
     {
     }
+
+    /// <summary>The partitions the ledger keys by, each with the number every ledger key starts with.</summary>
+    public DbSet<DeliveryLedgerPartition> DeliveryLedgerPartitions => Set<DeliveryLedgerPartition>();
+
+    /// <summary>Every ledger: a flow's (or an interface's) rows in one partition, under one ledger identity.</summary>
+    public DbSet<DeliveryLedger> DeliveryLedgers => Set<DeliveryLedger>();
 
     public DbSet<DeliverySubmission> DeliverySubmissions => Set<DeliverySubmission>();
 

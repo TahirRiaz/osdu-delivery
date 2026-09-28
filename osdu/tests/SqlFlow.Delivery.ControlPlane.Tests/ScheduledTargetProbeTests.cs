@@ -192,6 +192,9 @@ public sealed class ScheduledTargetProbeTests
                 ["reachable"],
                 capture.Of("osdu_delivery.probes", "flow", flowName + "/wellbores").Select(m => m.Tags["outcome"]));
             Assert.Equal("wellbores", capture.Of("osdu_delivery.probes", "flow", flowName + "/wellbores").Single().Tags["interface"]);
+
+            // Each probe is counted under the partition the interface's ledger is kept under: the one its header names.
+            Assert.Equal("dev", capture.Of("osdu_delivery.probes", "flow", flowName + "/wellbores").Single().Tags["partition"]);
             Assert.Equal(
                 ["unreachable"],
                 capture.Of("osdu_delivery.probes", "flow", flowName + "/welllogs").Select(m => m.Tags["outcome"]));

@@ -35,6 +35,13 @@ public sealed partial class OsduLedger
     {
         var token = NewToken(owner);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
+
+        // A ledger no run registered holds no batch to claim.
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
         await RecoverExpiredLeasesAsync(flowId, nowUtc, ct).ConfigureAwait(false);
         var queued = StatusText.Of(WorkBatchStatus.Queued);
         var pending = StatusText.Of(RecordStatus.Pending);
@@ -45,7 +52,7 @@ public sealed partial class OsduLedger
         {
             var candidate = await ReadAsync(
                 db => db.DeliveryWorkBatches
-                    .Where(b => b.FlowId == flowId && (submissionId == null || b.SubmissionId == submissionId) && b.Status == queued)
+                    .Where(b => b.PartitionId == partition && b.FlowId == flowId && (submissionId == null || b.SubmissionId == submissionId) && b.Status == queued)
                     .OrderBy(b => b.CreatedUtc)
                     .ThenBy(b => b.Index)
                     .Select(b => new { b.SubmissionId, b.Index })
@@ -58,6 +65,7 @@ public sealed partial class OsduLedger
 
             var held = new DeliveryLease
             {
+                PartitionId = partition,
                 Token = token,
                 FlowId = flowId,
                 SubmissionId = candidate.SubmissionId,
@@ -77,8 +85,9 @@ public sealed partial class OsduLedger
             var batchSubmission = candidate.SubmissionId;
             var batchIndex = candidate.Index;
             var waiting = await LeaveWaitingAsync(
+                partition,
                 flowId,
-                db => db.DeliveryRecords.Where(r => r.LastSubmissionId == batchSubmission && r.WorkBatch == batchIndex && r.FlowId == flowId
+                db => db.DeliveryRecords.Where(r => r.LastSubmissionId == batchSubmission && r.WorkBatch == batchIndex && r.PartitionId == partition && r.FlowId == flowId
                     && r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)),
                 waits ?? WaitRules.WaitForAll,
                 nowUtc,
@@ -100,8 +109,8 @@ public sealed partial class OsduLedger
             await using (var db = Open())
             {
                 await WriteEachAsync(
-                    db.DeliveryRecords.Where(r => r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index && r.FlowId == flowId),
-                    db.DeliveryRecords.Where(r => r.FlowId == flowId && r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index
+                    db.DeliveryRecords.Where(r => r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index && r.PartitionId == partition && r.FlowId == flowId),
+                    db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.LastSubmissionId == candidate.SubmissionId && r.WorkBatch == candidate.Index
                         && r.Status == pending && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)),
                     slice => slice.ExecuteUpdateAsync(
                         s => s
@@ -169,13 +178,21 @@ public sealed partial class OsduLedger
     {
         var token = NewToken(owner);
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(lease, TimeSpan.Zero);
+
+        // A ledger no run registered holds no record to claim.
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return ClaimedRecords.None;
+        }
+
         await RecoverExpiredLeasesAsync(flowId, nowUtc, ct).ConfigureAwait(false);
         var pending = StatusText.Of(RecordStatus.Pending);
         var delivering = StatusText.Of(RecordStatus.Delivering);
         var take = Math.Clamp(max, 1, ChunkSize);
         var candidates = await ReadAsync(
             db => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId
+                .Where(r => r.PartitionId == partition
+                    && r.FlowId == flowId
                     && (submissionId == null || r.LastSubmissionId == submissionId)
                     && r.Status == pending
                     && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
@@ -192,8 +209,9 @@ public sealed partial class OsduLedger
 
         // A candidate that refers to a record of the ledger still to land is left waiting rather than claimed.
         var waiting = await LeaveWaitingAsync(
+            partition,
             flowId,
-            db => db.DeliveryRecords.Where(r => r.FlowId == flowId && candidates.Contains(r.DeliveryKey) && r.Status == pending
+            db => db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && candidates.Contains(r.DeliveryKey) && r.Status == pending
                 && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)),
             waits ?? WaitRules.WaitForAll,
             nowUtc,
@@ -210,6 +228,7 @@ public sealed partial class OsduLedger
 
         var held = new DeliveryLease
         {
+            PartitionId = partition,
             Token = token,
             FlowId = flowId,
             SubmissionId = submissionId,
@@ -227,7 +246,8 @@ public sealed partial class OsduLedger
         {
             claimed = await RetryDeadlockAsync(
                 () => db.DeliveryRecords
-                    .Where(r => r.FlowId == flowId
+                    .Where(r => r.PartitionId == partition
+                        && r.FlowId == flowId
                         && candidates.Contains(r.DeliveryKey)
                         && r.Status == pending
                         && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc))
@@ -297,11 +317,12 @@ public sealed partial class OsduLedger
         }
 
         // Every try belongs to a record of this flow's ledger, or its attempt would be history no record owns.
+        var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
         var keys = append.Steps.Select(s => s.DeliveryKey.Value).Concat(append.Completions.Select(c => c.DeliveryKey.Value)).Distinct().ToList();
         foreach (var chunk in keys.Chunk(LookupChunk))
         {
             var wanted = chunk.ToList();
-            var found = await ReadAsync(db => db.DeliveryRecords.Where(r => r.FlowId == flowId && wanted.Contains(r.DeliveryKey)).Select(r => r.DeliveryKey).ToListAsync(ct), ct).ConfigureAwait(false);
+            var found = await ReadAsync(db => db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && wanted.Contains(r.DeliveryKey)).Select(r => r.DeliveryKey).ToListAsync(ct), ct).ConfigureAwait(false);
             if (found.Count < wanted.Count)
             {
                 var missing = wanted.Except(found).First();
@@ -310,10 +331,10 @@ public sealed partial class OsduLedger
         }
 
         // A record's steps come before its outcome: a try reports its steps, then ends.
-        var events = append.Steps.Select(s => ToEvent(flowId, token, s))
-            .Concat(append.Completions.Select(c => ToEvent(flowId, token, c)))
+        var events = append.Steps.Select(s => ToEvent(partition, flowId, token, s))
+            .Concat(append.Completions.Select(c => ToEvent(partition, flowId, token, c)))
             .ToList();
-        var attempts = append.Completions.Select(c => ToEntity(flowId, c.Attempt)).ToList();
+        var attempts = append.Completions.Select(c => ToEntity(partition, flowId, c.Attempt)).ToList();
         await using var db = Open();
 
         // A deadlock rolls the whole append back, attempts included, and the append is written again.
@@ -359,13 +380,18 @@ public sealed partial class OsduLedger
 
     public async Task<int> RecoverExpiredLeasesAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return 0;
+        }
+
         var settled = 0;
         while (true)
         {
             ct.ThrowIfCancellationRequested();
             var expired = await ReadAsync(
                 db => db.DeliveryLeases
-                    .Where(l => l.FlowId == flowId && l.ExpiresUtc < nowUtc)
+                    .Where(l => l.PartitionId == partition && l.FlowId == flowId && l.ExpiresUtc < nowUtc)
                     .OrderBy(l => l.ExpiresUtc)
                     .Select(l => l.Token)
                     .Take(RecoveryPage)
@@ -384,7 +410,7 @@ public sealed partial class OsduLedger
 
             if (expired.Count < RecoveryPage)
             {
-                return settled + await ApplyOrphanedEventsAsync(flowId, nowUtc, ct).ConfigureAwait(false);
+                return settled + await ApplyOrphanedEventsAsync(partition, flowId, nowUtc, ct).ConfigureAwait(false);
             }
         }
     }
@@ -396,7 +422,7 @@ public sealed partial class OsduLedger
     /// are looked at, through the flow's index on the time they were appended. Applying them is safe whenever it
     /// happens: a record another lease holds is left to that lease.
     /// </summary>
-    private async Task<int> ApplyOrphanedEventsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct)
+    private async Task<int> ApplyOrphanedEventsAsync(short partition, Guid flowId, DateTime nowUtc, CancellationToken ct)
     {
         var appendedBefore = nowUtc - RecoveryHold;
         var applied = 0;
@@ -405,7 +431,7 @@ public sealed partial class OsduLedger
             ct.ThrowIfCancellationRequested();
             var tokens = await ReadAsync(
                 db => db.DeliveryRecordEvents
-                    .Where(e => e.FlowId == flowId && e.AtUtc < appendedBefore && !db.DeliveryLeases.Any(l => l.Token == e.LeaseToken))
+                    .Where(e => e.PartitionId == partition && e.FlowId == flowId && e.AtUtc < appendedBefore && !db.DeliveryLeases.Any(l => l.Token == e.LeaseToken))
                     .Select(e => e.LeaseToken)
                     .Distinct()
                     .Take(RecoveryPage)
@@ -423,17 +449,23 @@ public sealed partial class OsduLedger
         }
     }
 
-    public Task<DateTime?> NextLeaseExpiryAsync(Guid flowId, Guid? submissionId, CancellationToken ct = default)
+    public async Task<DateTime?> NextLeaseExpiryAsync(Guid flowId, Guid? submissionId, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
         var delivering = StatusText.Of(RecordStatus.Delivering);
-        return ReadAsync(
+        return await ReadAsync(
             db => db.DeliveryLeases
-                .Where(l => l.FlowId == flowId
+                .Where(l => l.PartitionId == partition
+                    && l.FlowId == flowId
                     && (submissionId == null
                         || l.SubmissionId == submissionId
                         || db.DeliveryRecords.Any(r => r.LeaseOwner == l.Token && r.LastSubmissionId == submissionId && r.Status == delivering)))
                 .MinAsync(l => (DateTime?)l.ExpiresUtc, ct),
-            ct);
+            ct).ConfigureAwait(false);
     }
 
     private async Task<bool> TakeOverAsync(string token, DateTime nowUtc, CancellationToken ct)
@@ -550,15 +582,20 @@ public sealed partial class OsduLedger
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            (int Records, int Applied, IReadOnlyList<string> Landed) slice;
+            SqlServerLedgerBulk.AppliedEvents slice;
             await using (var db = Open())
             {
                 slice = await RetryDeadlockAsync(() => SqlServerLedgerBulk.ApplyEventsAsync(db, token, WriteSlice, nowUtc, ct), ct).ConfigureAwait(false);
             }
 
             // After the commit, never inside it: a claim deciding to wait for one of these records meanwhile either saw it
-            // landed, or marked its record waiting before this release reads what waits.
-            await ReleaseWaitersOfAsync(slice.Landed, nowUtc, ct).ConfigureAwait(false);
+            // landed, or marked its record waiting before this release reads what waits. A lease is one ledger's, so every
+            // record it landed, and every record waiting for one, is in its partition.
+            if (slice.PartitionId is { } partition)
+            {
+                await ReleaseWaitersOfAsync(partition, slice.Landed, nowUtc, ct).ConfigureAwait(false);
+            }
+
             applied += slice.Applied;
             if (slice.Records < WriteSlice)
             {
@@ -582,11 +619,13 @@ public sealed partial class OsduLedger
     /// correlated lookup inside the same query. Reading the records and then their leases would be two statements, and
     /// a lease closing between them leaves a record showing as delivering with an expiry it no longer has.
     /// </summary>
+    // A record's lease is its own ledger's, so it is kept under the record's partition: the lease table's key finds it
+    // and carries its expiry, with no second read.
     private static Task<List<Leased>> ReadLeasedAsync(OsduDbContext db, IQueryable<DeliveryRecord> rows, CancellationToken ct)
         => rows
             .Select(r => new Leased(
                 r,
-                db.DeliveryLeases.Where(l => l.Token == r.LeaseOwner).Select(l => (DateTime?)l.ExpiresUtc).FirstOrDefault()))
+                db.DeliveryLeases.Where(l => l.PartitionId == r.PartitionId && l.Token == r.LeaseOwner).Select(l => (DateTime?)l.ExpiresUtc).FirstOrDefault()))
             .ToListAsync(ct);
 
     /// <summary>What a caller sees: the ledger's record state, carrying the lease expiry read with it.</summary>
@@ -648,6 +687,7 @@ public sealed partial class OsduLedger
 
     private static DeliveryLease Copy(DeliveryLease lease) => new()
     {
+        PartitionId = lease.PartitionId,
         Token = lease.Token,
         FlowId = lease.FlowId,
         SubmissionId = lease.SubmissionId,
@@ -670,8 +710,9 @@ public sealed partial class OsduLedger
         ExpiresUtc = DateTime.SpecifyKind(lease.ExpiresUtc, DateTimeKind.Utc),
     };
 
-    private static DeliveryRecordEvent ToEvent(Guid flowId, string token, RecordStep step) => new()
+    private static DeliveryRecordEvent ToEvent(short partition, Guid flowId, string token, RecordStep step) => new()
     {
+        PartitionId = partition,
         LeaseToken = token,
         FlowId = flowId,
         DeliveryKey = step.DeliveryKey.Value,
@@ -682,11 +723,12 @@ public sealed partial class OsduLedger
         ClaimDocumentRef = step.DocumentRef,
     };
 
-    private static DeliveryRecordEvent ToEvent(Guid flowId, string token, RecordCompletion completion)
+    private static DeliveryRecordEvent ToEvent(short partition, Guid flowId, string token, RecordCompletion completion)
     {
         var claim = completion.Claimed;
         return new DeliveryRecordEvent
         {
+            PartitionId = partition,
             LeaseToken = token,
             FlowId = flowId,
             DeliveryKey = completion.DeliveryKey.Value,

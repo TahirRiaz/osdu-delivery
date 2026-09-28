@@ -238,6 +238,7 @@ public sealed class CachedReferenceTests : IDisposable
     private async Task DeliveredAsync(OsduLedger ledger, int count, IReadOnlyList<CacheUsage> usages)
     {
         var flow = FlowId.Of("reference-flow");
+        await ledger.RegisterAsync(flow);
         var submission = Guid.NewGuid();
         await ledger.RegisterSubmissionAsync(new SubmissionState
         {

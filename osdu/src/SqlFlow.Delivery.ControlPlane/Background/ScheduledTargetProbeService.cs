@@ -8,10 +8,12 @@ using Microsoft.Extensions.Options;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Background;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.ControlPlane.Configuration;
 using SqlFlow.Delivery.Diagnostics;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -150,11 +152,13 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
         var documents = scope.ServiceProvider.GetRequiredService<DeliveryDocumentLoader>();
         var partitions = scope.ServiceProvider.GetRequiredService<IPartitionRegistry>();
         var dispatcher = scope.ServiceProvider.GetRequiredService<IRunDispatcher>();
+        var placing = new LedgerPlacing(
+            scope.ServiceProvider.GetRequiredService<EngineContext>(), scope.ServiceProvider.GetRequiredService<DeliveryConfigStore>());
 
         var carried = await OpenProbesAsync(ledger, ct).ConfigureAwait(false);
         await SweepAsync(catalog, ledger, carried, ct).ConfigureAwait(false);
 
-        var queued = await QueueAsync(catalog, ledger, documents, partitions, dispatcher, ct).ConfigureAwait(false);
+        var queued = await QueueAsync(catalog, ledger, documents, partitions, dispatcher, placing, ct).ConfigureAwait(false);
         await AwaitSettlementAsync(catalog, ledger, queued, ct).ConfigureAwait(false);
     }
 
@@ -162,7 +166,8 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
 
     /// <summary>Queues a probe for every interface this pass covers, and starts each one's activity.</summary>
     private async Task<List<PendingProbe>> QueueAsync(
-        CatalogDbContext catalog, ILedger ledger, DeliveryDocumentLoader documents, IPartitionRegistry partitions, IRunDispatcher dispatcher, CancellationToken ct)
+        CatalogDbContext catalog, ILedger ledger, DeliveryDocumentLoader documents, IPartitionRegistry partitions, IRunDispatcher dispatcher, LedgerPlacing placing,
+        CancellationToken ct)
     {
         var names = _options.PipelineNames();
         var pipelines = await PipelinesAsync(catalog, names, ct).ConfigureAwait(false);
@@ -219,7 +224,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
                 {
                     var bound = flow.Partition is { } partition ? source.Source.ForPartition(partition) : source.Source;
                     var pending = await QueueOneAsync(
-                        catalog, ledger, dispatcher, new DeliveryEndpoints.FlowContext(source.Pipeline, bound, flow), ct).ConfigureAwait(false);
+                        catalog, ledger, dispatcher, placing, new DeliveryEndpoints.FlowContext(source.Pipeline, bound, flow), ct).ConfigureAwait(false);
                     if (pending is not null)
                     {
                         queued.Add(pending);
@@ -268,10 +273,18 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
         return rows.Select(r => new PipelineRef(r.Id, r.Name)).ToList();
     }
 
-    /// <summary>Queues one interface's probe and opens the activity that will carry its outcome.</summary>
+    /// <summary>
+    /// Queues one interface's probe and opens the activity that will carry its outcome, in the ledger of the partition the
+    /// interface delivers to. That ledger is registered first, the way a run registers it (<see cref="LedgerRegistration"/>),
+    /// so a flow whose partition cannot be worked out here, or whose ledger belongs to another partition than its header now
+    /// names, is reported and not probed, and no task is left queued without an activity to report to.
+    /// </summary>
     private async Task<PendingProbe?> QueueOneAsync(
-        CatalogDbContext catalog, ILedger ledger, IRunDispatcher dispatcher, DeliveryEndpoints.FlowContext flow, CancellationToken ct)
+        CatalogDbContext catalog, ILedger ledger, IRunDispatcher dispatcher, LedgerPlacing placing, DeliveryEndpoints.FlowContext flow, CancellationToken ct)
     {
+        var configured = await DeliveryEndpoints.ConfiguredAsync(placing.Engine, placing.Config, flow, ct).ConfigureAwait(false);
+        var placed = await LedgerRegistration.RegisterAsync(ledger, flow.Flow, configured.Secrets, keptWhenUnresolved: true, ct).ConfigureAwait(false);
+
         var result = await DeliveryEndpoints.QueueProbeAsync(catalog, dispatcher, flow, ScheduleActor, ScheduleActor, ct).ConfigureAwait(false);
         if (result.Result is not Accepted<ComputeTaskAccepted> accepted || accepted.Value is null)
         {
@@ -283,11 +296,11 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
 
         var taskId = accepted.Value.TaskId;
         var target = flow.Flow.Target;
-        target.Headers.TryGetValue("data-partition-id", out var partition);
+        var partition = placed.Partition;
 
         // What the activity records about the target is what the target view already shows: the endpoint as the document
-        // declares it (a reference, never a resolved secret), the partition and the protocol. Redacted regardless, since
-        // nothing the ledger stores is allowed to carry a credential.
+        // declares it (a reference, never a resolved secret), the partition its ledger is kept under and the protocol.
+        // Redacted regardless, since nothing the ledger stores is allowed to carry a credential.
         var parameters = Redacted(JsonSerializer.Serialize(new
         {
             taskId,
@@ -310,7 +323,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
             },
             ct).ConfigureAwait(false);
 
-        return new PendingProbe(activity.ActivityId, taskId, flow.Flow.Partition is { } bound ? $"{flow.Flow.Label}@{bound}" : flow.Flow.Label, flow.Flow.Interface);
+        return new PendingProbe(activity.ActivityId, taskId, flow.Flow.Label, partition, flow.Flow.Interface);
     }
 
     // ---- Settling ----------------------------------------------------------------------------------------------
@@ -331,13 +344,13 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
             var (taskId, interfaceName) = Read(activity.ParametersJson);
             if (taskId is { } id)
             {
-                open.Add(new PendingProbe(activity.ActivityId, id, activity.FlowName, interfaceName));
+                open.Add(new PendingProbe(activity.ActivityId, id, activity.FlowName, activity.Partition, interfaceName));
                 continue;
             }
 
             await SettleAsync(
                 ledger,
-                new PendingProbe(activity.ActivityId, Guid.Empty, activity.FlowName, interfaceName),
+                new PendingProbe(activity.ActivityId, Guid.Empty, activity.FlowName, activity.Partition, interfaceName),
                 ProbeOutcomes.Error,
                 "the probe's task could not be read from its parameters, so its outcome is unknown",
                 ct).ConfigureAwait(false);
@@ -434,17 +447,17 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
         catch (DeliveryException ex)
         {
             // The activity went (a prune, a restored database): the outcome is still counted, and nothing is carried over.
-            LogActivityGone(probe.ActivityId, probe.FlowLabel, Redacted(ex));
+            LogActivityGone(probe.ActivityId, probe.Where, Redacted(ex));
         }
 
-        DeliveryMetrics.ProbeSettled(probe.FlowLabel, probe.Interface, outcome);
+        DeliveryMetrics.ProbeSettled(probe.FlowLabel, probe.Partition, probe.Interface, outcome);
         if (outcome == ProbeOutcomes.Reachable)
         {
-            LogReachable(probe.FlowLabel, summary);
+            LogReachable(probe.Where, summary);
         }
         else
         {
-            LogNotReachable(probe.FlowLabel, outcome, summary);
+            LogNotReachable(probe.Where, outcome, summary);
         }
     }
 
@@ -518,7 +531,14 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
     private sealed record PipelineRef(Guid Id, string Name);
 
     /// <summary>A probe queued on a node and the activity waiting for its outcome.</summary>
-    private sealed record PendingProbe(long ActivityId, Guid TaskId, string FlowLabel, string? Interface);
+    private sealed record PendingProbe(long ActivityId, Guid TaskId, string FlowLabel, string? Partition, string? Interface)
+    {
+        /// <summary>The flow and the partition whose target was probed, as a log line names them.</summary>
+        public string Where => Partition is null ? FlowLabel : $"{FlowLabel}@{Partition}";
+    }
+
+    /// <summary>What places a flow's ledger in its partition before its probe is queued: the engine and the central configuration.</summary>
+    private sealed record LedgerPlacing(EngineContext Engine, DeliveryConfigStore Config);
 
     /// <summary>A probe task's row, as much of it as settling one needs.</summary>
     private sealed record TaskRow(string Status, string? Error, string? ResultJson);

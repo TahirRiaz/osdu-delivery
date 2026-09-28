@@ -113,6 +113,32 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         };
     }
 
+    /// <summary>
+    /// Registers a retrieval flow's ledger in the partition its <c>data-partition-id</c> header resolves to on this node, so
+    /// every retrieval it records is kept under that partition (docs/ledger.md, Partitions).
+    /// </summary>
+    private static async Task RegisterLedgerAsync(EngineContext context, Ledger.ILedger ledger, RetrievalDefinition flow, CancellationToken ct)
+    {
+        var declared = flow.Source.Headers.FirstOrDefault(h => h.Key.Equals(SqlFlow.Delivery.Snapshots.CacheScope.PartitionHeader, StringComparison.OrdinalIgnoreCase)).Value;
+        if (string.IsNullOrWhiteSpace(declared))
+        {
+            throw new SqlFlowException(
+                $"Retrieval flow '{flow.Name}' names no '{SqlFlow.Delivery.Snapshots.CacheScope.PartitionHeader}' in its source.headers, so the partition its runs are kept under is unknown.");
+        }
+
+        var partition = SqlFlow.Delivery.Snapshots.CacheScope.Normalize(await context.Secrets.ResolveAsync(declared, ct).ConfigureAwait(false), $"{flow.Name}: source.headers");
+        await ledger.RegisterLedgerAsync(
+            new Ledger.LedgerEntry
+            {
+                FlowId = flow.Id,
+                Partition = partition,
+                Kind = Ledger.LedgerKinds.Retrieval,
+                FlowName = flow.Name,
+                LedgerName = flow.Name,
+            },
+            ct).ConfigureAwait(false);
+    }
+
     private static async Task<object> ExecuteOperationAsync(EngineContext context, RetrievalDefinition flow, string operation, RunParameters parameters, Guid runId, string actor, ILogger log, CancellationToken ct)
     {
         var forced = RetrievalFlowKind.Forced(parameters);
@@ -126,6 +152,13 @@ public sealed class RetrievalExecutor : IFlowDocumentExecutor
         }
 
         var values = FlowParameters.Resolve(flow.Parameters, flow.SourcePath ?? flow.Name, parameters.Values);
+
+        // A retrieval keeps its runs in its ledger, in the partition its header resolves to: registered before the first.
+        if (operation == DeliveryOperations.Retrieve && context.Ledger is { } ledger)
+        {
+            await RegisterLedgerAsync(context, ledger, flow, ct).ConfigureAwait(false);
+        }
+
         using var http = new HttpRuntime(flow.Reliability, context.Secrets, context.Time, allowLoopback: EngineContext.LoopbackAllowed, observer: context.HttpObserver);
         var client = await ProtocolFactory.ClientAsync(http, flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, context.Secrets, ct).ConfigureAwait(false);
         var runner = new RetrievalRunner(flow, values, client, context.Stores, context.Ledger, context.Time, context.Loggers.CreateLogger<RetrievalRunner>());

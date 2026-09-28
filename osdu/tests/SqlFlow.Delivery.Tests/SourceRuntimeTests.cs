@@ -535,7 +535,10 @@ public sealed class SourceRuntimeTests : IDisposable
         var elsewhere = await RunAsync(
             engine, source, DeliveryOperations.Drain, new DeliveryRunPayload { SubmissionId = submission, Interface = "wellbores" });
         Assert.False(elsewhere.Success);
-        Assert.Contains($"Submission {submission:D} belongs to flow 'wells/welllogs', not 'wells/wellbores'.", elsewhere.Error, StringComparison.Ordinal);
+        // The submission names the partition its ledger is kept under; a flow whose partition is its header's is told no partition to run in.
+        Assert.Contains(
+            $"Submission {submission:D} belongs to flow 'wells/welllogs' in partition '{Samples.SampleCacheScope}', not 'wells/wellbores'.", elsewhere.Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("Run it in partition", elsewhere.Error, StringComparison.Ordinal);
     }
 
     [Fact]

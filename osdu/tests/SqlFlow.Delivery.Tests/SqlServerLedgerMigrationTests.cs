@@ -26,6 +26,16 @@ public sealed class SqlServerLedgerMigrationTests
 
     private const string BeforeWaits = "20260916221306_DeliveryInterfaces";
 
+    private const string BeforePartitionKeys = "20260928053849_PartitionRegistry";
+
+    private static readonly Guid Mixed = FlowId.Of("wells-mixed-delivery");
+
+    private static readonly Guid Retrieved = FlowId.Of("wells-retrieval");
+
+    /// <summary>The ledger tables the partition leads the key of.</summary>
+    private static readonly string[] LedgerTables =
+        ["Record", "RecordIdentity", "Attempt", "Submission", "WorkBatch", "Lease", "RecordEvent", "SourceWatermark", "Activity", "Retrieval"];
+
     private static readonly DateTime Now = new(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
 
     private static readonly Guid Logs = FlowId.Of("recall-welllog-03-header-delivery");
@@ -101,7 +111,8 @@ public sealed class SqlServerLedgerMigrationTests
             Assert.Equal(Wellbores, (await db.DeliveryUpdateTags.AsNoTracking().SingleAsync()).CursorFlowId);
         }
 
-        Assert.Equal(["FlowId", "DeliveryKey"], await database.KeyColumnsAsync());
+        // Every later migration kept the key per flow; the newest leads it with the partition the flow's ledger is kept under.
+        Assert.Equal(["PartitionId", "FlowId", "DeliveryKey"], await database.KeyColumnsAsync());
 
         // The statistics view is back, and the upgraded ledger takes a second flow's record of the same row while it
         // keeps the first flow's OSDU id for that flow.
@@ -110,14 +121,16 @@ public sealed class SqlServerLedgerMigrationTests
         var second = await ledger.UpsertPendingAsync(Wellbores, [Pending(Wellbores, delivered, "dev:master-data--Wellbore:a")]);
         Assert.Equal((1, 0), (second.Staged, second.Conflicts.Count));
         var third = FlowId.Of("wells-welllog-copy");
+        await ledger.RegisterAsync(third);
         var conflict = Assert.Single((await ledger.UpsertPendingAsync(third, [Pending(third, delivered, "dev:work-product-component--WellLog:a")])).Conflicts);
         Assert.Equal((Logs, "recall-welllog-03-header-delivery"), (conflict.OwnerFlowId, conflict.OwnerFlowName));
         Assert.Equal(2, (await ledger.LookupAsync(delivered.ToString(), 10)).Count);
 
-        // Back down is refused while two flows hold records of one key, because the earlier ledger keeps one per key.
+        // Back down is refused while two flows hold records of one key, because the earlier ledger keeps one per key. The
+        // migrations back down run in one transaction, so a refusal leaves the ledger as it was, keys and all.
         var refused = await Assert.ThrowsAsync<SqlException>(() => database.MigrateAsync(Before));
         Assert.Contains("have records in more than one flow", refused.Message, StringComparison.Ordinal);
-        Assert.Equal(["FlowId", "DeliveryKey"], await database.KeyColumnsAsync());
+        Assert.Equal(["PartitionId", "FlowId", "DeliveryKey"], await database.KeyColumnsAsync());
 
         // With one record per key again, the migration goes back down to the key it replaced.
         await database.ExecuteAsync("DELETE FROM [osdu].[Record] WHERE [FlowId] = @wellbores AND [DeliveryKey] = @delivered;", ("delivered", delivered));
@@ -296,6 +309,7 @@ public sealed class SqlServerLedgerMigrationTests
             $"SELECT COUNT_BIG(*) FROM sys.databases WHERE [name] = N'{database.Name}' AND [snapshot_isolation_state] = 1;"));
 
         var ledger = new OsduLedger(database.Context, TimeProvider.System);
+        await ledger.RegisterAsync(Logs);
         var key = Guid.NewGuid();
         Assert.Equal(1, (await ledger.UpsertPendingAsync(Logs, [Pending(Logs, key, "dev:work-product-component--WellLog:s")])).Staged);
 
@@ -335,6 +349,7 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Record] WHERE [PendingReferences] IS NOT NULL OR [WaitingFor] IS NOT NULL;"));
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Submission] WHERE [Waiting] <> 0;"));
         var ledger = new OsduLedger(database.Context, TimeProvider.System);
+        await ledger.RegisterAsync(Logs);
         var log = Guid.NewGuid();
         Assert.Equal(1, (await ledger.UpsertPendingAsync(
             Logs,
@@ -370,6 +385,145 @@ public sealed class SqlServerLedgerMigrationTests
 
         Assert.Equal(RecordStatus.Pending, (await ledger.GetRecordAsync(Logs, new DeliveryKey(log)))!.Status);
     }
+
+    /// <summary>
+    /// <c>LedgerPartitions</c> over a ledger written before it: every ledger placed in the partition its interface rows name,
+    /// else the one its records' OSDU ids name, else left unassigned for its next run; every row moved under its ledger's
+    /// partition; every key and index rebuilt exactly as the model declares them; and back down to the keys it replaced,
+    /// with nothing lost either way.
+    /// </summary>
+    [Fact]
+    public async Task The_ledger_is_keyed_by_partition_with_every_ledger_placed_from_its_interfaces_or_its_records()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforePartitionKeys);
+        var logA = Guid.NewGuid();
+        var logB = Guid.NewGuid();
+        var wellbore = Guid.NewGuid();
+        var mixedDev = Guid.NewGuid();
+        var mixedTest = Guid.NewGuid();
+        var submission = Guid.NewGuid();
+        await database.ExecuteAsync(
+            """
+            INSERT INTO [osdu].[Interface] ([Id], [RepoId], [FlowName], [Interface], [Partition], [Ordinal], [LedgerFlowId], [LedgerName], [Route],
+                [MappingReference], [Kind], [RecordObject], [AfterJson], [RelativePath], [Active], [FirstSeenUtc], [LastSeenUtc])
+            VALUES
+                (NEWID(), NEWID(), N'wells', N'welllogs', N'test', 0, @logs, N'wells/welllogs@test', N'storage', N'WellLog@1.4.0', N'', N'OsduData.arc.WellLog',
+                    N'[]', N'flows/wells.yaml', 1, @now, @now),
+                (NEWID(), NEWID(), N'wellbores', N'', N'', 0, @wellbores, N'wellbores', N'storage', N'Wellbore@1.0.0', N'', N'OsduData.arc.Wellbore',
+                    N'[]', N'flows/wellbores.yaml', 1, @now, @now);
+            INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [MappingName], [Status], [AttemptCount], [PendingMetadata], [PendingPayload],
+                [Blocked], [CreatedUtc], [UpdatedUtc], [TargetId], [ClaimedTargetId], [LastSubmissionId])
+            VALUES
+                (@logA, @logs, N'wells:L-1', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'test:work-product-component--WellLog:a', N'test:work-product-component--WellLog:a', @submission),
+                (@logB, @logs, N'wells:L-2', N'WellLog', N'delivered', 0, 0, 0, 0, @now, @now, N'test:work-product-component--WellLog:b', N'test:work-product-component--WellLog:b', @submission),
+                (@wellbore, @wellbores, N'wells:WB-A', N'Wellbore', N'delivered', 0, 0, 0, 0, @now, @now, N'dev:master-data--Wellbore:a', N'dev:master-data--Wellbore:a', NULL),
+                (@mixedDev, @mixed, N'wells:M-1', N'Wellbore', N'delivered', 0, 0, 0, 0, @now, @now, N'dev:master-data--Wellbore:m1', N'dev:master-data--Wellbore:m1', NULL),
+                (@mixedTest, @mixed, N'wells:M-2', N'Wellbore', N'delivered', 0, 0, 0, 0, @now, @now, N'test:master-data--Wellbore:m2', N'test:master-data--Wellbore:m2', NULL);
+            INSERT INTO [osdu].[Submission] ([SubmissionId], [FlowId], [FlowName], [MappingReference], [RenderContext], [ParametersJson], [RecordCount],
+                [BatchCount], [Slices], [Status], [ReceivedUtc], [Planned], [SkippedUnchanged], [AwaitingApproval], [SkippedStale], [UnchangedAtPush],
+                [Blocked], [Delivered], [Held], [Failed], [Untracked], [Kind], [SourceConnection], [SourceObject])
+            VALUES (@submission, @logs, N'wells/welllogs@test', N'WellLog@1.4.0', N'{}', N'{}', 2, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0,
+                N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog');
+            INSERT INTO [osdu].[Attempt] ([DeliveryKey], [FlowId], [SubmissionId], [Worker], [StartedUtc], [CompletedUtc], [Outcome], [Phase])
+            VALUES (@logA, @logs, @submission, N'w', @now, @now, N'delivered', N'metadata'), (@wellbore, @wellbores, NULL, N'w', @now, @now, N'delivered', N'metadata');
+            INSERT INTO [osdu].[Activity] ([FlowId], [FlowName], [Kind], [Actor], [StartedUtc], [Outcome], [DeliveryKey])
+            VALUES (@wellbores, N'wellbores', N'release', N'user:tahir', @now, N'completed', @wellbore), (@mixed, N'wells-mixed-delivery', N'deliver', N'service:schedule', @now, N'completed', NULL);
+            INSERT INTO [osdu].[Retrieval] ([FlowId], [FlowName], [Actor], [Kinds], [Location], [Status], [Records], [Files], [Bytes], [StartedUtc])
+            VALUES (@retrieved, N'wells-retrieval', N'service:schedule', N'master-data--Well:1.0.0', N'out/wells', N'done', 3, 1, 100, @now);
+            """,
+            ("logA", logA), ("logB", logB), ("wellbore", wellbore), ("mixedDev", mixedDev), ("mixedTest", mixedTest), ("submission", submission));
+
+        await database.MigrateAsync(null);
+
+        // Every ledger is in the directory: placed by its interface rows, else by its records' ids, else unassigned.
+        var ledger = new OsduLedger(database.Context, TimeProvider.System);
+        Assert.Equal("test", (await ledger.GetLedgerAsync(Logs))!.Partition);
+        Assert.Equal("wells/welllogs@test", (await ledger.GetLedgerAsync(Logs))!.LedgerName);
+        Assert.Equal("dev", (await ledger.GetLedgerAsync(Wellbores))!.Partition);
+        Assert.Null((await ledger.GetLedgerAsync(Mixed))!.Partition);
+        var retrieval = (await ledger.GetLedgerAsync(Retrieved))!;
+        Assert.Equal((LedgerKinds.Retrieval, "wells-retrieval", (string?)null), (retrieval.Kind, retrieval.FlowName, retrieval.Partition));
+
+        // Every row is under its ledger's partition, and each ledger reads as it did.
+        Assert.Equal(2, (await ledger.StatsAsync(Logs, Now)).Total);
+        Assert.Equal("test", (await ledger.GetRecordAsync(Logs, new DeliveryKey(logA)))!.Partition);
+        Assert.Equal("test", (await ledger.GetSubmissionAsync(submission))!.Partition);
+        Assert.Single(await ledger.ListAttemptsAsync(Logs, new DeliveryKey(logA), 10));
+        Assert.Equal("dev", Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = Wellbores })).Partition);
+        Assert.Equal(2, (await ledger.StatsAsync(Mixed, Now)).Total);
+        Assert.Equal(0L, await database.ScalarAsync(
+            "SELECT COUNT_BIG(*) FROM [osdu].[Record] AS r INNER JOIN [osdu].[Ledger] AS l ON l.[FlowId] = r.[FlowId] WHERE l.[PartitionId] <> r.[PartitionId];"));
+        Assert.Single(await ledger.ListRecentAsync(10, partition: "dev"));
+        Assert.Equal(2, (await ledger.ListRecentAsync(10, partition: "test")).Count);
+        Assert.Equal(5, (await ledger.ListRecentAsync(10)).Count);
+
+        // The unplaced ledger is adopted by the partition its records went to alone; it holds records of two, so neither.
+        var refused = await Assert.ThrowsAsync<DeliveryException>(() => ledger.RegisterLedgerAsync(new LedgerEntry
+        {
+            FlowId = Mixed, Partition = "dev", Kind = LedgerKinds.Delivery, FlowName = "wells-mixed-delivery", LedgerName = "wells-mixed-delivery",
+        }));
+        Assert.Contains("1 record(s) delivered to 'test'", refused.Message, StringComparison.Ordinal);
+
+        // Every key leads with the partition, and every index is exactly the one the model declares.
+        Assert.Equal(["PartitionId", "FlowId", "DeliveryKey"], await database.KeyColumnsAsync());
+        foreach (var table in LedgerTables)
+        {
+            Assert.Equal("PartitionId", (await database.PrimaryKeyAsync(table))[0]);
+        }
+
+        await using (var db = database.Context())
+        {
+            var tables = LedgerTables.Append("Ledger").Append("LedgerPartition").Append("UpdateTag").ToList();
+            Assert.Equal(ModelIndexes(db, tables), await database.IndexesAsync(tables));
+        }
+
+        Assert.Equal(3L, await database.ScalarAsync(
+            "SELECT COUNT_BIG(*) FROM sys.indexes WHERE [object_id] IN (OBJECT_ID(N'[osdu].[Attempt]'), OBJECT_ID(N'[osdu].[RecordEvent]')) AND [optimize_for_sequential_key] = 1;"));
+
+        // Back down, the keys it replaced return with every row, and up again the ledger is placed the same way.
+        await database.MigrateAsync(BeforePartitionKeys);
+        Assert.Equal(["FlowId", "DeliveryKey"], await database.KeyColumnsAsync());
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [name] = N'PartitionId' AND [object_id] = OBJECT_ID(N'[osdu].[Record]');"));
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.tables WHERE [name] IN (N'Ledger', N'LedgerPartition') AND SCHEMA_NAME([schema_id]) = N'osdu';"));
+        Assert.Equal(5L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Record];"));
+        Assert.Equal(2L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Attempt];"));
+
+        await database.MigrateAsync(null);
+        var again = new OsduLedger(database.Context, TimeProvider.System);
+        Assert.Equal(("test", "dev"), ((await again.GetLedgerAsync(Logs))!.Partition, (await again.GetLedgerAsync(Wellbores))!.Partition));
+        Assert.Equal(5, (await again.ListRecentAsync(10)).Count);
+    }
+
+    /// <summary>
+    /// Every index the model declares on <paramref name="tables"/> of the module's schema, as
+    /// <see cref="ScratchDatabase.IndexesAsync"/> describes one: read from the design-time model, which keeps the filters and
+    /// included columns the runtime model leaves out.
+    /// </summary>
+    private static IReadOnlyList<string> ModelIndexes(OsduDbContext db, IReadOnlyCollection<string> tables)
+    {
+        var described = new List<string>();
+        var model = db.GetService<Microsoft.EntityFrameworkCore.Metadata.IDesignTimeModel>().Model;
+        foreach (var entity in model.GetEntityTypes().Where(e => e.GetSchema() == DeliveryModel.SchemaName && tables.Contains(e.GetTableName()!)))
+        {
+            var table = entity.GetTableName()!;
+            var store = Microsoft.EntityFrameworkCore.Metadata.StoreObjectIdentifier.Table(table, DeliveryModel.SchemaName);
+            var key = entity.FindPrimaryKey()!;
+            described.Add(Describe(table, key.GetName()!, true, key.Properties.Select(p => p.GetColumnName(store)!), [], null));
+            foreach (var index in entity.GetIndexes())
+            {
+                var include = index.GetIncludeProperties() ?? [];
+                described.Add(Describe(
+                    table, index.GetDatabaseName()!, index.IsUnique, index.Properties.Select(p => p.GetColumnName(store)!),
+                    include.Select(p => entity.FindProperty(p)!.GetColumnName(store)!), index.GetFilter()));
+            }
+        }
+
+        return described.Order(StringComparer.Ordinal).ToList();
+    }
+
+    private static string Describe(string table, string name, bool unique, IEnumerable<string> columns, IEnumerable<string> include, string? filter)
+        => $"{table}.{name} unique={unique} ({string.Join(",", columns)}) include ({string.Join(",", include.Order(StringComparer.Ordinal))}) where {filter ?? "-"}";
 
     private static RecordState Pending(Guid flow, Guid key, string targetId) => new()
     {
@@ -442,6 +596,8 @@ public sealed class SqlServerLedgerMigrationTests
             command.Parameters.Add(new SqlParameter("@logs", System.Data.SqlDbType.UniqueIdentifier) { Value = Logs });
             command.Parameters.Add(new SqlParameter("@wellbores", System.Data.SqlDbType.UniqueIdentifier) { Value = Wellbores });
             command.Parameters.Add(new SqlParameter("@now", System.Data.SqlDbType.DateTime2) { Value = Now });
+            command.Parameters.Add(new SqlParameter("@mixed", System.Data.SqlDbType.UniqueIdentifier) { Value = Mixed });
+            command.Parameters.Add(new SqlParameter("@retrieved", System.Data.SqlDbType.UniqueIdentifier) { Value = Retrieved });
             foreach (var (name, value) in values)
             {
                 command.Parameters.Add(value switch
@@ -478,6 +634,79 @@ public sealed class SqlServerLedgerMigrationTests
 
             return columns;
         }
+
+        /// <summary>The columns of <paramref name="table"/>'s primary key, in key order.</summary>
+        public async Task<IReadOnlyList<string>> PrimaryKeyAsync(string table)
+        {
+            await using var connection = new SqlConnection(ConnectionString);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT c.[name]
+                FROM sys.indexes AS i
+                INNER JOIN sys.index_columns AS ic ON ic.[object_id] = i.[object_id] AND ic.[index_id] = i.[index_id]
+                INNER JOIN sys.columns AS c ON c.[object_id] = ic.[object_id] AND c.[column_id] = ic.[column_id]
+                WHERE i.[object_id] = OBJECT_ID(N'[osdu].' + QUOTENAME(@table)) AND i.[is_primary_key] = 1
+                ORDER BY ic.[key_ordinal];
+                """;
+            command.Parameters.Add(new SqlParameter("@table", System.Data.SqlDbType.NVarChar, 128) { Value = table });
+            var columns = new List<string>();
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                columns.Add(reader.GetString(0));
+            }
+
+            return columns;
+        }
+
+        /// <summary>
+        /// Every index of <paramref name="tables"/> as the database holds it: its name, whether it is unique, its key columns
+        /// in order, its included columns and its filter, described as the model's are, in name order.
+        /// </summary>
+        public async Task<IReadOnlyList<string>> IndexesAsync(IEnumerable<string> tables)
+        {
+            var wanted = tables.ToHashSet(StringComparer.Ordinal);
+            await using var connection = new SqlConnection(ConnectionString);
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT t.[name], i.[name], i.[is_unique], i.[filter_definition], c.[name], ic.[key_ordinal], ic.[is_included_column]
+                FROM sys.indexes AS i
+                INNER JOIN sys.tables AS t ON t.[object_id] = i.[object_id]
+                INNER JOIN sys.index_columns AS ic ON ic.[object_id] = i.[object_id] AND ic.[index_id] = i.[index_id]
+                INNER JOIN sys.columns AS c ON c.[object_id] = ic.[object_id] AND c.[column_id] = ic.[column_id]
+                WHERE SCHEMA_NAME(t.[schema_id]) = N'osdu' AND i.[type] IN (1, 2)
+                ORDER BY t.[name], i.[name], ic.[is_included_column], ic.[key_ordinal], c.[name];
+                """;
+            var indexes = new Dictionary<(string Table, string Name), (bool Unique, string? Filter, List<string> Columns, List<string> Include)>();
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                var key = (reader.GetString(0), reader.GetString(1));
+                if (!wanted.Contains(key.Item1))
+                {
+                    continue;
+                }
+
+                if (!indexes.TryGetValue(key, out var index))
+                {
+                    index = (reader.GetBoolean(2), reader.IsDBNull(3) ? null : reader.GetString(3), [], []);
+                    indexes[key] = index;
+                }
+
+                (reader.GetBoolean(6) ? index.Include : index.Columns).Add(reader.GetString(4));
+            }
+
+            // SQL Server keeps a filter as it normalized it, in parentheses; the model keeps it as it was written.
+            return indexes
+                .Select(i => Describe(i.Key.Table, i.Key.Name, i.Value.Unique, i.Value.Columns, i.Value.Include, Unwrap(i.Value.Filter)))
+                .Order(StringComparer.Ordinal)
+                .ToList();
+        }
+
+        private static string? Unwrap(string? filter)
+            => filter is { Length: > 2 } && filter[0] == '(' && filter[^1] == ')' ? filter[1..^1] : filter;
 
         public ValueTask DisposeAsync() => _database.DisposeAsync();
     }

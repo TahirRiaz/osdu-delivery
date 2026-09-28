@@ -14,13 +14,18 @@ namespace SqlFlow.Delivery.Tests;
 /// write that fails fails exactly the entries it carried.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
-public sealed class LeaseJournalTests : IDisposable
+public sealed class LeaseJournalTests : IAsyncLifetime, IDisposable
 {
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
 
     private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("journal-flow");
+
+    /// <summary>Registers the ledgers the tests write to directly, as a run registers its own before it writes a row of it.</summary>
+    public Task InitializeAsync() => _db.Ledger(_clock).RegisterAsync(_flow);
+
+    public Task DisposeAsync() => Task.CompletedTask;
     private readonly Guid _submission = Guid.NewGuid();
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;

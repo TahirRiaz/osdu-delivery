@@ -77,15 +77,24 @@ public sealed partial class OsduLedger : ILedger
     public async Task<SubmissionState?> GetSubmissionAsync(Guid submissionId, CancellationToken ct = default)
     {
         var entity = await ReadAsync(db => db.DeliverySubmissions.FirstOrDefaultAsync(s => s.SubmissionId == submissionId, ct), ct).ConfigureAwait(false);
-        return entity is null ? null : ToState(entity);
+        return entity is null ? null : await NamedAsync(entity, ct).ConfigureAwait(false);
     }
+
+    /// <summary>A submission as the ledger holds it, naming its partition.</summary>
+    private async Task<SubmissionState> NamedAsync(DeliverySubmission entity, CancellationToken ct)
+        => ToState(entity) with { Partition = await PartitionNameAsync(entity.PartitionId, ct).ConfigureAwait(false) };
 
     public async Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         var rows = await ReadAsync(
             db =>
             {
-                var query = db.DeliveryRecords.Where(r => r.FlowId == flowId && r.PlanRequestedUtc != null);
+                var query = db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.PlanRequestedUtc != null);
                 if (after is { } cursor)
                 {
                     var from = cursor.Value;
@@ -105,11 +114,16 @@ public sealed partial class OsduLedger : ILedger
     public async Task ClearPlanRequestedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(keys);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return;
+        }
+
         await using var db = Open();
         foreach (var chunk in keys.Select(k => k.Value).Distinct().Chunk(ChunkSize))
         {
             await db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && r.PlanRequestedUtc != null)
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && r.PlanRequestedUtc != null)
                 .ExecuteUpdateAsync(s => s.SetProperty(r => r.PlanRequestedUtc, (DateTime?)null), ct)
                 .ConfigureAwait(false);
         }
@@ -118,14 +132,15 @@ public sealed partial class OsduLedger : ILedger
     public async Task<(SubmissionState Submission, bool Created)> RegisterSubmissionAsync(SubmissionState submission, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(submission);
+        var partition = await WritePartitionAsync(submission.FlowId, ct).ConfigureAwait(false);
         await using var db = Open();
         var existing = await db.DeliverySubmissions.AsNoTracking().FirstOrDefaultAsync(s => s.SubmissionId == submission.SubmissionId, ct).ConfigureAwait(false);
         if (existing is not null)
         {
-            return (ToState(existing), false);
+            return (await NamedAsync(existing, ct).ConfigureAwait(false), false);
         }
 
-        var entity = new DeliverySubmission();
+        var entity = new DeliverySubmission { PartitionId = partition };
         Apply(entity, submission with { ReceivedUtc = submission.ReceivedUtc == default ? Now : submission.ReceivedUtc });
         db.DeliverySubmissions.Add(entity);
         try
@@ -136,10 +151,10 @@ public sealed partial class OsduLedger : ILedger
         {
             // Lost a race with another intake of the same id: idempotent by construction.
             var raced = await db.DeliverySubmissions.AsNoTracking().FirstAsync(s => s.SubmissionId == submission.SubmissionId, ct).ConfigureAwait(false);
-            return (ToState(raced), false);
+            return (await NamedAsync(raced, ct).ConfigureAwait(false), false);
         }
 
-        return (ToState(entity), true);
+        return (await NamedAsync(entity, ct).ConfigureAwait(false), true);
     }
 
     public async Task UpdateSubmissionAsync(SubmissionState submission, CancellationToken ct = default)
@@ -152,31 +167,56 @@ public sealed partial class OsduLedger : ILedger
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, string? partition = null, CancellationToken ct = default)
     {
-        var list = await ReadAsync(
-            db =>
-            {
-                var query = db.DeliverySubmissions.AsQueryable();
-                if (flowId is { } f)
+        // Each partition's newest through its own range of (PartitionId, FlowId, ReceivedUtc) or (PartitionId, ReceivedUtc),
+        // merged when the listing covers several.
+        var take = Math.Clamp(max, 1, 1000);
+        var partitions = await ReadPartitionsAsync(flowId, partition, ct).ConfigureAwait(false);
+        var list = new List<DeliverySubmission>();
+        foreach (var within in partitions)
+        {
+            list.AddRange(await ReadAsync(
+                db =>
                 {
-                    query = query.Where(s => s.FlowId == f);
-                }
+                    var query = db.DeliverySubmissions.Where(s => s.PartitionId == within);
+                    if (flowId is { } flow)
+                    {
+                        query = query.Where(s => s.FlowId == flow);
+                    }
 
-                return query.OrderByDescending(s => s.ReceivedUtc).Take(Math.Clamp(max, 1, 1000)).ToListAsync(ct);
-            },
-            ct).ConfigureAwait(false);
-        return list.Select(ToState).ToList();
+                    return query.OrderByDescending(s => s.ReceivedUtc).Take(take).ToListAsync(ct);
+                },
+                ct).ConfigureAwait(false));
+        }
+
+        if (partitions.Count > 1)
+        {
+            list = list.OrderByDescending(s => s.ReceivedUtc).Take(take).ToList();
+        }
+
+        var named = new List<SubmissionState>(list.Count);
+        foreach (var row in list)
+        {
+            named.Add(await NamedAsync(row, ct).ConfigureAwait(false));
+        }
+
+        return named;
     }
 
     public async Task<IReadOnlyDictionary<DeliveryKey, RecordState>> GetRecordsAsync(Guid flowId, IEnumerable<DeliveryKey> keys, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(keys);
         var result = new Dictionary<DeliveryKey, RecordState>();
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return result;
+        }
+
         foreach (var chunk in keys.Select(k => k.Value).Distinct().Chunk(ChunkSize))
         {
             var states = await ReadAsync(
-                async db => ToStates(await ReadLeasedAsync(db, db.DeliveryRecords.Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey)), ct).ConfigureAwait(false)),
+                async db => ToStates(await ReadLeasedAsync(db, db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && chunk.Contains(r.DeliveryKey)), ct).ConfigureAwait(false)),
                 ct).ConfigureAwait(false);
             foreach (var state in states)
             {
@@ -189,10 +229,15 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task<RecordState?> GetRecordAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
         var states = await ReadAsync(
-            async db => ToStates(await ReadLeasedAsync(db, db.DeliveryRecords.Where(r => r.FlowId == flowId && r.DeliveryKey == key.Value).Take(1), ct).ConfigureAwait(false)),
+            async db => ToStates(await ReadLeasedAsync(db, db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.DeliveryKey == key.Value).Take(1), ct).ConfigureAwait(false)),
             ct).ConfigureAwait(false);
-        return states.Count == 0 ? null : states[0];
+        return states.Count == 0 ? null : states[0] with { Partition = await PartitionNameAsync(partition, ct).ConfigureAwait(false) };
     }
 
     public async Task<PendingStaging> UpsertPendingAsync(Guid flowId, IReadOnlyList<RecordState> records, CancellationToken ct = default)
@@ -204,10 +249,11 @@ public sealed partial class OsduLedger : ILedger
             return PendingStaging.Empty;
         }
 
+        var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
         var now = Now;
         await using var db = Open();
-        var staged = await SqlServerLedgerBulk.UpsertPendingAsync(db, flowId, records, WriteSlice, now, ct).ConfigureAwait(false);
-        await WriteIdentitiesAsync(db, flowId, Staged(records, staged), ct).ConfigureAwait(false);
+        var staged = await SqlServerLedgerBulk.UpsertPendingAsync(db, partition, flowId, records, WriteSlice, now, ct).ConfigureAwait(false);
+        await WriteIdentitiesAsync(db, partition, flowId, Staged(records, staged), ct).ConfigureAwait(false);
         return staged;
     }
 
@@ -232,7 +278,7 @@ public sealed partial class OsduLedger : ILedger
     /// A record's tokens are replaced as a set, so a staging that renames or re-keys a record leaves nothing stale
     /// behind, and staging the same record again writes the same rows.
     /// </summary>
-    private static async Task WriteIdentitiesAsync(OsduDbContext db, Guid flowId, IReadOnlyList<RecordState> records, CancellationToken ct)
+    private static async Task WriteIdentitiesAsync(OsduDbContext db, short partition, Guid flowId, IReadOnlyList<RecordState> records, CancellationToken ct)
     {
         if (records.Count == 0)
         {
@@ -250,6 +296,7 @@ public sealed partial class OsduLedger : ILedger
                 {
                     wanted.Add(new DeliveryRecordIdentity
                     {
+                        PartitionId = partition,
                         FlowId = flowId,
                         DeliveryKey = record.DeliveryKey.Value,
                         Token = token.Token,
@@ -260,7 +307,7 @@ public sealed partial class OsduLedger : ILedger
             }
 
             var held = await db.DeliveryRecordIdentities
-                .Where(i => i.FlowId == flowId && keys.Contains(i.DeliveryKey))
+                .Where(i => i.PartitionId == partition && i.FlowId == flowId && keys.Contains(i.DeliveryKey))
                 .ToListAsync(ct).ConfigureAwait(false);
             var by = (DeliveryRecordIdentity row) => (row.DeliveryKey, row.Token);
             var keep = wanted.ToDictionary(by);
@@ -286,23 +333,33 @@ public sealed partial class OsduLedger : ILedger
     /// <summary>
     /// Writes the identity tokens of records the index does not hold yet: the records of a ledger that predates the
     /// index, or that a failed pass left without rows. One bounded pass over the records after
-    /// <paramref name="after"/> in key order, so a caller walks the whole ledger a page at a time and can stop and
-    /// resume; the answer is the last key it wrote, or null when the ledger holds no more records.
+    /// <paramref name="after"/> in the record table's key order (partition, ledger identity, delivery key), so a caller
+    /// walks the whole ledger a page at a time and can stop and resume, and a delivery key held by several ledgers is
+    /// passed once for each; the answer is the last record it read, or null when the ledger holds no more records.
     ///
     /// The tokens are derived from the record row, so a record whose mapping declares identities gains those on its
     /// next staging: the row alone cannot say what the mapping declared, and nothing is invented here.
     /// </summary>
-    public async Task<(Guid? LastKey, int Records, int Tokens)> BackfillIdentitiesAsync(Guid? after, int max, CancellationToken ct = default)
+    public async Task<(RecordCursor? Last, int Records, int Tokens)> BackfillIdentitiesAsync(RecordCursor? after, int max, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
         await using var db = Open();
-        var from = after ?? Guid.Empty;
-        var records = await db.DeliveryRecords.AsNoTracking()
-            .Where(r => r.DeliveryKey.CompareTo(from) > 0)
-            .OrderBy(r => r.DeliveryKey)
+        var rows = db.DeliveryRecords.AsNoTracking();
+        if (after is { } cursor)
+        {
+            var (p, f, k) = (cursor.PartitionId, cursor.FlowId, cursor.DeliveryKey);
+            rows = rows.Where(r => r.PartitionId > p
+                || (r.PartitionId == p && (r.FlowId.CompareTo(f) > 0 || (r.FlowId == f && r.DeliveryKey.CompareTo(k) > 0))));
+        }
+
+        var records = await rows
+            .OrderBy(r => r.PartitionId)
+            .ThenBy(r => r.FlowId)
+            .ThenBy(r => r.DeliveryKey)
             .Take(Math.Clamp(max, 1, 1000))
             .Select(r => new
             {
+                r.PartitionId,
                 r.FlowId,
                 r.DeliveryKey,
                 r.SourceKey,
@@ -318,18 +375,19 @@ public sealed partial class OsduLedger : ILedger
             return (null, 0, 0);
         }
 
-        var keys = records.Select(r => r.DeliveryKey).ToArray();
+        var keys = records.Select(r => r.DeliveryKey).Distinct().ToArray();
+        var partitions = records.Select(r => r.PartitionId).Distinct().ToArray();
         var indexed = (await db.DeliveryRecordIdentities.AsNoTracking()
-            .Where(i => keys.Contains(i.DeliveryKey))
-            .Select(i => new { i.FlowId, i.DeliveryKey })
+            .Where(i => partitions.Contains(i.PartitionId) && keys.Contains(i.DeliveryKey))
+            .Select(i => new { i.PartitionId, i.FlowId, i.DeliveryKey })
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false))
-            .Select(i => (i.FlowId, i.DeliveryKey))
+            .Select(i => (i.PartitionId, i.FlowId, i.DeliveryKey))
             .ToHashSet();
 
         var written = 0;
         var tokens = 0;
-        foreach (var flow in records.Where(r => !indexed.Contains((r.FlowId, r.DeliveryKey))).GroupBy(r => r.FlowId))
+        foreach (var flow in records.Where(r => !indexed.Contains((r.PartitionId, r.FlowId, r.DeliveryKey))).GroupBy(r => (r.PartitionId, r.FlowId)))
         {
             var states = flow.Select(r => new RecordState
             {
@@ -343,12 +401,13 @@ public sealed partial class OsduLedger : ILedger
                 SourceFileName = r.SourceFileName,
                 PendingSourceFileName = r.PendingSourceFileName,
             }).ToList();
-            await WriteIdentitiesAsync(db, flow.Key, states, ct).ConfigureAwait(false);
+            await WriteIdentitiesAsync(db, flow.Key.PartitionId, flow.Key.FlowId, states, ct).ConfigureAwait(false);
             written += states.Count;
             tokens += states.Sum(s => TokensOf(s).Count);
         }
 
-        return (records[^1].DeliveryKey, written, tokens);
+        var last = records[^1];
+        return (new RecordCursor(last.PartitionId, last.FlowId, last.DeliveryKey), written, tokens);
     }
 
     /// <summary>What one record is findable by, as the identity index stores it.</summary>
@@ -393,7 +452,7 @@ public sealed partial class OsduLedger : ILedger
                 {
                     ClaimedTargetId = r.ClaimedTargetId!,
                     r.FlowId,
-                    FlowName = db.DeliverySubmissions.Where(s => s.SubmissionId == r.LastSubmissionId).Select(s => s.FlowName).FirstOrDefault(),
+                    FlowName = db.DeliverySubmissions.Where(s => s.PartitionId == r.PartitionId && s.SubmissionId == r.LastSubmissionId).Select(s => s.FlowName).FirstOrDefault(),
                 })
                 .ToListAsync(ct).ConfigureAwait(false);
             foreach (var owner in owners.Where(o => wanted.Contains(o.ClaimedTargetId, StringComparer.Ordinal)))
@@ -413,6 +472,7 @@ public sealed partial class OsduLedger : ILedger
             return;
         }
 
+        var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
         var now = Now;
         var pending = StatusText.Of(RecordStatus.Pending);
         var delivering = StatusText.Of(RecordStatus.Delivering);
@@ -425,7 +485,7 @@ public sealed partial class OsduLedger : ILedger
         foreach (var chunk in records.Where(r => r.Kind == SkipKind.Unchanged).Select(r => r.DeliveryKey.Value).Chunk(ChunkSize))
         {
             await db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && !(r.PendingDocumentRef != null && (r.Status == pending || r.Status == delivering)))
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && !(r.PendingDocumentRef != null && (r.Status == pending || r.Status == delivering)))
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(r => r.LastSubmissionId, submissionId)
                     .SetProperty(r => r.UpdatedUtc, now), ct)
@@ -436,7 +496,7 @@ public sealed partial class OsduLedger : ILedger
         foreach (var chunk in records.Select(r => r.DeliveryKey.Value).Distinct().Chunk(ChunkSize))
         {
             await db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && r.PlanRequestedUtc != null)
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && chunk.Contains(r.DeliveryKey) && r.PlanRequestedUtc != null)
                 .ExecuteUpdateAsync(s => s.SetProperty(r => r.PlanRequestedUtc, (DateTime?)null), ct)
                 .ConfigureAwait(false);
         }
@@ -444,7 +504,7 @@ public sealed partial class OsduLedger : ILedger
         foreach (var chunk in records.Where(r => r.Kind != SkipKind.Unchanged).Chunk(ChunkSize))
         {
             var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
-            var entities = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            var entities = await db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
             foreach (var skip in chunk)
             {
                 if (!entities.TryGetValue(skip.DeliveryKey.Value, out var entity))
@@ -459,6 +519,7 @@ public sealed partial class OsduLedger : ILedger
                     // version and origin the source carried and which version stands.
                     db.DeliveryAttempts.Add(new DeliveryAttempt
                     {
+                        PartitionId = partition,
                         FlowId = flowId,
                         DeliveryKey = entity.DeliveryKey,
                         SubmissionId = submissionId,
@@ -489,6 +550,7 @@ public sealed partial class OsduLedger : ILedger
                 {
                     db.DeliveryAttempts.Add(new DeliveryAttempt
                     {
+                        PartitionId = partition,
                         FlowId = flowId,
                         DeliveryKey = entity.DeliveryKey,
                         SubmissionId = submissionId,
@@ -557,12 +619,18 @@ public sealed partial class OsduLedger : ILedger
         ArgumentNullException.ThrowIfNull(records);
         var list = records as IReadOnlyList<RecordState> ?? records.ToList();
         RequireFlow(flowId, list.Select(r => (r.FlowId, r.DeliveryKey)));
+        if (list.Count == 0)
+        {
+            return;
+        }
+
+        var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
         var now = Now;
         await using var db = Open();
         foreach (var chunk in list.Chunk(ChunkSize))
         {
             var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
-            var existing = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            var existing = await db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
             // A held record claims nothing, and it is not given an id another flow's record holds: nothing this flow
             // does to it (a removal, a read back) may reach that flow's OSDU record.
             var claims = await ClaimsOfOtherFlowsAsync(
@@ -573,6 +641,7 @@ public sealed partial class OsduLedger : ILedger
                 {
                     entity = new DeliveryRecord
                     {
+                        PartitionId = partition,
                         DeliveryKey = record.DeliveryKey.Value,
                         FlowId = flowId,
                         SourceKey = Truncate(record.SourceKey, 400)!,
@@ -611,6 +680,7 @@ public sealed partial class OsduLedger : ILedger
                 entity.UpdatedUtc = now;
                 db.DeliveryAttempts.Add(new DeliveryAttempt
                 {
+                    PartitionId = partition,
                     FlowId = flowId,
                     DeliveryKey = record.DeliveryKey.Value,
                     SubmissionId = record.LastSubmissionId,
@@ -670,19 +740,30 @@ public sealed partial class OsduLedger : ILedger
             ct);
     }
 
-    public Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default)
+    public async Task<long> CountAsync(Guid flowId, Guid? submissionId, RecordStatus status, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return 0;
+        }
+
         var text = StatusText.Of(status);
-        return ReadAsync(
-            db => db.DeliveryRecords.LongCountAsync(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == text, ct),
-            ct);
+        return await ReadAsync(
+            db => db.DeliveryRecords.LongCountAsync(r => r.PartitionId == partition && r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == text, ct),
+            ct).ConfigureAwait(false);
     }
 
-    public Task<bool> HoldsRecordsAsync(Guid flowId, CancellationToken ct = default)
-        => ReadAsync(db => db.DeliveryRecords.AnyAsync(r => r.FlowId == flowId, ct), ct);
+    public async Task<bool> HoldsRecordsAsync(Guid flowId, CancellationToken ct = default)
+        => await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is { } partition
+            && await ReadAsync(db => db.DeliveryRecords.AnyAsync(r => r.PartitionId == partition && r.FlowId == flowId, ct), ct).ConfigureAwait(false);
 
     public async Task<IReadOnlyList<PartitionRecords>> DeliveredPartitionsAsync(Guid flowId, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         // An OSDU id is <partition>:<entity type>:<id>, so the partition is everything before its first colon. A record is
         // counted by the id it was delivered as, or by the id it claimed when it has not been delivered yet. The two columns
         // are compared under different collations, so each is grouped on its own rather than coalesced into one expression
@@ -691,14 +772,14 @@ public sealed partial class OsduLedger : ILedger
 #pragma warning disable CA1866 // Use 'string.IndexOf(char)': the expression is translated to SQL, not run in .NET.
         var delivered = await ReadAsync(
             db => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && r.TargetId != null && r.TargetId.IndexOf(":") > 0)
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && r.TargetId != null && r.TargetId.IndexOf(":") > 0)
                 .GroupBy(r => r.TargetId!.Substring(0, r.TargetId.IndexOf(":")))
                 .Select(g => new { Partition = g.Key, Records = g.LongCount() })
                 .ToListAsync(ct),
             ct).ConfigureAwait(false);
         var claimed = await ReadAsync(
             db => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && r.TargetId == null && r.ClaimedTargetId != null && r.ClaimedTargetId.IndexOf(":") > 0)
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && r.TargetId == null && r.ClaimedTargetId != null && r.ClaimedTargetId.IndexOf(":") > 0)
                 .GroupBy(r => r.ClaimedTargetId!.Substring(0, r.ClaimedTargetId.IndexOf(":")))
                 .Select(g => new { Partition = g.Key, Records = g.LongCount() })
                 .ToListAsync(ct),
@@ -712,31 +793,47 @@ public sealed partial class OsduLedger : ILedger
             .ToList();
     }
 
-    public Task<bool> HasPendingAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
+    public async Task<bool> HasPendingAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return false;
+        }
+
         var pending = StatusText.Of(RecordStatus.Pending);
         var delivering = StatusText.Of(RecordStatus.Delivering);
-        return ReadAsync(
+        return await ReadAsync(
             db => db.DeliveryRecords.AnyAsync(
-                r => r.FlowId == flowId
+                r => r.PartitionId == partition
+                    && r.FlowId == flowId
                     && (submissionId == null || r.LastSubmissionId == submissionId)
                     && (r.Status == pending || r.Status == delivering),
                 ct),
-            ct);
+            ct).ConfigureAwait(false);
     }
 
-    public Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
+    public async Task<DateTime?> NextDueAsync(Guid flowId, Guid? submissionId, DateTime nowUtc, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
         var pending = StatusText.Of(RecordStatus.Pending);
-        return ReadAsync(
+        return await ReadAsync(
             db => db.DeliveryRecords
-                .Where(r => r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == pending && r.NextAttemptUtc != null && r.NextAttemptUtc > nowUtc)
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && (submissionId == null || r.LastSubmissionId == submissionId) && r.Status == pending && r.NextAttemptUtc != null && r.NextAttemptUtc > nowUtc)
                 .MinAsync(r => r.NextAttemptUtc, ct),
-            ct);
+            ct).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         var pending = StatusText.Of(RecordStatus.Pending);
         var completed = StatusText.Of(SubmissionStatus.Completed);
         var failed = StatusText.Of(SubmissionStatus.Failed);
@@ -744,10 +841,10 @@ public sealed partial class OsduLedger : ILedger
             db =>
             {
                 var settled = db.DeliverySubmissions
-                    .Where(s => s.FlowId == flowId && (s.Status == completed || s.Status == failed) && (except == null || s.SubmissionId != except))
+                    .Where(s => s.PartitionId == partition && s.FlowId == flowId && (s.Status == completed || s.Status == failed) && (except == null || s.SubmissionId != except))
                     .Select(s => s.SubmissionId);
                 return db.DeliveryRecords
-                    .Where(r => r.FlowId == flowId
+                    .Where(r => r.PartitionId == partition && r.FlowId == flowId
                         && r.Status == pending
                         && r.PendingDocumentRef != null
                         && (r.NextAttemptUtc == null || r.NextAttemptUtc <= nowUtc)
@@ -764,6 +861,7 @@ public sealed partial class OsduLedger : ILedger
     public async Task AddWorkBatchAsync(WorkBatchState batch, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(batch);
+        var partition = await WritePartitionAsync(batch.FlowId, ct).ConfigureAwait(false);
         await using var db = Open();
         var exists = await db.DeliveryWorkBatches.AnyAsync(b => b.SubmissionId == batch.SubmissionId && b.Index == batch.Index, ct).ConfigureAwait(false);
         if (exists)
@@ -783,6 +881,7 @@ public sealed partial class OsduLedger : ILedger
 
         db.DeliveryWorkBatches.Add(new DeliveryWorkBatch
         {
+            PartitionId = partition,
             SubmissionId = batch.SubmissionId,
             Index = batch.Index,
             FlowId = batch.FlowId,
@@ -810,35 +909,36 @@ public sealed partial class OsduLedger : ILedger
     /// </summary>
     private async Task<int> WriteEachAsync(IQueryable<DeliveryRecord> find, IQueryable<DeliveryRecord> rows, Func<IQueryable<DeliveryRecord>, Task<int>> write, CancellationToken ct)
     {
-        var keys = await RetryDeadlockAsync(() => find.Select(r => new RecordKey(r.FlowId, r.DeliveryKey)).ToListAsync(ct), ct).ConfigureAwait(false);
+        var keys = await RetryDeadlockAsync(() => find.Select(r => new RecordKey(r.PartitionId, r.FlowId, r.DeliveryKey)).ToListAsync(ct), ct).ConfigureAwait(false);
         return await WriteByKeyAsync(rows, keys, write, ct).ConfigureAwait(false);
     }
 
     /// <summary>
     /// Runs <paramref name="write"/> over the records of <paramref name="rows"/> that <paramref name="keys"/> names,
-    /// <see cref="WriteSlice"/> to a statement. Each statement names its flow and keys, which every index of the record
-    /// table ends with, so the database finds each record with one seek and reads, and locks, no record it does not write.
-    /// <paramref name="rows"/> still applies, so a record that changed since its key was read is left as it now is.
+    /// <see cref="WriteSlice"/> to a statement. Each statement names its partition, flow and keys, the record table's key,
+    /// which every index of the table ends with, so the database finds each record with one seek and reads, and locks, no
+    /// record it does not write. <paramref name="rows"/> still applies, so a record that changed since its key was read is
+    /// left as it now is.
     /// </summary>
     private async Task<int> WriteByKeyAsync(IQueryable<DeliveryRecord> rows, IEnumerable<RecordKey> keys, Func<IQueryable<DeliveryRecord>, Task<int>> write, CancellationToken ct)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(WriteSlice, 1);
         var written = 0;
-        foreach (var flow in keys.GroupBy(k => k.FlowId))
+        foreach (var ledger in keys.GroupBy(k => (k.PartitionId, k.FlowId)))
         {
-            var flowId = flow.Key;
-            foreach (var slice in flow.Select(k => k.DeliveryKey).Distinct().Chunk(WriteSlice))
+            var (partition, flowId) = ledger.Key;
+            foreach (var slice in ledger.Select(k => k.DeliveryKey).Distinct().Chunk(WriteSlice))
             {
                 ct.ThrowIfCancellationRequested();
-                written += await RetryDeadlockAsync(() => write(rows.Where(r => r.FlowId == flowId && slice.Contains(r.DeliveryKey))), ct).ConfigureAwait(false);
+                written += await RetryDeadlockAsync(() => write(rows.Where(r => r.PartitionId == partition && r.FlowId == flowId && slice.Contains(r.DeliveryKey))), ct).ConfigureAwait(false);
             }
         }
 
         return written;
     }
 
-    /// <summary>A record's key: its flow and its delivery key.</summary>
-    private readonly record struct RecordKey(Guid FlowId, Guid DeliveryKey);
+    /// <summary>A record's key: its partition, its ledger identity and its delivery key.</summary>
+    private readonly record struct RecordKey(short PartitionId, Guid FlowId, Guid DeliveryKey);
 
     public Task<IReadOnlyList<WorkBatchState>> ListWorkBatchesAsync(Guid submissionId, int max, int offset, CancellationToken ct = default)
         => ReadAsync<IReadOnlyList<WorkBatchState>>(
@@ -850,7 +950,11 @@ public sealed partial class OsduLedger : ILedger
                     .OrderBy(b => b.Index)
                     .Skip(Math.Max(0, offset))
                     .Take(Math.Clamp(max, 1, 1000))
-                    .Select(b => new { Batch = b, Expires = db.DeliveryLeases.Where(l => l.Token == b.LeaseOwner).Select(l => (DateTime?)l.ExpiresUtc).FirstOrDefault() })
+                    .Select(b => new
+                    {
+                        Batch = b,
+                        Expires = db.DeliveryLeases.Where(l => l.PartitionId == b.PartitionId && l.Token == b.LeaseOwner).Select(l => (DateTime?)l.ExpiresUtc).FirstOrDefault(),
+                    })
                     .ToListAsync(ct)
                     .ConfigureAwait(false);
                 return rows.Select(r => ToState(r.Batch) with { LeaseExpiresUtc = r.Expires }).ToList();
@@ -883,10 +987,15 @@ public sealed partial class OsduLedger : ILedger
                 $"A record listing pages through its first {RecordListing.CountLimit} records, and offset {query.Offset} is past them. Narrow the filter (a status, a submission, a run or a search) to reach the records beyond."));
         }
 
-        return await ReadAsync(
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        var listed = await ReadAsync(
             async db =>
             {
-                var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit, ct).ConfigureAwait(false);
+                var rows = await MatchingAsync(db, partition, flowId, query, RecordListing.CountLimit, ct).ConfigureAwait(false);
 
                 // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
                 var page = rows
@@ -897,16 +1006,23 @@ public sealed partial class OsduLedger : ILedger
                 return ToStates(await ReadLeasedAsync(db, page, ct).ConfigureAwait(false));
             },
             ct).ConfigureAwait(false);
+        var name = await PartitionNameAsync(partition, ct).ConfigureAwait(false);
+        return listed.Select(r => r with { Partition = name }).ToList();
     }
 
     public async Task<BoundedCount> CountAsync(Guid flowId, RecordQuery query, int limit, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return new BoundedCount(0, Exact: true);
+        }
+
         return await ReadAsync(
             async db =>
             {
-                var rows = await MatchingAsync(db, flowId, query, limit, ct).ConfigureAwait(false);
+                var rows = await MatchingAsync(db, partition, flowId, query, limit, ct).ConfigureAwait(false);
                 var count = await rows.Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false);
                 if (count >= limit)
                 {
@@ -916,7 +1032,7 @@ public sealed partial class OsduLedger : ILedger
                 // Below the limit the count is exact, unless a prefix search left out candidates another filter would have kept.
                 var truncated = PrefixTerm(query) is { } term
                     && Narrows(query)
-                    && await PrefixCandidatesTruncatedAsync(db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId), term, limit, ct).ConfigureAwait(false);
+                    && await PrefixCandidatesTruncatedAsync(db.DeliveryRecords.AsNoTracking().Where(r => r.PartitionId == partition && r.FlowId == flowId), term, limit, ct).ConfigureAwait(false);
                 return new BoundedCount(count, Exact: !truncated);
             },
             ct).ConfigureAwait(false);
@@ -925,10 +1041,15 @@ public sealed partial class OsduLedger : ILedger
     public async Task<IReadOnlyList<DeliveryKey>> ListKeysAsync(Guid flowId, RecordQuery query, int max, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         var keys = await ReadAsync(
             async db =>
             {
-                var rows = await MatchingAsync(db, flowId, query, RecordListing.CountLimit + 1, ct).ConfigureAwait(false);
+                var rows = await MatchingAsync(db, partition, flowId, query, RecordListing.CountLimit + 1, ct).ConfigureAwait(false);
                 return await rows
                     .OrderBy(r => r.DeliveryKey)
                     .Select(r => r.DeliveryKey)
@@ -940,49 +1061,128 @@ public sealed partial class OsduLedger : ILedger
         return keys.Select(k => new DeliveryKey(k)).ToList();
     }
 
-    public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, Guid? flowId = null, string? partition = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
-        return await ReadAsync(
+        var partitions = await ReadPartitionsAsync(flowId, partition, ct).ConfigureAwait(false);
+        if (partitions.Count == 0)
+        {
+            return [];
+        }
+
+        var states = await ReadAsync(
             async db =>
             {
-                var page = LookupFilter(db, term, RecordListing.LookupCandidateLimit, status, flowId)
+                var page = LookupFilter(db, term, RecordListing.LookupCandidateLimit, status, flowId, partitions)
                     .OrderByDescending(r => r.UpdatedUtc)
                     .ThenByDescending(r => r.DeliveryKey)
                     .Take(Math.Clamp(max, 1, 200));
-                return ToStates(await ReadLeasedAsync(db, page, ct).ConfigureAwait(false));
+                return await ReadLeasedAsync(db, page, ct).ConfigureAwait(false);
             },
             ct).ConfigureAwait(false);
+        return await NamedAsync(states, ct).ConfigureAwait(false);
     }
 
-    public async Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default)
+    public async Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, Guid? flowId = null, string? partition = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(term);
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        var count = await ReadAsync(db => LookupFilter(db, term, limit, status, flowId).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
+        var partitions = await ReadPartitionsAsync(flowId, partition, ct).ConfigureAwait(false);
+        if (partitions.Count == 0)
+        {
+            return new BoundedCount(0, Exact: true);
+        }
+
+        var count = await ReadAsync(db => LookupFilter(db, term, limit, status, flowId, partitions).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
         return new BoundedCount(count, Exact: count < limit);
     }
 
-    public async Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default)
+    public async Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, Guid? flowId = null, string? partition = null, CancellationToken ct = default)
     {
-        return await ReadAsync(
-            async db =>
-            {
-                // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
-                var page = RecentFilter(db, status, flowId)
-                    .OrderByDescending(r => r.UpdatedUtc)
-                    .ThenByDescending(r => r.DeliveryKey)
-                    .Take(Math.Clamp(max, 1, RecordListing.LookupCandidateLimit));
-                return ToStates(await ReadLeasedAsync(db, page, ct).ConfigureAwait(false));
-            },
-            ct).ConfigureAwait(false);
+        var take = Math.Clamp(max, 1, RecordListing.LookupCandidateLimit);
+        var partitions = await ReadPartitionsAsync(flowId, partition, ct).ConfigureAwait(false);
+        var rows = new List<Leased>();
+
+        // Each partition's newest records are the end of its own recency range; the newest across partitions are among
+        // them, so every partition is read to the same depth and the pages merged.
+        foreach (var within in partitions)
+        {
+            rows.AddRange(await ReadAsync(
+                db => ReadLeasedAsync(
+                    db,
+                    RecentFilter(db, status, flowId, within)
+                        .OrderByDescending(r => r.UpdatedUtc)
+                        .ThenByDescending(r => r.DeliveryKey)
+                        .Take(take),
+                    ct),
+                ct).ConfigureAwait(false));
+        }
+
+        // Ties broken by key: a bulk write stamps a whole batch with one update time, and the pages must still partition it.
+        var newest = rows
+            .OrderByDescending(r => r.Record.UpdatedUtc)
+            .ThenByDescending(r => r.Record.DeliveryKey)
+            .Take(take)
+            .ToList();
+        return await NamedAsync(newest, ct).ConfigureAwait(false);
     }
 
-    public async Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default)
+    public async Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, Guid? flowId = null, string? partition = null, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
-        var count = await ReadAsync(db => RecentFilter(db, status, flowId).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct), ct).ConfigureAwait(false);
+        var count = 0;
+        foreach (var within in await ReadPartitionsAsync(flowId, partition, ct).ConfigureAwait(false))
+        {
+            var left = limit - count;
+            if (left <= 0)
+            {
+                break;
+            }
+
+            count += await ReadAsync(db => RecentFilter(db, status, flowId, within).Select(r => r.DeliveryKey).Take(left).CountAsync(ct), ct).ConfigureAwait(false);
+        }
+
         return new BoundedCount(count, Exact: count < limit);
+    }
+
+    /// <summary>
+    /// The partitions a read across ledgers covers: the one <paramref name="flowId"/>'s ledger belongs to, the one
+    /// <paramref name="partition"/> names, or every partition the ledger keeps rows under, the unassigned included; none
+    /// when the ledger or the partition holds nothing. A ledger and a partition together are both filters, so a ledger of
+    /// another partition than the one named reads as empty. Each is read through its own range of a partition-first index.
+    /// </summary>
+    private async Task<IReadOnlyList<short>> ReadPartitionsAsync(Guid? flowId, string? partition, CancellationToken ct)
+    {
+        if (flowId is { } flow)
+        {
+            if (await PartitionOfAsync(flow, ct).ConfigureAwait(false) is not { } own)
+            {
+                return [];
+            }
+
+            return string.IsNullOrWhiteSpace(partition) || await PartitionIdOfAsync(partition, ct).ConfigureAwait(false) == own ? [own] : [];
+        }
+
+        if (!string.IsNullOrWhiteSpace(partition))
+        {
+            return await PartitionIdOfAsync(partition, ct).ConfigureAwait(false) is { } named ? [named] : [];
+        }
+
+        return await EveryPartitionIdAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Every partition number a ledger row can carry: the unassigned one, and each partition the directory numbers.</summary>
+    private async Task<IReadOnlyList<short>> EveryPartitionIdAsync(CancellationToken ct)
+    {
+        var every = await ReadAsync(db => db.DeliveryLedgerPartitions.AsNoTracking().Select(p => p.PartitionId).ToListAsync(ct), ct).ConfigureAwait(false);
+        return [Unassigned, .. every.Order()];
+    }
+
+    /// <summary>Records read across ledgers, each naming its partition.</summary>
+    private async Task<IReadOnlyList<RecordState>> NamedAsync(IReadOnlyList<Leased> rows, CancellationToken ct)
+    {
+        var names = await PartitionNamesAsync(rows.Select(r => r.Record.PartitionId), ct).ConfigureAwait(false);
+        return rows.Select(r => ToState(r.Record) with { LeaseExpiresUtc = r.LeaseExpiresUtc, Partition = names[r.Record.PartitionId] }).ToList();
     }
 
     public async Task<IReadOnlySet<Guid>> FlowsWithRecordsAsync(IReadOnlyCollection<Guid> flowIds, CancellationToken ct = default)
@@ -1000,14 +1200,15 @@ public sealed partial class OsduLedger : ILedger
     }
 
     /// <summary>
-    /// The records the recency listing orders: every record, those in one custody state, those of one ledger identity, or
-    /// those of one identity in one state. Each reads an index that ends with the update time ([UpdatedUtc],
-    /// [Status, UpdatedUtc], [FlowId, UpdatedUtc] or [FlowId, Status, UpdatedUtc]), so the newest rows are the end of a
-    /// range the server walks backwards, and the listing costs what it shows rather than what the ledger holds.
+    /// The records of one partition the recency listing orders: every record of it, those in one custody state, those of
+    /// one ledger identity, or those of one identity in one state. Each reads an index that starts with the partition and
+    /// ends with the update time ([PartitionId, UpdatedUtc], [PartitionId, Status, UpdatedUtc], [PartitionId, FlowId,
+    /// UpdatedUtc] or [PartitionId, FlowId, Status, UpdatedUtc]), so the newest rows are the end of a range the server walks
+    /// backwards, and the listing costs what it shows rather than what the ledger holds.
     /// </summary>
-    private static IQueryable<DeliveryRecord> RecentFilter(OsduDbContext db, RecordStatus? status, Guid? flowId)
+    private static IQueryable<DeliveryRecord> RecentFilter(OsduDbContext db, RecordStatus? status, Guid? flowId, short partition)
     {
-        var rows = db.DeliveryRecords.AsNoTracking();
+        var rows = db.DeliveryRecords.AsNoTracking().Where(r => r.PartitionId == partition);
         if (flowId is { } flow)
         {
             rows = rows.Where(r => r.FlowId == flow);
@@ -1023,24 +1224,25 @@ public sealed partial class OsduLedger : ILedger
     }
 
     /// <summary>
-    /// A UUID is a delivery key, which every flow reading the row holds a record under (a seek of the key index); anything
-    /// else is a prefix over the identity index, which holds every value a record is findable by (the mapping's declared
-    /// identities, the key values, the words of the label, the OSDU id and its trailing part, the ingestion file name),
-    /// folded to upper case. A candidate is a record, flow and key together, so a match in one flow never brings in
-    /// another flow's record of the same row, and the records are read by joining from the few candidates to the primary
-    /// key, so the read stays the size of the candidates however many records the ledger holds. A status narrows the
-    /// candidates after they are found, so it costs nothing more than reading them: the index is what bounds the read. A
-    /// flow is different: its candidates are its own tokens, read from the identity index in flow order, so the candidate
-    /// bound is spent on that flow's records rather than on every flow's.
+    /// A UUID is a delivery key, which every flow reading the row holds a record under (a seek of the partition's key
+    /// index); anything else is a prefix over the identity index, which holds every value a record is findable by (the
+    /// mapping's declared identities, the key values, the words of the label, the OSDU id and its trailing part, the
+    /// ingestion file name), folded to upper case. A candidate is a record, partition, flow and key together, so a match in
+    /// one flow never brings in another flow's record of the same row, and the records are read by joining from the few
+    /// candidates to the primary key, so the read stays the size of the candidates however many records the ledger holds.
+    /// A status narrows the candidates after they are found, so it costs nothing more than reading them: the index is what
+    /// bounds the read. A flow is different: its candidates are its own tokens, read from the identity index in flow order,
+    /// so the candidate bound is spent on that flow's records rather than on every flow's. Every read is a range of the
+    /// partitions in <paramref name="partitions"/>, each index leading with the partition.
     /// </summary>
-    private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates, RecordStatus? status, Guid? flowId)
+    private static IQueryable<DeliveryRecord> LookupFilter(OsduDbContext db, string term, int candidates, RecordStatus? status, Guid? flowId, IReadOnlyList<short> partitions)
     {
         var t = term.Trim();
         var rows = db.DeliveryRecords.AsNoTracking();
         var found = Guid.TryParse(t, out var key)
-            ? rows.Where(r => r.DeliveryKey == key)
-            : IdentityCandidates(db, t, candidates, flowId)
-                .Join(rows, m => new { m.FlowId, m.DeliveryKey }, r => new { r.FlowId, r.DeliveryKey }, (_, r) => r);
+            ? rows.Where(r => partitions.Contains(r.PartitionId) && r.DeliveryKey == key)
+            : IdentityCandidates(db, t, candidates, flowId, partitions)
+                .Join(rows, m => new { m.PartitionId, m.FlowId, m.DeliveryKey }, r => new { r.PartitionId, r.FlowId, r.DeliveryKey }, (_, r) => r);
         if (flowId is { } flow)
         {
             found = found.Where(r => r.FlowId == flow);
@@ -1056,15 +1258,16 @@ public sealed partial class OsduLedger : ILedger
     }
 
     /// <summary>
-    /// The records, of any flow or of the one ledger identity <paramref name="flowId"/> names, one of whose identity tokens
-    /// starts with <paramref name="term"/>: a seek of the identity index in token order (the primary key, or
-    /// [FlowId, Token] for one flow), at most <paramref name="candidates"/> of them. A record with several matching tokens
-    /// is one candidate, because the distinct is over the record, not the token.
+    /// The records, of any flow of <paramref name="partitions"/> or of the one ledger identity <paramref name="flowId"/>
+    /// names, one of whose identity tokens starts with <paramref name="term"/>: a seek of the identity index in token order
+    /// (the primary key, [PartitionId, Token, ...], or [PartitionId, FlowId, Token] for one flow), at most
+    /// <paramref name="candidates"/> of them. A record with several matching tokens is one candidate, because the distinct
+    /// is over the record, not the token.
     /// </summary>
-    private static IQueryable<RecordIdentityRow> IdentityCandidates(OsduDbContext db, string term, int candidates, Guid? flowId)
+    private static IQueryable<RecordIdentityRow> IdentityCandidates(OsduDbContext db, string term, int candidates, Guid? flowId, IReadOnlyList<short> partitions)
     {
         var folded = RecordIdentities.Fold(term);
-        var tokens = db.DeliveryRecordIdentities.AsNoTracking();
+        var tokens = db.DeliveryRecordIdentities.AsNoTracking().Where(i => partitions.Contains(i.PartitionId));
         if (flowId is { } flow)
         {
             tokens = tokens.Where(i => i.FlowId == flow);
@@ -1073,14 +1276,16 @@ public sealed partial class OsduLedger : ILedger
         return tokens
             .Where(i => i.Token.StartsWith(folded))
             .OrderBy(i => i.Token)
-            .Select(i => new RecordIdentityRow { FlowId = i.FlowId, DeliveryKey = i.DeliveryKey })
+            .Select(i => new RecordIdentityRow { PartitionId = i.PartitionId, FlowId = i.FlowId, DeliveryKey = i.DeliveryKey })
             .Take(candidates)
             .Distinct();
     }
 
-    /// <summary>A record named by an identity token: the pair the lookup joins back to the record on.</summary>
+    /// <summary>A record named by an identity token: the key the lookup joins back to the record on.</summary>
     private sealed class RecordIdentityRow
     {
+        public short PartitionId { get; init; }
+
         public Guid FlowId { get; init; }
 
         public Guid DeliveryKey { get; init; }
@@ -1093,10 +1298,10 @@ public sealed partial class OsduLedger : ILedger
     /// filter applies to those. A contains term has no index, so the records the rest of the filter leaves are counted
     /// first, no further than the scan limit, and a filter that leaves more is refused.
     /// </summary>
-    private async Task<IQueryable<DeliveryRecord>> MatchingAsync(OsduDbContext db, Guid flowId, RecordQuery query, int candidates, CancellationToken ct)
+    private async Task<IQueryable<DeliveryRecord>> MatchingAsync(OsduDbContext db, short partition, Guid flowId, RecordQuery query, int candidates, CancellationToken ct)
     {
-        var flow = db.DeliveryRecords.AsNoTracking().Where(r => r.FlowId == flowId);
-        var rows = Narrow(db, flowId, flow, query);
+        var flow = db.DeliveryRecords.AsNoTracking().Where(r => r.PartitionId == partition && r.FlowId == flowId);
+        var rows = Narrow(db, partition, flowId, flow, query);
         if (string.IsNullOrWhiteSpace(query.Search))
         {
             return rows;
@@ -1126,7 +1331,7 @@ public sealed partial class OsduLedger : ILedger
     }
 
     /// <summary>The listing's filters other than its search, over one flow's records; each one seeks an index.</summary>
-    private static IQueryable<DeliveryRecord> Narrow(OsduDbContext db, Guid flowId, IQueryable<DeliveryRecord> rows, RecordQuery query)
+    private static IQueryable<DeliveryRecord> Narrow(OsduDbContext db, short partition, Guid flowId, IQueryable<DeliveryRecord> rows, RecordQuery query)
     {
         if (query.Status is { } status)
         {
@@ -1141,8 +1346,8 @@ public sealed partial class OsduLedger : ILedger
 
         if (query.RunId is { } runId)
         {
-            // The attempt table is indexed on (RunId, FlowId, DeliveryKey), so this is a semi-join over that index rather than a scan.
-            var touched = db.DeliveryAttempts.AsNoTracking().Where(a => a.RunId == runId && a.FlowId == flowId).Select(a => a.DeliveryKey);
+            // The attempt table is indexed on (RunId, PartitionId, FlowId, DeliveryKey), so this is a semi-join over that index rather than a scan.
+            var touched = db.DeliveryAttempts.AsNoTracking().Where(a => a.RunId == runId && a.PartitionId == partition && a.FlowId == flowId).Select(a => a.DeliveryKey);
             rows = rows.Where(r => touched.Contains(r.DeliveryKey));
         }
 
@@ -1152,7 +1357,7 @@ public sealed partial class OsduLedger : ILedger
             // submission delivered are a seek of that index whatever the submission was: a semi-join, not a scan.
             var delivered = StatusText.Of(AttemptOutcome.Delivered);
             var sent = db.DeliveryAttempts.AsNoTracking()
-                .Where(a => a.SubmissionId == deliveredBy && a.Outcome == delivered && a.FlowId == flowId)
+                .Where(a => a.SubmissionId == deliveredBy && a.Outcome == delivered && a.PartitionId == partition && a.FlowId == flowId)
                 .Select(a => a.DeliveryKey);
             rows = rows.Where(r => sent.Contains(r.DeliveryKey));
         }
@@ -1218,18 +1423,27 @@ public sealed partial class OsduLedger : ILedger
             || await scope.Where(r => r.TargetId != null && r.TargetId.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit
             || await scope.Where(r => r.SourceFileName != null && r.SourceFileName.StartsWith(term)).Select(r => r.DeliveryKey).Take(limit).CountAsync(ct).ConfigureAwait(false) >= limit;
 
-    public Task<FlowStats> StatsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default)
-        => ReadAsync(db => StatsAsync(db, flowId, nowUtc, ct), ct);
+    public async Task<FlowStats> StatsAsync(Guid flowId, DateTime nowUtc, CancellationToken ct = default)
+    {
+        // A ledger no run has registered holds nothing to count.
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return new FlowStats();
+        }
+
+        var stats = await ReadAsync(db => StatsAsync(db, partition, flowId, nowUtc, ct), ct).ConfigureAwait(false);
+        return stats.LastSubmission is { } last ? stats with { LastSubmission = last with { Partition = await PartitionNameAsync(partition, ct).ConfigureAwait(false) } } : stats;
+    }
 
     /// <summary>A flow's statistics, every count read from one snapshot of the ledger.</summary>
-    private static async Task<FlowStats> StatsAsync(OsduDbContext db, Guid flowId, DateTime nowUtc, CancellationToken ct)
+    private static async Task<FlowStats> StatsAsync(OsduDbContext db, short partition, Guid flowId, DateTime nowUtc, CancellationToken ct)
     {
         var since = nowUtc.AddHours(-24);
-        var (byStatus, drifted, last24) = await CountFromRecordsAsync(db, flowId, since, ct).ConfigureAwait(false);
-        var lastDelivered = await db.DeliveryRecords.Where(r => r.FlowId == flowId).MaxAsync(r => r.LastDeliveredUtc, ct).ConfigureAwait(false);
-        var lastVerified = await db.DeliveryRecords.Where(r => r.FlowId == flowId).MaxAsync(r => r.LastVerifiedUtc, ct).ConfigureAwait(false);
-        var submissions = await db.DeliverySubmissions.LongCountAsync(s => s.FlowId == flowId, ct).ConfigureAwait(false);
-        var lastSubmission = await db.DeliverySubmissions.Where(s => s.FlowId == flowId).OrderByDescending(s => s.ReceivedUtc).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var (byStatus, drifted, last24) = await CountFromRecordsAsync(db, partition, flowId, since, ct).ConfigureAwait(false);
+        var lastDelivered = await db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId).MaxAsync(r => r.LastDeliveredUtc, ct).ConfigureAwait(false);
+        var lastVerified = await db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId).MaxAsync(r => r.LastVerifiedUtc, ct).ConfigureAwait(false);
+        var submissions = await db.DeliverySubmissions.LongCountAsync(s => s.PartitionId == partition && s.FlowId == flowId, ct).ConfigureAwait(false);
+        var lastSubmission = await db.DeliverySubmissions.Where(s => s.PartitionId == partition && s.FlowId == flowId).OrderByDescending(s => s.ReceivedUtc).FirstOrDefaultAsync(ct).ConfigureAwait(false);
 
         return new FlowStats
         {
@@ -1256,28 +1470,33 @@ public sealed partial class OsduLedger : ILedger
     /// node delivering a flow met every other one on those rows.
     /// </summary>
     private static async Task<(Dictionary<string, long> ByStatus, long Drifted, long DeliveredSince)> CountFromRecordsAsync(
-        OsduDbContext db, Guid flowId, DateTime since, CancellationToken ct)
+        OsduDbContext db, short partition, Guid flowId, DateTime since, CancellationToken ct)
     {
         var byStatus = await db.DeliveryRecords
-            .Where(r => r.FlowId == flowId)
+            .Where(r => r.PartitionId == partition && r.FlowId == flowId)
             .GroupBy(r => r.Status)
             .Select(g => new { Status = g.Key, Count = g.LongCount() })
             .ToDictionaryAsync(c => c.Status, c => c.Count, StringComparer.Ordinal, ct)
             .ConfigureAwait(false);
         var drifted = await db.DeliveryRecords
-            .LongCountAsync(r => r.FlowId == flowId && (r.LastVerifyOutcome == "drifted" || r.LastVerifyOutcome == "missing"), ct)
+            .LongCountAsync(r => r.PartitionId == partition && r.FlowId == flowId && (r.LastVerifyOutcome == "drifted" || r.LastVerifyOutcome == "missing"), ct)
             .ConfigureAwait(false);
         var deliveredSince = await db.DeliveryRecords
-            .LongCountAsync(r => r.FlowId == flowId && r.LastDeliveredUtc != null && r.LastDeliveredUtc >= since, ct)
+            .LongCountAsync(r => r.PartitionId == partition && r.FlowId == flowId && r.LastDeliveredUtc != null && r.LastDeliveredUtc >= since, ct)
             .ConfigureAwait(false);
         return (byStatus, drifted, deliveredSince);
     }
 
     public async Task<IReadOnlyList<AttemptRecord>> ListAttemptsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         var rows = await ReadAsync(
             db => db.DeliveryAttempts
-                .Where(a => a.FlowId == flowId && a.DeliveryKey == key.Value)
+                .Where(a => a.PartitionId == partition && a.FlowId == flowId && a.DeliveryKey == key.Value)
                 .OrderByDescending(a => a.StartedUtc)
                 .ThenByDescending(a => a.AttemptId)
                 .Take(Math.Clamp(max, 1, 1000))
@@ -1288,11 +1507,16 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<RecordOriginSeen>> ListOriginsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default)
     {
-        // One grouped read over the record's attempts, sought through (FlowId, DeliveryKey, StartedUtc): a record is tried
-        // a bounded number of times between retention's prunes, and its versions are far fewer than its tries.
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        // One grouped read over the record's attempts, sought through (PartitionId, FlowId, DeliveryKey, StartedUtc): a
+        // record is tried a bounded number of times between retention's prunes, and its versions are far fewer than its tries.
         var rows = await ReadAsync(
             db => db.DeliveryAttempts
-                .Where(a => a.FlowId == flowId && a.DeliveryKey == key.Value && (a.SourceUpdatedUtc != null || a.SourceDeletedUtc != null))
+                .Where(a => a.PartitionId == partition && a.FlowId == flowId && a.DeliveryKey == key.Value && (a.SourceUpdatedUtc != null || a.SourceDeletedUtc != null))
                 .GroupBy(a => new { a.SourceUpdatedUtc, a.SourceFileName, a.SourceRowNumber, a.SourceDeletedUtc })
                 .Select(g => new { g.Key.SourceUpdatedUtc, g.Key.SourceFileName, g.Key.SourceRowNumber, g.Key.SourceDeletedUtc, First = g.Min(a => a.StartedUtc) })
                 .OrderByDescending(v => v.SourceDeletedUtc ?? v.SourceUpdatedUtc)
@@ -1309,10 +1533,15 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<RecordState>> ListRecordsAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         return await ReadAsync(
             async db =>
             {
-                var query = db.DeliveryRecords.Where(r => r.FlowId == flowId);
+                var query = db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId);
                 if (after is { } cursor)
                 {
                     var from = cursor.Value;
@@ -1328,13 +1557,18 @@ public sealed partial class OsduLedger : ILedger
     {
         ArgumentNullException.ThrowIfNull(keys);
         var result = new Dictionary<DeliveryKey, AttemptRecord>();
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return result;
+        }
+
         foreach (var chunk in keys.Select(k => k.Value).Distinct().Chunk(ChunkSize))
         {
-            // The newest attempt of each record, ranked by the database over (FlowId, DeliveryKey, StartedUtc): a record
-            // tried many times costs its own rows of the index, not a read of every attempt into memory.
+            // The newest attempt of each record, ranked by the database over (PartitionId, FlowId, DeliveryKey, StartedUtc):
+            // a record tried many times costs its own rows of the index, not a read of every attempt into memory.
             var rows = await ReadAsync(
                 db => db.DeliveryAttempts
-                    .Where(a => a.FlowId == flowId && chunk.Contains(a.DeliveryKey))
+                    .Where(a => a.PartitionId == partition && a.FlowId == flowId && chunk.Contains(a.DeliveryKey))
                     .GroupBy(a => a.DeliveryKey)
                     .Select(g => g.OrderByDescending(a => a.StartedUtc).ThenByDescending(a => a.AttemptId).First())
                     .ToListAsync(ct),
@@ -1355,11 +1589,17 @@ public sealed partial class OsduLedger : ILedger
         var arrivals = 0;
         var plans = 0;
         var notFound = 0;
+        if (findings.Count == 0)
+        {
+            return new SourceSyncApplied(arrivals, plans, notFound);
+        }
+
+        var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
         await using var db = Open();
         foreach (var chunk in findings.Chunk(ChunkSize))
         {
             var keys = chunk.Select(f => f.DeliveryKey.Value).ToArray();
-            var entities = await db.DeliveryRecords.Where(r => r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
+            var entities = await db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
             foreach (var finding in chunk)
             {
                 if (!entities.TryGetValue(finding.DeliveryKey.Value, out var entity))
@@ -1387,6 +1627,7 @@ public sealed partial class OsduLedger : ILedger
                 {
                     db.DeliveryAttempts.Add(new DeliveryAttempt
                     {
+                        PartitionId = partition,
                         FlowId = flowId,
                         DeliveryKey = entity.DeliveryKey,
                         RunId = runId,
@@ -1425,11 +1666,16 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         var delivered = StatusText.Of(RecordStatus.Delivered);
         var rows = await ReadAsync(
             db =>
             {
-                var query = db.DeliveryRecords.Where(r => r.FlowId == flowId && r.Status == delivered && r.TargetId != null);
+                var query = db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.Status == delivered && r.TargetId != null);
                 if (verifiedBeforeUtc is { } before)
                 {
                     query = query.Where(r => r.LastVerifiedUtc == null || r.LastVerifiedUtc < before);
@@ -1443,8 +1689,9 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task RecordVerifyAsync(Guid flowId, DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, CancellationToken ct = default)
     {
+        var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
         await using var db = Open();
-        var entity = await db.DeliveryRecords.FirstOrDefaultAsync(r => r.FlowId == flowId && r.DeliveryKey == key.Value, ct).ConfigureAwait(false)
+        var entity = await db.DeliveryRecords.FirstOrDefaultAsync(r => r.PartitionId == partition && r.FlowId == flowId && r.DeliveryKey == key.Value, ct).ConfigureAwait(false)
             ?? throw new DeliveryException($"Record {key} is not in the ledger of flow {flowId:D}.");
         entity.LastVerifiedUtc = nowUtc;
         entity.LastVerifyOutcome = StatusText.Of(outcome);
@@ -1464,12 +1711,17 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task<int> ReleaseAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return 0;
+        }
+
         await using var db = Open();
         var held = StatusText.Of(RecordStatus.Held);
         var failed = StatusText.Of(RecordStatus.Failed);
         var deleted = StatusText.Of(RecordStatus.Deleted);
         var pending = StatusText.Of(RecordStatus.Pending);
-        var blocked = db.DeliveryRecords.Where(r => r.FlowId == flowId && r.Blocked && (r.Status == held || r.Status == failed || r.Status == deleted));
+        var blocked = db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.Blocked && (r.Status == held || r.Status == failed || r.Status == deleted));
         if (keys is not null)
         {
             var ids = keys.Select(k => k.Value).ToArray();
@@ -1507,7 +1759,7 @@ public sealed partial class OsduLedger : ILedger
             var ids = keys.Select(k => k.Value).ToArray();
             var waiting = StatusText.Of(RecordStatus.Waiting);
             unwaited = await WriteEachAsync(
-                db.DeliveryRecords.Where(r => r.FlowId == flowId && r.Status == waiting && ids.Contains(r.DeliveryKey)),
+                db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.Status == waiting && ids.Contains(r.DeliveryKey)),
                 slice => slice.ExecuteUpdateAsync(s => s
                     .SetProperty(r => r.Status, pending)
                     .SetProperty(r => r.WaitingFor, (string?)null)
@@ -1528,13 +1780,18 @@ public sealed partial class OsduLedger : ILedger
     {
         ArgumentNullException.ThrowIfNull(keys);
         ArgumentNullException.ThrowIfNull(selection);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return 0;
+        }
+
         await using var db = Open();
         var note = $"redelivery of {selection} requested";
 
         // Parts of a payload sent in parts are named on its delivered hash; a selection of every part clears it, as a
         // whole payload's redelivery always has.
         var marker = selection is { Scope: RedeliverScope.Payload, Parts.Count: > 0 } ? PayloadParts.RedeliverMarker(selection.Parts) : null;
-        return await WriteByKeyAsync(db.DeliveryRecords, keys.Select(k => new RecordKey(flowId, k.Value)), rows => RedeliverAsync(rows, selection.Scope, marker, note, nowUtc, ct), ct).ConfigureAwait(false);
+        return await WriteByKeyAsync(db.DeliveryRecords, keys.Select(k => new RecordKey(partition, flowId, k.Value)), rows => RedeliverAsync(rows, selection.Scope, marker, note, nowUtc, ct), ct).ConfigureAwait(false);
     }
 
     private static Task<int> RedeliverAsync(IQueryable<DeliveryRecord> rows, RedeliverScope scope, string note, DateTime nowUtc, CancellationToken ct)
@@ -1586,13 +1843,15 @@ public sealed partial class OsduLedger : ILedger
             _ => throw new ArgumentOutOfRangeException(nameof(scope)),
         };
 
+        var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
+
         // A removal of many records settles in chunks: one query for the rows and one save for the whole chunk,
         // rather than a round trip per record.
         foreach (var chunk in keys.Chunk(ChunkSize))
         {
             await using var db = Open();
             var ids = chunk.Select(k => k.Value).Distinct().ToList();
-            var entities = await db.DeliveryRecords.Where(r => r.FlowId == flowId && ids.Contains(r.DeliveryKey)).ToListAsync(ct).ConfigureAwait(false);
+            var entities = await db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && ids.Contains(r.DeliveryKey)).ToListAsync(ct).ConfigureAwait(false);
             if (entities.Count != ids.Count)
             {
                 var missing = ids.Except(entities.Select(e => e.DeliveryKey)).First();
@@ -1612,6 +1871,7 @@ public sealed partial class OsduLedger : ILedger
     {
         db.DeliveryAttempts.Add(new DeliveryAttempt
         {
+            PartitionId = entity.PartitionId,
             FlowId = entity.FlowId,
             DeliveryKey = entity.DeliveryKey,
             SubmissionId = entity.LastSubmissionId,
@@ -1933,7 +2193,7 @@ public sealed partial class OsduLedger : ILedger
         var page = await records
             .OrderBy(r => r.DeliveryKey)
             .ThenBy(r => r.FlowId)
-            .Select(r => new { r.FlowId, r.DeliveryKey })
+            .Select(r => new { r.PartitionId, r.FlowId, r.DeliveryKey })
             .Take(size)
             .ToListAsync(ct).ConfigureAwait(false);
 
@@ -1945,7 +2205,7 @@ public sealed partial class OsduLedger : ILedger
             var note = $"redelivery of metadata requested by cache change {tag.TagId}";
             await WriteByKeyAsync(
                 db.DeliveryRecords,
-                page.Select(r => new RecordKey(r.FlowId, r.DeliveryKey)),
+                page.Select(r => new RecordKey(r.PartitionId, r.FlowId, r.DeliveryKey)),
                 rows => RedeliverAsync(rows, RedeliverScope.Metadata, note, nowUtc, ct),
                 ct).ConfigureAwait(false);
 
@@ -2109,7 +2369,12 @@ public sealed partial class OsduLedger : ILedger
     public async Task<SourceWatermark?> GetWatermarkAsync(Guid flowId, string scope, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
-        var row = await ReadAsync(db => db.DeliverySourceWatermarks.FirstOrDefaultAsync(w => w.FlowId == flowId && w.Scope == scope, ct), ct).ConfigureAwait(false);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
+        var row = await ReadAsync(db => db.DeliverySourceWatermarks.FirstOrDefaultAsync(w => w.PartitionId == partition && w.FlowId == flowId && w.Scope == scope, ct), ct).ConfigureAwait(false);
         return row is null ? null : ToWatermark(row);
     }
 
@@ -2123,13 +2388,14 @@ public sealed partial class OsduLedger : ILedger
         }
 
         var through = DateTime.SpecifyKind(watermark.UpdatedThroughUtc, DateTimeKind.Utc);
+        var partition = await WritePartitionAsync(watermark.FlowId, ct).ConfigureAwait(false);
         for (var attempt = 0; attempt < 3; attempt++)
         {
             await using var db = Open();
-            var entity = await db.DeliverySourceWatermarks.FirstOrDefaultAsync(x => x.FlowId == watermark.FlowId && x.Scope == watermark.Scope, ct).ConfigureAwait(false);
+            var entity = await db.DeliverySourceWatermarks.FirstOrDefaultAsync(x => x.PartitionId == partition && x.FlowId == watermark.FlowId && x.Scope == watermark.Scope, ct).ConfigureAwait(false);
             if (entity is null)
             {
-                entity = new DeliverySourceWatermark { FlowId = watermark.FlowId, Scope = watermark.Scope };
+                entity = new DeliverySourceWatermark { PartitionId = partition, FlowId = watermark.FlowId, Scope = watermark.Scope };
                 db.DeliverySourceWatermarks.Add(entity);
             }
             else if (through < entity.UpdatedThroughUtc)
@@ -2177,7 +2443,7 @@ public sealed partial class OsduLedger : ILedger
             // seek of the record's own timeline.
             var deleted = await db.DeliveryAttempts
                 .Where(a => a.StartedUtc < olderThanUtc
-                    && db.DeliveryAttempts.Any(b => b.FlowId == a.FlowId && b.DeliveryKey == a.DeliveryKey && b.AttemptId > a.AttemptId))
+                    && db.DeliveryAttempts.Any(b => b.PartitionId == a.PartitionId && b.FlowId == a.FlowId && b.DeliveryKey == a.DeliveryKey && b.AttemptId > a.AttemptId))
                 .OrderBy(a => a.StartedUtc)
                 .Take(PruneBatch)
                 .ExecuteDeleteAsync(ct)
@@ -2195,9 +2461,11 @@ public sealed partial class OsduLedger : ILedger
     public async Task<RetrievalState> StartRetrievalAsync(RetrievalState retrieval, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(retrieval);
+        var partition = await WritePartitionAsync(retrieval.FlowId, ct).ConfigureAwait(false);
         await using var db = Open();
         var entity = new DeliveryRetrieval
         {
+            PartitionId = partition,
             FlowId = retrieval.FlowId,
             FlowName = retrieval.FlowName,
             RunId = retrieval.RunId,
@@ -2240,9 +2508,14 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task<RetrievalState?> LastRetrievalAsync(Guid flowId, string status, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
         var entity = await ReadAsync(
             db => db.DeliveryRetrievals
-                .Where(r => r.FlowId == flowId && r.Status == status)
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && r.Status == status)
                 .OrderByDescending(r => r.StartedUtc).ThenByDescending(r => r.RetrievalId)
                 .FirstOrDefaultAsync(ct),
             ct).ConfigureAwait(false);
@@ -2251,9 +2524,14 @@ public sealed partial class OsduLedger : ILedger
 
     public async Task<IReadOnlyList<RetrievalState>> ListRetrievalsAsync(Guid flowId, int max, CancellationToken ct = default)
     {
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
         var rows = await ReadAsync(
             db => db.DeliveryRetrievals
-                .Where(r => r.FlowId == flowId)
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId)
                 .OrderByDescending(r => r.StartedUtc).ThenByDescending(r => r.RetrievalId)
                 .Take(Math.Clamp(max, 1, 1000))
                 .ToListAsync(ct),
@@ -2287,9 +2565,11 @@ public sealed partial class OsduLedger : ILedger
     public async Task<ActivityRecord> StartActivityAsync(ActivityRecord activity, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(activity);
+        var partition = await WritePartitionAsync(activity.FlowId, ct).ConfigureAwait(false);
         await using var db = Open();
         var entity = new DeliveryActivity
         {
+            PartitionId = partition,
             FlowId = activity.FlowId,
             FlowName = activity.FlowName,
             Kind = activity.Kind,
@@ -2306,7 +2586,7 @@ public sealed partial class OsduLedger : ILedger
         };
         db.DeliveryActivities.Add(entity);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return ToRecord(entity);
+        return ToRecord(entity) with { Partition = await PartitionNameAsync(partition, ct).ConfigureAwait(false) };
     }
 
     public async Task CompleteActivityAsync(long activityId, string outcome, string? summary, string? log, DateTime completedUtc, Guid? submissionId = null, CancellationToken ct = default)
@@ -2325,20 +2605,52 @@ public sealed partial class OsduLedger : ILedger
     public async Task<ActivityRecord?> GetActivityAsync(long activityId, CancellationToken ct = default)
     {
         var entity = await ReadAsync(db => db.DeliveryActivities.FirstOrDefaultAsync(a => a.ActivityId == activityId, ct), ct).ConfigureAwait(false);
-        return entity is null ? null : ToRecord(entity);
+        return entity is null ? null : ToRecord(entity) with { Partition = await PartitionNameAsync(entity.PartitionId, ct).ConfigureAwait(false) };
     }
 
     public async Task<IReadOnlyList<ActivityRecord>> ListActivitiesAsync(ActivityQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
-        var list = await ReadAsync(
-            db => FilterActivities(db.DeliveryActivities, query)
+        if (await ActivityPartitionAsync(query, ct).ConfigureAwait(false) is not { } scope)
+        {
+            return [];
+        }
+
+        var skip = Math.Max(0, query.Offset);
+        var take = Math.Clamp(query.Max, 1, 1000);
+        List<DeliveryActivity> list;
+        if (scope.PartitionId is null && query.SubmissionId is null && query.RunId is null)
+        {
+            // Every partition's trail: each partition's newest through its own range of (PartitionId, StartedUtc), merged,
+            // rather than one sort of every activity kept. One narrowed to a submission or a run seeks that id's index.
+            var merged = new List<DeliveryActivity>();
+            foreach (var partition in await EveryPartitionIdAsync(ct).ConfigureAwait(false))
+            {
+                merged.AddRange(await ActivityPageAsync(query, partition, 0, skip + take, ct).ConfigureAwait(false));
+            }
+
+            list = merged.OrderByDescending(a => a.StartedUtc).ThenByDescending(a => a.ActivityId).Skip(skip).Take(take).ToList();
+        }
+        else
+        {
+            list = await ActivityPageAsync(query, scope.PartitionId, skip, take, ct).ConfigureAwait(false);
+        }
+
+        var names = await PartitionNamesAsync(list.Select(a => a.PartitionId), ct).ConfigureAwait(false);
+        return list.Select(a => ToRecord(a) with { Partition = names[a.PartitionId] }).ToList();
+    }
+
+    /// <summary>One page of activities <paramref name="query"/> selects in <paramref name="partition"/> (every one for null), newest first, without their logs.</summary>
+    private Task<List<DeliveryActivity>> ActivityPageAsync(ActivityQuery query, short? partition, int skip, int take, CancellationToken ct)
+        => ReadAsync(
+            db => FilterActivities(db.DeliveryActivities, query, partition)
                 .OrderByDescending(a => a.StartedUtc)
                 .ThenByDescending(a => a.ActivityId)
-                .Skip(Math.Max(0, query.Offset))
-                .Take(Math.Clamp(query.Max, 1, 1000))
+                .Skip(skip)
+                .Take(take)
                 .Select(a => new DeliveryActivity
                 {
+                    PartitionId = a.PartitionId,
                     ActivityId = a.ActivityId,
                     FlowId = a.FlowId,
                     FlowName = a.FlowName,
@@ -2356,18 +2668,52 @@ public sealed partial class OsduLedger : ILedger
                     Log = null,
                 })
                 .ToListAsync(ct),
-            ct).ConfigureAwait(false);
-        return list.Select(ToRecord).ToList();
-    }
+            ct);
 
-    public Task<int> CountActivitiesAsync(ActivityQuery query, CancellationToken ct = default)
+    public async Task<int> CountActivitiesAsync(ActivityQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
-        return ReadAsync(db => FilterActivities(db.DeliveryActivities, query).CountAsync(ct), ct);
+        if (await ActivityPartitionAsync(query, ct).ConfigureAwait(false) is not { } scope)
+        {
+            return 0;
+        }
+
+        return await ReadAsync(db => FilterActivities(db.DeliveryActivities, query, scope.PartitionId).CountAsync(ct), ct).ConfigureAwait(false);
     }
 
-    private static IQueryable<DeliveryActivity> FilterActivities(IQueryable<DeliveryActivity> rows, ActivityQuery query)
+    /// <summary>
+    /// The partition an activity listing reads: its ledger's, when it names a ledger identity; the one it names; or every
+    /// partition (a null number). Null when the ledger or the partition holds no activity to read, or when it names both
+    /// and the ledger belongs to another partition.
+    /// </summary>
+    private async Task<ActivityScope?> ActivityPartitionAsync(ActivityQuery query, CancellationToken ct)
     {
+        if (query.FlowId is { } flowId)
+        {
+            var own = await PartitionOfAsync(flowId, ct).ConfigureAwait(false);
+            return own is not null && (string.IsNullOrWhiteSpace(query.Partition) || await PartitionIdOfAsync(query.Partition, ct).ConfigureAwait(false) == own)
+                ? new ActivityScope(own)
+                : null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Partition))
+        {
+            return await PartitionIdOfAsync(query.Partition, ct).ConfigureAwait(false) is { } named ? new ActivityScope(named) : null;
+        }
+
+        return new ActivityScope(null);
+    }
+
+    /// <summary>The partition an activity listing reads, or null for every partition.</summary>
+    private sealed record ActivityScope(short? PartitionId);
+
+    private static IQueryable<DeliveryActivity> FilterActivities(IQueryable<DeliveryActivity> rows, ActivityQuery query, short? partition)
+    {
+        if (partition is { } within)
+        {
+            rows = rows.Where(a => a.PartitionId == within);
+        }
+
         if (query.FlowId is { } flowId)
         {
             rows = rows.Where(a => a.FlowId == flowId);
@@ -2420,8 +2766,9 @@ public sealed partial class OsduLedger : ILedger
     internal static string? Truncate(string? text, int max)
         => text is null ? null : text.Length <= max ? text : text[..max];
 
-    private static DeliveryAttempt ToEntity(Guid flowId, AttemptRecord attempt) => new()
+    private static DeliveryAttempt ToEntity(short partition, Guid flowId, AttemptRecord attempt) => new()
     {
+        PartitionId = partition,
         FlowId = flowId,
         DeliveryKey = attempt.DeliveryKey.Value,
         SubmissionId = attempt.SubmissionId,

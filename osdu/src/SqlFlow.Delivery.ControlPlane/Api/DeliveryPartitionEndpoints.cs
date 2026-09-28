@@ -11,6 +11,7 @@ using SqlFlow.ControlPlane.Hosting;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 
@@ -38,8 +39,12 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 /// <param name="Types">How many types that version holds.</param>
 /// <param name="Items">How many records and lookup rows that version holds.</param>
 /// <param name="CacheFlows">The cache flows that fill its cache, by name, in order.</param>
-/// <param name="DeliveryFlows">The delivery flows that deliver to it, by name, in order.</param>
+/// <param name="DeliveryFlows">
+/// The delivery flows that deliver to it, by name, in order: those the sync describes in it, and those whose ledger it keeps,
+/// a flow whose partition is its header's and a flow of a partition since removed included.
+/// </param>
 /// <param name="PendingChanges">Cache changes found in it that wait for someone to approve or reject them.</param>
+/// <param name="Ledgers">How many ledgers the ledger's directory keeps under it: one per interface that delivered or retrieved there.</param>
 public sealed record DeliveryPartitionDto(
     string Name,
     string? Description,
@@ -55,7 +60,8 @@ public sealed record DeliveryPartitionDto(
     long Items,
     IReadOnlyList<string> CacheFlows,
     IReadOnlyList<string> DeliveryFlows,
-    long PendingChanges);
+    long PendingChanges,
+    int Ledgers = 0);
 
 /// <summary>A partition to register: its name, what it is for, and whether it becomes the default.</summary>
 public sealed record DeliveryPartitionAddRequest(string? Name, string? Description, bool? IsDefault);
@@ -87,7 +93,7 @@ public static partial class DeliveryPartitionEndpoints
 
     /// <summary>
     /// Every registered partition, and every partition something is still kept under (a cache, a synced delivery flow that
-    /// hard-codes it), ordered by name. A cache flow whose header names a partition the sync could not resolve keeps the
+    /// hard-codes it, a ledger), ordered by name. A cache flow whose header names a partition the sync could not resolve keeps the
     /// reference as its scope; that is not a partition anyone can pick, so it is left out here and shown on the cache page
     /// as it is.
     /// </summary>
@@ -220,11 +226,22 @@ public static partial class DeliveryPartitionEndpoints
             .Select(d => new { d.Scope, d.FlowName })
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
-        var deliveryFlows = await osdu.DeliveryInterfaces.AsNoTracking()
+        var described = await osdu.DeliveryInterfaces.AsNoTracking()
             .Where(i => i.Active && i.Partition != "")
             .Select(i => new { i.Partition, i.FlowName })
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
+
+        // The ledgers each partition keeps, from the ledger's directory: one row per partition, kind and flow, counted there.
+        var kept = await osdu.DeliveryLedgers.AsNoTracking()
+            .Join(osdu.DeliveryLedgerPartitions.AsNoTracking(), l => l.PartitionId, p => p.PartitionId, (l, p) => new { Partition = p.Name, l.Kind, l.FlowName })
+            .GroupBy(x => new { x.Partition, x.Kind, x.FlowName })
+            .Select(g => new { g.Key.Partition, g.Key.Kind, g.Key.FlowName, Count = g.Count() })
+            .ToListAsync(ct).ConfigureAwait(false);
+        var deliveryFlows = described
+            .Select(d => (d.Partition, d.FlowName))
+            .Concat(kept.Where(k => k.Kind == LedgerKinds.Delivery).Select(k => (k.Partition, k.FlowName)))
+            .ToList();
         var current = (await osdu.DeliveryCacheVersions.AsNoTracking()
                 .Where(v => v.Current)
                 .ToListAsync(ct).ConfigureAwait(false))
@@ -243,6 +260,7 @@ public static partial class DeliveryPartitionEndpoints
         var names = registered.Select(r => r.Name)
             .Concat(cacheFlows.Select(c => c.Scope))
             .Concat(deliveryFlows.Select(d => d.Partition))
+            .Concat(kept.Select(k => k.Partition))
             .Concat(current.Keys)
             .Where(CacheScope.IsPartitionId)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -269,8 +287,9 @@ public static partial class DeliveryPartitionEndpoints
                 cacheFlows.Where(c => string.Equals(c.Scope, name, StringComparison.OrdinalIgnoreCase)).Select(c => c.FlowName)
                     .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList(),
                 deliveryFlows.Where(d => string.Equals(d.Partition, name, StringComparison.OrdinalIgnoreCase)).Select(d => d.FlowName)
-                    .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList(),
-                pending.GetValueOrDefault(name));
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList(),
+                pending.GetValueOrDefault(name),
+                kept.Where(k => string.Equals(k.Partition, name, StringComparison.OrdinalIgnoreCase)).Sum(k => k.Count));
         }).ToList();
     }
 

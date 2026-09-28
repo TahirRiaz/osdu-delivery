@@ -9,13 +9,18 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 [Collection(SqlServerSuite.Name)]
-public class SqlLedgerTests : IDisposable
+public class SqlLedgerTests : IAsyncLifetime, IDisposable
 {
     private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
     private readonly Guid _flow = FlowId.Of("test-flow");
 
     private OsduLedger Ledger => _db.Ledger(_clock);
+
+    /// <summary>Registers the ledgers the tests write to directly, as a run registers its own before it writes a row of it.</summary>
+    public Task InitializeAsync() => Ledger.RegisterAsync(_flow, FlowId.Of("other-flow"), FlowId.Of("test-flow-two"), FlowId.Of("test-flow-wellbores"), FlowId.Of("test-flow-copy"));
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
@@ -403,7 +408,7 @@ public class SqlLedgerTests : IDisposable
 
         // The backfill walks the ledger in key order, a page at a time, and is resumable from the key it last wrote.
         var written = 0;
-        Guid? after = null;
+        RecordCursor? after = null;
         for (var pass = 0; pass < 10; pass++)
         {
             var (last, count, tokens) = await Ledger.BackfillIdentitiesAsync(after, 2);

@@ -95,6 +95,7 @@ public sealed class DeliveryPreviewApiTests
         }
 
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(logsLedger);
         await ledger.UpsertPendingAsync(logsLedger,
         [
             new RecordState

@@ -95,7 +95,7 @@ public sealed partial class RecordIdentityBackfillService : BackgroundService
 
         var records = 0;
         var pages = 0;
-        Guid? after = null;
+        RecordCursor? after = null;
         while (!ct.IsCancellationRequested)
         {
             var (last, written, _) = await indexed.BackfillIdentitiesAsync(after, PageSize, ct).ConfigureAwait(false);

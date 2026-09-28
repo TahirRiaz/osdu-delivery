@@ -39,6 +39,7 @@ public class ScaleEngineTests : IDisposable
         var local = Samples.LocalFlow(_root);
         var flow = local with { Reliability = local.Reliability with { BatchRecords = 2 } };
         using var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        await ledger.RegisterAsync(runtime.Flow);
         var protocol = new FakeProtocol();
 
         var intake = await runtime.Intake.IntakeAsync(flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
@@ -102,6 +103,7 @@ public class ScaleEngineTests : IDisposable
         var engine = Samples.Engine(ledger, _clock, sources: tables);
         var flow = Samples.LocalFlow(_root);
         using var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        await ledger.RegisterAsync(runtime.Flow);
         var protocol = new FakeProtocol();
         var resumed = 0;
         protocol.Before = async (work, ct) =>
@@ -152,6 +154,7 @@ public class ScaleEngineTests : IDisposable
         var engine = Samples.Engine(ledger, _clock, sources: tables) with { Protocols = new FakeProtocolFactory(protocol), FanOut = dispatcher };
         dispatcher.Engine = engine;
         using var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        await ledger.RegisterAsync(runtime.Flow);
         runtime.RunId = Guid.NewGuid();
         runtime.Actor = "test";
 

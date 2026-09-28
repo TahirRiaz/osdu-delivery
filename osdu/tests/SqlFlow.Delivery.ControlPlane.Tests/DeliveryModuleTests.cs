@@ -215,6 +215,7 @@ public sealed class DeliveryModuleTests
         var ledger = database.Ledger();
         var flowName = "wells-wellbore-03-header-delivery";
         var flowId = FlowId.Of(flowName);
+        await ledger.RegisterAsync(flowId);
         var pipelineId = Guid.NewGuid();
         var repoId = Guid.NewGuid();
         await using (var db = database.CreateCatalogContext())
@@ -290,7 +291,7 @@ public sealed class DeliveryModuleTests
 
         await using var context = database.CreateCatalogContext();
         await using var module = database.CreateDbContext();
-        var contributor = new RecordSearchContributor(ledger, context, module);
+        var contributor = new RecordSearchContributor(ledger, context, module, new Microsoft.AspNetCore.Http.HttpContextAccessor());
         var contribution = await contributor.SearchAsync(
             new SearchContributionRequest("OSDU-DEV-1", ["OSDU-DEV-1"], 1, 5, new ClaimsPrincipal()), CancellationToken.None);
 

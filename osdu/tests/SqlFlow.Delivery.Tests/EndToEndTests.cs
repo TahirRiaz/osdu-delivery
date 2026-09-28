@@ -47,6 +47,7 @@ public class EndToEndTests : IDisposable
         var engine = Samples.Engine(ledger, _clock, sources: tables, searches: searches) with { Protocols = protocols ?? new FakeProtocolFactory(protocol) };
         var flow = adjust is null ? Samples.LocalFlow(_root) : adjust(Samples.LocalFlow(_root));
         var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        await ledger.RegisterAsync(runtime.Flow);
         return (runtime, protocol, ledger);
     }
 
@@ -118,6 +119,7 @@ public class EndToEndTests : IDisposable
             // The wellbore the sample well logs refer to is another flow's record of this ledger, queued and not yet
             // delivered: the well logs point at a record that is not in OSDU.
             var wellboreFlow = FlowId.Of("wells-wellbore-03-header-delivery");
+            await ledger.RegisterAsync(wellboreFlow);
             // The second log is moved into the first log's wellbore, so two logs wait for one wellbore.
             tables.Records[1].Row["wellbore_uwi"] = SampleEstate.Logs()[0].WellboreUwi;
             var wellboreId = "dev:master-data--Wellbore:" + FixedRecordSearchFactory.WellboreId(SampleEstate.Logs()[0].WellboreUwi);

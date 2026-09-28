@@ -43,7 +43,14 @@ public sealed class ReferenceCheck
             return new Dictionary<DeliveryKey, IReadOnlyList<RecordReference>>();
         }
 
-        var held = await _ledger.HeldIdsAsync(ids, ct).ConfigureAwait(false);
+        // The records are one ledger's, and an id is referred to within its partition: the ledger's partition holds it or none does.
+        var ledgers = records.Select(r => r.FlowId).Distinct().ToList();
+        var held = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var flowId in ledgers)
+        {
+            held.UnionWith(await _ledger.HeldIdsAsync(flowId, ids, ct).ConfigureAwait(false));
+        }
+
         var unknown = ids.Where(id => !held.Contains(id)).ToList();
         if (unknown.Count == 0)
         {

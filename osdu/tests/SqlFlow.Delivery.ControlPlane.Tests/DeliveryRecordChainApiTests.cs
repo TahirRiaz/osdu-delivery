@@ -48,6 +48,7 @@ public sealed class DeliveryRecordChainApiTests
         var deleted = day.AddHours(4).AddMinutes(5).AddSeconds(30);
         var runs = new List<Guid>();
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(flowId);
 
         try
         {
@@ -218,6 +219,7 @@ public sealed class DeliveryRecordChainApiTests
         var arrived = new DateTime(2026, 9, 5, 4, 2, 0, DateTimeKind.Utc);
         var stamped = arrived.AddDays(1);
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(flowId);
 
         try
         {

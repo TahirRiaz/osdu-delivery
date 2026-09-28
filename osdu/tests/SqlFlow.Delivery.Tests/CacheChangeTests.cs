@@ -16,7 +16,7 @@ namespace SqlFlow.Delivery.Tests;
 /// approved change out without taking the estate with it.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
-public sealed class CacheChangeTests : IDisposable
+public sealed class CacheChangeTests : IAsyncLifetime, IDisposable
 {
     /// <summary>The partition whose cache the records under test were built from.</summary>
     private const string Scope = "dev";
@@ -29,6 +29,11 @@ public sealed class CacheChangeTests : IDisposable
     public CacheChangeTests() => _ledger = _db.Ledger(_clock);
 
     private OsduLedger Ledger => _ledger;
+
+    /// <summary>Registers the ledgers the tests write to directly, as a run registers its own before it writes a row of it.</summary>
+    public Task InitializeAsync() => Ledger.RegisterAsync(_flow, FlowId.Of("test-flow-wellbores"));
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 

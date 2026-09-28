@@ -42,6 +42,7 @@ public sealed class DeliveryRecordOriginApiTests
         var delivered = new DateTime(2026, 9, 1, 6, 30, 0, DateTimeKind.Utc);
         var pending = new DateTime(2026, 9, 2, 7, 15, 0, DateTimeKind.Utc);
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(flowId);
 
         try
         {

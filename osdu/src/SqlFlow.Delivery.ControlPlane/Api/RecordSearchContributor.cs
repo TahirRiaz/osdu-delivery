@@ -74,10 +74,18 @@ internal static class DeliveryRecordHits
             return by;
         }
 
+        // The records' own tokens, found through the identity index of each record's ledger: the partition and ledger
+        // identity lead it, and the directory says which partition each ledger of the page is kept under.
         var folded = RecordIdentities.Fold(term);
         var keys = records.Select(r => r.DeliveryKey.Value).Distinct().ToList();
+        var flows = records.Select(r => r.FlowId).Distinct().ToList();
+        var partitions = await osdu.DeliveryLedgers.AsNoTracking()
+            .Where(l => flows.Contains(l.FlowId))
+            .Select(l => l.PartitionId)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
         var rows = await osdu.DeliveryRecordIdentities.AsNoTracking()
-            .Where(i => keys.Contains(i.DeliveryKey) && i.Token.StartsWith(folded))
+            .Where(i => partitions.Contains(i.PartitionId) && flows.Contains(i.FlowId) && keys.Contains(i.DeliveryKey) && i.Token.StartsWith(folded))
             .OrderBy(i => i.Token)
             .Select(i => new { i.FlowId, i.DeliveryKey, i.Display, i.Kind })
             .ToListAsync(ct).ConfigureAwait(false);
@@ -105,7 +113,7 @@ internal static class DeliveryRecordHits
             matched is { Count: > 0 } ? matched : null,
             origin.FileName,
             origin.RowNumber,
-            found is { Partition.Length: > 0 } ? found.Partition : null);
+            record.Partition ?? (found is { Partition.Length: > 0 } ? found.Partition : null));
     }
 
     /// <summary>
@@ -120,15 +128,16 @@ internal static class DeliveryRecordHits
         }
 
         var named = found.Interface.Length == 0 ? found.Pipeline.Name : $"{found.Pipeline.Name}/{found.Interface}";
-        return found.Partition.Length == 0 ? named : $"{named}@{found.Partition}";
+        return !found.Bound || found.Partition.Length == 0 ? named : $"{named}@{found.Partition}";
     }
 }
 
 /// <summary>
 /// The <c>records</c> category the module adds to the control plane's search: a delivery key lands on one record, and an
-/// OSDU id, a source key, a label or an origin file name lists the records that start with it, across every flow. The
-/// lookup is the ledger's own indexed one, so it answers in milliseconds at production volume and counts no further than
-/// its bound, which is what <see cref="SearchContribution.TotalCapped"/> then says.
+/// OSDU id, a source key, a label or an origin file name lists the records that start with it, across every flow of the
+/// partition the workbench works in (<see cref="WorkbenchPartition"/>), or of every partition when the request names none.
+/// The lookup is the ledger's own indexed one, so it answers in milliseconds at production volume and counts no further
+/// than its bound, which is what <see cref="SearchContribution.TotalCapped"/> then says.
 /// </summary>
 public sealed class RecordSearchContributor : ISearchContributor
 {
@@ -138,15 +147,18 @@ public sealed class RecordSearchContributor : ISearchContributor
     private readonly ILedger _ledger;
     private readonly CatalogDbContext _catalog;
     private readonly OsduDbContext _osdu;
+    private readonly Microsoft.AspNetCore.Http.IHttpContextAccessor _http;
 
-    public RecordSearchContributor(ILedger ledger, CatalogDbContext catalog, OsduDbContext osdu)
+    public RecordSearchContributor(ILedger ledger, CatalogDbContext catalog, OsduDbContext osdu, Microsoft.AspNetCore.Http.IHttpContextAccessor http)
     {
         ArgumentNullException.ThrowIfNull(ledger);
         ArgumentNullException.ThrowIfNull(catalog);
         ArgumentNullException.ThrowIfNull(osdu);
+        ArgumentNullException.ThrowIfNull(http);
         _ledger = ledger;
         _catalog = catalog;
         _osdu = osdu;
+        _http = http;
     }
 
     public string Key => CategoryKey;
@@ -165,15 +177,16 @@ public sealed class RecordSearchContributor : ISearchContributor
         var wanted = (long)request.Page * request.PageSize;
         var take = (int)Math.Min(wanted, RecordListing.LookupCandidateLimit);
         var skip = (request.Page - 1) * request.PageSize;
+        var partition = WorkbenchPartition.Of(_http.HttpContext?.Request);
         var found = skip >= RecordListing.LookupCandidateLimit
             ? []
-            : await _ledger.LookupAsync(request.Phrase, take, ct: ct).ConfigureAwait(false);
+            : await _ledger.LookupAsync(request.Phrase, take, partition: partition, ct: ct).ConfigureAwait(false);
         var page = found.Skip(skip).Take(request.PageSize).ToList();
 
         // Fewer hits than asked for means no identity index ran into its bound, so that count is exact.
         var total = found.Count < take
             ? new BoundedCount(found.Count, Exact: true)
-            : await _ledger.CountLookupAsync(request.Phrase, RecordListing.LookupCandidateLimit, ct: ct).ConfigureAwait(false);
+            : await _ledger.CountLookupAsync(request.Phrase, RecordListing.LookupCandidateLimit, partition: partition, ct: ct).ConfigureAwait(false);
 
         var pipelines = await DeliveryPipelines.ForLedgersAsync(_catalog, _osdu, page.Select(r => r.FlowId).Distinct().ToList(), ct).ConfigureAwait(false);
         var items = page

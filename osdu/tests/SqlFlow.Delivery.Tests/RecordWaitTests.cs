@@ -12,7 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// lands, and records never wait for each other in a circle.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
-public class RecordWaitTests : IDisposable
+public class RecordWaitTests : IAsyncLifetime, IDisposable
 {
     private readonly OsduTestDatabase _db = new();
     private readonly TestClock _clock = new();
@@ -20,6 +20,11 @@ public class RecordWaitTests : IDisposable
     private readonly Guid _wellbores = FlowId.Of("wellbores");
 
     private OsduLedger Ledger => _db.Ledger(_clock);
+
+    /// <summary>Registers the ledgers the tests write to directly, as a run registers its own before it writes a row of it.</summary>
+    public Task InitializeAsync() => Ledger.RegisterAsync(_logs, _wellbores);
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
@@ -168,7 +173,7 @@ public class RecordWaitTests : IDisposable
         var submission = Guid.NewGuid();
         var log = await StageAsync(_logs, "L-1", submission, wellbore.TargetId!);
         Assert.Single((await Ledger.ClaimAsync(_logs, submission, "w1", 10, TimeSpan.FromMinutes(5), Now)).Waiting);
-        Assert.Equal(log.DeliveryKey, Assert.Single(await Ledger.ListWaitingForAsync(wellbore.TargetId!, 10)).DeliveryKey);
+        Assert.Equal(log.DeliveryKey, Assert.Single(await Ledger.ListWaitingForAsync(_wellbores, wellbore.TargetId!, 10)).DeliveryKey);
 
         await DeliverAsync(_wellbores, wellbore.DeliveryKey);
 
@@ -289,9 +294,9 @@ public class RecordWaitTests : IDisposable
         Assert.Equal(2, await Ledger.CountAsync(_logs, submission, RecordStatus.Waiting));
         Assert.False(await Ledger.HasPendingAsync(_logs, submission, Now));
 
-        Assert.Equal(2, (await Ledger.ListWaitingForAsync(wellbore.TargetId!, 10)).Count);
-        Assert.Equal(wellbore.DeliveryKey, Assert.Single(await Ledger.ListHoldersAsync(wellbore.TargetId!, 10)).DeliveryKey);
-        Assert.Equal([wellbore.TargetId], await Ledger.HeldIdsAsync([wellbore.TargetId!, "dev:master-data--Well:nobody"]));
+        Assert.Equal(2, (await Ledger.ListWaitingForAsync(_wellbores, wellbore.TargetId!, 10)).Count);
+        Assert.Equal(wellbore.DeliveryKey, Assert.Single(await Ledger.ListHoldersAsync(_logs, wellbore.TargetId!, 10)).DeliveryKey);
+        Assert.Equal([wellbore.TargetId], await Ledger.HeldIdsAsync(_logs, [wellbore.TargetId!, "dev:master-data--Well:nobody"]));
     }
 
     public void Dispose()

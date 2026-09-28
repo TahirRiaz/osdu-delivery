@@ -201,7 +201,9 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
     {
         var protocol = new FakeProtocol();
         var engine = Samples.Engine(estate.Ledger, _clock, new FakeProtocolFactory(protocol), estate.Templates, estate.Caches, estate.Tables);
-        return new Pipeline(await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values), protocol);
+        var runtime = await FlowRuntime.CreateAsync(engine, flow, SampleEstate.Values);
+        await estate.Ledger.RegisterAsync(runtime.Flow);
+        return new Pipeline(runtime, protocol);
     }
 
     /// <summary>One run's work: plan into batches, drain them, and close the submission, as a deliver run does.</summary>

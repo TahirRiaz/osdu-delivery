@@ -241,7 +241,9 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         var flow = named
             ?? (source.DeclaresInterfaces ? null : source.First)
             ?? (submission is null ? null : source.ByFlowId(submission.FlowId)
-                ?? throw new DeliveryException($"Submission {submission.SubmissionId:D} belongs to flow '{submission.FlowName}', which is not an interface of '{source.Name}'."));
+                ?? throw new DeliveryException(
+                    $"Submission {submission.SubmissionId:D} belongs to {Owner(submission.FlowName, submission.Partition)}, which is not an interface of '{source.Name}'{In(source.Partition)}."
+                    + (source.Partitioned && submission.Partition is { } kept && !string.Equals(kept, source.Partition, StringComparison.OrdinalIgnoreCase) ? $" Run it in partition '{kept}'." : string.Empty)));
 
         if (flow is null)
         {
@@ -263,11 +265,19 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
         if (submission is not null && submission.FlowId != flow.Id)
         {
-            throw new DeliveryException($"Submission {submission.SubmissionId:D} belongs to flow '{submission.FlowName}', not '{flow.Label}'.");
+            throw new DeliveryException(
+                $"Submission {submission.SubmissionId:D} belongs to {Owner(submission.FlowName, submission.Partition)}, not '{flow.Label}'{In(flow.Partition)}."
+                + (flow.Partitioned && submission.Partition is { } own && !string.Equals(own, flow.Partition, StringComparison.OrdinalIgnoreCase) ? $" Run it in partition '{own}'." : string.Empty));
         }
 
         return (flow, operation == DeliveryOperations.Drain ? null : submission);
     }
+
+    /// <summary>A submission's flow as a message names it: with the partition its ledger keeps it in, when it has one.</summary>
+    private static string Owner(string flowName, string? partition) => $"flow '{flowName}'{In(partition)}";
+
+    /// <summary>" in partition 'p'", or nothing for no partition.</summary>
+    private static string In(string? partition) => partition is null ? string.Empty : $" in partition '{partition}'";
 
     /// <summary>
     /// Runs one interface's operation under its failure guard when the operation delivers: the guard watches every

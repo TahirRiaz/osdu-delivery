@@ -51,6 +51,9 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         services.Services.AddDeliveryKind();
         services.Services.AddDeliveryLedger();
 
+        // The record search reads the partition the workbench works in from the request it answers.
+        services.Services.AddHttpContextAccessor();
+
         // One module context per request, opened from the module database's factory, so an endpoint reads the osdu
         // tables exactly as the ledger does and the catalog's own context stays SQLFlow's.
         services.Services.AddScoped(provider => provider.GetRequiredService<IDbContextFactory<OsduDbContext>>().CreateDbContext());

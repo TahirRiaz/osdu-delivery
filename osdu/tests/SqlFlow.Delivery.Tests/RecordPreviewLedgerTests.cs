@@ -43,6 +43,7 @@ public sealed class RecordPreviewLedgerTests : IDisposable
         var protocol = new FakeProtocol();
         var engine = Samples.Engine(ledger, _clock, sources: tables) with { Protocols = new FakeProtocolFactory(protocol) };
         var runtime = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(_root), SampleEstate.Values);
+        await ledger.RegisterAsync(runtime.Flow);
         var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
         var worker = new DeliveryWorker(
             ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,

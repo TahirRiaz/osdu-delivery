@@ -81,12 +81,26 @@ public sealed class PartitionLedgerTests
     /// <summary>
     /// Records in the ledger of <paramref name="flowId"/>: one per partition named, each with an OSDU id of its own in that
     /// partition (ids are unique across the shared database), delivered, or only claimed when <paramref name="claimedOnly"/>;
-    /// a null partition is a record with no id yet.
+    /// a null partition is a record with no id yet. The ledger is one the upgrade to partition keys could not place, since
+    /// its records went to several partitions: unassigned in the directory, with its rows under the unassigned partition.
     /// </summary>
     private static async Task SeedAsync(Guid flowId, bool claimedOnly, params string?[] partitions)
     {
         await Migrated.Value;
         await using var db = Database();
+        if (!await db.DeliveryLedgers.AnyAsync(l => l.FlowId == flowId))
+        {
+            db.DeliveryLedgers.Add(new DeliveryLedger
+            {
+                PartitionId = DeliveryModel.UnassignedPartition,
+                FlowId = flowId,
+                Kind = LedgerKinds.Delivery,
+                FlowName = $"seeded-{flowId:N}",
+                LedgerName = $"seeded-{flowId:N}",
+                RegisteredUtc = Now,
+            });
+        }
+
         foreach (var partition in partitions)
         {
             var id = partition is null ? null : $"{partition}:work-product-component--WellLog:{Guid.NewGuid():N}";

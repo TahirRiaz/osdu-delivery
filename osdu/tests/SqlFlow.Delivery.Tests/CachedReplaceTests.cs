@@ -469,6 +469,7 @@ public sealed class CachedReplaceTests : IDisposable
     private async Task<IReadOnlyList<DeliveryKey>> DeliveredAsync(OsduLedger ledger, string prefix, int count, IReadOnlyList<CacheUsage> usages)
     {
         var flow = FlowId.Of("replace-flow");
+        await ledger.RegisterAsync(flow);
         var submission = Guid.NewGuid();
         await ledger.RegisterSubmissionAsync(new SubmissionState
         {

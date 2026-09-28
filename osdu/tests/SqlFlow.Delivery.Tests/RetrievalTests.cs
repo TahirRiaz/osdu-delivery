@@ -148,6 +148,7 @@ public sealed class RetrievalTests : IDisposable
         {
             var ledger = _db.Ledger(_clock);
             var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["root"] = root };
+            await _db.Ledger(_clock).RegisterAsync(flow);
             var runner = new RetrievalRunner(flow, FlowParameters.Resolve(flow.Parameters, "f", values), client, Samples.Stores(), ledger, _clock, Samples.Logger<RetrievalRunner>());
             var runId = Guid.NewGuid();
 
@@ -252,6 +253,7 @@ public sealed class RetrievalTests : IDisposable
         using (runtime)
         {
             var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["root"] = root };
+            await _db.Ledger(_clock).RegisterAsync(flow);
             var runner = new RetrievalRunner(flow, FlowParameters.Resolve(flow.Parameters, "f", values), client, Samples.Stores(), _db.Ledger(_clock), _clock, Samples.Logger<RetrievalRunner>());
 
             var (window, estimates) = await runner.EstimateAsync(force: false, CancellationToken.None);
@@ -296,6 +298,7 @@ public sealed class RetrievalTests : IDisposable
         {
             var ledger = _db.Ledger(_clock);
             var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["root"] = root };
+            await _db.Ledger(_clock).RegisterAsync(flow);
             var runner = new RetrievalRunner(flow, FlowParameters.Resolve(flow.Parameters, "f", values), client, Samples.Stores(), ledger, _clock, Samples.Logger<RetrievalRunner>());
             var ex = await Assert.ThrowsAsync<OsduStatusException>(() => runner.RunAsync(Guid.NewGuid(), "tester", force: false, CancellationToken.None));
             Assert.Equal(403, ex.StatusCode);

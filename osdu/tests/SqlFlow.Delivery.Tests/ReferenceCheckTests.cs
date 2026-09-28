@@ -19,7 +19,7 @@ namespace SqlFlow.Delivery.Tests;
 /// does not hold is not sent.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
-public class ReferenceCheckTests : IDisposable
+public class ReferenceCheckTests : IAsyncLifetime, IDisposable
 {
     private static readonly SecretResolver Secrets = new([new EnvSecretProvider()]);
 
@@ -28,6 +28,11 @@ public class ReferenceCheckTests : IDisposable
     private readonly FakeOsduPlatform _platform = new();
     private readonly HttpRuntime _runtime;
     private readonly Guid _flow = FlowId.Of("references");
+
+    /// <summary>Registers the ledgers the tests write to directly, as a run registers its own before it writes a row of it.</summary>
+    public Task InitializeAsync() => _db.Ledger(_clock).RegisterAsync(_flow, FlowId.Of("wellbores"));
+
+    public Task DisposeAsync() => Task.CompletedTask;
 
     public ReferenceCheckTests()
     {

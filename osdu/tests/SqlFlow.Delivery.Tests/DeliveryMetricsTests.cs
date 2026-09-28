@@ -10,41 +10,47 @@ namespace SqlFlow.Delivery.Tests;
 public sealed class DeliveryMetricsTests
 {
     [Fact]
-    public void A_settled_try_is_counted_with_its_flow_route_and_outcome()
+    public void A_settled_try_is_counted_with_its_flow_partition_route_and_outcome()
     {
         using var capture = new MetricsCapture();
         var flow = $"metrics-{Guid.NewGuid():N}";
 
-        DeliveryMetrics.RecordSettled(flow, "dspdm", "held", TimeSpan.FromMilliseconds(250));
-        DeliveryMetrics.RecordSettled(flow, "dspdm", "delivered", TimeSpan.FromSeconds(-1));
+        DeliveryMetrics.RecordSettled(flow, "dev", "dspdm", "held", TimeSpan.FromMilliseconds(250));
+        DeliveryMetrics.RecordSettled(flow, "dev", "dspdm", "delivered", TimeSpan.FromSeconds(-1));
+        DeliveryMetrics.RecordWaiting(flow, null, "dspdm");
 
         var counted = capture.Of("osdu_delivery.records", "flow", flow);
-        Assert.Equal(["held", "delivered"], counted.Select(c => c.Tags["outcome"]));
+        Assert.Equal(["held", "delivered", "waiting"], counted.Select(c => c.Tags["outcome"]));
         Assert.All(counted, c => Assert.Equal("dspdm", c.Tags["route"]));
+
+        // Each is counted under the partition its ledger is kept under; one not known is counted under an empty one.
+        Assert.Equal(["dev", "dev", string.Empty], counted.Select(c => c.Tags["partition"]));
         Assert.All(counted, c => Assert.Equal(1, c.Value));
         Assert.Equal([0.25, 0], capture.Of("osdu_delivery.record.duration", "flow", flow).Select(c => c.Value));
+        Assert.All(capture.Of("osdu_delivery.record.duration", "flow", flow), c => Assert.Equal("dev", c.Tags["partition"]));
         Assert.Equal("4xx", DeliveryMetrics.StatusClass(404));
         Assert.Equal("other", DeliveryMetrics.StatusClass(101));
     }
 
     [Fact]
-    public void A_settled_probe_is_counted_with_its_flow_interface_and_outcome()
+    public void A_settled_probe_is_counted_with_its_flow_partition_interface_and_outcome()
     {
         using var capture = new MetricsCapture();
         var flow = $"metrics-{Guid.NewGuid():N}";
 
-        DeliveryMetrics.ProbeSettled($"{flow}/welllogs", "welllogs", "reachable");
-        DeliveryMetrics.ProbeSettled($"{flow}/welllogs", "welllogs", "unreachable");
-        DeliveryMetrics.ProbeSettled(flow, null, "error");
+        DeliveryMetrics.ProbeSettled($"{flow}/welllogs", "dev", "welllogs", "reachable");
+        DeliveryMetrics.ProbeSettled($"{flow}/welllogs", "test", "welllogs", "unreachable");
+        DeliveryMetrics.ProbeSettled(flow, null, null, "error");
 
         var counted = capture.Of("osdu_delivery.probes", "flow", $"{flow}/welllogs");
         Assert.Equal(["reachable", "unreachable"], counted.Select(c => c.Tags["outcome"]));
+        Assert.Equal(["dev", "test"], counted.Select(c => c.Tags["partition"]));
         Assert.All(counted, c => Assert.Equal("welllogs", c.Tags["interface"]));
         Assert.All(counted, c => Assert.Equal(1, c.Value));
 
         // A flow in the single form has no interface, and is counted under an empty one rather than left out.
         var single = Assert.Single(capture.Of("osdu_delivery.probes", "flow", flow));
-        Assert.Equal(("error", string.Empty), (single.Tags["outcome"], single.Tags["interface"]));
+        Assert.Equal(("error", string.Empty, string.Empty), (single.Tags["outcome"], single.Tags["interface"], single.Tags["partition"]));
     }
 
     [Fact]

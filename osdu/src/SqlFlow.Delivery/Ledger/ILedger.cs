@@ -125,6 +125,13 @@ public sealed record SubmissionState
 
     public required Guid FlowId { get; init; }
 
+    /// <summary>
+    /// The OSDU partition the row belongs to, as the ledger's directory names it: filled when the ledger reads the row, and
+    /// null for a ledger not yet placed in a partition. A write takes the partition of its ledger identity, never this.
+    /// </summary>
+    public string? Partition { get; init; }
+
+
     public required string FlowName { get; init; }
 
     public required string MappingReference { get; init; }
@@ -239,6 +246,13 @@ public sealed record RecordState
     public required DeliveryKey DeliveryKey { get; init; }
 
     public required Guid FlowId { get; init; }
+
+    /// <summary>
+    /// The OSDU partition the row belongs to, as the ledger's directory names it: filled when the ledger reads the row, and
+    /// null for a ledger not yet placed in a partition. A write takes the partition of its ledger identity, never this.
+    /// </summary>
+    public string? Partition { get; init; }
+
 
     public required string SourceKey { get; init; }
 
@@ -1022,6 +1036,9 @@ public sealed class RecordQueryTooBroadException : DeliveryException
 /// <summary>An activity listing: filter and page.</summary>
 public sealed record ActivityQuery
 {
+    /// <summary>The partition whose audit trail is read, by its data-partition-id; null reads every partition's.</summary>
+    public string? Partition { get; init; }
+
     public Guid? FlowId { get; init; }
 
     public Guid? DeliveryKey { get; init; }
@@ -1110,6 +1127,13 @@ public sealed record ActivityRecord
 
     public required Guid FlowId { get; init; }
 
+    /// <summary>
+    /// The OSDU partition the row belongs to, as the ledger's directory names it: filled when the ledger reads the row, and
+    /// null for a ledger not yet placed in a partition. A write takes the partition of its ledger identity, never this.
+    /// </summary>
+    public string? Partition { get; init; }
+
+
     public required string FlowName { get; init; }
 
     /// <summary>deliver, plan, intake, drain, verify, replan, submit, release, redeliver, delete, poll, notification.</summary>
@@ -1141,6 +1165,44 @@ public sealed record ActivityRecord
     public string? Log { get; init; }
 }
 
+/// <summary>The kinds of flow a ledger belongs to.</summary>
+public static class LedgerKinds
+{
+    public const string Delivery = "delivery";
+
+    public const string Retrieval = "retrieval";
+}
+
+/// <summary>
+/// One ledger as the ledger's directory holds it (docs/ledger.md, Partitions): the rows of one flow (or interface of a
+/// source) in one partition, under one ledger identity. The partition is part of the key of every row the ledger keeps.
+/// </summary>
+public sealed record LedgerEntry
+{
+    /// <summary>The ledger identity every row of the ledger carries.</summary>
+    public required Guid FlowId { get; init; }
+
+    /// <summary>
+    /// The data-partition-id the ledger belongs to. Null, when read, for a ledger the upgrade to partition keys could not
+    /// place, until its next run adopts it; a registration always names one.
+    /// </summary>
+    public string? Partition { get; init; }
+
+    /// <summary><see cref="LedgerKinds.Delivery"/> or <see cref="LedgerKinds.Retrieval"/>.</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>The flow the ledger belongs to: the source, for an interface of a source.</summary>
+    public required string FlowName { get; init; }
+
+    /// <summary>The interface of a source, or empty for a flow in the single form.</summary>
+    public string Interface { get; init; } = string.Empty;
+
+    /// <summary>The ledger's name as pages show it.</summary>
+    public required string LedgerName { get; init; }
+
+    public DateTime RegisteredUtc { get; init; }
+}
+
 /// <summary>
 /// The ledger (design.md section 7): submissions, records and append-only attempts, with leasing for the worker,
 /// plus the activity audit trail and the catalog read-model. Implemented over the <c>osdu</c> schema through EF Core; the
@@ -1148,6 +1210,22 @@ public sealed record ActivityRecord
 /// </summary>
 public interface ILedger
 {
+    /// <summary>
+    /// Registers the ledger a run is about to write, in the partition the run delivers to (docs/ledger.md, Partitions), and
+    /// returns it as the directory now holds it. Every write of a ledger's rows needs its registration; every row carries
+    /// the partition in its key. A ledger belongs to one partition: registering it in another is refused, naming both. A
+    /// ledger the upgrade could not place is adopted into the partition registered, unless its records were delivered to
+    /// another partition.
+    /// </summary>
+    /// <exception cref="DeliveryException">The ledger belongs to another partition, or holds records delivered to one.</exception>
+    Task<LedgerEntry> RegisterLedgerAsync(LedgerEntry ledger, CancellationToken ct = default);
+
+    /// <summary>The ledger <paramref name="flowId"/> names, as the directory holds it, or null when no run has registered it.</summary>
+    Task<LedgerEntry?> GetLedgerAsync(Guid flowId, CancellationToken ct = default);
+
+    /// <summary>The ledgers of <paramref name="partition"/> (by its data-partition-id), or every ledger when it is null.</summary>
+    Task<IReadOnlyList<LedgerEntry>> ListLedgersAsync(string? partition, CancellationToken ct = default);
+
     Task<SubmissionState?> GetSubmissionAsync(Guid submissionId, CancellationToken ct = default);
 
     /// <summary>Registers a submission. Returns the existing one when the id was seen before (idempotent).</summary>
@@ -1155,8 +1233,11 @@ public interface ILedger
 
     Task UpdateSubmissionAsync(SubmissionState submission, CancellationToken ct = default);
 
-    /// <summary>A flow's submissions, newest first, or every flow's when <paramref name="flowId"/> is null.</summary>
-    Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, CancellationToken ct = default);
+    /// <summary>
+    /// A flow's submissions, newest first, or when <paramref name="flowId"/> is null, those of every flow of
+    /// <paramref name="partition"/>, or of every partition when that is null too.
+    /// </summary>
+    Task<IReadOnlyList<SubmissionState>> ListSubmissionsAsync(Guid? flowId, int max, string? partition = null, CancellationToken ct = default);
 
     Task<IReadOnlyDictionary<DeliveryKey, RecordState>> GetRecordsAsync(Guid flowId, IEnumerable<DeliveryKey> keys, CancellationToken ct = default);
 
@@ -1293,17 +1374,24 @@ public interface ILedger
     /// </summary>
     Task<int> ReleaseResolvedWaitsAsync(Guid flowId, IReadOnlyCollection<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default);
 
-    /// <summary>The records waiting for <paramref name="targetId"/>, in any flow, at most <paramref name="max"/>, most recently updated first.</summary>
-    Task<IReadOnlyList<RecordState>> ListWaitingForAsync(string targetId, int max, CancellationToken ct = default);
-
-    /// <summary>The ids among <paramref name="ids"/> that a record of the ledger holds, other than a record removed from OSDU.</summary>
-    Task<IReadOnlySet<string>> HeldIdsAsync(IReadOnlyCollection<string> ids, CancellationToken ct = default);
+    /// <summary>
+    /// The records waiting for <paramref name="targetId"/>, in any flow of the partition of <paramref name="flowId"/>'s
+    /// ledger (an id is referred to within its partition), at most <paramref name="max"/>, most recently updated first.
+    /// </summary>
+    Task<IReadOnlyList<RecordState>> ListWaitingForAsync(Guid flowId, string targetId, int max, CancellationToken ct = default);
 
     /// <summary>
-    /// The records that hold <paramref name="targetId"/> as the id they are delivered to, in any flow, compared exactly: the
-    /// one that claimed it first, then any held before it claimed one. At most <paramref name="max"/>.
+    /// The ids among <paramref name="ids"/> that a record of the partition of <paramref name="flowId"/>'s ledger holds,
+    /// other than a record removed from OSDU.
     /// </summary>
-    Task<IReadOnlyList<RecordState>> ListHoldersAsync(string targetId, int max, CancellationToken ct = default);
+    Task<IReadOnlySet<string>> HeldIdsAsync(Guid flowId, IReadOnlyCollection<string> ids, CancellationToken ct = default);
+
+    /// <summary>
+    /// The records that hold <paramref name="targetId"/> as the id they are delivered to, in any flow of the partition of
+    /// <paramref name="flowId"/>'s ledger, compared exactly: the one that claimed it first, then any held before it claimed
+    /// one. At most <paramref name="max"/>.
+    /// </summary>
+    Task<IReadOnlyList<RecordState>> ListHoldersAsync(Guid flowId, string targetId, int max, CancellationToken ct = default);
 
     Task<IReadOnlyList<WorkBatchState>> ListWorkBatchesAsync(Guid submissionId, int max, int offset, CancellationToken ct = default);
 
@@ -1361,21 +1449,24 @@ public interface ILedger
     /// row), or a prefix over the OSDU id, the source key, the label and the origin file name. At most
     /// <see cref="RecordListing.LookupCandidateLimit"/> candidates are read from each identity index, and the most recently
     /// updated of them are returned. With <paramref name="status"/>, only the candidates in that state. With
-    /// <paramref name="flowId"/>, the records of that ledger identity alone, its candidates read from its own tokens.</summary>
-    Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
+    /// <paramref name="flowId"/>, the records of that ledger identity alone, its candidates read from its own tokens. With
+    /// <paramref name="partition"/>, the records of that partition alone (the workbench reads one partition at a time); a
+    /// ledger identity names its own partition.</summary>
+    Task<IReadOnlyList<RecordState>> LookupAsync(string term, int max, RecordStatus? status = null, Guid? flowId = null, string? partition = null, CancellationToken ct = default);
 
     /// <summary>How many records a lookup matches, counting no further than <paramref name="limit"/>.</summary>
-    Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
+    Task<BoundedCount> CountLookupAsync(string term, int limit, RecordStatus? status = null, Guid? flowId = null, string? partition = null, CancellationToken ct = default);
 
     /// <summary>The ledger's most recently updated records across every flow, at most <paramref name="max"/> of them,
     /// newest first and ties broken by key: what the delivery system last took in, sent or was answered about, without a
     /// term to seek. With <paramref name="status"/>, only the records in that state; with <paramref name="flowId"/>, only
     /// the records of that ledger identity. It reads the end of a recency index, so it costs the same however many records
-    /// the ledger holds, and it reaches no further back than <see cref="RecordListing.LookupCandidateLimit"/> records.</summary>
-    Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
+    /// the ledger holds, and it reaches no further back than <see cref="RecordListing.LookupCandidateLimit"/> records.
+    /// With <paramref name="partition"/>, the records of that partition alone.</summary>
+    Task<IReadOnlyList<RecordState>> ListRecentAsync(int max, RecordStatus? status = null, Guid? flowId = null, string? partition = null, CancellationToken ct = default);
 
     /// <summary>How many records the recency listing has to show, counting no further than <paramref name="limit"/>.</summary>
-    Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, Guid? flowId = null, CancellationToken ct = default);
+    Task<BoundedCount> CountRecentAsync(int limit, RecordStatus? status = null, Guid? flowId = null, string? partition = null, CancellationToken ct = default);
 
     /// <summary>The ledger identities among <paramref name="flowIds"/> that hold at least one record, in any state. It asks
     /// whether each holds one, never how many, so it costs one index seek per identity however many records the ledger

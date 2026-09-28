@@ -108,6 +108,18 @@ public sealed class DeliveryWorker
     /// </summary>
     public ReferenceCheck? References { get; init; }
 
+    /// <summary>
+    /// The data-partition-id the worker's ledger is kept under, which tags what it counts: the partition the ledger was
+    /// registered in, or the flow's own when it is bound to one and nothing else was said.
+    /// </summary>
+    public string? Partition
+    {
+        get => _partition ?? _flow.Partition;
+        init => _partition = value;
+    }
+
+    private readonly string? _partition;
+
     public DeliveryWorker(
         ILedger ledger,
         IPayloadFiles payloads,
@@ -238,7 +250,7 @@ public sealed class DeliveryWorker
         var now = _time.GetUtcNow().UtcDateTime;
         foreach (var record in waiting)
         {
-            DeliveryMetrics.RecordWaiting(_flow.Label, RouteOf(_protocol.Kind));
+            DeliveryMetrics.RecordWaiting(_flow.Label, Partition, RouteOf(_protocol.Kind));
             await _listener.OnEventAsync(new DeliveryEvent
             {
                 AtUtc = now,
@@ -1116,7 +1128,7 @@ public sealed class DeliveryWorker
         };
 
         // Telemetry for watching the fleet; the counts the product shows are read from the ledger.
-        DeliveryMetrics.RecordSettled(_flow.Label, RouteOf(_protocol.Kind), evt.Kind["record.".Length..], completed - started);
+        DeliveryMetrics.RecordSettled(_flow.Label, Partition, RouteOf(_protocol.Kind), evt.Kind["record.".Length..], completed - started);
         return (completion, evt, summary);
     }
 

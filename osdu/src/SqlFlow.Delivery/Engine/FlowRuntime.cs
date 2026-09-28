@@ -142,6 +142,12 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>Which records this interface's records wait for, worked out once per runtime.</summary>
     private WaitRules? _waits;
 
+    /// <summary>True once this runtime's ledger is registered in the partition it delivers to.</summary>
+    private bool _ledgerRegistered;
+
+    /// <summary>The partition this runtime's ledger is kept under, once it is registered.</summary>
+    private string? _ledgerPartition;
+
     private FlowRuntime(
         EngineContext context,
         FlowDefinition flow,
@@ -375,6 +381,7 @@ public sealed class FlowRuntime : IDisposable
             RunId = RunId,
             Guard = Guard,
             Trace = _context.Trace,
+            Partition = _ledgerPartition,
             Waits = await WaitRulesAsync(ct).ConfigureAwait(false),
             References = await ReferenceCheckAsync(ct).ConfigureAwait(false),
         };
@@ -1124,6 +1131,8 @@ public sealed class FlowRuntime : IDisposable
             return (await action().ConfigureAwait(false)).Result;
         }
 
+        // Every operation registers its ledger before it writes a row of it, the activity that records it included.
+        await RegisterLedgerAsync(ledger, ct).ConfigureAwait(false);
         var started = _context.Time.GetUtcNow().UtcDateTime;
         var activity = await ledger.StartActivityAsync(new ActivityRecord
         {
@@ -1153,6 +1162,26 @@ public sealed class FlowRuntime : IDisposable
             await SettleAsync(ledger, activity.ActivityId, "failed", HeaderRedaction.RedactMessage(ex.Message)).ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Registers this interface's ledger in the partition this runtime delivers to, once, before the first row of it is
+    /// written (<see cref="LedgerRegistration"/>): the partition the flow is bound to, or for a flow whose partition is its
+    /// data-partition-id header, the one the header resolves to here, which the ledger refuses when the ledger belongs to
+    /// another. A runtime opened for target operations whose header does not resolve here takes the partition the
+    /// directory holds, so a release or a redelivery of records a run delivered is not stopped by a reference only the
+    /// nodes resolve; whatever then calls the target resolves the header itself.
+    /// </summary>
+    private async Task RegisterLedgerAsync(ILedger ledger, CancellationToken ct)
+    {
+        if (_ledgerRegistered)
+        {
+            return;
+        }
+
+        var entry = await LedgerRegistration.RegisterAsync(ledger, Flow, _context.Secrets, keptWhenUnresolved: !ReadsSource, ct).ConfigureAwait(false);
+        _ledgerPartition = entry.Partition;
+        _ledgerRegistered = true;
     }
 
     /// <summary>

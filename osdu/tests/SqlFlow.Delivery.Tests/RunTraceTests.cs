@@ -404,6 +404,7 @@ public sealed class RunTraceDeliveryTests : IDisposable
         var tables = await SampleEstate.BuildAsync(_root, _clock.GetUtcNow().UtcDateTime.AddMinutes(-5), time: _clock);
         var engine = Samples.Engine(ledger, _clock, sources: tables) with { Protocols = new FakeProtocolFactory(protocol) };
         using var runtime = await FlowRuntime.CreateAsync(engine, Samples.LocalFlow(_root), SampleEstate.Values);
+        await ledger.RegisterAsync(runtime.Flow);
         var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
         var events = new RunEventCollector();
         var loggers = new RunLogLoggerFactory(new RunLogger(RunLogLevel.Debug), events, Guid.NewGuid(), "trace");

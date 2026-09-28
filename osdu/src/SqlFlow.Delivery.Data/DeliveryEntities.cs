@@ -16,6 +16,9 @@ namespace SqlFlow.Delivery.Data;
 /// </summary>
 public sealed class DeliverySubmission
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public Guid SubmissionId { get; set; }
 
     public Guid FlowId { get; set; }
@@ -105,6 +108,9 @@ public sealed class DeliverySubmission
 /// </summary>
 public sealed class DeliveryRecord
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public Guid FlowId { get; set; }
 
     public Guid DeliveryKey { get; set; }
@@ -254,6 +260,9 @@ public sealed class DeliveryRecord
 /// <summary>One delivery try, append-only: the record's history.</summary>
 public sealed class DeliveryAttempt
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public long AttemptId { get; set; }
 
     /// <summary>The flow of the record the try belongs to; with the delivery key, the record's identity.</summary>
@@ -307,6 +316,9 @@ public sealed class DeliveryAttempt
 /// <summary>One work batch of a submission: a file of rendered documents, claimed and drained as one unit.</summary>
 public sealed class DeliveryWorkBatch
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public Guid SubmissionId { get; set; }
 
     public int Index { get; set; }
@@ -353,6 +365,9 @@ public sealed class DeliveryWorkBatch
 /// </summary>
 public sealed class DeliveryLease
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     /// <summary>The claim's token: the worker's name and a fresh id.</summary>
     public string Token { get; set; } = string.Empty;
 
@@ -382,6 +397,9 @@ public sealed class DeliveryLease
 /// </summary>
 public sealed class DeliveryRecordIdentity
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public Guid FlowId { get; set; }
 
     public Guid DeliveryKey { get; set; }
@@ -404,6 +422,9 @@ public sealed class DeliveryRecordIdentity
 /// </summary>
 public sealed class DeliveryRecordEvent
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public long EventId { get; set; }
 
     public string LeaseToken { get; set; } = string.Empty;
@@ -478,6 +499,9 @@ public sealed class DeliveryRecordEvent
 /// </summary>
 public sealed class DeliverySourceWatermark
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public Guid FlowId { get; set; }
 
     public string Scope { get; set; } = string.Empty;
@@ -500,6 +524,9 @@ public sealed class DeliverySourceWatermark
 /// <summary>The audit trail of runs and interventions: who did what, when, with which inputs, and the outcome.</summary>
 public sealed class DeliveryActivity
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public long ActivityId { get; set; }
 
     public Guid FlowId { get; set; }
@@ -988,6 +1015,9 @@ public sealed class DeliveryUpdateTag
 /// <summary>One retrieval run: the window it covered, where its files went, and its outcome.</summary>
 public sealed class DeliveryRetrieval
 {
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
     public long RetrievalId { get; set; }
 
     public Guid FlowId { get; set; }
@@ -1084,6 +1114,62 @@ public static partial class DeliveryConfigNames
 }
 
 /// <summary>
+/// A partition the ledger keeps rows under, and the number that stands for it in every ledger key (docs/ledger.md,
+/// Partitions). A partition's name is a data-partition-id of up to 200 characters; carried in every key of the record
+/// table it would push the source file index past SQL Server's 1700-byte limit and widen every index of the largest
+/// tables, so the ledger keys by this number and names the partition here. A row is added the first time a ledger of the
+/// partition is registered, and is never renumbered or removed: every ledger row names its partition by it.
+/// </summary>
+public sealed class DeliveryLedgerPartition
+{
+    /// <summary>The number every ledger key starts with. <see cref="DeliveryModel.UnassignedPartition"/> (0) has no row.</summary>
+    public short PartitionId { get; set; }
+
+    /// <summary>The data-partition-id, as runs name it; compared regardless of case, so a partition has one number.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    public DateTime CreatedUtc { get; set; }
+}
+
+/// <summary>
+/// One ledger: the rows of one flow (or interface of a source) in one partition, under one ledger identity (docs/ledger.md,
+/// Partitions). The engine registers a ledger when a run binds its flow, before it writes a row, with the partition the
+/// run delivers to: the one the flow names, the registry's, or the one its <c>data-partition-id</c> header resolves to.
+/// From then on the ledger belongs to that partition. Every ledger row carries the partition in its key, written from here,
+/// so which partition a record, a submission or an audit entry belongs to is known from the ledger alone.
+/// </summary>
+/// <remarks>
+/// A ledger the upgrade to partition keys could not place (no interface named its partition and its records carry no OSDU
+/// id, or ids of more than one partition) is <see cref="DeliveryModel.UnassignedPartition"/> until its next run adopts it,
+/// which refuses a ledger holding records delivered to another partition than the run's.
+/// </remarks>
+public sealed class DeliveryLedger
+{
+    /// <summary>The widest flow name a ledger keeps.</summary>
+    public const int MaxFlowNameLength = 200;
+
+    /// <summary>The partition the ledger belongs to, or <see cref="DeliveryModel.UnassignedPartition"/>.</summary>
+    public short PartitionId { get; set; }
+
+    /// <summary>The ledger identity every row of the ledger carries.</summary>
+    public Guid FlowId { get; set; }
+
+    /// <summary>delivery or retrieval: the kind of flow whose ledger this is.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The flow (for a source with interfaces, the source) the ledger belongs to.</summary>
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>The interface of a source, or empty for a flow in the single form.</summary>
+    public string Interface { get; set; } = string.Empty;
+
+    /// <summary>The ledger's name, as pages show it: <c>&lt;ledger&gt;@&lt;partition&gt;</c> for a partition keeping a ledger of its own.</summary>
+    public string LedgerName { get; set; } = string.Empty;
+
+    public DateTime RegisteredUtc { get; set; }
+}
+
+/// <summary>
 /// An OSDU partition registered with the catalog (docs/partitions-design.md section 2.1): the partitions every run, cache and
 /// ledger of the module is keyed by. A flow that names no partitions serves every registered one, so the same documents
 /// deploy to every environment; a run that names none runs in the one marked the default. A flow that names its
@@ -1170,6 +1256,15 @@ public static class DeliveryModel
     public const string SchemaName = "osdu";
 
     /// <summary>
+    /// The partition number of a ledger the upgrade to partition keys could not place, until its next run adopts it
+    /// (<see cref="DeliveryLedger"/>). No <see cref="DeliveryLedgerPartition"/> row carries it.
+    /// </summary>
+    public const short UnassignedPartition = 0;
+
+    /// <summary>The widest data-partition-id, as every table that names a partition keeps it.</summary>
+    public const int MaxPartitionLength = 200;
+
+    /// <summary>
     /// The collation of the columns that key on an OSDU record id. OSDU ids are case-sensitive:
     /// <c>...UnitOfMeasure:ft</c> (the foot) and <c>...UnitOfMeasure:fT</c> (the femtotesla) are two records, and SQL
     /// Server's default collation folds case, which would make them one key.
@@ -1197,10 +1292,38 @@ public static class DeliveryModel
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
 
+        // The ledger's directory: the partitions it keys by, and the ledger of every flow in one of them.
+        modelBuilder.Entity<DeliveryLedgerPartition>(e =>
+        {
+            e.ToTable("LedgerPartition", SchemaName);
+            e.HasKey(p => p.PartitionId);
+            e.Property(p => p.PartitionId).ValueGeneratedOnAdd();
+            e.Property(p => p.Name).HasMaxLength(MaxPartitionLength).IsRequired();
+            // A partition has one number whatever the case it is written in, as the registry compares names.
+            e.HasIndex(p => p.Name).IsUnique();
+        });
+
+        modelBuilder.Entity<DeliveryLedger>(e =>
+        {
+            e.ToTable("Ledger", SchemaName);
+            // A partition's ledgers together, as every ledger table keeps its rows.
+            e.HasKey(l => new { l.PartitionId, l.FlowId });
+            e.Property(l => l.Kind).HasMaxLength(16).IsRequired();
+            e.Property(l => l.FlowName).HasMaxLength(DeliveryLedger.MaxFlowNameLength).IsRequired();
+            e.Property(l => l.Interface).HasMaxLength(DeliveryInterface.MaxInterfaceLength).IsRequired();
+            e.Property(l => l.LedgerName).HasMaxLength(200).IsRequired();
+            // A ledger belongs to one partition: its identity is unique on its own, and every read of it starts here.
+            e.HasIndex(l => l.FlowId).IsUnique();
+        });
+
+        // Every ledger table keys by partition first, so one partition's rows are kept together and every read of a
+        // flow, a partition or a listing seeks a range of one partition. A row found by an id unique on its own (a
+        // submission, an activity, a retrieval, a lease, a work batch) keeps that id unique in an index of its own, for
+        // the reads that hold nothing else.
         modelBuilder.Entity<DeliverySubmission>(e =>
         {
             e.ToTable("Submission", SchemaName);
-            e.HasKey(s => s.SubmissionId);
+            e.HasKey(s => new { s.PartitionId, s.SubmissionId });
             e.Property(s => s.FlowName).HasMaxLength(200).IsRequired();
             e.Property(s => s.MappingReference).HasMaxLength(200).IsRequired();
             e.Property(s => s.RenderContext).IsRequired();
@@ -1211,10 +1334,14 @@ public static class DeliveryModel
             e.Property(s => s.Kind).HasMaxLength(16).IsRequired();
             e.Property(s => s.SourceConnection).HasMaxLength(400).IsRequired();
             e.Property(s => s.SourceObject).HasMaxLength(400).IsRequired();
-            e.HasIndex(s => new { s.FlowId, s.ReceivedUtc });
-            e.HasIndex(s => new { s.FlowId, s.Status });
+            // A submission named by its id alone: a run's payload, a link, a record's last submission.
+            e.HasIndex(s => s.SubmissionId).IsUnique();
+            e.HasIndex(s => new { s.PartitionId, s.FlowId, s.ReceivedUtc });
+            e.HasIndex(s => new { s.PartitionId, s.FlowId, s.Status });
             // The flow's submission listing filtered by kind.
-            e.HasIndex(s => new { s.FlowId, s.Kind, s.ReceivedUtc });
+            e.HasIndex(s => new { s.PartitionId, s.FlowId, s.Kind, s.ReceivedUtc });
+            // The submissions of a partition, most recent first, across its flows.
+            e.HasIndex(s => new { s.PartitionId, s.ReceivedUtc });
             // A run page links the run to the plan it coordinated.
             e.HasIndex(s => s.RunId);
         });
@@ -1222,9 +1349,10 @@ public static class DeliveryModel
         modelBuilder.Entity<DeliveryRecord>(e =>
         {
             e.ToTable("Record", SchemaName);
-            // A record is one flow's: two flows reading the same source row keep two records, and a flow's key-ordered
-            // walks (a removal's key list, a key-scoped plan) read the key in order.
-            e.HasKey(r => new { r.FlowId, r.DeliveryKey });
+            // A record is one flow's in one partition: two flows reading the same source row keep two records, and so does
+            // one flow delivering it to two partitions, under the same delivery key. A flow's key-ordered walks (a
+            // removal's key list, a key-scoped plan) read the key in order within the partition.
+            e.HasKey(r => new { r.PartitionId, r.FlowId, r.DeliveryKey });
             e.Property(r => r.SourceKey).HasMaxLength(400).IsRequired();
             e.Property(r => r.SourceKeyJson).HasMaxLength(2000);
             e.Property(r => r.Label).HasMaxLength(400);
@@ -1249,79 +1377,83 @@ public static class DeliveryModel
 
             // Worker and intake paths. The worker's reads (the claim, what is due next, the settled submissions with due
             // work) are answered from these two alone, for a flow and for one submission of it.
-            e.HasIndex(r => new { r.FlowId, r.Status, r.NextAttemptUtc })
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.Status, r.NextAttemptUtc })
                 .IncludeProperties(r => new { r.LastSubmissionId, r.UpdatedUtc, r.PendingDocumentRef });
-            e.HasIndex(r => new { r.FlowId, r.LastSubmissionId, r.Status, r.NextAttemptUtc })
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.LastSubmissionId, r.Status, r.NextAttemptUtc })
                 .IncludeProperties(r => r.UpdatedUtc);
-            // The rollout walks one set's records in key order, then flow order; the filtered index keeps untagged records out of it.
+            // The rollout walks one set's records in key order, then flow order; a set is one partition's, and the filtered
+            // index keeps untagged records out of it.
             e.HasIndex(r => new { r.CacheSetId, r.DeliveryKey, r.FlowId }).HasFilter("[CacheSetId] IS NOT NULL");
-            // One OSDU record, one flow: the database refuses a second flow's claim on an id, whatever races the intakes run.
+            // One OSDU record, one flow: the database refuses a second flow's claim on an id, whatever races the intakes
+            // run. An id names its partition, so this stays unique across every partition.
             e.HasIndex(r => r.ClaimedTargetId).IsUnique().HasFilter("[ClaimedTargetId] IS NOT NULL");
             e.HasIndex(r => new { r.LastSubmissionId, r.WorkBatch });
             // The records a lease holds: the ones a checkpoint or a close hands back, and the ones a submission waits on.
             e.HasIndex(r => r.LeaseOwner);
             // A submission's records, most recent first, read in index order however many the submission holds.
-            e.HasIndex(r => new { r.FlowId, r.LastSubmissionId, r.UpdatedUtc });
-            e.HasIndex(r => new { r.FlowId, r.LastVerifiedUtc });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.LastSubmissionId, r.UpdatedUtc });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.LastVerifiedUtc });
 
-            // GUI: prefix search and recency listings, all answered from an index.
-            e.HasIndex(r => new { r.FlowId, r.Label });
-            e.HasIndex(r => new { r.FlowId, r.SourceKey });
-            e.HasIndex(r => new { r.FlowId, r.TargetId });
-            e.HasIndex(r => new { r.FlowId, r.UpdatedUtc });
-            e.HasIndex(r => new { r.FlowId, r.Status, r.UpdatedUtc });
-            e.HasIndex(r => new { r.FlowId, r.LastDeliveredUtc });
-            e.HasIndex(r => new { r.FlowId, r.LastVerifyOutcome });
+            // GUI: one flow's prefix search and recency listings, all answered from an index.
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.Label });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.SourceKey });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.TargetId });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.UpdatedUtc });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.Status, r.UpdatedUtc });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.LastDeliveredUtc });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.LastVerifyOutcome });
 
-            // The global lookup (the search box): a delivery key, an OSDU id, a source key, a label prefix or an
-            // ingestion file name answers from these across every flow.
-            e.HasIndex(r => r.DeliveryKey);
-            e.HasIndex(r => r.TargetId);
-            e.HasIndex(r => r.SourceKey);
-            e.HasIndex(r => r.Label);
-            e.HasIndex(r => r.SourceFileName);
+            // The lookup across the flows of a partition (the search box, read in the partition the workbench works in): a
+            // delivery key, an OSDU id, a source key, a label prefix or an ingestion file name answers from these.
+            e.HasIndex(r => new { r.PartitionId, r.DeliveryKey });
+            e.HasIndex(r => new { r.PartitionId, r.TargetId });
+            e.HasIndex(r => new { r.PartitionId, r.SourceKey });
+            e.HasIndex(r => new { r.PartitionId, r.Label });
+            e.HasIndex(r => new { r.PartitionId, r.SourceFileName });
 
-            // The Records page with nothing typed: the most recently updated records across every flow, and the most
-            // recent of one custody state, read from the end of an index instead of by ordering the whole ledger.
-            e.HasIndex(r => r.UpdatedUtc);
-            e.HasIndex(r => new { r.Status, r.UpdatedUtc });
+            // The Records page with nothing typed: the most recently updated records across the flows of a partition, and
+            // the most recent of one custody state, read from the end of an index instead of by ordering the whole ledger.
+            e.HasIndex(r => new { r.PartitionId, r.UpdatedUtc });
+            e.HasIndex(r => new { r.PartitionId, r.Status, r.UpdatedUtc });
 
             // Which records came from this file, inside a flow, in milliseconds.
-            e.HasIndex(r => new { r.FlowId, r.SourceFileName, r.SourceRowNumber });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.SourceFileName, r.SourceRowNumber });
 
             // The records the ledger asked to be planned again, paged by the planner each run: the filter keeps the
             // index as small as the backlog.
-            e.HasIndex(r => new { r.FlowId, r.PlanRequestedUtc }).HasFilter("[PlanRequestedUtc] IS NOT NULL");
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.PlanRequestedUtc }).HasFilter("[PlanRequestedUtc] IS NOT NULL");
 
-            // The records waiting for an id, released when the record holding that id lands: the filter keeps the index
-            // as small as what is waiting, so the release every settle runs costs a seek.
-            e.HasIndex(r => r.WaitingFor).HasFilter("[WaitingFor] IS NOT NULL");
+            // The records waiting for an id, released when the record holding that id lands in the same partition: the
+            // filter keeps the index as small as what is waiting, so the release every settle runs costs a seek.
+            e.HasIndex(r => new { r.PartitionId, r.WaitingFor }).HasFilter("[WaitingFor] IS NOT NULL");
         });
 
         modelBuilder.Entity<DeliveryRecordIdentity>(e =>
         {
             e.ToTable("RecordIdentity", SchemaName);
-            // One row per token per record: the token first, so the row is written and read by what it identifies.
-            e.HasKey(i => new { i.Token, i.FlowId, i.DeliveryKey });
+            // One row per token per record: the partition, then the token, so the row is written and read by what it
+            // identifies within the partition the lookup reads.
+            e.HasKey(i => new { i.PartitionId, i.Token, i.FlowId, i.DeliveryKey });
             e.Property(i => i.Token).HasMaxLength(MaxIdentityTokenLength).IsRequired();
             e.Property(i => i.Display).HasMaxLength(MaxIdentityTokenLength).IsRequired();
             e.Property(i => i.Kind).HasMaxLength(16).IsRequired();
 
-            // The lookup: any identifier an operator holds, as a prefix, across every flow. The primary key answers it,
-            // and the record it names is read by joining to the record's own key.
+            // The lookup: any identifier an operator holds, as a prefix, across the flows of a partition. The primary key
+            // answers it, and the record it names is read by joining to the record's own key.
             //
             // The other direction: a record's own tokens, to rewrite or delete them when its identity changes.
-            e.HasIndex(i => new { i.FlowId, i.DeliveryKey });
+            e.HasIndex(i => new { i.PartitionId, i.FlowId, i.DeliveryKey });
 
             // The same lookup narrowed to one flow (the Records page's flow filter): its candidates are that flow's own
             // tokens, so a prefix many other flows share cannot use up the candidate bound before this flow is reached.
-            e.HasIndex(i => new { i.FlowId, i.Token });
+            e.HasIndex(i => new { i.PartitionId, i.FlowId, i.Token });
         });
 
         modelBuilder.Entity<DeliveryAttempt>(e =>
         {
             e.ToTable("Attempt", SchemaName);
-            e.HasKey(a => a.AttemptId);
+            // Append-only: the ever-increasing id within each partition, so every drain appends at the end of its range.
+            e.HasKey(a => new { a.PartitionId, a.AttemptId });
             e.Property(a => a.AttemptId).ValueGeneratedOnAdd();
             e.Property(a => a.Worker).HasMaxLength(200).IsRequired();
             e.Property(a => a.Outcome).HasMaxLength(16).IsRequired();
@@ -1331,44 +1463,50 @@ public static class DeliveryModel
             e.Property(a => a.Error).HasMaxLength(2000);
             e.Property(a => a.SourceFileName).HasMaxLength(MaxSourceFileNameLength);
             // A record's timeline, and the later attempt pruning looks for beside each one it removes.
-            e.HasIndex(a => new { a.FlowId, a.DeliveryKey, a.StartedUtc });
+            e.HasIndex(a => new { a.PartitionId, a.FlowId, a.DeliveryKey, a.StartedUtc });
+            // Pruning by age, across every partition: retention is the estate's, not a partition's.
             e.HasIndex(a => a.StartedUtc);
             // A submission's attempts, and the records they settled by outcome, counted when the submission closes: the
             // count reads this index alone, however many attempts a full plan wrote.
             e.HasIndex(a => new { a.SubmissionId, a.Outcome, a.Phase }).IncludeProperties(a => a.DeliveryKey);
-            // A run's records: the listing's run filter seeks the run and joins on the record without reading the attempt.
-            e.HasIndex(a => new { a.RunId, a.FlowId, a.DeliveryKey });
+            // A run's records: the listing's run filter seeks the run and joins on the record's key without reading the attempt.
+            e.HasIndex(a => new { a.RunId, a.PartitionId, a.FlowId, a.DeliveryKey });
         });
 
         modelBuilder.Entity<DeliveryWorkBatch>(e =>
         {
             e.ToTable("WorkBatch", SchemaName);
-            e.HasKey(b => new { b.SubmissionId, b.Index });
+            e.HasKey(b => new { b.PartitionId, b.SubmissionId, b.Index });
             e.Property(b => b.Location).HasMaxLength(2000).IsRequired();
             e.Property(b => b.Status).HasMaxLength(16).IsRequired();
             e.Property(b => b.LeaseOwner).HasMaxLength(200);
             e.Property(b => b.Error).HasMaxLength(2000);
             // The claim: the oldest queued batch of a flow (or a submission).
-            e.HasIndex(b => new { b.FlowId, b.Status, b.CreatedUtc });
-            e.HasIndex(b => new { b.SubmissionId, b.Status });
+            e.HasIndex(b => new { b.PartitionId, b.FlowId, b.Status, b.CreatedUtc });
+            // A batch named by its submission and place, and a submission's batches in order, counted by status: the batch's
+            // identity is unique on its own.
+            e.HasIndex(b => new { b.SubmissionId, b.Index }).IsUnique().IncludeProperties(b => b.Status);
         });
 
         modelBuilder.Entity<DeliveryLease>(e =>
         {
             e.ToTable("Lease", SchemaName);
-            e.HasKey(l => l.Token);
+            e.HasKey(l => new { l.PartitionId, l.Token });
             e.Property(l => l.Token).HasMaxLength(MaxLeaseTokenLength);
             e.Property(l => l.Owner).HasMaxLength(MaxLeaseTokenLength).IsRequired();
+            // A lease named by its token: a renewal, a checkpoint, a close, a record's holder.
+            e.HasIndex(l => l.Token).IsUnique();
             // The sweep: a flow's leases that ran out. A submission's leases: what its run waits on.
-            e.HasIndex(l => new { l.FlowId, l.ExpiresUtc });
+            e.HasIndex(l => new { l.PartitionId, l.FlowId, l.ExpiresUtc });
             e.HasIndex(l => new { l.SubmissionId, l.ExpiresUtc });
         });
 
         modelBuilder.Entity<DeliveryRecordEvent>(e =>
         {
             e.ToTable("RecordEvent", SchemaName);
-            // Clustered on an ever-increasing id: every worker only appends, at the end of the table.
-            e.HasKey(v => v.EventId);
+            // Clustered on an ever-increasing id within each partition: every worker only appends, at the end of the
+            // partition's range.
+            e.HasKey(v => new { v.PartitionId, v.EventId });
             e.Property(v => v.EventId).ValueGeneratedOnAdd();
             e.Property(v => v.LeaseToken).HasMaxLength(MaxLeaseTokenLength).IsRequired();
             e.Property(v => v.Kind).HasMaxLength(16).IsRequired();
@@ -1383,13 +1521,13 @@ public static class DeliveryModel
             // What a lease applies: its events, record by record, the latest last.
             e.HasIndex(v => new { v.LeaseToken, v.FlowId, v.DeliveryKey, v.EventId });
             // A flow's recovery: its events old enough that only a lease that is gone can have left them.
-            e.HasIndex(v => new { v.FlowId, v.AtUtc }).IncludeProperties(v => v.LeaseToken);
+            e.HasIndex(v => new { v.PartitionId, v.FlowId, v.AtUtc }).IncludeProperties(v => v.LeaseToken);
         });
 
         modelBuilder.Entity<DeliverySourceWatermark>(e =>
         {
             e.ToTable("SourceWatermark", SchemaName);
-            e.HasKey(w => new { w.FlowId, w.Scope });
+            e.HasKey(w => new { w.PartitionId, w.FlowId, w.Scope });
             e.Property(w => w.Scope).HasMaxLength(400);
             e.Property(w => w.ContextHash).HasMaxLength(64);
         });
@@ -1397,26 +1535,29 @@ public static class DeliveryModel
         modelBuilder.Entity<DeliveryActivity>(e =>
         {
             e.ToTable("Activity", SchemaName);
-            e.HasKey(a => a.ActivityId);
+            e.HasKey(a => new { a.PartitionId, a.ActivityId });
             e.Property(a => a.ActivityId).ValueGeneratedOnAdd();
             e.Property(a => a.FlowName).HasMaxLength(200).IsRequired();
             e.Property(a => a.Kind).HasMaxLength(32).IsRequired();
             e.Property(a => a.Actor).HasMaxLength(200).IsRequired();
             e.Property(a => a.Outcome).HasMaxLength(16).IsRequired();
             e.Property(a => a.Summary).HasMaxLength(2000);
-            e.HasIndex(a => new { a.FlowId, a.StartedUtc });
-            e.HasIndex(a => new { a.FlowId, a.DeliveryKey, a.StartedUtc });
+            // An entry named by its id: the audit trail's detail, and the run that completes it.
+            e.HasIndex(a => a.ActivityId).IsUnique();
+            e.HasIndex(a => new { a.PartitionId, a.FlowId, a.StartedUtc });
+            e.HasIndex(a => new { a.PartitionId, a.FlowId, a.DeliveryKey, a.StartedUtc });
             e.HasIndex(a => a.SubmissionId);
             e.HasIndex(a => a.RunId);
-            e.HasIndex(a => new { a.Kind, a.StartedUtc });
-            e.HasIndex(a => new { a.Actor, a.StartedUtc });
-            e.HasIndex(a => a.StartedUtc);
+            // The audit trail of a partition, newest first, and filtered by action or by actor.
+            e.HasIndex(a => new { a.PartitionId, a.Kind, a.StartedUtc });
+            e.HasIndex(a => new { a.PartitionId, a.Actor, a.StartedUtc });
+            e.HasIndex(a => new { a.PartitionId, a.StartedUtc });
         });
 
         modelBuilder.Entity<DeliveryRetrieval>(e =>
         {
             e.ToTable("Retrieval", SchemaName);
-            e.HasKey(r => r.RetrievalId);
+            e.HasKey(r => new { r.PartitionId, r.RetrievalId });
             e.Property(r => r.RetrievalId).ValueGeneratedOnAdd();
             e.Property(r => r.FlowName).HasMaxLength(200).IsRequired();
             e.Property(r => r.Actor).HasMaxLength(200).IsRequired();
@@ -1426,9 +1567,11 @@ public static class DeliveryModel
             e.Property(r => r.ManifestLocation).HasMaxLength(2000);
             e.Property(r => r.Status).HasMaxLength(16).IsRequired();
             e.Property(r => r.Error).HasMaxLength(4000);
+            // A retrieval named by its id: the run that completes it.
+            e.HasIndex(r => r.RetrievalId).IsUnique();
             // The flow's listing, the watermark chain (the last done run), and the run's row.
-            e.HasIndex(r => new { r.FlowId, r.StartedUtc });
-            e.HasIndex(r => new { r.FlowId, r.Status, r.StartedUtc });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.StartedUtc });
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.Status, r.StartedUtc });
             e.HasIndex(r => r.RunId);
         });
 
@@ -1612,8 +1755,11 @@ public static class DeliveryModel
             e.Property(t => t.Status).HasMaxLength(16).IsRequired();
             e.Property(t => t.DecidedBy).HasMaxLength(200);
             e.Property(t => t.SetIds).IsRequired();
+            // The rollout queue, across every partition.
             e.HasIndex(t => t.Status);
             e.HasIndex(t => new { t.Scope, t.TypeName, t.ItemId, t.Path, t.Status });
+            // A partition's changes of one status, newest first: the tag id the table is keyed by orders them.
+            e.HasIndex(t => new { t.Scope, t.Status });
         });
 
         modelBuilder.Entity<DeliveryCacheDefinition>(e =>

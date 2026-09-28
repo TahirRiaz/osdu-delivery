@@ -279,6 +279,7 @@ public sealed class DictionaryTests : IDisposable
     private static async Task DeliveredAsync(OsduLedger ledger, TestClock clock, string key, string value, int count)
     {
         var flowId = FlowId.Of("units-flow");
+        await ledger.RegisterAsync(flowId);
         var now = clock.GetUtcNow().UtcDateTime;
         var submission = Guid.NewGuid();
         await ledger.RegisterSubmissionAsync(new SubmissionState

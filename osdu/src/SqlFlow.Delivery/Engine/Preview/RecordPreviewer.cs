@@ -149,7 +149,7 @@ public sealed class RecordPreviewer
             referenceCount = read.Count;
             foreach (var reference in read.Take(_limits.MaxReferences))
             {
-                references.Add(new PreviewReference(reference.Id, reference.Property, await HolderAsync(ledger, reference.Id, ct).ConfigureAwait(false)));
+                references.Add(new PreviewReference(reference.Id, reference.Property, await HolderAsync(ledger, flow.Id, reference.Id, ct).ConfigureAwait(false)));
             }
 
             var targetState = decided.Existing?.TargetStateJson is { } state ? JsonMerge.ToValues(state) : null;
@@ -380,15 +380,18 @@ public sealed class RecordPreviewer
         return only ?? throw new DeliveryException("The plan of the previewed row gave no entry for it; a plan of one row always gives one.");
     }
 
-    /// <summary>The record of the ledger delivered to <paramref name="id"/>, when the ledger holds one.</summary>
-    private static async Task<PreviewHolder?> HolderAsync(ILedger? ledger, string id, CancellationToken ct)
+    /// <summary>
+    /// The record delivered to <paramref name="id"/>, when a ledger of the previewed flow's partition holds one: an id is
+    /// referred to within its partition.
+    /// </summary>
+    private static async Task<PreviewHolder?> HolderAsync(ILedger? ledger, Guid flowId, string id, CancellationToken ct)
     {
         if (ledger is null)
         {
             return null;
         }
 
-        var holders = await ledger.ListHoldersAsync(id, 1, ct).ConfigureAwait(false);
+        var holders = await ledger.ListHoldersAsync(flowId, id, 1, ct).ConfigureAwait(false);
         return holders.Count == 0
             ? null
             : new PreviewHolder(holders[0].FlowId, holders[0].DeliveryKey.Value, holders[0].SourceKey, holders[0].Label, holders[0].Status.ToString().ToLowerInvariant());

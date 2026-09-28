@@ -12,8 +12,8 @@ namespace SqlFlow.Delivery.Ledger;
 /// The writes that carry the volume of a submission, as bulk copies and set-based statements on the module's SQL Server
 /// database (design.md section 16.2): staging the pending records, appending what workers learn under their leases
 /// (attempts and record events), and applying those events to the records. SQL Server is the only provider the module
-/// runs on, so these are the ledger's only write path for them. A record is its flow and its delivery key together, and
-/// every statement that writes one matches on both.
+/// runs on, so these are the ledger's only write path for them. A record is its partition, its flow and its delivery key
+/// together, the record table's key, and every statement that writes one matches on all three.
 /// <para>Many nodes write these tables at once, so no write takes a lock on a range of keys, and no statement touches more
 /// rows than the caller's slice: SQL Server turns the row locks of a statement that takes 5,000 of them on one index into a
 /// lock on the whole table, which would stop every other node while it ran. Staging copies the whole batch once and
@@ -78,11 +78,12 @@ internal static class SqlServerLedgerBulk
     // writes them between the tests below and the update. Only rows that exist are locked, never a range of keys: a
     // record another staging inserts meanwhile is not held off here, and the insert below refuses it instead. A record
     // keeps the OSDU id it was first given, so that id, not the one this work was rendered with, is the one the work is
-    // delivered to and the one the claim check compares.
+    // delivered to and the one the claim check compares. A staging is one ledger's, so its partition is a parameter.
     private const string LockExistingSql = $$"""
         UPDATE s SET [Existing] = 1, [TargetId] = COALESCE(t.[TargetId], s.[TargetId])
         FROM #PendingStage AS s
-        INNER JOIN [osdu].[Record] AS t WITH (UPDLOCK, FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey]))) ON t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
+        INNER JOIN [osdu].[Record] AS t WITH (UPDLOCK, FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+            ON t.[PartitionId] = @partitionId AND t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
         WHERE s.[Slice] = @slice;
         """;
 
@@ -92,7 +93,8 @@ internal static class SqlServerLedgerBulk
         DELETE s
         OUTPUT deleted.[DeliveryKey]
         FROM #PendingStage AS s
-        INNER JOIN [osdu].[Record] AS t WITH (UPDLOCK, FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey]))) ON t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
+        INNER JOIN [osdu].[Record] AS t WITH (UPDLOCK, FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+            ON t.[PartitionId] = @partitionId AND t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
         CROSS APPLY (SELECT CASE WHEN t.[PendingDocumentRef] IS NOT NULL AND t.[Status] IN (N'pending', N'delivering') THEN 1 ELSE 0 END AS [Queued]) AS q
         WHERE s.[Slice] = @slice
           AND ((s.[PendingSourceModifiedUtc] IS NOT NULL
@@ -108,7 +110,8 @@ internal static class SqlServerLedgerBulk
     // claim index is unique, so a stage row meets at most one record, and each is one seek of that index, named here: the
     // filtered index applies because the query repeats its predicate, and a plan that went looking for the first match
     // any other way would read the whole table for every id nobody has claimed. The unique index is also what settles a
-    // race between two flows' intakes; this read names the owner.
+    // race between two flows' intakes; this read names the owner, from the owner's last submission, which its own ledger
+    // keeps under the owner's partition: one seek of the submission table's key.
     private const string RefuseClaimedSql = $$"""
         DELETE s
         OUTPUT deleted.[DeliveryKey], deleted.[TargetId], t.[FlowId], sub.[FlowName]
@@ -117,7 +120,7 @@ internal static class SqlServerLedgerBulk
             ON t.[ClaimedTargetId] = s.[TargetId] COLLATE Latin1_General_100_BIN2
             AND t.[ClaimedTargetId] IS NOT NULL
             AND t.[FlowId] <> s.[FlowId]
-        LEFT JOIN [osdu].[Submission] AS sub ON sub.[SubmissionId] = t.[LastSubmissionId]
+        LEFT JOIN [osdu].[Submission] AS sub ON sub.[PartitionId] = t.[PartitionId] AND sub.[SubmissionId] = t.[LastSubmissionId]
         WHERE s.[Slice] = @slice AND s.[TargetId] IS NOT NULL;
         """;
 
@@ -149,18 +152,18 @@ internal static class SqlServerLedgerBulk
                 [PendingPayloadLocation] = s.[PendingPayloadLocation], [PendingMetadata] = s.[PendingMetadata], [PendingPayload] = s.[PendingPayload],
                 [PendingReferences] = s.[PendingReferences], [WaitingFor] = NULL,
                 [CacheSetId] = s.[CacheSetId], [Blocked] = 0, [PlanRequestedUtc] = NULL, [UpdatedUtc] = @now
-        FROM [osdu].[Record] AS t WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
-        INNER JOIN #PendingStage AS s ON t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
+        FROM [osdu].[Record] AS t WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+        INNER JOIN #PendingStage AS s ON t.[PartitionId] = @partitionId AND t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
         CROSS APPLY (SELECT CASE WHEN t.[Status] = N'delivering' AND EXISTS (
-            SELECT 1 FROM [osdu].[Lease] AS l WHERE l.[Token] = t.[LeaseOwner] AND l.[ExpiresUtc] > @now) THEN 1 ELSE 0 END AS [InFlight]) AS f
+            SELECT 1 FROM [osdu].[Lease] AS l WHERE l.[PartitionId] = t.[PartitionId] AND l.[Token] = t.[LeaseOwner] AND l.[ExpiresUtc] > @now) THEN 1 ELSE 0 END AS [InFlight]) AS f
         WHERE s.[Slice] = @slice AND s.[Existing] = 1;
         SET @updated = @@ROWCOUNT;
-        INSERT INTO [osdu].[Record] ([DeliveryKey], [FlowId], [SourceKey], [SourceKeyJson], [Label], [MappingName], [TargetId], [ClaimedTargetId], [Status], [LastSubmissionId], [AttemptCount],
+        INSERT INTO [osdu].[Record] ([PartitionId], [DeliveryKey], [FlowId], [SourceKey], [SourceKeyJson], [Label], [MappingName], [TargetId], [ClaimedTargetId], [Status], [LastSubmissionId], [AttemptCount],
                 [PendingDocumentRef], [WorkBatch], [PendingRenderContext], [PendingSourceFingerprint], [PendingSourceModifiedUtc],
                 [PendingSourceFileName], [PendingSourceRowNumber], [PendingSourceUpdatedUtc], [SourceInsertedUtc],
                 [PendingMetadataHash], [PendingPayloadHash], [PendingPayloadModifiedUtc],
                 [PendingPayloadLocation], [PendingMetadata], [PendingPayload], [PendingReferences], [CacheSetId], [Blocked], [CreatedUtc], [UpdatedUtc])
-        SELECT s.[DeliveryKey], s.[FlowId], s.[SourceKey], s.[SourceKeyJson], s.[Label], s.[MappingName], s.[TargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2, N'pending', s.[LastSubmissionId], 0,
+        SELECT @partitionId, s.[DeliveryKey], s.[FlowId], s.[SourceKey], s.[SourceKeyJson], s.[Label], s.[MappingName], s.[TargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2, N'pending', s.[LastSubmissionId], 0,
                 s.[PendingDocumentRef], s.[WorkBatch], s.[PendingRenderContext], s.[PendingSourceFingerprint], s.[PendingSourceModifiedUtc],
                 s.[PendingSourceFileName], s.[PendingSourceRowNumber], s.[PendingSourceUpdatedUtc], s.[SourceInsertedUtc],
                 s.[PendingMetadataHash], s.[PendingPayloadHash], s.[PendingPayloadModifiedUtc],
@@ -174,21 +177,23 @@ internal static class SqlServerLedgerBulk
     // are applied in the order they were appended, a slice at a time, so a slice may end part way through a record: its
     // latest event there is older than the ones the next slice applies, and a step carries every step before it. A try's
     // completion is its record's last event. A record another lease holds now is that lease's to settle. The events go in
-    // the same transaction as their application, so each is applied once.
+    // the same transaction as their application, so each is applied once. A lease is one ledger's, so its events, and the
+    // records they settle, are one partition's, which the statement names back.
     private const string ApplyEventsSql = $$"""
-        CREATE TABLE #Events ([EventId] bigint NOT NULL PRIMARY KEY);
-        INSERT INTO #Events ([EventId])
-        SELECT TOP (@slice) e.[EventId]
+        CREATE TABLE #Events ([PartitionId] smallint NOT NULL, [EventId] bigint NOT NULL, PRIMARY KEY ([PartitionId], [EventId]));
+        INSERT INTO #Events ([PartitionId], [EventId])
+        SELECT TOP (@slice) e.[PartitionId], e.[EventId]
         FROM [osdu].[RecordEvent] AS e
         WHERE e.[LeaseToken] = @token
         ORDER BY e.[FlowId], e.[DeliveryKey], e.[EventId];
         DECLARE @events int = @@ROWCOUNT;
+        DECLARE @partition smallint = (SELECT TOP (1) [PartitionId] FROM #Events);
 
         SELECT l.* INTO #Latest
         FROM (
-            SELECT e.*, ROW_NUMBER() OVER (PARTITION BY e.[FlowId], e.[DeliveryKey] ORDER BY e.[EventId] DESC) AS [Rank]
+            SELECT e.*, ROW_NUMBER() OVER (PARTITION BY e.[PartitionId], e.[FlowId], e.[DeliveryKey] ORDER BY e.[EventId] DESC) AS [Rank]
             FROM #Events AS n
-            INNER JOIN [osdu].[RecordEvent] AS e WITH (FORCESEEK ({{EventKey}} ([EventId]))) ON e.[EventId] = n.[EventId]) AS l
+            INNER JOIN [osdu].[RecordEvent] AS e WITH (FORCESEEK ({{EventKey}} ([PartitionId], [EventId]))) ON e.[PartitionId] = n.[PartitionId] AND e.[EventId] = n.[EventId]) AS l
         WHERE l.[Rank] = 1;
 
         {{CompletionUpdateSql}}
@@ -200,21 +205,23 @@ internal static class SqlServerLedgerBulk
         INSERT INTO #Landed ([TargetId])
         SELECT DISTINCT r.[TargetId]
         FROM #Latest AS s
-        INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey]))) ON r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
+        INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+            ON r.[PartitionId] = s.[PartitionId] AND r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
         WHERE s.[Kind] = N'completion' AND s.[Promote] = 1 AND r.[TargetId] IS NOT NULL AND r.[LeaseOwner] IS NULL;
 
         UPDATE r SET [PendingStepJson] = s.[StepJson]
-        FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
-        INNER JOIN #Latest AS s ON r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
+        FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+        INNER JOIN #Latest AS s ON r.[PartitionId] = s.[PartitionId] AND r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
         WHERE s.[Kind] = N'step'
           AND (r.[LeaseOwner] IS NULL OR r.[LeaseOwner] = @token)
           AND r.[PendingDocumentRef] = s.[ClaimDocumentRef]
           AND (r.[LastSubmissionId] = s.[ClaimSubmissionId] OR (r.[LastSubmissionId] IS NULL AND s.[ClaimSubmissionId] IS NULL));
 
-        DELETE e FROM [osdu].[RecordEvent] AS e WITH (FORCESEEK ({{EventKey}} ([EventId]))) INNER JOIN #Events AS n ON n.[EventId] = e.[EventId];
+        DELETE e FROM [osdu].[RecordEvent] AS e WITH (FORCESEEK ({{EventKey}} ([PartitionId], [EventId])))
+        INNER JOIN #Events AS n ON n.[PartitionId] = e.[PartitionId] AND n.[EventId] = e.[EventId];
         DROP TABLE #Latest;
         DROP TABLE #Events;
-        SELECT @events, @applied;
+        SELECT @events, @applied, @partition;
         SELECT [TargetId] FROM #Landed;
         DROP TABLE #Landed;
         """;
@@ -274,8 +281,8 @@ internal static class SqlServerLedgerBulk
             [PendingPayloadLocation] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingPayloadLocation] END,
             [PendingReferences] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingReferences] END,
             [AttemptCount] = CASE WHEN s.[Promote] = 1 OR x.[Superseded] = 1 THEN 0 ELSE r.[AttemptCount] END
-        FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey])))
-        INNER JOIN #Latest AS s ON r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
+        FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+        INNER JOIN #Latest AS s ON r.[PartitionId] = s.[PartitionId] AND r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
         CROSS APPLY (SELECT CASE
             WHEN s.[ClaimDocumentRef] IS NOT NULL AND r.[PendingDocumentRef] IS NOT NULL
                  AND (r.[PendingDocumentRef] <> s.[ClaimDocumentRef]
@@ -294,7 +301,7 @@ internal static class SqlServerLedgerBulk
     /// table's key refuses the insert, and the record is now found and compared), or the database ended a deadlock by
     /// rolling the slice back.
     /// </summary>
-    public static async Task<PendingStaging> UpsertPendingAsync(OsduDbContext db, Guid flowId, IReadOnlyList<RecordState> records, int slice, DateTime now, CancellationToken ct)
+    public static async Task<PendingStaging> UpsertPendingAsync(OsduDbContext db, short partitionId, Guid flowId, IReadOnlyList<RecordState> records, int slice, DateTime now, CancellationToken ct)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(slice, 1);
         var strategy = db.Database.CreateExecutionStrategy();
@@ -316,7 +323,7 @@ internal static class SqlServerLedgerBulk
                 var slices = (records.Count + slice - 1) / slice;
                 for (var index = 0; index < slices; index++)
                 {
-                    var written = await StageSliceAsync(db, connection, flowId, index, now, ct).ConfigureAwait(false);
+                    var written = await StageSliceAsync(db, connection, partitionId, flowId, index, now, ct).ConfigureAwait(false);
                     staged += written.Staged;
                     refused.AddRange(written.Refused);
                     conflicts.AddRange(written.Conflicts);
@@ -332,7 +339,7 @@ internal static class SqlServerLedgerBulk
         }).ConfigureAwait(false);
     }
 
-    private static async Task<PendingStaging> StageSliceAsync(OsduDbContext db, SqlConnection connection, Guid flowId, int slice, DateTime now, CancellationToken ct)
+    private static async Task<PendingStaging> StageSliceAsync(OsduDbContext db, SqlConnection connection, short partitionId, Guid flowId, int slice, DateTime now, CancellationToken ct)
     {
         for (var attempt = 1; ; attempt++)
         {
@@ -342,10 +349,10 @@ internal static class SqlServerLedgerBulk
                 // slice that runs again starts from the rows it was copied with.
                 await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
                 var transaction = (SqlTransaction)tx.GetDbTransaction();
-                await SliceAsync(connection, transaction, LockExistingSql, slice, ct).ConfigureAwait(false);
-                var refused = await KeysAsync(connection, transaction, RefuseOlderSql, slice, ct).ConfigureAwait(false);
+                await SliceAsync(connection, transaction, LockExistingSql, slice, partitionId, ct).ConfigureAwait(false);
+                var refused = await KeysAsync(connection, transaction, RefuseOlderSql, slice, partitionId, ct).ConfigureAwait(false);
                 var conflicts = await ConflictsAsync(connection, transaction, slice, ct).ConfigureAwait(false);
-                var staged = await ScalarAsync(connection, transaction, PendingWriteSql, now, flowId, slice, ct).ConfigureAwait(false);
+                var staged = await ScalarAsync(connection, transaction, PendingWriteSql, now, partitionId, flowId, slice, ct).ConfigureAwait(false);
                 await tx.CommitAsync(ct).ConfigureAwait(false);
                 return new PendingStaging(staged, refused, conflicts);
             }
@@ -420,12 +427,17 @@ internal static class SqlServerLedgerBulk
             return attempts.Count + events.Count;
         }, ct);
 
+    /// <summary>What applying a slice of a lease's events did.</summary>
+    /// <param name="Records">How many events the slice took: fewer than the slice when none are left after it.</param>
+    /// <param name="Applied">How many tries it settled.</param>
+    /// <param name="PartitionId">The partition the lease's records are kept under, or null when it held no event.</param>
+    /// <param name="Landed">The OSDU ids of the records those tries landed, all in that partition.</param>
+    public sealed record AppliedEvents(int Records, int Applied, short? PartitionId, IReadOnlyList<string> Landed);
+
     /// <summary>
     /// Applies the next <paramref name="slice"/> events of a lease to their records and deletes them, in one transaction.
-    /// Returns how many events the slice took (fewer than the slice when none are left after it), how many tries it
-    /// settled, and the OSDU ids of the records those tries landed.
     /// </summary>
-    public static Task<(int Records, int Applied, IReadOnlyList<string> Landed)> ApplyEventsAsync(OsduDbContext db, string token, int slice, DateTime now, CancellationToken ct)
+    public static Task<AppliedEvents> ApplyEventsAsync(OsduDbContext db, string token, int slice, DateTime now, CancellationToken ct)
         => InTransactionAsync(db, async (connection, transaction) =>
         {
             await using var command = Command(connection, transaction, ApplyEventsSql, slice);
@@ -439,6 +451,7 @@ internal static class SqlServerLedgerBulk
 
             var records = reader.GetInt32(0);
             var applied = reader.GetInt32(1);
+            short? partition = reader.IsDBNull(2) ? null : reader.GetInt16(2);
             if (!await reader.NextResultAsync(ct).ConfigureAwait(false))
             {
                 throw new DeliveryException($"Applying the events of lease {token} did not name the records that landed.");
@@ -450,7 +463,7 @@ internal static class SqlServerLedgerBulk
                 landed.Add(reader.GetString(0));
             }
 
-            return (records, applied, (IReadOnlyList<string>)landed);
+            return new AppliedEvents(records, applied, partition, landed);
         }, ct);
 
     // Takes the lock every decision to wait is made under, for the rest of the caller's transaction.
@@ -479,6 +492,7 @@ internal static class SqlServerLedgerBulk
     }
 
     // The decided records, each still pending with the document the decision read and held by no lease, left waiting.
+    // The records are one ledger's, so the partition and the flow are parameters and each is found by the table's key.
     private const string MarkWaitingSql = $$"""
         UPDATE r SET r.[Status] = N'waiting', r.[WaitingFor] = w.[WaitingFor], r.[LastError] = w.[Reason], r.[UpdatedUtc] = @now
         OUTPUT inserted.[DeliveryKey]
@@ -487,18 +501,20 @@ internal static class SqlServerLedgerBulk
             [DocumentRef] nvarchar(64) '$.ref',
             [WaitingFor] nvarchar(500) '$.id',
             [Reason] nvarchar(2000) '$.reason') AS w
-        INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([FlowId], [DeliveryKey]))) ON r.[FlowId] = @flowId AND r.[DeliveryKey] = w.[DeliveryKey]
+        INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+            ON r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[DeliveryKey] = w.[DeliveryKey]
         WHERE r.[Status] = N'pending' AND r.[LeaseOwner] IS NULL AND r.[PendingDocumentRef] = w.[DocumentRef];
         """;
 
     /// <summary>Leaves the decided records waiting in the caller's transaction, and returns the ones it did.</summary>
     public static async Task<IReadOnlyList<Guid>> MarkWaitingAsync(
-        OsduDbContext db, Guid flowId, IReadOnlyList<(Guid Key, string DocumentRef, string WaitingFor, string Reason)> waits, DateTime now, CancellationToken ct)
+        OsduDbContext db, short partitionId, Guid flowId, IReadOnlyList<(Guid Key, string DocumentRef, string WaitingFor, string Reason)> waits, DateTime now, CancellationToken ct)
     {
         var (connection, transaction) = Current(db);
         var payload = System.Text.Json.JsonSerializer.Serialize(waits.Select(w => new { key = w.Key, @ref = w.DocumentRef, id = w.WaitingFor, reason = w.Reason }));
         await using var command = Command(connection, transaction, MarkWaitingSql, slice: null);
         command.Parameters.Add(new SqlParameter("@waits", SqlDbType.NVarChar, -1) { Value = payload });
+        command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
         command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
         command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
         return await GuidsAsync(command, ct).ConfigureAwait(false);
@@ -506,22 +522,25 @@ internal static class SqlServerLedgerBulk
 
     // A slice of the flow's waiting records (the named ones, when a key list is given) whose wait is over: the record
     // holding the id they wait for landed, or no record holds it any more but ones removed from OSDU. A holder is found
-    // through the id index, whose collation folds case, and compared exactly as OSDU compares ids.
+    // through the partition's id index, whose collation folds case, and compared exactly as OSDU compares ids: an id is
+    // referred to within its partition, so its holders are the waiting record's partition's records.
     private const string ReleaseResolvedSql = """
         UPDATE TOP (@slice) w SET w.[Status] = N'pending', w.[WaitingFor] = NULL, w.[NextAttemptUtc] = NULL, w.[LastError] = NULL, w.[UpdatedUtc] = @now
         OUTPUT inserted.[DeliveryKey]
         FROM [osdu].[Record] AS w
-        WHERE w.[FlowId] = @flowId AND w.[Status] = N'waiting'
+        WHERE w.[PartitionId] = @partitionId AND w.[FlowId] = @flowId AND w.[Status] = N'waiting'
           AND (@keys IS NULL OR w.[DeliveryKey] IN (SELECT CAST(k.[value] AS uniqueidentifier) FROM OPENJSON(@keys) AS k))
           AND (w.[WaitingFor] IS NULL
                OR EXISTS (
                     SELECT 1 FROM [osdu].[Record] AS p
-                    WHERE p.[TargetId] = w.[WaitingFor] COLLATE DATABASE_DEFAULT
+                    WHERE p.[PartitionId] = w.[PartitionId]
+                      AND p.[TargetId] = w.[WaitingFor] COLLATE DATABASE_DEFAULT
                       AND p.[TargetId] COLLATE Latin1_General_100_BIN2 = w.[WaitingFor]
                       AND (p.[Status] = N'delivered' OR p.[TargetVersion] IS NOT NULL))
                OR NOT EXISTS (
                     SELECT 1 FROM [osdu].[Record] AS p
-                    WHERE p.[TargetId] = w.[WaitingFor] COLLATE DATABASE_DEFAULT
+                    WHERE p.[PartitionId] = w.[PartitionId]
+                      AND p.[TargetId] = w.[WaitingFor] COLLATE DATABASE_DEFAULT
                       AND p.[TargetId] COLLATE Latin1_General_100_BIN2 = w.[WaitingFor]
                       AND p.[Status] <> N'deleted'
                       AND NOT (p.[FlowId] = w.[FlowId] AND p.[DeliveryKey] = w.[DeliveryKey])));
@@ -532,13 +551,14 @@ internal static class SqlServerLedgerBulk
     /// <paramref name="keys"/> names when given, in one statement of its own. Returns their keys.
     /// </summary>
     public static async Task<IReadOnlyList<Guid>> ReleaseResolvedWaitsAsync(
-        OsduDbContext db, Guid flowId, IReadOnlyList<Guid>? keys, int slice, DateTime now, CancellationToken ct)
+        OsduDbContext db, short partitionId, Guid flowId, IReadOnlyList<Guid>? keys, int slice, DateTime now, CancellationToken ct)
     {
         await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
         try
         {
             var connection = (SqlConnection)db.Database.GetDbConnection();
             await using var command = Command(connection, null, ReleaseResolvedSql, slice);
+            command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
             command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
             command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
             command.Parameters.Add(new SqlParameter("@keys", SqlDbType.NVarChar, -1)
@@ -554,12 +574,14 @@ internal static class SqlServerLedgerBulk
     }
 
     // Which of the listed ledger identities hold a record at all: an EXISTS per identity, a seek on the key the records
-    // lead with, so it costs the same whatever the ledger holds. One statement for any number of identities; a UNION of
-    // one query per identity nests as deep as the list is long, which the provider's query translation cannot walk.
+    // lead with (the ledger's partition, from the directory, and its identity), so it costs the same whatever the ledger
+    // holds. One statement for any number of identities; a UNION of one query per identity nests as deep as the list is
+    // long, which the provider's query translation cannot walk.
     private const string FlowsWithRecordsSql = """
-        SELECT f.[FlowId]
+        SELECT l.[FlowId]
         FROM (SELECT DISTINCT CAST(j.[value] AS uniqueidentifier) AS [FlowId] FROM OPENJSON(@flows) AS j) AS f
-        WHERE EXISTS (SELECT 1 FROM [osdu].[Record] AS r WHERE r.[FlowId] = f.[FlowId]);
+        INNER JOIN [osdu].[Ledger] AS l ON l.[FlowId] = f.[FlowId]
+        WHERE EXISTS (SELECT 1 FROM [osdu].[Record] AS r WHERE r.[PartitionId] = l.[PartitionId] AND r.[FlowId] = l.[FlowId]);
         """;
 
     /// <summary>The ledger identities among <paramref name="flowIds"/> that hold at least one record, in any state.</summary>
@@ -645,17 +667,19 @@ internal static class SqlServerLedgerBulk
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    /// <summary>Runs a statement over one slice of the stage.</summary>
-    private static async Task SliceAsync(SqlConnection connection, SqlTransaction transaction, string sql, int slice, CancellationToken ct)
+    /// <summary>Runs a statement over one slice of the stage, in the partition of the ledger it stages.</summary>
+    private static async Task SliceAsync(SqlConnection connection, SqlTransaction transaction, string sql, int slice, short partitionId, CancellationToken ct)
     {
         await using var command = Command(connection, transaction, sql, slice);
+        command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    private static async Task<int> ScalarAsync(SqlConnection connection, SqlTransaction transaction, string sql, DateTime now, Guid flowId, int? slice, CancellationToken ct)
+    private static async Task<int> ScalarAsync(SqlConnection connection, SqlTransaction transaction, string sql, DateTime now, short partitionId, Guid flowId, int? slice, CancellationToken ct)
     {
         await using var command = Command(connection, transaction, sql, slice);
         command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
+        command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
         command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
         var result = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
         return result is int i ? i : Convert.ToInt32(result, System.Globalization.CultureInfo.InvariantCulture);
@@ -694,9 +718,10 @@ internal static class SqlServerLedgerBulk
     }
 
     /// <summary>Runs a statement over one slice whose result set is one delivery key per row, and reads the keys back.</summary>
-    private static async Task<IReadOnlyList<DeliveryKey>> KeysAsync(SqlConnection connection, SqlTransaction transaction, string sql, int slice, CancellationToken ct)
+    private static async Task<IReadOnlyList<DeliveryKey>> KeysAsync(SqlConnection connection, SqlTransaction transaction, string sql, int slice, short partitionId, CancellationToken ct)
     {
         await using var command = Command(connection, transaction, sql, slice);
+        command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
         var keys = new List<DeliveryKey>();
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -759,6 +784,7 @@ internal static class SqlServerLedgerBulk
     private static DataTable AttemptTable(IReadOnlyList<DeliveryAttempt> attempts)
     {
         var table = new DataTable();
+        table.Columns.Add("PartitionId", typeof(short));
         table.Columns.Add("FlowId", typeof(Guid));
         table.Columns.Add("DeliveryKey", typeof(Guid));
         table.Columns.Add("SubmissionId", typeof(Guid));
@@ -781,7 +807,7 @@ internal static class SqlServerLedgerBulk
         foreach (var a in attempts)
         {
             table.Rows.Add(
-                a.FlowId, a.DeliveryKey, Value(a.SubmissionId), Value(a.RunId), a.Worker, a.StartedUtc, a.CompletedUtc,
+                a.PartitionId, a.FlowId, a.DeliveryKey, Value(a.SubmissionId), Value(a.RunId), a.Worker, a.StartedUtc, a.CompletedUtc,
                 a.Outcome, a.Phase, Value(a.MetadataHash), Value(a.PayloadHash), Value(a.TargetVersion),
                 Value(a.Error), Value(a.ResultJson), Value(a.WorkBatch),
                 Value(a.SourceFileName), Value(a.SourceRowNumber), Value(a.SourceUpdatedUtc), Value(a.SourceDeletedUtc));
@@ -793,6 +819,7 @@ internal static class SqlServerLedgerBulk
     private static DataTable EventTable(IReadOnlyList<DeliveryRecordEvent> events)
     {
         var table = new DataTable();
+        table.Columns.Add("PartitionId", typeof(short));
         table.Columns.Add("LeaseToken", typeof(string));
         table.Columns.Add("FlowId", typeof(Guid));
         table.Columns.Add("DeliveryKey", typeof(Guid));
@@ -824,7 +851,7 @@ internal static class SqlServerLedgerBulk
         foreach (var e in events)
         {
             table.Rows.Add(
-                e.LeaseToken, e.FlowId, e.DeliveryKey, e.Kind, e.AtUtc, Value(e.StepJson),
+                e.PartitionId, e.LeaseToken, e.FlowId, e.DeliveryKey, e.Kind, e.AtUtc, Value(e.StepJson),
                 Value(e.Status), e.Promote, e.NothingSent, Value(e.NextAttemptUtc), Value(e.Error),
                 Value(e.TargetId), Value(e.TargetVersion), Value(e.TargetStateJson), Value(e.PendingStepJson),
                 Value(e.ClaimSubmissionId), Value(e.ClaimDocumentRef), Value(e.ClaimRenderContext), Value(e.ClaimSourceFingerprint),

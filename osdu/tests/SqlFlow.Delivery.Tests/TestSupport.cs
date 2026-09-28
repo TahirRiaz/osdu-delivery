@@ -1145,3 +1145,72 @@ public sealed class FixedPartitionRegistry(RegisteredPartitions partitions) : IP
 
     public Task<RegisteredPartitions> ReadAsync(CancellationToken ct = default) => Task.FromResult(partitions);
 }
+
+/// <summary>
+/// Registers ledgers in the ledger's directory for a test that writes to a ledger directly, as a run registers its own
+/// before it writes a row of it (docs/ledger.md, Partitions). A test that runs a flow needs none of this: the run does it.
+/// </summary>
+public static class TestLedgers
+{
+    /// <summary>The partition a test's ledgers are kept under unless it names another.</summary>
+    public const string Partition = "dev";
+
+    /// <summary>Registers each of <paramref name="flowIds"/> in <paramref name="partition"/>, named after its identity.</summary>
+    public static async Task RegisterAsync(this ILedger ledger, string partition, params Guid[] flowIds)
+    {
+        ArgumentNullException.ThrowIfNull(ledger);
+        foreach (var flowId in flowIds)
+        {
+            await ledger.RegisterLedgerAsync(new LedgerEntry
+            {
+                FlowId = flowId,
+                Partition = partition,
+                Kind = LedgerKinds.Delivery,
+                FlowName = $"test-{flowId:N}",
+                LedgerName = $"test-{flowId:N}",
+            });
+        }
+    }
+
+    /// <summary>Registers each of <paramref name="flowIds"/> in <see cref="Partition"/>.</summary>
+    public static Task RegisterAsync(this ILedger ledger, params Guid[] flowIds) => ledger.RegisterAsync(Partition, flowIds);
+
+    /// <summary>
+    /// Registers <paramref name="flowId"/> in <paramref name="partition"/> under the names a run of <paramref name="flowName"/>
+    /// registers it with, for a test whose flow is read back by name (the Partitions page lists flows by it).
+    /// </summary>
+    public static Task RegisterAsync(this ILedger ledger, Guid flowId, string partition, string flowName, string? ledgerName = null)
+    {
+        ArgumentNullException.ThrowIfNull(ledger);
+        return ledger.RegisterLedgerAsync(new LedgerEntry
+        {
+            FlowId = flowId,
+            Partition = partition,
+            Kind = LedgerKinds.Delivery,
+            FlowName = flowName,
+            LedgerName = ledgerName ?? flowName,
+        });
+    }
+
+    /// <summary>
+    /// Registers <paramref name="flow"/>'s ledger exactly as a run of it would (<see cref="LedgerRegistration"/>), for a test
+    /// that drives the intake or the worker itself rather than through the runtime's operations.
+    /// </summary>
+    public static Task RegisterAsync(this ILedger ledger, FlowDefinition flow)
+        => LedgerRegistration.RegisterAsync(ledger, flow, new SecretResolver([new EnvSecretProvider()]), keptWhenUnresolved: false);
+
+    /// <summary>Registers a retrieval flow's ledger in <paramref name="partition"/>, as its executor does before the runner writes.</summary>
+    public static Task RegisterAsync(this ILedger ledger, RetrievalDefinition flow, string partition = Partition)
+    {
+        ArgumentNullException.ThrowIfNull(ledger);
+        ArgumentNullException.ThrowIfNull(flow);
+        return ledger.RegisterLedgerAsync(new LedgerEntry
+        {
+            FlowId = flow.Id,
+            Partition = partition,
+            Kind = LedgerKinds.Retrieval,
+            FlowName = flow.Name,
+            LedgerName = flow.Name,
+        });
+    }
+}

@@ -224,6 +224,8 @@ public sealed class DeliveryPartitionsApiTests
         }
 
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(devLedger, dev, flowName);
+        await ledger.RegisterAsync(testLedger, test, flowName, $"{flowName}@{test}");
         foreach (var (flowId, key) in new[] { (devLedger, devKey), (testLedger, testKey) })
         {
             await ledger.UpsertPendingAsync(flowId,
@@ -354,6 +356,8 @@ public sealed class DeliveryPartitionsApiTests
             await using (var osdu = SampleEstate.Context(cs))
             {
                 await osdu.DeliveryRecords.Where(r => r.FlowId == devLedger || r.FlowId == testLedger).ExecuteDeleteAsync();
+                await osdu.DeliveryLedgers.Where(l => l.FlowId == devLedger || l.FlowId == testLedger).ExecuteDeleteAsync();
+                await osdu.DeliveryLedgerPartitions.Where(p => p.Name == dev || p.Name == test).ExecuteDeleteAsync();
                 await osdu.DeliveryInterfaces.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
                 await osdu.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
                 await osdu.DeliveryConfigProperties.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
@@ -458,6 +462,8 @@ public sealed class DeliveryPartitionsApiTests
         }
 
         var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(devLedger, dev, flowName);
+        await ledger.RegisterAsync(testLedger, test, flowName, $"{flowName}@{test}");
         foreach (var (flowId, key) in new[] { (devLedger, devKey), (testLedger, testKey) })
         {
             await ledger.UpsertPendingAsync(flowId,
@@ -575,9 +581,18 @@ public sealed class DeliveryPartitionsApiTests
                 Assert.Equal(HttpStatusCode.NotFound, gone.StatusCode);
             }
 
-            using (var notServed = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/records?partition={dev}"))
+            // A partition taken out of the registry is no longer served: nothing is read from its target or acted on in it. What
+            // its ledger kept is still read, where the ledger's directory says it is.
+            using (var notServed = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/target?partition={dev}"))
             {
                 Assert.Equal(HttpStatusCode.BadRequest, notServed.StatusCode);
+            }
+
+            var kept = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/records?partition={dev}");
+            Assert.Equal(devKey.Value, Assert.Single(kept.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
+            using (var nowhere = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/records?partition={unregistered}"))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, nowhere.StatusCode);
             }
 
             // A record of a partition taken out of the registry is still read where its ledger says it was delivered.
@@ -591,6 +606,8 @@ public sealed class DeliveryPartitionsApiTests
             await using (var osdu = SampleEstate.Context(cs))
             {
                 await osdu.DeliveryRecords.Where(r => r.FlowId == devLedger || r.FlowId == testLedger).ExecuteDeleteAsync();
+                await osdu.DeliveryLedgers.Where(l => l.FlowId == devLedger || l.FlowId == testLedger).ExecuteDeleteAsync();
+                await osdu.DeliveryLedgerPartitions.Where(p => p.Name == dev || p.Name == test).ExecuteDeleteAsync();
                 await osdu.DeliveryInterfaces.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
                 await osdu.DeliveryCacheDefinitions.Where(c => c.RepoId == repoId).ExecuteDeleteAsync();
                 await osdu.DeliveryPartitions.ExecuteDeleteAsync();
