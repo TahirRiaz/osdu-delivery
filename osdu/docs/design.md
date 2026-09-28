@@ -411,8 +411,13 @@ the value it matched by no longer resolves, or when a field it read and found em
 gives a value; anything else the change does not touch, including a record that only ever
 read the id of an item whose name changed. A lookup table is asked about the keys it newly
 lists too: a replace that looked a key up and found no row records the key, so a table
-that comes to list it touches the records built without it. Each set is
-judged by the value it holds, since sets built against different cache versions can hold
+that comes to list it touches the records built without it. A type of OSDU records is asked
+the same about every value its arriving or moving records hold: a node that found no record
+by a value (a wellbore loaded after the logs naming it) records the value, and a
+`$findAll` records each key with the ids of the rows it found, none included, so a record
+that the access group a data office lists for its field later would widen is touched when
+the group arrives, and tagged `relisted`. Each
+set is judged by the value it holds, since sets built against different cache versions can hold
 different values of one path: a set already holding the new value is not touched.
 
 **Who decides.** Each changed value becomes one tag (`osdu.UpdateTag`): the cached

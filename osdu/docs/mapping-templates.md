@@ -174,23 +174,25 @@ record:
 | `dataset.identity` | Optional list of the dataset's own columns whose values identify the record to a person (a wellbore id, a well name, a log id). The ledger indexes every value, so the Records page finds the record by any of them across every flow, without knowing which flow delivered it. Search only: like the label, an identity never enters the record or its hash. |
 | `parameters` | Values the flow supplies under `render.parameters`. `dataPartition` is always declared. |
 | `searches` | The record sets the mapping's `$search` nodes look in, each with the saved schema that says how its kind is indexed. See [Searches](#searches). |
+| `lookups` | The records a row is matched to once in the cache and read wherever the record needs them, by name. See [Lookups](#lookups). |
 | `record` | The record the mapping renders, laid out as the record is, described below. |
 | `fixtureDefaults` | What every fixture renders with unless it says otherwise: `parameters`, written once. See [Fixtures](#fixtures). |
-| `fixtures` | Example rows and the exact record each must render to, with the answers they assume the platform gives to the searches they make. Every run checks them before rendering. See [Fixtures](#fixtures). |
+| `fixtures` | Example rows and the exact record each must render to, with the answers they assume the platform gives to the searches they make and the cached rows they assume. Every run checks them before rendering. See [Fixtures](#fixtures). |
 
 ### The record tree
 
 **Every word of the mapping language starts with `$`, and every other key is a property of the record.** A template's
 property is therefore never read as the language, whatever it is called (a template may well declare a property called
-`Source`, `Value` or `Description`), and a column never is either. A property is one of five nodes:
+`Source`, `Value` or `Description`), and a column never is either. A property is one of six nodes:
 
 | Node | Written as | Writes |
 | --- | --- | --- |
 | A literal | `ReferenceCurveID: MD`, `otherRelevantDataCountries: [NO]` | The value as it is written: text, a number, a boolean or a list. `{$param.<name>}` tokens in its text are replaced with the flow's parameter values. |
 | An object | `VerticalMeasurement:` and the properties it holds | Each property it holds. |
-| A value node | `Name: { $from: log_source, $modifiers: [trim] }` | One value, read with `$from`, `$expr`, `$value`, `$cache` or `$search`, and the settings beside it. |
+| A value node | `Name: { $from: log_source, $modifiers: [trim] }` | One value, read with `$from`, `$expr`, `$value`, `$cache`, `$search` or `$lookup`, and the settings beside it; with `$findAll`, one value from every cached row that matches. |
 | A `$coalesce` node | `Name: { $coalesce: [ { $from: log_name }, { $from: log_source } ] }` | The value of the first of its alternatives that gives one, each a value node of its own. See [Coalesce](#coalesce). |
 | A `$forEach` node | `Curves: { $forEach: curves, $item: { ... } }` | An array with one item per row of a child dataset, each laid out under `$item`. |
+| A list of values | `viewers: ["{$param.aclViewer}", { $cache: ..., $findAll: ... }]` | What each item gives, in order: a literal, or a value node. See [Lists of values](#lists-of-values). |
 
 A map holding any `$` key is a node, and all of its keys start with `$`: mixing the language's words with the record's
 properties in one map is refused, and so is a word the language does not have, naming the one it most likely meant
@@ -203,8 +205,10 @@ properties in one map is refused, and so is a word the language does not have, n
 | `$value` | A literal with settings: a string, a number, a boolean, a list or an object, written verbatim. It takes only `$when` and `$description` beside it. |
 | `$cache` | `<Type>.id`, the OSDU id of the cached record `$findBy` selects, in the reference form OSDU relationships use (ending in `:`); or `<Type>.<field>`, a field of that record, such as `Name` or `NameAliases.AliasName`. |
 | `$search` | `<name>`, the OSDU id of the one record a search of the platform finds by `$findBy`, in the same reference form. See [Searches](#searches). |
+| `$lookup` | `<lookup>.<field>`, a field of the record a lookup of the `lookups` block finds, or its `id` in the reference form. It takes only `$when`, `$required` and `$description` beside it; how the record is found is the lookup's to say. See [Lookups](#lookups). |
 | `$coalesce` | A list of two or more value nodes, tried in order: the first that gives a value is written. See [Coalesce](#coalesce). |
 | `$findBy` | With `$cache` or `$search`: which record to read. |
+| `$findAll` | With `$cache`, in place of `$findBy`: every row to read, the node giving the field it reads from each of them as a list. See [findAll](#findall). |
 | `$modifiers` | Changes to an incoming dataset value, applied top to bottom. |
 | `$when` | A [condition](#expressions): when the property applies to a row. When it does not, the property is left out for that row. |
 | `$required` | What happens when the value is empty. Default `true`. |
@@ -216,8 +220,9 @@ A `$forEach` node takes `$forEach: <child dataset>` and `$item`, which lays out 
 `$where`, a condition each child row must hold to become an item, read against that row; and `$when`, `$required` and
 `$description`, which decide for the whole array and read the dataset's own row. The properties
 under `$item` read the item's row by bare column names and the dataset's own row with `$dataset.<column>`. A repeated
-array inside a repeated item is not supported yet, and neither is an array of values from rows or a literal list
-holding value nodes; the tree has the syntax for them and the loader refuses them by name.
+array inside a repeated item is not supported, and neither is an array of values whose items come from a child
+dataset's rows; the loader refuses both by name. A list of values whose items come from the cache is a
+[list of values](#lists-of-values).
 
 Each property the tree writes is a template variable, named by its path in the record: `record.data.Curves.$item.CurveID`
 fills `osdu.data.Curves[].CurveID`. Messages name a node by where the document writes it, and the builder, the coverage
@@ -416,6 +421,141 @@ fixtures:
       - { search: Wellbore, field: data.FacilityName, value: OSDU-DEV-1-A, id: "dev:master-data--Wellbore:OSDU-DEV-1-A" }
     row:
       wellbore_uwi: OSDU-DEV-1-A
+```
+
+### Lookups
+
+A record often needs several values of one other record: a well log writes the id of its wellbore, and the viewers its
+access list takes come from the field and the country that wellbore lies in. A lookup finds that record once, in the
+partition's cache, and every node reads from the record it found, so the id a record writes and the values derived from
+that record can never come from two different ones.
+
+```yaml
+lookups:
+  wellbore:
+    $cache: Wellbore
+    $findBy:
+      - FacilityName = wellbore_uwi
+      - NameAliases.AliasName = wellbore_uwi
+    $description: The log's wellbore, by its UWI or one of its aliases.
+
+record:
+  data:
+    WellboreID: { $lookup: wellbore.id }
+```
+
+| Key | Meaning |
+| --- | --- |
+| `lookups.<name>` | The name nodes read the lookup by: letters, digits, underscores and hyphens. |
+| `$cache` | The cached type the record is found in, by name alone (`Wellbore`): the field is read where the lookup is read. |
+| `$findBy` | How the row finds its record, as a cache node's `$findBy` does: lines tried in order, each comparing a field of the cached record with a column of the dataset's own row or a quoted text, the first that finds exactly one winning. |
+| `$modifiers`, `$ignoreSeparators` | As on a cache node: changes to the value each line compares, and a last attempt with punctuation and spacing folded away. |
+| `$description` | Free text. |
+
+A lookup is read with `$lookup: <lookup>.<field>` anywhere in the tree, including inside a `$forEach` item, since it reads
+the dataset's own row; and in a `$findAll` line as `$lookup.<lookup>.<field>`. A `$lookup` node is the cache node the
+lookup would be written as on its own (`$cache: Wellbore.id` with the lookup's `$findBy`), so it holds, records its
+dependencies and resolves its references exactly like one, and every lookup must be read by a node. A lookup that finds
+nothing holds a required node that reads it, and gives nothing to one that is not; several records answering to one
+value hold the record whatever the node says.
+
+A lookup reads the cache, not the platform, so it suits a type the cache can hold whole: wellbores, where a capture
+keeps a few paths of each (`FacilityName`, `NameAliases.AliasName`, `GeoContexts.FieldID`,
+`GeoContexts.GeoPoliticalEntityID`), and a refresh writes only the records that arrived or changed. A render that finds no
+record by a value records the value it looked for, so the refresh that brings the record in (a wellbore loaded after the
+logs that name it) tags every record built without it, as `listed`. A [search](#searches) remains the choice for a set
+no capture can keep.
+
+### findAll
+
+`$findBy` names the one record a value stands for. `$findAll` reads every row of a cached type a value keys, however many
+there are, and the node gives the field it reads from each of them as a list: every access group a data office lists for
+a field, every alias a code is known by.
+
+```yaml
+$cache: AccessGroupMap.EntitlementGroupEmail
+$findAll:
+  - GeoPoliticalEntityID = $lookup.wellbore.GeoContexts.GeoPoliticalEntityID
+  - FieldList is empty
+  - FieldIDList is empty
+```
+
+Reads as: the group address of every access group that names the wellbore's country and no field. Exactly one line is
+the key, `<field> = <operand>`, whose operand is a column (after the node's modifiers), a quoted text, or a path of the
+record a lookup finds, every value of which is a key of its own (a wellbore in two fields keys both). Any number of
+lines `<field> is empty` narrow the rows the key finds to those holding nothing under the field. A row holds a key when
+any value of its field is the key, without regard to case, since a key names the same thing however it is written; a
+key that is an OSDU reference finds the rows that name the record with or without the separator before its version
+(`dev:master-data--Field:1234:` and `dev:master-data--Field:1234`). The rows are read in the order of their ids, and a
+value two rows give is written once.
+
+A `$findAll` gives a list, so it fills a list of values: a property that is one, or an item of a
+[list of values](#lists-of-values). A node that finds no row leaves the property out when it is `$required: false`, and
+holds the record, naming the keys it looked for, when it is required.
+
+Every key is recorded with the ids of the rows it found, none included, and every field a row was judged by, as read.
+That is what makes a `$findAll` safe to deliver without what it did not find yet: the refresh of the cache that lists
+another row under a key, drops one, or changes one, tags every record built from the key, as `relisted`, and the
+rollout redelivers them; so does a row that comes to hold a value under a field the node asked to be empty, or a
+lookup's record given the field a key is read from. The preflight refuses a `$findAll` whose key field the cache does
+not hold, and one asking for a field to be empty that no row of the type holds, which is more likely a path the cache
+flow does not capture than a field every row leaves empty, and would let every row through.
+
+### Lists of values
+
+A list some of whose items are value nodes is a list of values: the items, in order, each a literal or a value node (a
+`$findAll` among them), and the list is what they give, one after another, a value given twice (whatever its case)
+written once where it is first given. An item that gives nothing adds nothing, and one that holds holds the record, as it
+would on its own. An item is never an object, a list, a `$coalesce` or a `$forEach`.
+
+The access lists take one: `acl.owners` and `acl.viewers` may add to the literal values every record carries, of which
+they list at least one, so no record goes out without an owner or a viewer whatever its nodes find. The legal lists
+never do: the legal service checks a record's tags and countries before a run, which it can only do for a list the same
+on every record.
+
+### Access by field and country
+
+The access groups a data office maintains per field and per country (equinor/PetroDB#1227) are one cached type, and a
+well log's viewers are the flow's group, the groups of the wellbore's field, and the country groups of its country:
+
+```yaml
+lookups:
+  wellbore:
+    $cache: Wellbore
+    $findBy: [FacilityName = wellbore_uwi, NameAliases.AliasName = wellbore_uwi]
+
+record:
+  acl:
+    owners: ["{$param.aclOwner}"]
+    viewers:
+      - "{$param.aclViewer}"
+      - $cache: AccessGroupMap.EntitlementGroupEmail
+        $findAll: FieldIDList = $lookup.wellbore.GeoContexts.FieldID
+        $required: false
+      - $cache: AccessGroupMap.EntitlementGroupEmail
+        $findAll:
+          - GeoPoliticalEntityID = $lookup.wellbore.GeoContexts.GeoPoliticalEntityID
+          - FieldList is empty
+          - FieldIDList is empty
+        $required: false
+  data:
+    WellboreID: { $lookup: wellbore.id }
+```
+
+A country group is every row naming the country and no field, the permanent employees' group and the consultants' alike;
+a row naming a field is that field's group, never the country's, so a field's group never widens to the whole country. A
+wellbore in no field, or a field or country with no group yet, gives the record the groups that were found and the
+flow's group at the least, and the refresh that brings what was missing redelivers it with the full list. The cache flow
+captures the paths the mapping reads:
+
+```yaml
+types:
+  - kind: "osdu:wks:master-data--Wellbore:*"
+    name: Wellbore
+    fields: [data.FacilityName, data.NameAliases.AliasName, data.GeoContexts.FieldID, data.GeoContexts.GeoPoliticalEntityID]
+  - kind: "eqnr:dataoffice:data-governance--AccessGroupMap:*"
+    name: AccessGroupMap
+    fields: [data.EntitlementGroupEmail, data.FieldIDList, data.FieldList, data.GeoPoliticalEntityID, data.GeoPoliticalEntityName]
 ```
 
 ### Modifiers
@@ -678,9 +818,9 @@ document; nothing is rendered and no cache is read.
 ### Fixtures
 
 A fixture is an example row and the exact record it must render to. The preflight renders every fixture before every
-run, against the pinned template and cache and the search answers the fixture declares, and a fixture that renders
-anything else stops the run: the fixtures are the mapping's regression suite. A fixture renders with the flow's
-parameters, `fixtureDefaults.parameters` over them, and its own `parameters` over those, name by name:
+run, against the pinned template and cache, the search answers the fixture declares and the cached rows it declares, and
+a fixture that renders anything else stops the run: the fixtures are the mapping's regression suite. A fixture renders
+with the flow's parameters, `fixtureDefaults.parameters` over them, and its own `parameters` over those, name by name:
 
 ```yaml
 fixtureDefaults:
@@ -698,7 +838,28 @@ fixtures:
       { ... }
 ```
 
-After a change to a mapping that is meant to change its records, `sqlflow fixtures update <flow.yaml>` renders each
+A fixture reading a cached type whose rows change every day (wellbores, the access groups a data office maintains)
+declares the rows it assumes under `cache`, by type: for each type it names, it renders against exactly those rows,
+whatever the partition's cache holds of it, so it checks the mapping rather than the data of the day. A row is an object
+with its record `id` and the fields it holds, named as the cache names them; `[]` says the type holds none. Every type it
+names is one the mapping reads. Types it does not name are read from the partition's cache as ever:
+
+```yaml
+  - name: L-1003, a wellbore in a field with a group of its own
+    cache:
+      Wellbore:
+        - id: dev:master-data--Wellbore:OSDU-DEV-1-A
+          FacilityName: OSDU-DEV-1-A
+          GeoContexts.FieldID: ["dev:master-data--Field:DEV:"]
+      AccessGroupMap:
+        - id: dev:data-governance--AccessGroupMap:dev-field
+          EntitlementGroupEmail: data.office.dev.viewers@dev
+          FieldIDList: ["dev:master-data--Field:DEV"]
+          FieldList: [DEV]
+    row: { log_id: L-1003, wellbore_uwi: OSDU-DEV-1-A }
+    expected: |
+      { ... }
+```, `sqlflow fixtures update <flow.yaml>` renders each
 fixture exactly as the preflight does and writes what it renders into its `expected` block
 ([reference/cli/delivery.md](reference/cli/delivery.md)). Only those blocks change; the rest of the file, its comments and
 its layout stay as written, and a fixture that already renders what it expects is not touched. A fixture whose record
@@ -737,6 +898,11 @@ When a mapping is read:
   `data`. Every declared search is read by a node, no two look in one kind, and each pins a schema of the entity type it
   searches. A fixture's answers name a declared search, a property its `$findBy` lines compare, and an id of the entity
   type searched, once per lookup.
+- Every `$lookup` node, and every `$findAll` line reading a lookup, names a lookup the `lookups` block declares and a
+  field of its record, and every declared lookup is read by a node. A `$findAll` belongs to a `$cache` node, has exactly
+  one key line and no key field it also asks to be empty, and reads another type than the lookup it keys by. A list of
+  values holds only literals and value nodes; the access lists among them list at least one literal, and the legal
+  lists hold none. A fixture's cached rows name types the mapping reads, each row once with its id.
 
 Before any row is rendered (the preflight):
 
@@ -744,20 +910,23 @@ Before any row is rendered (the preflight):
 2. Every property the tree writes is a variable of the template, with an agreeing shape: `$forEach` only on an array
    of objects, a plain value only on a scalar or an array of scalars, an object only from a literal.
 3. No node fills `record.id`, `record.kind` or a property OSDU sets.
-4. `acl.owners`, `acl.viewers`, `legal.legaltags` and `legal.otherRelevantDataCountries` are literal lists,
-   non-empty and free of repeats, so the legal service can check the tags before a run.
+4. `legal.legaltags` and `legal.otherRelevantDataCountries` are literal lists, non-empty and free of repeats, so the
+   legal service can check the tags before a run; so are the literal values of `acl.owners` and `acl.viewers`, which a
+   [list of values](#lists-of-values) may add to.
 5. Every property the schema requires has a node, and none of those nodes is `$required: false`. A required object
    may instead be filled by nodes for its properties, at least one of them a literal or required without `$when`.
 6. Every dataset column and child dataset exists in the flow's ingestion tables, when those are known, the columns
    expressions read included. Every parameter an expression reads has a value.
 7. Every cache type exists in the cache, and holds the fields `$findBy` compares and the field the node reads. Every
    search's pinned schema is saved, and every property its `$findBy` lines compare can be matched exactly on the
-   platform, as that schema says the property is indexed.
+   platform, as that schema says the property is indexed. A `$findAll` fills a list, its key field is cached, every
+   field it asks to be empty is held by some row of the type, and a lookup it keys by reads a cached type by fields it
+   caches, at a path its records hold.
 8. A `$cache` node resolves to the entity type the schema expects for its property. `data.WellboreID` can only be
    read from a cached type of `master-data--Wellbore`.
 9. A literal on a relationship property exists in the cache when the cache holds that entity type. An `id` or `ref`
    modifier builds ids of an entity type the property points to, matching its pattern; a `ref` settles one type.
-10. Every fixture renders exactly as declared, against the search answers it declares.
+10. Every fixture renders exactly as declared, against the search answers and the cached rows it declares.
 
 ## The mapping builder
 
@@ -788,7 +957,9 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
    environment. Each value read from a reference names it; a reference the control plane cannot resolve (one only the
    nodes hold) is named with a request for a value to check with. What is typed there is never written into the mapping.
 
-An existing mapping opens in the builder with its entries filled in.
+An existing mapping opens in the builder with its entries filled in. One that declares lookups, reads rows with
+`$findAll` or lists values nodes read is not opened, with the reason: the builder has no place for them, and writing the
+mapping back would drop them. It is edited as the document it is.
 
 ## What is removed
 
