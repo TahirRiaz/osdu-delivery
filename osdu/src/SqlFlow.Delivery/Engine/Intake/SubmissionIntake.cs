@@ -323,7 +323,7 @@ public sealed class SubmissionIntake
                 through,
                 submission.SubmissionId,
                 _time.GetUtcNow().UtcDateTime,
-                Hashing.ContentHash.Of(submission.RenderContext)),
+                Delivery.Snapshots.RenderContext.Parse(submission.RenderContext).RulesHash()),
             ct).ConfigureAwait(false);
     }
 

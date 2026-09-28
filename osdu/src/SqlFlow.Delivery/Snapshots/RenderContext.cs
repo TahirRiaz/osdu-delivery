@@ -19,6 +19,9 @@ public sealed partial record RenderContext
 
     public required string MappingReference { get; init; }
 
+    /// <summary>The mapping document's fingerprint, so an edit in place re-renders its records; null for a mapping built in code.</summary>
+    public string? MappingFingerprint { get; init; }
+
     /// <summary>The partition whose cache the render read; null when the mapping reads no cache.</summary>
     public string? CacheScope { get; init; }
 
@@ -73,7 +76,18 @@ public sealed partial record RenderContext
     private static partial Regex IdSegment();
 
     /// <summary>Canonical JSON form, stored verbatim in the ledger and fed into hashes.</summary>
-    public string Canonical()
+    public string Canonical() => CanonicalJson.ToString(Node(withCacheVersion: true));
+
+    public string Hash() => ContentHash.Of(Canonical());
+
+    /// <summary>
+    /// The hash of everything but the cache version: the mapping, the template, the parameters and the pinned system
+    /// properties. A scope planned under other rules is read whole on its next run; a moved cache version is not, since the
+    /// cache rollout redelivers exactly the records a cache change reaches.
+    /// </summary>
+    public string RulesHash() => ContentHash.Of(CanonicalJson.ToString(Node(withCacheVersion: false)));
+
+    private JsonObject Node(bool withCacheVersion)
     {
         var parameters = new JsonObject();
         foreach (var kv in Parameters.OrderBy(k => k.Key, StringComparer.Ordinal))
@@ -84,10 +98,19 @@ public sealed partial record RenderContext
         var node = new JsonObject
         {
             ["mapping"] = MappingReference,
-            ["cacheVersion"] = CacheVersion,
             ["schema"] = SchemaSnapshotVersion,
             ["parameters"] = parameters,
         };
+        if (withCacheVersion)
+        {
+            node["cacheVersion"] = CacheVersion;
+        }
+
+        if (MappingFingerprint is not null)
+        {
+            node["mappingFingerprint"] = MappingFingerprint;
+        }
+
         if (CacheScope is not null)
         {
             node["cache"] = CacheScope;
@@ -110,10 +133,8 @@ public sealed partial record RenderContext
             node["systemProperties"] = services;
         }
 
-        return CanonicalJson.ToString(node);
+        return node;
     }
-
-    public string Hash() => ContentHash.Of(Canonical());
 
     public static RenderContext Parse(string canonical)
     {
@@ -130,6 +151,7 @@ public sealed partial record RenderContext
         return new RenderContext
         {
             MappingReference = node["mapping"]?.GetValue<string>() ?? string.Empty,
+            MappingFingerprint = node["mappingFingerprint"]?.GetValue<string>(),
             CacheScope = node["cache"]?.GetValue<string>(),
             CacheVersion = node["cacheVersion"]?.GetValue<string>() ?? string.Empty,
             SchemaSnapshotVersion = node["schema"]?.GetValue<string>() ?? string.Empty,

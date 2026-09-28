@@ -27,7 +27,7 @@
 # Where this differs from petrodb-api: the record id is the delivery key rather than one the DDMS mints, so a log is
 # always the same record; the viewers are the flow's group rather than groups looked up per field and country; and
 # CompanyID is left out, because petrodb-api finds it by searching Organisation records, a template this estate does not
-# pin. Editing this file re-renders every record that uses it, so changes go through `plan` and a canary first.
+# pin. Editing this file re-renders every record that uses it on the flow's next run, so `plan` it first to see what that sends.
 documentType: mapping
 name: WellLog
 version: 1.4.0

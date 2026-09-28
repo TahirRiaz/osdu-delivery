@@ -328,8 +328,8 @@ public sealed class Planner
         }
 
         // Tier 0: nothing changed in the window and no record is waiting to be planned again, so the whole run is
-        // skipped without reading a row. A moved render context is handled by the cache rollout and an explicit
-        // replan, not by re-rendering the scope on every run.
+        // skipped without reading a row. A run under moved rules reads the whole scope instead of a window, and a moved
+        // cache version is handled by the cache rollout, which asks for exactly the records it reaches.
         if (gate && selection.CoversScope && flow.Change.UseSourceVersions && !source.HasChanges)
         {
             var waiting = _ledger is not null && (await _ledger.ListPlanRequestedAsync(flow.Id, null, 1, ct).ConfigureAwait(false)).Count > 0;

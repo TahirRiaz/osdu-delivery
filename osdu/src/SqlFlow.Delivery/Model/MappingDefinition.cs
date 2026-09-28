@@ -20,6 +20,12 @@ public sealed record MappingDefinition
     /// <summary>Semantic version of the mapping. Part of the render context and so of every record's render.</summary>
     public required string Version { get; init; }
 
+    /// <summary>
+    /// What the document says about how records render (<see cref="Documents.MappingFingerprint"/>), so an edit made in place
+    /// under the same name and version still moves the render context. Null for a definition built in code.
+    /// </summary>
+    public string? Fingerprint { get; init; }
+
     /// <summary>The template version the mapping fills.</summary>
     public required TemplateReference Template { get; init; }
 

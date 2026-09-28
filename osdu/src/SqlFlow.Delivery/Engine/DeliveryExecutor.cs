@@ -324,7 +324,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         {
             runtime.SubmissionId = payload.SubmissionId;
             runtime.Slices = payload.Slices.Count > 0 ? payload.Slices : null;
-            selection = await SelectionAsync(context, flow, runtime.Parameters, operation, submission, keys, log, ct).ConfigureAwait(false);
+            selection = await SelectionAsync(context, flow, runtime.Parameters, runtime.Mapping.Context, operation, submission, keys, log, ct).ConfigureAwait(false);
             runtime.Selection = selection;
         }
 
@@ -383,10 +383,11 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     /// <summary>
     /// Which records this run reads. A run on a submission reads the rows that submission recorded, a record-scoped run
     /// reads those records by their stored key tuples, a replan reads the whole scope, and an ordinary run reads what
-    /// changed since the scope's watermark, less the flow's overlap.
+    /// changed since the scope's watermark, less the flow's overlap, or the whole scope when the mapping, the template or
+    /// the parameters it renders with moved since that watermark was written.
     /// </summary>
     private static async Task<SourceSelection> SelectionAsync(
-        EngineContext context, FlowDefinition flow, IReadOnlyDictionary<string, string> values, string operation,
+        EngineContext context, FlowDefinition flow, IReadOnlyDictionary<string, string> values, Delivery.Snapshots.RenderContext rendering, string operation,
         SubmissionState? submission, IReadOnlyList<DeliveryKey> keys, ILogger log, CancellationToken ct)
     {
         if (submission is not null)
@@ -434,6 +435,16 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         if (watermark is null)
         {
             log.LogInformation("No whole-scope plan of scope {Scope} has completed yet, so this run reads every row in scope.", scope);
+            return SourceSelection.Full();
+        }
+
+        // Rows that did not change still render differently under a new mapping, template or parameter value, and nothing
+        // else would reach them. Once this read completes the watermark carries the new rules and runs are incremental again.
+        if (watermark.ContextHash is { } planned && !string.Equals(planned, rendering.RulesHash(), StringComparison.Ordinal))
+        {
+            log.LogInformation(
+                "Scope {Scope} was last planned with other rules than {Mapping} renders with now (its mapping, template or parameters changed), so this run reads every row in scope; each record's own hashes decide what is sent.",
+                scope, rendering.MappingReference);
             return SourceSelection.Full();
         }
 

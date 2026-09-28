@@ -102,6 +102,7 @@ public sealed class RenderResolver
         var context = new RenderContext
         {
             MappingReference = mapping.Reference,
+            MappingFingerprint = mapping.Fingerprint,
             CacheScope = scope,
             CacheVersion = references.Version,
             SchemaSnapshotVersion = schema.Version,

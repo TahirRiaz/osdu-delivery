@@ -201,7 +201,7 @@ public sealed class DeliveryDocumentLoader
         }
 
         var y = Deserialize<MappingYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
-        return MappingMapper.Map(y, source);
+        return MappingMapper.Map(y, source) with { Fingerprint = MappingFingerprint.Of(yaml, source) };
     }
 
     /// <summary>
