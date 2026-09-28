@@ -8,7 +8,6 @@ import { Card } from "@/components/ui/card";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "@/api/client";
@@ -55,8 +54,9 @@ function isTab(value: string | null): value is Tab {
  * which version deliveries read, how much it holds, how it is refreshed and whether anything waits for a decision. Below
  * are the working tabs: the records, the versions, the changes a refresh found, the definition, and the partition's system
  * properties (its settings, as the platform reports them), with a searchable type picker in the tab bar for the tabs a
- * type narrows. The partition, the tab and the type live in the URL, so a link lands on
- * the same view; a link naming a cache flow (?flow=) opens the partition that flow fills.
+ * type narrows. The partition is the one picked in the title bar, which every page follows: the page has no partition
+ * picker of its own. The tab and the type live in the URL, so a link lands on the same view; a link that names a partition
+ * (?partition=) or a cache flow (?flow=) makes that partition the title bar's, so it lands on the cache it names.
  */
 export default function DeliveryCachePage() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -66,11 +66,14 @@ export default function DeliveryCachePage() {
   const caches = useQuery({ queryKey: ["delivery", "cache", "caches"], queryFn: () => deliveryApi.caches() });
   const all = caches.data ?? [];
   const byFlow = searchParams.get("flow");
-  // A link names the partition (`partition`, or `scope` as older links do); otherwise the page shows the workbench's.
-  const requested = searchParams.get("partition") ?? searchParams.get("scope") ?? active;
-  const cache = (byFlow === null ? undefined : all.find((candidate) => candidate.flows.some((flow) => flow.name === byFlow)))
-    ?? all.find((candidate) => candidate.scope === requested)
-    ?? all[0]
+  // A link names the partition (`partition`, or `scope` as older links do), or a cache flow, whose cache is the title
+  // bar's partition's when the flow fills it there and else the first partition's it fills. Otherwise the page shows the
+  // title bar's partition, and no other: a partition with no cache says so rather than show another's.
+  const linkedScope = searchParams.get("partition") ?? searchParams.get("scope");
+  const fills = (candidate: DeliveryCache) => byFlow !== null && candidate.flows.some((flow) => flow.name === byFlow);
+  const cache = (linkedScope === null ? undefined : all.find((candidate) => candidate.scope === linkedScope))
+    ?? (byFlow === null ? undefined : all.find((candidate) => candidate.scope === active && fills(candidate)) ?? all.find(fills))
+    ?? all.find((candidate) => candidate.scope === active)
     ?? null;
 
   const tabParam = searchParams.get("tab");
@@ -89,23 +92,28 @@ export default function DeliveryCachePage() {
     return next;
   }, { replace: true });
 
-  const chooseCache = (scope: string) => {
-    if (isPartitionId(scope)) {
-      setActive(scope);
+  // The partition a link named becomes the title bar's, so the title bar says which cache is in view; the link has done
+  // its work then, and the title bar decides from there on. A cache kept under a partition the sync could not resolve (a
+  // reference) is shown when a link names it, but is no partition to work in.
+  const shownScope = cache?.scope ?? null;
+  const linked = linkedScope !== null || byFlow !== null;
+  useEffect(() => {
+    if (!linked || shownScope === null || !isPartitionId(shownScope)) {
+      return;
     }
 
-    update({ partition: scope, scope: null, flow: null, type: null });
-  };
-
-  // The partition shown becomes the workbench's when a link named it, so the title bar says which cache is in view. A
-  // cache kept under a partition the sync could not resolve (a reference) is shown, but is no partition to work in.
-  const shownScope = cache?.scope ?? null;
-  const linked = searchParams.get("partition") ?? searchParams.get("scope") ?? byFlow;
-  useEffect(() => {
-    if (linked !== null && shownScope !== null && shownScope !== active && isPartitionId(shownScope)) {
+    if (shownScope !== active) {
       setActive(shownScope);
     }
-  }, [linked, shownScope, active, setActive]);
+
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete("partition");
+      next.delete("scope");
+      next.delete("flow");
+      return next;
+    }, { replace: true });
+  }, [linked, shownScope, active, setActive, setSearchParams]);
 
   return (
     <Page data-testid="page-delivery-cache">
@@ -114,24 +122,7 @@ export default function DeliveryCachePage() {
         subtitle={cache === null
           ? "The reference data and lookup tables mappings resolve against, one cache per data partition."
           : <CacheSubtitle cache={cache} />}
-        actions={cache === null ? undefined : (
-          <>
-            <Select value={cache.scope} onValueChange={chooseCache}>
-              <SelectTrigger size="sm" className="h-8 min-w-52" aria-label="Partition" title="The OSDU partition whose cache is shown" data-testid="delivery-cache-picker">
-                <DatabaseZap />
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {all.map((candidate) => (
-                  <SelectItem key={candidate.scope} value={candidate.scope}>
-                    <span className="font-mono text-[12px]">{candidate.scope}</span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <CacheFlowActions flows={cache.flows} scope={cache.scope} onRefresh={setRefreshing} />
-          </>
-        )}
+        actions={cache === null ? undefined : <CacheFlowActions flows={cache.flows} scope={cache.scope} onRefresh={setRefreshing} />}
       />
 
       {caches.isError && (isApiError(caches.error)
@@ -145,6 +136,19 @@ export default function DeliveryCachePage() {
             <Skeleton className="h-96 w-full rounded-lg" />
           </>
         )
+        : cache === null && all.length > 0
+          ? (
+            <Card className="gap-0 rounded-lg p-0">
+              <EmptyState
+                icon={<DatabaseZap />}
+                title={active === null ? "No partition is picked in the title bar" : `No cache is kept for ${active}`}
+                description={active === null
+                  ? "The cache shown is the one of the partition picked in the title bar. Pick a partition there."
+                  : `No cache flow fills the cache of ${active}, the partition picked in the title bar. A cache flow fills every partition it names under partitions, the one in its data-partition-id, or when it names neither, every registered partition. Pick another partition in the title bar, or add ${active} to a cache flow and sync its repository.`}
+                data-testid="delivery-cache-none-here"
+              />
+            </Card>
+          )
         : cache === null
           ? (
             <Card className="gap-0 rounded-lg p-0">
@@ -176,7 +180,7 @@ export default function DeliveryCachePage() {
           flowName={refreshing.name}
           flowId={refreshing.pipelineId}
           flowKind="cache"
-          initialValues={cache !== null && (refreshing.partitions ?? []).includes(cache.scope) ? { partition: cache.scope } : null}
+          initialValues={null}
         />
       )}
     </Page>

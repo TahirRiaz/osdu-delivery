@@ -28,7 +28,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { BlockedBadge, RecordStatusBadge, SubmissionStatusBadge, VerifyOutcomeBadge } from "./DeliveryBadges";
 import { FlowStatusBar } from "./FlowStatusBar";
 import { InterfacePicker } from "./InterfacePicker";
-import { PartitionPicker } from "./PartitionPicker";
+import { OutsidePartition } from "./PartitionNotice";
 import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./RecordCells";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
@@ -91,7 +91,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const runFilter = searchParams.get("run");
   // The chips point at records of the ledger that was showing; another interface's or partition's records are not those.
   const {
-    rows, names, many, interfaceName, partitions, partition, headerPartition, outside, scope, ready, selectInterface, selectPartition,
+    rows, names, many, interfaceName, partitions, partition, headerPartition, outside, unplaced, active, scope, ready, selectInterface,
   } = useInterfaceChoice(pipelineId, SCOPED_TO_LEDGER);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<string>(ALL);
@@ -201,6 +201,16 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     ? "Read every record's row from the ingestion table and consolidate the ledger with it: arrivals, changes the ledger never saw (planned by the next run), rows that are gone. Nothing is sent."
     : "Pick an interface: a sync reads one interface's records.";
 
+  // The title bar's partition is not one this flow delivers to: the view says where it does, rather than show another
+  // partition's ledger here.
+  if (outside !== null || unplaced) {
+    return (
+      <div className="flex flex-col gap-4" data-testid={`delivery-panel-${section}`}>
+        <OutsidePartition flowName={flowName} active={active} partitions={partitions} headerPartition={headerPartition} />
+      </div>
+    );
+  }
+
   if (stats.isError) {
     return isApiError(stats.error)
       ? <CorrelationError error={stats.error} />
@@ -217,22 +227,15 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
 
   return (
     <div className="flex flex-col gap-4" data-testid={`delivery-panel-${section}`}>
-      {partitions.length > 0 && (
-        <PartitionPicker
-          partitions={partitions}
-          partition={partition}
-          onSelect={selectPartition}
-          caption={outside !== null
-            ? `this flow does not deliver to ${outside}, the workbench's partition; it is shown in ${partition}`
-            : partitions.length === 1
-              ? "the one partition this flow delivers to; it keeps its own ledger"
-              : `of ${partitions.length} partitions; each keeps its own ledger, and every count and action below is this one's`}
-        />
+      {partitions.length > 1 && partition !== null && (
+        <p className="text-[13px] text-muted-foreground" data-testid="delivery-partition-in-view">
+          In <span className="font-mono text-foreground">{partition}</span>, the partition picked in the title bar: one of the{" "}
+          {partitions.length} this flow delivers to, each keeping its own ledger, so every count and action below is this one&apos;s.
+        </p>
       )}
       {partitions.length === 0 && headerPartition !== null && (
         <p className="text-[13px] text-muted-foreground" data-testid="delivery-header-partition">
-          Delivers to <span className="font-mono text-foreground">{headerPartition}</span>, the partition its target.headers name
-          {outside !== null ? `; the workbench is in ${outside}, and nothing shown here is that partition's` : ""}.
+          Delivers to <span className="font-mono text-foreground">{headerPartition}</span>, the partition its target.headers name.
         </p>
       )}
       {many && (

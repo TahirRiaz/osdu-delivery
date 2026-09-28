@@ -10,7 +10,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/auth/AuthContext";
 import { deliveryApi, type DeliveryParameter, type DeliveryRecordPreview } from "../../api/delivery";
 import { InterfacePicker } from "./InterfacePicker";
-import { PartitionPicker } from "./PartitionPicker";
+import { OutsidePartition } from "./PartitionNotice";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RecordPreviewView } from "./RecordPreviewView";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
@@ -36,7 +36,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
   const { hasScope } = useAuth();
   const canOperate = hasScope("operate");
   const {
-    interfaces, names, many, interfaceName, current, partitions, partition, outside, scope, selectInterface, selectPartition,
+    interfaces, names, many, interfaceName, current, partitions, headerPartition, outside, unplaced, active, scope, selectInterface,
   } = useInterfaceChoice(pipelineId);
   const parameters = useMemo(() => current?.parameters ?? [], [current]);
   const keyColumns = current?.keyColumns ?? [];
@@ -96,18 +96,17 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
     return <ProblemView error={interfaces.error} testId="preview-interfaces-error" />;
   }
 
+  // A preview renders with the partition's cache, ids and configuration: the title bar's, which this flow must serve.
+  if (outside !== null || unplaced) {
+    return (
+      <div className="flex flex-col gap-4" data-testid="delivery-panel-preview">
+        <OutsidePartition flowName={flowName} active={active} partitions={partitions} headerPartition={headerPartition} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-4" data-testid="delivery-panel-preview">
-      {partitions.length > 0 && (
-        <PartitionPicker
-          partitions={partitions}
-          partition={partition}
-          onSelect={selectPartition}
-          caption={outside !== null
-            ? `this flow does not deliver to ${outside}, the workbench's partition; the preview renders in ${partition}`
-            : "the preview renders with this partition's cache, ids and configuration"}
-        />
-      )}
       {many && (
         <InterfacePicker names={names} interfaceName={interfaceName} onSelect={selectInterface} caption={`of ${names.length} interfaces of ${flowName}`} />
       )}
