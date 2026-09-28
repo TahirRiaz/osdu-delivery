@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, GitCommitHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -161,14 +162,179 @@ function Side({ title, version, values, testId }: {
   );
 }
 
+/** How many records changed, arrived and left between two versions. */
+export interface CacheChangeCounts {
+  changed: number;
+  added: number;
+  removed: number;
+}
+
+/**
+ * The records that differ between two versions of a partition's cache (of one type, when one is given): filtered by kind
+ * of change, searched, and opened record by record with both sides beside each other.
+ */
+export function CacheChanges({ scope, from, to, type, counts, header, unchanged, testId = "delivery-cache-history" }: {
+  scope: string;
+  /** The earlier version, read as the before side. */
+  from: string;
+  /** The later version, read as the after side. */
+  to: string;
+  type: string | null;
+  /** The counts beside each kind of change; undefined while they are fetched. */
+  counts: CacheChangeCounts | undefined;
+  /** What leads the toolbar, before the search. */
+  header?: ReactNode;
+  /** What the table says when the two versions hold the same records with the same values. */
+  unchanged: string;
+  /** The prefix of every test id within. */
+  testId?: string;
+}) {
+  const [change, setChange] = useState<ChangeFilter>(ALL);
+  const [search, setSearch] = useState("");
+  const [row, setRow] = useState<DeliveryCacheDiffItem | null>(null);
+
+  const count = (filter: ChangeFilter) => (counts === undefined
+    ? null
+    : (filter === ALL ? counts.changed + counts.added + counts.removed : counts[filter]).toLocaleString());
+  const compared = { scope, from, to, type: type ?? undefined };
+
+  return (
+    <div className="flex min-h-0 flex-col gap-2">
+      <div className="flex flex-col flex-wrap gap-2 sm:flex-row sm:items-center">
+        {header}
+        <div className="grow" />
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search ids and cached values"
+          label="Search the changes"
+          className="sm:w-64"
+          testId={`${testId}-search`}
+        />
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          value={change}
+          onValueChange={(value) => {
+            if (value !== "") {
+              setChange(value as ChangeFilter);
+            }
+          }}
+          aria-label="Kind of change"
+          data-testid={`${testId}-summary`}
+        >
+          {changeFilters.map((filter) => (
+            <ToggleGroupItem
+              key={filter.value}
+              value={filter.value}
+              className="h-8 gap-1.5 text-[13px]"
+              data-testid={`${testId}-change-${filter.value}`}
+            >
+              {filter.label}
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{count(filter.value)}</span>
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
+
+      <PagedTable
+        queryKey={["delivery", "cache", "diff", "items", compared, search, change]}
+        fetchPage={(page, pageSize) => deliveryApi
+          .cacheDiff({ ...compared, search: search || undefined, change: change === ALL ? undefined : change, page, pageSize })
+          .then((result) => result.items)}
+        // The type column says nothing a scoped listing does not already say in its title.
+        columns={type === null ? [changeColumn, typeColumn, ...recordColumns] : [changeColumn, ...recordColumns]}
+        rowKey={(item) => `${item.typeName}:${item.recordId}`}
+        onRowClick={setRow}
+        emptyMessage={search || change !== ALL ? "No changes match these filters." : unchanged}
+        data-testid={`${testId}-table`}
+      />
+
+      <Sheet open={row !== null} onOpenChange={(open) => { if (!open) { setRow(null); } }}>
+        <SheetContent
+          className="w-full gap-0 sm:max-w-4xl"
+          onOpenAutoFocus={(event) => { event.preventDefault(); (event.currentTarget as HTMLElement).focus(); }}
+          data-testid={`${testId}-record`}
+        >
+          {row !== null && (
+            <>
+              <SheetHeader className="border-b border-border">
+                <SheetTitle className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono">{row.typeName}</span>
+                  <Badge variant="secondary" className={changeTone[row.change]}>{row.change}</Badge>
+                </SheetTitle>
+                <SheetDescription className="font-mono text-[12px] text-foreground">{row.recordId}</SheetDescription>
+                <p className="text-[12px] text-muted-foreground">{row.entityType}</p>
+              </SheetHeader>
+              <div className="grid flex-1 gap-4 overflow-y-auto p-4 md:grid-cols-2">
+                <Side title="Before" version={from} values={row.before} testId={`${testId}-before`} />
+                <Side title="After" version={to} values={row.after} testId={`${testId}-after`} />
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+    </div>
+  );
+}
+
+/**
+ * An earlier version of the cache (of the type in scope, when one is) compared with the current one, in a dialog over the
+ * records: what the refreshes since then changed, added and removed.
+ */
+export function CacheCompareDialog({ scope, from, to, type, onClose }: {
+  scope: string;
+  /** The earlier version picked. */
+  from: string;
+  /** The current version. */
+  to: string;
+  type: string | null;
+  onClose: () => void;
+}) {
+  const summary = useQuery({
+    queryKey: ["delivery", "cache", "diff", "counts", scope, from, to, type],
+    queryFn: () => deliveryApi.cacheDiff({ scope, from, to, type: type ?? undefined, pageSize: 1 }),
+  });
+  const held = type ? `${type} records` : "cached records";
+
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) { onClose(); } }}>
+      <DialogContent className="flex max-h-[90vh] flex-col gap-3 overflow-hidden sm:max-w-6xl" data-testid="delivery-cache-compare-dialog">
+        <DialogHeader>
+          <DialogTitle>
+            {type ? <><span className="font-mono">{type}</span> at </> : "Version "}
+            <span className="font-mono">{from}</span> compared with the current version
+          </DialogTitle>
+          <DialogDescription>
+            What the refreshes since <span className="font-mono">{from}</span> changed, added and removed among the {held},
+            up to <span className="font-mono">{to}</span>, the version deliveries read.
+          </DialogDescription>
+        </DialogHeader>
+        {summary.isError && (isApiError(summary.error)
+          ? <CorrelationError error={summary.error} />
+          : <p className="text-[13px] text-destructive">{String(summary.error)}</p>)}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <CacheChanges
+            scope={scope}
+            from={from}
+            to={to}
+            type={type}
+            counts={summary.data}
+            unchanged={`Version ${from} holds the same ${held} with the same values as the current version.`}
+            testId="delivery-cache-compare"
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /**
  * The changes one version made to the cache (to the type in scope, when one is), compared with the version before
  * it: the bottom panel's content once a version is picked.
  */
 function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; type: string | null }) {
-  const [change, setChange] = useState<ChangeFilter>(ALL);
-  const [search, setSearch] = useState("");
-  const [row, setRow] = useState<DeliveryCacheDiffItem | null>(null);
   const { version, before } = entry;
 
   const header = (
@@ -201,90 +367,19 @@ function VersionChanges({ entry, type }: { entry: DeliveryCacheHistoryEntry; typ
     );
   }
 
-  const count = (filter: ChangeFilter) => (filter === ALL ? totalOf(entry) : entry[filter]).toLocaleString();
-  const scope = { scope: version.scope, from: before, to: version.version, type: type ?? undefined };
-
   return (
-    <div className="flex flex-col gap-2 p-3" data-testid="delivery-cache-history-detail">
-      <div className="flex flex-col flex-wrap gap-2 sm:flex-row sm:items-center">
-        {header}
-        <div className="grow" />
-        <SearchInput
-          value={search}
-          onChange={setSearch}
-          placeholder="Search ids and cached values"
-          label="Search the changes"
-          className="sm:w-64"
-          testId="delivery-cache-history-search"
-        />
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          size="sm"
-          value={change}
-          onValueChange={(value) => {
-            if (value !== "") {
-              setChange(value as ChangeFilter);
-            }
-          }}
-          aria-label="Kind of change"
-          data-testid="delivery-cache-history-summary"
-        >
-          {changeFilters.map((filter) => (
-            <ToggleGroupItem
-              key={filter.value}
-              value={filter.value}
-              className="h-8 gap-1.5 text-[13px]"
-              data-testid={`delivery-cache-history-change-${filter.value}`}
-            >
-              {filter.label}
-              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{count(filter.value)}</span>
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      </div>
-
-      <PagedTable
-        queryKey={["delivery", "cache", "diff", "items", scope, search, change]}
-        fetchPage={(page, pageSize) => deliveryApi
-          .cacheDiff({ ...scope, search: search || undefined, change: change === ALL ? undefined : change, page, pageSize })
-          .then((result) => result.items)}
-        // The type column says nothing a scoped listing does not already say in its title.
-        columns={type === null ? [changeColumn, typeColumn, ...recordColumns] : [changeColumn, ...recordColumns]}
-        rowKey={(item) => `${item.typeName}:${item.recordId}`}
-        onRowClick={setRow}
-        emptyMessage={search || change !== ALL
-          ? "No changes match these filters."
-          : type
-            ? `This version holds the same ${type} records with the same values as the one before it.`
-            : "This version holds the same cached records with the same values as the one before it."}
-        data-testid="delivery-cache-history-table"
+    <div className="flex flex-col p-3" data-testid="delivery-cache-history-detail">
+      <CacheChanges
+        scope={version.scope}
+        from={before}
+        to={version.version}
+        type={type}
+        counts={entry}
+        header={header}
+        unchanged={type
+          ? `This version holds the same ${type} records with the same values as the one before it.`
+          : "This version holds the same cached records with the same values as the one before it."}
       />
-
-      <Sheet open={row !== null} onOpenChange={(open) => { if (!open) { setRow(null); } }}>
-        <SheetContent
-          className="w-full gap-0 sm:max-w-4xl"
-          onOpenAutoFocus={(event) => { event.preventDefault(); (event.currentTarget as HTMLElement).focus(); }}
-          data-testid="delivery-cache-history-record"
-        >
-          {row !== null && (
-            <>
-              <SheetHeader className="border-b border-border">
-                <SheetTitle className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono">{row.typeName}</span>
-                  <Badge variant="secondary" className={changeTone[row.change]}>{row.change}</Badge>
-                </SheetTitle>
-                <SheetDescription className="font-mono text-[12px] text-foreground">{row.recordId}</SheetDescription>
-                <p className="text-[12px] text-muted-foreground">{row.entityType}</p>
-              </SheetHeader>
-              <div className="grid flex-1 gap-4 overflow-y-auto p-4 md:grid-cols-2">
-                <Side title="Before" version={before} values={row.before} testId="delivery-cache-history-before" />
-                <Side title="After" version={version.version} values={row.after} testId="delivery-cache-history-after" />
-              </div>
-            </>
-          )}
-        </SheetContent>
-      </Sheet>
     </div>
   );
 }

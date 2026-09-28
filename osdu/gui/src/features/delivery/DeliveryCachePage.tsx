@@ -27,7 +27,7 @@ import { DeliveryCacheApprovals } from "./DeliveryCacheApprovals";
 import { DeliveryCacheDefinition } from "./DeliveryCacheDefinition";
 import { DeliveryCacheFlags } from "./DeliveryCacheFlags";
 import { DeliveryCacheGaps } from "./DeliveryCacheGaps";
-import { DeliveryCacheHistory } from "./DeliveryCacheHistory";
+import { CacheCompareDialog, DeliveryCacheHistory } from "./DeliveryCacheHistory";
 import { DeliveryCacheRecords } from "./DeliveryCacheRecords";
 
 /**
@@ -296,19 +296,30 @@ function CacheFlowActions({ flows, scope, onRefresh }: {
             <ChevronDown />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
+        <DropdownMenuContent align="end" className="w-96 max-w-[calc(100vw-2rem)]">
           <DropdownMenuLabel>Refresh what one cache flow captures</DropdownMenuLabel>
           {runnable.map((flow) => (
             <DropdownMenuItem
               key={`${flow.repoId}:${flow.name}`}
               onSelect={() => onRefresh(flow)}
+              className="flex-col items-start gap-0.5"
+              title={flow.types.join(", ")}
               data-testid={`delivery-cache-refresh-${flow.name}`}
             >
-              <span className="font-mono text-[12px]">{flow.name}</span>
-              <span className="text-[11px] text-muted-foreground">
-                {flow.types.join(", ")}
-                {(flow.partitions ?? []).length > 1 && ` (builds ${flow.partitions!.join(", ")}; refreshes ${scope})`}
+              <span className="flex w-full items-baseline justify-between gap-2">
+                <span className="truncate font-mono text-[12px]">{flow.name}</span>
+                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                  {flow.types.length} type{flow.types.length === 1 ? "" : "s"}
+                </span>
               </span>
+              <span className="line-clamp-2 w-full break-words text-[11px] text-muted-foreground">
+                {flow.types.join(", ")}
+              </span>
+              {(flow.partitions ?? []).length > 1 && (
+                <span className="w-full truncate text-[11px] text-muted-foreground">
+                  Builds {flow.partitions!.join(", ")}; refreshes {scope}
+                </span>
+              )}
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>
@@ -336,6 +347,7 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
     queryFn: () => deliveryApi.updateTags({ page: 1, pageSize: 1, status: "pending", scope: cache.scope }),
   });
   const pendingTotal = pending.data?.total ?? 0;
+  const [comparing, setComparing] = useState<string | null>(null);
 
   const types = summarizeTypes(cache);
   const scoped = type === null ? null : types.find((candidate) => candidate.name === type) ?? null;
@@ -468,7 +480,17 @@ function CacheWorkbench({ cache, tab, type, onTab, onType, onRefresh }: {
             type={scoped?.name ?? null}
             onType={onType}
             versions={versions.data ?? []}
+            onCompare={setComparing}
           />
+          {comparing !== null && current !== null && (
+            <CacheCompareDialog
+              scope={cache.scope}
+              from={comparing}
+              to={current.version}
+              type={scoped?.name ?? null}
+              onClose={() => setComparing(null)}
+            />
+          )}
         </TabsContent>
 
         <TabsContent value="versions">

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { ArrowRight, BookOpen, DatabaseZap, History, Pin, Search, ShieldCheck, Table2 } from "lucide-react";
+import { ArrowRight, BookOpen, DatabaseZap, GitCompare, History, Pin, Search, ShieldCheck, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -443,7 +443,7 @@ function LeftOut({ label, types, testId }: { label: string; types: BrowsedType[]
  * rather than one list whose rows cannot share columns; a type opens its whole table. While a search is typed the list
  * counts the matches in every type, the sections of types nothing matches in give way, and every match is marked.
  */
-export function DeliveryCacheRecords({ scope, types, type, onType, versions }: {
+export function DeliveryCacheRecords({ scope, types, type, onType, versions, onCompare }: {
   /** The partition whose cache the records belong to. */
   scope: string;
   /** The types the cache flows declare, as the page summarizes them. */
@@ -453,6 +453,8 @@ export function DeliveryCacheRecords({ scope, types, type, onType, versions }: {
   onType: (type: string | null) => void;
   /** The cache's versions, newest first, for the version picker. */
   versions: DeliveryCacheVersion[];
+  /** Compares an earlier version, the one being read, with the current one. */
+  onCompare: (version: string) => void;
 }) {
   const [item, setItem] = useState<DeliveryCachedItem | null>(null);
   const [typed, setTyped] = useState("");
@@ -464,6 +466,7 @@ export function DeliveryCacheRecords({ scope, types, type, onType, versions }: {
   const versionFilter = picked === CURRENT || versions.some((v) => v.version === picked) ? picked : CURRENT;
   const reading = versions.find((v) => (versionFilter === CURRENT ? v.current : v.version === versionFilter));
   const historic = reading !== undefined && !reading.current ? reading : null;
+  const hasCurrent = versions.some((v) => v.current);
   const version = versionFilter === CURRENT ? undefined : versionFilter;
 
   const browsed = useMemo(() => browsedTypes(types, reading), [types, reading]);
@@ -554,10 +557,25 @@ export function DeliveryCacheRecords({ scope, types, type, onType, versions }: {
               Reading the cache as it stood at <span className="font-mono">{historic.version}</span>. Deliveries read the
               current version.
             </span>
+            {hasCurrent && (
+              <Button
+                variant="outline"
+                size="xs"
+                className="ml-auto"
+                onClick={() => onCompare(historic.version)}
+                title={selected === null
+                  ? "What changed in the cache between this version and the current one"
+                  : `What changed in ${selected.name} between this version and the current one`}
+                data-testid="delivery-cache-compare-current"
+              >
+                <GitCompare />
+                Compare with current
+              </Button>
+            )}
             <Button
               variant="outline"
               size="xs"
-              className="ml-auto"
+              className={hasCurrent ? undefined : "ml-auto"}
               onClick={() => setPicked(CURRENT)}
               data-testid="delivery-cache-back-to-current"
             >
