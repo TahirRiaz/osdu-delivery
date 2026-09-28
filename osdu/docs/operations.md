@@ -397,12 +397,12 @@ Pipelines like any other flow.
   order a run takes them, with each one's route, what it waits for and its counts, and the probe, the release and
   every removal act on the interface that is showing. The counts at the top of the Delivery tab are the source's.
   A flow in the single form has one interface and no picker. **A flow that names its partitions is read one partition
-  at a time** the same way: a Partition dropdown of the partitions it names, shown even when it names one, whose choice
-  travels in the URL (`?partition=`), and every count, record, submission, preview and action below it is that
-  partition's. The pipeline header lists the partitions, the Delivery overview's card lists them beside counts that
-  add every partition up, the record page names its partition and links to the flow's page in it, and the trigger
-  dialog asks for the partition from a dropdown: a delivery run in a flow of several partitions has to name one, and a
-  cache refresh may name one or build every partition in turn. Rows tick: a selection
+  at a time**: the partition picked in the title bar, which every page follows and none picks for itself, and every
+  count, record, submission, preview and action below it is that partition's; a flow that does not serve it says so, and
+  which partitions it does serve. A link that names a partition (`?partition=`) makes it the title bar's. The pipeline
+  header lists the partitions, the Delivery overview's card counts each flow in the title bar's partition, the record
+  page names its partition and links to the flow's page in it, and a run started from the trigger dialog writes to the
+  title bar's partition, which the dialog shows; it refuses a flow that does not serve it. Rows tick: a selection
   bar offers "select all N matching", Sync timelines and Remove from OSDU, so a sync or a removal can be aimed at
   exactly the ticked rows or at the whole filtered set; Sync all from source above the list reads every record. A run page links here filtered to the records that run touched, and a submission's
   page links here twice: to the records it last planned (`?submission=`, which a later submission moves on) and to
@@ -579,15 +579,15 @@ Pipelines like any other flow.
   filled by several files; Refresh now opens the trigger dialog on the cache flow with the refresh operation, and is a
   menu naming the flows when several fill the partition, since a refresh runs one flow's capture. A link to Pipelines
   can set its repository and kind filters (`?repo=`, `?kind=`), and a kind filter opens the groups it narrows the tree
-  to. The Partition dropdown beside them lists every partition a synced cache flow fills, even when there is one, so the
-  page always says whose cache it shows. A cache flow that names its partitions says which it builds, and its Refresh
-  opens the trigger dialog on the partition in view. A summary row follows: the current version with the flow that wrote it, when and for whom, how many
+  to. The cache shown is the one of the partition picked in the title bar, which the header names; a partition with no
+  cache says so. A cache flow that names its partitions says which it builds, and its Refresh builds the title bar's
+  partition. A summary row follows: the current version with the flow that wrote it, when and for whom, how many
   records it holds in how many types, whether a schedule refreshes it, and either that changes are automatic or how
   many wait for approval. Whenever a change waits, a banner says so with Review changes. A searchable type picker at
   the end of the tab bar, on the Records and Versions tabs, lists the types with their family, record count and whether
-  their changes need approval; picking one scopes those tabs, and Clear filter lifts the scope. The tab, the partition
-  (`?scope=`) and the type are in the URL, so a link opens the same view; a link naming a cache flow (`?flow=`, as a
-  cache run's page uses) opens the partition that flow fills. The definition is read-only because it lives in the cache
+  their changes need approval; picking one scopes those tabs, and Clear filter lifts the scope. The tab and the type are
+  in the URL, so a link opens the same view; a link naming a partition (`?partition=`) or a cache flow (`?flow=`, as a
+  cache run's page uses) makes that partition the title bar's. The definition is read-only because it lives in the cache
   flow files in git; the decision on a change is the one thing made here.
 - **Records.** The cached records at the version being read, with the search over every value they hold (id, code,
   name, alias) and the version picker in the tab's own toolbar. With a type in scope the table has one column per

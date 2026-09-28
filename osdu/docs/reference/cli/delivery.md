@@ -178,7 +178,7 @@ history says exactly what was asked:
 | `--db <ref>` | The catalog connection (default `${env:SQLFLOW_CATALOG_DB}`) for a local run. With it the ledger is live and the run is recorded. |
 
 A flow that names its partitions ([documents.md](../../documents.md#partitions)) runs in the partition the run value
-`partition` names: `--set partition=test`, as the trigger dialog's Partition dropdown and a schedule's
+`partition` names: `--set partition=test`, as a run started in the GUI takes the partition picked in its title bar and a schedule's
 `values: { partition: test }` give it. The kind takes it off the flow's parameters and binds the flow to it, so the ids,
 the header, the cache, the ledger and the configuration of the run are that partition's. A delivery flow that names
 several partitions refuses a run that names none, and one that names one runs in it; a cache flow refreshes the one

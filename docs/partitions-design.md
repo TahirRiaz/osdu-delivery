@@ -243,9 +243,10 @@ an id, never a reference, in the configuration as in a document.
 
 ## 7. GUI
 
-A partition is always chosen from a dropdown, never typed: the title bar's switcher, the trigger dialog of a delivery or
-cache flow, the cache page's partition picker, and the partition picker of a delivery flow's views. The dropdown is shown
-even when there is one choice, because which partition a view is about is what an operator needs to know before acting.
+A partition is chosen in one place: the title bar's switcher, from a dropdown, never typed. Every page, view and run
+follows it, and none has a partition picker of its own: which partition a view is about, and which one a run writes to,
+is always the one the title bar shows, so what an operator looks at and what they act on cannot disagree. A link that
+names a partition (`?partition=`) makes it the title bar's, so a link still lands where it points.
 
 - The title bar's switcher (a `GuiModule.titleBar` contribution) sets the partition every OSDU page is read in. It lists
   every registered partition, and every partition something is still kept under, marked unregistered, each with what it
@@ -260,19 +261,21 @@ even when there is one choice, because which partition a view is about is what a
   and leaves it out of the totals; a flow whose partition is its header's is counted in the partition its ledger is kept
   under. A flow's pages say when the flow does not deliver to it. With no partition known, every read is every
   partition's, and each row names its own.
-- The trigger dialog reads the partitions a flow serves through the pipeline it is launched for
-  (`TriggerFieldsProps.pipelineId`, a generic extension point of SQLFlow's GUI). It opens on the partition a repeated run
-  ran in, else the title bar's when the flow serves it, else the registry's default, marked as such. A delivery run
-  cannot be submitted without a partition; a cache refresh also offers "every partition, one after another", sent as `*`.
-- A delivery flow's pages (overview, records, submissions, preview) read one partition at a time, chosen in the URL
-  (`?partition=`), else the title bar's, else the default, and every count and action is that partition's. The pipeline
-  header lists the partitions; the Delivery overview's card adds them up and lists them; a record names its partition and
-  links to the flow's page in it; the Records lookup names a hit's partition and offers each partition's ledger as a flow
-  to narrow to.
-- The cache page shows the title bar's partition; Refresh on a flow that works in partitions opens on the partition in
-  view, and the definition says which partitions each flow builds.
-- The mapping builder offers a flow that works in partitions once per partition, and checks with the entry for the
-  partition whose cache is picked.
+- A run started from the GUI acts in the title bar's partition. The trigger dialog reads the partitions a flow serves
+  through the pipeline it is launched for (`TriggerFieldsProps.pipelineId`, a generic extension point of SQLFlow's GUI),
+  shows the title bar's partition as the one the run writes to, and refuses to start a run of a flow that does not serve
+  it, saying which partitions the flow serves and that the title bar switches them. A flow whose partition is its
+  header's runs while the title bar is on that partition (once its ledger says which it is). A run being repeated runs in
+  the title bar's partition, and is refused while it names a submission or records of the partition it ran in. Building
+  every partition in turn (`*`) is left to schedules and the CLI.
+- A delivery flow's pages (overview, records, submissions, preview) are the title bar's partition's, and every count and
+  action is that partition's. A flow that does not deliver to it says so, and where it does deliver, instead of showing
+  another partition's ledger. The pipeline header lists the partitions; a record names its partition and links to the
+  flow's page in it; the Records lookup names a hit's partition when no partition is picked.
+- The cache page shows the title bar's partition's cache, and says so when that partition has none; Refresh runs in it,
+  and the definition says which partitions each flow builds.
+- The mapping builder reads the title bar's partition's cache, and checks with the delivery flow's entry for that
+  partition.
 
 ## 8. API and CLI
 

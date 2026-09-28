@@ -251,7 +251,7 @@ target:
   endpoint: ${env:OSDU_URL}        # resolved with the run's partition's own values of the central configuration
 ```
 
-- **A run targets one partition**, named under the run value `partition`: the Partition dropdown of the trigger dialog,
+- **A run targets one partition**, named under the run value `partition`: the partition picked in the GUI's title bar,
   `--set partition=test` on `sqlflow run` and `sqlflow trigger`, `values: { partition: test }` on a schedule; the
   module's own verbs (`check`, `preview`, `fixtures`, `records`, `cache`, `config`) take `--partition test`. A run that
   names none runs in the registry's default when the flow serves it, else in the flow's only listed partition, and is
@@ -277,8 +277,9 @@ target:
   serves the registry, because a version is a version of one partition's cache. A partition is written literally, an id
   segment (letters, digits, underscore, hyphen and dot) of at most 200 characters, and a flow names at most 64.
 - **The GUI and the API read a flow one partition at a time.** The title bar's switcher picks the partition every OSDU
-  page is read in, starting at the registry's default. A flow's pages carry a Partition dropdown of the partitions it
-  serves, and every count, record, submission, preview and action on them is that partition's. The API takes
+  page is read in and every run started from the GUI writes to, starting at the registry's default; no page picks one of
+  its own. A flow's pages are that partition's, every count, record, submission, preview and action on them, and a flow
+  that does not serve it says so. The API takes
   `?partition=` on every flow-level route and settles one left out as a run does, answering 400 when that settles none,
   with two exceptions: the interface listing then lists every interface in every partition, each row naming its
   partition, and the counts add every partition up, as the Delivery overview's card shows them with the partitions
@@ -1184,7 +1185,7 @@ flow keeps every LogCurveType the partition holds, tens of thousands of them, ra
 | `name` | Required. The cache flow's name: its pipeline identity, and the name the versions it writes and the records it holds in the partition's cache are recorded under. A cache flow is named globally: the sync warns when a second file in the repository declares the same name (the first file wins), and when another repository declares it too (rename one of them). |
 | `description` | Optional text describing the cache. |
 | `parameters` | Optional, as on a delivery flow; `{name}` tokens usable in a type's `query`. A token no parameter declares is refused, and so is a parameter named `partition` on a flow that names its partitions. |
-| `partitions` | Optional: the OSDU partitions whose caches the flow fills, each written literally as an id segment, at most 64. A refresh names one of them under the run value `partition` (the Partition dropdown of the trigger dialog, `--set partition=<name>` on `sqlflow run` and `sqlflow trigger`, a schedule's `values`), or, naming none, fills each in turn: a partition that fails leaves the others refreshed, and the run's result says how each went. Each partition's refresh searches with that partition's `data-partition-id`, keeps what it captures in that partition's cache, and resolves its references with the partition's own configuration first. A flow that names its partitions leaves `source.headers.data-partition-id` out. |
+| `partitions` | Optional: the OSDU partitions whose caches the flow fills, each written literally as an id segment, at most 64. A refresh names one of them under the run value `partition` (the partition picked in the GUI's title bar, `--set partition=<name>` on `sqlflow run` and `sqlflow trigger`, a schedule's `values`), or, naming none, fills each in turn: a partition that fails leaves the others refreshed, and the run's result says how each went. Each partition's refresh searches with that partition's `data-partition-id`, keeps what it captures in that partition's cache, and resolves its references with the partition's own configuration first. A flow that names its partitions leaves `source.headers.data-partition-id` out. |
 | `types[].partitions` | Optional: the partitions of the flow's `partitions` this type is cached in, when not all of them. A type's name is unique within each partition, and every partition the flow names caches at least one type. |
 | `source.endpoint`, `source.auth`, `source.headers` | The OSDU platform the OSDU types are searched on, written as `target` is on a delivery flow: `${env:NAME}` and `${keyvault:vault/secret}` references and the same auth types. `source.endpoint` is required when the flow declares a type with a `kind`, and refused, with `source.auth`, when every type it declares is a lookup table. `data-partition-id` hard-codes the one partition whose cache the flow fills, an id segment (letters, digits, underscore, hyphen and dot) or a `${env:...}` or `${keyvault:...}` reference, and every search carries it. A flow that names its partitions leaves it out, and so does a flow that names neither and fills every registered partition; each refresh sets it to the partition it fills. |
 | `types` | Required, at least one: the types the flow caches, each from one origin: a `kind` searched on OSDU, or a `dictionary` (a lookup table kept in the repository, [Dictionary](#dictionary)). Each type's name is unique within the flow, because a mapping reads a type by its name. Another cache flow of the same partition may declare the same OSDU type, and the cache then holds one type under it ([The partition cache](#the-partition-cache)); a lookup table is declared by one cache flow of a partition. |
