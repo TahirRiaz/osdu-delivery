@@ -99,12 +99,12 @@ test.describe.serial("osdu cache", () => {
     await adminPage.getByTestId("delivery-cache-files").click();
     await expect(adminPage.getByTestId("page-pipelines")).toBeVisible();
     await expect(adminPage.getByTestId("filter-kind")).toHaveText(/cache/);
-    // One repo fills the partition, so the link scopes to it too, and a single repo lists its project folders
-    // collapsed. The repository is laid out per source, so that is the one project the cache flow lives under.
+    // One repo fills the partition, so the link scopes to it too, and a single repo lists its project folders. The
+    // repository is laid out per source, so that is the one project the cache flow lives under, and the kind the link
+    // picked opens it onto the cache flow without a click.
     const folder = adminPage.getByTestId("repo-project").filter({ hasText: SOURCE });
     await expect(folder).toHaveCount(1, { timeout: 30_000 });
     await expect(adminPage.getByTestId("repo-project")).toHaveCount(1);
-    await folder.getByText(SOURCE, { exact: true }).click();
     const cacheRow = adminPage.getByTestId("repo-pipeline").filter({ hasText: CACHE });
     await expect(cacheRow.first()).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("repo-pipeline").filter({ hasText: DELIVERY_FLOW })).toHaveCount(0);
