@@ -385,6 +385,9 @@ public static class DeliveryEndpoints
 
         // The partitions the catalog knows, which every OSDU page is read in.
         DeliveryPartitionEndpoints.Map(delivery);
+
+        // Where each cached type of a partition comes from, who reads it, and what its last refreshes did.
+        DeliveryCacheStreams.Map(delivery);
         delivery.MapGet("/flows/{pipelineId:guid}/stats", GetStatsAsync).WithName("GetDeliveryFlowStats");
         delivery.MapGet("/flows/{pipelineId:guid}/interfaces", ListInterfacesAsync).WithName("ListDeliveryInterfaces");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");
