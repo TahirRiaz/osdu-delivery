@@ -82,7 +82,7 @@ export function needsLook(outcome: Pick<DeliveryAssertionOutcome, "outcome" | "s
 /** How a test's checks came out, counted by where each stands. */
 export interface CheckCounts {
   total: number;
-  holding: number;
+  passing: number;
   failing: number;
   errored: number;
   warning: number;
@@ -95,7 +95,7 @@ export function checkCounts(outcomes: readonly Pick<DeliveryAssertionOutcome, "o
   const count = (standing: TestStanding) => standings.filter((s) => s === standing).length;
   return {
     total: outcomes.length,
-    holding: count("passed"),
+    passing: count("passed"),
     failing: count("failed"),
     errored: count("errored"),
     warning: count("warned"),
@@ -110,29 +110,34 @@ export interface Verdict {
   standing: TestStanding;
 }
 
-/** One short phrase saying how a test's checks came out in a result: all of them hold, or how many do not and how. */
+/** How a run's checks all passing reads: "all 3 checks passed", or "1 check passed" for a test of one. */
+function allPassed(total: number): string {
+  return total === 1 ? "1 check passed" : `all ${counted(total, "check")} passed`;
+}
+
+/** One short phrase saying how a test's checks came out in a result: all of them passed, or how many did not and how. */
 export function checksVerdict(counts: CheckCounts): Verdict {
   if (counts.total === 0) {
     return { text: "no check recorded", standing: "skipped" };
   }
 
-  if (counts.holding === counts.total) {
-    return { text: `all ${counted(counts.total, "check")} hold`, standing: "passed" };
+  if (counts.passing === counts.total) {
+    return { text: allPassed(counts.total), standing: "passed" };
   }
 
   const parts = [
-    counts.failing > 0 ? `${counts.failing} fail` : null,
+    counts.failing > 0 ? `${counts.failing} failed` : null,
     counts.errored > 0 ? `${counts.errored} could not be evaluated` : null,
-    counts.warning > 0 ? `${counts.warning} warn` : null,
+    counts.warning > 0 ? `${counts.warning} warned` : null,
     counts.noted > 0 ? `${counts.noted} noted` : null,
     counts.skipped > 0 ? `${counts.skipped} skipped` : null,
   ].filter((part): part is string => part !== null);
   const standing = counts.failing > 0 ? "failed" : counts.errored > 0 ? "errored" : counts.warning > 0 ? "warned" : counts.noted > 0 ? "noted" : "skipped";
-  return { text: `${counts.holding} of ${counts.total} hold · ${parts.join(" · ")}`, standing };
+  return { text: `${counts.passing} of ${counts.total} passed · ${parts.join(" · ")}`, standing };
 }
 
 /**
- * The phrase a board shows beside a test, from its latest result's summary, which counts the checks that did not hold
+ * The phrase a board shows beside a test, from its latest result's summary, which counts the checks that did not pass
  * together whatever their severity; the test's outcome says how heavily they weigh.
  */
 export function testVerdict(test: DeliveryAssertionTest): Verdict {
@@ -151,10 +156,10 @@ export function testVerdict(test: DeliveryAssertionTest): Verdict {
   }
 
   if (latest.failedAssertions === 0) {
-    return { text: `all ${counted(latest.assertions, "check")} hold`, standing };
+    return { text: allPassed(latest.assertions), standing };
   }
 
-  const how = standing === "passed" ? "noted" : standing === "warned" ? "warn" : "do not hold";
+  const how = standing === "passed" ? "noted" : standing === "warned" ? "warned" : "failed";
   return { text: `${latest.failedAssertions} of ${counted(latest.assertions, "check")} ${how}`, standing: standing === "passed" ? "noted" : standing };
 }
 

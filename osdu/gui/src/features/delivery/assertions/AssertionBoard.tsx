@@ -353,11 +353,11 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
   });
 
   const cells: StripCell[] = [
-    { key: "failed", label: "Failing", count: totals.failed, standing: "failed", hint: "A check of error severity did not hold." },
+    { key: "failed", label: "Failing", count: totals.failed, standing: "failed", hint: "A check of error severity failed." },
     { key: "errored", label: "Errored", count: totals.errored, standing: "errored", hint: "The test could not find out: a query OSDU refused, a service that did not answer." },
-    { key: "warned", label: "Warned", count: totals.warned, standing: "warned", hint: "Only a check of warning severity did not hold." },
+    { key: "warned", label: "Warned", count: totals.warned, standing: "warned", hint: "Only checks of warning severity failed." },
     { key: "notRun", label: "Not run", count: totals.notRun, standing: null, hint: "No result yet in this partition." },
-    { key: "passed", label: "Passing", count: totals.passed, standing: "passed", hint: "Every check of error or warning severity held in the latest run." },
+    { key: "passed", label: "Passing", count: totals.passed, standing: "passed", hint: "Every check of error or warning severity passed in the latest run." },
     ...(totals.problems > 0 ? [{ key: "problems", label: "Unfit", count: totals.problems, standing: "errored" as const, hint: "Tests that do not fit the schema of their type, and so are not evaluated." }] : []),
     ...(totals.changed > 0 ? [{ key: "changed", label: "Changed", count: totals.changed, standing: "warned" as const, hint: "Tests changed since their latest result." }] : []),
   ];

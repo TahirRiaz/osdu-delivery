@@ -15,7 +15,7 @@ import { ProblemView } from "../TemplateSheet";
 import { AssertionRunStatusBadge, OutcomeBar, OutcomeSquare } from "./AssertionBadges";
 import { AssertionBoard } from "./AssertionBoard";
 import { ReportDownloads } from "./AssertionRunDialog";
-import { duration, kindEntity, runStatusVisual, selectionText } from "./assertionFormat";
+import { counted, duration, kindEntity, runStatusVisual, selectionText } from "./assertionFormat";
 
 /** How often a flow's tabs read the ledger again, so a run under way shows its results as they land. */
 const REFRESH_MS = 15000;
@@ -159,7 +159,7 @@ export function AssertionHistoryPanel({ pipelineId }: { pipelineId: string }) {
                           <OutcomeSquare
                             outcome={cell.outcome}
                             size="size-3.5"
-                            title={`#${cell.assertionRunId}${cell.failedAssertions > 0 ? `, ${cell.failedAssertions} check(s) not holding` : ""}${cell.matched !== null ? `, ${cell.matched.toLocaleString("en-US")} matched` : ""}`}
+                            title={`#${cell.assertionRunId}${cell.failedAssertions > 0 ? `, ${counted(cell.failedAssertions, "failed check")}` : ""}${cell.matched !== null ? `, ${cell.matched.toLocaleString("en-US")} matched` : ""}`}
                             onClick={() => navigate(`/delivery/assertions/runs/${cell.assertionRunId}`)}
                             testId="assertion-history-cell"
                           />

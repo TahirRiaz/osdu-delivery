@@ -203,10 +203,10 @@ export default function AssertionReportPage() {
     }
   })();
   const cells: StripCell[] = [
-    { key: "failed", label: "Failed", count: counts.failed, standing: "failed", hint: "A check of error severity did not hold." },
+    { key: "failed", label: "Failed", count: counts.failed, standing: "failed", hint: "A check of error severity failed." },
     { key: "errored", label: "Errored", count: counts.errored, standing: "errored", hint: "The test could not find out." },
-    { key: "warned", label: "Warned", count: counts.warned, standing: "warned", hint: "Only a check of warning severity did not hold." },
-    { key: "passed", label: "Passed", count: counts.passed, standing: "passed", hint: "Every check of error or warning severity held." },
+    { key: "warned", label: "Warned", count: counts.warned, standing: "warned", hint: "Only checks of warning severity failed." },
+    { key: "passed", label: "Passed", count: counts.passed, standing: "passed", hint: "Every check of error or warning severity passed." },
     { key: "skipped", label: "Skipped", count: counts.skipped, standing: null, hint: "Not run in this partition." },
   ];
 

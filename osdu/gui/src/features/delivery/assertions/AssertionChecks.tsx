@@ -66,7 +66,7 @@ function Examples({ outcome }: { outcome: DeliveryAssertionOutcome }) {
           <thead>
             <tr className="border-b text-left text-[11px] text-muted-foreground">
               <th className="px-2 py-1.5 font-medium">Record</th>
-              <th className="px-2 py-1.5 font-medium">Held</th>
+              <th className="px-2 py-1.5 font-medium">Value</th>
               <th className="px-2 py-1.5 font-medium">Why it fails</th>
             </tr>
           </thead>
@@ -216,7 +216,7 @@ export function CheckList({ outcomes, onOpen, testId = "check-list" }: {
           className="w-fit text-[12px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
           data-testid={`${testId}-show-all`}
         >
-          {`${counted(hidden, "more check")} hold; show them`}
+          {`Show ${counted(hidden, "passed check")}`}
         </button>
       )}
     </div>

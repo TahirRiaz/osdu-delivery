@@ -389,7 +389,7 @@ public sealed class AssertionRunner
         var first = result.Assertions.FirstOrDefault(a => a.Outcome is TestOutcomes.Failed or TestOutcomes.Errored);
         _log.LogWarning(
             "test {Test}: {Outcome} in {Ms} ms ({Matched}): {Reason}",
-            result.Test, result.Outcome, result.DurationMs, Matched(result), first is null ? result.Error ?? "no assertion held" : $"'{first.Label}': {first.Message ?? first.Actual}");
+            result.Test, result.Outcome, result.DurationMs, Matched(result), first is null ? result.Error ?? "no assertion failed" : $"'{first.Label}': {first.Message ?? first.Actual}");
     }
 
     private static string Matched(TestResult result) => result.Matched is { } matched
