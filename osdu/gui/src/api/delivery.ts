@@ -728,6 +728,8 @@ export interface DeliveryPruneResult {
   attemptsPruned: number;
   /** Activities whose captured run log was cleared. The audit row itself is never deleted. */
   activityLogsCleared: number;
+  /** Assertion runs whose every result a later one superseded; the latest result of every test is always kept. */
+  assertionRunsPruned: number;
 }
 
 export interface DeliveryRecordListQuery extends PageQuery {
@@ -1967,6 +1969,213 @@ const flowPath = (pipelineId: string, suffix: string, scope?: DeliveryFlowScope)
   return `/api/v1/delivery/flows/${pipelineId}${suffix}${query === "" ? "" : `?${query}`}`;
 };
 
+// ---- Assertion flows ---------------------------------------------------------------------------------------------------
+
+/** How one test came out in one run, or how one assertion of it did (`passed`, `failed`, `errored` or `skipped`). */
+export type TestOutcome = "passed" | "failed" | "warned" | "errored" | "skipped";
+
+/** An assertion run's status: running while its tests run, then how they came out, or why it stopped. */
+export type AssertionRunStatus = "running" | "passed" | "failed" | "errored" | "cancelled";
+
+export type AssertionSeverity = "error" | "warning" | "info";
+
+/** The formats a run's report downloads in. */
+export type AssertionReportFormat = "html" | "md" | "json" | "junit";
+
+/** An assertion of a test as the flow document states it. */
+export interface DeliveryAssertionDefinition {
+  index: number;
+  label: string;
+  type: string;
+  severity: AssertionSeverity;
+  expected: string;
+  description: string | null;
+}
+
+/** One run's outcome of a test, as a history strip or a matrix cell shows it. */
+export interface DeliveryAssertionPoint {
+  assertionRunId: number;
+  outcome: TestOutcome;
+  failedAssertions: number;
+  matched: number | null;
+  completedUtc: string;
+}
+
+/** A test's latest result, without its detail. */
+export interface DeliveryAssertionLatest {
+  resultId: number;
+  assertionRunId: number;
+  outcome: TestOutcome;
+  severity: AssertionSeverity | null;
+  matched: number | null;
+  evaluated: number | null;
+  sampled: boolean;
+  assertions: number;
+  failedAssertions: number;
+  durationMs: number;
+  error: string | null;
+  completedUtc: string;
+  definitionHash: string;
+}
+
+/**
+ * One test on a board: what the flow document says of it, whether it fits the template of its kind (`problems`), its
+ * latest result, how it came out over the last runs (newest first), and whether it changed since that result.
+ */
+export interface DeliveryAssertionTest {
+  name: string;
+  description: string | null;
+  kind: string;
+  tags: string[];
+  severity: AssertionSeverity;
+  query: string | null;
+  ids: number;
+  bulk: boolean;
+  read: "storage" | "index";
+  maxRecords: number;
+  assertions: DeliveryAssertionDefinition[];
+  /** False when the test names partitions and the board's partition is not one of them. */
+  runsHere: boolean;
+  partitions: string[];
+  /** The version of the saved template of its kind its fields are checked against; null when it reads no field of an exact kind. */
+  template: string | null;
+  problems: string[];
+  latest: DeliveryAssertionLatest | null;
+  history: DeliveryAssertionPoint[];
+  changed: boolean;
+  definitionHash: string;
+}
+
+/** An assertion run as listings show it. */
+export interface DeliveryAssertionRun {
+  assertionRunId: number;
+  flowId: string;
+  flowName: string;
+  partition: string | null;
+  runId: string | null;
+  actor: string;
+  /** The tests the run was asked for, as JSON; null when it ran every test. */
+  selection: string | null;
+  status: AssertionRunStatus;
+  tests: number;
+  passed: number;
+  failed: number;
+  warned: number;
+  errored: number;
+  skipped: number;
+  startedUtc: string;
+  completedUtc: string | null;
+  error: string | null;
+}
+
+/** One assertion flow on a board, in the board's partition. */
+export interface DeliveryAssertionFlow {
+  pipelineId: string;
+  repoId: string;
+  name: string;
+  description: string | null;
+  batch: string | null;
+  partition: string | null;
+  /** False when the flow does not test the board's partition (or its document does not parse: see `problem`). */
+  testsPartition: boolean;
+  partitions: string[];
+  failRunOn: "error" | "warning" | "never";
+  /** The parameters a run of the flow takes, which its tests use as `{name}` tokens. */
+  parameters: DeliveryParameter[];
+  problem: string | null;
+  lastRun: DeliveryAssertionRun | null;
+  tests: DeliveryAssertionTest[];
+}
+
+/** What a board adds up to over every test that runs in its partition. */
+export interface DeliveryAssertionTotals {
+  flows: number;
+  tests: number;
+  passed: number;
+  failed: number;
+  warned: number;
+  errored: number;
+  notRun: number;
+  problems: number;
+  changed: number;
+  passRate: number | null;
+}
+
+export interface DeliveryAssertionBoard {
+  partition: string | null;
+  totals: DeliveryAssertionTotals;
+  flows: DeliveryAssertionFlow[];
+}
+
+/** A record that failed an assertion: what it held there and why it failed. */
+export interface DeliveryAssertionExample {
+  id?: string | null;
+  value?: string | null;
+  reason: string;
+}
+
+/** How one assertion of a test came out in one run. */
+export interface DeliveryAssertionOutcome {
+  index: number;
+  label: string;
+  description?: string | null;
+  type: string;
+  severity: AssertionSeverity;
+  outcome: TestOutcome;
+  expected: string;
+  actual?: string | null;
+  message?: string | null;
+  checked?: number | null;
+  failing?: number | null;
+  /** The number the assertion measured (a count, an aggregate, the share that held), for a trend. */
+  value?: number | null;
+  examples?: DeliveryAssertionExample[];
+  examplesTrimmed?: boolean;
+}
+
+/** One test's whole result in one run: what it read, and every assertion. */
+export interface DeliveryTestResult {
+  test: string;
+  description?: string | null;
+  kind: string;
+  tags?: string[];
+  outcome: TestOutcome;
+  severity?: AssertionSeverity | null;
+  matched?: number | null;
+  evaluated?: number | null;
+  sampled?: boolean;
+  query?: string | null;
+  ids?: number;
+  template?: string | null;
+  definitionHash: string;
+  durationMs?: number;
+  error?: string | null;
+  problems?: string[];
+  notes?: string[];
+  assertions?: DeliveryAssertionOutcome[];
+  startedUtc?: string;
+  completedUtc?: string;
+}
+
+/** An assertion run with every test's result. */
+export interface DeliveryAssertionRunDetail {
+  run: DeliveryAssertionRun;
+  pipelineId: string | null;
+  results: DeliveryTestResult[];
+}
+
+/** A flow's recent runs against its tests: each test's outcome in each run, null where the run did not run it. */
+export interface DeliveryAssertionMatrix {
+  runs: DeliveryAssertionRun[];
+  tests: { test: string; kind: string; cells: (DeliveryAssertionPoint | null)[] }[];
+}
+
+/** One test's results over its recent runs, newest first. */
+export interface DeliveryAssertionTestHistory {
+  test: string;
+  results: DeliveryTestResult[];
+}
+
 export const deliveryApi = {
   /**
    * Every registered partition, and every partition something is still kept under, with what its cache serves and what
@@ -2017,6 +2226,24 @@ export const deliveryApi = {
     }),
   retrievals: (pipelineId: string, max?: number) =>
     get<DeliveryRetrieval[]>(`/api/v1/delivery/flows/${pipelineId}/retrievals`, max ? { max } : {}),
+  /** Every assertion flow's tests in the workbench's partition, each with its latest result and recent history. */
+  assertionBoard: () => get<DeliveryAssertionBoard>("/api/v1/delivery/assertions"),
+  /** One assertion flow's tests in the workbench's partition. */
+  assertionFlowBoard: (pipelineId: string) => get<DeliveryAssertionBoard>(`/api/v1/delivery/flows/${pipelineId}/assertions`),
+  /** An assertion flow's runs in the workbench's partition, newest first. */
+  assertionRuns: (pipelineId: string, max?: number) =>
+    get<DeliveryAssertionRun[]>(`/api/v1/delivery/flows/${pipelineId}/assertion-runs`, max ? { max } : {}),
+  /** An assertion flow's recent runs against its tests. */
+  assertionMatrix: (pipelineId: string, runs?: number) =>
+    get<DeliveryAssertionMatrix>(`/api/v1/delivery/flows/${pipelineId}/assertion-matrix`, runs ? { runs } : {}),
+  /** One test's whole results over its recent runs, newest first. */
+  assertionTestHistory: (pipelineId: string, test: string, runs?: number) =>
+    get<DeliveryAssertionTestHistory>(`/api/v1/delivery/flows/${pipelineId}/assertions/${encodeURIComponent(test)}/history`, runs ? { runs } : {}),
+  /** An assertion run with every test's result. */
+  assertionRun: (assertionRunId: number) => get<DeliveryAssertionRunDetail>(`/api/v1/delivery/assertion-runs/${assertionRunId}`),
+  /** An assertion run's report as the text of the format asked for. */
+  assertionReport: (assertionRunId: number, format: AssertionReportFormat) =>
+    getText(`/api/v1/delivery/assertion-runs/${assertionRunId}/report?format=${format}`),
   record: (record: DeliveryRecordRef) => get<DeliveryRecordDetail>(recordApiPath(record)),
   attempts: (record: DeliveryRecordRef, max?: number) =>
     get<DeliveryAttempt[]>(`${recordApiPath(record)}/attempts`, max ? { max } : {}),

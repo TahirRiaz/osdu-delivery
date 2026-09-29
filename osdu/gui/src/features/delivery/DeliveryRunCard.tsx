@@ -10,6 +10,7 @@ import { runRequest } from "./runOutcome";
 const OUTCOME_COPY: Record<string, string> = {
   cache: "What the refresh reported when it finished: the version it wrote (or that nothing changed), each type's record count and changes, and the delivered records those changes reach.",
   retrieval: "What the retrieval reported when it finished: the window it covered, the records and files it wrote, and where they went.",
+  assertion: "How the tests came out: the report it kept, each outcome's count, and the tests that did not pass. Every result, whole, is in the report.",
 };
 
 const DEFAULT_OUTCOME_COPY = "What the run reported when it finished: its counts, the submission it worked on, and how far it fanned out.";
@@ -21,7 +22,7 @@ const REDELIVER_LABELS: Record<string, string> = {
 };
 
 /**
- * What a delivery, retrieval or cache run was asked to do (its operation, the payload its trigger sent, the flow parameter
+ * What a delivery, retrieval, cache or assertion run was asked to do (its operation, the payload its trigger sent, the flow parameter
  * values it was given) and, once it finished, what it reported.
  */
 export default function DeliveryRunCard({ run }: { run: RunDetail }) {
@@ -57,6 +58,14 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
                   {`${request.slices.length === 1 ? "slice" : "slices"} ${request.slices.join(", ")}`}
                 </Badge>
               )}
+              {request.tests.length > 0 && (
+                <Badge variant="secondary" className="font-mono" data-testid="run-tests-picked">
+                  {`${request.tests.length === 1 ? "test" : "tests"} ${request.tests.join(", ")}`}
+                </Badge>
+              )}
+              {request.tags.map((tag) => (
+                <Badge key={`tag-${tag}`} variant="secondary" className="font-mono" data-testid="run-tags-picked">#{tag}</Badge>
+              ))}
               {values.map(([name, value]) => (
                 <Badge key={name} variant="secondary" className="font-mono">{name}={value}</Badge>
               ))}

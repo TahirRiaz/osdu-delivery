@@ -80,6 +80,13 @@ export interface RunRequest {
   redeliver: string | null;
   /** The key slices of the submission a fan-out intake member plans. */
   slices: number[];
+  /** The tests an assertion run was asked to run, by name and by tag; both empty when it ran every test. */
+  tests: string[];
+  tags: string[];
+}
+
+function names(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((name): name is string => typeof name === "string") : [];
 }
 
 export function runRequest(run: RunDetail): RunRequest {
@@ -94,5 +101,7 @@ export function runRequest(run: RunDetail): RunRequest {
     slices: Array.isArray(payload.slices)
       ? payload.slices.filter((slice): slice is number => typeof slice === "number" && Number.isInteger(slice))
       : [],
+    tests: names(payload.tests),
+    tags: names(payload.tags),
   };
 }

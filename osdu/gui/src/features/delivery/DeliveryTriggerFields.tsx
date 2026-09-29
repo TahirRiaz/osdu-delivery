@@ -9,10 +9,10 @@ import { useAuth } from "@/auth/AuthContext";
 import type { TriggerBodyContribution, TriggerFieldsProps } from "@/modules/registry";
 import { deliveryApi, type DeliveryFlowScope, type DeliveryParameter } from "../../api/delivery";
 import { useActivePartition } from "./activePartition";
+import { lines, parseValues } from "./runValues";
 import { ScopeParameterFields } from "./ScopeParameterFields";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** An interface's name: a letter, then letters, digits, '_' and '-' (SourceDefinition.IsInterfaceName). */
 const INTERFACE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
@@ -125,11 +125,6 @@ function isRedeliverScope(value: unknown): value is RedeliverScope {
   return value === "all" || value === "metadata" || value === "payload";
 }
 
-/** The non-blank, trimmed lines of a textarea. */
-function lines(text: string): string[] {
-  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
-}
-
 /**
  * The values of a flow's parameter fields as a run takes them: each given value trimmed, an empty one left out so the
  * parameter's default applies, and a required parameter without a default and without a value the error.
@@ -150,22 +145,6 @@ function fieldsToValues(parameters: DeliveryParameter[], fields: Record<string, 
       ? null
       : `The flow's scope needs ${missing.map((p) => p.name).join(", ")}: the flow declares ${missing.length === 1 ? "it" : "them"} required, with no default.`,
   };
-}
-
-/** Parses "name=value" lines into the flow's parameter values; the first malformed line is the error. */
-function parseValues(text: string): { values: Record<string, string>; error: string | null } {
-  const values: Record<string, string> = {};
-  for (const line of lines(text)) {
-    const at = line.indexOf("=");
-    const name = at > 0 ? line.slice(0, at).trim() : "";
-    if (at <= 0 || !IDENTIFIER.test(name)) {
-      return { values, error: `Parameter '${line}' must be written as name=value (the name an identifier).` };
-    }
-
-    values[name] = line.slice(at + 1);
-  }
-
-  return { values, error: null };
 }
 
 /**

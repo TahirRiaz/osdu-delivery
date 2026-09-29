@@ -1,5 +1,5 @@
 import {
-  CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, PackageCheck, PackageSearch, PencilRuler,
+  CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch, PencilRuler,
   ScrollText, ShieldCheck, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
@@ -8,12 +8,14 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { lazyRoute } from "@/lib/lazyRoute";
 import type { FlowKindContribution, GuiModule, RunDetailContribution } from "@/modules/registry";
 import { Deferred } from "./features/delivery/Deferred";
+import { AssertionRunActions, AssertionRunCounts } from "./features/delivery/assertions/AssertionRunHeader";
+import { AssertionTriggerFields } from "./features/delivery/assertions/AssertionTriggerFields";
 import { CacheRunActions, DeliveryRunActions, DeliveryRunCounts, DeliveryRunMeta } from "./features/delivery/DeliveryRunHeader";
 import { DeliveryTriggerFields } from "./features/delivery/DeliveryTriggerFields";
 import { activePartition } from "./features/delivery/activePartition";
 import { PartitionSwitcher } from "./features/delivery/PartitionSwitcher";
 
-// The OSDU Delivery module: its pages, its navigation, the panels of the delivery, retrieval and cache kinds on SQLFlow's
+// The OSDU Delivery module: its pages, its navigation, the panels of the delivery, retrieval, cache and assertion kinds on SQLFlow's
 // pipeline, run and trigger pages, the delivery records in search, and the product's branding. Everything heavy (the
 // pages, the panels, anything with the code editor) loads with the surface that shows it.
 
@@ -28,6 +30,8 @@ const TemplatesPage = lazyRoute("TemplatesPage", () => import("./features/delive
 const MappingBuilderPage = lazyRoute("MappingBuilderPage", () => import("./features/delivery/MappingBuilderPage"));
 const DeliveryCachePage = lazyRoute("DeliveryCachePage", () => import("./features/delivery/DeliveryCachePage"));
 const DeliveryPartitionsPage = lazyRoute("DeliveryPartitionsPage", () => import("./features/delivery/DeliveryPartitionsPage"));
+const DeliveryAssertionsPage = lazyRoute("DeliveryAssertionsPage", () => import("./features/delivery/assertions/DeliveryAssertionsPage"));
+const AssertionReportPage = lazyRoute("AssertionReportPage", () => import("./features/delivery/assertions/AssertionReportPage"));
 
 const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
@@ -49,6 +53,18 @@ const DeliveryCacheFlowVersions = lazyRoute(
   "DeliveryCacheFlowVersions",
   () => import("./features/delivery/DeliveryCacheFlowVersions").then((loaded) => ({ default: loaded.DeliveryCacheFlowVersions })),
 );
+const AssertionTestsPanel = lazyRoute(
+  "AssertionTestsPanel",
+  () => import("./features/delivery/assertions/AssertionFlowPanels").then((loaded) => ({ default: loaded.AssertionTestsPanel })),
+);
+const AssertionHistoryPanel = lazyRoute(
+  "AssertionHistoryPanel",
+  () => import("./features/delivery/assertions/AssertionFlowPanels").then((loaded) => ({ default: loaded.AssertionHistoryPanel })),
+);
+const AssertionReportsPanel = lazyRoute(
+  "AssertionReportsPanel",
+  () => import("./features/delivery/assertions/AssertionFlowPanels").then((loaded) => ({ default: loaded.AssertionReportsPanel })),
+);
 const DeliveryRunCard = lazyRoute("DeliveryRunCard", () => import("./features/delivery/DeliveryRunCard"));
 const RecordSearchHits = lazyRoute(
   "RecordSearchHits",
@@ -57,13 +73,14 @@ const RecordSearchHits = lazyRoute(
 
 /**
  * The key census of every document this module adds, so the YAML editor documents, colours and checks them as it does
- * SQLFlow's own flows: the delivery, retrieval and cache flows by their flowType, the mapping and the dictionary by their
- * documentType. Each file loads when the editor first starts, not with the page.
+ * SQLFlow's own flows: the delivery, retrieval, cache and assertion flows by their flowType, the mapping and the dictionary
+ * by their documentType. Each file loads when the editor first starts, not with the page.
  */
 const census: GuiModule["census"] = [
   { flowType: "delivery", load: () => import("../../docs/census/keys.delivery.json?raw").then((file) => file.default) },
   { flowType: "retrieval", load: () => import("../../docs/census/keys.retrieval.json?raw").then((file) => file.default) },
   { flowType: "cache", load: () => import("../../docs/census/keys.cache.json?raw").then((file) => file.default) },
+  { flowType: "assertion", load: () => import("../../docs/census/keys.assertion.json?raw").then((file) => file.default) },
   { documentType: "mapping", load: () => import("../../docs/census/keys.mapping.json?raw").then((file) => file.default) },
   { documentType: "dictionary", load: () => import("../../docs/census/keys.dictionary.json?raw").then((file) => file.default) },
 ];
@@ -93,9 +110,10 @@ function runPanels(extra: Omit<RunDetailContribution, "card" | "hiddenTabs">): R
   };
 }
 
-// The module's kinds wear the icons of the pages they feed (Delivery, Cache), in colours of their own: a delivery flow
-// in the one tone SQLFlow leaves to modules, a cache flow in orange, so a pre, ingestion, cache and delivery flow of one
-// source each read differently; a retrieval flow brings records in, as SQLFlow's blue kinds do.
+// The module's kinds wear the icons of the pages they feed (Delivery, Cache, Tests), in colours of their own: a delivery
+// flow in the one tone SQLFlow leaves to modules, a cache flow in orange, so a pre, ingestion, cache and delivery flow of
+// one source each read differently; a retrieval flow brings records in, as SQLFlow's blue kinds do, and an assertion flow
+// checks, as SQLFlow's neutral kinds do.
 const deliveryKind: FlowKindContribution = {
   kind: "delivery",
   identity: { label: "Delivery", icon: PackageCheck, tone: "magenta" },
@@ -186,6 +204,40 @@ const cacheKind: FlowKindContribution = {
   trigger: { Fields: DeliveryTriggerFields },
 };
 
+const assertionKind: FlowKindContribution = {
+  kind: "assertion",
+  identity: { label: "Assertion", icon: ListChecks, tone: "neutral" },
+  pipelineTabs: [
+    {
+      value: "tests",
+      label: "Tests",
+      testId: "pipeline-tab-tests",
+      render: (pipeline) => <Deferred><AssertionTestsPanel pipelineId={pipeline.id} /></Deferred>,
+    },
+    {
+      // The flow's tests against its recent runs.
+      value: "history",
+      label: "History",
+      testId: "pipeline-tab-history",
+      render: (pipeline) => <Deferred><AssertionHistoryPanel pipelineId={pipeline.id} /></Deferred>,
+    },
+    {
+      value: "reports",
+      label: "Reports",
+      testId: "pipeline-tab-reports",
+      render: (pipeline) => <Deferred><AssertionReportsPanel pipelineId={pipeline.id} /></Deferred>,
+    },
+  ],
+  defaultPipelineTab: "tests",
+  hiddenPipelineTabs: HIDDEN_PIPELINE_TABS,
+  runColumns,
+  run: runPanels({
+    headerActions: (run) => <AssertionRunActions run={run} />,
+    headerDetails: (run) => <AssertionRunCounts run={run} />,
+  }),
+  trigger: { Fields: AssertionTriggerFields },
+};
+
 export const osduDeliveryModule: GuiModule = {
   id: "osdu-delivery",
   routes: [
@@ -201,16 +253,19 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/mappings/build", component: MappingBuilderPage },
     { path: "/delivery/cache", component: DeliveryCachePage },
     { path: "/delivery/partitions", component: DeliveryPartitionsPage },
+    { path: "/delivery/assertions", component: DeliveryAssertionsPage },
+    { path: "/delivery/assertions/runs/:assertionRunId", component: AssertionReportPage },
   ],
-  // Everything this product adds is one group of its own, rather than seven entries threaded through the platform's
-  // generic ones. It sits straight after Operate, and its entries read in the order the work is done: what has been
-  // delivered, one record, who did what, then the documents a delivery is built from.
+  // Everything this product adds is one group of its own, rather than entries threaded through the platform's generic
+  // ones. It sits straight after Operate, and its entries read in the order the work is done: what has been delivered,
+  // one record, how OSDU stands against the tests, who did what, then the documents a delivery is built from.
   navGroups: [
     { id: OSDU_GROUP, label: "OSDU", icon: Layers, after: "operate" },
   ],
   navItems: [
     { group: OSDU_GROUP, label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery" },
     { group: OSDU_GROUP, label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records" },
+    { group: OSDU_GROUP, label: "Tests", to: "/delivery/assertions", icon: ListChecks, testId: "nav-delivery-assertions" },
     { group: OSDU_GROUP, label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
     { group: OSDU_GROUP, label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents" },
     { group: OSDU_GROUP, label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
@@ -221,8 +276,9 @@ export const osduDeliveryModule: GuiModule = {
   detailTitles: [
     { pattern: /^\/delivery\/records\/[^/]+/, title: () => "Record" },
     { pattern: /^\/delivery\/submissions\/([^/]+)/, title: (match) => `Submission ${match[1].slice(0, 8)}` },
+    { pattern: /^\/delivery\/assertions\/runs\/(\d+)/, title: (match) => `Report #${match[1]}` },
   ],
-  kinds: [deliveryKind, retrievalKind, cacheKind],
+  kinds: [deliveryKind, retrievalKind, cacheKind, assertionKind],
   searchCategories: [
     {
       key: "records",
