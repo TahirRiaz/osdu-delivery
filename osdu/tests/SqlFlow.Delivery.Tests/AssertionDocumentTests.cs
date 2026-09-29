@@ -99,8 +99,8 @@ public sealed class AssertionDocumentTests
               - aggregate: avg
                 column: GR
                 between: [10, 200]
-          - name: any-kind
-            kind: "osdu:wks:*:*"
+          - name: wells
+            kind: osdu:wks:master-data--Well:1.0.0
             assert:
               - count: 0
         """;
@@ -219,11 +219,21 @@ public sealed class AssertionDocumentTests
         Assert.True(Assert.IsType<AggregateAssertion>(logs.Assertions[4]).Target.IsColumn);
     }
 
-    [Fact]
-    public void A_test_of_a_kind_with_wildcards_asks_the_index_alone()
+    [Theory]
+    [InlineData("osdu:wks:*:*")]
+    [InlineData("osdu:wks:master-data--Wellbore:*")]
+    [InlineData("osdu:wks:work-product-component--WellLog:1.*.*")]
+    public void A_test_reads_one_type_in_one_version(string kind)
     {
-        var flow = Parse(OneTest("- groupBy: kind\n  groupCount: { atLeast: 1 }\n- count: { atLeast: 0 }\n- indexed: true", kind: "osdu:wks:*:*"));
-        Assert.Equal(3, flow.Tests[0].Assertions.Count);
+        // The type a mapping delivers (its template.kind) is one version of one type: a test of it reads that type, is
+        // checked against that type's template, and links to that type in lineage, so a kind with wildcards is refused.
+        Assert.Contains("has wildcards; a test reads one type in one version", Refusal(OneTest("- count: { atLeast: 0 }", kind: kind)));
+    }
+
+    [Fact]
+    public void A_test_that_only_counts_or_asks_the_index_needs_no_template()
+    {
+        var flow = Parse(OneTest("- count: { atLeast: 0 }\n- indexed: true"));
         Assert.False(Engine.Assertions.AssertionTemplates.ReadsFields(flow.Tests[0]));
     }
 
@@ -316,12 +326,6 @@ public sealed class AssertionDocumentTests
     [InlineData("- monotonic: sideways\n  column: MD", "which reads each record's bulk data")]
     public void An_assertion_that_does_not_say_one_thing_clearly_is_refused(string assertion, string expected)
         => Assert.Contains(expected, Refusal(OneTest(assertion)));
-
-    [Theory]
-    [InlineData("- field: data.A\n  exists: true", "which reads fields of each record, and the test's kind")]
-    [InlineData("- aggregate: count\n  field: data.A\n  atLeast: 1", "which reads fields of each record")]
-    public void A_test_that_reads_fields_names_one_concrete_kind(string assertion, string expected)
-        => Assert.Contains(expected, Refusal(OneTest(assertion, kind: "osdu:wks:master-data--Wellbore:*")));
 
     [Theory]
     [InlineData("ids: [a:b:c]\nquery: x", "- count: 1", "reads records by ids, and names a query as well")]
@@ -474,7 +478,7 @@ public sealed class AssertionDocumentTests
         Assert.Contains(("test", Wellbore), reads);
         Assert.Contains(("dev", WellLog), reads);
         Assert.DoesNotContain(("test", WellLog), reads);
-        Assert.Contains(("dev", "osdu:wks:*:*"), reads);
+        Assert.Contains(("dev", "osdu:wks:master-data--Well:1.0.0"), reads);
 
         var registryDriven = AssertionLineage.Describe(Parse("flowType: assertion\nname: r\nsource: { endpoint: http://x }\ntests: [{ name: a, kind: 'osdu:wks:master-data--Well:1.0.0', assert: [{ count: 1 }] }]"));
         Assert.Equal(PartitionNames.Every, Assert.Single(registryDriven.Datasets).Namespace);

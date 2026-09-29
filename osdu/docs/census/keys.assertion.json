@@ -1423,7 +1423,7 @@
       "path": "tests[].kind",
       "type": "string",
       "required": true,
-      "description": "The kind the test reads, `authority:source:entityType:version`. Wildcards are allowed per segment only when no assertion reads a field: a test that reads fields names one kind, so they are checked against its template."
+      "description": "The one type the test reads, in one version: `authority:source:entityType:major.minor.patch`, as the `template.kind` of the mapping that delivers it names it. A kind with wildcards is refused, since a test is checked against one schema and reads one type in lineage."
     },
     {
       "path": "tests[].maxRecords",
@@ -1576,7 +1576,7 @@
       "path": "tests[].template",
       "type": "string",
       "required": false,
-      "description": "The saved template version the test's fields are checked against; left out, the newest saved for the kind. A test that reads fields of a kind with no saved template is not evaluated, and says how to capture one."
+      "description": "The saved template version the test's fields are checked against: the mapping's `template.version`, so the test is checked against the schema the mapping renders to; left out, the newest saved for the kind. A test that reads fields of a kind with no saved template is not evaluated, and says how to capture one."
     }
   ]
 }

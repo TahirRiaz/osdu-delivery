@@ -234,9 +234,13 @@ internal static partial class AssertionMapper
 
         var where = $"{at} '{name}'";
         var kind = FlowMapper.Require(t.Kind, at + ".kind", source);
-        if (!OsduKind.IsValid(kind))
+        if (!OsduKind.IsExact(kind))
         {
-            throw new FlowValidationException($"{source}: {where}: kind '{kind}' is not authority:source:entityType:version (wildcards allowed per segment).");
+            throw new FlowValidationException(kind.Contains('*', StringComparison.Ordinal)
+                ? $"{source}: {where}: kind '{kind}' has wildcards; a test reads one type in one version, the one a mapping delivers "
+                    + "(its template.kind), so its records, the template its fields are checked against and its lineage are that type's. "
+                    + "Name the kind whole, such as osdu:wks:work-product-component--WellLog:1.4.0."
+                : $"{source}: {where}: kind '{kind}' is not authority:source:entityType:major.minor.patch.");
         }
 
         var ids = MapIds(t.Ids, where, source);
@@ -262,17 +266,9 @@ internal static partial class AssertionMapper
         }
 
         var template = Optional(t.Template);
-        if (template is not null)
+        if (template is not null && (template.Length > 64 || template.Any(c => char.IsWhiteSpace(c) || char.IsControl(c))))
         {
-            if (!OsduKind.IsExact(kind))
-            {
-                throw new FlowValidationException($"{source}: {where} pins template '{template}' for the kind '{kind}', which has wildcards; a template is a version of one kind.");
-            }
-
-            if (template.Length > 64 || template.Any(c => char.IsWhiteSpace(c) || char.IsControl(c)))
-            {
-                throw new FlowValidationException($"{source}: {where}: template '{template}' is not a template version (at most 64 characters, no whitespace).");
-            }
+            throw new FlowValidationException($"{source}: {where}: template '{template}' is not a template version (at most 64 characters, no whitespace).");
         }
 
         var read = FlowMapper.ParseEnum(t.Read, defaults.Read, at + ".read", source);
@@ -860,7 +856,6 @@ internal static partial class AssertionMapper
     {
         OnlyKeys(y, "conforms", ["conforms"], at, test);
         RequireTrue(y.Conforms, "conforms", at, test);
-        RequireFields("conforms", at, test);
         if (test.Read == AssertionRead.Index)
         {
             throw new FlowValidationException(
@@ -978,7 +973,6 @@ internal static partial class AssertionMapper
     private static UniqueAssertion MapUnique(AssertionItemYaml y, string at, TestContext test)
     {
         OnlyKeys(y, "unique", ["unique"], at, test);
-        RequireFields("unique", at, test);
         var fields = new List<string>();
         foreach (var raw in y.Unique!)
         {
@@ -1069,7 +1063,6 @@ internal static partial class AssertionMapper
     private static RecordSetAssertion MapRecordSet(AssertionItemYaml y, string at, TestContext test)
     {
         OnlyKeys(y, "recordSet", ["recordSet"], at, test);
-        RequireFields("recordSet", at, test);
         var set = y.RecordSet!;
         var columns = new List<string>();
         foreach (var raw in set.Columns ?? [])
@@ -1134,7 +1127,6 @@ internal static partial class AssertionMapper
         }
         else
         {
-            RequireFields("aggregate", at, test);
             var field = y.Field ?? throw new FlowValidationException($"{test.Source}: {at} aggregates, and names no field (or column) to aggregate.");
             target = new ValueTarget(CheckPath(field, at + ".field", test.Source), IsColumn: false);
         }
@@ -1183,7 +1175,6 @@ internal static partial class AssertionMapper
         }
         else
         {
-            RequireFields("field", at, test);
             target = new ValueTarget(CheckPath(y.Field!, at + ".field", test.Source), IsColumn: false);
         }
 
@@ -1574,15 +1565,6 @@ internal static partial class AssertionMapper
         {
             throw new FlowValidationException(
                 $"{test.Source}: {at} is {Article(subject)} {subject} assertion, which reads each record's bulk data; give the test a bulk block (bulk: {{ columns: [...] }}).");
-        }
-    }
-
-    private static void RequireFields(string subject, string at, TestContext test)
-    {
-        if (!OsduKind.IsExact(test.Kind))
-        {
-            throw new FlowValidationException(
-                $"{test.Source}: {at} is {Article(subject)} {subject} assertion, which reads fields of each record, and the test's kind '{test.Kind}' has wildcards; a test that reads fields names one kind, so its fields can be checked against that kind's schema.");
         }
     }
 

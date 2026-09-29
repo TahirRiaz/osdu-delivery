@@ -85,17 +85,12 @@ public static partial class AssertionTemplates
     }
 
     /// <summary>
-    /// Whether a test reads fields of its records, and so needs its kind's template. A test of a kind with wildcards asks
-    /// the index alone (a count, a grouping, how records were indexed), which the loader holds it to, and needs none.
+    /// Whether a test reads fields of its records, and so needs its kind's template: a test that only counts, asks how
+    /// records were indexed or reads bulk data needs none.
     /// </summary>
     public static bool ReadsFields(AssertionTest test)
     {
         ArgumentNullException.ThrowIfNull(test);
-        if (!Documents.OsduKind.IsExact(test.Kind))
-        {
-            return false;
-        }
-
         return test.Sort.Count > 0 || test.Spatial is not null || test.Assertions.Any(a => a switch
         {
             ValueAssertion { Target.IsColumn: false } => true,

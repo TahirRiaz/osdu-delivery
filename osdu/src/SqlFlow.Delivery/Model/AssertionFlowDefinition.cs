@@ -383,7 +383,10 @@ public sealed record AssertionTest
     /// <summary>The severity of the test's assertions that do not state one.</summary>
     public AssertionSeverity Severity { get; init; } = AssertionSeverity.Error;
 
-    /// <summary>The kind the test reads, <c>authority:source:entityType:version</c>; wildcards only when no field is read.</summary>
+    /// <summary>
+    /// The one type the test reads, in one version (<c>authority:source:entityType:major.minor.patch</c>), as the mapping
+    /// that delivers it names it in its <c>template.kind</c>.
+    /// </summary>
     public required string Kind { get; init; }
 
     /// <summary>The saved template version the test's paths are checked against; null takes the newest saved for the kind.</summary>

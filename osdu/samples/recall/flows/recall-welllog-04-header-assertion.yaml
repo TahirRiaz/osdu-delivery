@@ -7,9 +7,10 @@
 # Tests tab of this pipeline shows where every test stands and how it has come out over the last runs, and the report
 # of any run downloads as HTML, Markdown, JSON or JUnit XML.
 #
-# The tests only read: nothing is written to OSDU. A test that reads fields is checked against the saved WellLog 1.4.0
-# template before anything is read, so a field the kind does not have is reported as such rather than failing every
-# record. Run one test, or the tests of one tag, from the Tests tab, or with
+# The tests only read: nothing is written to OSDU. Every test reads the one type the mapping WellLog@1.4.0 delivers
+# (its template.kind), and a test that reads fields pins the schema that mapping pins (its template.version), so it is
+# checked against exactly what the mapping renders to before anything is read, and a field the kind does not have is
+# reported as such rather than failing every record. Run one test, or the tests of one tag, from the Tests tab, or with
 #   sqlflow run recall-welllog-04-header-assertion.yaml --payload '{"tests":["log-headers"]}'
 flowType: assertion
 name: recall-welllog-04-header-assertion
@@ -73,6 +74,7 @@ tests:
     description: Each log header meets the WellLog schema, and its references resolve.
     tags: [smoke]
     kind: osdu:wks:work-product-component--WellLog:1.4.0
+    template: 26a3c3441882db4f
     query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
     assert:
       - conforms: true
@@ -121,6 +123,7 @@ tests:
     description: The delivered logs are filed under known Recall log sources.
     tags: [coverage]
     kind: osdu:wks:work-product-component--WellLog:1.4.0
+    template: 26a3c3441882db4f
     query: 'tags.DeliveredBy:"osdu-delivery"'
     assert:
       - groupBy: data.Name

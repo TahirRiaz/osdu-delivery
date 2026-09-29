@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
@@ -234,7 +233,6 @@ public static class TestEvaluator
                 }
             }).ConfigureAwait(false);
 
-        var pattern = KindPattern(test.Kind);
         var records = new List<(string, JsonNode)>(found.Count);
         var otherKind = new List<string>();
         foreach (var id in test.Ids)
@@ -244,7 +242,7 @@ public static class TestEvaluator
                 continue;
             }
 
-            if (record["kind"] is JsonValue kind && kind.TryGetValue<string>(out var text) && !pattern.IsMatch(text))
+            if (record["kind"] is JsonValue kind && kind.TryGetValue<string>(out var text) && !string.Equals(text, test.Kind, StringComparison.OrdinalIgnoreCase))
             {
                 otherKind.Add($"{id} ({text})");
                 continue;
@@ -350,9 +348,6 @@ public static class TestEvaluator
         return found;
     }
 
-    /// <summary>A kind with wildcards as a pattern a record's kind is matched against, segment by segment, ignoring case.</summary>
-    internal static Regex KindPattern(string kind)
-        => new("^" + string.Concat(kind.Select(c => c == '*' ? "[^:]*" : Regex.Escape(c.ToString()))) + "$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static string Named(IReadOnlyList<string> ids) => string.Join(", ", ids.Take(NamedIds)) + (ids.Count > NamedIds ? ", ..." : string.Empty);
 }

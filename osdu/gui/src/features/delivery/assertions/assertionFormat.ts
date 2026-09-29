@@ -71,7 +71,7 @@ export const SEVERITY_TONES: Record<AssertionSeverity, string> = {
 export function kindGroup(kind: string): string {
   const entity = kind.split(":")[2] ?? kind;
   const at = entity.indexOf("--");
-  return at > 0 ? entity.slice(0, at) : entity.includes("*") || entity === "" ? "any kind" : entity;
+  return at > 0 ? entity.slice(0, at) : entity;
 }
 
 /** The entity type of a kind without its group (`Wellbore`), for a compact heading. */

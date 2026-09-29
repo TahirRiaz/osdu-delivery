@@ -5,9 +5,10 @@ using SqlFlow.Yaml;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// What an assertion flow contributes to SQLFlow's lineage (docs/lineage-design.md section 3): it reads the OSDU kind of
-/// every test (wildcards allowed) on its platform and partition, and writes nothing. The delivery flow writing a kind is so
-/// ordered before the tests of that kind, and a schedule firing both runs the tests once the records have landed.
+/// What an assertion flow contributes to SQLFlow's lineage (docs/lineage-design.md section 3): it reads the one OSDU kind,
+/// in one version, of every test on its platform and partition, and writes nothing. That is the type node the delivery flow
+/// writing it links to through its mapping's template.kind, so the delivery is ordered before the tests of its type, and a
+/// schedule firing both runs the tests once the records have landed.
 /// </summary>
 public static class AssertionLineage
 {
