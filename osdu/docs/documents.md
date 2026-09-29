@@ -1256,6 +1256,9 @@ test that reads fields of an exact kind is checked against the template of its k
 the schema, an operator that does not suit the variable's type, or an operand the variable cannot hold keeps the test
 from being evaluated, with the nearest variable suggested. A kind whose template is not saved says how to save one.
 
+What a test reads today is storage and search for every kind, and bulk data from the Wellbore DDMS alone; the other
+DDMSs and file contents are not read yet ([docs/assertions-design.md](../../docs/assertions-design.md) section 11).
+
 The operations are `test` (the default) and `plan` (select, check and count the tests, and record nothing). The payload
 takes `tests` (names) and `tags`; a run with neither runs every test. A flow's pipeline has a Tests tab (its board), a
 History tab (its tests against its runs) and a Reports tab; OSDU, **Tests** is the board of every assertion flow

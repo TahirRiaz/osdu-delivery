@@ -252,3 +252,53 @@ runs the tests after the delivery rather than in the same wave.
 - Credentials are references (`${env:NAME}`, `${keyvault:NAME}`); an error is redacted before it is stored or shown.
 - A test never writes. Running the flow against a live partition is still a live OSDU run: it follows the approval rule
   for live runs (CLAUDE.md), though it creates no id and so leaves nothing to clean up.
+
+## 11. What it reads today: storage and the DDMSs
+
+The state as of 2026-09-29. A test reads records through search and storage for every kind, and bulk data from one
+DDMS, the Wellbore DDMS. Everything below "Not yet" is outside what a test can assert on today.
+
+### Storage and search: every kind
+
+| What | How a test uses it |
+| --- | --- |
+| Records as storage keeps them | `read: storage`, the default: every assertion on fields (conditions, aggregates, uniqueness, record sets, `conforms`, `legal`) holds the records to what storage returns (`POST /api/storage/v2/query/records`). |
+| Records as search returns them | `read: index`: the same assertions on the projection a user of search sees, and `count`, `groupBy`, `indexed` and `delivered` from the index. |
+| Records named by id | `ids`: read from storage directly; an id storage does not return is noted in the result. |
+| References | `resolves`: every id a field holds is looked up in storage, of the entity type named. |
+
+A record a DDMS writes is registered in storage as well, so its header (the WellLog record beside its curves, a record
+the Well Delivery or Reservoir Management DDMS keeps) is tested at the record level like any other.
+
+### Bulk data: the Wellbore DDMS
+
+A test with `bulk` reads each record's bulk data from the Wellbore DDMS v3
+(`GET {ddmsRoot}/ddms/v3/{collection}/{id}/data`) and holds it to `rowCount`, `columns`, a condition on a `column`, an
+`aggregate` over a column, and `monotonic`, record by record. The kinds it keeps bulk data for are the ones it reads:
+
+| Entity type | Collection |
+| --- | --- |
+| `work-product-component--WellLog` | `welllogs` |
+| `work-product-component--WellboreTrajectory` | `wellboretrajectories` |
+| `work-product-component--PPFGDataset` | `ppfgdataset` |
+| `work-product-component--WellPressureTestRawMeasurement` | `wellpressuretestrawmeasurement` |
+
+`bulk` on any other kind is refused when the flow loads. The Wellbore DDMS's collections without bulk data (wells,
+wellbores, marker and interval sets, log acquisitions) are tested through storage, as above.
+
+### Not yet
+
+- **The other DDMSs the delivery side writes to**: the Well Delivery DDMS, the Rock and Fluid Sample DDMS (RAFS), the
+  Reservoir DDMS (ETP), the Reservoir Management DDMS, the Production DDMS (its core service, DSPDM, and its historian's
+  time series), Seismic Store, and External Data Services. What each of these keeps beyond the storage record (RAFS
+  content tables, ETP objects and arrays, DSPDM rows, historian points, seismic files, EDS registrations) cannot be
+  asserted on; the storage records they register can.
+- **File contents**: the files behind a `dataset--File.*` or `dataset--FileCollection.*` record are not read; only the
+  dataset record is.
+- **A Wellbore DDMS elsewhere**: a test reads bulk data under the flow's own endpoint at `source.ddmsRoot`; a Wellbore
+  DDMS the delivery side reaches through `target.ddms` (another endpoint, or one the Register service names) is not
+  reached from a test.
+
+A DDMS added here gets its reader beside `WellboreBulk`, its collections and call pattern from the DDMS catalog the
+delivery side already keeps (`DdmsCatalog`), and its requests held to its OpenAPI specification by the contract tests,
+as the Wellbore DDMS's are.
