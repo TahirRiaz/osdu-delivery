@@ -1,27 +1,23 @@
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, CircleAlert, OctagonAlert, Pencil, Plus, TriangleAlert, X } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type {
-  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft,
-  MappingDraftEntry, MappingDraftInput, MappingDraftIssue, MappingDraftModifier, MappingDraftModifierKind, MappingDraftOtherwiseKind,
+  DeliveryCachedType, DeliveryTemplateVariable, MappingDraft, MappingDraftEntry, MappingDraftFindAll, MappingDraftInput, MappingDraftIssue,
+  MappingDraftModifier,
 } from "../../api/delivery";
-import { isLookupEntityType } from "./cacheFormat";
+import { ChoiceOrText, FindByLinesEditor, IconAction, ModifierListEditor, Section, type ChoiceOption } from "./MappingEditorParts";
 import {
-  alternativeText, cachedReplaceFields, DECIMAL_SEPARATORS, emptyEntry, GROUP_SEPARATORS, ID_MODIFIER_KINDS, ID_TEMPLATE_EXAMPLE, inputsFor, isCachedReplace, KEY_NAME, knownColumns, MODIFIER_KINDS,
-  newModifier, NO_GROUP, parseJson, repeaterOf, staticModeFor,
-  type StaticMode,
+  ACCESS_TARGETS, alternativeText, bareColumn, emptyEntry, findLinesOf, findsOf, ID_MODIFIER_KINDS, inputsFor, KEY_NAME, knownColumns,
+  MODIFIER_KINDS, moveItem, parseJson, repeaterOf, staticModeFor, type FindLine, type StaticMode,
 } from "./mappingDraft";
 import { shapeText } from "./templateFormat";
 
@@ -44,18 +40,19 @@ const CHOICE_LABELS: Record<Choice, string> = {
   Dataset: "Dataset column",
   Repeat: "Repeat child rows",
   Cache: "Cache",
+  Lookup: "Lookup",
   Static: "Static value",
   Search: "Platform search",
   Expression: "Expression",
   Coalesce: "First value of",
+  List: "List of values",
 };
 
-/** One findBy line as the form edits it: the cached field, and a dataset column or a fixed text. */
-interface FindLine {
-  field: string;
-  mode: "column" | "text";
-  value: string;
-}
+/** The inputs one item of a list of values may read: one value each, or with a find all many. */
+const ITEM_INPUTS: MappingDraftInput[] = ["Static", "Dataset", "Expression", "Cache", "Lookup", "Search"];
+
+/** What a find all compares its field with: a dataset column, a fixed text, or a field of a lookup's record. */
+type FindAllMode = "column" | "text" | "lookup";
 
 /** The static value in every editor at once, so switching between them keeps what was typed. */
 interface StaticState {
@@ -64,22 +61,6 @@ interface StaticState {
   number: string;
   boolean: "true" | "false";
   json: string;
-}
-
-/** A column as the draft stores it: trimmed, and without the dataset. prefix a person may type out of habit. */
-function bare(text: string): string {
-  return text.trim().replace(/^dataset\./, "");
-}
-
-function move<T>(items: readonly T[], index: number, delta: number): T[] {
-  const to = index + delta;
-  const next = [...items];
-  if (to < 0 || to >= items.length) {
-    return next;
-  }
-
-  [next[index], next[to]] = [next[to], next[index]];
-  return next;
 }
 
 function defaultJson(variable: DeliveryTemplateVariable): string {
@@ -139,374 +120,11 @@ function staticJsonOf(mode: StaticMode, state: StaticState, variable: DeliveryTe
   }
 }
 
-function IconAction({
-  label, onClick, disabled = false, testId, children,
-}: { label: string; onClick: () => void; disabled?: boolean; testId: string; children: ReactNode }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-xs" aria-label={label} onClick={onClick} disabled={disabled} data-testid={testId}>
-          {children}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-function Section({
-  title, hint, action, testId, children,
-}: { title: string; hint?: ReactNode; action?: ReactNode; testId?: string; children?: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-2" data-testid={testId}>
-      <div className="flex min-h-7 items-center gap-2">
-        <h3 className="text-[13px] font-medium">{title}</h3>
-        {action !== undefined && <div className="ml-auto">{action}</div>}
-      </div>
-      {hint !== undefined && <p className="text-xs text-muted-foreground">{hint}</p>}
-      {children}
-    </section>
-  );
-}
-
-const OTHER = "__other__";
-
-interface ChoiceOption {
-  value: string;
-  hint?: string;
-  group: string;
-}
-
-/** A select of the names the repository knows, with a way to type one it does not list. */
-function ChoiceOrText({
-  value, options, onChange, placeholder, testId, className,
-}: { value: string; options: ChoiceOption[]; onChange: (value: string) => void; placeholder: string; testId: string; className?: string }) {
-  const known = options.some((option) => option.value === value);
-  const [typing, setTyping] = useState(value !== "" && !known);
-  const showInput = typing || (value !== "" && !known);
-  const groups = [...new Set(options.map((option) => option.group))];
-
-  return (
-    <div className={cn("flex flex-wrap items-center gap-1", className)}>
-      <Select
-        value={showInput ? OTHER : value}
-        onValueChange={(next) => {
-          if (next === OTHER) {
-            setTyping(true);
-            onChange("");
-          } else {
-            setTyping(false);
-            onChange(next);
-          }
-        }}
-      >
-        <SelectTrigger size="sm" className="h-8 min-w-40" data-testid={testId}>
-          <SelectValue placeholder={placeholder} />
-        </SelectTrigger>
-        <SelectContent>
-          {groups.map((group) => (
-            <SelectGroup key={group}>
-              <SelectLabel>{group}</SelectLabel>
-              {options.filter((option) => option.group === group).map((option) => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.value}
-                  {option.hint !== undefined && <span className="font-mono text-[11px] text-muted-foreground">{option.hint}</span>}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          ))}
-          <SelectItem value={OTHER}>Type a name</SelectItem>
-        </SelectContent>
-      </Select>
-      {showInput && (
-        <Input
-          className="h-8 w-44 font-mono text-[12px]"
-          placeholder={placeholder}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          data-testid={`${testId}-text`}
-        />
-      )}
-    </div>
-  );
-}
-
-const DEFAULT_FIELD = "__default__";
-
-/**
- * A field of a cached table, picked from those it holds or typed, with the field the table settles on its own offered
- * first when there is one: a lookup table's key to match on, and the one field it holds beside its key to replace by.
- */
-function CachedFieldSelect({
-  value, settled, settledLabel, options, onChange, placeholder, testId,
-}: {
-  value: string | null;
-  settled: string | null;
-  settledLabel: string;
-  options: string[];
-  onChange: (value: string | null) => void;
-  placeholder: string;
-  testId: string;
-}) {
-  const named = value !== null && value.trim() !== "";
-  const known = named && options.includes(value);
-  const [typing, setTyping] = useState(named && !known);
-  const showInput = typing || (named && !known);
-  const selected = showInput ? OTHER : named ? value : settled !== null ? DEFAULT_FIELD : "";
-
-  return (
-    <div className="flex flex-wrap items-center gap-1">
-      <Select
-        value={selected}
-        onValueChange={(next) => {
-          if (next === OTHER) {
-            setTyping(true);
-            onChange("");
-          } else {
-            setTyping(false);
-            onChange(next === DEFAULT_FIELD ? null : next);
-          }
-        }}
-      >
-        <SelectTrigger size="sm" className="h-7 min-w-40" data-testid={testId}>
-          <SelectValue placeholder={placeholder} />
-        </SelectTrigger>
-        <SelectContent>
-          {settled !== null && (
-            <SelectItem value={DEFAULT_FIELD}>
-              {settledLabel}
-              <span className="font-mono text-[11px] text-muted-foreground">{settled}</span>
-            </SelectItem>
-          )}
-          {options.length > 0 && (
-            <SelectGroup>
-              <SelectLabel>Cached fields</SelectLabel>
-              {options.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
-            </SelectGroup>
-          )}
-          <SelectItem value={OTHER}>Type a name</SelectItem>
-        </SelectContent>
-      </Select>
-      {showInput && (
-        <Input
-          className="h-7 w-44 font-mono text-[12px]"
-          placeholder={placeholder}
-          value={value ?? ""}
-          onChange={(event) => onChange(event.target.value)}
-          data-testid={`${testId}-text`}
-        />
-      )}
-    </div>
-  );
-}
-
-/**
- * A replace: the pairs written in the mapping, or a table read from the partition's cache (a dictionary, an ingestion
- * table, or OSDU reference data), and what a value the table does not list becomes.
- */
-function ReplaceEditor({
-  modifier, index, cacheTypes, onChange,
-}: {
-  modifier: MappingDraftModifier;
-  index: number;
-  cacheTypes: DeliveryCachedType[];
-  onChange: (patch: Partial<MappingDraftModifier>) => void;
-}) {
-  const cached = isCachedReplace(modifier) || modifier.table === "";
-  const tableName = (modifier.table ?? "").trim();
-  const type = cacheTypes.find((candidate) => candidate.name === tableName);
-  const lookupTables = cacheTypes.filter((candidate) => isLookupEntityType(candidate.entityType));
-  const osduTypes = cacheTypes.filter((candidate) => !isLookupEntityType(candidate.entityType));
-  const tableOptions: ChoiceOption[] = [
-    ...lookupTables.map((candidate) => ({
-      value: candidate.name,
-      hint: candidate.key === null ? undefined : `key ${candidate.key}`,
-      group: "Lookup tables (dictionaries and ingestion tables)",
-    })),
-    ...osduTypes.map((candidate) => ({ value: candidate.name, hint: candidate.entityType, group: "OSDU types" })),
-  ];
-  const fields = cachedReplaceFields(modifier, type);
-  const key = type?.key ?? null;
-  const lookup = type !== undefined && key !== null;
-  const matchOptions = type === undefined ? [] : key !== null ? [...new Set([key, ...type.fields])] : [...new Set([...type.fields, "id"])];
-  const fieldOptions = type === undefined ? [] : key !== null ? type.fields.filter((name) => name !== key) : [...new Set([...type.fields, "id"])];
-
-  const switchTo = (next: string) => {
-    if (next === "cache" && !cached) {
-      onChange({ replacements: null, table: lookupTables[0]?.name ?? cacheTypes[0]?.name ?? "", match: null, field: null });
-    } else if (next === "pairs" && cached) {
-      onChange({ replacements: [{ from: "", to: "" }], table: null, match: null, field: null });
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-2">
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
-        value={cached ? "cache" : "pairs"}
-        onValueChange={(next) => { if (next !== "") { switchTo(next); } }}
-        className="self-start"
-        data-testid={`mapping-builder-entry-modifier-source-${index}`}
-      >
-        <ToggleGroupItem value="pairs" data-testid={`mapping-builder-entry-modifier-source-pairs-${index}`}>Values listed here</ToggleGroupItem>
-        <ToggleGroupItem value="cache" data-testid={`mapping-builder-entry-modifier-source-cache-${index}`}>A table in the cache</ToggleGroupItem>
-      </ToggleGroup>
-
-      {cached ? (
-        <div className="flex flex-col gap-2 text-xs text-muted-foreground">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="w-28">Table</span>
-            <ChoiceOrText
-              value={modifier.table ?? ""}
-              options={tableOptions}
-              onChange={(value) => onChange({ table: value, match: null, field: null })}
-              placeholder="RecallUnits"
-              testId={`mapping-builder-entry-modifier-table-${index}`}
-            />
-          </div>
-          {tableName !== "" && cacheTypes.length > 0 && type === undefined && (
-            <p className="text-warning" data-testid={`mapping-builder-entry-modifier-table-missing-${index}`}>
-              The cache picked for this mapping holds no type {tableName}. A cache flow declares it, as a dictionary, an ingestion table or an OSDU kind.
-            </p>
-          )}
-          {tableName !== "" && cacheTypes.length === 0 && (
-            <p>No cache is picked for this mapping, so the table cannot be checked here; the check against the partition's cache does it.</p>
-          )}
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="w-28">Match the value on</span>
-            <CachedFieldSelect
-              value={modifier.match ?? null}
-              settled={key}
-              settledLabel="the table's key"
-              options={matchOptions}
-              onChange={(value) => onChange({ match: value })}
-              placeholder={key !== null ? `the key, ${key}` : "Code"}
-              testId={`mapping-builder-entry-modifier-match-${index}`}
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="w-28">Replace it by</span>
-            <CachedFieldSelect
-              value={modifier.field ?? null}
-              settled={fields.fieldSettled ? fields.field : null}
-              settledLabel={fieldOptions.length === 0 ? "the dictionary's value" : "the table's only field"}
-              options={fieldOptions}
-              onChange={(value) => onChange({ field: value })}
-              placeholder={lookup ? "the field" : "id"}
-              testId={`mapping-builder-entry-modifier-field-${index}`}
-            />
-          </div>
-          {type !== undefined && (fields.match === null || fields.field === null) && (
-            <p className="text-warning" data-testid={`mapping-builder-entry-modifier-fields-missing-${index}`}>
-              {fields.match === null
-                ? `${type.name} holds OSDU records, which have no key: choose the field a value is compared with, and the field that replaces it.`
-                : `${type.name} holds ${fieldOptions.length} fields beside its key: choose the one that replaces the value.`}
-            </p>
-          )}
-          <p>
-            Each value is looked up in the version of the cache a render reads: an exact match first, then the one row that
-            matches ignoring case. A row with nothing in that field gives no value. The rows a record used are recorded, so a
-            later change to the table flags the records built from it.
-          </p>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-1">
-          {(modifier.replacements ?? []).map((pair, pairIndex) => (
-            <div key={pairIndex} className="flex items-center gap-1">
-              <Input
-                className="h-7 font-mono text-[12px]"
-                placeholder="incoming value"
-                value={pair.from}
-                onChange={(event) => onChange({
-                  replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, from: event.target.value } : old)),
-                })}
-                data-testid={`mapping-builder-entry-modifier-from-${index}-${pairIndex}`}
-              />
-              <span className="text-xs text-muted-foreground">becomes</span>
-              <Input
-                className="h-7 font-mono text-[12px]"
-                placeholder={pair.to === null ? "no value" : "what it becomes"}
-                value={pair.to ?? ""}
-                disabled={pair.to === null}
-                onChange={(event) => onChange({
-                  replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, to: event.target.value } : old)),
-                })}
-                data-testid={`mapping-builder-entry-modifier-to-${index}-${pairIndex}`}
-              />
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <Switch
-                      checked={pair.to === null}
-                      onCheckedChange={(none) => onChange({
-                        replacements: (modifier.replacements ?? []).map((old, i) => (i === pairIndex ? { ...old, to: none ? null : "" } : old)),
-                      })}
-                      aria-label="Replace with no value"
-                      data-testid={`mapping-builder-entry-modifier-none-${index}-${pairIndex}`}
-                    />
-                    none
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>No value: the entry's required flag decides what an empty value does.</TooltipContent>
-              </Tooltip>
-              <IconAction
-                label="Remove this pair"
-                onClick={() => onChange({ replacements: (modifier.replacements ?? []).filter((_, i) => i !== pairIndex) })}
-                testId={`mapping-builder-entry-modifier-pair-remove-${index}-${pairIndex}`}
-              >
-                <X />
-              </IconAction>
-            </div>
-          ))}
-          <Button
-            variant="ghost"
-            size="xs"
-            className="self-start"
-            onClick={() => onChange({ replacements: [...(modifier.replacements ?? []), { from: "", to: "" }] })}
-            data-testid={`mapping-builder-entry-modifier-pair-add-${index}`}
-          >
-            <Plus />
-            Add a pair
-          </Button>
-          <p className="text-xs text-muted-foreground">
-            Values are matched trimmed: an exact key first, then the one key that matches ignoring case. A list kept in one
-            place for many mappings belongs in a dictionary, read here as a table in the cache.
-          </p>
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>{cached ? "A value the table does not list" : "A value the pairs do not list"}</span>
-        <Select
-          value={modifier.otherwiseKind ?? "keep"}
-          onValueChange={(value) => onChange({
-            otherwiseKind: value as MappingDraftOtherwiseKind,
-            otherwiseText: value === "text" ? (modifier.otherwiseText ?? "") : null,
-          })}
-        >
-          <SelectTrigger size="sm" className="h-7 w-40" data-testid={`mapping-builder-entry-modifier-otherwise-${index}`}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="keep">is left as it is</SelectItem>
-            <SelectItem value="empty">gives no value</SelectItem>
-            <SelectItem value="text">becomes</SelectItem>
-          </SelectContent>
-        </Select>
-        {modifier.otherwiseKind === "text" && (
-          <Input
-            className="h-7 w-48 font-mono text-[12px]"
-            placeholder="what it becomes"
-            value={modifier.otherwiseText ?? ""}
-            onChange={(event) => onChange({ otherwiseText: event.target.value })}
-            data-testid={`mapping-builder-entry-modifier-otherwise-text-${index}`}
-          />
-        )}
-      </div>
-    </div>
-  );
+/** How a nested form edits one part of an entry: an alternative of a coalesce, or an item of a list of values. */
+interface NestedRole {
+  kind: "alternative" | "item";
+  /** How the form's title names the part: "alternative 2", "item 3". */
+  label: string;
 }
 
 interface EntryFormProps {
@@ -518,47 +136,67 @@ interface EntryFormProps {
   onSave: (target: string, entry: MappingDraftEntry | null) => void;
   onClose: () => void;
   /**
-   * Set when the form edits one alternative of a coalesce entry, which it names ("alternative 2"): one value of its own
-   * input, without what only the whole entry decides (its condition, whether it is required, its description).
+   * Set when the form edits one part of an entry. An alternative of a coalesce reads one value of its own input, without
+   * what only the whole entry decides (its condition, whether it is required, its description). An item of a list of
+   * values reads one value, or many with a find all, and has a condition, a required flag and a description of its own.
    */
-  alternativeLabel?: string;
+  nested?: NestedRole;
 }
 
-/** The alternative the nested editor edits: its place in the list (the end for a new one), and a number per opening. */
-interface EditedAlternative {
+/** The part the nested editor edits: which list, its place there (the end for a new one), and a number per opening. */
+interface EditedPart {
+  list: "alternatives" | "items";
   index: number;
   entry: MappingDraftEntry | null;
   session: number;
 }
 
-function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alternativeLabel }: EntryFormProps) {
+function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested }: EntryFormProps) {
   const ids = useId();
   const { variable, entry, keyHolder, outside } = target;
   const known = useMemo(() => knownColumns(draft), [draft]);
-  const isAlternative = alternativeLabel !== undefined;
+  const isAlternative = nested?.kind === "alternative";
+  const isItem = nested?.kind === "item";
+  // An item of a list is one value of the list's items, so a fixed item is edited as one value of that type.
+  const valueVariable: DeliveryTemplateVariable = isItem ? { ...variable, shape: "Value", type: variable.itemType ?? "string" } : variable;
 
   const searches = draft.searches;
-  const offered: MappingDraftInput[] = outside !== null ? ["Dataset", "Expression", "Repeat", "Cache", "Search", "Static"] : inputsFor(variable);
-  // A search is offered once the mapping declares one to look in; the searches block says which kinds it looks in. An
-  // alternative reads one value, so it is neither a repeat nor a coalesce of its own.
-  const allowed = offered.filter((input) => (input !== "Search" || searches.length > 0) && (!isAlternative || (input !== "Repeat" && input !== "Coalesce")));
+  const lookups = draft.lookups;
+  const offered: MappingDraftInput[] = outside !== null
+    ? ["Dataset", "Expression", "Repeat", "Cache", "Lookup", "Search", "Static"]
+    : isItem ? ITEM_INPUTS : inputsFor(variable);
+  // A search is offered once the mapping declares one to look in, and a lookup once it declares one to read. A part of an
+  // entry reads values of its own, so it is neither a repeat, a coalesce nor a list.
+  const allowed = offered.filter((input) => (input !== "Search" || searches.length > 0)
+    && (input !== "Lookup" || lookups.length > 0)
+    && (nested === undefined || (input !== "Repeat" && input !== "Coalesce" && input !== "List")));
   if (entry !== null && !allowed.includes(entry.input)) {
     allowed.push(entry.input);
   }
 
-  const typedMode = staticModeFor(variable, null);
+  const typedMode = staticModeFor(valueVariable, null);
   const initialStatic = entry?.input === "Static" ? entry.static : null;
+  const initialAll = entry?.findAll ?? null;
+  const initialAllLookup = (initialAll?.lookup ?? "").trim();
 
-  const [choice, setChoice] = useState<Choice>(entry?.input ?? (keyHolder !== null || isAlternative ? allowed[0] : "None"));
+  const [choice, setChoice] = useState<Choice>(entry?.input ?? (keyHolder !== null || nested !== undefined ? allowed[0] : "None"));
   const [keyName, setKeyName] = useState("");
   const [column, setColumn] = useState(entry?.column ?? "");
   const [child, setChild] = useState(entry?.child ?? "");
   const [cacheType, setCacheType] = useState(entry?.cacheType ?? variable.cacheTypes[0] ?? "");
-  const [cacheField, setCacheField] = useState(entry?.cacheField ?? "id");
-  const [findBy, setFindBy] = useState<FindLine[]>(() => (entry?.findBy ?? []).map((find): FindLine => (
-    find.literal !== null && find.literal !== ""
-      ? { field: find.field, mode: "text", value: find.literal }
-      : { field: find.field, mode: "column", value: find.column ?? "" })));
+  const [cacheField, setCacheField] = useState(entry?.input === "Lookup" ? "id" : entry?.cacheField ?? "id");
+  const [findBy, setFindBy] = useState<FindLine[]>(() => findLinesOf(entry?.findBy ?? []));
+  const [findMode, setFindMode] = useState<"one" | "all">(initialAll === null ? "one" : "all");
+  const [allField, setAllField] = useState(initialAll?.field ?? "");
+  const [allMode, setAllMode] = useState<FindAllMode>(initialAll === null
+    ? (lookups.length > 0 ? "lookup" : "column")
+    : initialAllLookup !== "" ? "lookup" : (initialAll.literal ?? "") !== "" ? "text" : "column");
+  const [allValue, setAllValue] = useState(initialAll === null ? "" : (initialAll.literal ?? "") !== "" ? initialAll.literal ?? "" : initialAll.column ?? "");
+  const [allLookup, setAllLookup] = useState(initialAllLookup === "" ? lookups[0]?.name ?? "" : initialAllLookup.split(".")[0]);
+  const [allPath, setAllPath] = useState(initialAllLookup.includes(".") ? initialAllLookup.slice(initialAllLookup.indexOf(".") + 1) : "");
+  const [allEmpty, setAllEmpty] = useState<string[]>(initialAll?.empty ?? []);
+  const [lookupName, setLookupName] = useState(entry?.input === "Lookup" ? entry.lookup ?? "" : lookups[0]?.name ?? "");
+  const [lookupField, setLookupField] = useState(entry?.input === "Lookup" ? entry.cacheField ?? "id" : "id");
   const [ignoreSeparators, setIgnoreSeparators] = useState(entry?.ignoreSeparators ?? false);
   const [modifiers, setModifiers] = useState<MappingDraftModifier[]>(entry?.modifiers ?? []);
   const [expression, setExpression] = useState(entry?.expression ?? "");
@@ -570,13 +208,14 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
   const [description, setDescription] = useState(entry?.description ?? "");
   const [unverified, setUnverified] = useState(entry?.unverified ?? false);
   const [alternatives, setAlternatives] = useState<MappingDraftEntry[]>(entry?.alternatives ?? []);
-  const [editing, setEditing] = useState<EditedAlternative | null>(null);
+  const [items, setItems] = useState<MappingDraftEntry[]>(entry?.items ?? []);
+  const [editing, setEditing] = useState<EditedPart | null>(null);
   const [openings, setOpenings] = useState(0);
-  const [jsonMode, setJsonMode] = useState(() => typedMode === "json" || staticModeFor(variable, initialStatic) === "json");
-  const [staticState, setStaticState] = useState<StaticState>(() => seedStatic(variable, initialStatic));
+  const [jsonMode, setJsonMode] = useState(() => typedMode === "json" || staticModeFor(valueVariable, initialStatic) === "json");
+  const [staticState, setStaticState] = useState<StaticState>(() => seedStatic(valueVariable, initialStatic));
 
   const mode: StaticMode = jsonMode ? "json" : typedMode;
-  const staticResult = choice === "Static" ? staticJsonOf(mode, staticState, variable) : { json: null, error: null };
+  const staticResult = choice === "Static" ? staticJsonOf(mode, staticState, valueVariable) : { json: null, error: null };
   const newTarget = keyHolder !== null ? `${keyHolder.path}.${keyName.trim()}` : variable.path;
   const repeater = repeaterOf(newTarget);
   const repeaterChild = repeater === null
@@ -598,14 +237,25 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
     })),
   ];
   const searchOptions: ChoiceOption[] = searches.map((search) => ({ value: search.name, hint: search.kind, group: "The mapping's searches" }));
+  const lookupOptions: ChoiceOption[] = lookups.map((lookup) => ({ value: lookup.name, hint: lookup.cacheType, group: "The mapping's lookups" }));
+  // The fields of the record a lookup finds: those its cached type captures, and its id.
+  const lookupFields = (name: string): ChoiceOption[] => {
+    const type = lookups.find((lookup) => lookup.name === name.trim())?.cacheType ?? "";
+    const fields = repoTypes.find((candidate) => candidate.name === type)?.fields ?? [];
+    return [...new Set(["id", ...fields])].map((field) => ({ value: field, group: `Fields of ${type === "" ? "its record" : type}` }));
+  };
   // The properties other entries already compare in the same search, which is where a new line most often looks.
   const searchedFields: ChoiceOption[] = [...new Set(draft.entries
     .filter((candidate) => candidate.input === "Search" && candidate.cacheType === cacheType.trim())
     .flatMap((candidate) => candidate.findBy.map((find) => find.field))
     .filter((field) => field !== ""))]
     .map((field) => ({ value: field, group: "Compared by this search's entries" }));
-  const lookup = choice === "Cache" || choice === "Search";
+  const resolves = choice === "Cache" || choice === "Search";
+  const findsAll = choice === "Cache" && findMode === "all";
+  // A find all's modifiers change the column it compares, so one comparing a fixed text or a lookup's field takes none.
+  const modified = choice === "Dataset" || choice === "Expression" || (resolves && !(findsAll && allMode !== "column"));
   const buildsId = modifiers.some((modifier) => ID_MODIFIER_KINDS.includes(modifier.kind));
+  const access = ACCESS_TARGETS.includes(newTarget);
 
   let keyError: string | null = null;
   if (keyHolder !== null) {
@@ -622,55 +272,91 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
   const error = keyError ?? staticResult.error;
   const columnsList = `${ids}-columns`;
   const childrenList = `${ids}-children`;
+  const columnPlaceholder = repeater === null ? "column" : `${repeaterChild ?? "child"}.column`;
+
+  const findAllOf = (): MappingDraftFindAll => ({
+    field: allField.trim(),
+    column: allMode === "column" ? bareColumn(allValue) : null,
+    literal: allMode === "text" ? allValue : null,
+    lookup: allMode === "lookup" ? `${allLookup.trim()}.${allPath.trim()}` : null,
+    empty: allEmpty.map((field) => field.trim()).filter((field) => field !== ""),
+  });
 
   /**
-   * The entry the form holds for an input, as Save writes it. An alternative keeps nothing only the whole entry decides,
-   * and a coalesce entry carries its alternatives under its own target.
+   * The entry the form holds for an input, as Save writes it. An alternative keeps nothing only the whole entry decides, a
+   * coalesce entry carries its alternatives and a list its items under its own target, and a list has no settings of its
+   * own, since it is written as its items alone.
    */
   const build = (kind: MappingDraftInput): MappingDraftEntry => {
     const looks = kind === "Cache" || kind === "Search";
+    const all = kind === "Cache" && findMode === "all";
+    const takesModifiers = kind === "Dataset" || kind === "Expression" || (looks && !(all && allMode !== "column"));
+    const own = !isAlternative && kind !== "List";
     return {
       ...(entry ?? emptyEntry(newTarget, kind)),
       target: newTarget,
       input: kind,
-      column: kind === "Dataset" ? bare(column) : null,
-      child: kind === "Repeat" ? bare(child) : null,
+      column: kind === "Dataset" ? bareColumn(column) : null,
+      child: kind === "Repeat" ? bareColumn(child) : null,
       cacheType: looks ? cacheType.trim() : null,
-      cacheField: kind === "Cache" ? cacheField.trim() : kind === "Search" ? "id" : null,
-      findBy: looks
-        ? findBy.map((line) => (line.mode === "text"
-          ? { field: line.field.trim(), column: null, literal: line.value }
-          : { field: line.field.trim(), column: bare(line.value), literal: null }))
-        : [],
-      modifiers: kind === "Dataset" || kind === "Expression" || looks
+      cacheField: kind === "Cache" ? cacheField.trim() : kind === "Search" ? "id" : kind === "Lookup" ? lookupField.trim() : null,
+      lookup: kind === "Lookup" ? lookupName.trim() : null,
+      findBy: looks && !all ? findsOf(findBy) : [],
+      findAll: all ? findAllOf() : null,
+      modifiers: takesModifiers
         ? modifiers.map((modifier) => (modifier.kind === "date" && (modifier.text ?? "").trim() === "" ? { ...modifier, text: null } : modifier))
         : [],
       expression: kind === "Expression" ? expression.trim() : null,
-      when: !isAlternative && conditionOn && condition.trim() !== "" ? condition.trim() : null,
+      when: own && conditionOn && condition.trim() !== "" ? condition.trim() : null,
       where: kind === "Repeat" && whereOn && where.trim() !== "" ? where.trim() : null,
-      required: kind === "Static" || isAlternative ? true : required,
-      ignoreSeparators: kind === "Cache" && ignoreSeparators,
+      required: kind === "Static" || kind === "List" || isAlternative ? true : required,
+      ignoreSeparators: kind === "Cache" && !all && ignoreSeparators,
       unverified: (kind === "Dataset" || kind === "Expression") && buildsId && unverified,
       alternatives: kind === "Coalesce" ? alternatives.map((alternative) => ({ ...alternative, target: newTarget })) : [],
+      items: kind === "List" ? items.map((item) => ({ ...item, target: newTarget })) : [],
       static: kind === "Static" ? staticResult.json : null,
-      description: !isAlternative && description.trim() !== "" ? description.trim() : null,
+      description: own && description.trim() !== "" ? description.trim() : null,
       prefilled: false,
     };
   };
 
-  const openAlternative = (index: number, alternative: MappingDraftEntry | null) => {
+  const openPart = (list: EditedPart["list"], index: number, part: MappingDraftEntry | null) => {
     const session = openings + 1;
     setOpenings(session);
-    setEditing({ index, entry: alternative, session });
+    setEditing({ list, index, entry: part, session });
   };
 
   const choose = (next: Choice) => {
     const previous = choice;
+    const reads = previous !== "None" && previous !== "Repeat" && previous !== "Coalesce" && previous !== "List";
     setChoice(next);
     if (next === "Coalesce") {
       // What the form already reads becomes the first alternative, so turning an entry into a coalesce keeps it.
-      if (alternatives.length === 0 && previous !== "None" && previous !== "Repeat" && previous !== "Coalesce") {
+      if (alternatives.length === 0 && reads) {
         setAlternatives([{ ...build(previous), when: null, required: true, description: null }]);
+      }
+
+      return;
+    }
+
+    if (next === "List") {
+      // What the form already holds becomes the list's first items: each value of a static list an item of its own, and
+      // any other value one item, so turning an entry into a list of values keeps it.
+      if (items.length === 0 && reads) {
+        const parsed = previous === "Static" ? parseJson(staticResult.json) : null;
+        if (parsed !== null && parsed.ok && Array.isArray(parsed.value)) {
+          setItems(parsed.value.map((value: unknown) => ({ ...emptyEntry(newTarget, "Static"), static: JSON.stringify(value) })));
+        } else {
+          setItems([build(previous)]);
+        }
+      }
+
+      return;
+    }
+
+    if (next === "Lookup") {
+      if (!lookups.some((lookup) => lookup.name === lookupName.trim())) {
+        setLookupName(lookups[0]?.name ?? "");
       }
 
       return;
@@ -706,23 +392,17 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
     }
   };
 
-  const updateModifier = (index: number, patch: Partial<MappingDraftModifier>) =>
-    setModifiers((current) => current.map((modifier, i) => (i === index ? { ...modifier, ...patch } : modifier)));
-
-  const updateLine = (index: number, patch: Partial<FindLine>) =>
-    setFindBy((current) => current.map((line, i) => (i === index ? { ...line, ...patch } : line)));
-
   const toggleJson = (on: boolean) => {
     if (on) {
-      const typed = staticJsonOf(typedMode, staticState, variable);
+      const typed = staticJsonOf(typedMode, staticState, valueVariable);
       setStaticState((current) => ({ ...current, json: typed.json ?? current.json }));
       setJsonMode(true);
       return;
     }
 
     // Back to the typed editor only when it can show what the JSON holds.
-    if (staticModeFor(variable, staticState.json) !== "json") {
-      setStaticState(seedStatic(variable, staticState.json));
+    if (staticModeFor(valueVariable, staticState.json) !== "json") {
+      setStaticState(seedStatic(valueVariable, staticState.json));
       setJsonMode(false);
     }
   };
@@ -741,18 +421,22 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
   };
 
   const facts = [
-    shapeText(variable),
+    shapeText(valueVariable),
     variable.format !== null ? `format ${variable.format}` : null,
-    variable.required ? "required by the template" : null,
+    variable.required && nested === undefined ? "required by the template" : null,
     variable.relationships.length > 0 ? `points to ${variable.relationships.join(", ")}` : null,
     variable.unitContext !== null ? `unit context ${variable.unitContext}` : null,
   ].filter((fact): fact is string => fact !== null);
+
+  const parts = choice === "Coalesce" ? alternatives : items;
+  const setParts = choice === "Coalesce" ? setAlternatives : setItems;
+  const partName = choice === "Coalesce" ? "alternative" : "item";
 
   return (
     <>
       <SheetHeader>
         <SheetTitle className="break-all pr-6 font-mono text-[14px]" data-testid="mapping-builder-entry-target">
-          {keyHolder !== null ? `${keyHolder.path}.<key>` : isAlternative ? `${variable.path}, ${alternativeLabel}` : variable.path}
+          {keyHolder !== null ? `${keyHolder.path}.<key>` : nested !== undefined ? `${variable.path}, ${nested.label}` : variable.path}
         </SheetTitle>
         <SheetDescription>{facts.join(", ")}.</SheetDescription>
       </SheetHeader>
@@ -763,7 +447,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
         <datalist id={childrenList}>
           {known.children.map((name) => <option key={name} value={name} />)}
         </datalist>
-        {variable.description !== null && <p className="text-xs text-muted-foreground">{variable.description}</p>}
+        {variable.description !== null && nested === undefined && <p className="text-xs text-muted-foreground">{variable.description}</p>}
         {outside !== null && (
           <Alert data-testid="mapping-builder-entry-outside">
             <CircleAlert />
@@ -810,7 +494,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
             className="flex-wrap"
             data-testid="mapping-builder-entry-input"
           >
-            {keyHolder === null && !isAlternative && (
+            {keyHolder === null && nested === undefined && (
               <ToggleGroupItem value="None" data-testid="mapping-builder-entry-input-none">{CHOICE_LABELS.None}</ToggleGroupItem>
             )}
             {allowed.map((input) => (
@@ -827,39 +511,56 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
           )}
         </Section>
 
-        {choice === "Coalesce" && (
+        {(choice === "Coalesce" || choice === "List") && (
           <Section
-            title="Alternatives"
-            hint="Tried in order, and the first that gives a value is written: one that gives nothing (an empty column, no cached record, an id the partition holds no record under) passes to the next, and one that meets a mistake, such as a date that is not a date, holds the record. A static value can only be the last, the value when none of the others gives one."
+            title={choice === "Coalesce" ? "Alternatives" : "Values"}
+            hint={choice === "Coalesce"
+              ? "Tried in order, and the first that gives a value is written: one that gives nothing (an empty column, no cached record, an id the partition holds no record under) passes to the next, and one that meets a mistake, such as a date that is not a date, holds the record. A static value can only be the last, the value when none of the others gives one."
+              : `Every value the items give, in the order they are written, a value given twice (whatever its case) written once. An item that gives nothing adds nothing, and one that holds holds the record, as it would on its own; an item reading every matching row with a find all adds each of them.${access ? " Every record carries the fixed values without a condition, so list at least one." : ""}`}
             action={(
-              <Button variant="outline" size="xs" onClick={() => openAlternative(alternatives.length, null)} data-testid="mapping-builder-entry-alternative-add">
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => openPart(choice === "Coalesce" ? "alternatives" : "items", parts.length, null)}
+                data-testid={`mapping-builder-entry-${partName}-add`}
+              >
                 <Plus />
-                Add an alternative
+                {choice === "Coalesce" ? "Add an alternative" : "Add a value"}
               </Button>
             )}
-            testId="mapping-builder-entry-alternatives"
+            testId={choice === "Coalesce" ? "mapping-builder-entry-alternatives" : "mapping-builder-entry-items"}
           >
-            {alternatives.length < 2 && (
+            {choice === "Coalesce" && alternatives.length < 2 && (
               <p className="text-xs text-destructive">Add at least two alternatives; one alternative is an input of its own.</p>
             )}
-            {alternatives.map((alternative, index) => (
+            {choice === "List" && items.length === 0 && <p className="text-xs text-destructive">Add at least one value.</p>}
+            {choice === "List" && access && items.length > 0 && !items.some((item) => item.input === "Static" && item.when === null) && (
+              <p className="text-xs text-destructive" data-testid="mapping-builder-entry-items-fixed">
+                Every record carries {newTarget}, so list at least one fixed value without a condition.
+              </p>
+            )}
+            {parts.map((part, index) => (
               <div
                 key={index}
                 className="flex items-center gap-1 rounded-md border border-border p-2"
-                data-testid={`mapping-builder-entry-alternative-${index}`}
+                data-testid={`mapping-builder-entry-${partName}-${index}`}
               >
                 <span className="w-5 shrink-0 text-xs text-muted-foreground">{index + 1}</span>
-                <span className="min-w-0 flex-1 break-all font-mono text-[12px]">{alternativeText(alternative)}</span>
-                <IconAction label="Edit this alternative" onClick={() => openAlternative(index, alternative)} testId={`mapping-builder-entry-alternative-edit-${index}`}>
+                <span className="min-w-0 flex-1 break-all font-mono text-[12px]">{alternativeText(part)}</span>
+                <IconAction
+                  label={`Edit this ${partName}`}
+                  onClick={() => openPart(choice === "Coalesce" ? "alternatives" : "items", index, part)}
+                  testId={`mapping-builder-entry-${partName}-edit-${index}`}
+                >
                   <Pencil />
                 </IconAction>
-                <IconAction label="Move up" onClick={() => setAlternatives((current) => move(current, index, -1))} disabled={index === 0} testId={`mapping-builder-entry-alternative-up-${index}`}>
+                <IconAction label="Move up" onClick={() => setParts((current) => moveItem(current, index, -1))} disabled={index === 0} testId={`mapping-builder-entry-${partName}-up-${index}`}>
                   <ArrowUp />
                 </IconAction>
-                <IconAction label="Move down" onClick={() => setAlternatives((current) => move(current, index, 1))} disabled={index === alternatives.length - 1} testId={`mapping-builder-entry-alternative-down-${index}`}>
+                <IconAction label="Move down" onClick={() => setParts((current) => moveItem(current, index, 1))} disabled={index === parts.length - 1} testId={`mapping-builder-entry-${partName}-down-${index}`}>
                   <ArrowDown />
                 </IconAction>
-                <IconAction label="Remove this alternative" onClick={() => setAlternatives((current) => current.filter((_, i) => i !== index))} testId={`mapping-builder-entry-alternative-remove-${index}`}>
+                <IconAction label={`Remove this ${partName}`} onClick={() => setParts((current) => current.filter((_, i) => i !== index))} testId={`mapping-builder-entry-${partName}-remove-${index}`}>
                   <X />
                 </IconAction>
               </div>
@@ -931,12 +632,40 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
           </Section>
         )}
 
+        {choice === "Lookup" && (
+          <Section
+            title="Lookup record"
+            hint="The record the lookup finds for the row, read by one of its fields; id reads its OSDU id in the form relationships use. How the record is found belongs to the lookup, under Lookups on the page, so every entry reading it reads the same record."
+            testId="mapping-builder-entry-lookup"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <ChoiceOrText
+                value={lookupName}
+                options={lookupOptions}
+                onChange={setLookupName}
+                placeholder="Lookup"
+                testId="mapping-builder-entry-lookup-name"
+              />
+              <span className="font-mono text-[12px] text-muted-foreground">.</span>
+              <ChoiceOrText
+                value={lookupField}
+                options={lookupFields(lookupName)}
+                onChange={setLookupField}
+                placeholder="id"
+                testId="mapping-builder-entry-lookup-field"
+              />
+            </div>
+          </Section>
+        )}
+
         {choice === "Cache" && (
           <Section
             title="Cached record"
             hint={repoTypes.length === 0
               ? "The repository's cache holds no types, so the check cannot confirm the type or its fields."
-              : "The cached type to read, and the field to read from it. id reads the record's OSDU id in the form relationships use."}
+              : findsAll
+                ? "The cached type whose rows are read, and the field read from each of them. The values of every row found make a list, so the variable takes a list, or this is an item of one."
+                : "The cached type to read, and the field to read from it. id reads the record's OSDU id in the form relationships use."}
           >
             <div className="flex flex-wrap items-center gap-2">
               <ChoiceOrText
@@ -948,13 +677,25 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
               />
               <span className="font-mono text-[12px] text-muted-foreground">.</span>
               <Input
-                className="h-8 w-44 font-mono"
+                className="h-8 w-56 font-mono"
                 placeholder="id"
                 value={cacheField}
                 onChange={(event) => setCacheField(event.target.value)}
                 data-testid="mapping-builder-entry-cache-field"
               />
             </div>
+            <ToggleGroup
+              type="single"
+              variant="outline"
+              size="sm"
+              value={findMode}
+              onValueChange={(next) => { if (next === "one" || next === "all") { setFindMode(next); } }}
+              className="self-start"
+              data-testid="mapping-builder-entry-find-mode"
+            >
+              <ToggleGroupItem value="one" data-testid="mapping-builder-entry-find-one">Find one record</ToggleGroupItem>
+              <ToggleGroupItem value="all" data-testid="mapping-builder-entry-find-all">Read every matching row</ToggleGroupItem>
+            </ToggleGroup>
           </Section>
         )}
 
@@ -976,81 +717,115 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
           </Section>
         )}
 
-        {lookup && (
-          <>
-            <Section
-              title="Find the record by"
-              hint={choice === "Search"
-                ? "Tried in order. Each line asks the platform for the one record whose property is exactly the value, and the first that finds one wins. Several matching records, or a value that cannot be asked for, hold the record."
-                : "Tried in order. The first line that finds a record wins, and several matching records hold the record."}
-              action={(
-                <Button
-                  variant="outline"
-                  size="xs"
-                  onClick={() => setFindBy((current) => [...current, { field: choice === "Search" ? "" : typeFields[0] ?? "id", mode: "column", value: "" }])}
-                  data-testid="mapping-builder-entry-findby-add"
-                >
-                  <Plus />
-                  Add a line
-                </Button>
-              )}
-              testId="mapping-builder-entry-findby"
-            >
-              {findBy.length === 0 && (
-                <p className="text-xs text-destructive">
-                  {choice === "Search" ? "Add at least one line, or no record can be searched for." : "Add at least one line, or no cached record can be found."}
-                </p>
-              )}
-              {findBy.map((line, index) => (
-                <div
-                  key={index}
-                  className="flex flex-wrap items-center gap-1.5 rounded-md border border-border p-2"
-                  data-testid={`mapping-builder-entry-findby-${index}`}
-                >
+        {resolves && !findsAll && (
+          <FindByLinesEditor
+            lines={findBy}
+            onChange={setFindBy}
+            title="Find the record by"
+            hint={choice === "Search"
+              ? "Tried in order. Each line asks the platform for the one record whose property is exactly the value, and the first that finds one wins. Several matching records, or a value that cannot be asked for, hold the record."
+              : "Tried in order. The first line that finds a record wins, and several matching records hold the record."}
+            fieldOptions={choice === "Search" ? searchedFields : fieldOptions}
+            fieldPlaceholder={choice === "Search" ? "data.FacilityName" : "Cached field"}
+            newField={choice === "Search" ? "" : typeFields[0] ?? "id"}
+            columnsList={columnsList}
+            columnPlaceholder={columnPlaceholder}
+            emptyText={choice === "Search" ? "Add at least one line, or no record can be searched for." : "Add at least one line, or no cached record can be found."}
+            testId="mapping-builder-entry-findby"
+          >
+            {choice === "Cache" && (
+              <Label className="flex items-center gap-2 text-[13px] font-normal">
+                <Switch checked={ignoreSeparators} onCheckedChange={setIgnoreSeparators} data-testid="mapping-builder-entry-ignore-separators" />
+                Also try with punctuation and spacing folded away (for names, never for codes)
+              </Label>
+            )}
+          </FindByLinesEditor>
+        )}
+
+        {findsAll && (
+          <Section
+            title="Rows to read"
+            hint="Every row whose field holds the value is read, ignoring case; a field holding a list is read when any of its values is the value, and a value a lookup's record holds several of keys each. A reference finds the rows naming the record with or without the separator before its version. The rows are then narrowed to those holding nothing under each field listed below."
+            testId="mapping-builder-entry-findall"
+          >
+            <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border p-2">
+              <ChoiceOrText
+                value={allField}
+                options={fieldOptions}
+                onChange={setAllField}
+                placeholder="FieldIDList"
+                testId="mapping-builder-entry-findall-field"
+              />
+              <span className="font-mono text-[12px] text-muted-foreground">=</span>
+              <Select value={allMode} onValueChange={(next) => setAllMode(next as FindAllMode)}>
+                <SelectTrigger size="sm" className="h-8 w-44" data-testid="mapping-builder-entry-findall-mode">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="column">dataset column</SelectItem>
+                  <SelectItem value="text">fixed text</SelectItem>
+                  {(lookups.length > 0 || allMode === "lookup") && <SelectItem value="lookup">lookup record field</SelectItem>}
+                </SelectContent>
+              </Select>
+              {allMode === "lookup" ? (
+                <>
                   <ChoiceOrText
-                    value={line.field}
-                    options={choice === "Search" ? searchedFields : fieldOptions}
-                    onChange={(field) => updateLine(index, { field })}
-                    placeholder={choice === "Search" ? "data.FacilityName" : "Cached field"}
-                    testId={`mapping-builder-entry-findby-field-${index}`}
+                    value={allLookup}
+                    options={lookupOptions}
+                    onChange={setAllLookup}
+                    placeholder="wellbore"
+                    testId="mapping-builder-entry-findall-lookup"
                   />
-                  <span className="font-mono text-[12px] text-muted-foreground">=</span>
-                  <Select value={line.mode} onValueChange={(next) => updateLine(index, { mode: next === "text" ? "text" : "column" })}>
-                    <SelectTrigger size="sm" className="h-8 w-36" data-testid={`mapping-builder-entry-findby-mode-${index}`}>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="column">dataset column</SelectItem>
-                      <SelectItem value="text">fixed text</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    list={line.mode === "column" ? columnsList : undefined}
-                    className="h-8 min-w-40 flex-1 font-mono text-[12px]"
-                    placeholder={line.mode === "column" ? (repeater === null ? "column" : `${repeaterChild ?? "child"}.column`) : "KellyBushing"}
-                    value={line.value}
-                    onChange={(event) => updateLine(index, { value: event.target.value })}
-                    data-testid={`mapping-builder-entry-findby-value-${index}`}
+                  <span className="font-mono text-[12px] text-muted-foreground">.</span>
+                  <ChoiceOrText
+                    value={allPath}
+                    options={lookupFields(allLookup).filter((option) => option.value !== "id")}
+                    onChange={setAllPath}
+                    placeholder="GeoContexts.FieldID"
+                    testId="mapping-builder-entry-findall-path"
                   />
-                  <IconAction label="Move up" onClick={() => setFindBy((current) => move(current, index, -1))} disabled={index === 0} testId={`mapping-builder-entry-findby-up-${index}`}>
-                    <ArrowUp />
-                  </IconAction>
-                  <IconAction label="Move down" onClick={() => setFindBy((current) => move(current, index, 1))} disabled={index === findBy.length - 1} testId={`mapping-builder-entry-findby-down-${index}`}>
-                    <ArrowDown />
-                  </IconAction>
-                  <IconAction label="Remove this line" onClick={() => setFindBy((current) => current.filter((_, i) => i !== index))} testId={`mapping-builder-entry-findby-remove-${index}`}>
-                    <X />
-                  </IconAction>
-                </div>
-              ))}
-              {choice === "Cache" && (
-                <Label className="flex items-center gap-2 text-[13px] font-normal">
-                  <Switch checked={ignoreSeparators} onCheckedChange={setIgnoreSeparators} data-testid="mapping-builder-entry-ignore-separators" />
-                  Also try with punctuation and spacing folded away (for names, never for codes)
-                </Label>
+                </>
+              ) : (
+                <Input
+                  list={allMode === "column" ? columnsList : undefined}
+                  className="h-8 min-w-40 flex-1 font-mono text-[12px]"
+                  placeholder={allMode === "column" ? columnPlaceholder : "Norway"}
+                  value={allValue}
+                  onChange={(event) => setAllValue(event.target.value)}
+                  data-testid="mapping-builder-entry-findall-value"
+                />
               )}
-            </Section>
-          </>
+            </div>
+            {allEmpty.map((field, index) => (
+              <div key={index} className="flex flex-wrap items-center gap-1.5" data-testid={`mapping-builder-entry-findall-empty-${index}`}>
+                <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">and nothing under</span>
+                <ChoiceOrText
+                  value={field}
+                  options={fieldOptions.filter((option) => option.value !== "id")}
+                  onChange={(value) => setAllEmpty((current) => current.map((old, i) => (i === index ? value : old)))}
+                  placeholder="FieldList"
+                  testId={`mapping-builder-entry-findall-empty-field-${index}`}
+                />
+                <IconAction
+                  label="Remove this field"
+                  onClick={() => setAllEmpty((current) => current.filter((_, i) => i !== index))}
+                  testId={`mapping-builder-entry-findall-empty-remove-${index}`}
+                >
+                  <X />
+                </IconAction>
+              </div>
+            ))}
+            <Button
+              variant="ghost"
+              size="xs"
+              className="self-start"
+              onClick={() => setAllEmpty((current) => [...current, ""])}
+              data-testid="mapping-builder-entry-findall-empty-add"
+            >
+              <Plus />
+              Add a field that must be empty
+            </Button>
+          </Section>
         )}
 
         {choice === "Static" && (
@@ -1063,7 +838,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
                   size="sm"
                   checked={jsonMode}
                   onCheckedChange={toggleJson}
-                  disabled={jsonMode && staticModeFor(variable, staticState.json) === "json"}
+                  disabled={jsonMode && staticModeFor(valueVariable, staticState.json) === "json"}
                   data-testid="mapping-builder-entry-static-json-mode"
                 />
                 Write as JSON
@@ -1117,7 +892,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
               <Input
                 className="h-8 w-48 font-mono"
                 inputMode="decimal"
-                placeholder={variable.type === "integer" ? "a whole number" : "a number"}
+                placeholder={valueVariable.type === "integer" ? "a whole number" : "a number"}
                 value={staticState.number}
                 onChange={(event) => { const value = event.target.value; setStaticState((current) => ({ ...current, number: value })); }}
                 data-testid="mapping-builder-entry-static"
@@ -1148,178 +923,40 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
           </Section>
         )}
 
-        {(choice === "Dataset" || choice === "Expression" || lookup) && (
-          <Section
-            title="Modifiers"
+        {modified && (
+          <ModifierListEditor
+            modifiers={modifiers}
+            onChange={setModifiers}
+            kinds={MODIFIER_KINDS.filter((kind) => !ID_MODIFIER_KINDS.includes(kind) || choice === "Dataset" || choice === "Expression")}
+            cacheTypes={repoTypes}
             hint={choice === "Cache"
-              ? "On a cache input, modifiers change the dataset value before it is compared. Cached values are never modified."
+              ? findsAll
+                ? "On a find all, modifiers change the dataset value the rows are found by. Cached values are never modified."
+                : "On a cache input, modifiers change the dataset value before it is compared. Cached values are never modified."
               : choice === "Search"
                 ? "On a search input, modifiers change the dataset value before it is searched for."
                 : "Applied to the dataset value, top to bottom."}
-            action={(
-              <Select value="" onValueChange={(kind) => setModifiers((current) => [...current, newModifier(kind as MappingDraftModifierKind)])}>
-                <SelectTrigger size="sm" className="h-7 w-40" data-testid="mapping-builder-entry-modifier-add">
-                  <SelectValue placeholder="Add a modifier" />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODIFIER_KINDS.filter((kind) => !ID_MODIFIER_KINDS.includes(kind) || choice === "Dataset" || choice === "Expression").map((kind) => <SelectItem key={kind} value={kind}>{kind}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            )}
-            testId="mapping-builder-entry-modifiers"
+            refHint={{ path: variable.path, relationships: variable.relationships }}
+            testId="mapping-builder-entry-modifier"
+            sectionTestId="mapping-builder-entry-modifiers"
           >
-            {modifiers.length === 0 && <p className="text-xs text-muted-foreground">No modifiers.</p>}
-            {modifiers.map((modifier, index) => (
-              <div key={index} className="flex flex-col gap-2 rounded-md border border-border p-2" data-testid={`mapping-builder-entry-modifier-${index}`}>
-                <div className="flex items-center gap-1">
-                  <span className="font-mono text-[12px] font-medium">{modifier.kind}</span>
-                  <div className="ml-auto flex items-center gap-0.5">
-                    <IconAction label="Move up" onClick={() => setModifiers((current) => move(current, index, -1))} disabled={index === 0} testId={`mapping-builder-entry-modifier-up-${index}`}>
-                      <ArrowUp />
-                    </IconAction>
-                    <IconAction label="Move down" onClick={() => setModifiers((current) => move(current, index, 1))} disabled={index === modifiers.length - 1} testId={`mapping-builder-entry-modifier-down-${index}`}>
-                      <ArrowDown />
-                    </IconAction>
-                    <IconAction label="Remove this modifier" onClick={() => setModifiers((current) => current.filter((_, i) => i !== index))} testId={`mapping-builder-entry-modifier-remove-${index}`}>
-                      <X />
-                    </IconAction>
-                  </div>
-                </div>
-                {modifier.kind === "split" && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span>separator</span>
-                    <Input
-                      className="h-7 w-20 font-mono text-[12px]"
-                      value={modifier.separator ?? ""}
-                      onChange={(event) => updateModifier(index, { separator: event.target.value })}
-                      data-testid={`mapping-builder-entry-modifier-separator-${index}`}
-                    />
-                    <span>keep part</span>
-                    <Input
-                      className="h-7 w-16 font-mono text-[12px]"
-                      inputMode="numeric"
-                      value={modifier.part === null ? "" : String(modifier.part)}
-                      onChange={(event) => {
-                        const part = Number.parseInt(event.target.value, 10);
-                        updateModifier(index, { part: Number.isNaN(part) ? null : part });
-                      }}
-                      data-testid={`mapping-builder-entry-modifier-part-${index}`}
-                    />
-                    <span>counting from one; a single space splits on any run of whitespace</span>
-                  </div>
-                )}
-                {modifier.kind === "replace" && (
-                  <ReplaceEditor
-                    modifier={modifier}
-                    index={index}
-                    cacheTypes={repoTypes}
-                    onChange={(patch) => updateModifier(index, patch)}
-                  />
-                )}
-                {modifier.kind === "equals" && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span>true when the value is</span>
-                    <Input
-                      className="h-7 w-48 font-mono text-[12px]"
-                      value={modifier.text ?? ""}
-                      onChange={(event) => updateModifier(index, { text: event.target.value })}
-                      data-testid={`mapping-builder-entry-modifier-text-${index}`}
-                    />
-                    <span>(trimmed, any case), false otherwise</span>
-                  </div>
-                )}
-                {modifier.kind === "date" && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span>format</span>
-                    <Input
-                      className="h-7 w-48 font-mono text-[12px]"
-                      placeholder="dd.MM.yyyy"
-                      value={modifier.text ?? ""}
-                      onChange={(event) => updateModifier(index, { text: event.target.value })}
-                      data-testid={`mapping-builder-entry-modifier-format-${index}`}
-                    />
-                    <span>empty reads ISO 8601</span>
-                  </div>
-                )}
-                {modifier.kind === "id" && (
-                  <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                    <Input
-                      className="h-7 w-full font-mono text-[12px]"
-                      placeholder={ID_TEMPLATE_EXAMPLE}
-                      spellCheck={false}
-                      value={modifier.text ?? ""}
-                      onChange={(event) => updateModifier(index, { text: event.target.value })}
-                      data-testid={`mapping-builder-entry-modifier-id-${index}`}
-                    />
-                    <span>
-                      {"Tokens: {$value}, {<column>} (the row the entry reads, an item's row inside a repeated array), {$dataset.<column>} (the dataset's own row), {$cache.<Type>.<field>} (a lookup table row keyed by the value) and {$param.<name>}. "
-                        + "Values are percent-encoded; a token with no value gives no value. The last modifier; a reference ends with ':'."}
-                    </span>
-                  </div>
-                )}
-                {modifier.kind === "ref" && (
-                  <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-                    <Input
-                      className="h-7 w-full font-mono text-[12px]"
-                      placeholder={variable.relationships.length === 1 ? variable.relationships[0] : "UnitOfMeasure"}
-                      spellCheck={false}
-                      value={modifier.text ?? ""}
-                      onChange={(event) => updateModifier(index, { text: event.target.value === "" ? null : event.target.value })}
-                      data-testid={`mapping-builder-entry-modifier-ref-${index}`}
-                    />
-                    <span>
-                      {(variable.relationships.length > 0
-                        ? `The reference to the record whose code is the value, in the flow's partition. ${variable.path} points to ${variable.relationships.join(" or ")}; `
-                        : "The reference to the record whose code is the value, in the flow's partition. The template names no type for this property, so name one in full, such as reference-data--UnitOfMeasure; ")
-                        + "leave the type empty when the property points to one, or name the entity (UnitOfMeasure) or the type in full. The last modifier."}
-                    </span>
-                  </div>
-                )}
-                {modifier.kind === "number" && (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <span>decimals after</span>
-                    <Select value={modifier.decimalSeparator ?? "."} onValueChange={(value) => updateModifier(index, { decimalSeparator: value })}>
-                      <SelectTrigger size="sm" className="h-7 w-28" data-testid={`mapping-builder-entry-modifier-decimal-${index}`}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DECIMAL_SEPARATORS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                    <span>digit groups split by</span>
-                    <Select
-                      value={modifier.groupSeparator ?? NO_GROUP}
-                      onValueChange={(value) => updateModifier(index, { groupSeparator: value === NO_GROUP ? null : value })}
-                    >
-                      <SelectTrigger size="sm" className="h-7 w-32" data-testid={`mapping-builder-entry-modifier-group-${index}`}>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {GROUP_SEPARATORS.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                    {modifier.groupSeparator !== null && modifier.groupSeparator === (modifier.decimalSeparator ?? ".") && (
-                      <span className="text-destructive">the two separators must differ</span>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
             {(choice === "Dataset" || choice === "Expression") && buildsId && (
               <Label className="flex items-center gap-2 text-[13px] font-normal">
                 <Switch checked={unverified} onCheckedChange={setUnverified} data-testid="mapping-builder-entry-unverified" />
                 Write the id even when the cache holds no such record, recorded as unverified
               </Label>
             )}
-          </Section>
+          </ModifierListEditor>
         )}
 
-        {choice !== "None" && !isAlternative && (
+        {choice !== "None" && choice !== "List" && !isAlternative && (
           <Section
             title="When it applies"
             hint={choice === "Repeat"
               ? "A condition on the dataset row that decides for the whole array. When it is false, the array is left out. A value it cannot test, such as text where it compares a number, holds the record with the reason."
-              : "A condition such as depth_coding = \"REGULAR\", not empty(unit), or depth > 0 and status in [\"A\", \"B\"]. When it is false, the variable is left out for that row. A value it cannot test, such as text where it compares a number, holds the record with the reason."}
+              : isItem
+                ? "A condition such as not empty(wellbore_uwi). When it is false, the item adds nothing to the list for that row. A value it cannot test holds the record with the reason."
+                : "A condition such as depth_coding = \"REGULAR\", not empty(unit), or depth > 0 and status in [\"A\", \"B\"]. When it is false, the variable is left out for that row. A value it cannot test, such as text where it compares a number, holds the record with the reason."}
           >
             <Label className="flex items-center gap-2 text-[13px] font-normal">
               <Switch checked={conditionOn} onCheckedChange={setConditionOn} data-testid="mapping-builder-entry-applies" />
@@ -1337,14 +974,16 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
           </Section>
         )}
 
-        {choice !== "None" && choice !== "Static" && !isAlternative && (
+        {choice !== "None" && choice !== "Static" && choice !== "List" && !isAlternative && (
           <Section
             title="Required"
-            hint={variable.required
+            hint={variable.required && !isItem
               ? "The template requires this variable, so its entry has to stay required."
               : choice === "Coalesce"
                 ? "Off leaves the variable out when no alternative gives a value, instead of holding the record."
-                : "Off leaves the variable out when the value is empty or the cache has no match, instead of holding the record."}
+                : isItem
+                  ? "Off adds nothing to the list when the item gives no value (an empty column, no record found, no row matching), instead of holding the record."
+                  : "Off leaves the variable out when the value is empty or the cache has no match, instead of holding the record."}
           >
             <Label className="flex items-center gap-2 text-[13px] font-normal">
               <Switch checked={required} onCheckedChange={setRequired} data-testid="mapping-builder-entry-required" />
@@ -1353,7 +992,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
           </Section>
         )}
 
-        {choice !== "None" && !isAlternative && (
+        {choice !== "None" && choice !== "List" && !isAlternative && (
           <Section title="Description">
             <Input
               className="h-8"
@@ -1371,12 +1010,15 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
         )}
         <Button variant="ghost" size="sm" onClick={onClose} data-testid="mapping-builder-entry-cancel">Cancel</Button>
         <Button size="sm" onClick={save} disabled={error !== null} data-testid="mapping-builder-entry-save">
-          {isAlternative ? "Save alternative" : choice === "None" && entry !== null ? "Remove entry" : "Save entry"}
+          {isAlternative ? "Save alternative" : isItem ? "Save value" : choice === "None" && entry !== null ? "Remove entry" : "Save entry"}
         </Button>
       </SheetFooter>
-      {/* One alternative of the coalesce, edited as an input of its own over the entry's form. */}
+      {/* One alternative of the coalesce, or one item of the list, edited as an input of its own over the entry's form. */}
       <Sheet open={editing !== null} onOpenChange={(open) => { if (!open) { setEditing(null); } }}>
-        <SheetContent className="w-full gap-0 sm:max-w-2xl" data-testid="mapping-builder-alternative-editor">
+        <SheetContent
+          className="w-full gap-0 sm:max-w-2xl"
+          data-testid={editing?.list === "items" ? "mapping-builder-item-editor" : "mapping-builder-alternative-editor"}
+        >
           {editing !== null && (
             <EntryForm
               key={editing.session}
@@ -1384,11 +1026,18 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, alterna
               draft={draft}
               cacheTypes={cacheTypes}
               issues={[]}
-              alternativeLabel={`alternative ${editing.index + 1}`}
+              nested={editing.list === "items"
+                ? { kind: "item", label: `item ${editing.index + 1}` }
+                : { kind: "alternative", label: `alternative ${editing.index + 1}` }}
               onSave={(_, value) => {
                 if (value !== null) {
                   const at = editing.index;
-                  setAlternatives((current) => (at < current.length ? current.map((old, i) => (i === at ? value : old)) : [...current, value]));
+                  const put = (current: MappingDraftEntry[]) => (at < current.length ? current.map((old, i) => (i === at ? value : old)) : [...current, value]);
+                  if (editing.list === "items") {
+                    setItems(put);
+                  } else {
+                    setAlternatives(put);
+                  }
                 }
 
                 setEditing(null);
@@ -1416,9 +1065,10 @@ interface MappingEntryEditorProps {
 }
 
 /**
- * The entry editor: where one variable's value comes from (a dataset column, a child dataset's rows, a cached record or a
- * static value), with its modifiers, condition, requiredness and description. It edits a copy, and Save puts the entry
- * into the draft, so Cancel leaves the draft as it was.
+ * The entry editor: where one variable's value comes from (a dataset column, a child dataset's rows, a cached record, a
+ * lookup's record, a search, a static value, the first of several alternatives or a list of values), with its modifiers,
+ * condition, requiredness and description. It edits a copy, and Save puts the entry into the draft, so Cancel leaves the
+ * draft as it was.
  */
 export function MappingEntryEditor({ target, draft, cacheTypes, issues, onSave, onClose }: MappingEntryEditorProps) {
   // The sheet slides out showing what it showed, so the last target stays rendered while it closes.

@@ -1635,10 +1635,11 @@ export interface DeliveryBuilderCache {
 
 /**
  * Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, a fixed value, the
- * id of a record found by searching the platform, a value an expression computes from the row, or the first of several
- * alternatives that gives a value ($coalesce).
+ * id of a record found by searching the platform, a value an expression computes from the row, the first of several
+ * alternatives that gives a value ($coalesce), a field of the record one of the mapping's lookups finds ($lookup), or a
+ * list of values whose items are fixed values and value nodes.
  */
-export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search" | "Expression" | "Coalesce";
+export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search" | "Expression" | "Coalesce" | "Lookup" | "List";
 
 export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number" | "id" | "ref";
 
@@ -1703,9 +1704,13 @@ export interface MappingDraftEntry {
   child: string | null;
   /** Cache: the cached type, such as UnitOfMeasure. Search: the search, by the name the mapping declares it under. */
   cacheType: string | null;
-  /** Cache: the field to read, usually id. Search: always id, the one thing a search returns. */
+  /** Cache and Lookup: the field of the record to read, usually id. Search: always id, the one thing a search returns. */
   cacheField: string | null;
+  /** Lookup: the lookup read, by the name the mapping declares it under. */
+  lookup: string | null;
   findBy: MappingDraftFind[];
+  /** Cache: every matching row read ($findAll) in place of findBy lines; null for an entry that finds one record. */
+  findAll: MappingDraftFindAll | null;
   modifiers: MappingDraftModifier[];
   /** Expression: the expression the value is computed with, as the record tree writes it in the entry's scope. */
   expression: string | null;
@@ -1725,11 +1730,43 @@ export interface MappingDraftEntry {
    * required flag and description are this entry's.
    */
   alternatives: MappingDraftEntry[];
+  /**
+   * List: the items in the order they are written, each an entry of its own input with its own condition, required flag
+   * and description; a fixed item holds one value. Their target is this entry's, which itself takes no condition.
+   */
+  items: MappingDraftEntry[];
   /** Static: the value as JSON text, such as "[\"a\"]", "\"MD\"", "5" or "true". */
   static: string | null;
   description: string | null;
   /** True when the builder proposed the entry from the cache, until someone edits it. */
   prefilled: boolean;
+}
+
+/**
+ * A cache entry's $findAll: the cached field the rows are found by, compared with exactly one of a dataset column, a fixed
+ * text, or a field of a lookup's record written with the lookup's name (`wellbore.GeoContexts.FieldID`); and the fields a
+ * row must hold nothing under.
+ */
+export interface MappingDraftFindAll {
+  field: string;
+  column: string | null;
+  literal: string | null;
+  lookup: string | null;
+  empty: string[];
+}
+
+/**
+ * A record the mapping finds once for a row and reads wherever the record needs it (lookups.<name>): the cached type it is
+ * found in, the findBy lines comparing columns of the dataset's own row, and the modifiers and separator fold a cache
+ * entry takes.
+ */
+export interface MappingDraftLookup {
+  name: string;
+  cacheType: string;
+  findBy: MappingDraftFind[];
+  modifiers: MappingDraftModifier[];
+  ignoreSeparators: boolean;
+  description: string | null;
 }
 
 /** What a fixture assumes the platform answers when a search compares `field` with `value`: the record found, or none. */
@@ -1749,6 +1786,8 @@ export interface MappingDraftFixture {
   expected: string;
   /** What the fixture assumes the platform answers to each search its render asks; null when it searches nothing. */
   searches: MappingDraftFixtureSearch[] | null;
+  /** The cached rows the fixture renders against, by cached type, each with its record id; null when it declares none. */
+  cache: Record<string, Record<string, unknown>[]> | null;
 }
 
 /**
@@ -1780,6 +1819,8 @@ export interface MappingDraft {
   parameters: MappingDraftParameter[];
   /** The record sets the mapping's search entries look in. */
   searches: MappingDraftSearch[];
+  /** The records the mapping finds once for a row, which lookup entries and find all lines read. */
+  lookups: MappingDraftLookup[];
   entries: MappingDraftEntry[];
   /** The parameter values every fixture renders with unless it gives its own (fixtureDefaults.parameters). */
   fixtureParameters: Record<string, string>;

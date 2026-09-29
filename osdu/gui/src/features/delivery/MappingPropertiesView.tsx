@@ -46,7 +46,7 @@ const columns: Column<PropertyRow>[] = [
         <span className="flex min-w-0 items-center gap-1.5" data-testid={`delivery-mapping-property-${row.target}`}>
           <FormulaLine text={row.detail} title="Mapping">
             <span className="text-muted-foreground">{row.source}</span>
-            {row.lookup !== "" && <span className="text-muted-foreground">{` by ${row.lookup}`}</span>}
+            {row.lookupPhrase !== "" && <span className="text-muted-foreground">{` ${row.lookupPhrase}`}</span>}
             {row.modifierKinds !== "" && <span className="text-muted-foreground">{` | ${row.modifierKinds}`}</span>}
             <span className="px-2 text-muted-foreground">&rarr;</span>
             <span className="text-muted-foreground">{parent}</span>

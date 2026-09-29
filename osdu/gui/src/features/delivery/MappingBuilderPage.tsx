@@ -14,7 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import {
   deliveryApi, type DeliveryBuilderFlow, type DeliveryMappingComposeResult, type DeliveryTemplateVariable, type MappingDraft,
-  type MappingDraftEntry, type MappingDraftIssue,
+  type MappingDraftEntry, type MappingDraftIssue, type MappingDraftLookup,
 } from "../../api/delivery";
 import { useAuth } from "@/auth/AuthContext";
 import { CodeView } from "@/components/CodeView";
@@ -26,10 +26,11 @@ import { PageHeader } from "@/components/PageHeader";
 import { RichTooltip } from "@/components/RichTooltip";
 import { OutcomePill } from "@/components/StatusBadge";
 import { useActivePartition } from "./activePartition";
+import { MappingBuilderLookups, type LookupEditing } from "./MappingBuilderLookups";
 import { MappingBuilderVariables } from "./MappingBuilderVariables";
 import { MappingEntryEditor, type EntryEditorTarget } from "./MappingEntryEditor";
 import { MappingProposeSheet } from "./MappingProposeSheet";
-import { COLUMN_NAME, emptyEntry, putEntry } from "./mappingDraft";
+import { bareColumn, COLUMN_NAME, emptyEntry, LOOKUP_TARGET_PREFIX, putEntry, renameLookup } from "./mappingDraft";
 import { entityName, parseTemplateKey, templateKey } from "./templateFormat";
 import { problemText } from "./problemText";
 import { ProblemView } from "./TemplateSheet";
@@ -43,10 +44,6 @@ interface ComposeRequest {
   scope: string | null;
   draft: MappingDraft;
   parameters: Record<string, string>;
-}
-
-function bareColumn(text: string): string {
-  return text.trim().replace(/^dataset\./, "");
 }
 
 /**
@@ -108,6 +105,7 @@ export default function MappingBuilderPage() {
   const [checkEdits, setCheckEdits] = useState<Record<string, string>>({});
   const [keyInput, setKeyInput] = useState("");
   const [editing, setEditing] = useState<EntryEditorTarget | null>(null);
+  const [lookupEditing, setLookupEditing] = useState<LookupEditing | null>(null);
   const [session, setSession] = useState(0);
   const [proposeOpen, setProposeOpen] = useState(false);
   const [startOverOpen, setStartOverOpen] = useState(false);
@@ -147,6 +145,7 @@ export default function MappingBuilderPage() {
     setDescription(openedDraft.description ?? "");
     setCheckEdits({});
     setEditing(null);
+    setLookupEditing(null);
   }
 
   const repo = (repos.data ?? []).find((candidate) => candidate.repoId === repoId) ?? null;
@@ -296,7 +295,38 @@ export default function MappingBuilderPage() {
     openEditor({ variable, entry, keyHolder: null, outside: null });
   };
 
+  const openLookup = (lookup: MappingDraftLookup | null) => {
+    const next = session + 1;
+    setSession(next);
+    setLookupEditing({ lookup, session: next });
+  };
+
+  // A renamed lookup keeps its readers: every entry reading the old name reads the new one.
+  const saveLookup = (previous: string | null, lookup: MappingDraftLookup) => {
+    setDraft((current) => (current === null ? current : {
+      ...current,
+      lookups: previous === null ? [...current.lookups, lookup] : current.lookups.map((candidate) => (candidate.name === previous ? lookup : candidate)),
+      entries: previous !== null && previous !== lookup.name ? renameLookup(current.entries, previous, lookup.name) : current.entries,
+    }));
+    setLookupEditing(null);
+  };
+
+  const removeLookup = (name: string) => {
+    setDraft((current) => (current === null ? current : { ...current, lookups: current.lookups.filter((candidate) => candidate.name !== name) }));
+  };
+
+  /** The lookup an issue is about, when it is about one the draft declares. */
+  const lookupOf = (issue: MappingDraftIssue) => (issue.target !== null && issue.target.startsWith(LOOKUP_TARGET_PREFIX)
+    ? draft?.lookups.find((candidate) => candidate.name === issue.target!.slice(LOOKUP_TARGET_PREFIX.length))
+    : undefined);
+
   const openIssue = (issue: MappingDraftIssue) => {
+    const lookup = lookupOf(issue);
+    if (lookup !== undefined) {
+      openLookup(lookup);
+      return;
+    }
+
     const row = issue.target === null ? undefined : rows.find((candidate) => candidate.key === issue.target);
     if (row !== undefined) {
       openEditor({ variable: row.variable, entry: row.entry, keyHolder: null, outside: row.outside });
@@ -322,6 +352,7 @@ export default function MappingBuilderPage() {
   const startOver = () => {
     setDraft(null);
     setEditing(null);
+    setLookupEditing(null);
     setCheckEdits({});
     setStartOverOpen(false);
     if (mappingId !== null) {
@@ -625,6 +656,19 @@ export default function MappingBuilderPage() {
             </Card>
           )}
 
+          {draft !== null && (
+            <MappingBuilderLookups
+              draft={draft}
+              cacheTypes={cache?.types ?? []}
+              issues={issues}
+              editing={lookupEditing}
+              onOpen={openLookup}
+              onClose={() => setLookupEditing(null)}
+              onSave={saveLookup}
+              onRemove={removeLookup}
+            />
+          )}
+
           {draft !== null && draft.parameters.length > 0 && (
             <Card className="gap-3 rounded-lg p-4" data-testid="mapping-builder-check-values">
               <div className="flex flex-col gap-0.5">
@@ -709,7 +753,7 @@ export default function MappingBuilderPage() {
                 )}
                 <ul className="flex max-h-80 flex-col gap-0.5 overflow-y-auto" data-testid="mapping-builder-issues">
                   {issues.map((issue, index) => {
-                    const openable = issue.target !== null && rows.some((row) => row.key === issue.target);
+                    const openable = issue.target !== null && (rows.some((row) => row.key === issue.target) || lookupOf(issue) !== undefined);
                     const icon = issue.severity === "error"
                       ? <OctagonAlert className="mt-0.5 size-3.5 shrink-0 text-destructive" />
                       : <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" />;

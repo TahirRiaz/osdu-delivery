@@ -13,6 +13,8 @@ const SOURCE_LABEL: Record<MappingDraftInput, string> = {
   Search: "Record found by searching the platform",
   Expression: "Computed by the expression",
   Coalesce: "The first of these that gives a value",
+  Lookup: "Field of the record a lookup finds",
+  List: "Every value these give, in order, each once",
 };
 
 /** One end of the pipeline: where the value comes from, or the property it lands on. */
@@ -80,12 +82,17 @@ export function EntryDetail({ row, target = true }: { row: PropertyRow; target?:
 
       <Node
         label={SOURCE_LABEL[row.input]}
-        value={row.input === "Coalesce" ? `${row.alternatives.length} alternatives, tried in order` : row.sourceValue}
+        value={row.input === "Coalesce"
+          ? `${row.alternatives.length} alternatives, tried in order`
+          : row.input === "List" ? `${row.items.length} item${row.items.length === 1 ? "" : "s"}` : row.sourceValue}
         testId="delivery-mapping-property-detail-source"
       >
-        {row.input === "Coalesce" && (
-          <ol className="mt-2 flex flex-col gap-0.5 border-t pt-2" data-testid="delivery-mapping-property-detail-alternatives">
-            {row.alternatives.map((text, index) => (
+        {(row.input === "Coalesce" || row.input === "List") && (
+          <ol
+            className="mt-2 flex flex-col gap-0.5 border-t pt-2"
+            data-testid={row.input === "List" ? "delivery-mapping-property-detail-items" : "delivery-mapping-property-detail-alternatives"}
+          >
+            {(row.input === "List" ? row.items : row.alternatives).map((text, index) => (
               <li key={`${index}-${text}`} className="font-mono text-[12px] break-all">
                 <span className="mr-1.5 text-muted-foreground">{index + 1}</span>
                 {text}
@@ -98,7 +105,9 @@ export function EntryDetail({ row, target = true }: { row: PropertyRow; target?:
             <p className="text-[11px] text-muted-foreground">
               {row.input === "Search"
                 ? "found by searching, in order, until exactly one record on the platform matches"
-                : "found by, in order, until a cached record matches"}
+                : row.findsAll
+                  ? "read from every cached row that holds the key, and nothing under the fields to be empty"
+                  : "found by, in order, until a cached record matches"}
             </p>
             <ul className="mt-1 flex flex-col gap-0.5">
               {row.lookupDetail.map((line, index) => (
