@@ -41,6 +41,7 @@ public sealed class AssertionRunTests : IDisposable
               - { field: data.WellID, resolves: master-data--Well }
               - { aggregate: max, field: data.SequenceNumber, atMost: 4 }
               - { groupBy: kind, groups: { "{{Wellbore}}": 4 }, mode: exact }
+              - { groupBy: data.FacilityName, groups: { "15/9-F-12": 2 }, groupCount: 3 }
               - { indexed: true }
               - { legal: valid }
               - { conforms: true, severity: warning }
@@ -214,6 +215,8 @@ public sealed class AssertionRunTests : IDisposable
         Assert.Equal(TestOutcomes.Passed, Of(wellbores, "aggregate").Outcome);
         Assert.Equal(4, Of(wellbores, "aggregate").Value);
         Assert.Equal(TestOutcomes.Passed, Of(wellbores, "groupBy").Outcome);
+        Assert.Equal(TestOutcomes.Passed, Of(wellbores, "groupBy", 1).Outcome);
+        Assert.Contains(_platform.Calls, c => c.Body?.Contains("\"aggregateBy\":\"data.FacilityName.keyword\"", StringComparison.Ordinal) == true);
 
         var indexed = Of(wellbores, "indexed");
         Assert.Equal(TestOutcomes.Failed, indexed.Outcome);

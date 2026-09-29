@@ -91,7 +91,9 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
             var json = string.IsNullOrEmpty(body) ? null : JsonNode.Parse(body) as JsonObject;
             if (request.Method == HttpMethod.Post && path.EndsWith("/api/search/v2/query", StringComparison.Ordinal))
             {
-                return Ok(Query(json!));
+                return AggregatesText(json!)
+                    ? FakeHttpHandler.Json(HttpStatusCode.BadRequest, """{"code":400,"reason":"Bad Request","message":"Aggregations are not supported for one or more of the specified fields"}""")
+                    : Ok(Query(json!));
             }
 
             if (request.Method == HttpMethod.Post && path.EndsWith("/api/search/v2/query_with_cursor", StringComparison.Ordinal))
@@ -129,6 +131,15 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
         }
     }
 
+    private const string KeywordSuffix = ".keyword";
+
+    /// <summary>True when the query aggregates a string of data by itself: the index keeps no field data for text, only for its keyword sub-field.</summary>
+    private bool AggregatesText(JsonObject body)
+        => body["aggregateBy"]?.GetValue<string>() is { } field
+            && field.StartsWith("data.", StringComparison.Ordinal)
+            && !field.EndsWith(KeywordSuffix, StringComparison.Ordinal)
+            && Records.Any(r => JsonPathReader.SelectNodes(r, field).Any(v => v is JsonValue text && text.TryGetValue<string>(out _)));
+
     private JsonObject Query(JsonObject body)
     {
         var matched = Matching(body).ToList();
@@ -139,8 +150,9 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
             ["results"] = new JsonArray(matched.Take(limit).Select(r => (JsonNode?)Project(r, fields)).ToArray()),
             ["totalCount"] = matched.Count,
         };
-        if (body["aggregateBy"]?.GetValue<string>() is { } field)
+        if (body["aggregateBy"]?.GetValue<string>() is { } aggregateBy)
         {
+            var field = aggregateBy.EndsWith(KeywordSuffix, StringComparison.Ordinal) ? aggregateBy[..^KeywordSuffix.Length] : aggregateBy;
             var groups = matched.SelectMany(r => JsonPathReader.SelectNodes(r, field).Select(v => v is JsonValue text && text.TryGetValue<string>(out var s) ? s : v.ToJsonString()))
                 .GroupBy(k => k, StringComparer.Ordinal)
                 .Select(g => (JsonNode?)new JsonObject { ["key"] = g.Key, ["count"] = g.Count() })

@@ -7,6 +7,8 @@ using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Rendering;
+using SqlFlow.Delivery.Search;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Delivery.Validation;
 
@@ -746,7 +748,7 @@ internal sealed class GroupEvaluator(int index, GroupAssertion assertion, int ex
 
     public override async Task<AssertionOutcome> CompleteAsync(TestScope scope, TestSubject subject, CancellationToken ct)
     {
-        var field = SearchField(assertion.Field);
+        var field = AggregationField(SearchField(assertion.Field), scope.Template);
         var (_, buckets) = await scope.Search.AggregateAsync(scope.Query with { ReturnedFields = ["id"] }, field, ct).ConfigureAwait(false);
         var found = buckets.GroupBy(b => b.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Sum(b => b.Count), StringComparer.Ordinal);
         var failures = new List<AssertionExample>();
@@ -789,6 +791,22 @@ internal sealed class GroupEvaluator(int index, GroupAssertion assertion, int ex
 
     /// <summary>A record path as the search names a field: arrays are not stepped into by name there.</summary>
     internal static string SearchField(string path) => System.Text.RegularExpressions.Regex.Replace(path, @"\[(\*|\d+)\]", string.Empty);
+
+    /// <summary>
+    /// The field the search aggregates: a property of data the schema has indexed as text is aggregated by its keyword
+    /// sub-field, since the search refuses to aggregate text ("Aggregations are not supported for one or more of the
+    /// specified fields"). Every other field, the record's own properties among them, is aggregated as it is named.
+    /// </summary>
+    internal static string AggregationField(string path, OsduTemplate? template)
+    {
+        if (template is null || !path.StartsWith("data.", StringComparison.Ordinal))
+        {
+            return path;
+        }
+
+        var (field, _) = SearchFields.Classify(template.Schema, path);
+        return field is { Index: OsduFieldIndex.Text, NestedPath: null } ? path + "." + OsduQuery.KeywordSubField : path;
+    }
 }
 
 /// <summary>
