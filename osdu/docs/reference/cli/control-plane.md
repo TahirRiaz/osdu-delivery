@@ -52,8 +52,8 @@ sqlflow runs cancel <runId>
 
 A delivery run's header carries the submission it produced and its record counts (planned, delivered, held,
 failed, unchanged), so `runs show` answers "what did that run actually do to the data" without opening the GUI.
-`--kind` filters by flow kind, and the kinds an OSDU Delivery estate has are `delivery`, `retrieval`, `cache`, and
-the `pre` and `ing` flows feeding them.
+`--kind` filters by flow kind, and the kinds an OSDU Delivery estate has are `delivery`, `retrieval`, `cache`,
+`assertion`, and the `pre` and `ing` flows feeding them.
 
 ## The estate
 

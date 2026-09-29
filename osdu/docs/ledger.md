@@ -190,6 +190,31 @@ is complete as soon as the try ends.
 | `Records`, `Files`, `Bytes` | What was written (bytes uncompressed). |
 | `StartedUtc`, `CompletedUtc`, `Error` | Timeline and the redacted error. |
 
+### `osdu.AssertionRun` and `osdu.AssertionResult`: the reports of assertion flows
+
+An assertion flow's run keeps its report here ([docs/assertions-design.md](../../docs/assertions-design.md) section 7):
+one `AssertionRun` row per run of its tests in a partition, and one `AssertionResult` row per test it ran.
+
+| Column | Purpose |
+| --- | --- |
+| `AssertionRun.AssertionRunId` | The report's number, unique across partitions: what the report page and a download name. |
+| `FlowId`, `FlowName`, `RunId`, `Actor` | The flow's ledger identity in the partition, its name, the platform run, who asked. |
+| `Selection` | The tests and tags the run was asked for, as JSON; null when it ran every test. |
+| `Status` | `running`, `passed`, `failed`, `errored`, `cancelled`. |
+| `Tests`, `Passed`, `Failed`, `Warned`, `Errored`, `Skipped` | How the run's tests came out, written when it closes. |
+| `DefinitionsHash` | The hash of the definitions of the tests it ran. |
+| `StartedUtc`, `CompletedUtc`, `Error` | Timeline, and the redacted reason a run failed or stopped. |
+| `AssertionResult.ResultId`, `AssertionRunId`, `FlowId`, `TestName`, `Kind` | One test's result in one run. |
+| `Outcome`, `Severity` | `passed`, `failed`, `warned`, `errored` or `skipped`, and the heaviest severity that failed. |
+| `Matched`, `Evaluated`, `Sampled` | What the test's selection matched, the records it held its assertions to, and whether those were a sample. |
+| `Assertions`, `FailedAssertions` | How many assertions it held, and how many failed or errored. |
+| `DefinitionHash` | The test's definition when it ran: a board shows a result whose hash differs from the test's current one as changed. |
+| `DurationMs`, `Error`, `StartedUtc`, `CompletedUtc` | How long it took, and the redacted reason it could not be evaluated. |
+| `Detail` | The whole result as JSON (every assertion, what it expected and found, and the records that failed it), at most 1,000,000 characters: a larger one keeps fewer examples, marked as cut back. |
+
+A result is written the moment its test is evaluated, so a report shows a long run's progress and keeps what a stopped run
+found. The run registers its ledger in the partition first, with the directory's kind `assertion`, like any ledger.
+
 ### `osdu.Activity`: the audit trail of runs and interventions
 
 One row per operator or scheduler action: `deliver`, `intake`, `drain`, `submit`, `verify`,
@@ -431,7 +456,8 @@ delivers some rows to `dev` and others to `test` from the same instance, and a f
 Every element of the ledger is therefore one partition's, and the partition is part of every ledger table's key.
 
 - **Every ledger table leads with the partition.** `osdu.Record`, `RecordIdentity`, `Attempt`, `Submission`,
-  `WorkBatch`, `Lease`, `RecordEvent`, `SourceWatermark`, `Activity` and `Retrieval` each carry `PartitionId`, and each
+  `WorkBatch`, `Lease`, `RecordEvent`, `SourceWatermark`, `Activity`, `Retrieval`, `AssertionRun` and `AssertionResult`
+  each carry `PartitionId`, and each
   primary key starts with it, so one partition's rows are one range of every clustered index and of every index that
   serves a listing. A partition's rows never interleave with another's, a partition's reads never touch another's pages,
   and a partition can later be moved to a filegroup or a table partition of its own without a key change.
@@ -603,6 +629,8 @@ do not are seeks on an id that is unique across partitions, where the partition 
 | `Attempt (PartitionId, AttemptId)` primary key, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, PartitionId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order across every partition |
 | `Activity (PartitionId, ActivityId)` primary key, unique `(ActivityId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(PartitionId, Kind, StartedUtc)`, `(PartitionId, Actor, StartedUtc)`, `(PartitionId, StartedUtc)`, `(SubmissionId)`, `(RunId)` | an activity by id, the audit views and their filters in a partition, one record's interventions, a submission's and a run's |
 | `Retrieval (PartitionId, RetrievalId)` primary key, unique `(RetrievalId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval by id, a retrieval flow's runs, the watermark chain (the last done run), the run's row |
+| `AssertionRun (PartitionId, AssertionRunId)` primary key, unique `(AssertionRunId)`, `(PartitionId, FlowId, StartedUtc)`, `(RunId)` | a report by number, an assertion flow's runs newest first, the platform run's report |
+| `AssertionResult (PartitionId, ResultId)` primary key, unique `(ResultId)`, `(PartitionId, AssertionRunId)`, `(PartitionId, FlowId, TestName, AssertionRunId)` | a run's results, and each test's latest result and history, one seek per flow, for the boards, the matrix and a test's trend |
 | `SourceWatermark (PartitionId, FlowId, Scope)` primary key | a flow's watermark per scope |
 | `Ledger (PartitionId, FlowId)` primary key, unique `(FlowId)`, `LedgerPartition (Name)` unique | a ledger's partition, a partition's ledgers, a partition's number |
 | `UpdateTag (Scope, Status)` | a partition's cache changes waiting for a decision, counted for the switcher and the Partitions page |
@@ -655,10 +683,12 @@ It deletes 4,000 attempts per statement, oldest first, each statement its own sh
 history never holds a long lock on the table every drain appends to, and never enough row locks for SQL Server to lock
 the whole table instead; an attempt goes only when a later attempt of the same record exists, which is one seek of the
 record's timeline.
-The same pass clears the captured run log of settled activities past the cut-off, and answers both counts
-(`attemptsPruned`, `activityLogsCleared`): a run log is up to 200,000 characters written once per run, which grows
-without bound, while the audit row itself, its flow, kind, actor, times, parameters, outcome and summary, is never
-deleted. Partition either table by time in the model if volume demands it (see
+The same pass clears the captured run log of settled activities past the cut-off, and removes whole the assertion runs
+past it whose every result a later result of the same test superseded, and answers the three counts
+(`attemptsPruned`, `activityLogsCleared`, `assertionRunsPruned`): a run log is up to 200,000 characters written once per
+run, which grows without bound, while the audit row itself, its flow, kind, actor, times, parameters, outcome and summary,
+is never deleted. An assertion run goes with all its results in one transaction, so a report kept is whole, and a run
+holding a test's latest result stays however old. Partition either table by time in the model if volume demands it (see
 [decisions/0005-ledger-retention.md](decisions/0005-ledger-retention.md)).
 
 The identity index is not pruned, and does not grow with activity: it grows with the number of records and their

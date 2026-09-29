@@ -1,4 +1,4 @@
-# sqlflow check, preview, values, fixtures, cache, template, and the OSDU run options
+# sqlflow check, preview, values, fixtures, cache, template, assertions, and the OSDU run options
 
 ## check
 
@@ -197,6 +197,33 @@ kind is saved beside them as a new version. With `--json` the saved template is 
 or `unchanged`. A schema that describes another kind, refers to anything outside itself, or declares no `data`
 property is refused.
 
+## assertions
+
+```bash
+sqlflow assertions list <flow.yaml> [--partition <name>] [--max <n>] [--db <ref>] [--json]
+sqlflow assertions status <flow.yaml> [--partition <name>] [--db <ref>] [--json]
+sqlflow assertions report <flow.yaml> [--partition <name>] [--run <n>] [--format json|md|html|junit] [--out <file>] [--db <ref>]
+```
+
+The reports an assertion flow's runs keep in the module database
+([docs/assertions-design.md](../../../../docs/assertions-design.md)), read where an operator already is, at a terminal or
+in a CI job, without a control plane. Every form needs the module database (`--db <ref>`). A flow that names several
+partitions reads the one `--partition` names; one that names one reads it.
+
+| Verb | What it does |
+| --- | --- |
+| `list` | The flow's runs in the partition, newest first (20 unless `--max` says otherwise, at most 1,000): the report number, status, when, the counts of each outcome, who ran it, and why a run failed. |
+| `status` | Where each test of the flow stands: its latest outcome and report number, what it matched, how many assertions did not hold and why it errored, and whether the test changed since that result. A test with no result yet says `not run`. |
+| `report` | A run's full report, the latest unless `--run` names one, as JSON (the default), Markdown, HTML or JUnit XML, rendered by the same code as the control plane's. `--out` writes it to a file, which a CI job publishes: JUnit XML for its test view, HTML as an artifact to read. A run of another flow, or of the flow in another partition, is refused. |
+
+Running the tests is a run like any other: `sqlflow run <flow.yaml>` runs every test, and the payload picks some
+(`--payload '{"tests":["log-headers"],"tags":["smoke"]}'`). A CI job runs the tests, then writes the report:
+
+```bash
+sqlflow run flows/recall-welllog-04-header-assertion.yaml --set partition=dev --db osdu
+sqlflow assertions report flows/recall-welllog-04-header-assertion.yaml --partition dev --format junit --out tests.xml --db osdu
+```
+
 ## The run options
 
 An OSDU flow is run by `sqlflow run` (on this machine) or `sqlflow trigger` (queued on the fleet). Both take the
@@ -215,8 +242,9 @@ A flow that names its partitions ([documents.md](../../documents.md#partitions))
 `values: { partition: test }` give it. The kind takes it off the flow's parameters and binds the flow to it, so the ids,
 the header, the cache, the ledger and the configuration of the run are that partition's. A delivery flow that names
 several partitions refuses a run that names none, and one that names one runs in it; a cache flow refreshes the one
-named, or every partition it names in turn. A flow that names none refuses the value, unless it declares a parameter of
-that name, which then takes it as any parameter; a retrieval flow refuses it.
+named, or every partition it names in turn; an assertion flow tests the one named, one partition per run, and refuses
+`*`. A flow that names none refuses the value, unless it declares a parameter of that name, which then takes it as any
+parameter; a retrieval flow refuses it.
 
 ### The operations
 
@@ -225,10 +253,12 @@ that name, which then takes it as any parameter; a retrieval flow refuses it.
 | `delivery` | `deliver` (read the changed records, plan against the ledger, deliver what changed), `plan` (render and compare, report what would be delivered, change nothing), `intake` (plan into work batches without delivering), `drain` (deliver the pending batches without re-reading the source), `verify` (read delivered records back from OSDU and compare versions), `sync` (read the records' rows from the ingestion tables and consolidate the ledger with them; sends nothing) | `deliver` |
 | `retrieval` | `retrieve`, `plan` | `retrieve` |
 | `cache` | `refresh` (capture every declared type and merge it into the partition's cache), `plan` (count what each type's search matches, write nothing) | `refresh` |
+| `assertion` | `test` (run the tests and keep their report), `plan` (check each test against its template and count what it matches and would read; record nothing) | `test` |
 
 A delivery flow needs the catalog for every operation: `deliver`, `plan` and `intake` render against the template
 and the cache version saved there, and `verify` and `drain` work on the ledger. A cache flow's `refresh` needs it
-because the versions it writes live there. A retrieval flow runs without it.
+because the versions it writes live there. An assertion flow's `test` needs it for the report it keeps and the
+templates its tests are checked against. A retrieval flow runs without it.
 
 ### The payload
 
@@ -248,6 +278,10 @@ rather than half-applied.
 | `interface` | The one interface of a source the run works on. A run on records or slices of a source with several interfaces has to name it. | all |
 | `interfaces` | The interfaces a run of a source runs, each once; every interface when left out. Not with `interface`, `submissionId`, `recordKeys` or `slices`. | all |
 
+An assertion flow's payload takes two fields and no other: `tests`, the names of the tests to run, and `tags`, running
+every test that carries one of them, each at most 500 and each named once. With neither, every test runs. A name that is
+not a test of the flow, or a tag no test carries, fails the run, naming the tests and tags the flow has.
+
 ```bash
 # plan one log source, forcing past the change gates
 sqlflow run flows/recall-welllog-03-header-delivery.yaml --operation plan --set logSource=STAT_COMP --payload '{"force":true}'
@@ -260,6 +294,9 @@ sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interfaces"
 
 # send the curves of one well log again
 sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interface":"welllogs","recordKeys":["<key>"],"redeliver":"bulk"}'
+
+# run the smoke tests of an assertion flow, and one more by name
+sqlflow run flows/recall-welllog-04-header-assertion.yaml --set partition=dev --payload '{"tags":["smoke"],"tests":["log-curves"]}'
 ```
 
 ### The result
@@ -270,12 +307,16 @@ version the partition's cache holds after it, the version it replaced, whether a
 captured, and per type what was captured and what its changes reach; a plan on a cache flow carries the partition,
 the flow, the current version and what each type's search matches. A cache flow that names several partitions, run for
 all of them, carries one such result per partition, with the error of any that failed: the run fails when one did, and
-says which, while the others stay refreshed.
+says which, while the others stay refreshed. A test run's result names the report (`assertionRunId`), the partition, the
+status, the count of each outcome and the tests that did not pass (the first 50, the rest counted); the run fails when
+the flow's `failRunOn` says its outcomes do (a failed or errored test by default), and its error names them. A plan's
+result lists each test with what it matches, would read, the template it fits and its problems.
 
 ## Exit codes
 
-`check`, `cache` and `template` exit 0 on success and 1 on a failure, which prints one `ERROR` line naming the
-problem. `preview` exits 1 as well when no record was found to preview, after saying why. `values` exits 1 as well when
+`check`, `cache`, `template` and `assertions` exit 0 on success and 1 on a failure, which prints one `ERROR` line naming
+the problem; `assertions report` writes the report of a run whatever its tests found, and exits 0 when it did. `preview` exits 1 as well when no record was found to preview, after saying why. `values` exits 1 as well when
 a row checked is held, writes a value the template does not accept, or has an empty key part; a row that leaves an
 optional attribute out is reported without failing it. `fixtures update` exits 1 as well when any fixture was skipped, after writing the others, so a script never
-takes a partial update for a complete one. `run` exits 0 when the run succeeded and 1 when it failed; Ctrl+C exits 130.
+takes a partial update for a complete one. `run` exits 0 when the run succeeded and 1 when it failed (for an assertion flow, when its tests failed it as its
+`failRunOn` says); Ctrl+C exits 130.

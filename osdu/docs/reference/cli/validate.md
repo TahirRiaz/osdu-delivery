@@ -22,6 +22,7 @@ which live in the catalog, is [`sqlflow check`](delivery.md).
 | Delivery flow | `flowType: delivery` |
 | Retrieval flow | `flowType: retrieval` |
 | Cache flow | `flowType: cache` |
+| Assertion flow | `flowType: assertion` |
 | Mapping | `documentType: mapping` |
 
 Every one is parsed with a strict deserializer: an unknown or misspelled key is a hard error, reported with the
@@ -42,6 +43,23 @@ document declaring an unknown `flowType` fails naming the kinds the host knows.
   `apiKeyHeader` and `basic` need `secretRef`; `apiKeyHeader` needs `headerName`.
 - Every `{token}` in a value that takes parameter substitution is declared under `parameters`.
 - `reliability.concurrency` and `reliability.retry.attempts` are at least 1.
+
+## What an assertion flow must satisfy
+
+- `name`, `source.endpoint` and at least one test are required; at most 500 tests, each with a unique `name`, a `kind`
+  and at least one assertion.
+- A test reads the records its `ids` name, or the records a search finds (`query`, `spatial`, `sort`), never both;
+  `spatial` names a field and exactly one filter; `read`, `maxRecords` (at most 1,000,000) and `bulk` (only for a kind
+  the Wellbore DDMS keeps bulk data for) are checked.
+- An assertion names exactly one subject and only the keys that subject takes; its operands suit its operator (a number
+  for a comparison, a list of two for `between`, a regular expression that compiles), and its `for`, `values` and
+  `severity` are ones the kind knows.
+- A test that reads fields names an exact kind. Every `{token}` in a query, an id or an expected text is a declared
+  parameter or `{partition}`; the partition is not a parameter.
+- `partitions`, the flow's and each test's, follow the delivery flow's rules; a test names only partitions the flow tests.
+
+Whether each path is a variable of the kind is checked against the saved template when the tests run, or with
+`sqlflow run <flow.yaml> --operation plan`, since templates live in the catalog.
 
 ## What a mapping must satisfy
 

@@ -1113,6 +1113,154 @@ write nothing).
 A retrieval flow lands records as files and nothing else. The cache the mappings resolve against is defined and
 captured by a cache flow.
 
+## Assertion flow
+
+Tests of what an OSDU partition holds once the data has landed ([docs/assertions-design.md](../../docs/assertions-design.md)).
+A flow holds tests; a test reads one kind and holds assertions about what it read. Each run keeps a report in the
+module's database. Nothing a test does writes to OSDU.
+
+```yaml
+flowType: assertion
+name: recall-welllog-04-header-assertion
+batch: recall
+partitions: [dev]                        # or "*" for every registered partition; without it, source.headers names one
+parameters:
+  logSource: { default: STAT_COMP }      # {logSource} in queries, ids and expected text; {partition} is always there
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth: { type: oauth2ClientCredentials, secondarySecretRef: ${env:OSDU_CLIENT_ID}, secretRef: ${env:OSDU_CLIENT_SECRET}, token: { url: ${env:OSDU_TOKEN_URL} } }
+  ddmsRoot: /api/os-wellbore-ddms        # where bulk data is read; the service paths below have defaults too
+  # queryPath: /api/search/v2/query
+  # searchPath: /api/search/v2/query_with_cursor
+  # recordQueryPath: /api/storage/v2/query/records
+  # legalPath: /api/legal/v1
+
+defaults: { maxRecords: 10000, examples: 20, read: storage }
+failRunOn: error                         # error | warning | never: which outcomes fail the platform run
+reliability: { concurrency: 4, retry: { attempts: 4 } }
+schedule: recall-welllog
+
+tests:
+  - name: logs-delivered
+    tags: [smoke, ledger]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
+    read: index
+    assert:
+      - count: { atLeast: 1 }
+      - delivered: recall-welllog-03-header-delivery
+      - indexed: true
+
+  - name: log-headers
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
+    assert:
+      - conforms: true
+      - field: data.WellboreID
+        resolves: master-data--Wellbore
+      - field: data.ReferenceCurveID
+        equals: MD
+      - name: the index curve is among the curves
+        field: data.Curves.CurveID
+        equals: MD
+        values: any
+      - legal: valid
+      - unique: [data.WellboreID, data.Name, data.LogRun, data.LogVersion]
+        severity: warning
+      - aggregate: missing
+        field: data.SamplingInterval
+        equals: 0
+        severity: info
+
+  - name: log-curves
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery"'
+    maxRecords: 200
+    sample: true
+    bulk: { columns: [MD], maxRows: 2000000 }
+    assert:
+      - rowCount: { atLeast: 1 }
+      - columns: { includes: [MD] }
+      - column: MD
+        monotonic: strictlyIncreasing
+      - column: MD
+        exists: true
+        for: 99%
+
+  - name: log-sources
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery"'
+    assert:
+      - groupBy: data.Name
+        absent: [UNKNOWN]
+        groupCount: { atLeast: 1 }
+```
+
+A test:
+
+| Key | Meaning |
+| --- | --- |
+| `name` | Unique in the flow: a letter or digit, then letters, digits, `.`, `_` and `-`, at most 100. A run names tests by it. At most 500 tests per flow. |
+| `description`, `tags` | What the test is for, and labels a run selects tests by (`{"tags":["smoke"]}`) and the board filters by. |
+| `kind` | The kind it reads, `authority:source:entityType:version`; wildcards read several kinds, but a test that reads fields needs an exact kind. |
+| `query` | Lucene over the index, with `{parameter}` tokens. Without it (and without `ids`), every record of the kind. |
+| `ids` | Records named by id instead of a query, read from storage; an id storage does not return is noted in the result. |
+| `spatial` | The search's `spatialFilter` (`field` and one of `byBoundingBox`, `byDistance`, `byGeoPolygon`, `byIntersection`, `byWithinPolygon`), checked when the flow loads. |
+| `sort` | `[{ field, order }]`: the order records are read in, which is what a sample takes. |
+| `read` | `storage` (the record as OSDU keeps it; the default) or `index` (the projection search returns). |
+| `maxRecords` | The most records the test reads (10,000 by default, at most 1,000,000). When more match, the assertions that need records are not evaluated and say so. |
+| `sample` | `true` evaluates the first `maxRecords` records when more match, and marks the result as a sample. |
+| `bulk` | Reads each record's bulk data from the Wellbore DDMS under `source.ddmsRoot`: `columns` narrows the columns read (the ones the assertions name are always read), `maxRows` bounds the rows (1,000,000 by default). Only for a kind the DDMS keeps bulk data for (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement). |
+| `template` | The template version its fields are checked against; the newest saved one of its kind when left out. |
+| `partitions` | Narrows the test to some of the flow's partitions; a run in another skips it. |
+| `severity` | The default severity of its assertions: `error` (the default), `warning` or `info`. |
+| `assert` | Its assertions, at least one. |
+
+An assertion is exactly one subject, with the keys that subject takes; `name`, `description` and `severity` go on any.
+A key a subject does not take is a parse error naming the assertion.
+
+| Subject | Keys | Holds when |
+| --- | --- | --- |
+| `count: <n or comparison>` | | The index's exact count of what the test matches compares true. |
+| `field: <path>` | a condition, `for`, `values`, `optional`, `where` | The condition holds of the path's values in the records read, for the share `for` says. |
+| `aggregate: min\|max\|sum\|avg\|count\|distinct\|missing` | `field` (or `column`, over the bulk data), a comparison, `tolerance` | The aggregate over the records read compares true; `missing` counts the values that are not there, `distinct` the different ones. |
+| `unique: [paths]` | | No two records read share the values of all the paths. |
+| `groupBy: <path>` | `groups`, `mode`, `absent`, `groupCount` | The index's groups of the path: each named group's count compares true (`mode: exact` allows no other group), no `absent` group is there, and the number of groups compares true. |
+| `recordSet: { columns, rows, mode }` | | The rows of the columns (paths) the records hold, against `rows`: `exact` (the same rows, in any order; the default), `ordered`, `includes` or `excludes`. |
+| `conforms: true` | | Every record read meets the schema of its kind, as the saved template lays it out. |
+| `indexed: true` | | No record the test matches has an index error (`index.statusCode` 201 or above). |
+| `legal: valid` | | Every record read carries a legal tag, and every tag they carry is valid now (Legal's `legaltags:validate`). |
+| `delivered: <delivery flow>` | `interface`, `exact` | Every record that flow's ledger holds as delivered in the partition is among what the test matches; with `exact: true`, nothing else is. |
+| `rowCount: <n or comparison>` | | Each record's bulk data has that many rows. |
+| `columns: { includes, excludes, equals }` | | Each record's bulk data has, lacks, or has exactly these columns. |
+| `column: <name>` | a condition, `for`, `optional`, `where` | The condition holds of the column's values in each record's bulk data. |
+| `monotonic: increasing\|decreasing\|strictlyIncreasing\|strictlyDecreasing` | `column` | The column's values only go that way in each record's bulk data. |
+
+A condition is one of `equals`, `notEquals`, `in`, `notIn`, `atLeast`, `atMost`, `greaterThan`, `lessThan`, `between`
+(`[low, high]`), `matches` and `notMatches` (a regular expression, one second at most per value), `startsWith`,
+`endsWith`, `contains` and `notContains` (text, or an element of an array), `exists` and `empty` (true or false), `type`
+(JSON Schema's words: `string`, `number`, `integer`, `boolean`, `object`, `array`, `null`), `length` (a number or a comparison, of text or
+an array), and `resolves` (true: the id names a record the partition holds; or an entity type the record must be, such as
+`master-data--Wellbore`). `ignoreCase: true` compares text regardless of case; `tolerance` allows numbers that close.
+A number in the document is compared exactly as written; `equals: 5` compares a number and `equals: "5"` text.
+
+`for` is `all` (the default), `any`, `none` or a share such as `99%`. `values: any` holds a record when any of the values a
+path yields across arrays meets the condition, rather than all of them. `optional: true` lets a record without the path
+pass. `where` is a list of conditions, each with its own `field` (or `column`), that selects the records (or rows) the
+assertion looks at.
+
+A path is dotted from the record root (`data.WellboreID`, `acl.viewers`, `legal.legaltags`, `id`, `kind`), crossing
+arrays implicitly (`data.Curves.CurveID` is every curve's id), or with `[*]` or `[n]`. Before a run reads anything, each
+test that reads fields of an exact kind is checked against the template of its kind: a path that is not a variable of
+the schema, an operator that does not suit the variable's type, or an operand the variable cannot hold keeps the test
+from being evaluated, with the nearest variable suggested. A kind whose template is not saved says how to save one.
+
+The operations are `test` (the default) and `plan` (select, check and count the tests, and record nothing). The payload
+takes `tests` (names) and `tags`; a run with neither runs every test. A flow's pipeline has a Tests tab (its board), a
+History tab (its tests against its runs) and a Reports tab; OSDU, **Tests** is the board of every assertion flow
+([operations.md](operations.md#the-gui)).
+
 ## Cache flow
 
 The reference data the mappings resolve against ([design.md](design.md) section 6.2). A cache flow is the one place what
@@ -2028,6 +2176,7 @@ it ([docs/lineage-design.md](../../docs/lineage-design.md)). What each kind cont
 | Delivery | The record table and every `source.datasets` table, on the server `source.connection` names; the files under the `root` of the payload set its protocol streams; every cache type its mapping reads (`cache.<Type>` sources and `findBy` lines) | The OSDU type its mapping fills (`template.kind`); for `file` and `manifest`, also `protocolOptions.datasetKind` |
 | Cache | Each type's `kind`, wildcards included | Each type's `name` in its partition's cache |
 | Retrieval | Each of `source.kinds`, wildcards included | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest under `target.location` |
+| Assertion | Each test's `kind`, wildcards included, in each partition the flow tests | Nothing: its reports are kept in the module's database, not as data |
 
 An **OSDU type** node is one exact kind in one partition of one platform: the platform is the flow's endpoint as written
 (`${env:OSDU_URL}`; a literal URL is identified by a hash, never shown), the partition is `data-partition-id` as written,
@@ -2039,7 +2188,8 @@ platform filled it, because a partition has one cache. The catalog explorer list
 Pipelines tab shows which flows write and read it.
 
 So a cache flow capturing wellbores runs after the delivery flow that delivers them, a delivery flow rendering against
-the cache runs after the cache flow, and a file flow reading a retrieval's folder runs after the retrieval. Two flows
+the cache runs after the cache flow, a file flow reading a retrieval's folder runs after the retrieval, and an assertion
+flow testing well logs runs after the flow that delivers them. Two flows
 that each read what the other writes are not ordered against each other.
 
 Lineage reads the mapping a delivery flow pins from the checkout the repository sync scans, through the same layout a

@@ -107,6 +107,13 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, the path each removal scope calls, and the method the record scope calls its path with (`recordMethod`: `POST`, or `DELETE` for a DDMS's own removal). On the ddms route the paths are those of the collection serving the kind the flow's synced mapping renders, and `ddms` says which collection of which DDMS that is (null on the other routes); a scope the flow cannot route reads `(not routable: ...)`, and one its DDMS refuses (the Well Delivery DDMS's history scope) `(refused: ...)`; neither is offered. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
+| `GET /assertions` | read | The board of every active assertion flow ([docs/assertions-design.md](../../docs/assertions-design.md) section 8), in the partition `?partition=` names, else the workbench's (`X-Osdu-Partition`): per flow its partitions and whether it tests this one (`testsPartition`), the `parameters` a run takes, `failRunOn`, its last run, and every test with its declaration, the template version it is checked against and the `problems` that keep it from being evaluated, its latest result that was not skipped, its last 12 outcomes (`history`, newest first) and whether it `changed` since that result; and the `totals` over every test that runs in the partition, with the pass rate of those evaluated. A flow whose document does not parse, or that does not test the partition, says why in `problem`. |
+| `GET /flows/{pipelineId}/assertions` | read | One assertion flow's board, as above. 409 for a pipeline that is not an assertion flow. |
+| `GET /flows/{pipelineId}/assertion-runs?max=` | read | The flow's runs in the partition, newest first (50 by default, at most 500): status, counts, what each was asked to run (`selection`), the platform run, the actor, when, and why it failed. |
+| `GET /flows/{pipelineId}/assertion-matrix?runs=` | read | The flow's recent runs (30 by default, at most 200) against its tests: every declared test (and any a run recorded that the document no longer declares) with its outcome in each run, null where a run did not run it. |
+| `GET /flows/{pipelineId}/assertions/{test}/history?runs=` | read | One test's whole results over its recent runs, newest first: what every assertion expected and found, and the records that failed it. 400 for a name that is not a test name. |
+| `GET /assertion-runs/{assertionRunId}` | read | One run with every test's whole result, and the pipeline it belongs to. |
+| `GET /assertion-runs/{assertionRunId}/report?format=` | read | The run's report as a file: `json`, `md`, `html` (a page with no script, which prints) or `junit` (a suite per kind, a case per test). 400 for another format. |
 | `GET /records/{flowId}/{key}`, `/attempts`, `/activities` | read | One flow's record, its delivery history, its interventions. A record is addressed by the ledger's flow id and the delivery key together, because the same row read by several flows is one record per flow. |
 | `GET /records/{flowId}/{key}/chain` | read | The record's row through its ingestion table: the table (`sourceTable`), when the row first arrived (`insertedUtc`), and every change of it the ledger recorded, newest first: `loaded` (the insert), `reloaded` (inserted again after earlier versions), `earliest` (the earliest version held, when the arrival is not known), `changed` and `deleted`, each with its file and row, the ingestion run that was writing the table when the row was stamped (`loading`), and the last landing of its file before that run (`landing`). A run that reloaded the row unchanged made no change and is not listed; a run the catalog does not prove is left out rather than guessed, and `note` says what could not be named. At most 50 changes, the newest and the arrival (`truncated`). |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
@@ -155,7 +162,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
-| `POST /ledger/prune` | admin | The ledger's retention pass at one cut-off (`olderThanDays`): ages out attempts older than it, keeping the latest of every record, and clears the captured run log of the activities older than it that have finished. No row of the audit trail is deleted. Answers what it took ([Retention and backup](#retention-and-backup)). |
+| `POST /ledger/prune` | admin | The ledger's retention pass at one cut-off (`olderThanDays`): ages out attempts older than it, keeping the latest of every record, clears the captured run log of the activities older than it that have finished, and removes whole the assertion runs older than it whose every result a later one superseded. No row of the audit trail is deleted. Answers what it took ([Retention and backup](#retention-and-backup)). |
 
 A route under `/flows/{pipelineId}` that acts on records (`records`, `target`, `submissions`, `release`, `probe`,
 `preview`, `osdu/read`, `records/remove` and its preview, and `GET /activities?pipelineId=`) works on one interface of the flow. A flow in the
@@ -189,6 +196,12 @@ flag. The run row records them, the delivery counts are projected onto it when t
 what it planned, sent and held, with the submission's totals across every run under `submission`; a fan-out root
 reports the submission its members worked on), and its result (the operation's outcome as JSON) and its fan-out
 membership (root, slot, count) are on the run detail.
+
+An assertion flow's run carries the operation `test` (the default) or `plan`, the flow's `values` (its parameters, and
+`partition`), and in the payload the tests it runs: `tests` (names) and `tags` (the tests carrying any of them), every
+test when both are left out. A name that is not a test of the flow, or a tag no test carries, fails the run naming it,
+and a delivery flow's payload keys are refused. Its result names the report (`assertionRunId`), the counts, and the tests
+that did not pass.
 
 ## Running a source
 
@@ -414,7 +427,7 @@ read from.
 ## The GUI
 
 Everything this product adds sits in one navigation group, **OSDU**, straight after the platform's Operate group:
-Delivery, Records, Audit trail, Mappings, Templates, Mapping builder and Cache. The platform's own groups (Operate,
+Delivery, Records, Tests, Audit trail, Mappings, Templates, Mapping builder, Cache and Partitions. The platform's own groups (Operate,
 Workspace, Tools, Explore) hold only its generic surfaces, so a delivery flow's own page is still reached through
 Pipelines like any other flow.
 
@@ -603,6 +616,32 @@ Pipelines like any other flow.
 - **A cache flow's page** (Pipelines): the Cache versions tab names the partition the flow fills and how many other
   cache flows fill it too, and lists every version of that partition's cache with the flow that wrote each, with a link
   to the OSDU cache page for what the cache holds and the changes waiting for approval.
+- **Tests** (OSDU): every test of every assertion flow in the workbench's partition, on one board
+  ([docs/assertions-design.md](../../docs/assertions-design.md) section 8). A scoreboard heads it: the share of the
+  evaluated tests that passed, and one tile per outcome (failed, errored, warned, not run, passed) and for the tests that
+  do not fit their template or changed since their result, each tile the filter to the tests it counts. A search over
+  names, kinds, tags, queries and assertions, and the tags as toggles, narrow it further. The tests are listed by flow,
+  and within a flow by the kind they read, what needs a look first: each with its outcome, how many of its assertions
+  hold, how many records it matched (and whether it read a sample), its last ten outcomes as a strip of squares (the
+  word, the report and the time on hover; a square opens its report), when it last ran, and a button that runs it alone.
+  Tests picked with their boxes run together, and **Run all** runs the flow's every test; each opens the platform's
+  trigger dialog on those tests, where the pick, the parameters and the operation can still change. A flow's header
+  names its partitions, its last run and that run's report. A test opens in a sheet (its address carries `?test=`, so a
+  link opens it): what it matched and evaluated, how many assertions hold, and how long it took; every assertion with
+  what it expected and found, how many it checked and failed, and the records that failed it (id, value held, why), the
+  failing ones open; each assertion's outcome across the last runs; the trend of the records it matched, or of what any
+  assertion measured, each point in the tone of how that run came out; and its declaration. A test that does not fit its
+  template says why, and one that changed since its result says so.
+- **An assertion flow's page** (Pipelines): the **Tests** tab is that flow's board; **History** lays its tests against
+  its last 30 runs, oldest on the left, with each test's pass rate and how often its outcome flipped (three or more
+  flips is marked: a test that keeps changing is unsteady data or an unsteady test), a column header opening its run's
+  report; **Reports** lists its runs with their outcomes as a bar and every download.
+- **A test report** (`/delivery/assertions/runs/<n>`): one run of a flow's tests as the report of how the partition
+  stood: the flow, partition, time, duration, actor and what it ran; the pass rate and the outcome tiles as filters; the
+  tests by kind as bars; and every test's result, the failing ones open. **Run the tests not passing again** opens the
+  trigger dialog on the failed, errored and warned tests; **Run again** repeats the run's pick; **Report** opens the
+  HTML report in a tab of its own or downloads it as HTML, Markdown, JSON or JUnit XML. The platform run's page links
+  here (**Open the report**) and shows the counts in place of row counts.
 - **Audit trail** (OSDU): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (OSDU): the mapping documents the repositories hold, each mapping with the template it pins and a
   link to the Mapping builder. A mapping opens on its Properties, laid out so that what needs a look is what stands
@@ -794,7 +833,10 @@ Pipelines like any other flow.
 | `sqlflow check <flow.yaml> [--interface <name>] [--partition <name>] [--connect] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the flow, its mappings, its templates and its payload roots. With `--connect` it opens the flow's source connection on this machine and reports the tables, their columns, the key types, the system columns, the current watermark window and the candidate counts. A source is checked one interface at a time, each with its route, its ledger, its wave, what it waits for and why, and the references it does not wait for, after a first line giving the order the interfaces run in; `--interface` checks one. Interfaces that wait for each other in a way nothing cuts fail the check, naming them. With `--json`, a source answers `flow`, `order` and one object per interface (with `wave`, `waitsFor` and `notWaitedFor`). |
 | `sqlflow preview <flow.yaml> [--interface <name>] [--partition <name>] [--key <key>] [--set name=value]... [--out <file.json>] [--db <ref>] [--json]` | One record rendered as a delivery would render it, and nothing sent ([Previewing a record](#previewing-a-record)): the first record of the scope, or the one `--key` names. It says what the next run would do with the record, lists the payload files and the route's requests, and prints the document as the route sends it. A source is previewed one interface at a time, each with its own first record; a key names a record of one interface, so it needs `--interface`. `--out` writes the whole preview as JSON, however large its document. Ends with 1 when no record was found. |
 | `sqlflow values <flow.yaml> [--interface <name>] [--partition <name>] [--target <osdu.path>]... [--set name=value]... [--max-rows <n>] [--samples <n>] [--skip <n>] [--rows <file.csv>] [--out <file.json>] [--db <ref>] [--json]` | The rows that will not give the mapping's attributes the values the template expects ([Checking a mapping's values](#checking-a-mappings-values)): each attribute's rows by outcome, every reason with the values behind it and example records. `--target` checks one attribute and what it holds (repeat it for more); `--max-rows` reads that many rows (10,000 by default, 0 for the whole scope); `--rows` writes every failing row to CSV, however many; `--out` writes the whole check as JSON. Ends with 1 when a row is held or writes a value the template does not accept. |
-| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|intake\|drain\|replan\|sync\|retrieve\|refresh] [--set name=value]... [--payload <json>\|@<file>] [--db <ref>]` | A run on the workstation. The payload carries the delivery kind's arguments (`force`, `submissionId`, `recordKeys`, `redeliver`, `interface`, `interfaces`; [The API](#the-api)). A delivery flow's runs need the module database connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition and so needs it. `--set partition=<name>` names the partition a flow that works in partitions runs in; without it a run takes the registry's default when the flow serves it, else the flow's only listed partition. A cache flow given `--set partition=*` builds every partition it serves in turn. |
+| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|intake\|drain\|replan\|sync\|retrieve\|refresh\|test] [--set name=value]... [--payload <json>\|@<file>] [--db <ref>]` | A run on the workstation. The payload carries the delivery kind's arguments (`force`, `submissionId`, `recordKeys`, `redeliver`, `interface`, `interfaces`; [The API](#the-api)). A delivery flow's runs need the module database connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition and so needs it. `--set partition=<name>` names the partition a flow that works in partitions runs in; without it a run takes the registry's default when the flow serves it, else the flow's only listed partition. A cache flow given `--set partition=*` builds every partition it serves in turn. An assertion flow runs `test` by default, with `--payload '{"tests":["log-headers"],"tags":["smoke"]}'` to run some of its tests, and keeps its report in the module database; `--operation plan` checks and counts the tests and records nothing. |
+| `sqlflow assertions list <flow.yaml> [--partition <name>] [--max <n>] [--db <ref>] [--json]` | An assertion flow's runs in a partition, newest first: status, counts, when and by whom, and why a run failed. |
+| `sqlflow assertions status <flow.yaml> [--partition <name>] [--db <ref>] [--json]` | Where each test of the flow stands: its latest outcome and report, what it matched, how many of its assertions did not hold and why it errored, and whether the test changed since. |
+| `sqlflow assertions report <flow.yaml> [--partition <name>] [--run <n>] [--format json\|md\|html\|junit] [--out <file>] [--db <ref>]` | A run's full report (the latest when `--run` is left out), rendered by the same code as the API's; `--out` writes it to a file, which a CI job publishes (JUnit XML for its test view). |
 | `sqlflow records list <flow.yaml> [--interface <name>] [--partition <name>] [--search <term>] [--contains] [--status <status>] [--max <n>] [--db <ref>] [--json]` | The interface's records from the ledger: the delivery key, the status, the source key, the OSDU id and version, what a waiting record waits for, and the last error of each. A source is read one interface at a time, and says which interfaces it has when it is not told. |
 | `sqlflow records show <flow.yaml> --key <delivery key \| source key> [--interface <name>] [--partition <name>] [--attempts <n>] [--db <ref>] [--json]` | One record and every try it took: the custody state and where the row came from, then each attempt with its outcome, what it delivered, how long it took, the steps it ran with what the target answered, and the error that stopped it. The source key finds the record as surely as the delivery key, because that is what an operator holds. |
 | `sqlflow cache list <partition\|cache.yaml> [--partition <name>] [--db <ref>] [--json]` | The versions of a partition's cache (a cache flow's file lists the partition it fills, or every partition it serves, or the one `--partition` names), newest first: the cache flow that wrote each, when it was captured, by whom and in which run, and what it holds. |
@@ -891,6 +933,11 @@ redacted before it is written.
 | A run refuses to start: `no partition keeps the ledger` | The message names the records the flow's own ledger holds and the partitions they went to | The flow moved from its header to named partitions: mark the partition those records were delivered to `keepLedger: true`, so its ledger stays the one the flow kept. Nothing ran. |
 | A flow fails to load: `the document declares interfaces, so these belong to an interface rather than the source` | The error names each misplaced key | Move `source.record`, `source.datasets`, `source.payloads`, `render.mapping`, `target.protocol` or `target.protocolOptions.payload` under the interface they belong to ([documents.md](documents.md#a-source-with-interfaces)). |
 | The sync warns that a ledger is kept by two flows | The warning names the interface and the flow keeping it | An interface adopted the ledger (`ledger:`) of a flow the repository still holds. Remove the old flow, or the adoption; until then both deliver into one ledger. |
+| A test `errored`: it does not fit the template of its kind | The Tests board marks it; its sheet lists every problem | A path that is not a variable of the kind (the nearest one is suggested), an operator that does not suit the variable's type, or a template not saved (`sqlflow template capture --kind <kind>`). Fix the flow document, sync, and run the test again. |
+| A test's assertions `skipped`: the query matches more records than the test reads | The assertion's message names the count and `maxRecords` | Narrow the query, raise `maxRecords` (at most 1,000,000), or set `sample: true` to evaluate the first records. |
+| A test `errored` with OSDU's answer | The result's error quotes the service's status and reason | A query the search service refuses (a leading wildcard, a query of nothing but `NOT`), a service down, or credentials refused. Fix the query or the service and run the test again. |
+| An assertion run fails its platform run | The run page's **Open the report**; the run's error names the tests | The flow's `failRunOn` says which outcomes fail a run (`error` by default). Fix what the failing tests found, or the tests; run the tests not passing again from the report. |
+| A test flips between passing and failing | The flow's History tab marks it | A test run in the same wave as the delivery reads an index still catching up (about thirty seconds): schedule the assertion flow after the delivery, as lineage orders it. Otherwise the data itself is changing between runs. |
 | A failure has to be followed into OSDU's own logs | The record's Timeline tab: the dispatch, opened, names its correlation id, and a refused request's error quotes `(correlation-id ...)` | Give the OSDU operators that id: every request of the try carried it. |
 
 ## Metrics
@@ -1120,6 +1167,7 @@ deleting a record, its submission, the cache version it was rendered against, or
 | `osdu.Lease`, `osdu.RecordEvent` | A worker's live hold and what it has appended and not yet applied. | In-flight work only | **Self-clearing**: applying a lease deletes its events in the same transaction, and closing or recovering it deletes the lease. |
 | `osdu.SourceWatermark` | One row per flow scope: how far the last whole-scope plan read. | Scopes | **Never**: it is state, and losing it re-reads everything. |
 | `osdu.Retrieval` | One run of a retrieval flow: window, location, counts, outcome. | Retrieval runs | **Never** by this tool. |
+| `osdu.AssertionRun`, `osdu.AssertionResult` | One run of an assertion flow's tests in a partition, and one result per test with its whole detail. | Test runs | **Yes**, by age, a run whole and only once a later result of the same test superseded every one of its results; a run holding a test's latest result stays. |
 | `osdu.CacheVersion`, `osdu.CacheItem` | Every version of every partition's cache, and the records each version held (rows only for what changed, arrived or left). | Refreshes that changed something | **Never.** A delivered record's render context names the version it was rendered against, and the ledger has to be able to show what that version held. |
 | `osdu.CacheMember` | That a cache flow's last capture held a record: current state, not history. | Cached records and the flows capturing them | Maintained by a refresh's merge and by the repository sync; not an operator's to prune. |
 | `osdu.CacheSet`, `osdu.CacheSetEntry` | The distinct combinations of cached values renders consumed; a record points at its set. | Distinct combinations (a few thousand, not one per record) | **Never**: it is how a record says what it read. |
@@ -1152,7 +1200,7 @@ curl -sS -X POST "$CONTROL_PLANE/api/v1/delivery/ledger/prune" \
   -d '{"olderThanDays": 90}'
 ```
 
-It answers `{"attemptsPruned": n, "activityLogsCleared": n}`. `olderThanDays` below 1 is refused with 400, and the
+It answers `{"attemptsPruned": n, "activityLogsCleared": n, "assertionRunsPruned": n}`. `olderThanDays` below 1 is refused with 400, and the
 route needs the `admin` scope: operating the estate is not administering it.
 
 What it does, precisely:
@@ -1164,6 +1212,10 @@ What it does, precisely:
 - **Activity logs.** Clears the `Log` of activities that started before the cut-off and have finished, 1,000 per
   statement on the same reasoning. The row stays with its flow, kind, actor, times, parameters, outcome and summary.
   An activity still running is left alone whatever its age, because its log is not written until it completes.
+- **Assertion reports.** Removes finished assertion runs that started before the cut-off, each with all its results in
+  one transaction, once a later result of the same test superseded every one of its results (a later outcome of a test
+  that ran, or anything later of a test that was skipped). A kept report is so always whole, and a run holding a test's
+  latest result stays however old, so the board always shows where every test stands.
 
 It is safe to interrupt and repeat: every statement is its own transaction, and a second pass at the same cut-off
 finds nothing left to take.

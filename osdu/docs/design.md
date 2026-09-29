@@ -1123,6 +1123,23 @@ What the retrieval kind does not do: it never renders. A mapping is not invertib
 an `equals` modifier collapses a string to a boolean, a `split` discards everything but one
 part, and static values have no source at all. What lands is the record as OSDU holds it.
 
+### 15.4 Checking what OSDU holds
+
+Reading to check is the assertion kind, `flowType: assertion`
+([docs/assertions-design.md](../../docs/assertions-design.md),
+[decisions/0010](decisions/0010-assertion-flows-read-only.md)). A flow holds tests; a test reads one
+kind (a query, ids or a spatial filter select the records) and holds assertions about what it read:
+counts, values at JSON paths, aggregates, uniqueness, groups, expected record sets, conformance to the
+schema, index errors, legal tags, the delivery ledger against what search finds, and each record's
+bulk data in the Wellbore DDMS. It reads search, storage, legal and the DDMS through the same pager and
+storage reader the retrieval runner uses, and writes nothing to OSDU.
+
+A test that reads fields is checked against the saved template of its kind before anything is read,
+so a path the kind does not have is reported as such instead of failing every record. Each run tests
+one partition and keeps its report in `osdu.AssertionRun` and `osdu.AssertionResult`, one row per test
+written as it finishes; the boards, the report in JSON, Markdown, HTML and JUnit XML, and the CLI read
+those rows. Lineage orders an assertion flow after the flows that write the kinds it reads.
+
 ## 16. Scale: streaming intake, work batches, returned values and fan-out
 
 An ingestion table can hold millions of rows and a flow billions over time. Nothing in the

@@ -26,7 +26,8 @@ groups so a delivery route is authorized exactly like a platform route.
 
 | Endpoints | Purpose |
 | --- | --- |
-| `GET /delivery/flows/{pipelineId}/...` | A flow's statistics, its records, its submissions, and its retrievals for a retrieval flow. Every count is derived from the ledger, never held separately. |
+| `GET /delivery/flows/{pipelineId}/...` | A flow's statistics, its records, its submissions, its retrievals for a retrieval flow, and for an assertion flow its board, runs, matrix and each test's history. Every count is derived from the ledger, never held separately. |
+| `GET /delivery/assertions`, `GET /delivery/assertion-runs/{id}`, `/report` | The board of every assertion flow in a partition, one run with every result, and its report as JSON, Markdown, HTML or JUnit XML. |
 | `GET /delivery/records/{flowId}/{key}/...`, `GET /delivery/submissions/...` | One flow's record with its attempts and activities; one submission with its attempts and its work batches. |
 | `GET /delivery/activity` | The audit trail of interventions: who did what, when, and in which run. |
 | `GET /delivery/mappings`, `GET /delivery/caches`, `/cache/items`, `/cache/versions`, `/cache/history`, `/cache/diff`, `/cache/tags` | The mapping documents the repositories hold, every data partition's cache with the cache flows filling it, and one partition's cached records, versions, history, comparison and the changes awaiting a decision. |

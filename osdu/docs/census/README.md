@@ -10,6 +10,7 @@ checks for these documents in the GUI's YAML editor, and in the language server 
 | `keys.delivery.json` | A delivery flow, `flowType: delivery`, in the single form and as a source with interfaces. |
 | `keys.retrieval.json` | A retrieval flow, `flowType: retrieval`. |
 | `keys.cache.json` | A cache flow, `flowType: cache`: OSDU types, ingestion table types and dictionary types. |
+| `keys.assertion.json` | An assertion flow, `flowType: assertion`: its source, defaults and tests, and every subject, condition and modifier an assertion takes. |
 | `keys.mapping.json` | A mapping, `documentType: mapping`: its header, its fixtures, and its `record` tree, whose node grammar (every `$` word, modifier and setting) is described on `record.<name>`. |
 | `keys.dictionary.json` | A dictionary, `documentType: dictionary`. |
 

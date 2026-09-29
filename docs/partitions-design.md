@@ -318,6 +318,10 @@ next sync.
   and cache definition ids. Their partition need not be registered.
 - A document that named neither `partitions` nor the header was refused before; it is now registry-driven.
 - Retrieval flows keep their `data-partition-id` header, and refuse the `partition` run value.
+- Assertion flows choose their partition as delivery flows do (`partitions:`, `"*"`, or the header), and test one
+  partition per run: `*` is refused, since a report describes one partition. Each partition keeps its own ledger
+  identity for the flow and so its own report history; a test's own `partitions` narrows it further, and a run in
+  another partition skips it ([assertions-design.md](assertions-design.md)).
 - Moving a flow between the paths is a change in the repository, never made by the engine. The Recall estate made that
   move: its cache flows name no partitions, and its delivery flow writes `keepLedger: dev` at the top, with `dev`
   registered as the default, so every registered partition is served and `dev` keeps the ledger it always had.

@@ -35,11 +35,11 @@ the ledger, so a delivered record still points back at the source file and row i
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| The flow kinds | `osdu/src/SqlFlow.Delivery` | `delivery` (render and deliver), `retrieval` (OSDU's search index paged onto storage), and `cache` (the reference and master data mappings resolve against, captured from OSDU into one versioned cache per data partition). |
-| The ledger and the rest of the `osdu` schema | `osdu/src/SqlFlow.Delivery.Data` | Submissions, records, append-only attempts, watermarks, the audit trail, the mapping and cache read models, the templates and the cache versions. |
+| The flow kinds | `osdu/src/SqlFlow.Delivery` | `delivery` (render and deliver), `retrieval` (OSDU's search index paged onto storage), `cache` (the reference and master data mappings resolve against, captured from OSDU into one versioned cache per data partition), and `assertion` (tests of what a partition holds, each run keeping a report). |
+| The ledger and the rest of the `osdu` schema | `osdu/src/SqlFlow.Delivery.Data` | Submissions, records, append-only attempts, watermarks, the audit trail, the assertion reports, the mapping and cache read models, the templates and the cache versions. |
 | The delivery API | `osdu/src/SqlFlow.Delivery.ControlPlane` | Everything under `/api/v1/delivery`, plus the cache rollout and data-definitions background services. |
-| The CLI verbs | `osdu/src/SqlFlow.Delivery.Cli` | `sqlflow check`, `sqlflow cache`, `sqlflow template`. |
-| The GUI pages | `osdu/gui` | The delivery overview, the per-flow tabs, the record and submission pages, the audit trail, mappings, templates, the mapping builder and the OSDU cache page, installed into SQLFlow's GUI through its module contract. |
+| The CLI verbs | `osdu/src/SqlFlow.Delivery.Cli` | `sqlflow check`, `sqlflow cache`, `sqlflow template`, `sqlflow assertions`. |
+| The GUI pages | `osdu/gui` | The delivery overview, the per-flow tabs, the record and submission pages, the Tests board and the test reports, the audit trail, mappings, templates, the mapping builder and the OSDU cache page, installed into SQLFlow's GUI through its module contract. |
 | The hosts | `osdu/hosts` | The control plane, the node and the CLI, each composing SQLFlow with the module and the product's branding. |
 
 ## How the module meets SQLFlow
@@ -49,14 +49,14 @@ and nothing else in `sqlflow/` knows OSDU exists:
 
 | Extension point | What the module registers |
 | --- | --- |
-| Flow kind registry | The `delivery`, `retrieval` and `cache` document kinds, and the mapping companion document. |
+| Flow kind registry | The `delivery`, `retrieval`, `cache` and `assertion` document kinds, and the mapping companion document. |
 | Executor | The run executors for those kinds. |
 | Compute operations | The target-side operations a node runs outside a flow: probe, read back, delete. |
 | Run parameters | The operation, the flow's parameter values and the kind-owned JSON payload a run carries. |
 | Catalog sync extension | The mapping documents and the types each cache flow declares, projected during a repository sync, inside the sync's transaction. |
 | Module database | `OsduDbContext` over the `osdu` schema, with its own migrations and schema version. |
 | Run result projection | The delivery counts shown on the run list. |
-| Lineage contributor | What each OSDU flow reads and writes: the ingestion tables, payload files and cache types a delivery flow reads and the OSDU type it writes, the OSDU types, ingestion tables and dictionary files a cache flow reads and the cache types it writes, the types a retrieval flow reads and the files it lands. Lineage shows them as nodes and orders pre, ing, delivery, cache and retrieval flows in waves. |
+| Lineage contributor | What each OSDU flow reads and writes: the ingestion tables, payload files and cache types a delivery flow reads and the OSDU type it writes, the OSDU types, ingestion tables and dictionary files a cache flow reads and the cache types it writes, the types a retrieval flow reads and the files it lands, and the types an assertion flow's tests read. Lineage shows them as nodes and orders pre, ing, delivery, cache, retrieval and assertion flows in waves. |
 | Catalog sync lineage gate | A changed mapping document recomputes the repository's lineage, since a delivery flow's OSDU type comes from its mapping. |
 | Host modules | The endpoint groups under SQLFlow's authorization policies, the background services, the options sections and the CLI verbs. |
 | GUI module contract | The routes, navigation entries and per-kind panels on the pipeline, run and trigger pages. |

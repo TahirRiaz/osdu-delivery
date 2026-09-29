@@ -13,8 +13,9 @@ channels and their configuration, and the API. This page covers only what it mea
 ## What gets reported
 
 A notification is about a **run**, not about a record. Every OSDU Delivery flow kind is an ordinary platform flow,
-so a failed run of any of them alerts: a `delivery` flow, a `retrieval` flow, and a `cache` flow whose refresh
-could not capture what it declares.
+so a failed run of any of them alerts: a `delivery` flow, a `retrieval` flow, a `cache` flow whose refresh
+could not capture what it declares, and an `assertion` flow whose tests failed it as its `failRunOn` says (a failed or
+errored test by default, a warned one as well with `warning`, never with `never`); its error names the tests.
 
 A run that succeeded reports nothing, even when it **held** records. Held records are a normal outcome of a
 delivery run (a value the mapping could not resolve, a payload that is not where the record says it is), they are

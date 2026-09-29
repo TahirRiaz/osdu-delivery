@@ -62,6 +62,7 @@ the module keys the cache itself (`CacheScope`).
 | Delivery | The record and dataset ingestion tables (unchanged); the payload files under each `source.payloads.<name>.root`; each partition cache type its mapping reads (`cache.<Type>`) | The OSDU type its mapping fills (`template.kind`); for `file` and `manifest`, the dataset kind it registers files as (`protocolOptions.datasetKind`) |
 | Cache | Each declared type's OSDU kind (`types[].kind`, wildcards allowed) | Each declared cache type (`types[].name`) in its partition's cache |
 | Retrieval | Each OSDU kind it retrieves (`source.kinds`) | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest it lands under `target.location`, as file drops a pre flow can read |
+| Assertion | Each test's OSDU kind (`tests[].kind`, wildcards allowed), in every partition the flow tests | Nothing: its reports are kept in the module's database ([assertions-design.md](assertions-design.md)) |
 
 The delivery flow's OSDU type and cache reads come from its mapping. Lineage reads the mapping the flow pins from the
 repository checkout the sync scans (`render.mappings`, or the `mappings` folder `DeliveryLayout` finds), and only from
@@ -110,8 +111,8 @@ A write never carries a wildcard; a declaration that tries is refused.
 
 Reads and writes of OSDU types and cache types order flows exactly as table reads and writes do:
 
-- A cache or retrieval flow reading a kind a delivery flow writes runs after that delivery flow, and a delivery flow
-  reading a cache type runs after the cache flow that writes it. So "run a flow and its descendants" from a pre flow now
+- A cache, retrieval or assertion flow reading a kind a delivery flow writes runs after that delivery flow, and a
+  delivery flow reading a cache type runs after the cache flow that writes it. So "run a flow and its descendants" from a pre flow now
   also runs the cache and retrieval flows downstream of the deliveries, which is the order a fresh cache needs.
 - SQLFlow already skips the ordering edge between two flows that each read what the other writes (a delivery flow whose
   mapping looks up the very type it writes, and the cache flow that captures that type). Longer loops are reported by
@@ -195,7 +196,7 @@ file nodes earlier syncs had already left behind without an edge (the machine-pa
 
 ## 8. The OSDU module's side
 
-- `DeliveryLineage`, `CacheLineage` and `RetrievalLineage` build each flow kind's `RegisteredFlowLineage` from the parsed
+- `DeliveryLineage`, `CacheLineage`, `RetrievalLineage` and `AssertionLineage` build each flow kind's `RegisteredFlowLineage` from the parsed
   document (and, for delivery, its mapping), in a stable order, without throwing for any document the loader accepted.
   `OsduLineage` checks every OSDU declaration against the widths SQLFlow keeps first, so an unusual value costs one node
   and a warning rather than the flow's whole lineage.

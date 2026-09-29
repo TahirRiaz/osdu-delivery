@@ -9,7 +9,7 @@ and recording, failure handling, crash recovery, the drain on shutdown and the o
 [../../../../sqlflow/docs/reference/cli/worker.md](../../../../sqlflow/docs/reference/cli/worker.md). In an
 OSDU Delivery deployment the node is
 `osdu/hosts/SqlFlow.Delivery.Worker.Host`: the same runtime with the OSDU module installed, so a delivery,
-retrieval or cache flow executes on it exactly as it does from the command line.
+retrieval, cache or assertion flow executes on it exactly as it does from the command line.
 
 This page covers what an OSDU Delivery node needs that a plain SQLFlow node does not.
 

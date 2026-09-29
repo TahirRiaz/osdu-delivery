@@ -12,7 +12,7 @@ the committed tree (no build output, no local files).
 
 | Here | From |
 | --- | --- |
-| `src/SqlFlow.Delivery/` | `src/SqlFlow.Delivery/`: the delivery flow, retrieval and cache kinds, ledger, protocols, rendering, templates and mapping builder, OSDU cache, worker, verifier, removal, fan-out |
+| `src/SqlFlow.Delivery/` | `src/SqlFlow.Delivery/`: the delivery flow, retrieval, cache and assertion kinds, ledger, protocols, rendering, templates and mapping builder, OSDU cache, worker, verifier, removal, fan-out |
 | `src/SqlFlow.Delivery.Data/DeliveryEntities.cs` | `src/SqlFlow.Catalog/DeliveryEntities.cs`: the ledger's entity model, to become `OsduDbContext` in the `osdu` schema |
 | `src/SqlFlow.Delivery.ControlPlane/` | `src/SqlFlow.ControlPlane/Api/DeliveryEndpoints.cs`, `DeliveryTemplateEndpoints.cs`, `Background/CacheUpdateRolloutService.cs`, `Background/DataDefinitionsWarmupService.cs` |
 | `src/SqlFlow.Delivery.Cli/DeliveryVerbs.cs` | `src/SqlFlow.Cli/DeliveryVerbs.cs`: the `check`, `cache` and `template` verbs |
