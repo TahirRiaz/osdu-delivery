@@ -555,7 +555,7 @@ internal static partial class AssertionMapper
                 break;
             case "byDistance":
                 Point(filter["point"], $"{at}.byDistance.point", source);
-                if (filter["distance"] is not JsonValue d || !d.TryGetValue<double>(out var distance) || distance < 0 || !double.IsFinite(distance))
+                if (!IsNumber(filter["distance"], out var distance) || distance < 0)
                 {
                     throw new FlowValidationException($"{source}: {at}.byDistance.distance must be a distance in metres, zero or more.");
                 }
@@ -587,6 +587,19 @@ internal static partial class AssertionMapper
         return spatial;
     }
 
+    /// <summary>
+    /// A finite number the document wrote, whatever YAML read it as: <c>72</c> arrives as a whole number and <c>72.5</c> as a
+    /// fraction, and each is read from the JSON it writes, so a whole-number latitude or distance counts as surely as a decimal.
+    /// </summary>
+    private static bool IsNumber(JsonNode? node, out double value)
+    {
+        value = 0;
+        return node is JsonValue number
+            && number.GetValueKind() == JsonValueKind.Number
+            && double.TryParse(number.ToJsonString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value)
+            && double.IsFinite(value);
+    }
+
     private static void Only(JsonObject node, string[] keys, string at, string source)
     {
         foreach (var (key, _) in node)
@@ -614,8 +627,8 @@ internal static partial class AssertionMapper
     private static void Point(JsonNode? node, string at, string source)
     {
         if (node is not JsonObject point
-            || point["latitude"] is not JsonValue lat || !lat.TryGetValue<double>(out var latitude)
-            || point["longitude"] is not JsonValue lon || !lon.TryGetValue<double>(out var longitude)
+            || !IsNumber(point["latitude"], out var latitude)
+            || !IsNumber(point["longitude"], out var longitude)
             || latitude is < -90 or > 90 || longitude is < -180 or > 180)
         {
             throw new FlowValidationException($"{source}: {at} must be a point: latitude between -90 and 90, longitude between -180 and 180.");

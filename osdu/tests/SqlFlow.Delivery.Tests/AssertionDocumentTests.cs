@@ -350,6 +350,19 @@ public sealed class AssertionDocumentTests
         Assert.Contains(expected, Refusal(OneTest(assertion, testKeys)));
     }
 
+    [Theory]
+    [InlineData("spatial: { field: data.SpatialLocation.Wgs84Coordinates, byBoundingBox: { topLeft: { latitude: 72, longitude: 0 }, bottomRight: { latitude: 56, longitude: 32 } } }")]
+    [InlineData("spatial: { field: data.SpatialLocation.Wgs84Coordinates, byDistance: { point: { latitude: 60, longitude: 5 }, distance: 1000 } }")]
+    [InlineData("spatial: { field: data.SpatialLocation.Wgs84Coordinates, byGeoPolygon: { points: [{ latitude: 56, longitude: 0 }, { latitude: 72, longitude: 0 }, { latitude: 72, longitude: 32 }] } }")]
+    public void A_spatial_filter_takes_whole_numbers_as_coordinates_and_distances(string testKeys)
+    {
+        // YAML reads 72 as a whole number and 72.5 as a fraction; a latitude, a longitude or a distance in whole units is a
+        // number all the same, and goes to the search as the document wrote it.
+        var test = Assert.Single(Parse(OneTest("- count: { atLeast: 1 }", testKeys)).Tests);
+        Assert.NotNull(test.Spatial);
+        Assert.Equal("data.SpatialLocation.Wgs84Coordinates", test.Spatial["field"]!.GetValue<string>());
+    }
+
     [Fact]
     public void The_flow_is_refused_where_its_own_keys_do_not_fit()
     {
