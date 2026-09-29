@@ -34,9 +34,18 @@ public enum MappingDraftInput
 
     /// <summary>
     /// The first of several alternatives that gives a value (<c>$coalesce</c>): each a dataset column, an expression, the
-    /// cache, a search or a fixed value of its own, tried in order.
+    /// cache, a lookup, a search or a fixed value of its own, tried in order.
     /// </summary>
     Coalesce,
+
+    /// <summary>A field of the record one of the mapping's lookups finds (<c>$lookup</c>).</summary>
+    Lookup,
+
+    /// <summary>
+    /// A list of values: its items in order, each a fixed value or a node reading values of its own (a <c>$findAll</c> among
+    /// them), the list being every value they give, a value given twice written once.
+    /// </summary>
+    List,
 }
 
 /// <summary>
@@ -73,6 +82,9 @@ public sealed record MappingDraft
     /// <summary>The record sets the mapping's search entries look in.</summary>
     public IReadOnlyList<MappingDraftSearch> Searches { get; init; } = [];
 
+    /// <summary>The records the mapping finds once for a row and reads wherever the record needs them (<c>lookups</c>).</summary>
+    public IReadOnlyList<MappingDraftLookup> Lookups { get; init; } = [];
+
     public IReadOnlyList<MappingDraftEntry> Entries { get; init; } = [];
 
     /// <summary>The parameter values every fixture renders with unless it gives its own (<c>fixtureDefaults.parameters</c>).</summary>
@@ -89,6 +101,44 @@ public sealed record MappingDraftSearch(string Name, string Kind, string SchemaK
 /// <summary>What a fixture assumes the platform answers when a search compares <c>Field</c> with <c>Value</c>: the record found, or none.</summary>
 public sealed record MappingDraftFixtureSearch(string Search, string Field, string Value, string? Id);
 
+/// <summary>
+/// One lookup: the name nodes read it by, the cached type its record is found in, the findBy lines that find it against the
+/// dataset's own row, and the modifiers and separator fold a cache entry takes.
+/// </summary>
+public sealed record MappingDraftLookup
+{
+    public string Name { get; init; } = string.Empty;
+
+    public string CacheType { get; init; } = string.Empty;
+
+    /// <summary>The lines tried in order; a column is one of the dataset's own row, since a lookup reads that row wherever it is read.</summary>
+    public IReadOnlyList<MappingDraftFind> FindBy { get; init; } = [];
+
+    public IReadOnlyList<MappingDraftModifier> Modifiers { get; init; } = [];
+
+    public bool IgnoreSeparators { get; init; }
+
+    public string? Description { get; init; }
+}
+
+/// <summary>
+/// A cache entry's <c>$findAll</c>: the cached field the rows are found by and what it holds, which is one of a column
+/// (<c>column</c>, or <c>child.column</c> inside a repeater), a fixed text, or a field of a lookup's record written with the
+/// lookup's name (<c>wellbore.GeoContexts.FieldID</c>); and the fields a row must hold nothing under.
+/// </summary>
+public sealed record MappingDraftFindAll
+{
+    public string Field { get; init; } = string.Empty;
+
+    public string? Column { get; init; }
+
+    public string? Literal { get; init; }
+
+    public string? Lookup { get; init; }
+
+    public IReadOnlyList<string> Empty { get; init; } = [];
+}
+
 /// <summary>One entry as the builder edits it.</summary>
 public sealed record MappingDraftEntry
 {
@@ -102,11 +152,19 @@ public sealed record MappingDraftEntry
     /// <summary>For a repeat input: the child dataset.</summary>
     public string? Child { get; init; }
 
+    /// <summary>For a cache input: the cached type. For a search input: the search, by the name the mapping declares it under.</summary>
     public string? CacheType { get; init; }
 
+    /// <summary>For a cache or a lookup input: the field of the record read. For a search input: always id.</summary>
     public string? CacheField { get; init; }
 
+    /// <summary>For a lookup input: the lookup read, by the name the mapping declares it under.</summary>
+    public string? Lookup { get; init; }
+
     public IReadOnlyList<MappingDraftFind> FindBy { get; init; } = [];
+
+    /// <summary>For a cache input that reads every matching row (<c>$findAll</c>) in place of findBy lines; null for one that finds one record.</summary>
+    public MappingDraftFindAll? FindAll { get; init; }
 
     public IReadOnlyList<MappingDraftModifier> Modifiers { get; init; } = [];
 
@@ -135,6 +193,13 @@ public sealed record MappingDraftEntry
     /// </summary>
     public IReadOnlyList<MappingDraftEntry> Alternatives { get; init; } = [];
 
+    /// <summary>
+    /// For a list input: the items in the order they are written, each an entry of its own input with its own condition,
+    /// required flag and description; a fixed item holds one value. Their target is the entry's, and the entry itself takes
+    /// no condition, since a list is written as the items alone.
+    /// </summary>
+    public IReadOnlyList<MappingDraftEntry> Items { get; init; } = [];
+
     /// <summary>For a static input: the value as JSON text.</summary>
     public string? Static { get; init; }
 
@@ -162,13 +227,18 @@ public sealed record MappingDraftModifier(
 /// <summary>One pair of a replace: the incoming value, and what it becomes; a null <see cref="To"/> is no value.</summary>
 public sealed record MappingDraftReplacement(string From, string? To);
 
+/// <summary>
+/// An example row and the exact record it must render to, with the search answers and the cached rows by type it renders
+/// against (null for none), which stand in for the platform and the partition's cache.
+/// </summary>
 public sealed record MappingDraftFixture(
     string Name,
     IReadOnlyDictionary<string, string> Parameters,
     IReadOnlyDictionary<string, string?> Record,
     IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> Datasets,
     string Expected,
-    IReadOnlyList<MappingDraftFixtureSearch>? Searches = null);
+    IReadOnlyList<MappingDraftFixtureSearch>? Searches = null,
+    IReadOnlyDictionary<string, IReadOnlyList<JsonObject>>? Cache = null);
 
 /// <summary>What the builder found about a draft: an error stops the mapping from loading, a warning does not.</summary>
 public sealed record MappingDraftIssue(string Severity, string Message, string? Target = null)
@@ -330,6 +400,12 @@ public static partial class MappingBuilder
             }
         }
 
+        var lookupNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var lookup in draft.Lookups)
+        {
+            LookupIssues(lookup, lookupNames, Error);
+        }
+
         var layout = Layout(draft);
         foreach (var left in layout.LeftOut.Where(l => l.Reason is not null))
         {
@@ -365,6 +441,9 @@ public static partial class MappingBuilder
                 case MappingDraftInput.Coalesce:
                     CoalesceIssues(draft, entry, target, scope, Error);
                     break;
+                case MappingDraftInput.List:
+                    ListIssues(draft, entry, target, scope, Error);
+                    break;
                 default:
                     ValueIssues(draft, entry, target, target, scope, Error);
                     break;
@@ -391,7 +470,177 @@ public static partial class MappingBuilder
             }
         }
 
+        // The loader refuses a lookup nothing reads, since it says something no record uses.
+        var read = draft.Entries.SelectMany(ValueNodesOf).SelectMany(LookupsRead).ToHashSet(StringComparer.Ordinal);
+        foreach (var name in draft.Lookups.Select(l => l.Name?.Trim() ?? string.Empty).Where(n => ColumnName().IsMatch(n) && !read.Contains(n)).Distinct(StringComparer.Ordinal))
+        {
+            Error($"Lookup '{name}' is read by no entry; read a field of its record with a lookup input, or in a find all line, or remove it.", LookupTarget(name));
+        }
+
         return issues;
+    }
+
+    /// <summary>The issue target that names a lookup, so the page can open the lookup an issue is about.</summary>
+    public static string LookupTarget(string name) => "lookups." + name;
+
+    /// <summary>An entry and the value nodes it reads through: a coalesce entry's alternatives, and a list's items.</summary>
+    private static IEnumerable<MappingDraftEntry> ValueNodesOf(MappingDraftEntry entry) => [entry, .. entry.Alternatives, .. entry.Items];
+
+    /// <summary>The lookups one value node reads: the one a lookup input reads, and the one a find all line keys by.</summary>
+    private static IEnumerable<string> LookupsRead(MappingDraftEntry node)
+    {
+        if (node.Input == MappingDraftInput.Lookup && !string.IsNullOrWhiteSpace(node.Lookup))
+        {
+            yield return node.Lookup.Trim();
+        }
+
+        if (node.Input == MappingDraftInput.Cache && node.FindAll?.Lookup is { } path && !string.IsNullOrWhiteSpace(path))
+        {
+            yield return path.Trim().Split('.')[0];
+        }
+    }
+
+    /// <summary>
+    /// What a lookup lacks: a name of its own, the cached type its record is found in, findBy lines comparing columns of the
+    /// dataset's own row (the row a lookup reads wherever it is read), and modifiers that change what those lines compare.
+    /// </summary>
+    private static void LookupIssues(MappingDraftLookup lookup, HashSet<string> names, Action<string, string?> error)
+    {
+        var name = lookup.Name?.Trim() ?? string.Empty;
+        var target = LookupTarget(name);
+        var at = $"Lookup '{name}'";
+        if (!ColumnName().IsMatch(name))
+        {
+            error($"Name each lookup with letters, digits, underscores and hyphens; entries read it as {MappingMapper.LookupKey}: <name>.<field>.", target);
+            return;
+        }
+
+        if (!names.Add(name))
+        {
+            error($"{at} is declared twice; give each lookup a name of its own.", target);
+        }
+
+        if (!ColumnName().IsMatch(lookup.CacheType?.Trim() ?? string.Empty))
+        {
+            error($"{at}: choose the cached type its record is found in, such as Wellbore.", target);
+        }
+
+        if (lookup.FindBy.Count == 0)
+        {
+            error($"{at}: say how a row finds its record with at least one findBy line, such as FacilityName = wellbore_uwi.", target);
+        }
+
+        foreach (var find in lookup.FindBy)
+        {
+            if (!FieldPath().IsMatch(find.Field ?? string.Empty) || find.Field!.StartsWith(Marker, StringComparison.Ordinal))
+            {
+                error($"{at}: a findBy line needs the cached field it compares.", target);
+            }
+            else if (string.IsNullOrWhiteSpace(find.Literal) && !ColumnName().IsMatch(find.Column?.Trim() ?? string.Empty))
+            {
+                error(DatasetColumnPattern().IsMatch(find.Column?.Trim() ?? string.Empty)
+                    ? $"{at}: findBy {find.Field} compares {find.Column!.Trim()}, a column of a child dataset; a lookup reads the dataset's own row, so it compares a column of that row."
+                    : $"{at}: findBy {find.Field} needs the dataset column, or a fixed text, it must equal.", target);
+            }
+        }
+
+        foreach (var modifier in lookup.Modifiers)
+        {
+            if (modifier.Kind is "id" or "ref")
+            {
+                error($"{at}: the {modifier.Kind} modifier builds an id to write, and a lookup finds a record in the cache; the record's id is read with {MappingMapper.LookupKey}: {name}.id.", target);
+            }
+            else
+            {
+                ModifierIssue(modifier, null, at, error);
+            }
+        }
+
+        if (lookup.Modifiers.Count > 0 && lookup.FindBy.Count > 0 && lookup.FindBy.All(f => !string.IsNullOrWhiteSpace(f.Literal)))
+        {
+            error($"{at}: modifiers change the dataset value a findBy line compares, and every line compares a fixed text; remove the modifiers.", target);
+        }
+    }
+
+    /// <summary>
+    /// What a list of values lacks: items, each one value of its own input that is complete as an entry of that input would
+    /// be, a fixed item holding one value. The access lists keep a fixed value no record goes without, and the legal lists
+    /// hold fixed values alone, since the legal service checks them before a run.
+    /// </summary>
+    private static void ListIssues(MappingDraft draft, MappingDraftEntry entry, string target, string? scope, Action<string, string?> error)
+    {
+        if (target is "osdu.legal.legaltags" or "osdu.legal.otherRelevantDataCountries")
+        {
+            error($"{target}: the legal service checks a record's tags and countries before a run, which it can only do for a list the same on every record; give fixed values.", target);
+        }
+        else if (target is "osdu.acl.owners" or "osdu.acl.viewers"
+            && !entry.Items.Any(item => item.Input == MappingDraftInput.Static && string.IsNullOrWhiteSpace(item.When)))
+        {
+            error($"{target}: every record carries it, so list at least one fixed value without a condition beside the values entries read.", target);
+        }
+
+        if (entry.Items.Count == 0)
+        {
+            error($"{target}: add the list's items, each a fixed value or a value read from the dataset, the cache, a lookup or a search.", target);
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.When))
+        {
+            error($"{target}: a list of values is written as its items alone, so it takes no condition; give the items that need one a condition of their own.", target);
+        }
+
+        for (var i = 0; i < entry.Items.Count; i++)
+        {
+            var item = entry.Items[i];
+            var name = $"{target} item {i + 1}";
+            if (item.Input is MappingDraftInput.Repeat or MappingDraftInput.Coalesce or MappingDraftInput.List)
+            {
+                error($"{name}: an item gives values of its own; choose a fixed value, a dataset column, an expression, the cache, a lookup or a search.", target);
+                continue;
+            }
+
+            if (item.Input == MappingDraftInput.Static)
+            {
+                ItemLiteralIssue(item, name, target, error);
+            }
+            else
+            {
+                ValueIssues(draft, item, name, target, scope, error);
+            }
+
+            if (!string.IsNullOrWhiteSpace(item.When) && MappingMapper.ReadCondition(item.When.Trim(), MappingMapper.WhenKey, scope, out var whenProblem) is null)
+            {
+                error($"{name}: {whenProblem}", target);
+            }
+        }
+    }
+
+    /// <summary>A fixed item of a list: one text, number or true/false, never an object or a list of its own.</summary>
+    private static void ItemLiteralIssue(MappingDraftEntry item, string name, string target, Action<string, string?> error)
+    {
+        JsonNode? node;
+        try
+        {
+            node = string.IsNullOrWhiteSpace(item.Static) ? null : JsonNode.Parse(item.Static);
+        }
+        catch (JsonException)
+        {
+            error($"{name}: the fixed value is not valid JSON.", target);
+            return;
+        }
+
+        if (node is null || (node is JsonValue value && value.TryGetValue<string>(out var text) && text.Length == 0))
+        {
+            error($"{name}: give the fixed value.", target);
+        }
+        else if (node is not JsonValue)
+        {
+            error($"{name}: an item of a list of values is one value, a text, a number or true/false; a list of objects whose items come from rows repeats a child dataset.", target);
+        }
+        else if (MappingMapper.LiteralTokenProblem(node) is { } problem)
+        {
+            error($"{name}: {problem}", target);
+        }
     }
 
     /// <summary>
@@ -409,9 +658,9 @@ public static partial class MappingBuilder
         {
             var alternative = entry.Alternatives[i];
             var name = $"{target} alternative {i + 1}";
-            if (alternative.Input is MappingDraftInput.Repeat or MappingDraftInput.Coalesce)
+            if (alternative.Input is MappingDraftInput.Repeat or MappingDraftInput.Coalesce or MappingDraftInput.List)
             {
-                error($"{name}: an alternative reads one value; choose a dataset column, an expression, the cache, a search or a fixed value.", target);
+                error($"{name}: an alternative reads one value; choose a dataset column, an expression, the cache, a lookup, a search or a fixed value.", target);
                 continue;
             }
 
@@ -442,6 +691,22 @@ public static partial class MappingBuilder
                 if (!ColumnName().IsMatch(entry.CacheType ?? string.Empty) || !FieldPath().IsMatch(entry.CacheField ?? string.Empty))
                 {
                     error($"{name}: choose the cached type and the field to read.", target);
+                }
+
+                if (entry.FindAll is { } findAll)
+                {
+                    if (entry.FindBy.Count > 0)
+                    {
+                        error($"{name}: an entry finds one record with findBy lines or reads every matching row with find all, not both.", target);
+                    }
+
+                    if (entry.IgnoreSeparators)
+                    {
+                        error($"{name}: folding punctuation and spacing loosens how one record is found by name, and find all matches each key ignoring case only; turn it off.", target);
+                    }
+
+                    FindAllIssues(draft, entry, findAll, name, target, scope, error);
+                    break;
                 }
 
                 if (entry.FindBy.Count == 0)
@@ -499,6 +764,25 @@ public static partial class MappingBuilder
                 }
 
                 break;
+            case MappingDraftInput.Lookup:
+                if (!draft.Lookups.Any(l => string.Equals(l.Name?.Trim(), entry.Lookup?.Trim(), StringComparison.Ordinal)))
+                {
+                    error(draft.Lookups.Count == 0
+                        ? $"{name}: the mapping declares no lookup to read; add one under Lookups."
+                        : $"{name}: choose one of the mapping's lookups to read.", target);
+                }
+
+                if (!FieldPath().IsMatch(entry.CacheField?.Trim() ?? string.Empty) || entry.CacheField!.Trim().StartsWith(Marker, StringComparison.Ordinal))
+                {
+                    error($"{name}: name the field of the lookup's record to read, such as id or GeoContexts.FieldID.", target);
+                }
+
+                if (entry.FindBy.Count > 0 || entry.FindAll is not null || entry.Modifiers.Count > 0 || entry.IgnoreSeparators)
+                {
+                    error($"{name}: a lookup input reads the record its lookup finds, so how the record is found (findBy lines, modifiers, folding separators) is the lookup's to say.", target);
+                }
+
+                break;
             case MappingDraftInput.Static:
                 StaticIssue(entry, name, error);
                 break;
@@ -540,6 +824,84 @@ public static partial class MappingBuilder
             error($"{name}: {MappingMapper.UnverifiedKey} lets an id built with id or ref go out when the cache holds no record under it, and this one builds no id.", target);
         }
     }
+
+    /// <summary>
+    /// What a find all lacks: the cached field its rows are found by, exactly one value that field is compared with (a
+    /// column in the entry's scope, a fixed text, or a field of a declared lookup's record of another type), and fields to
+    /// be empty that are named once each and are not the key.
+    /// </summary>
+    private static void FindAllIssues(
+        MappingDraft draft, MappingDraftEntry entry, MappingDraftFindAll findAll, string name, string target, string? scope, Action<string, string?> error)
+    {
+        var field = findAll.Field?.Trim() ?? string.Empty;
+        if (!IsCachedRowField(field))
+        {
+            error($"{name}: find all needs the cached field the rows are found by, such as FieldIDList.", target);
+        }
+
+        var column = findAll.Column?.Trim() ?? string.Empty;
+        var lookupPath = findAll.Lookup?.Trim() ?? string.Empty;
+        var operands = new[] { column, findAll.Literal ?? string.Empty, lookupPath }.Count(text => !string.IsNullOrWhiteSpace(text));
+        if (operands != 1)
+        {
+            error($"{name}: find all compares {(field.Length == 0 ? "its field" : field)} with one value: a dataset column, a fixed text, or a field of a lookup's record.", target);
+        }
+        else if (column.Length > 0)
+        {
+            if (!DatasetColumnPattern().IsMatch(column))
+            {
+                error($"{name}: find all compares {field} with the dataset column '{column}', which is not a column name.", target);
+            }
+            else
+            {
+                ScopeIssue(column, scope, name, error);
+            }
+        }
+        else if (lookupPath.Length > 0)
+        {
+            var parts = lookupPath.Split('.', 2);
+            var lookup = draft.Lookups.FirstOrDefault(l => string.Equals(l.Name?.Trim(), parts[0], StringComparison.Ordinal));
+            if (parts.Length < 2 || !FieldPath().IsMatch(parts[1]) || parts[1].StartsWith(Marker, StringComparison.Ordinal))
+            {
+                error($"{name}: find all reads a field of a lookup's record, named after the lookup, such as wellbore.GeoContexts.FieldID; '{lookupPath}' is not one.", target);
+            }
+            else if (lookup is null)
+            {
+                error($"{name}: find all reads lookup '{parts[0]}', which the mapping does not declare.", target);
+            }
+            else if (string.Equals(lookup.CacheType?.Trim(), entry.CacheType?.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                error($"{name}: find all finds {entry.CacheType?.Trim()} rows by a field of the {entry.CacheType?.Trim()} record lookup '{parts[0]}' finds; read that record's field with a lookup input instead.", target);
+            }
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var empty in findAll.Empty.Select(e => e?.Trim() ?? string.Empty))
+        {
+            if (!IsCachedRowField(empty))
+            {
+                error($"{name}: find all names the fields a row must hold nothing under, such as FieldList; '{empty}' is not one.", target);
+            }
+            else if (!seen.Add(empty))
+            {
+                error($"{name}: find all asks for {empty} to be empty twice.", target);
+            }
+            else if (string.Equals(empty, field, StringComparison.OrdinalIgnoreCase))
+            {
+                error($"{name}: find all finds rows by {field} and asks for {field} to be empty; no row holds both.", target);
+            }
+        }
+
+        if (entry.Modifiers.Count > 0 && column.Length == 0)
+        {
+            error($"{name}: modifiers change the dataset value find all compares, and this one compares none; remove the modifiers.", target);
+        }
+    }
+
+    /// <summary>A field of a cached row as a find all line names it: a dotted path, never a word of the mapping language.</summary>
+    private static bool IsCachedRowField(string field)
+        => FieldPath().IsMatch(field) && !field.StartsWith(Marker, StringComparison.Ordinal)
+            && !field.StartsWith(MappingSource.CachePrefix + ".", StringComparison.Ordinal);
 
 
     /// <summary>
@@ -614,6 +976,16 @@ public static partial class MappingBuilder
             }
         }
 
+        if (draft.Lookups.Count > 0)
+        {
+            Line(string.Empty);
+            Line("lookups:");
+            foreach (var lookup in draft.Lookups)
+            {
+                WriteLookup(lookup, Line);
+            }
+        }
+
         Line(string.Empty);
         Line("record:");
         var layout = Layout(draft);
@@ -649,24 +1021,13 @@ public static partial class MappingBuilder
     }
 
     /// <summary>
-    /// The draft of a loaded mapping, for opening it in the builder. A mapping that reads lookups, reads every matching row
-    /// with <c>$findAll</c>, or lists values some of which nodes read, is refused rather than opened: the draft has no place
-    /// for those, and writing it back would drop them without a word.
+    /// The draft of a loaded mapping, for opening it in the builder: everything the document says, so writing the draft back
+    /// gives the same mapping. Its lookups, the nodes reading them, the rows a <c>$findAll</c> reads, the items of a list of
+    /// values and the cached rows a fixture declares all have their place in the draft.
     /// </summary>
     public static MappingDraft FromDefinition(MappingDefinition mapping)
     {
         ArgumentNullException.ThrowIfNull(mapping);
-        var written = mapping.Entries.SelectMany(e => e.ValueNodes.Prepend(e)).ToList();
-        var construct = mapping.Lookups.Count > 0 ? $"declares lookups ({string.Join(", ", mapping.Lookups.Keys.Order(StringComparer.Ordinal))})"
-            : written.FirstOrDefault(e => e.FindAll is not null) is { } all ? $"reads every matching row with $findAll at {all.Where}"
-            : written.FirstOrDefault(e => e.IsList) is { } list ? $"lists values that nodes read at {list.Where}"
-            : null;
-        if (construct is not null)
-        {
-            throw new FlowValidationException(
-                $"{mapping.SourcePath ?? mapping.Reference}: the mapping {construct}, which the builder does not lay out; edit the mapping document itself.");
-        }
-
         return new MappingDraft
         {
             Name = mapping.Name,
@@ -683,6 +1044,18 @@ public static partial class MappingBuilder
                 .OrderBy(s => s.Name, StringComparer.Ordinal)
                 .Select(s => new MappingDraftSearch(s.Name, s.Kind, s.Schema.Kind, s.Schema.Version, s.Description))
                 .ToList(),
+            Lookups = mapping.Lookups.Values
+                .OrderBy(l => l.Name, StringComparer.Ordinal)
+                .Select(l => new MappingDraftLookup
+                {
+                    Name = l.Name,
+                    CacheType = l.CacheType,
+                    FindBy = l.FindBy.Select(DraftFind).ToList(),
+                    Modifiers = l.Modifiers.Select(DraftModifier).ToList(),
+                    IgnoreSeparators = l.IgnoreSeparators,
+                    Description = l.Description,
+                })
+                .ToList(),
             Entries = mapping.Entries.Select(Draft).ToList(),
             FixtureParameters = mapping.FixtureParameters,
             Fixtures = mapping.Fixtures.Select(f => new MappingDraftFixture(
@@ -691,7 +1064,8 @@ public static partial class MappingBuilder
                 f.Record,
                 f.Datasets,
                 f.Expected,
-                f.Searches.Count == 0 ? null : f.Searches.Select(a => new MappingDraftFixtureSearch(a.Search, a.Field, a.Value, a.Id)).ToList())).ToList(),
+                f.Searches.Count == 0 ? null : f.Searches.Select(a => new MappingDraftFixtureSearch(a.Search, a.Field, a.Value, a.Id)).ToList(),
+                f.Cache.Count == 0 ? null : f.Cache)).ToList(),
         };
     }
 
@@ -724,7 +1098,33 @@ public static partial class MappingBuilder
 
     private static MappingDraftEntry DraftNode(MappingEntry entry)
     {
+        if (entry.IsList)
+        {
+            // A list is its items alone: each a literal, or a node with its own condition, required flag and description.
+            return new MappingDraftEntry
+            {
+                Target = entry.Target.Text,
+                Input = MappingDraftInput.List,
+                Items = entry.Parts.Select(DraftNode).ToList(),
+            };
+        }
+
         var source = entry.Source;
+        if (source?.Lookup is { } lookup)
+        {
+            // The node carries its lookup's findBy lines and modifiers as the loader resolved them; the draft keeps them on the lookup.
+            return new MappingDraftEntry
+            {
+                Target = entry.Target.Text,
+                Input = MappingDraftInput.Lookup,
+                Lookup = lookup,
+                CacheField = source.CacheField,
+                When = entry.AppliesWhen?.Text,
+                Required = entry.Required,
+                Description = entry.Description,
+            };
+        }
+
         return new MappingDraftEntry
         {
             Target = entry.Target.Text,
@@ -743,25 +1143,18 @@ public static partial class MappingBuilder
             Child = source?.Child,
             CacheType = source?.CacheType,
             CacheField = source?.CacheField,
-            FindBy = entry.FindBy.Select(f => new MappingDraftFind(f.Field, f.Column is null ? null : ColumnText(f.Column), f.Literal)).ToList(),
-            Modifiers = entry.Modifiers.Select(m => new MappingDraftModifier(
-                m.Kind.ToString().ToLowerInvariant(),
-                m.Separator,
-                m.Part,
-                m.Replacements.Count == 0 ? null : m.Replacements.Select(kv => new MappingDraftReplacement(kv.Key, kv.Value)).ToList(),
-                m.Kind switch
+            FindBy = entry.FindBy.Select(DraftFind).ToList(),
+            FindAll = entry.FindAll is { } all
+                ? new MappingDraftFindAll
                 {
-                    ModifierKind.Id => m.Id!.Text,
-                    ModifierKind.Ref => m.EntityType,
-                    _ => m.Text,
-                },
-                m.DecimalSeparator,
-                m.GroupSeparator,
-                m.Kind == ModifierKind.Replace ? FallbackKind(m.Otherwise) : null,
-                m.Kind == ModifierKind.Replace && m.Otherwise.Kind == ReplaceFallbackKind.Text ? m.Otherwise.Text : null,
-                m.Table?.CacheType,
-                m.Table?.Match,
-                m.Table?.Field)).ToList(),
+                    Field = all.Field,
+                    Column = all.Operand.Column is { } operand ? ColumnText(operand) : null,
+                    Literal = all.Operand.Literal,
+                    Lookup = all.Operand.Lookup is { } read ? $"{read.Name}.{all.Operand.LookupPath}" : null,
+                    Empty = all.Empty,
+                }
+                : null,
+            Modifiers = entry.Modifiers.Select(DraftModifier).ToList(),
             When = entry.AppliesWhen?.Text,
             Where = entry.RowFilter?.Text,
             Required = entry.Required,
@@ -771,6 +1164,27 @@ public static partial class MappingBuilder
             Description = entry.Description,
         };
     }
+
+    private static MappingDraftFind DraftFind(FindBy find) => new(find.Field, find.Column is null ? null : ColumnText(find.Column), find.Literal);
+
+    private static MappingDraftModifier DraftModifier(Modifier modifier) => new(
+        modifier.Kind.ToString().ToLowerInvariant(),
+        modifier.Separator,
+        modifier.Part,
+        modifier.Replacements.Count == 0 ? null : modifier.Replacements.Select(kv => new MappingDraftReplacement(kv.Key, kv.Value)).ToList(),
+        modifier.Kind switch
+        {
+            ModifierKind.Id => modifier.Id!.Text,
+            ModifierKind.Ref => modifier.EntityType,
+            _ => modifier.Text,
+        },
+        modifier.DecimalSeparator,
+        modifier.GroupSeparator,
+        modifier.Kind == ModifierKind.Replace ? FallbackKind(modifier.Otherwise) : null,
+        modifier.Kind == ModifierKind.Replace && modifier.Otherwise.Kind == ReplaceFallbackKind.Text ? modifier.Otherwise.Text : null,
+        modifier.Table?.CacheType,
+        modifier.Table?.Match,
+        modifier.Table?.Field);
 
     /// <summary>One property of the record tree the draft is written as: an object of properties, or an entry, which for a repeat holds the item's properties too.</summary>
     private sealed class TreeSlot
@@ -961,7 +1375,41 @@ public static partial class MappingBuilder
             // Always the block form: an expression reads best on a line of its own, and a flow mapping would need it quoted.
             line(key + ":");
             line(inner + MappingMapper.ExprKey + ": " + ExpressionScalar(entry.Expression?.Trim() ?? string.Empty));
-            WriteModifiers(entry, inner, line);
+            WriteModifiers(entry.Modifiers, inner, line);
+            WriteSettings(entry, inner, line);
+            return;
+        }
+
+        if (entry.Input == MappingDraftInput.List)
+        {
+            // The items alone, in order: a list has no settings of its own, and each item carries its own.
+            if (entry.Items.Count == 0)
+            {
+                line(key + ": []");
+                return;
+            }
+
+            line(key + ":");
+            foreach (var item in entry.Items)
+            {
+                WriteItem(item, indent + 2, scope, valueNode: false, line);
+            }
+
+            return;
+        }
+
+        if (entry.Input == MappingDraftInput.Lookup)
+        {
+            // How the record is found is the lookup's to say, so the node holds the field it reads and its own settings alone.
+            var field = $"{entry.Lookup?.Trim()}.{entry.CacheField?.Trim()}";
+            if (string.IsNullOrWhiteSpace(entry.When) && entry.Required && !entry.Unverified && string.IsNullOrWhiteSpace(entry.Description))
+            {
+                line(key + ": { " + MappingMapper.LookupKey + ": " + FlowScalar(field) + " }");
+                return;
+            }
+
+            line(key + ":");
+            line(inner + MappingMapper.LookupKey + ": " + Scalar(field));
             WriteSettings(entry, inner, line);
             return;
         }
@@ -973,7 +1421,8 @@ public static partial class MappingBuilder
             _ => (MappingMapper.CacheKey, $"{entry.CacheType?.Trim()}.{entry.CacheField?.Trim()}"),
         };
 
-        var bare = entry.FindBy.Count == 0 && entry.Modifiers.Count == 0 && string.IsNullOrWhiteSpace(entry.When) && entry.Required
+        var findAll = entry.Input == MappingDraftInput.Cache ? entry.FindAll : null;
+        var bare = entry.FindBy.Count == 0 && findAll is null && entry.Modifiers.Count == 0 && string.IsNullOrWhiteSpace(entry.When) && entry.Required
             && !(entry.Input == MappingDraftInput.Cache && entry.IgnoreSeparators) && !entry.Unverified && string.IsNullOrWhiteSpace(entry.Description);
         if (bare)
         {
@@ -983,45 +1432,97 @@ public static partial class MappingBuilder
 
         line(key + ":");
         line(inner + sourceKey + ": " + Scalar(read));
-        if (entry.Input is MappingDraftInput.Cache or MappingDraftInput.Search)
+        if (findAll is not null)
         {
-            var lines = entry.FindBy.Select(f => FindByText(f, scope)).ToList();
-            if (lines.Count == 1)
-            {
-                line(inner + MappingMapper.FindByKey + ": " + Scalar(lines[0]));
-            }
-            else if (lines.Count > 1)
-            {
-                line(inner + MappingMapper.FindByKey + ":");
-                foreach (var text in lines)
-                {
-                    line(inner + "  - " + Scalar(text));
-                }
-            }
+            WriteLines(MappingMapper.FindAllKey, FindAllLines(findAll, scope), inner, line);
+        }
+        else if (entry.Input is MappingDraftInput.Cache or MappingDraftInput.Search)
+        {
+            WriteLines(MappingMapper.FindByKey, entry.FindBy.Select(f => FindByText(f, scope)).ToList(), inner, line);
         }
 
-        WriteModifiers(entry, inner, line);
+        WriteModifiers(entry.Modifiers, inner, line);
         WriteSettings(entry, inner, line);
     }
 
     /// <summary>
+    /// A lookup under <c>lookups</c>: the cached type its record is found in, the findBy lines, read against the dataset's
+    /// own row, then the modifiers, the separator fold and the description.
+    /// </summary>
+    private static void WriteLookup(MappingDraftLookup lookup, Action<string> line)
+    {
+        const string Inner = "    ";
+        line("  " + Scalar(lookup.Name?.Trim() ?? string.Empty) + ":");
+        line(Inner + MappingMapper.CacheKey + ": " + Scalar(lookup.CacheType?.Trim() ?? string.Empty));
+        WriteLines(MappingMapper.FindByKey, lookup.FindBy.Select(f => FindByText(f, null)).ToList(), Inner, line);
+        WriteModifiers(lookup.Modifiers, Inner, line);
+        if (lookup.IgnoreSeparators)
+        {
+            line(Inner + MappingMapper.IgnoreSeparatorsKey + ": true");
+        }
+
+        if (!string.IsNullOrWhiteSpace(lookup.Description))
+        {
+            line(Inner + MappingMapper.DescriptionKey + ": " + Scalar(lookup.Description.Trim()));
+        }
+    }
+
+    /// <summary>A key holding lines of the mapping language (<c>$findBy</c>, <c>$findAll</c>): one line beside the key, several as a list under it.</summary>
+    private static void WriteLines(string key, IReadOnlyList<string> lines, string inner, Action<string> line)
+    {
+        if (lines.Count == 1)
+        {
+            line(inner + key + ": " + Scalar(lines[0]));
+        }
+        else if (lines.Count > 1)
+        {
+            line(inner + key + ":");
+            foreach (var text in lines)
+            {
+                line(inner + "  - " + Scalar(text));
+            }
+        }
+    }
+
+    /// <summary>
+    /// A find all as the document writes it: the key line, comparing the field with a column in the entry's scope, a
+    /// quoted text or <c>$lookup.&lt;lookup&gt;.&lt;field&gt;</c>, then one <c>&lt;field&gt; is empty</c> line per field.
+    /// </summary>
+    private static List<string> FindAllLines(MappingDraftFindAll findAll, string? scope)
+    {
+        var operand = !string.IsNullOrWhiteSpace(findAll.Literal)
+            ? QuotedText(findAll.Literal)
+            : !string.IsNullOrWhiteSpace(findAll.Lookup)
+                ? MappingMapper.LookupReference + "." + findAll.Lookup.Trim()
+                : ScopedColumn(findAll.Column ?? string.Empty, scope);
+        return [$"{findAll.Field?.Trim()} = {operand}", .. findAll.Empty.Select(field => $"{field?.Trim()} is empty")];
+    }
+
+    /// <summary>
     /// One alternative of a coalesce entry, as an item of its <c>$coalesce</c> list at <paramref name="indent"/>: written as a
-    /// node of its own is, with the item's dash in place of its key, and a fixed value always under <c>$value</c>, since a
-    /// bare value in the list would not be a node. What only the whole node takes is never written here.
+    /// node of its own is, with a fixed value always under <c>$value</c>, since a bare value in the list would not be a node.
+    /// What only the whole node takes is never written here.
     /// </summary>
     private static void WriteAlternative(MappingDraftEntry alternative, int indent, string? scope, Action<string> line)
+        => WriteItem(alternative with { When = null, Required = true, Description = null }, indent, scope, valueNode: true, line);
+
+    /// <summary>
+    /// One item of a list at <paramref name="indent"/>: a node written as it would be at a key of its own, with the item's
+    /// dash in place of the key. A fixed value is the bare value, unless it carries a condition or a description, or
+    /// <paramref name="valueNode"/> asks for a node, which puts it under <c>$value</c>.
+    /// </summary>
+    private static void WriteItem(MappingDraftEntry item, int indent, string? scope, bool valueNode, Action<string> line)
     {
         var dash = new string(' ', indent) + "- ";
-        var own = alternative with { When = null, Required = true, Description = null };
-        if (own.Input == MappingDraftInput.Static)
+        if (item.Input == MappingDraftInput.Static)
         {
-            WriteLiteralAlternative(own, indent, line);
+            WriteLiteralItem(item, indent, valueNode, line);
             return;
         }
 
         var written = new List<string>();
         var key = new string(' ', indent) + "-";
-        WriteNode(key, new TreeSlot { Entry = own }, indent, scope, written.Add);
+        WriteNode(key, new TreeSlot { Entry = item }, indent, scope, written.Add);
         if (written[0].StartsWith(key + ": ", StringComparison.Ordinal))
         {
             // The one-line form: the node itself is the item.
@@ -1037,19 +1538,39 @@ public static partial class MappingBuilder
         }
     }
 
-    /// <summary>A fixed value as the last alternative of a coalesce entry: <c>- $value: ...</c>, an object or a list of them under it.</summary>
-    private static void WriteLiteralAlternative(MappingDraftEntry alternative, int indent, Action<string> line)
+    /// <summary>
+    /// A fixed value as an item of a list: the bare value where it can be, and otherwise <c>- $value: ...</c>, an object or a
+    /// list of them under it, followed by the item's condition and description.
+    /// </summary>
+    private static void WriteLiteralItem(MappingDraftEntry item, int indent, bool valueNode, Action<string> line)
     {
         JsonNode? node;
         try
         {
-            node = string.IsNullOrWhiteSpace(alternative.Static) ? null : JsonNode.Parse(alternative.Static);
+            node = string.IsNullOrWhiteSpace(item.Static) ? null : JsonNode.Parse(item.Static);
         }
         catch (JsonException)
         {
-            node = JsonValue.Create(alternative.Static ?? string.Empty);
+            node = JsonValue.Create(item.Static ?? string.Empty);
         }
 
+        var settled = string.IsNullOrWhiteSpace(item.When) && string.IsNullOrWhiteSpace(item.Description);
+        if (!valueNode && settled && node is JsonValue bareValue)
+        {
+            line(new string(' ', indent) + "- " + ValueText(bareValue, flow: false));
+            return;
+        }
+
+        WriteLiteralNode(node, indent, line);
+        if (!settled)
+        {
+            WriteSettings(item, new string(' ', indent + 2), line);
+        }
+    }
+
+    /// <summary>A fixed value as a list item under <c>$value</c>: <c>- $value: ...</c>, an object or a list of them under it.</summary>
+    private static void WriteLiteralNode(JsonNode? node, int indent, Action<string> line)
+    {
         var dash = new string(' ', indent) + "- " + MappingMapper.ValueKey + ":";
         switch (node)
         {
@@ -1076,15 +1597,15 @@ public static partial class MappingBuilder
         }
     }
 
-    private static void WriteModifiers(MappingDraftEntry entry, string inner, Action<string> line)
+    private static void WriteModifiers(IReadOnlyList<MappingDraftModifier> modifiers, string inner, Action<string> line)
     {
-        if (entry.Modifiers.Count == 0)
+        if (modifiers.Count == 0)
         {
             return;
         }
 
         line(inner + MappingMapper.ModifiersKey + ":");
-        foreach (var modifier in entry.Modifiers)
+        foreach (var modifier in modifiers)
         {
             var lines = ModifierLines(modifier);
             line(inner + "  - " + lines[0]);
@@ -1276,6 +1797,23 @@ public static partial class MappingBuilder
             {
                 var id = answer.Id is null ? string.Empty : ", id: " + FlowScalar(answer.Id);
                 line("      - { search: " + FlowScalar(answer.Search) + ", field: " + FlowScalar(answer.Field) + ", value: " + FlowScalar(answer.Value) + id + " }");
+            }
+        }
+
+        if (fixture.Cache is { Count: > 0 } cache)
+        {
+            // Each row as the object it is, written verbatim as a $value is: the cache names its fields, not the record tree.
+            line("    cache:");
+            foreach (var (type, rows) in cache)
+            {
+                if (rows.Count == 0)
+                {
+                    line("      " + Scalar(type) + ": []");
+                    continue;
+                }
+
+                line("      " + Scalar(type) + ":");
+                WriteArray(new JsonArray(rows.Select(row => (JsonNode?)row.DeepClone()).ToArray()), 8, escape: false, line);
             }
         }
 
@@ -1502,10 +2040,13 @@ public static partial class MappingBuilder
     private static string FindByText(MappingDraftFind find, string? scope)
     {
         var operand = !string.IsNullOrWhiteSpace(find.Literal)
-            ? (find.Literal.Contains('\'', StringComparison.Ordinal) ? "\"" + find.Literal + "\"" : "'" + find.Literal + "'")
+            ? QuotedText(find.Literal)
             : ScopedColumn(find.Column ?? string.Empty, scope);
         return $"{find.Field?.Trim()} = {operand}";
     }
+
+    /// <summary>A fixed text a findBy or find all line compares with, in the quotes that do not occur in it.</summary>
+    private static string QuotedText(string text) => text.Contains('\'', StringComparison.Ordinal) ? "\"" + text + "\"" : "'" + text + "'";
 
     /// <summary>
     /// An expression as a YAML value: plain where YAML reads it back as the same text (<c>curve_id != "MD"</c>), which is

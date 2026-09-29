@@ -540,6 +540,63 @@ public class MappingBuilderTests
         Assert.Contains(problem, refused.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Lookups_find_alls_and_lists_that_would_not_load_are_named_where_they_are_written()
+    {
+        static MappingDraftEntry Fixed(string target, string json) => new() { Target = target, Input = MappingDraftInput.Static, Static = json };
+        var draft = BaseDraft() with
+        {
+            Lookups =
+            [
+                new MappingDraftLookup { Name = "wellbore", CacheType = "Wellbore", FindBy = [new MappingDraftFind("FacilityName", "curves.uwi", null)] },
+                new MappingDraftLookup { Name = "field", CacheType = "Field", FindBy = [new MappingDraftFind("Name", "field_name", null)], Modifiers = [new MappingDraftModifier("ref")] },
+            ],
+            Entries =
+            [
+                Fixed("osdu.acl.owners", """["owners@x"]"""),
+                new MappingDraftEntry
+                {
+                    Target = "osdu.acl.viewers",
+                    Input = MappingDraftInput.List,
+                    Items =
+                    [
+                        new MappingDraftEntry
+                        {
+                            Target = "osdu.acl.viewers", Input = MappingDraftInput.Cache, CacheType = "Wellbore", CacheField = "id",
+                            FindAll = new MappingDraftFindAll { Field = "FacilityName", Lookup = "wellbore.FacilityName" },
+                        },
+                        Fixed("osdu.acl.viewers", """{"a":1}""") with { When = "not empty(name)" },
+                    ],
+                },
+                new MappingDraftEntry { Target = "osdu.legal.legaltags", Input = MappingDraftInput.List, Items = [Fixed("osdu.legal.legaltags", "\"tag\"")] },
+                Fixed("osdu.legal.otherRelevantDataCountries", """["NO"]"""),
+                new MappingDraftEntry { Target = "osdu.data.Name", Input = MappingDraftInput.Dataset, Column = "name" },
+                new MappingDraftEntry { Target = "osdu.data.WellboreID", Input = MappingDraftInput.Lookup, Lookup = "well", CacheField = "id" },
+                new MappingDraftEntry
+                {
+                    Target = "osdu.data.Aliases", Input = MappingDraftInput.Cache, CacheType = "AccessGroupMap", CacheField = "EntitlementGroupEmail",
+                    FindAll = new MappingDraftFindAll { Field = "FieldList", Column = "uwi", Literal = "x", Empty = ["FieldList"] },
+                },
+            ],
+        };
+
+        var issues = MappingBuilder.Incomplete(draft);
+        void Named(string target, string text)
+            => Assert.Contains(issues, i => i.Target == target && i.Message.Contains(text, StringComparison.Ordinal));
+
+        Named("lookups.wellbore", "compares curves.uwi, a column of a child dataset; a lookup reads the dataset's own row");
+        Named("lookups.field", "the ref modifier builds an id to write");
+        Named("lookups.field", "Lookup 'field' is read by no entry");
+        Assert.DoesNotContain(issues, i => i.Message.Contains("Lookup 'wellbore' is read by no entry", StringComparison.Ordinal));
+        Named("osdu.acl.viewers", "list at least one fixed value without a condition");
+        Named("osdu.acl.viewers", "item 1: find all finds Wellbore rows by a field of the Wellbore record lookup 'wellbore' finds");
+        Named("osdu.acl.viewers", "item 2: an item of a list of values is one value");
+        Named("osdu.legal.legaltags", "the legal service checks a record's tags and countries before a run");
+        Named("osdu.data.WellboreID", "choose one of the mapping's lookups to read");
+        Named("osdu.data.Aliases", "find all compares FieldList with one value");
+        Named("osdu.data.Aliases", "find all finds rows by FieldList and asks for FieldList to be empty");
+    }
+
     /// <summary>A condition comparing the name with the awkward text, written as an expression text literal.</summary>
     private static string ConditionText(string text) => $"name != {ExpressionText(text)}";
 

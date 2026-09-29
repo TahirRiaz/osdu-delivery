@@ -461,33 +461,35 @@ public sealed class AccessListTests
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("with $findAll gives a list, one value from every row it finds", StringComparison.Ordinal));
     }
 
+    /// <summary>A fixture that declares the wellbore and the access group it renders against, whatever the partition's cache holds.</summary>
+    internal const string FieldFixture = """
+        fixtures:
+          - name: a wellbore of a field whose group the data office maintains
+            row: { name: log-1, depth: "1", wellbore_uwi: NO 5/5-F }
+            cache:
+              Wellbore:
+                - id: dev:master-data--Wellbore:f1
+                  FacilityName: NO 5/5-F
+                  GeoContexts.FieldID: [ "dev:master-data--Field:F:" ]
+              AccessGroupMap:
+                - id: dev:data-governance--AccessGroupMap:f
+                  FieldIDList: [ "dev:master-data--Field:F:" ]
+                  FieldList: [ F ]
+                  EntitlementGroupEmail: data.office.f.viewers@x
+            expected: |
+              {
+                "id": "dev:test--Thing:x",
+                "kind": "test:wks:work-product-component--Thing:1.0.0",
+                "acl": { "owners": ["owners@x"], "viewers": ["viewers@x", "data.office.f.viewers@x"] },
+                "legal": { "legaltags": ["tag"], "otherRelevantDataCountries": ["NO"] },
+                "data": { "Name": "log-1", "Depth": 1, "WellboreID": "dev:master-data--Wellbore:f1:" }
+              }
+        """;
+
     [Fact]
     public void A_fixture_renders_against_the_rows_it_declares_and_not_the_partition_s_rows_of_the_day()
     {
-        const string Fixtures = """
-            fixtures:
-              - name: a wellbore of a field whose group the data office maintains
-                row: { name: log-1, depth: "1", wellbore_uwi: NO 5/5-F }
-                cache:
-                  Wellbore:
-                    - id: dev:master-data--Wellbore:f1
-                      FacilityName: NO 5/5-F
-                      GeoContexts.FieldID: [ "dev:master-data--Field:F:" ]
-                  AccessGroupMap:
-                    - id: dev:data-governance--AccessGroupMap:f
-                      FieldIDList: [ "dev:master-data--Field:F:" ]
-                      FieldList: [ F ]
-                      EntitlementGroupEmail: data.office.f.viewers@x
-                expected: |
-                  {
-                    "id": "dev:test--Thing:x",
-                    "kind": "test:wks:work-product-component--Thing:1.0.0",
-                    "acl": { "owners": ["owners@x"], "viewers": ["viewers@x", "data.office.f.viewers@x"] },
-                    "legal": { "legaltags": ["tag"], "otherRelevantDataCountries": ["NO"] },
-                    "data": { "Name": "log-1", "Depth": 1, "WellboreID": "dev:master-data--Wellbore:f1:" }
-                  }
-            """;
-        var mapping = Mapping(fixtures: Fixtures);
+        var mapping = Mapping(fixtures: FieldFixture);
         var fixture = Assert.Single(mapping.Fixtures);
         Assert.Equal(["AccessGroupMap", "Wellbore"], fixture.Cache.Keys.Order(StringComparer.Ordinal));
 
@@ -512,25 +514,115 @@ public sealed class AccessListTests
     }
 
     [Fact]
-    public void The_builder_refuses_to_open_what_it_would_drop_on_writing_the_mapping_back()
+    public void The_builder_opens_lookups_find_alls_lists_and_a_fixture_s_cached_rows_and_writes_back_the_same_mapping()
     {
-        var ex = Assert.Throws<FlowValidationException>(() => MappingBuilder.FromDefinition(Mapping()));
-        Assert.Contains("the mapping declares lookups (wellbore), which the builder does not lay out", ex.Message, StringComparison.Ordinal);
-
-        var list = Assert.Throws<FlowValidationException>(() => MappingBuilder.FromDefinition(Mapping(
-            lookups: string.Empty,
-            data: "Symbol: { $value: s }",
+        var original = Mapping(
+            lookups: """
+                lookups:
+                  wellbore:
+                    $cache: Wellbore
+                    $findBy:
+                      - FacilityName = wellbore_uwi
+                      - NameAliases.AliasName = wellbore_uwi
+                    $modifiers: [trim]
+                    $ignoreSeparators: true
+                    $description: The wellbore the log belongs to.
+                """,
             record: """
                 acl:
                   owners: [owners@x]
                   viewers:
                     - viewers@x
-                    - $cache: UnitOfMeasure.Name
-                      $findAll: Code = unit
+                    - $value: wellbores@x
+                      $when: not empty(wellbore_uwi)
+                    - $cache: AccessGroupMap.EntitlementGroupEmail
+                      $findAll: FieldIDList = $lookup.wellbore.GeoContexts.FieldID
+                      $required: false
+                    - $cache: AccessGroupMap.EntitlementGroupEmail
+                      $findAll:
+                        - GeoPoliticalEntityID = $lookup.wellbore.GeoContexts.GeoPoliticalEntityID
+                        - FieldList is empty
+                        - FieldIDList is empty
+                      $required: false
+                    - $cache: AccessGroupMap.EntitlementGroupEmail
+                      $findAll: GeoPoliticalEntityName = 'United Kingdom'
+                      $when: not empty(wellbore_uwi)
+                      $required: false
                 legal:
                   legaltags: [tag]
                   otherRelevantDataCountries: [NO]
-                """)));
-        Assert.Contains("reads every matching row with $findAll at record.acl.viewers[1]", list.Message, StringComparison.Ordinal);
+                """,
+            data: """
+                WellboreID: { $lookup: wellbore.id }
+                Symbol:
+                  $coalesce:
+                    - $lookup: wellbore.FacilityName
+                    - $value: unknown
+                  $when: not empty(wellbore_uwi)
+                Aliases:
+                  - alias@x
+                  - $lookup: wellbore.FacilityName
+                    $required: false
+                    $description: The wellbore's name, when the lookup finds it.
+                  - $cache: AccessGroupMap.GeoPoliticalEntityName
+                    $findAll: FieldList = wellbore_uwi
+                    $modifiers: [upper]
+                    $required: false
+                """,
+            fixtures: FieldFixture);
+
+        var draft = MappingBuilder.FromDefinition(original);
+        Assert.Empty(MappingBuilder.Incomplete(draft));
+
+        // The draft holds what the document says, in the builder's terms.
+        var lookup = Assert.Single(draft.Lookups);
+        Assert.Equal(("wellbore", "Wellbore", true), (lookup.Name, lookup.CacheType, lookup.IgnoreSeparators));
+        Assert.Equal(["FacilityName", "NameAliases.AliasName"], lookup.FindBy.Select(f => f.Field));
+        Assert.Equal("trim", Assert.Single(lookup.Modifiers).Kind);
+
+        var wellbore = draft.Entries.Single(e => e.Target == "osdu.data.WellboreID");
+        Assert.Equal((MappingDraftInput.Lookup, "wellbore", "id"), (wellbore.Input, wellbore.Lookup, wellbore.CacheField));
+        Assert.Empty(wellbore.FindBy);
+
+        var viewers = draft.Entries.Single(e => e.Target == "osdu.acl.viewers");
+        Assert.Equal(MappingDraftInput.List, viewers.Input);
+        Assert.Equal(
+            [MappingDraftInput.Static, MappingDraftInput.Static, MappingDraftInput.Cache, MappingDraftInput.Cache, MappingDraftInput.Cache],
+            viewers.Items.Select(i => i.Input));
+        Assert.Equal("not empty(wellbore_uwi)", viewers.Items[1].When);
+        Assert.Equal("wellbore.GeoContexts.FieldID", viewers.Items[2].FindAll!.Lookup);
+        Assert.Equal(["FieldList", "FieldIDList"], viewers.Items[3].FindAll!.Empty);
+        Assert.Equal("United Kingdom", viewers.Items[4].FindAll!.Literal);
+
+        var aliases = draft.Entries.Single(e => e.Target == "osdu.data.Aliases");
+        Assert.Equal(MappingDraftInput.Lookup, aliases.Items[1].Input);
+        Assert.Equal(("wellbore_uwi", "upper"), (aliases.Items[2].FindAll!.Column, Assert.Single(aliases.Items[2].Modifiers).Kind));
+        Assert.Equal(MappingDraftInput.Lookup, draft.Entries.Single(e => e.Target == "osdu.data.Symbol").Alternatives[0].Input);
+        Assert.Equal(["Wellbore", "AccessGroupMap"], Assert.Single(draft.Fixtures).Cache!.Keys);
+
+        // Written back and read again, it is the same draft and the same document.
+        var yaml = MappingBuilder.ToYaml(draft);
+        var reread = new DeliveryDocumentLoader().ParseMapping(yaml, "thing.yaml");
+        var again = MappingBuilder.FromDefinition(reread);
+        var json = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(draft, json), System.Text.Json.JsonSerializer.Serialize(again, json));
+        Assert.Equal(yaml, MappingBuilder.ToYaml(again));
+
+        // And it renders every row exactly as the document it was opened from.
+        foreach (var uwi in new[] { "NO 16/3-A-1", "UK 9/8-A1", "ALBA A1", "NO 1/1-X", "nowhere", null })
+        {
+            var before = Renderer(original).Render(Record(uwi));
+            var after = Renderer(reread).Render(Record(uwi));
+            Assert.Equal(string.Join("; ", before.Holds), string.Join("; ", after.Holds));
+            Assert.Equal(before.Document.ToJsonString(), after.Document.ToJsonString());
+        }
+
+        // The fixture keeps the rows it declares: its wellbore is in no cache but its own, so it renders unheld only with them.
+        var fixtureBefore = Assert.Single(Preflight.RenderFixtures(original, Renderer(original)));
+        var fixtureAfter = Assert.Single(Preflight.RenderFixtures(reread, Renderer(reread)));
+        Assert.Null(fixtureAfter.Problem);
+        Assert.False(fixtureAfter.Result!.IsHeld, string.Join("; ", fixtureAfter.Result.Holds));
+        Assert.Equal("dev:master-data--Wellbore:f1:", fixtureAfter.Result.Document["data"]!["WellboreID"]!.GetValue<string>());
+        Assert.Equal(fixtureBefore.Result!.Document.ToJsonString(), fixtureAfter.Result.Document.ToJsonString());
     }
 }
