@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.14.0";
+    public const string ModuleVersion = "1.15.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -54,6 +54,12 @@ public sealed class OsduDbContext : DbContext
     public DbSet<DeliveryActivity> DeliveryActivities => Set<DeliveryActivity>();
 
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
+
+    /// <summary>The runs of assertion flows, one row per run and partition.</summary>
+    public DbSet<DeliveryAssertionRun> DeliveryAssertionRuns => Set<DeliveryAssertionRun>();
+
+    /// <summary>The result of every test in every run of an assertion flow.</summary>
+    public DbSet<DeliveryAssertionResult> DeliveryAssertionResults => Set<DeliveryAssertionResult>();
 
     public DbSet<DeliveryMapping> DeliveryMappings => Set<DeliveryMapping>();
 

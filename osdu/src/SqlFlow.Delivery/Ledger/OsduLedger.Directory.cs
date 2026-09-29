@@ -24,7 +24,7 @@ public sealed partial class OsduLedger
     /// index leading with the partition and the ledger identity, so a ledger's rows are one range of it.
     /// </summary>
     private static readonly string[] LedgerTables =
-        ["Record", "RecordIdentity", "Attempt", "Submission", "WorkBatch", "Lease", "RecordEvent", "SourceWatermark", "Activity", "Retrieval"];
+        ["Record", "RecordIdentity", "Attempt", "Submission", "WorkBatch", "Lease", "RecordEvent", "SourceWatermark", "Activity", "Retrieval", "AssertionRun", "AssertionResult"];
 
     /// <summary>The statement that moves a slice of an unassigned ledger's rows of each table into its partition.</summary>
     private static readonly string[] AdoptStatements = LedgerTables

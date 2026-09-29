@@ -67,6 +67,7 @@ public static class DeliveryServices
         services.AddSingleton<ICompanionDocumentKind, DictionaryDocumentKind>();
         services.AddSingleton<IFlowDocumentKind, RetrievalFlowKind>();
         services.AddSingleton<IFlowDocumentKind, CacheFlowKind>();
+        services.AddSingleton<IFlowDocumentKind, AssertionFlowKind>();
         // The repository sync's delivery half. It is given the module database when the host registered one, since
         // that is what decides whether its rows can ride the catalog's transaction or need a connection of their own.
         services.AddSingleton<ICatalogSyncExtension>(sp => new DeliveryCatalogSync(
@@ -104,6 +105,7 @@ public static class DeliveryServices
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, CacheExecutor>();
+        services.AddSingleton<IFlowDocumentExecutor, AssertionExecutor>();
         services.AddSingleton<IComputeOperation, ProbeTargetOperation>();
         services.AddSingleton<IComputeOperation, ReadRecordOperation>();
         services.AddSingleton<IComputeOperation, ReadSourceRowOperation>();

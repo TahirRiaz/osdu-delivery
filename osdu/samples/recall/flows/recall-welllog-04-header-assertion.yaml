@@ -1,0 +1,128 @@
+# Flow: recall-welllog-04-header-assertion
+#
+# What the Recall well logs look like in OSDU once recall-welllog-03-header-delivery has delivered them
+# (osdu/docs/documents.md, "Assertion flow"). It reads what the delivery wrote, never the ingestion tables: every test
+# reads the WellLog kind on the same platform and partition, so lineage runs it after the delivery flow, and the hourly
+# schedule both flows join fires it once the logs have landed. Each run keeps a report in the module's database: the
+# Tests tab of this pipeline shows where every test stands and how it has come out over the last runs, and the report
+# of any run downloads as HTML, Markdown, JSON or JUnit XML.
+#
+# The tests only read: nothing is written to OSDU. A test that reads fields is checked against the saved WellLog 1.4.0
+# template before anything is read, so a field the kind does not have is reported as such rather than failing every
+# record. Run one test, or the tests of one tag, from the Tests tab, or with
+#   sqlflow run recall-welllog-04-header-assertion.yaml --payload '{"tests":["log-headers"]}'
+flowType: assertion
+name: recall-welllog-04-header-assertion
+batch: recall
+
+# The partition the delivery flow delivers to. A run tests one partition, and keeps its report under it.
+partitions: [dev]
+
+parameters:
+  logSource:
+    default: STAT_COMP
+    description: The Recall log source whose logs are tested, as the delivery flow's logSource names it.
+
+source:
+  # The platform and credentials the delivery flow delivers with.
+  endpoint: ${env:OSDU_URL}
+  auth:
+    type: oauth2ClientCredentials
+    secondarySecretRef: ${env:OSDU_CLIENT_ID}
+    secretRef: ${env:OSDU_CLIENT_SECRET}
+    token:
+      url: ${env:OSDU_TOKEN_URL}
+      body:
+        scope: ${env:OSDU_SCOPE}
+  # Where the wellbore DDMS keeps the curve grids, as the delivery flow's ddmsRoot names it.
+  ddmsRoot: /api/os-wellbore-ddms
+
+defaults:
+  maxRecords: 10000
+  examples: 20
+
+# A test that fails an error-severity assertion, or cannot be evaluated, fails the run, so the schedule's notifications
+# say so; warnings and infos are in the report.
+failRunOn: error
+
+reliability:
+  concurrency: 4
+  retry: { attempts: 4, backoff: exponential, baseDelayMs: 500, maxDelayMs: 30000 }
+  timeoutSeconds: 100
+
+# Hourly, with the delivery flow (../schedules.yaml): lineage runs this flow after it.
+schedule: recall-welllog
+
+tests:
+  # Every log the ledger says was delivered is in the index, and indexed whole: a record OSDU stored but could not index
+  # is invisible to every search, which is how a user would look for it.
+  - name: logs-delivered
+    description: Every log the delivery flow holds as delivered in this partition is in the search index, indexed cleanly.
+    tags: [smoke, ledger]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
+    read: index
+    assert:
+      - count: { atLeast: 1 }
+      - delivered: recall-welllog-03-header-delivery
+      - indexed: true
+
+  # Each header as storage holds it: the schema's rules, and every reference it carries naming a record the partition
+  # holds. A unit the mapping wrote as unverified is a warning, not a failure: the delivery flow allows it on purpose.
+  - name: log-headers
+    description: Each log header meets the WellLog schema, and its references resolve.
+    tags: [smoke]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
+    assert:
+      - conforms: true
+      - field: data.WellboreID
+        resolves: master-data--Wellbore
+      - field: data.Curves.CurveUnit
+        resolves: reference-data--UnitOfMeasure
+        severity: warning
+      - field: data.ReferenceCurveID
+        equals: MD
+      - name: the index curve is among the curves
+        field: data.Curves.CurveID
+        equals: MD
+        values: any
+      - field: acl.viewers
+        length: { atLeast: 1 }
+      - legal: valid
+      - unique: [data.WellboreID, data.Name, data.LogRun, data.LogVersion]
+        severity: warning
+      - aggregate: missing
+        field: data.SamplingInterval
+        equals: 0
+        severity: info
+
+  # The curve grid of each log in the wellbore DDMS: there, holding the index curve, and indexed by a depth that only
+  # goes down the hole. A sample of the logs is read, since a partition's curves run to millions of rows.
+  - name: log-curves
+    description: Each log's curve grid is in the Wellbore DDMS, indexed by a measured depth that only increases.
+    tags: [bulk]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
+    maxRecords: 200
+    sample: true
+    bulk: { columns: [MD], maxRows: 2000000 }
+    assert:
+      - rowCount: { atLeast: 1 }
+      - columns: { includes: [MD] }
+      - column: MD
+        monotonic: strictlyIncreasing
+      - column: MD
+        exists: true
+        for: 99%
+
+  # How the delivered logs spread over the Recall log sources, from the index alone: no record is read.
+  - name: log-sources
+    description: The delivered logs are filed under known Recall log sources.
+    tags: [coverage]
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery"'
+    assert:
+      - groupBy: data.Name
+        absent: [UNKNOWN]
+        groupCount: { atLeast: 1 }

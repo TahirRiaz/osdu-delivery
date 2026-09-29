@@ -395,9 +395,10 @@ public static class DeliveryRecordRoutes
     public static string Path(Guid flowId, Guid deliveryKey) => $"{flowId:D}/{deliveryKey:D}";
 }
 
-/// <summary>What the retention pass aged out: delivery tries deleted (the latest of every record always kept), and
-/// activities whose captured run log was cleared (the audit row itself is never deleted).</summary>
-public sealed record DeliveryPruneResult(int AttemptsPruned, int ActivityLogsCleared);
+/// <summary>What the retention pass aged out: delivery tries deleted (the latest of every record always kept), activities
+/// whose captured run log was cleared (the audit row itself is never deleted), and assertion runs removed whole because a
+/// later result superseded every one of theirs (a run holding the latest result of a test is always kept).</summary>
+public sealed record DeliveryPruneResult(int AttemptsPruned, int ActivityLogsCleared, int AssertionRunsPruned);
 
 /// <summary>
 /// The delivery ledger's API: what each flow delivered (records, their history, their submissions), the audit trail
@@ -449,6 +450,9 @@ public static class DeliveryEndpoints
         delivery.MapGet("/mappings", ListMappingsAsync).WithName("ListDeliveryMappings");
         delivery.MapGet("/mappings/{mappingId:guid}", GetMappingAsync).WithName("GetDeliveryMapping");
         DeliveryValueCheckEndpoints.MapReads(delivery);
+
+        // The report of assertion flows: boards, runs, history and the report of a run in every format.
+        DeliveryAssertionEndpoints.MapReads(delivery);
         delivery.MapGet("/caches", ListCachesAsync).WithName("ListDeliveryCaches");
         delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
         delivery.MapGet("/cache/versions", ListCacheVersionsAsync).WithName("ListDeliveryCacheVersions");
@@ -2252,9 +2256,10 @@ public static class DeliveryEndpoints
     /// <summary>
     /// The ledger's retention pass: everything the <c>osdu</c> schema grows without bound and a delivered record does not
     /// have to stay reconstructible from, aged out at one cut-off. Attempts go through the ledger (the latest try of every
-    /// record is always kept, so a record's last outcome stays explainable), and the captured run log of settled activities
-    /// is cleared, which is the schema's only column with no ceiling at all. No row of the audit trail is deleted: who did
-    /// what, when, with which parameters and to what outcome is what the traceability rule keeps.
+    /// record is always kept, so a record's last outcome stays explainable), the captured run log of settled activities
+    /// is cleared, which is the schema's only column with no ceiling at all, and the assertion results a later result of the
+    /// same test superseded go, with the runs left holding none (every test's latest result stays). No row of the audit
+    /// trail is deleted: who did what, when, with which parameters and to what outcome is what the traceability rule keeps.
     /// </summary>
     private static async Task<Results<Ok<DeliveryPruneResult>, ProblemHttpResult>> PruneAsync(
         DeliveryPruneRequest request, ILedger ledger, OsduDbContext osdu, TimeProvider clock, CancellationToken ct)
@@ -2267,7 +2272,8 @@ public static class DeliveryEndpoints
         var olderThanUtc = clock.GetUtcNow().UtcDateTime.AddDays(-request.OlderThanDays);
         var pruned = await ledger.PruneAttemptsAsync(olderThanUtc, ct).ConfigureAwait(false);
         var cleared = await ClearActivityLogsAsync(osdu, olderThanUtc, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryPruneResult(pruned, cleared));
+        var reports = await ledger.PruneAssertionRunsAsync(olderThanUtc, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliveryPruneResult(pruned, cleared, reports));
     }
 
     /// <summary>

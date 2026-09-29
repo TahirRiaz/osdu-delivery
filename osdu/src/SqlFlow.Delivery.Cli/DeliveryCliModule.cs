@@ -8,10 +8,10 @@ using SqlFlow.Delivery.Hosting;
 namespace SqlFlow.Delivery.Cli;
 
 /// <summary>
-/// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval and cache flow kinds (so SQLFlow's own
-/// <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
+/// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval, cache and assertion flow kinds (so SQLFlow's
+/// own <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
 /// module's database, and the module's own verbs: <c>check</c>, <c>preview</c>, <c>values</c>, <c>fixtures</c>, <c>records</c>, <c>config</c>,
-/// <c>partition</c>, <c>cache</c> and <c>template</c>.
+/// <c>partition</c>, <c>cache</c>, <c>template</c> and <c>assertions</c>.
 /// </summary>
 /// <remarks>
 /// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless
@@ -188,6 +188,26 @@ public sealed class DeliveryCliModule : ICliModule
         {
             Subcommands = ["capture", "import", "list", "show", "delete"],
             ValueOptions = ["--release", "--version", "--from-dir", "--out"],
+        },
+        new CliVerb(
+            "assertions",
+            [
+                "sqlflow assertions list <flow.yaml> [--partition <id>] [--max <n>]",
+                "                                   An assertion flow's runs in a partition, newest first: how many of their",
+                "                                   tests passed, failed, warned, errored or were skipped (needs --db)",
+                "sqlflow assertions status <flow.yaml> [--partition <id>]",
+                "                                   Where each test stands: its latest result, or that it has not run, and",
+                "                                   whether its definition changed since (needs --db)",
+                "sqlflow assertions report <flow.yaml> [--partition <id>] [--run <n>] [--format json|md|html|junit] [--out <file>]",
+                "                                   A run's full report (the latest, or the one --run names): every test and",
+                "                                   assertion with what it expected, what it found and the records that failed",
+                "                                   it. JUnit XML is what a CI server reads (needs --db). The tests themselves",
+                "                                   run as any flow runs: sqlflow run <flow.yaml> --payload '{\"tests\":[\"name\"]}'",
+            ],
+            DeliveryAssertionVerbs.AssertionsAsync)
+        {
+            Subcommands = ["list", "status", "report"],
+            ValueOptions = ["--partition", "--max", "--run", "--format", "--out"],
         },
     ];
 

@@ -34,7 +34,7 @@ public sealed class SqlServerLedgerMigrationTests
 
     /// <summary>The ledger tables the partition leads the key of.</summary>
     private static readonly string[] LedgerTables =
-        ["Record", "RecordIdentity", "Attempt", "Submission", "WorkBatch", "Lease", "RecordEvent", "SourceWatermark", "Activity", "Retrieval"];
+        ["Record", "RecordIdentity", "Attempt", "Submission", "WorkBatch", "Lease", "RecordEvent", "SourceWatermark", "Activity", "Retrieval", "AssertionRun", "AssertionResult"];
 
     private static readonly DateTime Now = new(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
 

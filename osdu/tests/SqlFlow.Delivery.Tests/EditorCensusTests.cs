@@ -34,6 +34,7 @@ public sealed class EditorCensusTests
     [InlineData("keys.delivery.json", "delivery")]
     [InlineData("keys.cache.json", "cache")]
     [InlineData("keys.retrieval.json", "retrieval")]
+    [InlineData("keys.assertion.json", "assertion")]
     [InlineData("keys.mapping.json", "mapping")]
     [InlineData("keys.dictionary.json", "dictionary")]
     public void A_census_file_names_its_kind_and_documents_every_key_it_lists(string file, string kind)
@@ -66,6 +67,7 @@ public sealed class EditorCensusTests
     [InlineData("keys.delivery.json", typeof(FlowYaml))]
     [InlineData("keys.cache.json", typeof(CacheYaml))]
     [InlineData("keys.retrieval.json", typeof(RetrievalYaml))]
+    [InlineData("keys.assertion.json", typeof(AssertionYaml))]
     public void A_flow_kinds_census_documents_exactly_the_keys_its_loader_accepts(string file, Type model)
     {
         var accepted = YamlKeyPaths.Of(model);

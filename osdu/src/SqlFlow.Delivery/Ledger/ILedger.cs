@@ -1152,6 +1152,139 @@ public sealed record RetrievalState
     public string? Error { get; init; }
 }
 
+/// <summary>The statuses of an assertion run: running while its tests run, then how they came out, or why it stopped.</summary>
+public static class AssertionRunStatus
+{
+    public const string Running = "running";
+
+    /// <summary>Every test passed, or failed only assertions of a severity that does not fail the run.</summary>
+    public const string Passed = "passed";
+
+    /// <summary>A test failed an assertion whose severity fails the run.</summary>
+    public const string Failed = "failed";
+
+    /// <summary>The run could not run its tests (the platform unreachable, the flow unresolvable), or a test could not be evaluated.</summary>
+    public const string Errored = "errored";
+
+    public const string Cancelled = "cancelled";
+}
+
+/// <summary>The outcomes of one test in one run, and of one assertion of it.</summary>
+public static class TestOutcomes
+{
+    /// <summary>Every assertion held (an info assertion that failed does not change it).</summary>
+    public const string Passed = "passed";
+
+    /// <summary>An error-severity assertion failed.</summary>
+    public const string Failed = "failed";
+
+    /// <summary>A warning-severity assertion failed, and no error-severity one did.</summary>
+    public const string Warned = "warned";
+
+    /// <summary>The test could not be evaluated: its definition does not fit its template, or reading OSDU failed.</summary>
+    public const string Errored = "errored";
+
+    /// <summary>The test does not run in the partition the run tested, or the run stopped before it.</summary>
+    public const string Skipped = "skipped";
+
+    public static IReadOnlyList<string> All { get; } = [Passed, Failed, Warned, Errored, Skipped];
+}
+
+/// <summary>How many of a run's tests came out each way.</summary>
+public sealed record AssertionCounts(int Tests, int Passed, int Failed, int Warned, int Errored, int Skipped)
+{
+    public static AssertionCounts None { get; } = new(0, 0, 0, 0, 0, 0);
+
+    /// <summary>The counts of <paramref name="outcomes"/>, one outcome per test.</summary>
+    public static AssertionCounts Of(IEnumerable<string> outcomes)
+    {
+        ArgumentNullException.ThrowIfNull(outcomes);
+        var list = outcomes.ToList();
+        return new AssertionCounts(
+            list.Count,
+            list.Count(o => o == TestOutcomes.Passed),
+            list.Count(o => o == TestOutcomes.Failed),
+            list.Count(o => o == TestOutcomes.Warned),
+            list.Count(o => o == TestOutcomes.Errored),
+            list.Count(o => o == TestOutcomes.Skipped));
+    }
+}
+
+/// <summary>One run of an assertion flow's tests as the ledger holds it (docs/assertions-design.md section 7).</summary>
+public sealed record AssertionRunState
+{
+    public long AssertionRunId { get; init; }
+
+    /// <summary>The ledger identity of the flow in the partition it tested.</summary>
+    public required Guid FlowId { get; init; }
+
+    /// <summary>The partition the run tested, as the ledger's directory names it: filled when the ledger reads the row.</summary>
+    public string? Partition { get; init; }
+
+    public required string FlowName { get; init; }
+
+    public Guid? RunId { get; init; }
+
+    public string Actor { get; init; } = "unknown";
+
+    /// <summary>The tests the run was asked for, as JSON; null when it ran every test.</summary>
+    public string? Selection { get; init; }
+
+    public string Status { get; init; } = AssertionRunStatus.Running;
+
+    public AssertionCounts Counts { get; init; } = AssertionCounts.None;
+
+    public string? DefinitionsHash { get; init; }
+
+    public DateTime StartedUtc { get; init; }
+
+    public DateTime? CompletedUtc { get; init; }
+
+    public string? Error { get; init; }
+}
+
+/// <summary>One test's result in one run, as the ledger holds it: the summary columns, and the whole result as JSON.</summary>
+public sealed record AssertionResultState
+{
+    public long ResultId { get; init; }
+
+    public long AssertionRunId { get; init; }
+
+    public required Guid FlowId { get; init; }
+
+    public required string TestName { get; init; }
+
+    public required string Kind { get; init; }
+
+    public required string Outcome { get; init; }
+
+    /// <summary>The heaviest severity among the assertions that failed; null when none did.</summary>
+    public string? Severity { get; init; }
+
+    public long? Matched { get; init; }
+
+    public long? Evaluated { get; init; }
+
+    public bool Sampled { get; init; }
+
+    public int Assertions { get; init; }
+
+    public int FailedAssertions { get; init; }
+
+    public required string DefinitionHash { get; init; }
+
+    public long DurationMs { get; init; }
+
+    public string? Error { get; init; }
+
+    /// <summary>The whole result as JSON (<see cref="Engine.Assertions.TestResult"/>).</summary>
+    public required string Detail { get; init; }
+
+    public DateTime StartedUtc { get; init; }
+
+    public DateTime CompletedUtc { get; init; }
+}
+
 /// <summary>
 /// One operator or scheduler action, persisted for the audit trail: who did what, when, with which inputs, and
 /// what came of it. Record-level history lives in attempts; this is the history of runs and interventions.
@@ -1206,6 +1339,8 @@ public static class LedgerKinds
     public const string Delivery = "delivery";
 
     public const string Retrieval = "retrieval";
+
+    public const string Assertion = "assertion";
 }
 
 /// <summary>
@@ -1223,7 +1358,7 @@ public sealed record LedgerEntry
     /// </summary>
     public string? Partition { get; init; }
 
-    /// <summary><see cref="LedgerKinds.Delivery"/> or <see cref="LedgerKinds.Retrieval"/>.</summary>
+    /// <summary><see cref="LedgerKinds.Delivery"/>, <see cref="LedgerKinds.Retrieval"/> or <see cref="LedgerKinds.Assertion"/>.</summary>
     public required string Kind { get; init; }
 
     /// <summary>The flow the ledger belongs to: the source, for an interface of a source.</summary>
@@ -1647,6 +1782,44 @@ public interface ILedger
 
     /// <summary>The flow's retrieval runs, newest first.</summary>
     Task<IReadOnlyList<RetrievalState>> ListRetrievalsAsync(Guid flowId, int max, CancellationToken ct = default);
+
+    /// <summary>Opens the row of an assertion run and returns it with its id.</summary>
+    Task<AssertionRunState> StartAssertionRunAsync(AssertionRunState run, CancellationToken ct = default);
+
+    /// <summary>Records one test's result in a run, as soon as the test has come out, and returns it with its id.</summary>
+    Task<AssertionResultState> RecordAssertionResultAsync(AssertionResultState result, CancellationToken ct = default);
+
+    /// <summary>Closes an assertion run with its status, its counts and, for a run that stopped, why.</summary>
+    Task CompleteAssertionRunAsync(long assertionRunId, string status, AssertionCounts counts, string? failure, DateTime completedUtc, CancellationToken ct = default);
+
+    /// <summary>The assertion run <paramref name="assertionRunId"/> names, naming its partition, or null.</summary>
+    Task<AssertionRunState?> GetAssertionRunAsync(long assertionRunId, CancellationToken ct = default);
+
+    /// <summary>A flow's assertion runs in its partition, newest first.</summary>
+    Task<IReadOnlyList<AssertionRunState>> ListAssertionRunsAsync(Guid flowId, int max, CancellationToken ct = default);
+
+    /// <summary>The results a run recorded, in the order it recorded them.</summary>
+    Task<IReadOnlyList<AssertionResultState>> ListAssertionResultsAsync(long assertionRunId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Each test's most recent result of each flow in <paramref name="flowIds"/>, the latest run that ran it; a test no run
+    /// has run has none. The summary columns alone, without the detail: what a board across flows reads.
+    /// </summary>
+    Task<IReadOnlyList<AssertionResultState>> LatestAssertionResultsAsync(IReadOnlyCollection<Guid> flowIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// The results of a flow's <paramref name="runs"/> most recent runs, newest run first, for one test or (null) every test:
+    /// the history a matrix of tests against runs, or one test's trend, is drawn from. With <paramref name="withDetail"/> each
+    /// result carries its detail; without, an empty one.
+    /// </summary>
+    Task<IReadOnlyList<AssertionResultState>> AssertionHistoryAsync(Guid flowId, string? testName, int runs, bool withDetail, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes the finished assertion runs that started before <paramref name="olderThanUtc"/> and whose every result a later
+    /// result of the same test superseded, each run with all its results, so a report that is kept is whole. A run holding a
+    /// test's latest result stays however old, so a board always shows where each test stands. Returns the runs removed.
+    /// </summary>
+    Task<int> PruneAssertionRunsAsync(DateTime olderThanUtc, CancellationToken ct = default);
 
     Task<ActivityRecord> StartActivityAsync(ActivityRecord activity, CancellationToken ct = default);
 

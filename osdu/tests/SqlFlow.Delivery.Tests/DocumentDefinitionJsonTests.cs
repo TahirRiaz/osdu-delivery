@@ -82,4 +82,28 @@ public sealed class DocumentDefinitionJsonTests
         Assert.Equal("definition-json-cache", parsed.RootElement.GetProperty("name").GetString());
         Assert.DoesNotContain("\"scope\"", json, StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData("partitions: [dev, test]")]
+    [InlineData("")]
+    [InlineData("source: { endpoint: http://x, headers: { data-partition-id: dev } }")]
+    public void An_assertion_flow_bound_to_no_partition_serializes_as_the_catalog_keeps_it(string partitions)
+    {
+        var yaml = AssertionDocumentTests.Full.Replace("partitions: [dev, test]", partitions.StartsWith("source", StringComparison.Ordinal) ? string.Empty : partitions, StringComparison.Ordinal);
+        if (partitions.StartsWith("source", StringComparison.Ordinal))
+        {
+            yaml = yaml.Replace("source:\n  endpoint: http://localhost\n", partitions + "\n", StringComparison.Ordinal)
+                .Replace("    partitions: [dev]\n", string.Empty, StringComparison.Ordinal);
+        }
+
+        var document = new AssertionFlowKind(_loader).Parse(yaml.ReplaceLineEndings("\n"), "tests/definition-json-assertion.yaml");
+
+        var json = JsonSerializer.Serialize(document, document.GetType(), CatalogOptions);
+
+        using var parsed = JsonDocument.Parse(json);
+        Assert.Equal("recall-welllog-04-header-assertion", parsed.RootElement.GetProperty("name").GetString());
+        Assert.DoesNotContain("\"ledgerName\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"ledgerId\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"$type\":\"groupBy\"", json, StringComparison.Ordinal);
+    }
 }

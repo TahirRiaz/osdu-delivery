@@ -1,0 +1,1582 @@
+{
+  "version": 1,
+  "product": "OSDU Delivery",
+  "flowType": "assertion",
+  "strictKeys": true,
+  "includeEnvelope": true,
+  "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+  "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
+  "keyCount": 229,
+  "keys": [
+    {
+      "path": "batch",
+      "type": "string",
+      "required": false,
+      "description": "Optional grouping label (the source system) the platform files the flow's pipeline and runs under. A blank value counts as none."
+    },
+    {
+      "path": "defaults",
+      "type": "object",
+      "required": false,
+      "description": "What a test takes when it says nothing itself."
+    },
+    {
+      "path": "defaults.examples",
+      "type": "integer",
+      "required": false,
+      "description": "The most failing records an assertion names, 1 to 500. Counts are always exact; the examples are the first ones met.",
+      "default": "20"
+    },
+    {
+      "path": "defaults.maxRecords",
+      "type": "integer",
+      "required": false,
+      "description": "The most records a test reads, 1 to 1,000,000. A test whose query matches more is not evaluated over its records (its count and grouping still are), unless it sets `sample: true`.",
+      "default": "10000"
+    },
+    {
+      "path": "defaults.read",
+      "type": "enum(storage|index)",
+      "required": false,
+      "description": "`storage` reads each record as storage holds it, found by the search; `index` reads the search hits themselves, which hold only what the index keeps.",
+      "default": "storage",
+      "enumValues": [
+        "storage",
+        "index"
+      ]
+    },
+    {
+      "path": "description",
+      "type": "string",
+      "required": false,
+      "description": "Optional text describing what the tests check."
+    },
+    {
+      "path": "failRunOn",
+      "type": "enum(error|warning|never)",
+      "required": false,
+      "description": "Which outcomes fail the platform run: `error` fails it on a test that failed an error-severity assertion or could not be evaluated; `warning` on a warning-severity failure as well; `never` reports and succeeds. A failed run still records its report, and notifications fire on it as on any failed run.",
+      "default": "error",
+      "enumValues": [
+        "error",
+        "warning",
+        "never"
+      ]
+    },
+    {
+      "path": "flowType",
+      "type": "enum(assertion)",
+      "required": true,
+      "description": "The document kind: `assertion`, qualified tests of what an OSDU partition holds, run after the flows that populate it. The loader chooses the reader by it and refuses a document that declares no `flowType` or `documentType`.",
+      "enumValues": [
+        "assertion"
+      ]
+    },
+    {
+      "path": "name",
+      "type": "string",
+      "required": true,
+      "description": "The assertion flow's name: its pipeline identity, and the name its reports are kept under. A flow that tests partitions keeps a report per partition, shown as `name@partition`. Named `<source>-<type>-<counter>-<area>-assertion`, so it sorts after the flows it tests."
+    },
+    {
+      "path": "parameters",
+      "type": "map",
+      "required": false,
+      "description": "Optional: the flow's parameters, by name. `{name}` tokens are usable in a test's `query`, its `ids` and the text an assertion compares with (never in a `matches` expression); `{partition}` is always the partition the run tests, so no parameter may be called `partition`. Values come from `--set name=value`, the run's values, or the schedule's `values`."
+    },
+    {
+      "path": "parameters.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One parameter; `<name>` is the name its `{name}` tokens use. A run supplying a value for a name the flow does not declare is refused."
+    },
+    {
+      "path": "parameters.<name>.default",
+      "type": "string",
+      "required": false,
+      "description": "The value used when a run supplies none."
+    },
+    {
+      "path": "parameters.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "Text describing what the parameter is for."
+    },
+    {
+      "path": "parameters.<name>.required",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, a run that supplies no value, for a parameter without a default, fails with \"parameter 'name' is required\". A scheduled fire supplies only the schedule's `values`, so give it one there.",
+      "default": "false"
+    },
+    {
+      "path": "partitions",
+      "type": "list",
+      "required": false,
+      "description": "The OSDU data partitions the flow tests, hard-coded: each by its `data-partition-id` written literally, never a reference, at least one, at most 64, none twice. A run tests one of them: the one it names, else the registry's default when the flow names it, else the flow's only one; `*` is refused, since a report describes one partition. Left out, with no `data-partition-id` header, the flow tests every registered partition. Each partition keeps a report of its own."
+    },
+    {
+      "path": "partitions[]",
+      "type": "string",
+      "required": false,
+      "description": "One partition the flow tests, by its `data-partition-id`."
+    },
+    {
+      "path": "reliability",
+      "type": "object",
+      "required": false,
+      "description": "The HTTP settings (timeout, retry, rate limit, TLS, URL allowlist and response size), and `concurrency`: the tests evaluated at once, and the requests each has in flight. `reliability.parallelInterfaces` is refused."
+    },
+    {
+      "path": "reliability.batchRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: rendered documents per work batch file. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.batchSize",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: records claimed per ledger round trip when retrying records. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "50"
+    },
+    {
+      "path": "reliability.concurrency",
+      "type": "integer",
+      "required": false,
+      "description": "The tests evaluated at once, and the requests (storage reads, reference lookups, bulk reads) one test has in flight. At least 1.",
+      "default": "8"
+    },
+    {
+      "path": "reliability.fanOut",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the member runs a large submission spreads over. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.fanOutMinRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: below this many records a submission never fans out. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "1000"
+    },
+    {
+      "path": "reliability.leaseSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: how long a worker's lease on a record lasts. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "300"
+    },
+    {
+      "path": "reliability.maxRequestBodyBytes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the target's declared request body ceiling (0 = not declared). The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.maxResponseBytes",
+      "type": "integer",
+      "required": false,
+      "description": "The largest response body read, in bytes. A larger response fails the request with a message naming this setting.",
+      "default": "67108864"
+    },
+    {
+      "path": "reliability.parallelInterfaces",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery source's setting: how many of its interfaces run at once. An assertion flow runs no interfaces, so the loader refuses it here."
+    },
+    {
+      "path": "reliability.rateLimitRps",
+      "type": "number",
+      "required": false,
+      "description": "The most requests per second the flow sends to the platform; 0 means unlimited. Token requests are not limited.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.renderParallelism",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: renderers in the intake pipeline on one node, 0 to 256 (0 takes half the machine's processors, at least one). The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.retry",
+      "type": "object",
+      "required": false,
+      "description": "How one request is repeated inline. Only requests that are safe to repeat are repeated, on 408, 425, 429, 503 and 504 and on a transport failure; 500 and 502 are not replayed."
+    },
+    {
+      "path": "reliability.retry.attempts",
+      "type": "integer",
+      "required": false,
+      "description": "The most attempts one request gets, the first included.",
+      "default": "4"
+    },
+    {
+      "path": "reliability.retry.backoff",
+      "type": "enum(exponential|fixed)",
+      "required": false,
+      "description": "The wait between attempts: `exponential` doubles `baseDelayMs` per attempt, `fixed` waits `baseDelayMs` each time; both are capped at `maxDelayMs`.",
+      "enumValues": [
+        "exponential",
+        "fixed"
+      ],
+      "default": "exponential"
+    },
+    {
+      "path": "reliability.retry.baseDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The first wait between attempts, in milliseconds.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.retry.honorRetryAfter",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether a `Retry-After` the service sends is honoured. A requested wait within `maxDelayMs` becomes the floor of the backoff; a longer one is never shortened, so the request stops instead of waiting it out.",
+      "default": "true"
+    },
+    {
+      "path": "reliability.retry.maxDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The longest wait between attempts, in milliseconds.",
+      "default": "30000"
+    },
+    {
+      "path": "reliability.retry.recordBaseDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the first wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "1"
+    },
+    {
+      "path": "reliability.retry.recordMaxDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the longest wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "60"
+    },
+    {
+      "path": "reliability.skipStatusCodes",
+      "type": "list",
+      "required": false,
+      "description": "A delivery flow's setting: statuses that hold a record instead of retrying it. The loader accepts it as on a delivery flow; an assertion flow does not use it."
+    },
+    {
+      "path": "reliability.skipStatusCodes[]",
+      "type": "integer",
+      "required": false,
+      "description": "One HTTP status code."
+    },
+    {
+      "path": "reliability.timeoutSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "How long one HTTP request may take, in seconds.",
+      "default": "100"
+    },
+    {
+      "path": "reliability.urlAllowlist",
+      "type": "list",
+      "required": false,
+      "description": "The hosts requests may reach (an SSRF guard), checked on every request and every redirect hop. Empty allows any host the deployment's network policy reaches; token requests are not checked against it."
+    },
+    {
+      "path": "reliability.urlAllowlist[]",
+      "type": "string",
+      "required": false,
+      "description": "A host name, or `*.suffix` to match the bare domain and any subdomain of it. Compared ignoring case."
+    },
+    {
+      "path": "reliability.verifyTls",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether the platform's TLS certificate is verified. `false` also needs `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS=true` on the node, or the run is refused.",
+      "default": "true"
+    },
+    {
+      "path": "source",
+      "type": "object",
+      "required": true,
+      "description": "The OSDU platform the tests read, and where its services are served. Tests only read: nothing is ever written to OSDU."
+    },
+    {
+      "path": "source.auth",
+      "type": "object",
+      "required": false,
+      "description": "How requests to the OSDU platform authenticate, written as `target.auth` is on a delivery flow. Secrets are references only: ${env:NAME} or ${keyvault:vault/secret}. Left out, requests carry no credentials (type `none`).",
+      "appliesWhen": "Optional; written as `target.auth` on a delivery flow."
+    },
+    {
+      "path": "source.auth.headerName",
+      "type": "string",
+      "required": false,
+      "description": "The header an `apiKeyHeader` auth sends the key in.",
+      "appliesWhen": "source.auth.type is apiKeyHeader, which needs it."
+    },
+    {
+      "path": "source.auth.secondarySecretRef",
+      "type": "string",
+      "required": false,
+      "description": "The secondary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}): the username for `basic`, the client id for `oauth2ClientCredentials` (sent as `client_id` unless the token body names one).",
+      "appliesWhen": "source.auth.type is basic or oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.secretRef",
+      "type": "string",
+      "required": false,
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token",
+      "type": "object",
+      "required": false,
+      "description": "The OAuth2 token endpoint: where a token is requested and how it is read from the answer. One token serves the run and is requested again shortly before it expires.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials, which needs it."
+    },
+    {
+      "path": "source.auth.token.applyPrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the access token in the `Authorization` header.",
+      "default": "\"Bearer \"",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.basicAuthClient",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, the client id and secret are sent as an HTTP Basic `Authorization` header on the token request instead of in its form body.",
+      "default": "false",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body",
+      "type": "map",
+      "required": false,
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.discoveryUrl",
+      "type": "string",
+      "required": false,
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
+    },
+    {
+      "path": "source.auth.token.tokenPath",
+      "type": "string",
+      "required": false,
+      "description": "The path of the access token in the token endpoint's JSON answer.",
+      "default": "access_token",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.url",
+      "type": "string",
+      "required": false,
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
+    },
+    {
+      "path": "source.auth.type",
+      "type": "enum(none|bearer|apiKeyHeader|basic|oauth2ClientCredentials)",
+      "required": false,
+      "description": "The auth scheme: `none`, `bearer` (a token as a reference), `apiKeyHeader` (a key in a named header), `basic` (username and password) or `oauth2ClientCredentials` (a token requested from `token`). Read ignoring case.",
+      "enumValues": [
+        "none",
+        "bearer",
+        "apiKeyHeader",
+        "basic",
+        "oauth2ClientCredentials"
+      ],
+      "default": "none"
+    },
+    {
+      "path": "source.auth.valuePrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the secret in the header value of a `bearer` or `apiKeyHeader` auth. An OAuth2 token takes `token.applyPrefix` instead.",
+      "default": "\"Bearer \" for bearer; nothing for apiKeyHeader",
+      "appliesWhen": "source.auth.type is bearer or apiKeyHeader."
+    },
+    {
+      "path": "source.ddmsRoot",
+      "type": "string",
+      "required": false,
+      "description": "Where the Wellbore DDMS is served under the platform, for a test that reads bulk data (`/ddms/v3/{collection}/{id}/data`).",
+      "default": "/api/os-wellbore-ddms"
+    },
+    {
+      "path": "source.endpoint",
+      "type": "string",
+      "required": true,
+      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`, the same one the delivery flows it tests deliver to."
+    },
+    {
+      "path": "source.headers",
+      "type": "map",
+      "required": false,
+      "description": "Headers sent with every request. A flow that names its partitions, or tests every registered one, may not name `data-partition-id` here: each run sets it to the partition it tests. A flow that names neither tests the partition this header names."
+    },
+    {
+      "path": "source.headers.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret})."
+    },
+    {
+      "path": "source.legalPath",
+      "type": "string",
+      "required": false,
+      "description": "The legal service's root, under which `/legaltags:validate` answers whether a legal tag is valid.",
+      "default": "/api/legal/v1"
+    },
+    {
+      "path": "source.queryPath",
+      "type": "string",
+      "required": false,
+      "description": "The search service's offset search, which counts, groups and asks how records were indexed (openapi search v2, POST /query).",
+      "default": "/api/search/v2/query"
+    },
+    {
+      "path": "source.recordQueryPath",
+      "type": "string",
+      "required": false,
+      "description": "The storage service's read by id, of records a test reads whole and of references it looks up (openapi storage v2, POST /query/records).",
+      "default": "/api/storage/v2/query/records"
+    },
+    {
+      "path": "source.searchPath",
+      "type": "string",
+      "required": false,
+      "description": "The search service's cursor search, which a test pages through the records it reads (openapi search v2, POST /query_with_cursor).",
+      "default": "/api/search/v2/query_with_cursor"
+    },
+    {
+      "path": "tests",
+      "type": "list",
+      "required": true,
+      "description": "The tests, 1 to 500, each reading one OSDU kind and holding what it reads to its assertions. A run runs every test, or those its payload names by test or tag."
+    },
+    {
+      "path": "tests[]",
+      "type": "object",
+      "required": false,
+      "description": "One test: what it reads (a kind found by a query, or records named by id, and optionally their bulk data) and the assertions it holds that to."
+    },
+    {
+      "path": "tests[].assert",
+      "type": "list",
+      "required": true,
+      "description": "The assertions, 1 to 100. Each names one subject: count, field, column, aggregate, unique, groupBy, recordSet, conforms, indexed, legal, delivered, rowCount, columns or monotonic."
+    },
+    {
+      "path": "tests[].assert[]",
+      "type": "object",
+      "required": false,
+      "description": "One assertion: exactly one subject, the keys that subject takes, and optionally a name, a description and a severity. A key the subject does not take is refused, naming it."
+    },
+    {
+      "path": "tests[].assert[].absent",
+      "type": "list",
+      "required": false,
+      "description": "Groups that must not appear at all.",
+      "appliesWhen": "With groupBy."
+    },
+    {
+      "path": "tests[].assert[].absent[]",
+      "type": "string",
+      "required": false,
+      "description": "One group's value."
+    },
+    {
+      "path": "tests[].assert[].aggregate",
+      "type": "enum(min|max|sum|avg|count|distinct|missing)",
+      "required": false,
+      "description": "An aggregate of the values of `field` over every record read, or of `column` over each record's rows, compared with the comparison keys beside it (`equals`, `atLeast`, ...) within `tolerance`. `count` counts values, `distinct` distinct values, `missing` records (or rows) without one; min and max also take dates.",
+      "enumValues": [
+        "min",
+        "max",
+        "sum",
+        "avg",
+        "count",
+        "distinct",
+        "missing"
+      ]
+    },
+    {
+      "path": "tests[].assert[].atLeast",
+      "type": "object",
+      "required": false,
+      "description": "This value or more: a number, or a date and time.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].atMost",
+      "type": "object",
+      "required": false,
+      "description": "This value or less.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].between",
+      "type": "list",
+      "required": false,
+      "description": "Between two values, both included: `[low, high]`, both numbers or both dates."
+    },
+    {
+      "path": "tests[].assert[].between[]",
+      "type": "object",
+      "required": false,
+      "description": "One value: text, a number, or true or false.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].column",
+      "type": "string",
+      "required": false,
+      "description": "A column (curve) of each record's bulk data. With one operator it is a column assertion, held for the share of each record's rows `for` asks; with `aggregate` or `monotonic` their measure.",
+      "appliesWhen": "The test reads bulk data."
+    },
+    {
+      "path": "tests[].assert[].columns",
+      "type": "object",
+      "required": false,
+      "description": "The columns each record's bulk data holds.",
+      "appliesWhen": "The test reads bulk data."
+    },
+    {
+      "path": "tests[].assert[].columns.equals",
+      "type": "list",
+      "required": false,
+      "description": "The columns every record's bulk data has, and no other, in any order."
+    },
+    {
+      "path": "tests[].assert[].columns.equals[]",
+      "type": "string",
+      "required": false,
+      "description": "One column."
+    },
+    {
+      "path": "tests[].assert[].columns.excludes",
+      "type": "list",
+      "required": false,
+      "description": "Columns no record's bulk data may have."
+    },
+    {
+      "path": "tests[].assert[].columns.excludes[]",
+      "type": "string",
+      "required": false,
+      "description": "One column."
+    },
+    {
+      "path": "tests[].assert[].columns.includes",
+      "type": "list",
+      "required": false,
+      "description": "Columns every record's bulk data has."
+    },
+    {
+      "path": "tests[].assert[].columns.includes[]",
+      "type": "string",
+      "required": false,
+      "description": "One column."
+    },
+    {
+      "path": "tests[].assert[].conforms",
+      "type": "boolean",
+      "required": false,
+      "description": "true: every record meets the template of its kind: the properties it requires, and the type, format, pattern, enumeration and ranges of every value. Needs `read: storage`."
+    },
+    {
+      "path": "tests[].assert[].contains",
+      "type": "object",
+      "required": false,
+      "description": "A list holding this value, or text holding this text.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].count",
+      "type": "object",
+      "required": false,
+      "description": "How many records the test matches (the index's exact count, or the ids storage holds): a whole number (equals), or a mapping of `equals`, `notEquals`, `atLeast`, `atMost`, `greaterThan`, `lessThan` and `between`, every one of which has to hold.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].count.atLeast",
+      "type": "integer",
+      "required": false,
+      "description": "This number or more."
+    },
+    {
+      "path": "tests[].assert[].count.atMost",
+      "type": "integer",
+      "required": false,
+      "description": "This number or less."
+    },
+    {
+      "path": "tests[].assert[].count.between",
+      "type": "list",
+      "required": false,
+      "description": "Between these two numbers, both included: `[low, high]`."
+    },
+    {
+      "path": "tests[].assert[].count.equals",
+      "type": "integer",
+      "required": false,
+      "description": "Equal to this number."
+    },
+    {
+      "path": "tests[].assert[].count.greaterThan",
+      "type": "integer",
+      "required": false,
+      "description": "More than this number."
+    },
+    {
+      "path": "tests[].assert[].count.lessThan",
+      "type": "integer",
+      "required": false,
+      "description": "Less than this number."
+    },
+    {
+      "path": "tests[].assert[].count.notEquals",
+      "type": "integer",
+      "required": false,
+      "description": "Not equal to this number."
+    },
+    {
+      "path": "tests[].assert[].delivered",
+      "type": "string",
+      "required": false,
+      "description": "A delivery flow: every record its ledger holds as delivered in the partition is among the records the test matches. What a delivery says it sent is so held to what OSDU holds."
+    },
+    {
+      "path": "tests[].assert[].description",
+      "type": "string",
+      "required": false,
+      "description": "Why the assertion matters, as reports show it."
+    },
+    {
+      "path": "tests[].assert[].empty",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether the value is empty (null, empty text, an empty list or object), or not."
+    },
+    {
+      "path": "tests[].assert[].endsWith",
+      "type": "string",
+      "required": false,
+      "description": "Text ending with this."
+    },
+    {
+      "path": "tests[].assert[].equals",
+      "type": "object",
+      "required": false,
+      "description": "Equal to this value: a number as a number (within `tolerance`), text as text (and as an instant when both are ISO 8601 dates), true or false. Text holding a number equals the number.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].exact",
+      "type": "boolean",
+      "required": false,
+      "description": "With delivered: the test matches no record the ledger does not hold either.",
+      "default": "false",
+      "appliesWhen": "With delivered."
+    },
+    {
+      "path": "tests[].assert[].exists",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether there is a value at all (true), or none (false)."
+    },
+    {
+      "path": "tests[].assert[].field",
+      "type": "string",
+      "required": false,
+      "description": "A path into each record, from a root property (`data.FacilityName`, `acl.viewers`, `legal.legaltags`, `tags.RunMarker`): arrays are crossed implicitly, or with `[*]` and `[n]`. Checked against the template of the test's kind before anything is read. With one operator it is a field assertion; with `aggregate` its measure."
+    },
+    {
+      "path": "tests[].assert[].for",
+      "type": "string",
+      "required": false,
+      "description": "The share of records (or of each record's rows, for a column) the condition has to hold for: `all`, `any`, `none`, or a percentage such as `95%`. With none considered, all, any and a share fail and none passes.",
+      "default": "all"
+    },
+    {
+      "path": "tests[].assert[].greaterThan",
+      "type": "object",
+      "required": false,
+      "description": "More than this value.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].groupBy",
+      "type": "string",
+      "required": false,
+      "description": "Groups the records the test matches by the distinct values of this field, as the search's `aggregateBy` answers it over the whole index: nothing is read, so any number of records is grouped."
+    },
+    {
+      "path": "tests[].assert[].groupCount",
+      "type": "object",
+      "required": false,
+      "description": "How many groups there are: a whole number (equals), or a mapping of `equals`, `notEquals`, `atLeast`, `atMost`, `greaterThan`, `lessThan` and `between`, every one of which has to hold.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].groupCount.atLeast",
+      "type": "integer",
+      "required": false,
+      "description": "This number or more."
+    },
+    {
+      "path": "tests[].assert[].groupCount.atMost",
+      "type": "integer",
+      "required": false,
+      "description": "This number or less."
+    },
+    {
+      "path": "tests[].assert[].groupCount.between",
+      "type": "list",
+      "required": false,
+      "description": "Between these two numbers, both included: `[low, high]`."
+    },
+    {
+      "path": "tests[].assert[].groupCount.equals",
+      "type": "integer",
+      "required": false,
+      "description": "Equal to this number."
+    },
+    {
+      "path": "tests[].assert[].groupCount.greaterThan",
+      "type": "integer",
+      "required": false,
+      "description": "More than this number."
+    },
+    {
+      "path": "tests[].assert[].groupCount.lessThan",
+      "type": "integer",
+      "required": false,
+      "description": "Less than this number."
+    },
+    {
+      "path": "tests[].assert[].groupCount.notEquals",
+      "type": "integer",
+      "required": false,
+      "description": "Not equal to this number."
+    },
+    {
+      "path": "tests[].assert[].groups",
+      "type": "map",
+      "required": false,
+      "description": "The groups expected, each with what its count has to be.",
+      "appliesWhen": "With groupBy."
+    },
+    {
+      "path": "tests[].assert[].groups.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One group's count: a whole number (equals) or a comparison. `<name>` is the group's value.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].groups.<name>.atLeast",
+      "type": "integer",
+      "required": false,
+      "description": "This number or more."
+    },
+    {
+      "path": "tests[].assert[].groups.<name>.atMost",
+      "type": "integer",
+      "required": false,
+      "description": "This number or less."
+    },
+    {
+      "path": "tests[].assert[].groups.<name>.between",
+      "type": "list",
+      "required": false,
+      "description": "Between these two numbers, both included: `[low, high]`."
+    },
+    {
+      "path": "tests[].assert[].groups.<name>.equals",
+      "type": "integer",
+      "required": false,
+      "description": "Equal to this number."
+    },
+    {
+      "path": "tests[].assert[].groups.<name>.greaterThan",
+      "type": "integer",
+      "required": false,
+      "description": "More than this number."
+    },
+    {
+      "path": "tests[].assert[].groups.<name>.lessThan",
+      "type": "integer",
+      "required": false,
+      "description": "Less than this number."
+    },
+    {
+      "path": "tests[].assert[].groups.<name>.notEquals",
+      "type": "integer",
+      "required": false,
+      "description": "Not equal to this number."
+    },
+    {
+      "path": "tests[].assert[].ignoreCase",
+      "type": "boolean",
+      "required": false,
+      "description": "Compares text ignoring case: for equals, in, matches, startsWith, endsWith and contains.",
+      "default": "false"
+    },
+    {
+      "path": "tests[].assert[].in",
+      "type": "list",
+      "required": false,
+      "description": "One of these values, 1 to 1000."
+    },
+    {
+      "path": "tests[].assert[].in[]",
+      "type": "object",
+      "required": false,
+      "description": "One value: text, a number, or true or false.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].indexed",
+      "type": "boolean",
+      "required": false,
+      "description": "true: the search indexed every record the test matches cleanly: none carries an index status other than 200 (a mapping or conversion failure, a missing schema). The failing examples carry the indexer's trace."
+    },
+    {
+      "path": "tests[].assert[].interface",
+      "type": "string",
+      "required": false,
+      "description": "The interface of the delivery flow whose ledger is read, for a source delivering several.",
+      "appliesWhen": "With delivered."
+    },
+    {
+      "path": "tests[].assert[].legal",
+      "type": "enum(valid)",
+      "required": false,
+      "description": "`valid`: every legal tag the records carry is valid now, as the legal service answers it (`/legaltags:validate`); a record with none fails too.",
+      "enumValues": [
+        "valid"
+      ]
+    },
+    {
+      "path": "tests[].assert[].length",
+      "type": "object",
+      "required": false,
+      "description": "What the length of text or of a list has to be: a whole number, or a comparison.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].length.atLeast",
+      "type": "integer",
+      "required": false,
+      "description": "This number or more."
+    },
+    {
+      "path": "tests[].assert[].length.atMost",
+      "type": "integer",
+      "required": false,
+      "description": "This number or less."
+    },
+    {
+      "path": "tests[].assert[].length.between",
+      "type": "list",
+      "required": false,
+      "description": "Between these two numbers, both included: `[low, high]`."
+    },
+    {
+      "path": "tests[].assert[].length.equals",
+      "type": "integer",
+      "required": false,
+      "description": "Equal to this number."
+    },
+    {
+      "path": "tests[].assert[].length.greaterThan",
+      "type": "integer",
+      "required": false,
+      "description": "More than this number."
+    },
+    {
+      "path": "tests[].assert[].length.lessThan",
+      "type": "integer",
+      "required": false,
+      "description": "Less than this number."
+    },
+    {
+      "path": "tests[].assert[].length.notEquals",
+      "type": "integer",
+      "required": false,
+      "description": "Not equal to this number."
+    },
+    {
+      "path": "tests[].assert[].lessThan",
+      "type": "object",
+      "required": false,
+      "description": "Less than this value.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].matches",
+      "type": "string",
+      "required": false,
+      "description": "Matches this .NET regular expression, taken as written (no tokens); a match taking longer than a second fails the value."
+    },
+    {
+      "path": "tests[].assert[].mode",
+      "type": "enum(includes|exact)",
+      "required": false,
+      "description": "`includes`: the groups listed are there with their counts, others allowed. `exact`: they are the only groups there are.",
+      "default": "includes",
+      "enumValues": [
+        "includes",
+        "exact"
+      ],
+      "appliesWhen": "With groupBy and groups."
+    },
+    {
+      "path": "tests[].assert[].monotonic",
+      "type": "enum(increasing|decreasing|strictlyIncreasing|strictlyDecreasing)",
+      "required": false,
+      "description": "The order `column`'s values keep row after row in each record's bulk data, as an index curve does; absent values are passed over. The failing example names the two rows that break it.",
+      "enumValues": [
+        "increasing",
+        "decreasing",
+        "strictlyIncreasing",
+        "strictlyDecreasing"
+      ],
+      "appliesWhen": "With column; the test reads bulk data."
+    },
+    {
+      "path": "tests[].assert[].name",
+      "type": "string",
+      "required": false,
+      "description": "What reports call the assertion; left out, a label read off what it asserts. At most 200 characters."
+    },
+    {
+      "path": "tests[].assert[].notContains",
+      "type": "object",
+      "required": false,
+      "description": "A list not holding this value, or text not holding this text.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].notEquals",
+      "type": "object",
+      "required": false,
+      "description": "Not equal to this value.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].notIn",
+      "type": "list",
+      "required": false,
+      "description": "None of these values."
+    },
+    {
+      "path": "tests[].assert[].notIn[]",
+      "type": "object",
+      "required": false,
+      "description": "One value: text, a number, or true or false.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].notMatches",
+      "type": "string",
+      "required": false,
+      "description": "Does not match this regular expression."
+    },
+    {
+      "path": "tests[].assert[].optional",
+      "type": "boolean",
+      "required": false,
+      "description": "Passes over a record (or row) with no value at all, instead of failing it.",
+      "default": "false"
+    },
+    {
+      "path": "tests[].assert[].recordSet",
+      "type": "object",
+      "required": false,
+      "description": "The records projected onto `columns` and compared as a set of rows with `rows`, as DeltaForge's RESULT SET is. Values compare exactly as JSON: 5 and \"5\" differ; a field with no value is null, and one with several the list of them."
+    },
+    {
+      "path": "tests[].assert[].recordSet.columns",
+      "type": "list",
+      "required": true,
+      "description": "The fields each record is projected onto, 1 to 20."
+    },
+    {
+      "path": "tests[].assert[].recordSet.columns[]",
+      "type": "string",
+      "required": false,
+      "description": "One field."
+    },
+    {
+      "path": "tests[].assert[].recordSet.mode",
+      "type": "enum(exact|ordered|includes|excludes)",
+      "required": false,
+      "description": "`exact`: the same rows in any order. `ordered`: the same rows in the test's `sort` order. `includes`: these rows are there, others allowed. `excludes`: none of these rows is there.",
+      "default": "exact",
+      "enumValues": [
+        "exact",
+        "ordered",
+        "includes",
+        "excludes"
+      ]
+    },
+    {
+      "path": "tests[].assert[].recordSet.rows",
+      "type": "list",
+      "required": true,
+      "description": "The rows expected, at most 1000, each a list with a value per column."
+    },
+    {
+      "path": "tests[].assert[].recordSet.rows[]",
+      "type": "list",
+      "required": false,
+      "description": "One row: a value per column, in column order."
+    },
+    {
+      "path": "tests[].assert[].recordSet.rows[][]",
+      "type": "object",
+      "required": false,
+      "description": "One value: text, a number, true or false, or null for no value.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].resolves",
+      "type": "object",
+      "required": false,
+      "description": "true: every value is a reference to a record storage holds. An entity type (`master-data--Well`): to a record of it. Looked up a hundred at a time once the records are read; the failing examples name the dangling references.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].rowCount",
+      "type": "object",
+      "required": false,
+      "description": "How many rows each record's bulk data holds: a whole number (equals), or a mapping of `equals`, `notEquals`, `atLeast`, `atMost`, `greaterThan`, `lessThan` and `between`, every one of which has to hold.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].rowCount.atLeast",
+      "type": "integer",
+      "required": false,
+      "description": "This number or more."
+    },
+    {
+      "path": "tests[].assert[].rowCount.atMost",
+      "type": "integer",
+      "required": false,
+      "description": "This number or less."
+    },
+    {
+      "path": "tests[].assert[].rowCount.between",
+      "type": "list",
+      "required": false,
+      "description": "Between these two numbers, both included: `[low, high]`."
+    },
+    {
+      "path": "tests[].assert[].rowCount.equals",
+      "type": "integer",
+      "required": false,
+      "description": "Equal to this number."
+    },
+    {
+      "path": "tests[].assert[].rowCount.greaterThan",
+      "type": "integer",
+      "required": false,
+      "description": "More than this number."
+    },
+    {
+      "path": "tests[].assert[].rowCount.lessThan",
+      "type": "integer",
+      "required": false,
+      "description": "Less than this number."
+    },
+    {
+      "path": "tests[].assert[].rowCount.notEquals",
+      "type": "integer",
+      "required": false,
+      "description": "Not equal to this number."
+    },
+    {
+      "path": "tests[].assert[].severity",
+      "type": "enum(error|warning|info)",
+      "required": false,
+      "description": "How much its failure matters: an error fails the test, a warning warns, an info is reported.",
+      "default": "the test's severity",
+      "enumValues": [
+        "error",
+        "warning",
+        "info"
+      ]
+    },
+    {
+      "path": "tests[].assert[].startsWith",
+      "type": "string",
+      "required": false,
+      "description": "Text starting with this."
+    },
+    {
+      "path": "tests[].assert[].tolerance",
+      "type": "number",
+      "required": false,
+      "description": "How far a number may be from the value compared with and still be equal to it, or within a range."
+    },
+    {
+      "path": "tests[].assert[].type",
+      "type": "enum(string|number|integer|boolean|object|array|null)",
+      "required": false,
+      "description": "The JSON type the value has to be; an integer is a number without a fractional part.",
+      "enumValues": [
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "object",
+        "array",
+        "null"
+      ]
+    },
+    {
+      "path": "tests[].assert[].unique",
+      "type": "list",
+      "required": false,
+      "description": "Fields whose values, taken together, no two records may share (1 to 20). Records holding none of them are passed over."
+    },
+    {
+      "path": "tests[].assert[].unique[]",
+      "type": "string",
+      "required": false,
+      "description": "One field."
+    },
+    {
+      "path": "tests[].assert[].values",
+      "type": "enum(all|any)",
+      "required": false,
+      "description": "For a path yielding several values in one record: `all` holds the record when every value meets the condition, `any` when one does.",
+      "default": "all",
+      "enumValues": [
+        "all",
+        "any"
+      ]
+    },
+    {
+      "path": "tests[].assert[].where",
+      "type": "list",
+      "required": false,
+      "description": "Conditions selecting the records (or rows) the assertion looks at, 1 to 10, every one of which has to hold; each on a field (a column, for a column assertion) with one operator."
+    },
+    {
+      "path": "tests[].assert[].where[]",
+      "type": "object",
+      "required": false,
+      "description": "One condition: a field or column and one operator; it holds when one of the values meets it."
+    },
+    {
+      "path": "tests[].assert[].where[].atLeast",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value this value or more: a number, or a date and time.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].atMost",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value this value or less.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].between",
+      "type": "list",
+      "required": false,
+      "description": "Selects the records (or rows) whose value between two values, both included: `[low, high]`, both numbers or both dates."
+    },
+    {
+      "path": "tests[].assert[].where[].between[]",
+      "type": "object",
+      "required": false,
+      "description": "One value: text, a number, or true or false.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].column",
+      "type": "string",
+      "required": false,
+      "description": "The column of the row the condition reads."
+    },
+    {
+      "path": "tests[].assert[].where[].contains",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value a list holding this value, or text holding this text.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].empty",
+      "type": "boolean",
+      "required": false,
+      "description": "Selects the records (or rows) whose value whether the value is empty (null, empty text, an empty list or object), or not."
+    },
+    {
+      "path": "tests[].assert[].where[].endsWith",
+      "type": "string",
+      "required": false,
+      "description": "Selects the records (or rows) whose value text ending with this."
+    },
+    {
+      "path": "tests[].assert[].where[].equals",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value equal to this value: a number as a number (within `tolerance`), text as text (and as an instant when both are ISO 8601 dates), true or false. Text holding a number equals the number.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].exists",
+      "type": "boolean",
+      "required": false,
+      "description": "Selects the records (or rows) whose value whether there is a value at all (true), or none (false)."
+    },
+    {
+      "path": "tests[].assert[].where[].field",
+      "type": "string",
+      "required": false,
+      "description": "The path into the record the condition reads."
+    },
+    {
+      "path": "tests[].assert[].where[].greaterThan",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value more than this value.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].ignoreCase",
+      "type": "boolean",
+      "required": false,
+      "description": "Compares text ignoring case: for equals, in, matches, startsWith, endsWith and contains.",
+      "default": "false"
+    },
+    {
+      "path": "tests[].assert[].where[].in",
+      "type": "list",
+      "required": false,
+      "description": "Selects the records (or rows) whose value one of these values, 1 to 1000."
+    },
+    {
+      "path": "tests[].assert[].where[].in[]",
+      "type": "object",
+      "required": false,
+      "description": "One value: text, a number, or true or false.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].length",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value what the length of text or of a list has to be: a whole number, or a comparison.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].lessThan",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value less than this value.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].matches",
+      "type": "string",
+      "required": false,
+      "description": "Selects the records (or rows) whose value matches this .NET regular expression, taken as written (no tokens); a match taking longer than a second fails the value."
+    },
+    {
+      "path": "tests[].assert[].where[].notContains",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value a list not holding this value, or text not holding this text.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].notEquals",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value not equal to this value.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].notIn",
+      "type": "list",
+      "required": false,
+      "description": "Selects the records (or rows) whose value none of these values."
+    },
+    {
+      "path": "tests[].assert[].where[].notIn[]",
+      "type": "object",
+      "required": false,
+      "description": "One value: text, a number, or true or false.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].notMatches",
+      "type": "string",
+      "required": false,
+      "description": "Selects the records (or rows) whose value does not match this regular expression."
+    },
+    {
+      "path": "tests[].assert[].where[].resolves",
+      "type": "object",
+      "required": false,
+      "description": "Selects the records (or rows) whose value true: every value is a reference to a record storage holds. An entity type (`master-data--Well`): to a record of it. Looked up a hundred at a time once the records are read; the failing examples name the dangling references.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].assert[].where[].startsWith",
+      "type": "string",
+      "required": false,
+      "description": "Selects the records (or rows) whose value text starting with this."
+    },
+    {
+      "path": "tests[].assert[].where[].tolerance",
+      "type": "number",
+      "required": false,
+      "description": "How far a number may be from the value compared with and still be equal to it, or within a range."
+    },
+    {
+      "path": "tests[].assert[].where[].type",
+      "type": "enum(string|number|integer|boolean|object|array|null)",
+      "required": false,
+      "description": "Selects the records (or rows) whose value the JSON type the value has to be; an integer is a number without a fractional part.",
+      "enumValues": [
+        "string",
+        "number",
+        "integer",
+        "boolean",
+        "object",
+        "array",
+        "null"
+      ]
+    },
+    {
+      "path": "tests[].bulk",
+      "type": "object",
+      "required": false,
+      "description": "Read each record's bulk data from the Wellbore DDMS, for rowCount, columns, column and monotonic assertions. The kind must be one the DDMS keeps bulk data for (a WellLog, a WellboreTrajectory, a PPFGDataset, a WellPressureTestRawMeasurement)."
+    },
+    {
+      "path": "tests[].bulk.columns",
+      "type": "list",
+      "required": false,
+      "description": "The columns (curves) read; left out, those the assertions name."
+    },
+    {
+      "path": "tests[].bulk.columns[]",
+      "type": "string",
+      "required": false,
+      "description": "One column, as the DDMS names it; no commas."
+    },
+    {
+      "path": "tests[].bulk.maxRows",
+      "type": "integer",
+      "required": false,
+      "description": "The most rows read of one record's bulk data, 1 to 100,000,000. A record holding more fails the assertions over its rows, unless the test samples.",
+      "default": "1000000"
+    },
+    {
+      "path": "tests[].description",
+      "type": "string",
+      "required": false,
+      "description": "What the test checks, as reports and the board show it."
+    },
+    {
+      "path": "tests[].ids",
+      "type": "list",
+      "required": false,
+      "description": "Records the test reads by id instead of searching, 1 to 1000, with tokens (`{partition}:master-data--Wellbore:123`). An id storage does not hold is left out of the count and named.",
+      "appliesWhen": "Not beside query, spatial or sort."
+    },
+    {
+      "path": "tests[].ids[]",
+      "type": "string",
+      "required": false,
+      "description": "One record id."
+    },
+    {
+      "path": "tests[].kind",
+      "type": "string",
+      "required": true,
+      "description": "The kind the test reads, `authority:source:entityType:version`. Wildcards are allowed per segment only when no assertion reads a field: a test that reads fields names one kind, so they are checked against its template."
+    },
+    {
+      "path": "tests[].maxRecords",
+      "type": "integer",
+      "required": false,
+      "description": "The most records the test reads, 1 to 1,000,000.",
+      "default": "defaults.maxRecords"
+    },
+    {
+      "path": "tests[].name",
+      "type": "string",
+      "required": true,
+      "description": "The test's name, unique in the flow (ignoring case): a letter or digit followed by letters, digits, `.`, `_` and `-`, at most 100 characters. A run names a test by it, and its history is kept under it."
+    },
+    {
+      "path": "tests[].partitions",
+      "type": "list",
+      "required": false,
+      "description": "The partitions of the flow the test runs in, when not all of them. A run in another partition records the test as skipped.",
+      "appliesWhen": "Not on a flow whose partition is its header's."
+    },
+    {
+      "path": "tests[].partitions[]",
+      "type": "string",
+      "required": false,
+      "description": "One partition the test runs in."
+    },
+    {
+      "path": "tests[].query",
+      "type": "string",
+      "required": false,
+      "description": "A Lucene query narrowing the kind (`data.Source:\"Recall\"`), with `{parameter}` and `{partition}` tokens. Leading wildcards are refused by the search service.",
+      "appliesWhen": "Not beside ids."
+    },
+    {
+      "path": "tests[].read",
+      "type": "enum(storage|index)",
+      "required": false,
+      "description": "Where the test reads the records its assertions look at: storage (every property, exactly as stored) or the search hits (only what the index holds). `conforms` needs storage.",
+      "default": "defaults.read",
+      "enumValues": [
+        "storage",
+        "index"
+      ]
+    },
+    {
+      "path": "tests[].sample",
+      "type": "boolean",
+      "required": false,
+      "description": "When more records match than `maxRecords`: false (the default) evaluates none of the assertions over the records and says so, since the rest could fail them; true evaluates the first `maxRecords` and marks the result a sample.",
+      "default": "false"
+    },
+    {
+      "path": "tests[].severity",
+      "type": "enum(error|warning|info)",
+      "required": false,
+      "description": "The severity of the test's assertions that state none. An error that fails fails the test; a warning makes it warned; an info is reported and changes nothing.",
+      "default": "error",
+      "enumValues": [
+        "error",
+        "warning",
+        "info"
+      ]
+    },
+    {
+      "path": "tests[].sort",
+      "type": "list",
+      "required": false,
+      "description": "The order the search returns records in, 1 to 5 fields; what an ordered record set compares against."
+    },
+    {
+      "path": "tests[].sort[]",
+      "type": "object",
+      "required": false,
+      "description": "One field the search sorts by."
+    },
+    {
+      "path": "tests[].sort[].field",
+      "type": "string",
+      "required": true,
+      "description": "The field, as the index names it."
+    },
+    {
+      "path": "tests[].sort[].order",
+      "type": "enum(asc|desc)",
+      "required": false,
+      "description": "Ascending or descending.",
+      "default": "asc",
+      "enumValues": [
+        "asc",
+        "desc"
+      ]
+    },
+    {
+      "path": "tests[].spatial",
+      "type": "object",
+      "required": false,
+      "description": "A spatial filter the search applies (openapi search v2, `spatialFilter`): a geo `field` and exactly one of `byBoundingBox`, `byDistance`, `byGeoPolygon`, `byIntersection`, `byWithinPolygon`, each point a `{ latitude, longitude }`.",
+      "freeForm": true
+    },
+    {
+      "path": "tests[].spatial.byBoundingBox",
+      "type": "object",
+      "required": false,
+      "description": "Records within a box: `{ topLeft: { latitude, longitude }, bottomRight: { latitude, longitude } }`."
+    },
+    {
+      "path": "tests[].spatial.byDistance",
+      "type": "object",
+      "required": false,
+      "description": "Records within `distance` metres of `point`."
+    },
+    {
+      "path": "tests[].spatial.byGeoPolygon",
+      "type": "object",
+      "required": false,
+      "description": "Records within a polygon: `{ points: [...] }`."
+    },
+    {
+      "path": "tests[].spatial.byIntersection",
+      "type": "object",
+      "required": false,
+      "description": "Records intersecting polygons: `{ polygons: [{ points: [...] }] }`."
+    },
+    {
+      "path": "tests[].spatial.byWithinPolygon",
+      "type": "object",
+      "required": false,
+      "description": "Records within a polygon: `{ points: [...] }`."
+    },
+    {
+      "path": "tests[].spatial.field",
+      "type": "string",
+      "required": false,
+      "description": "The geo field the filter applies to, such as `data.SpatialLocation.Wgs84Coordinates`."
+    },
+    {
+      "path": "tests[].tags",
+      "type": "list",
+      "required": false,
+      "description": "Labels a run selects tests by (the payload's `tags`) and the board groups and filters them by; at most 20."
+    },
+    {
+      "path": "tests[].tags[]",
+      "type": "string",
+      "required": false,
+      "description": "One tag, written as a test name is."
+    },
+    {
+      "path": "tests[].template",
+      "type": "string",
+      "required": false,
+      "description": "The saved template version the test's fields are checked against; left out, the newest saved for the kind. A test that reads fields of a kind with no saved template is not evaluated, and says how to capture one."
+    }
+  ]
+}

@@ -78,7 +78,8 @@ public sealed class LineageTests : IDisposable
     private static YamlDocumentLoader Loader()
     {
         var documents = new DeliveryDocumentLoader();
-        return YamlDocumentLoader.CreateDefault([new DeliveryFlowKind(documents), new CacheFlowKind(documents), new RetrievalFlowKind(documents)]);
+        return YamlDocumentLoader.CreateDefault(
+            [new DeliveryFlowKind(documents), new CacheFlowKind(documents), new RetrievalFlowKind(documents), new AssertionFlowKind(documents)]);
     }
 
     private RegisteredFlowLineage Describe(string relative)
@@ -293,6 +294,11 @@ public sealed class LineageTests : IDisposable
         Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "recall-welllog-03-header-delivery"));
         Assert.True(WaveOf(report, "recall-lookups-00-cache") < WaveOf(report, "recall-welllog-03-header-delivery"));
         Assert.True(WaveOf(report, "wells-wellbore-03-header-delivery") < WaveOf(report, "wells-osdu-04-metadata-retrieval"));
+
+        // The assertion flow reads the kind the well log delivery writes, so its tests run once the logs have landed.
+        Assert.True(WaveOf(report, "recall-welllog-03-header-delivery") < WaveOf(report, "recall-welllog-04-header-assertion"));
+        Assert.Contains(report.Edges, e => e.Flow == "recall-welllog-04-header-assertion" && e.Relation == LineageRelation.Reads && e.ObjectKey == TypeKey(Samples.WellLogKind));
+        Assert.DoesNotContain(report.Edges, e => e.Flow == "recall-welllog-04-header-assertion" && e.Relation == LineageRelation.Writes);
 
         // Every file node is where the flows read and land it, relative to the checkout.
         var files = report.Objects.Where(o => o.Kind == LineageNodeKind.File).Select(o => o.Name).Order(StringComparer.Ordinal).ToList();
