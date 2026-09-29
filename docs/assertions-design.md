@@ -222,14 +222,15 @@ whole, a run with every result, and a run's report in each format ([osdu/docs/op
 Every read is in a partition: the one the request names, else the workbench's (`X-Osdu-Partition`), else the one a run
 would test.
 
-The GUI puts every test of every assertion flow on one board (OSDU, **Tests**): the pass rate, outcome tiles that filter
-the tests they count, a search over names, kinds, tags, queries and assertions, the tags as filters, and the tests by
-flow and by the kind they read, each with its outcome, how many of its assertions hold, what it matched, its last runs
-as a strip and a button that runs it alone. A test opens in a sheet with what every assertion found and the records that
-failed it, each assertion's outcome over the last runs, the trend of what it measured, and its declaration. A pipeline of
-the kind has three tabs: **Tests** (its board), **History** (its tests against its runs, with how often each flipped)
-and **Reports** (its runs). A report page shows one run and runs the tests that did not pass again. Running is always
-the platform's one trigger dialog, opened on the tests asked for.
+The GUI is built on one rule: a test is worth what its last run found about the data as it is now, so every surface
+leads with that, says each thing once, and leaves earlier runs to the flow's History and Reports tabs. The board (OSDU,
+**Tests**) shows every test of every assertion flow, one line each with the verdict of its last result, under a strip of
+counts that filter them; a test whose result is older than its flow's last run says so. A test opens in a sheet whose
+**Checks** tab opens on the checks that ask for a look, each of which opens on its own with what it found and the records
+that failed it, and whose **Definition** tab says what the test reads. A pipeline of the kind has three tabs: **Tests**
+(its board), **History** (its tests against its runs, with how often each flipped) and **Reports** (its runs). A report
+page shows one run, each test opening in place on its checks, and runs the tests that did not pass again. Running is
+always the platform's one trigger dialog, opened on the tests asked for.
 
 The CLI reads the same rows: `sqlflow assertions list | status | report <flow.yaml>`.
 

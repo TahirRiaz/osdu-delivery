@@ -616,32 +616,39 @@ Pipelines like any other flow.
 - **A cache flow's page** (Pipelines): the Cache versions tab names the partition the flow fills and how many other
   cache flows fill it too, and lists every version of that partition's cache with the flow that wrote each, with a link
   to the OSDU cache page for what the cache holds and the changes waiting for approval.
-- **Tests** (OSDU): every test of every assertion flow in the workbench's partition, on one board
-  ([docs/assertions-design.md](../../docs/assertions-design.md) section 8). A scoreboard heads it: the share of the
-  evaluated tests that passed, and one tile per outcome (failed, errored, warned, not run, passed) and for the tests that
-  do not fit their template or changed since their result, each tile the filter to the tests it counts. A search over
-  names, kinds, tags, queries and assertions, and the tags as toggles, narrow it further. The tests are listed by flow,
-  and within a flow by the kind they read, what needs a look first: each with its outcome, how many of its assertions
-  hold, how many records it matched (and whether it read a sample), its last ten outcomes as a strip of squares (the
-  word, the report and the time on hover; a square opens its report), when it last ran, and a button that runs it alone.
-  Tests picked with their boxes run together, and **Run all** runs the flow's every test; each opens the platform's
-  trigger dialog on those tests, where the pick, the parameters and the operation can still change. A flow's header
-  names its partitions, its last run and that run's report. A test opens in a sheet (its address carries `?test=`, so a
-  link opens it): what it matched and evaluated, how many assertions hold, and how long it took; every assertion with
-  what it expected and found, how many it checked and failed, and the records that failed it (id, value held, why), the
-  failing ones open; each assertion's outcome across the last runs; the trend of the records it matched, or of what any
-  assertion measured, each point in the tone of how that run came out; and its declaration. A test that does not fit its
-  template says why, and one that changed since its result says so.
-- **An assertion flow's page** (Pipelines): the **Tests** tab is that flow's board; **History** lays its tests against
-  its last 30 runs, oldest on the left, with each test's pass rate and how often its outcome flipped (three or more
-  flips is marked: a test that keeps changing is unsteady data or an unsteady test), a column header opening its run's
-  report; **Reports** lists its runs with their outcomes as a bar and every download.
-- **A test report** (`/delivery/assertions/runs/<n>`): one run of a flow's tests as the report of how the partition
-  stood: the flow, partition, time, duration, actor and what it ran; the pass rate and the outcome tiles as filters; the
-  tests by kind as bars; and every test's result, the failing ones open. **Run the tests not passing again** opens the
-  trigger dialog on the failed, errored and warned tests; **Run again** repeats the run's pick; **Report** opens the
-  HTML report in a tab of its own or downloads it as HTML, Markdown, JSON or JUnit XML. The platform run's page links
-  here (**Open the report**) and shows the counts in place of row counts.
+- **Tests** (OSDU): how the data stands now, by every test of every assertion flow in the workbench's partition
+  ([docs/assertions-design.md](../../docs/assertions-design.md) section 8). A test is worth what its last run found, so
+  every surface leads with that, says each thing once, and leaves earlier runs to the flow's History and Reports tabs. A
+  strip heads the board: the pass rate with its bar, then one count per standing (failing, errored, warned, not run,
+  passing, and unfit or changed when a test is), each the filter to the tests it counts. Search (names, types, tags,
+  queries, checks) and a tag picker narrow it further. Each flow is a card: its name (its description and what fails a
+  run of it on hover), the type its tests read, its last run with the report it kept, **Report** (open or download) and
+  **Run all**, which becomes **Run N picked** once tests are picked with their boxes. Each test is one line: its outcome,
+  its name (its description on hover; a mark when it does not fit its schema or changed since its result), the verdict
+  of its last result ("2 of 9 checks do not hold", "all 3 checks hold"), and a button that runs it alone; a test whose
+  last result comes from an earlier run than the flow's last (a run that left it out) says which run and when. Every run
+  goes through the platform's trigger dialog, opened on the tests asked for.
+- **A test** opens in a sheet (its address carries `?test=`, `testTab=` and `check=`, so a link opens exactly it): its
+  outcome and name, **Latest report** and **Run**, one line saying how its checks came out with what it matched, how long
+  it took and when, and its description. **Checks** opens on the checks that ask for a look (every one, when all of them
+  hold), the others a click away; a check holding shows only its mark, one that does not shows what it found. A check
+  opens on its own: what it expects (when its name does not already say), what it found, why, and the records that failed
+  it (id to copy, the value held, why it fails). A test not run yet lists the checks its first run will make; one that
+  does not fit its schema, errored, or changed since its result says so above them. **Definition** says what the test
+  reads: the type, the schema it is checked against, the records it selects (the query to copy), how it reads them, its
+  checks' default severity, tags and partitions.
+- **An assertion flow's page** (Pipelines): **Tests** is that flow's board. **History** and **Reports** hold the runs
+  before the last, for whoever asks: History lays the tests against the last 30 runs with each test's pass rate and how
+  often it flipped (three or more is marked), a column opening its run's report; Reports lists the runs with their
+  outcomes as a bar and every download.
+- **A test report** (`/delivery/assertions/runs/<n>`): one run as the report of how the partition stood then: the flow,
+  partition, time, duration, actor and what it ran; the same strip as the board over the run's tests; the tests by type as
+  bars when there are several types; and every test on one line that opens in place on what it read as it ran and its
+  checks that ask for a look, the failed and errored ones open. The run's error is shown only when the run itself stopped;
+  a run failed by its tests says so through them. **Run the tests not passing again** opens the trigger dialog on the
+  failed, errored and warned tests; **Run again** repeats the run's pick; **Report** opens the HTML report in a tab of its
+  own or downloads it as HTML, Markdown, JSON or JUnit XML. The platform run's page links here (**Open the report**) and
+  shows the counts in place of row counts.
 - **Audit trail** (OSDU): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (OSDU): the mapping documents the repositories hold, each mapping with the template it pins and a
   link to the Mapping builder. A mapping opens on its Properties, laid out so that what needs a look is what stands
