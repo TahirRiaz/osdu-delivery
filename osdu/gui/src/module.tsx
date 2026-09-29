@@ -257,10 +257,11 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/assertions/runs/:assertionRunId", component: AssertionReportPage },
   ],
   // Everything this product adds is one group of its own, rather than entries threaded through the platform's generic
-  // ones. It sits straight after Operate, and its entries read in the order the work is done: what has been delivered,
-  // one record, how OSDU stands against the tests, who did what, then the documents a delivery is built from.
+  // ones. It sits straight after Workspace, and its entries read in the order the work is done: what has been delivered,
+  // one record, how OSDU stands against the tests, who did what, then the documents a delivery is built from, with the
+  // mapping builder, a tool for writing them, last.
   navGroups: [
-    { id: OSDU_GROUP, label: "OSDU", icon: Layers, after: "operate" },
+    { id: OSDU_GROUP, label: "OSDU", icon: Layers, after: "workspace" },
   ],
   navItems: [
     { group: OSDU_GROUP, label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery" },
@@ -269,9 +270,9 @@ export const osduDeliveryModule: GuiModule = {
     { group: OSDU_GROUP, label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
     { group: OSDU_GROUP, label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents" },
     { group: OSDU_GROUP, label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
-    { group: OSDU_GROUP, label: "Mapping builder", to: "/delivery/mappings/build", icon: PencilRuler, testId: "nav-delivery-mapping-builder" },
     { group: OSDU_GROUP, label: "Cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache" },
     { group: OSDU_GROUP, label: "Partitions", to: "/delivery/partitions", icon: Layers, testId: "nav-delivery-partitions" },
+    { group: OSDU_GROUP, label: "Mapping builder", to: "/delivery/mappings/build", icon: PencilRuler, testId: "nav-delivery-mapping-builder" },
   ],
   detailTitles: [
     { pattern: /^\/delivery\/records\/[^/]+/, title: () => "Record" },
