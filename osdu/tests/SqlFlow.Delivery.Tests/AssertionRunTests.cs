@@ -64,6 +64,7 @@ public sealed class AssertionRunTests : IDisposable
               - rowCount: { atLeast: 10 }
               - columns: { includes: [MD, GR] }
               - { column: GR, between: [0, 300], severity: warning }
+              - { column: GR, between: [0, 500], optional: true }
               - { column: MD, monotonic: increasing, severity: warning }
               - { aggregate: max, column: GR, atMost: 500 }
           - name: by-id
@@ -252,6 +253,8 @@ public sealed class AssertionRunTests : IDisposable
         Assert.Equal(TestOutcomes.Failed, gr.Outcome);
         Assert.Equal("dev:work-product-component--WellLog:l2", Assert.Single(gr.Examples).Id);
         Assert.Contains("row 7: 400", gr.Examples[0].Value, StringComparison.Ordinal);
+        // Row 8's gap comes back as the DDMS's "NaN", which an optional condition passes over as no value.
+        Assert.Equal(TestOutcomes.Passed, Of(logs, "column", 1).Outcome);
         var md = Of(logs, "monotonic");
         Assert.Equal(TestOutcomes.Failed, md.Outcome);
         Assert.Contains("is not increasing at row 12", Assert.Single(md.Examples).Reason);

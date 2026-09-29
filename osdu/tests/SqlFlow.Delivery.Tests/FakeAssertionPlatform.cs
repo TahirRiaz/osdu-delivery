@@ -230,9 +230,10 @@ internal sealed partial class FakeAssertionPlatform : HttpMessageHandler
         });
     }
 
+    // The live DDMS writes a gap in a float column as the text "NaN".
     private static JsonNode? Cell(object? value) => value switch
     {
-        null => null,
+        null => JsonValue.Create("NaN"),
         double d => JsonValue.Create(d),
         int n => JsonValue.Create(n),
         string s => JsonValue.Create(s),

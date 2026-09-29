@@ -90,7 +90,10 @@ public abstract class BulkEvaluator : Evaluator
         }
     }
 
-    /// <summary>A cell of a frame as a value: null for an absent value (the DDMS writes one as null).</summary>
+    /// <summary>
+    /// A cell of a frame as a value: null for an absent value, which the DDMS writes as null, or for a float column as the
+    /// text "NaN" (seen live on ADME), and null for a value that is not a finite number.
+    /// </summary>
     internal static JsonNode? Cell(JsonElement row, int column)
     {
         if (row.ValueKind != JsonValueKind.Array || column >= row.GetArrayLength())
@@ -103,6 +106,7 @@ public abstract class BulkEvaluator : Evaluator
         {
             JsonValueKind.Null or JsonValueKind.Undefined => null,
             JsonValueKind.Number => cell.TryGetDouble(out var number) && double.IsFinite(number) ? JsonValue.Create(number) : null,
+            JsonValueKind.String when cell.ValueEquals("NaN") || cell.ValueEquals("Infinity") || cell.ValueEquals("-Infinity") => null,
             JsonValueKind.String => JsonValue.Create(cell.GetString()),
             JsonValueKind.True => JsonValue.Create(true),
             JsonValueKind.False => JsonValue.Create(false),
