@@ -123,7 +123,7 @@ internal static class DeliveryAssertionVerbs
 
             var changed = string.Equals(result.DefinitionHash, test.DefinitionHash, StringComparison.Ordinal) ? string.Empty : "  (changed since)";
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {result.Outcome,-9}  {test.Name}  ({test.Kind})  matched {result.Matched?.ToString(CultureInfo.InvariantCulture) ?? "n/a"}, {result.FailedAssertions} of {result.Assertions} assertion(s) not holding, run {result.AssertionRunId} at {Stamp(result.CompletedUtc)}{changed}"));
+                $"  {result.Outcome,-9}  {test.Name}  ({test.Kind})  matched {result.Matched?.ToString(CultureInfo.InvariantCulture) ?? "n/a"}, {result.FailedAssertions} of {result.Assertions} assertion(s) failed, run {result.AssertionRunId} at {Stamp(result.CompletedUtc)}{changed}"));
             if (result.Error is { Length: > 0 } error)
             {
                 context.Out.WriteLine("             " + error);
