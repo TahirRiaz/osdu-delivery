@@ -213,7 +213,7 @@ partitions reads the one `--partition` names; one that names one reads it.
 | Verb | What it does |
 | --- | --- |
 | `list` | The flow's runs in the partition, newest first (20 unless `--max` says otherwise, at most 1,000): the report number, status, when, the counts of each outcome, who ran it, and why a run failed. |
-| `status` | Where each test of the flow stands: its latest outcome and report number, what it matched, how many assertions did not hold and why it errored, and whether the test changed since that result. A test with no result yet says `not run`. |
+| `status` | Where each test of the flow stands: its latest outcome and report number, what it matched, how many assertions failed and why it errored, and whether the test changed since that result. A test with no result yet says `not run`. |
 | `report` | A run's full report, the latest unless `--run` names one, as JSON (the default), Markdown, HTML or JUnit XML, rendered by the same code as the control plane's. `--out` writes it to a file, which a CI job publishes: JUnit XML for its test view, HTML as an artifact to read. A run of another flow, or of the flow in another partition, is refused. |
 
 Running the tests is a run like any other: `sqlflow run <flow.yaml>` runs every test, and the payload picks some
