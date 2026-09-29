@@ -607,21 +607,22 @@ public sealed class FlowRuntime : IDisposable
 
     /// <summary>
     /// Marks records for redelivery (design.md section 7.6: forget what OSDU holds so the next plan re-sends), and asks
-    /// the flow's next run to plan them again.
+    /// the flow's next run to plan them again. Null keys means every record the flow has delivered.
     /// </summary>
-    public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey> keys, RedeliverScope scope, CancellationToken ct = default)
+    public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey>? keys, RedeliverScope scope, CancellationToken ct = default)
         => RedeliverAsync(keys, new RedeliverSelection(scope, []), ct);
 
     /// <summary>Marks records for redelivery of what <paramref name="selection"/> names, parts of a payload sent in parts included.</summary>
-    public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey> keys, RedeliverSelection selection, CancellationToken ct = default)
+    public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey>? keys, RedeliverSelection selection, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(keys);
         ArgumentNullException.ThrowIfNull(selection);
-        return TrackAsync("redeliver", new { keys = keys.Select(k => k.ToString()).ToList(), scope = selection.Scope.ToString(), parts = selection.Parts }, keys.Count == 1 ? keys[0] : null, async () =>
+        return TrackAsync("redeliver", new { keys = keys?.Select(k => k.ToString()).ToList(), scope = selection.Scope.ToString(), parts = selection.Parts }, keys is { Count: 1 } ? keys[0] : null, async () =>
         {
             var marked = await RequireLedger().ForceRedeliverAsync(Flow.Id, keys, selection, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
             await EmitAsync("record.redeliver", keys, $"redelivery of {selection} requested by {Actor}", ct).ConfigureAwait(false);
-            return (marked, $"marked {marked} record(s) for redelivery of {selection}", (Guid?)null);
+            return (marked, keys is null
+                ? $"marked every delivered record, {marked} in all, for redelivery of {selection}"
+                : $"marked {marked} record(s) for redelivery of {selection}", (Guid?)null);
         }, ct);
     }
 

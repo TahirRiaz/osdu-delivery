@@ -23,13 +23,29 @@ const DEFAULT_OPERATION: Record<string, string> = {
   cache: "refresh",
 };
 
-type RedeliverScope = "all" | "metadata" | "payload";
+type RedeliverScope = "all" | "metadata" | "payload" | "record" | "files" | "bulk" | "workflow";
+
+/** What a deliver run sends: what changed, or a part of its records again whatever their hashes say. */
+type SendAgain = "changed" | RedeliverScope;
 
 const REDELIVER_SCOPES: readonly { value: RedeliverScope; label: string }[] = [
   { value: "all", label: "Metadata and payload" },
   { value: "metadata", label: "Metadata only" },
   { value: "payload", label: "Payload only" },
 ];
+
+/** The parts a route sends by name, which a run started from the CLI or the API may have named and a repeat keeps. */
+const PART_LABELS: Partial<Record<RedeliverScope, string>> = {
+  record: "The record only",
+  files: "Files only",
+  bulk: "Bulk data only",
+  workflow: "The workflow run only",
+};
+
+const SEND_CHANGED: { value: SendAgain; label: string } = { value: "changed", label: "Nothing: send only what changed" };
+
+/** The records a run sends again at most before the flow's next runs take the rest (DeliveryExecutor.RequestedPerRun). */
+const SENT_AGAIN_PER_RUN = 5000;
 
 /** The run value naming the partition a run of a flow that works in partitions targets (docs/partitions-design.md section 3). */
 const PARTITION = "partition";
@@ -116,13 +132,13 @@ function listed(names: readonly string[]): string {
 const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver", "interface", "interfaces"]);
 
 const FORCE_HINTS: Record<string, string> = {
-  delivery: "Push past the change gates: plan every record even when no source table advanced, re-plan a completed submission, verify records verified recently.",
+  delivery: "Look at every record even when no source row changed, re-plan a completed submission, verify records verified recently. A record that renders and hashes as it was delivered is still not sent: Send again does that.",
   retrieval: "Start again at the declared start instead of continuing from the last run's watermark.",
   cache: "Capture every declared type again, even where the last refresh found nothing to change.",
 };
 
 function isRedeliverScope(value: unknown): value is RedeliverScope {
-  return value === "all" || value === "metadata" || value === "payload";
+  return value === "all" || value === "metadata" || value === "payload" || (typeof value === "string" && value in PART_LABELS);
 }
 
 /**
@@ -179,8 +195,11 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
       ? initialPayload.recordKeys.filter((key): key is string => typeof key === "string").join("\n")
       : ""
   ));
-  const [redeliver, setRedeliver] = useState<RedeliverScope>(
-    () => (isRedeliverScope(initialPayload?.redeliver) ? initialPayload.redeliver : "all"),
+  const [redeliver, setRedeliver] = useState<SendAgain>(
+    () => (isRedeliverScope(initialPayload?.redeliver) ? initialPayload.redeliver : "changed"),
+  );
+  const [repeatedPart] = useState<RedeliverScope | null>(
+    () => (isRedeliverScope(initialPayload?.redeliver) && PART_LABELS[initialPayload.redeliver] !== undefined ? initialPayload.redeliver : null),
   );
   // A source delivers several interfaces; a run can take some of them, and the ones it leaves out are not run, their
   // records read from the ledger as they stand. Either payload key the kind accepts opens the field.
@@ -206,7 +225,14 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   // A drain delivers what a submission planned and a sync reads every row it is given: neither has a gate to force.
   const takesForce = !(deliveryKind && (effectiveOperation === "drain" || effectiveOperation === "sync"));
   const recordKeys = useMemo(() => lines(recordKeysText), [recordKeysText]);
-  const takesRedeliver = takesRecordScope && effectiveOperation === "deliver" && recordKeys.length > 0;
+  const takesRedeliver = deliveryKind && effectiveOperation === "deliver";
+  // Records named by key are always sent again, so naming them makes "only what changed" everything.
+  const sendAgain: SendAgain = recordKeys.length > 0 && redeliver === "changed" ? "all" : redeliver;
+  const sendAgainOptions = useMemo(() => {
+    const part = repeatedPart === null ? undefined : PART_LABELS[repeatedPart];
+    const scopes = repeatedPart !== null && part !== undefined ? [...REDELIVER_SCOPES, { value: repeatedPart, label: part }] : REDELIVER_SCOPES;
+    return recordKeys.length > 0 ? scopes : [SEND_CHANGED, ...scopes];
+  }, [recordKeys.length, repeatedPart]);
   const takesInterfaces = deliveryKind && effectiveOperation !== null;
   const interfaceNames = useMemo(() => lines(interfacesText), [interfacesText]);
   const { partitions, headerPartition, loading: partitionsLoading, interfaces } = useFlowPartitions(flowKind, pipelineId);
@@ -247,7 +273,9 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
             : null))
       ?? (takesSubmission && trimmedSubmission !== "" && !UUID.test(trimmedSubmission)
         ? "The submission id must be a UUID."
-        : takesRecordScope && recordKeys.some((key) => !UUID.test(key))
+        : takesRedeliver && sendAgain !== "changed" && takesSubmission && trimmedSubmission !== ""
+          ? "A run on a submission delivers what that submission planned; clear the submission, or set Send again to nothing."
+          : takesRecordScope && recordKeys.some((key) => !UUID.test(key))
           ? "Every record key must be a UUID (one per line)."
           : takesInterfaces && interfaceNames.some((name) => !INTERFACE_NAME.test(name))
             ? "An interface's name is a letter, then letters, digits, '_' and '-' (one per line)."
@@ -268,8 +296,8 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
       payload.recordKeys = recordKeys;
     }
 
-    if (takesRedeliver) {
-      payload.redeliver = redeliver;
+    if (takesRedeliver && sendAgain !== "changed") {
+      payload.redeliver = sendAgain;
     }
 
     if (takesInterfaces && interfaceNames.length > 0) {
@@ -287,7 +315,7 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
       error,
     };
   }, [
-    carried, carriesLedgerWork, force, interfaceNames, movedFrom, partition, partitionError, recordKeys, redeliver, submissionId, takesForce,
+    carried, carriesLedgerWork, force, interfaceNames, movedFrom, partition, partitionError, recordKeys, sendAgain, submissionId, takesForce,
     takesInterfaces, takesRecordScope, takesRedeliver, takesSubmission, takesValues, valuesText, declared, fieldValues,
   ]);
 
@@ -323,6 +351,28 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
           </Label>
           <p className="pl-10 text-xs text-muted-foreground">
             {FORCE_HINTS[flowKind] ?? "Run past the change gates that would otherwise skip work."}
+          </p>
+        </div>
+      )}
+      {takesRedeliver && (
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor={`${idPrefix}-redeliver`}>Send again</Label>
+          <Select value={sendAgain} onValueChange={(value) => { if (value === "changed" || isRedeliverScope(value)) { setRedeliver(value); } }}>
+            <SelectTrigger id={`${idPrefix}-redeliver`} size="sm" className="h-8 w-full" data-testid="trigger-redeliver">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {sendAgainOptions.map((scope) => (
+                <SelectItem key={scope.value} value={scope.value}>{scope.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground" data-testid="trigger-redeliver-hint">
+            {recordKeys.length > 0
+              ? "What of the records named below is sent again, changed or not: the record and its payload files, or one of them."
+              : sendAgain === "changed"
+                ? "Only records whose rendering or payload changed are sent."
+                : `Every record this flow has delivered${partition !== null ? ` in ${partition}` : ""} is sent again, changed or not: a new version of each in OSDU. A run sends at most ${SENT_AGAIN_PER_RUN.toLocaleString()} of them; the flow's next runs send the rest.`}
           </p>
         </div>
       )}
@@ -404,7 +454,7 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
               ? "Delivery keys to check; empty verifies the flow's delivered records."
               : effectiveOperation === "sync"
                 ? "Delivery keys whose rows to read from the ingestion tables (at most 1,000); empty syncs every record."
-                : "Delivery keys to send again, changed or not; empty delivers what changed."}
+                : "Delivery keys to send again, changed or not; empty leaves it to Send again, over every record the flow has delivered."}
           </p>
         </div>
       )}
@@ -422,24 +472,6 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
           <p className="text-xs text-muted-foreground">
             Which interfaces of the source this run takes, one per line; empty runs them all. The ones left out are not
             run, and the records they deliver are read from the ledger as they stand.
-          </p>
-        </div>
-      )}
-      {takesRedeliver && (
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${idPrefix}-redeliver`}>Send again</Label>
-          <Select value={redeliver} onValueChange={(value) => { if (isRedeliverScope(value)) { setRedeliver(value); } }}>
-            <SelectTrigger id={`${idPrefix}-redeliver`} size="sm" className="h-8 w-full" data-testid="trigger-redeliver">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {REDELIVER_SCOPES.map((scope) => (
-                <SelectItem key={scope.value} value={scope.value}>{scope.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-xs text-muted-foreground">
-            Which part of the scoped records is sent again: the record and its payload files, or one of them.
           </p>
         </div>
       )}

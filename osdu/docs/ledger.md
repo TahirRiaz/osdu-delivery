@@ -74,7 +74,7 @@ the identities its mapping declares when it is next staged.
 | `SourceFileName`, `SourceRowNumber`, `SourceUpdatedUtc` | Where the version OSDU holds came from: the ingestion row's `FileName_DW`, `RowNumber_DW` and `UpdatedDate_DW`. |
 | `PendingSourceFileName`, `PendingSourceRowNumber`, `PendingSourceUpdatedUtc` | The same for the queued version, or for the state a held, failed or deleted record was left in. |
 | `SourceInsertedUtc` | When the ingestion table first inserted the record's row (`InsertedDate_DW`), which later changes never move: the row's arrival, as the last plan that read it saw it. Null while the table does not carry the column, or until a plan reads the row. |
-| `PlanRequestedUtc` | Set when the ledger asks for the record to be planned again (a redeliver, a release with no pending document, a cache rollout); the next run pages these records and plans them as a keys selection, and planning clears it. |
+| `PlanRequestedUtc` | Set when the ledger asks for the record to be planned again (a redeliver of named records or of every delivered record, a release with no pending document, a cache rollout); the next run pages these records and plans them as a keys selection, and planning clears it. |
 | `TargetId`, `TargetVersion` | The OSDU id and the last known version (the drift handle). |
 | `ClaimedTargetId` | The OSDU id the record claimed for its flow when it first queued a document, kept for good. Unique across the ledger: one OSDU record belongs to one flow. Null for a record that was only ever held. |
 | `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |

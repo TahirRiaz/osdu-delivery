@@ -19,6 +19,10 @@ const REDELIVER_LABELS: Record<string, string> = {
   all: "metadata and payload",
   metadata: "metadata only",
   payload: "payload only",
+  record: "the record only",
+  files: "files only",
+  bulk: "bulk data only",
+  workflow: "the workflow run only",
 };
 
 /**
@@ -51,7 +55,9 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
                 </Badge>
               )}
               {request.redeliver !== null && (
-                <Badge variant="secondary">redeliver {REDELIVER_LABELS[request.redeliver] ?? request.redeliver}</Badge>
+                <Badge variant="secondary" data-testid="run-redeliver">
+                  {`redeliver ${REDELIVER_LABELS[request.redeliver] ?? request.redeliver}${request.recordKeys.length === 0 ? " of every delivered record" : ""}`}
+                </Badge>
               )}
               {request.slices.length > 0 && (
                 <Badge variant="secondary" className="font-mono" data-testid="run-slices">

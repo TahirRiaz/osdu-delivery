@@ -795,6 +795,18 @@ public class DeliverRunScopeTests
             StringComparison.Ordinal);
         Assert.Contains("is not one of", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{"nothing":1}""")).Message, StringComparison.Ordinal);
 
+        // Without keys a redelivery sends again every record the flow has delivered; a run on a submission delivers what
+        // that submission planned, so it takes none.
+        DeliveryRunPayload.Parse("""{"redeliver":"bulk"}""").Validate(DeliveryOperations.Deliver);
+        Assert.Contains(
+            "a run on a submission delivers what that submission planned",
+            Assert.Throws<SqlFlowException>(() => new DeliveryRunPayload { SubmissionId = Guid.NewGuid(), Redeliver = RedeliverScopes.All }.Validate(DeliveryOperations.Deliver)).Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "a plan sends nothing",
+            Assert.Throws<SqlFlowException>(() => new DeliveryRunPayload { Redeliver = RedeliverScopes.All }.Validate(DeliveryOperations.Plan)).Message,
+            StringComparison.Ordinal);
+
         // A sync reads the rows of the ledger's records, all of them or the ones it names, and sends nothing.
         DeliveryRunPayload.Parse("""{"recordKeys":["11111111-1111-1111-1111-111111111111"],"interface":"wells"}""").Validate(DeliveryOperations.Sync);
         DeliveryRunPayload.None.Validate(DeliveryOperations.Sync);

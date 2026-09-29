@@ -270,10 +270,10 @@ rather than half-applied.
 
 | Field | Meaning | Operations |
 | --- | --- | --- |
-| `force` | `true` lifts the whole-run gates (the tier 0 skip and an already completed submission); each record's own hashes still decide what is sent. | all but `drain` and `sync` |
+| `force` | `true` lifts the whole-run gates (the tier 0 skip and an already completed submission), so the run looks at every record; each record's own hashes still decide what is sent, and a record that renders and hashes as it was delivered is not sent. To send records again, use `redeliver`. | all but `drain` and `sync` |
 | `submissionId` | The submission the run works on: a re-run, or a fan-out member's share. | all but `verify`, `replan` and `sync` |
 | `recordKeys` | The delivery keys (UUIDs) the run is scoped to, at most 1,000, each once. Not with `submissionId`. | `deliver`, `plan`, `intake`, `verify`, `sync` |
-| `redeliver` | What a run scoped to `recordKeys` sends again: `all` (the default), `record` (the record document; its datasets and bulk data keep what OSDU holds), `files` (uploaded and registered again, on the file, dataset, manifest and composed routes, and the workflow route with files), `bulk` (a new version of the bulk data, on the ddms and composed routes) or `workflow` (the workflow route's stages run again). On the composed and workflow routes the named part goes alone. `metadata` names the record and `payload` every part. A part the route does not send fails the run. | `deliver` |
+| `redeliver` | What the run sends again, changed or not: of the records `recordKeys` names, or without `recordKeys` of every record the flow has delivered in the partition (a run sends at most 5,000 of them, and the flow's next runs send the rest). `all` (the default for named records), `record` (the record document; its datasets and bulk data keep what OSDU holds), `files` (uploaded and registered again, on the file, dataset, manifest and composed routes, and the workflow route with files), `bulk` (a new version of the bulk data, on the ddms and composed routes) or `workflow` (the workflow route's stages run again). On the composed and workflow routes the named part goes alone. `metadata` names the record and `payload` every part. A part the route does not send fails the run. Not with `submissionId`. | `deliver` |
 | `slices` | The key slices of `submissionId` a fan-out intake member plans (indexes 0 to 1023, each once). | `intake` |
 | `interface` | The one interface of a source the run works on. A run on records or slices of a source with several interfaces has to name it. | all |
 | `interfaces` | The interfaces a run of a source runs, each once; every interface when left out. Not with `interface`, `submissionId`, `recordKeys` or `slices`. | all |
@@ -294,6 +294,9 @@ sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interfaces"
 
 # send the curves of one well log again
 sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interface":"welllogs","recordKeys":["<key>"],"redeliver":"bulk"}'
+
+# send the curves of every well log the flow has delivered again
+sqlflow run flows/recall-welllog-03-header-delivery.yaml --set logSource=STAT_COMP --payload '{"redeliver":"bulk"}'
 
 # run the smoke tests of an assertion flow, and one more by name
 sqlflow run flows/recall-welllog-04-header-assertion.yaml --set partition=dev --payload '{"tags":["smoke"],"tests":["log-curves"]}'

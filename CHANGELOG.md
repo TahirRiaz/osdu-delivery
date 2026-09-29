@@ -13,6 +13,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Send a whole flow's records again.** A deliver run's `redeliver` no longer needs `recordKeys`: without them it sends
+  again, changed or not, every record the flow has delivered in the partition (the metadata and payload, the record, or
+  the payload or one of its parts), marked a slice at a time and sent at most 5,000 a run, the flow's next runs sending
+  the rest. The trigger dialog shows **Send again** beside **Force** on every deliver run, with "send only what changed"
+  as its default, and says what each choice sends; **Force** now says it looks at every record and still sends only
+  what changed. A run on a submission takes no `redeliver`. The run page names a flow-wide redelivery as such.
 - **A flow's scope offers the values its column holds.** A parameter a delivery flow's `source.record.scope` binds to a
   column of its record table is a pick list wherever the scope is given its values: a flow's Preview tab, a mapping's
   Check values, and the trigger dialog, which asks for each parameter the flow declares instead of `name=value` lines.
@@ -696,6 +702,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **A test of bulk data reads the Wellbore DDMS's "NaN" as a gap.** The DDMS writes a missing value of a float curve as
+  the text `NaN`, which a condition on the column took for a string and failed ("is a string (NaN), which does not
+  order against the number 0"), so an `optional` range over a curve with gaps failed every log that had one. It is read
+  as no value now, as a JSON null always was.
+- **A test groups a text property by its keyword sub-field.** The search refuses to aggregate text, so a `groupBy` on a
+  property of `data` the schema indexes as text errored; it asks for the `.keyword` sub-field instead.
 - **A refresh no longer tags delivered records whose cached values did not move.** A cached record is asked about as
   a whole when any of its values moves, and each set was judged only against the new version, so a path that read the
   same before and after was told as a change whenever the set held something else: a change someone had rejected was

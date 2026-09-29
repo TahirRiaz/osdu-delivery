@@ -1658,17 +1658,19 @@ public interface ILedger
 
     /// <summary>
     /// Forgets what OSDU holds for the records (the whole record, the metadata document or the payload) and asks the
-    /// flow's next run to plan them again. Returns how many records were marked.
+    /// flow's next run to plan them again. Null keys means every record the flow has delivered. Returns how many records
+    /// were marked.
     /// </summary>
-    Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
+    Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
         => ForceRedeliverAsync(flowId, keys, new RedeliverSelection(scope, []), nowUtc, ct);
 
     /// <summary>
-    /// Marks records so the next plan sends again what <paramref name="selection"/> names. A selection of payload parts
+    /// Marks records so the next plan sends again what <paramref name="selection"/> names: the named ones, or with null
+    /// keys every record the flow has delivered, a slice at a time. A selection of payload parts
     /// (docs/interfaces-design.md section 5.5) leaves them on the record's delivered payload hash
     /// (<see cref="Model.PayloadParts.RedeliverMarker"/>), where the plan reads them and the next payload delivery replaces them.
     /// </summary>
-    Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default);
+    Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
     /// Records what a removal did to a set of the flow's records, in one round trip. <see cref="RemovalScope.Record"/> and

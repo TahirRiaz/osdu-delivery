@@ -103,7 +103,7 @@ public static class DeliveryOperations
 }
 
 /// <summary>
-/// What a record-scoped deliver run sends again, by the names a run's payload and the API carry
+/// What a deliver run sends again, by the names a run's payload and the API carry
 /// (docs/interfaces-design.md section 10): everything, or one part of the record, named by what it is on the record's
 /// route. The part that is not named keeps what OSDU holds: the record keeps its dataset references and its DDMS bulk
 /// link, and a bulk resend writes a new bulk version of the same record.
@@ -250,7 +250,10 @@ public sealed record DeliveryRunPayload
 
     public static DeliveryRunPayload None { get; } = new();
 
-    /// <summary>Lift the whole-run gates: tier 0 and an already completed submission. Each record's own hashes still decide.</summary>
+    /// <summary>
+    /// Look at every record past the whole-run gates: tier 0 and an already completed submission. It sends nothing that
+    /// has not changed, since each record's own hashes still decide; <see cref="Redeliver"/> sends records again.
+    /// </summary>
     public bool Force { get; init; }
 
     /// <summary>The submission the run works on: a re-run, or a fan-out member's share.</summary>
@@ -259,7 +262,11 @@ public sealed record DeliveryRunPayload
     /// <summary>The delivery keys the run is scoped to.</summary>
     public IReadOnlyList<Guid> RecordKeys { get; init; } = [];
 
-    /// <summary>What of the scoped records is sent again: all, metadata or payload; null means all.</summary>
+    /// <summary>
+    /// What a deliver run sends again whatever the hashes say: all, the record, or its payload or a part of it. It applies to
+    /// the records <see cref="RecordKeys"/> names, or without keys to every record the flow has delivered. Null sends again
+    /// everything of named records, and nothing of a run without keys.
+    /// </summary>
     public string? Redeliver { get; init; }
 
     /// <summary>The key slices of <see cref="SubmissionId"/> an intake member plans.</summary>
@@ -475,7 +482,7 @@ public sealed record DeliveryRunPayload
         {
             case DeliveryOperations.Deliver:
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
-                Refuse(Redeliver is not null && RecordKeys.Count == 0, RedeliverProperty, operation, "it says what of the records named by recordKeys is sent again");
+                Refuse(Redeliver is not null && SubmissionId is not null, RedeliverProperty, operation, "a run on a submission delivers what that submission planned");
                 break;
             case DeliveryOperations.Plan:
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");

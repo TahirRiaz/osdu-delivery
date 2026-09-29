@@ -262,6 +262,17 @@ public sealed class ComposedSourceTests : IDisposable
         Assert.Equal(0, Delivered(await RunAsync(engine, source)).Delivered);
         Assert.Empty(Sent(platform, mark));
 
+        // A redelivery of the curves that names no record sends every delivered log's bulk data again, and no file.
+        mark = platform.Calls.Count;
+        await RunAsync(engine, source, new DeliveryRunPayload { Interface = "welllogs", Redeliver = RedeliverScopes.Bulk });
+        var resent = Sent(platform, mark);
+        Assert.Equal(5, resent.Count(c => c.StartsWith("POST " + Ddms + "/", StringComparison.Ordinal) && c.EndsWith("/data", StringComparison.Ordinal)));
+        Assert.DoesNotContain(resent, c => c.Contains("/api/file/", StringComparison.Ordinal));
+        Assert.Empty(await ledger.ListPlanRequestedAsync(flowId, null, 10));
+        mark = platform.Calls.Count;
+        Assert.Equal(0, Delivered(await RunAsync(engine, source)).Delivered);
+        Assert.Empty(Sent(platform, mark));
+
         OsduContracts.AssertConform(platform.Calls, FakeOsduPlatform.ToSignedLocation, OsduContracts.File, OsduContracts.WellboreDdms, OsduContracts.Legal);
     }
 }

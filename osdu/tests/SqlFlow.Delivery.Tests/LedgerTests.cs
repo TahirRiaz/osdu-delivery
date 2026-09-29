@@ -1062,6 +1062,35 @@ public class SqlLedgerTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task A_redelivery_without_keys_marks_every_record_the_flow_has_delivered_and_no_other()
+    {
+        var submission = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync(_flow, [Pending("sent-1", submission), Pending("sent-2", submission), Pending("waiting", submission)]);
+        var sent = new[] { "sent-1", "sent-2" }.Select(name => DeliveryKey.Derive("test", [name])).ToList();
+        foreach (var key in sent)
+        {
+            await Ledger.CompleteAsync(_flow, new RecordCompletion
+            {
+                DeliveryKey = key,
+                Status = RecordStatus.Delivered,
+                Promote = true,
+                TargetId = $"dev:master-data--Wellbore:{key.Value:N}",
+                Attempt = new AttemptRecord { DeliveryKey = key, Worker = "w", StartedUtc = Now, CompletedUtc = Now, Outcome = AttemptOutcome.Delivered, Phase = "metadata+payload" },
+            });
+        }
+
+        Assert.Equal(2, await Ledger.ForceRedeliverAsync(_flow, null, RedeliverScope.Payload, Now));
+        foreach (var key in sent)
+        {
+            var marked = (await Ledger.GetRecordAsync(_flow, key))!;
+            Assert.Equal(("mh", (string?)null), (marked.MetadataHash, marked.PayloadHash));
+        }
+
+        Assert.Equal(sent.Select(k => k.Value).Order().ToList(), (await Ledger.ListPlanRequestedAsync(_flow, null, 10)).Select(r => r.DeliveryKey.Value).Order().ToList());
+        Assert.Equal(RecordStatus.Pending, (await Ledger.GetRecordAsync(_flow, DeliveryKey.Derive("test", ["waiting"])))!.Status);
+    }
+
+    [Fact]
     public async Task Flow_statistics_count_statuses_drift_and_the_last_24_hours_to_the_tick()
     {
         // The counts come from the ledger's indexed statistics view, which its migration builds, checked here to the tick.

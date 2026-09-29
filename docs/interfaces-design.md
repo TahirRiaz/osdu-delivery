@@ -502,7 +502,8 @@ that did not complete. A record can be redelivered or released on its own, as to
 - A record-scoped run (redeliver, release) names the interface in its payload (`interface`) beside the record keys.
 - A redelivery can name the part to send again: `record`, `files`, `bulk`, or `all`. Only that part is sent; the
   others keep what OSDU holds (the record keeps its dataset references and its DDMS bulk link, and a bulk resend
-  writes a new bulk version on the same record).
+  writes a new bulk version on the same record). A redelivery that names no record keys sends that part of every record
+  the interface has delivered.
 - A type that is often redelivered on its own can live in a flow of its own (the individual form), with its own
   schedule, and still refer to records another source file delivers.
 - `drain` drains every interface's pending batches, or the named ones.

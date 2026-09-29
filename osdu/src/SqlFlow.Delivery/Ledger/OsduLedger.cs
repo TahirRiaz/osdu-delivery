@@ -1778,12 +1778,11 @@ public sealed partial class OsduLedger : ILedger
         return requeued + unblocked + unwaited;
     }
 
-    public Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
+    public Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
         => ForceRedeliverAsync(flowId, keys, new RedeliverSelection(scope, []), nowUtc, ct);
 
-    public async Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey> keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default)
+    public async Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(keys);
         ArgumentNullException.ThrowIfNull(selection);
         if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
         {
@@ -1796,7 +1795,17 @@ public sealed partial class OsduLedger : ILedger
         // Parts of a payload sent in parts are named on its delivered hash; a selection of every part clears it, as a
         // whole payload's redelivery always has.
         var marker = selection is { Scope: RedeliverScope.Payload, Parts.Count: > 0 } ? PayloadParts.RedeliverMarker(selection.Parts) : null;
-        return await WriteByKeyAsync(db.DeliveryRecords, keys.Select(k => new RecordKey(partition, flowId, k.Value)), rows => RedeliverAsync(rows, selection.Scope, marker, note, nowUtc, ct), ct).ConfigureAwait(false);
+        if (keys is not null)
+        {
+            return await WriteByKeyAsync(db.DeliveryRecords, keys.Select(k => new RecordKey(partition, flowId, k.Value)), rows => RedeliverAsync(rows, selection.Scope, marker, note, nowUtc, ct), ct).ConfigureAwait(false);
+        }
+
+        // Every record OSDU holds of the flow, a slice at a time as a release of the whole flow is.
+        var delivered = StatusText.Of(RecordStatus.Delivered);
+        return await WriteEachAsync(
+            db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.Status == delivered && r.TargetId != null),
+            rows => RedeliverAsync(rows, selection.Scope, marker, note, nowUtc, ct),
+            ct).ConfigureAwait(false);
     }
 
     private static Task<int> RedeliverAsync(IQueryable<DeliveryRecord> rows, RedeliverScope scope, string note, DateTime nowUtc, CancellationToken ct)

@@ -335,12 +335,12 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         {
             case DeliveryOperations.Deliver:
             case DeliveryOperations.Replan:
-                if (keys.Count > 0)
+                if (keys.Count > 0 || payload.Redeliver is not null)
                 {
-                    // A scoped redelivery: forget what OSDU holds for these records (all of it, or the part the run
-                    // names), then let the plan re-send them.
-                    var marked = await runtime.RedeliverAsync(keys, RedeliverScopeOf(payload, flow), ct).ConfigureAwait(false);
-                    LogRedeliver(log, marked, keys.Count);
+                    // A redelivery: forget what OSDU holds for the named records, or without names for every record the
+                    // flow has delivered (all of it, or the part the run names), then let the plan re-send them.
+                    var marked = await runtime.RedeliverAsync(keys.Count > 0 ? keys : null, RedeliverScopeOf(payload, flow), ct).ConfigureAwait(false);
+                    LogRedeliver(log, marked, keys.Count > 0 ? keys.Count : null);
                 }
 
                 var (requestedSubmission, requestedRecords) = await DeliverRequestedAsync(runtime, selection, payload, log, ct).ConfigureAwait(false);
@@ -504,8 +504,8 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     }
 
     /// <summary>
-    /// What a record-scoped deliver run of <paramref name="flow"/> sends again: the part the run's <c>redeliver</c> names,
-    /// everything when unset. A part the flow's route does not send is refused.
+    /// What a deliver run of <paramref name="flow"/> sends again of the records it redelivers: the part the run's
+    /// <c>redeliver</c> names, everything when unset. A part the flow's route does not send is refused.
     /// </summary>
     public static RedeliverSelection RedeliverScopeOf(DeliveryRunPayload payload, FlowDefinition flow)
     {
@@ -600,8 +600,19 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     private static void LogSubmission(ILogger log, Guid submissionId, string source)
         => log.LogInformation("working on submission {SubmissionId} of {Source}", submissionId, source);
 
-    private static void LogRedeliver(ILogger log, int marked, int requested)
-        => log.LogInformation("marked {Marked} of {Requested} record(s) for redelivery", marked, requested);
+    private static void LogRedeliver(ILogger log, int marked, int? requested)
+    {
+        if (requested is { } named)
+        {
+            log.LogInformation("marked {Marked} of {Requested} record(s) for redelivery", marked, named);
+        }
+        else
+        {
+            log.LogInformation(
+                "marked every record the flow has delivered, {Marked} in all, for redelivery; a run sends at most {PerRun} of them and the flow's next runs send the rest",
+                marked, RequestedPerRun);
+        }
+    }
 
     private static void LogOutcome(ILogger log, string outcome)
         => log.LogInformation("{Outcome}", outcome);

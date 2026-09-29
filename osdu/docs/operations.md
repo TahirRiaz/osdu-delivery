@@ -184,8 +184,8 @@ and the node acts in that partition alone, with its own configuration.
 
 A run carries its `operation` (`deliver`, `plan`, `intake`, `drain`, `verify`, `replan` or `sync`) and the flow's `values` on
 the platform's trigger (`POST /api/v1/runs`), with the kind's own arguments in the run payload: `force` (lift the
-whole-run gates), `submissionId` (the submission to work on), `recordKeys` (scope the run to named records, at most
-1,000), `redeliver` (what a run scoped to `recordKeys` sends again: `all`, the default, `record`, or `files` on the file, dataset, manifest, fileAndDdms and manifestAndDdms routes (and on the workflow route when it declares files), `bulk` on the ddms and composed routes, and `workflow`, a new run of the workflow route's stages; on a route that sends its payload in parts the named part goes alone; `metadata` names the record and `payload` every part, and a part the route does not send fails the run),
+whole-run gates so the run looks at every record; what did not change is still not sent), `submissionId` (the submission to work on), `recordKeys` (scope the run to named records, at most
+1,000), `redeliver` (what the run sends again, changed or not, of the records `recordKeys` names or, without it, of every record the flow has delivered, at most 5,000 a run with the flow's next runs sending the rest; not with `submissionId`: `all`, the default for named records, `record`, or `files` on the file, dataset, manifest, fileAndDdms and manifestAndDdms routes (and on the workflow route when it declares files), `bulk` on the ddms and composed routes, and `workflow`, a new run of the workflow route's stages; on a route that sends its payload in parts the named part goes alone; `metadata` names the record and `payload` every part, and a part the route does not send fails the run),
 `slices` (the key slices a fan-out intake member plans), `interface` (the one interface of a source the run works on)
 and `interfaces` (the interfaces a run of a source runs; every interface when left out). A run on a submission, on
 records or on slices works on one interface and never takes `interfaces`: a run on records or slices of a source of
@@ -823,7 +823,10 @@ Pipelines like any other flow.
   flags says so in a line: it reported none for the partition, or could not be asked, which the refresh's log says.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
-  The trigger dialog offers the operations the flow's kind runs.
+  The trigger dialog offers the operations the flow's kind runs. For a deliver run, **Force** looks at every record past
+  the whole-run gates and still sends only what changed; **Send again** sends records whatever their hashes say: the
+  metadata and payload, the metadata or the payload of the records named under **Redeliver these records**, or, with none
+  named, of every record the flow has delivered in the partition. A record's own page redelivers that record alone.
 
 ## The CLI
 
