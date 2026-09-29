@@ -942,11 +942,17 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
 3. **Entries are prefilled from the cache.** Every variable that points to an entity type the picked partition's cache
    holds gets a cache entry, written `$cache: <Type>.id` with a `$findBy` on the type's first cached field. The person
    completes the incoming side.
-4. For each variable the person chooses dataset, repeater, cache, search (once the mapping declares a search),
-   static or "first value of" (a `$coalesce`, whose alternatives are each edited as an input of their own and ordered in
-   the list), and adds modifiers, a condition and the required flag; a value that builds an id can be let out
-   unverified. What they type in a fixed value, an id template or
-   the label is written in the mapping language as the document reads it (`{$param.name}`, `{$value}`, `{column}`).
+4. For each variable the person chooses dataset, repeater, cache, lookup (once the mapping declares a lookup), search
+   (once it declares a search), static, "first value of" (a `$coalesce`, whose alternatives are each edited as an input
+   of their own and ordered in the list) or, for a list, "list of values" (whose items are each a fixed value or an input
+   of their own, with its own condition, required flag and description), and adds modifiers, a condition and the
+   required flag; a value that builds an id can be let out unverified. A cache input finds one record by its `$findBy`
+   lines, or reads every matching row with a `$findAll`: the key field and the column, fixed text or field of a lookup's
+   record it holds, and the fields a row must hold nothing under. The mapping's lookups are a card of their own: each
+   names its cached type, its `$findBy` lines against the dataset's own row, its modifiers and separator fold, and lists
+   the entries reading it; a renamed lookup keeps its readers, and one that entries read is not removed. What they type
+   in a fixed value, an id template or the label is written in the mapping language as the document reads it
+   (`{$param.name}`, `{$value}`, `{column}`).
 5. The page shows the resulting YAML, laid out as the record tree with every entry at the place its variable has in the
    record, checks it against the template and the current version of the picked partition's cache, and either copies
    it or opens a pull request against the repository through the existing proposal path. An entry the tree has no place
@@ -958,9 +964,10 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
    environment. Each value read from a reference names it; a reference the control plane cannot resolve (one only the
    nodes hold) is named with a request for a value to check with. What is typed there is never written into the mapping.
 
-An existing mapping opens in the builder with its entries filled in. One that declares lookups, reads rows with
-`$findAll` or lists values nodes read is not opened, with the reason: the builder has no place for them, and writing the
-mapping back would drop them. It is edited as the document it is.
+An existing mapping opens in the builder with everything it says: its lookups, the nodes reading them, its `$findAll`
+nodes, its lists of values, and the search answers and cached rows its fixtures declare, so writing it back gives the
+same mapping. The builder writes the whole document from what it holds, so the comments of a hand-written mapping are
+not kept.
 
 ## What is removed
 
