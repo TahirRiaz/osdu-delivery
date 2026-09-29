@@ -9,6 +9,7 @@ using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -60,6 +61,8 @@ public sealed class RetrievalRunner
     private readonly ILedger? _ledger;
     private readonly TimeProvider _time;
     private readonly ILogger _logger;
+    private readonly OsduSearch _search;
+    private readonly StorageRecords _storage;
     private readonly ConcurrentDictionary<string, List<string>> _missingIds = new(StringComparer.Ordinal);
 
     public RetrievalRunner(RetrievalDefinition flow, IReadOnlyDictionary<string, string> values, OsduHttpClient client, FileStoreRegistry stores, ILedger? ledger, TimeProvider time, ILogger logger)
@@ -77,6 +80,8 @@ public sealed class RetrievalRunner
         _ledger = ledger;
         _time = time;
         _logger = logger;
+        _search = new OsduSearch(client, flow.Source.QueryPath, flow.Source.SearchPath, logger);
+        _storage = new StorageRecords(client, flow.Source.RecordQueryPath);
     }
 
     private DateTime Now => _time.GetUtcNow().UtcDateTime;
@@ -124,7 +129,7 @@ public sealed class RetrievalRunner
             return query;
         }
 
-        var range = window.Field + ":[" + Lucene(window.From) + " TO " + Lucene(window.To) + "}";
+        var range = window.Field + ":[" + OsduSearch.LuceneTime(window.From) + " TO " + OsduSearch.LuceneTime(window.To) + "}";
         return query is null ? range : "(" + query + ") AND " + range;
     }
 
@@ -144,20 +149,9 @@ public sealed class RetrievalRunner
             return (window, estimates);
         }
 
-        var url = _client.Url(_flow.Source.QueryPath);
         foreach (var kind in _flow.Source.Kinds)
         {
-            var body = new JsonObject { ["kind"] = kind, ["limit"] = 1, ["trackTotalCount"] = true };
-            if (query is not null)
-            {
-                body["query"] = query;
-            }
-
-            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
-            using var document = JsonDocument.Parse(result.Body);
-            var total = document.RootElement.TryGetProperty("totalCount", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt64(out var value)
-                ? value
-                : throw new DeliveryException($"{url.AbsolutePath} did not report totalCount for kind {kind}.");
+            var total = await _search.CountAsync(new OsduSearchQuery { Kind = kind, Query = query }, ct).ConfigureAwait(false);
             estimates.Add(new RetrievalEstimate(kind, query, total));
         }
 
@@ -253,90 +247,45 @@ public sealed class RetrievalRunner
 
     private async Task<RetrievedKind> RetrieveKindAsync(string kind, string? query, string location, CancellationToken ct)
     {
-        var url = _client.Url(_flow.Source.SearchPath);
         var sink = new JsonLinesSink(_stores, FileStoreRegistry.Join(location, Slug(kind)), _flow.Target.RollRecords, _flow.Target.Gzip);
         var missing = 0L;
-        string? cursor = null;
         var pages = 0;
         long records = 0;
         long? total = null;
-        var finished = false;
+        var search = new OsduSearchQuery { Kind = kind, Query = query, ReturnedFields = _flow.Source.ReturnedFields };
         await using (sink.ConfigureAwait(false))
         {
-            try
+            await foreach (var page in _search.PagesAsync(search, _flow.Source.PageSize, deduplicate: false, ct).ConfigureAwait(false))
             {
-                while (true)
+                if (pages == 0 && page.TotalCount is { } totalCount)
                 {
-                    ct.ThrowIfCancellationRequested();
-                    var body = new JsonObject { ["kind"] = kind, ["limit"] = _flow.Source.PageSize };
-                    if (query is not null)
-                    {
-                        body["query"] = query;
-                    }
+                    total = totalCount;
+                    _logger.LogInformation("retrieve {Kind}: the index reports {Total} matching record(s)", kind, totalCount);
+                }
 
-                    if (_flow.Source.ReturnedFields.Count > 0)
+                pages++;
+                if (page.Hits.Count > 0)
+                {
+                    if (_flow.Source.FetchRecords)
                     {
-                        body["returnedFields"] = new JsonArray(_flow.Source.ReturnedFields.Select(f => (JsonNode?)JsonValue.Create(f)).ToArray());
-                    }
-
-                    if (cursor is null)
-                    {
-                        body["trackTotalCount"] = true;
+                        var (written, notFound) = await WriteFetchedAsync(kind, page.Hits, sink, ct).ConfigureAwait(false);
+                        records += written;
+                        missing += notFound;
                     }
                     else
                     {
-                        body["cursor"] = cursor;
-                    }
-
-                    var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
-                    using var document = JsonDocument.Parse(result.Body);
-                    var root = document.RootElement;
-                    if (pages == 0 && root.TryGetProperty("totalCount", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt64(out var totalCount))
-                    {
-                        total = totalCount;
-                        _logger.LogInformation("retrieve {Kind}: the index reports {Total} matching record(s)", kind, totalCount);
-                    }
-
-                    var hits = root.TryGetProperty("results", out var array) && array.ValueKind == JsonValueKind.Array ? array : default;
-                    var inPage = hits.ValueKind == JsonValueKind.Array ? hits.GetArrayLength() : 0;
-                    pages++;
-                    if (inPage > 0)
-                    {
-                        if (_flow.Source.FetchRecords)
+                        foreach (var hit in page.Hits)
                         {
-                            var (written, notFound) = await WriteFetchedAsync(kind, hits, sink, ct).ConfigureAwait(false);
-                            records += written;
-                            missing += notFound;
+                            await sink.WriteAsync(hit, ct).ConfigureAwait(false);
                         }
-                        else
-                        {
-                            foreach (var hit in hits.EnumerateArray())
-                            {
-                                await sink.WriteAsync(hit, ct).ConfigureAwait(false);
-                            }
 
-                            records += inPage;
-                        }
-                    }
-
-                    cursor = root.TryGetProperty("cursor", out var next) && next.ValueKind == JsonValueKind.String ? next.GetString() : null;
-                    if (inPage == 0 || string.IsNullOrEmpty(cursor))
-                    {
-                        finished = true;
-                        break;
-                    }
-
-                    if (pages % ProgressEveryPages == 0)
-                    {
-                        _logger.LogInformation("retrieve {Kind}: {Records} record(s){Total} after {Pages} page(s), {Files} file(s) so far", kind, records, total is { } t ? $" of {t.ToString(CultureInfo.InvariantCulture)}" : string.Empty, pages, sink.Files.Count + 1);
+                        records += page.Hits.Count;
                     }
                 }
-            }
-            finally
-            {
-                if (!finished && cursor is not null)
+
+                if (pages % ProgressEveryPages == 0)
                 {
-                    await CloseCursorAsync(cursor).ConfigureAwait(false);
+                    _logger.LogInformation("retrieve {Kind}: {Records} record(s){Total} after {Pages} page(s), {Files} file(s) so far", kind, records, total is { } t ? $" of {t.ToString(CultureInfo.InvariantCulture)}" : string.Empty, pages, sink.Files.Count + 1);
                 }
             }
 
@@ -348,12 +297,12 @@ public sealed class RetrievalRunner
     }
 
     /// <summary>Reads the page's records back from storage, up to a hundred per request and several requests at a time, and writes them in page order.</summary>
-    private async Task<(long Written, long NotFound)> WriteFetchedAsync(string kind, JsonElement hits, JsonLinesSink sink, CancellationToken ct)
+    private async Task<(long Written, long NotFound)> WriteFetchedAsync(string kind, IReadOnlyList<JsonElement> hits, JsonLinesSink sink, CancellationToken ct)
     {
-        var ids = new List<string>(hits.GetArrayLength());
-        foreach (var hit in hits.EnumerateArray())
+        var ids = new List<string>(hits.Count);
+        foreach (var hit in hits)
         {
-            if (hit.ValueKind == JsonValueKind.Object && hit.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String && id.GetString() is { Length: > 0 } text)
+            if (OsduSearch.IdOf(hit) is { Length: > 0 } text)
             {
                 ids.Add(text);
             }
@@ -391,59 +340,14 @@ public sealed class RetrievalRunner
         return (written, notFound);
     }
 
-    /// <summary>One storage read-back (openapi storage v2, POST /query/records); the ids storage asks to retry get one more request.</summary>
+    /// <summary>
+    /// One storage read-back of a page's ids, in the page's order (openapi storage v2, POST /query/records); the ids storage
+    /// asks to retry get one more request.
+    /// </summary>
     private async Task<(List<JsonElement> Records, List<string> NotFound)> FetchAsync(IReadOnlyList<string> ids, CancellationToken ct)
     {
-        var url = _client.Url(_flow.Source.RecordQueryPath);
-        var records = new List<JsonElement>(ids.Count);
-        var found = new HashSet<string>(StringComparer.Ordinal);
-        var invalid = new List<string>();
-        var pending = ids;
-        for (var attempt = 0; attempt < 2 && pending.Count > 0; attempt++)
-        {
-            var body = new JsonObject { ["records"] = new JsonArray(pending.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()) };
-            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
-            using var document = JsonDocument.Parse(result.Body);
-            var root = document.RootElement;
-            if (root.TryGetProperty("records", out var array) && array.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var record in array.EnumerateArray())
-                {
-                    records.Add(record.Clone());
-                    if (record.ValueKind == JsonValueKind.Object && record.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String && id.GetString() is { } text)
-                    {
-                        found.Add(text);
-                    }
-                }
-            }
-
-            var retry = new List<string>();
-            if (root.TryGetProperty("retryRecords", out var retries) && retries.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var id in retries.EnumerateArray())
-                {
-                    if (id.ValueKind == JsonValueKind.String && id.GetString() is { } text && !found.Contains(text))
-                    {
-                        retry.Add(text);
-                    }
-                }
-            }
-
-            if (root.TryGetProperty("invalidRecords", out var rejected) && rejected.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var id in rejected.EnumerateArray())
-                {
-                    if (id.ValueKind == JsonValueKind.String && id.GetString() is { } text)
-                    {
-                        invalid.Add(text);
-                    }
-                }
-            }
-
-            pending = retry;
-        }
-
-        if (invalid.Count > 0)
+        var read = await _storage.ReadAsync(ids, null, ct).ConfigureAwait(false);
+        if (read.Invalid.Count > 0)
         {
             // The index found these but storage did not hand them over. Storage names an id under invalidRecords for a
             // record it does not hold (observed on a live M26 service), so the likeliest reading is a record deleted
@@ -451,23 +355,11 @@ public sealed class RetrievalRunner
             // can be traced to the ids.
             _logger.LogWarning(
                 "retrieve: storage did not return {Count} id(s) the search index listed and names them under invalidRecords (deleted since they were indexed, or not readable by this caller); they are counted as missing. First: {Ids}",
-                invalid.Count, string.Join(", ", invalid.Take(5)));
+                read.Invalid.Count, string.Join(", ", read.Invalid.Take(5)));
         }
 
-        return (records, ids.Where(id => !found.Contains(id)).ToList());
-    }
-
-    private async Task CloseCursorAsync(string cursor)
-    {
-        try
-        {
-            var url = _client.Url(_flow.Source.SearchPath.TrimEnd('/') + "/{id}", cursor);
-            await _client.SendJsonAsync(HttpMethod.Delete, url, null, new HashSet<int> { 404 }, CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
-        {
-            _logger.LogWarning("Could not close the search cursor after the run stopped: {Message}", HeaderRedaction.RedactMessage(ex.Message));
-        }
+        var byId = read.Records.ToDictionary(r => OsduSearch.IdOf(r)!, StringComparer.Ordinal);
+        return (ids.Where(byId.ContainsKey).Select(id => byId[id]).ToList(), read.Missing.ToList());
     }
 
     private async Task<string> WriteManifestAsync(Guid runId, DateTime started, RetrievalWindow? window, IReadOnlyList<RetrievedKind> kinds, string location, CancellationToken ct)
@@ -521,10 +413,7 @@ public sealed class RetrievalRunner
     }
 
     private static string DescribeWindow(RetrievalWindow? window)
-        => window is null ? string.Empty : $"; {window.Field} in [{Lucene(window.From)} TO {Lucene(window.To)})";
-
-    private static string Lucene(DateTime? value)
-        => value is { } v ? v.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) : "*";
+        => window is null ? string.Empty : $"; {window.Field} in [{OsduSearch.LuceneTime(window.From)} TO {OsduSearch.LuceneTime(window.To)})";
 
     /// <summary>A kind as a directory name: the separators and wildcards that a path cannot carry are replaced.</summary>
     public static string Slug(string kind)

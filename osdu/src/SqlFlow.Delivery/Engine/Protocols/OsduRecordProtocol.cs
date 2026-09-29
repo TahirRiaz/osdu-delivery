@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
+using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Ledger;
@@ -549,8 +550,9 @@ internal static class RecordWriter
 
     /// <summary>
     /// Reads records back whole in batched reads (openapi storage v2, <c>POST /query/records</c>, at most
-    /// <see cref="OsduRecordProtocol.MaxVerifyBatch"/> ids per request), keyed by id; a record the service does not
-    /// return is not in the result. <paramref name="attributes"/> projects the data block when it names data paths.
+    /// <see cref="StorageRecords.Batch"/> ids per request), keyed by id; a record the service does not return is not in the
+    /// result. <paramref name="attributes"/> projects the data block when it names data paths. The reads are
+    /// <see cref="StorageRecords"/>', the one storage batch read every reader of records uses.
     /// </summary>
     public static async Task<IReadOnlyDictionary<string, JsonObject>> ReadManyAsync(
         OsduHttpClient client, string batchPath, IReadOnlyCollection<string> ids, IReadOnlyList<string>? attributes, CancellationToken ct)
@@ -563,32 +565,16 @@ internal static class RecordWriter
             return found;
         }
 
-        var url = client.Url(batchPath);
-        foreach (var chunk in ids.Distinct(StringComparer.Ordinal).Chunk(OsduRecordProtocol.MaxVerifyBatch))
+        var storage = new StorageRecords(client, batchPath);
+        foreach (var chunk in ids.Distinct(StringComparer.Ordinal).Chunk(StorageRecords.Batch))
         {
             ct.ThrowIfCancellationRequested();
-            var body = new JsonObject { ["records"] = new JsonArray(chunk.Select(id => (JsonNode?)JsonValue.Create(id)).ToArray()) };
-            if (attributes is { Count: > 0 })
+            var read = await storage.ReadAsync(chunk, attributes, ct).ConfigureAwait(false);
+            foreach (var record in read.Records)
             {
-                body["attributes"] = new JsonArray(attributes.Select(a => (JsonNode?)JsonValue.Create(a)).ToArray());
-            }
-
-            var result = await client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
-            if (result.Body.Length == 0 || (int)result.Status == 404)
-            {
-                continue;
-            }
-
-            if (JsonNode.Parse(result.Body) is not JsonObject root)
-            {
-                throw new DeliveryException($"{url.AbsolutePath} answered with something other than a JSON object.");
-            }
-
-            foreach (var record in root["records"] as JsonArray ?? [])
-            {
-                if (record is JsonObject stored && stored["id"] is JsonValue id && id.TryGetValue<string>(out var text))
+                if (JsonNode.Parse(record.GetRawText()) is JsonObject stored && OsduSearch.IdOf(record) is { } id)
                 {
-                    found[text] = (JsonObject)stored.DeepClone();
+                    found[id] = stored;
                 }
             }
         }
