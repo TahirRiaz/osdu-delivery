@@ -316,9 +316,9 @@ public sealed class AssertionRunTests : IDisposable
         var html = report.Render(ReportFormat.Html);
         Assert.Contains("<title>recall-04-assertion test report</title>", html);
         Assert.Contains("dev:master-data--Well:MISSING", html);
-        // A warning that does not hold is badged as a warning, not as a failure.
-        Assert.Contains("<td>warning</td><td><span class=\"badge warned\">warned</span>", html);
-        Assert.DoesNotContain("<td>warning</td><td><span class=\"badge failed\">", html);
+        // A warning that fails is badged as a warning, not as a failure.
+        Assert.Contains("<td class=\"fit\">warning</td><td class=\"fit\"><span class=\"badge warned\">warned</span>", html);
+        Assert.DoesNotContain("<td class=\"fit\">warning</td><td class=\"fit\"><span class=\"badge failed\">", html);
         Assert.DoesNotContain("<script", html, StringComparison.OrdinalIgnoreCase);
 
         var markdown = report.Render(ReportFormat.Markdown);

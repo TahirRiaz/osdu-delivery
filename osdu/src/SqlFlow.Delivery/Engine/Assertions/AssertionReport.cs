@@ -335,12 +335,12 @@ public sealed record AssertionReport(AssertionRunState Run, IReadOnlyList<TestRe
 
                 if (result.Assertions.Count > 0)
                 {
-                    html.Append("<table><thead><tr><th>Assertion</th><th>Severity</th><th>Outcome</th><th>Expected</th><th>Actual</th></tr></thead><tbody>");
+                    html.Append("<table><thead><tr><th>Assertion</th><th class=\"fit\">Severity</th><th class=\"fit\">Outcome</th><th>Expected</th><th>Actual</th></tr></thead><tbody>");
                     foreach (var a in result.Assertions)
                     {
                         var standing = Standing(a);
                         html.Append(CultureInfo.InvariantCulture,
-                            $"<tr><td>{E(a.Label)}</td><td>{a.Severity}</td><td><span class=\"badge {standing}\">{standing}</span></td><td>{E(a.Expected)}</td><td>{E(a.Actual ?? string.Empty)}{(a.Message is { } message && a.Outcome != TestOutcomes.Passed ? "<br><small>" + E(message) + "</small>" : string.Empty)}</td></tr>");
+                            $"<tr><td>{E(a.Label)}</td><td class=\"fit\">{a.Severity}</td><td class=\"fit\"><span class=\"badge {standing}\">{standing}</span></td><td>{E(a.Expected)}</td><td>{E(a.Actual ?? string.Empty)}{(a.Message is { } message && a.Outcome != TestOutcomes.Passed ? "<br><small>" + E(message) + "</small>" : string.Empty)}</td></tr>");
                         if (a.Examples.Count > 0 && a.Outcome != TestOutcomes.Passed)
                         {
                             html.Append(CultureInfo.InvariantCulture,
@@ -379,7 +379,7 @@ public sealed record AssertionReport(AssertionRunState Run, IReadOnlyList<TestRe
         };
 
     private const string Styles = """
-        :root { --bg:#f7f8fa; --card:#ffffff; --ink:#1b1f24; --muted:#5b6470; --line:#e3e6ea; --passed:#1f8f55; --failed:#c62f3b; --warned:#b7791f; --errored:#7a3fc2; --skipped:#8a929c; --neutral:#2c5fb3; --noted:#2c5fb3; }
+        :root { color-scheme:light dark; --bg:#f7f8fa; --card:#ffffff; --ink:#1b1f24; --muted:#5b6470; --line:#e3e6ea; --passed:#1f8f55; --failed:#c62f3b; --warned:#b7791f; --errored:#7a3fc2; --skipped:#8a929c; --neutral:#2c5fb3; --noted:#2c5fb3; }
         @media (prefers-color-scheme: dark) { :root { --bg:#111418; --card:#191d22; --ink:#e7eaee; --muted:#9aa3ad; --line:#2a3037; } }
         * { box-sizing:border-box; }
         body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -398,15 +398,15 @@ public sealed record AssertionReport(AssertionRunState Run, IReadOnlyList<TestRe
         .tile.errored { border-top-color:var(--errored); } .tile.skipped { border-top-color:var(--skipped); }
         .test { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--skipped); border-radius:10px; padding:14px 16px; margin:10px 0; break-inside:avoid; }
         .test.passed { border-left-color:var(--passed); } .test.failed { border-left-color:var(--failed); } .test.warned { border-left-color:var(--warned); } .test.errored { border-left-color:var(--errored); }
-        .head { display:flex; justify-content:space-between; align-items:center; gap:12px; }
-        .badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; color:#fff; background:var(--skipped); text-transform:uppercase; letter-spacing:.04em; }
+        .head { display:flex; justify-content:space-between; align-items:center; gap:12px; } .head h3 { min-width:0; overflow-wrap:anywhere; }
+        .badge { display:inline-block; white-space:nowrap; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; color:#fff; background:var(--skipped); text-transform:uppercase; letter-spacing:.04em; }
         .badge.passed { background:var(--passed); } .badge.failed { background:var(--failed); } .badge.warned { background:var(--warned); } .badge.errored { background:var(--errored); } .badge.noted { background:var(--noted); }
         table { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; } th, td { text-align:left; padding:6px 8px; border-top:1px solid var(--line); vertical-align:top; overflow-wrap:anywhere; }
-        th { color:var(--muted); font-weight:600; font-size:12px; } .examples td { padding:0 8px 8px; border-top:none; } details summary { cursor:pointer; color:var(--muted); }
+        th { color:var(--muted); font-weight:600; font-size:12px; } th.fit, td.fit { white-space:nowrap; } .examples td { padding:0 8px 8px; border-top:none; } details summary { cursor:pointer; color:var(--muted); }
         .alert { border:1px solid var(--failed); color:var(--failed); border-radius:8px; padding:8px 12px; } .note { color:var(--muted); margin:4px 0; font-size:13px; }
         footer { margin-top:32px; color:var(--muted); font-size:12px; }
         @media print { body { background:#fff; } .test, .tile { break-inside:avoid; } details { display:block; } details > * { display:block; } }
-        @media (max-width:640px) { header { flex-direction:column; align-items:flex-start; } }
+        @media (max-width:640px) { header { flex-direction:column; align-items:flex-start; } table { display:block; overflow-x:auto; } th, td { overflow-wrap:break-word; } }
         """;
 
     private static int Rank(string outcome) => outcome switch
