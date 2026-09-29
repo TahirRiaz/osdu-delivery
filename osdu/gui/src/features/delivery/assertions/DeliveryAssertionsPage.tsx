@@ -2,23 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
-import { deliveryApi, type DeliveryAssertionTotals } from "../../../api/delivery";
+import { deliveryApi } from "../../../api/delivery";
 import { useActivePartition } from "../activePartition";
 import { ProblemView } from "../TemplateSheet";
 import { AssertionBoard } from "./AssertionBoard";
 import { counted } from "./assertionFormat";
 
-/** The page's one line of totals: the flows and tests of the workbench's partition, and how they last came out. */
-function subtitle(totals: DeliveryAssertionTotals, partition: string | null): string {
-  const where = partition === null ? "" : ` in ${partition}`;
-  const parts = [
-    `${totals.passed.toLocaleString("en-US")} passed`,
-    `${totals.failed.toLocaleString("en-US")} failed`,
-    ...(totals.warned > 0 ? [`${totals.warned.toLocaleString("en-US")} warned`] : []),
-    ...(totals.errored > 0 ? [`${totals.errored.toLocaleString("en-US")} errored`] : []),
-    `${totals.notRun.toLocaleString("en-US")} not run`,
-  ];
-  return `${counted(totals.tests, "test")} of ${counted(totals.flows, "assertion flow")}${where}: ${parts.join(", ")}.`;
+/** What the page covers, in one line; how the tests stand is the status strip's to say. */
+function subtitle(tests: number, flows: number, partition: string | null): string {
+  return `${counted(tests, "test")} of ${counted(flows, "assertion flow")}${partition === null ? "" : ` in ${partition}`}.`;
 }
 
 /**
@@ -36,7 +28,7 @@ export default function DeliveryAssertionsPage() {
 
   return (
     <Page data-testid="page-delivery-assertions">
-      <PageHeader title="Tests" subtitle={board.data ? subtitle(board.data.totals, board.data.partition) : undefined} />
+      <PageHeader title="Tests" subtitle={board.data ? subtitle(board.data.totals.tests, board.data.totals.flows, board.data.partition) : undefined} />
       {board.isError
         ? <ProblemView error={board.error} testId="assertion-board-error" />
         : board.data === undefined

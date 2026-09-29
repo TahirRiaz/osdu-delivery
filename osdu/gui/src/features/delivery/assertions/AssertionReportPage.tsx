@@ -16,59 +16,56 @@ import { cn } from "@/lib/utils";
 import { deliveryApi, type DeliveryAssertionRunDetail, type DeliveryTestResult, type TestOutcome } from "../../../api/delivery";
 import { KindText } from "../KindText";
 import { ProblemView } from "../TemplateSheet";
-import { AssertionRunStatusBadge, OutcomeBar, PassRateRing, TestOutcomeBadge, TestOutcomeIcon } from "./AssertionBadges";
-import { AssertionOutcomesTable } from "./AssertionOutcomesTable";
+import { AssertionRunStatusBadge, OutcomeBar, StatusStrip, TestOutcomeIcon, type StripCell } from "./AssertionBadges";
+import { CheckList } from "./AssertionChecks";
 import { AssertionRunDialog, ReportDownloads, type AssertionLaunch } from "./AssertionRunDialog";
-import { OUTCOME_ORDER, STANDING_TEXT, counted, duration, kindEntity, selectionText, worstStanding } from "./assertionFormat";
-
-const OUTCOMES: readonly TestOutcome[] = ["failed", "errored", "warned", "passed", "skipped"];
+import { OUTCOME_ORDER, STANDING_TEXT, checkCounts, checksVerdict, counted, duration, selectionText } from "./assertionFormat";
 
 function tally(results: readonly DeliveryTestResult[]) {
   const count = (outcome: TestOutcome) => results.filter((r) => r.outcome === outcome).length;
   return { passed: count("passed"), failed: count("failed"), warned: count("warned"), errored: count("errored"), skipped: count("skipped") };
 }
 
-/** One test's result in the report: its line, and when opened, everything it found. */
-function ResultCard({ result, initiallyOpen }: { result: DeliveryTestResult; initiallyOpen: boolean }) {
+/**
+ * One test's result on one line (where it stands, its verdict, what it matched, how long it took), opening in place on
+ * what it read as it ran and the checks that ask for a look.
+ */
+function ResultRow({ result, initiallyOpen }: { result: DeliveryTestResult; initiallyOpen: boolean }) {
   const [open, setOpen] = useState(initiallyOpen);
-  const assertions = result.assertions ?? [];
-  const holding = assertions.filter((a) => a.outcome === "passed").length;
-  const worst = worstStanding(assertions);
+  const verdict = result.outcome === "skipped"
+    ? { text: result.error ?? "skipped: it does not run in this partition", standing: "skipped" as const }
+    : result.outcome === "errored" && (result.assertions ?? []).length === 0
+      ? { text: "could not be evaluated", standing: "errored" as const }
+      : checksVerdict(checkCounts(result.assertions ?? []));
   return (
-    <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid={`report-result-${result.test}`} data-outcome={result.outcome}>
+    <div data-testid={`report-result-${result.test}`} data-outcome={result.outcome}>
       <button
         type="button"
         onClick={() => setOpen((was) => !was)}
         aria-expanded={open}
-        className="grid w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/40 md:grid-cols-[auto_auto_minmax(0,1fr)_9rem_7rem_5rem]"
+        className="grid w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-x-2.5 px-3 py-1.5 text-left outline-none transition-colors hover:bg-accent/50 focus-visible:bg-accent/50 md:grid-cols-[auto_auto_minmax(0,16rem)_minmax(0,1fr)_7rem_4.5rem]"
       >
         <ChevronRight className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-90")} />
         <TestOutcomeIcon outcome={result.outcome} />
-        <span className="min-w-0">
-          <span className="flex flex-wrap items-center gap-1.5">
-            <span className="font-mono text-[12.5px] font-medium">{result.test}</span>
-            {(result.tags ?? []).map((tag) => <span key={tag} className="font-mono text-[10.5px] text-muted-foreground">#{tag}</span>)}
-          </span>
-          <span className="block truncate text-[12px] text-muted-foreground">{result.description ?? kindEntity(result.kind)}</span>
+        <span className="truncate font-mono text-[12.5px]" title={result.description ?? undefined}>{result.test}</span>
+        <span className={cn("hidden truncate text-[12px] md:block", STANDING_TEXT[result.outcome] ?? (verdict.standing === "passed" ? "text-muted-foreground" : STANDING_TEXT[verdict.standing]))}>
+          {verdict.text}
         </span>
         <span className="hidden text-right font-mono text-[11.5px] tabular-nums text-muted-foreground md:block">
           {result.matched !== null && result.matched !== undefined ? `${result.matched.toLocaleString("en-US")} matched` : ""}
-          {result.sampled ? ", sample" : ""}
-        </span>
-        <span className={cn("hidden text-right font-mono text-[12px] tabular-nums md:block", result.outcome !== "skipped" && worst !== null && STANDING_TEXT[worst])}>
-          {assertions.length === 0 ? "-" : `${holding}/${assertions.length} hold`}
         </span>
         <span className="text-right font-mono text-[11.5px] tabular-nums text-muted-foreground">{duration(result.durationMs)}</span>
       </button>
       {open && (
-        <div className="flex flex-col gap-3 border-t px-3 py-3">
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-muted-foreground">
-            <span className="min-w-0 max-w-[28rem]"><KindText kind={result.kind} /></span>
-            {result.query && <code className="break-all font-mono text-[11.5px]">{result.query}</code>}
-            {(result.ids ?? 0) > 0 && <span>{result.ids} record(s) by id</span>}
-            {result.template && <span>template version <span className="font-mono text-[11.5px]">{result.template}</span></span>}
-          </div>
-          {result.error && (
+        <div className="flex flex-col gap-3 border-t bg-muted/10 px-3 py-3 md:pl-12">
+          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground" data-testid="report-result-read">
+            <span className="min-w-0 max-w-[26rem]"><KindText kind={result.kind} /></span>
+            {result.query && <code className="break-all font-mono text-[11.5px] text-foreground">{result.query}</code>}
+            {(result.ids ?? 0) > 0 && <span>{counted(result.ids ?? 0, "record")} by id</span>}
+            {result.sampled && <span>read {result.evaluated?.toLocaleString("en-US") ?? "-"} as a sample</span>}
+            {result.template && <span>schema <span className="font-mono">{result.template}</span></span>}
+          </p>
+          {result.error && result.outcome !== "skipped" && (
             <Alert variant="destructive">
               <CircleAlert />
               <AlertTitle>The test could not be evaluated</AlertTitle>
@@ -78,7 +75,7 @@ function ResultCard({ result, initiallyOpen }: { result: DeliveryTestResult; ini
           {(result.problems ?? []).length > 0 && (
             <Alert variant="destructive">
               <CircleAlert />
-              <AlertTitle>It does not fit the template of its kind</AlertTitle>
+              <AlertTitle>It does not fit the schema of its type</AlertTitle>
               <AlertDescription>
                 <ul className="list-disc pl-4">{(result.problems ?? []).map((p) => <li key={p}>{p}</li>)}</ul>
               </AlertDescription>
@@ -87,14 +84,14 @@ function ResultCard({ result, initiallyOpen }: { result: DeliveryTestResult; ini
           {(result.notes ?? []).length > 0 && (
             <ul className="list-disc pl-5 text-[12.5px] text-muted-foreground">{(result.notes ?? []).map((note) => <li key={note}>{note}</li>)}</ul>
           )}
-          <AssertionOutcomesTable outcomes={assertions} />
+          {(result.assertions ?? []).length > 0 && <CheckList outcomes={result.assertions ?? []} testId={`report-checks-${result.test}`} />}
         </div>
       )}
-    </Card>
+    </div>
   );
 }
 
-/** The tests of the report by the kind they read, each kind's outcomes as a bar: where the estate is weak at a glance. */
+/** The tests of the report by the type they read, each type's outcomes as a bar: shown only when there is more than one. */
 function ByKind({ results }: { results: readonly DeliveryTestResult[] }) {
   const kinds = useMemo(() => {
     const groups = new Map<string, DeliveryTestResult[]>();
@@ -110,7 +107,7 @@ function ByKind({ results }: { results: readonly DeliveryTestResult[] }) {
 
   return (
     <Card className="gap-2 rounded-lg p-3" data-testid="report-by-kind">
-      <h2 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">By kind</h2>
+      <h2 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">By type</h2>
       <div className="grid gap-x-4 gap-y-2 md:grid-cols-[minmax(0,22rem)_minmax(8rem,1fr)_auto]">
         {kinds.map(([kind, group]) => {
           const counts = tally(group);
@@ -145,15 +142,15 @@ function Subtitle({ detail }: { detail: DeliveryAssertionRunDetail }) {
 }
 
 /**
- * One run of an assertion flow's tests, as the report of how OSDU stood when it ran: how many passed, how each kind fared,
- * and every test with what each assertion found and the records that failed it. It downloads as HTML, Markdown, JSON and
- * JUnit XML, and the tests that did not pass run again from here.
+ * One run of an assertion flow's tests, as the report of how OSDU stood when it ran: the share that passed, and every test
+ * on a line of its own that opens on the checks that ask for a look. It downloads as HTML, Markdown, JSON and JUnit XML,
+ * and the tests that did not pass run again from here.
  */
 export default function AssertionReportPage() {
   const { assertionRunId: raw } = useParams();
   const assertionRunId = Number(raw);
   const valid = Number.isSafeInteger(assertionRunId) && assertionRunId > 0;
-  const [shown, setShown] = useState<TestOutcome | null>(null);
+  const [shown, setShown] = useState<string | null>(null);
   const [launch, setLaunch] = useState<AssertionLaunch | null>(null);
   const detail = useQuery({
     queryKey: ["delivery", "assertions", "run", assertionRunId],
@@ -205,6 +202,13 @@ export default function AssertionReportPage() {
       return { tests: [], tags: [] };
     }
   })();
+  const cells: StripCell[] = [
+    { key: "failed", label: "Failed", count: counts.failed, standing: "failed", hint: "A check of error severity did not hold." },
+    { key: "errored", label: "Errored", count: counts.errored, standing: "errored", hint: "The test could not find out." },
+    { key: "warned", label: "Warned", count: counts.warned, standing: "warned", hint: "Only a check of warning severity did not hold." },
+    { key: "passed", label: "Passed", count: counts.passed, standing: "passed", hint: "Every check of error or warning severity held." },
+    { key: "skipped", label: "Skipped", count: counts.skipped, standing: null, hint: "Not run in this partition." },
+  ];
 
   return (
     <Page data-testid="page-assertion-report">
@@ -234,54 +238,35 @@ export default function AssertionReportPage() {
         )}
       />
 
-      {run.error && (
-        <Alert variant={run.status === "failed" ? "default" : "destructive"} data-testid="assertion-report-run-error">
+      {run.error && run.status !== "failed" && (
+        <Alert variant="destructive" data-testid="assertion-report-run-error">
           <CircleAlert />
-          <AlertTitle>{run.status === "failed" ? "The run failed on its tests" : "The run stopped"}</AlertTitle>
+          <AlertTitle>The run stopped</AlertTitle>
           <AlertDescription>{run.error}</AlertDescription>
         </Alert>
       )}
 
-      <Card className="flex flex-col gap-3 rounded-lg p-3 lg:flex-row lg:items-center" data-testid="assertion-report-score">
-        <div className="shrink-0 px-1">
-          <PassRateRing rate={evaluated === 0 ? null : Math.round((1000 * counts.passed) / evaluated) / 10} evaluated={evaluated} />
-        </div>
-        <div className="flex flex-1 flex-wrap gap-2">
-          {OUTCOMES.map((outcome) => {
-            const count = counts[outcome as keyof typeof counts];
-            return (
-              <button
-                key={outcome}
-                type="button"
-                aria-pressed={shown === outcome}
-                onClick={() => setShown((was) => (was === outcome ? null : outcome))}
-                className={cn(
-                  "flex min-w-[6.5rem] flex-1 flex-col items-start gap-0.5 rounded-lg border bg-card px-3 py-2 text-left transition-colors hover:bg-accent/50",
-                  shown === outcome && "border-primary ring-1 ring-inset ring-primary",
-                )}
-                data-testid={`assertion-report-tile-${outcome}`}
-              >
-                <TestOutcomeBadge outcome={outcome} testId={`assertion-report-tile-${outcome}-badge`} />
-                <span className="font-mono text-xl font-semibold leading-7 tabular-nums">{count}</span>
-              </button>
-            );
-          })}
-        </div>
-      </Card>
+      <StatusStrip
+        passRate={evaluated === 0 ? null : (100 * counts.passed) / evaluated}
+        evaluated={evaluated}
+        bar={counts}
+        cells={cells}
+        selected={shown}
+        onSelect={setShown}
+        testId="assertion-report-score"
+      />
 
       <ByKind results={results} />
 
-      <div className="flex flex-col gap-2" data-testid="assertion-report-results">
-        {shownResults.length === 0
-          ? <p className="text-[13px] text-muted-foreground">{results.length === 0 ? "The run recorded no result yet." : "No test came out this way."}</p>
-          : shownResults.map((result) => (
-            <ResultCard
-              key={result.test}
-              result={result}
-              initiallyOpen={result.outcome === "failed" || result.outcome === "errored" || (result.outcome === "warned" && notPassing.length <= 5)}
-            />
-          ))}
-      </div>
+      {shownResults.length === 0
+        ? <p className="text-[13px] text-muted-foreground">{results.length === 0 ? "The run recorded no result yet." : "No test came out this way."}</p>
+        : (
+          <Card className="gap-0 divide-y overflow-hidden rounded-lg p-0" data-testid="assertion-report-results">
+            {shownResults.map((result) => (
+              <ResultRow key={result.test} result={result} initiallyOpen={result.outcome === "failed" || result.outcome === "errored"} />
+            ))}
+          </Card>
+        )}
 
       <AssertionRunDialog launch={launch} onClose={() => setLaunch(null)} />
     </Page>

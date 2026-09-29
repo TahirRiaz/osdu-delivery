@@ -1,8 +1,7 @@
-import { format } from "date-fns";
 import { IconBadge, OutcomePill } from "@/components/StatusBadge";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { AssertionRunStatus, AssertionSeverity, DeliveryAssertionPoint } from "../../../api/delivery";
+import type { AssertionRunStatus, AssertionSeverity } from "../../../api/delivery";
 import { OUTCOME_VISUALS, SEVERITY_TONES, runStatusVisual, type TestStanding } from "./assertionFormat";
 
 /** Where a test stands, as the outcome pill every board, sheet and report shows it with. */
@@ -100,47 +99,6 @@ export function OutcomeSquare({ outcome, title, onClick, size = "size-2.5", test
   );
 }
 
-/**
- * A test's last runs, oldest on the left: one square per run, the word, the run and the time on hover, and the tally
- * beside it in text, so the pattern reads at a glance and the colour never carries it alone.
- */
-export function HistoryStrip({
-  points, slots = 12, onPick,
-}: {
-  /** Newest first, as the board serves them. */
-  points: readonly DeliveryAssertionPoint[];
-  slots?: number;
-  onPick?: (point: DeliveryAssertionPoint) => void;
-}) {
-  const recent = points.slice(0, slots).reverse();
-  const failing = recent.filter((p) => p.outcome === "failed" || p.outcome === "errored").length;
-  const empty = Math.max(0, slots - recent.length);
-  return (
-    <div className="flex items-center gap-2" data-testid="history-strip">
-      <div className="flex items-center gap-[3px]" role="group" aria-label={`last ${recent.length} run(s), ${failing} not passing`}>
-        {Array.from({ length: empty }, (_, i) => (
-          <span key={`empty-${i}`} className="size-2.5 rounded-[2px] border border-dashed border-border" aria-hidden />
-        ))}
-        {recent.map((point) => (
-          <OutcomeSquare
-            key={point.assertionRunId}
-            outcome={point.outcome}
-            title={`report ${point.assertionRunId}, ${format(new Date(point.completedUtc), "yyyy-MM-dd HH:mm")}`
-              + (point.failedAssertions > 0 ? `, ${point.failedAssertions} assertion(s) not holding` : "")}
-            onClick={onPick === undefined ? undefined : () => onPick(point)}
-            testId="history-cell"
-          />
-        ))}
-      </div>
-      {recent.length > 0 && (
-        <span className="font-mono text-[11px] tabular-nums text-muted-foreground" data-testid="history-tally">
-          {recent.length - failing}/{recent.length}
-        </span>
-      )}
-    </div>
-  );
-}
-
 /** How a set of tests came out, as a stacked bar: each outcome's share in its fill, the counts on hover and in its label. */
 export function OutcomeBar({ counts, className, testId = "outcome-bar" }: {
   counts: { passed: number; warned: number; failed: number; errored: number; skipped: number };
@@ -165,41 +123,81 @@ export function OutcomeBar({ counts, className, testId = "outcome-bar" }: {
   );
 }
 
+/** One count of a status strip: what it counts, how many, the standing its number wears, and what it means. */
+export interface StripCell {
+  key: string;
+  label: string;
+  count: number;
+  /** The standing the count wears when it is not zero; null for a neutral count (all of them). */
+  standing: TestStanding | null;
+  hint: string;
+}
+
+const STRIP_TEXT: Partial<Record<TestStanding, string>> = {
+  passed: "text-success",
+  failed: "text-destructive",
+  errored: "text-destructive",
+  warned: "text-warning",
+  noted: "text-info",
+};
+
 /**
- * The share of tests passing as a ring, with the count it is a share of: the one headline number of a board. The ring is
- * a measure, not a status, so it wears the primary tone; the outcomes themselves are in the tiles beside it.
+ * The counts a list is read by, on one line (DESIGN.md 7.7): first the share of what was evaluated that passed, with its
+ * bar, then one cell per standing, each the filter to what it counts. A count of zero is quiet, and the selected cell
+ * wears the accent ring; choosing it again clears the filter.
  */
-export function PassRateRing({ rate, evaluated, size = 64 }: { rate: number | null; evaluated: number; size?: number }) {
-  const stroke = 7;
-  const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const shown = rate ?? 0;
+export function StatusStrip({ passRate, evaluated, bar, cells, selected, onSelect, testId = "status-strip" }: {
+  passRate: number | null;
+  evaluated: number;
+  bar: { passed: number; warned: number; failed: number; errored: number; skipped: number };
+  cells: readonly StripCell[];
+  selected: string | null;
+  onSelect: (key: string | null) => void;
+  testId?: string;
+}) {
   return (
-    <div className="flex items-center gap-3" data-testid="pass-rate">
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={rate === null ? "no test evaluated" : `${shown}% of ${evaluated} tests passing`}>
-        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" className="stroke-muted" strokeWidth={stroke} />
-        <circle
-          cx={size / 2}
-          cy={size / 2}
-          r={radius}
-          fill="none"
-          className="stroke-primary transition-[stroke-dashoffset] duration-500 ease-out"
-          strokeWidth={stroke}
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={circumference * (1 - shown / 100)}
-          transform={`rotate(-90 ${size / 2} ${size / 2})`}
-        />
-        <text x="50%" y="50%" dominantBaseline="central" textAnchor="middle" className="fill-foreground font-mono text-[13px] font-semibold">
-          {rate === null ? "-" : `${Math.round(shown)}%`}
-        </text>
-      </svg>
-      <div className="flex flex-col">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Passing</span>
-        <span className="text-xs text-muted-foreground">
-          {rate === null ? "nothing evaluated yet" : `of ${evaluated.toLocaleString("en-US")} evaluated`}
+    <div className="flex flex-wrap items-stretch overflow-hidden rounded-lg border bg-card" data-testid={testId}>
+      <div className="flex min-w-44 flex-col justify-center gap-1 border-r px-3 py-2" data-testid="pass-rate">
+        <div className="flex items-baseline gap-2">
+          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Pass rate</span>
+          <span className="font-mono text-[15px] font-semibold tabular-nums">{passRate === null ? "-" : `${Math.round(passRate)}%`}</span>
+        </div>
+        <OutcomeBar counts={bar} className="h-1.5" />
+        <span className="text-[11px] text-muted-foreground">
+          {passRate === null ? "nothing evaluated yet" : `of ${evaluated.toLocaleString("en-US")} evaluated`}
         </span>
       </div>
+      {cells.map((cell) => {
+        const pressed = selected === cell.key;
+        return (
+          <Tooltip key={cell.key}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-pressed={pressed}
+                onClick={() => onSelect(pressed ? null : cell.key)}
+                className={cn(
+                  "flex min-w-24 flex-1 flex-col justify-center border-r px-3 py-2 text-left outline-none transition-colors last:border-r-0 hover:bg-accent/50 focus-visible:bg-accent/50",
+                  pressed && "bg-primary/10 ring-1 ring-inset ring-primary dark:bg-primary/20",
+                )}
+                data-testid={`${testId}-${cell.key}`}
+              >
+                <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{cell.label}</span>
+                <span
+                  className={cn(
+                    "font-mono text-[15px] font-semibold leading-6 tabular-nums",
+                    cell.count === 0 || cell.standing === null ? (cell.count === 0 ? "text-muted-foreground" : "") : STRIP_TEXT[cell.standing],
+                  )}
+                  data-testid={`${testId}-${cell.key}-value`}
+                >
+                  {cell.count.toLocaleString("en-US")}
+                </span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{cell.hint}</TooltipContent>
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }

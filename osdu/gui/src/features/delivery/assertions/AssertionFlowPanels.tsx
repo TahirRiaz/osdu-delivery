@@ -159,7 +159,7 @@ export function AssertionHistoryPanel({ pipelineId }: { pipelineId: string }) {
                           <OutcomeSquare
                             outcome={cell.outcome}
                             size="size-3.5"
-                            title={`#${cell.assertionRunId}${cell.failedAssertions > 0 ? `, ${cell.failedAssertions} not holding` : ""}${cell.matched !== null ? `, ${cell.matched.toLocaleString("en-US")} matched` : ""}`}
+                            title={`#${cell.assertionRunId}${cell.failedAssertions > 0 ? `, ${cell.failedAssertions} check(s) not holding` : ""}${cell.matched !== null ? `, ${cell.matched.toLocaleString("en-US")} matched` : ""}`}
                             onClick={() => navigate(`/delivery/assertions/runs/${cell.assertionRunId}`)}
                             testId="assertion-history-cell"
                           />
@@ -202,17 +202,16 @@ const runColumns: Column<DeliveryAssertionRun>[] = [
   {
     id: "outcomes",
     header: "Outcomes",
-    width: 180,
+    width: 200,
     render: (row) => (
       <div className="flex flex-col gap-1">
         <OutcomeBar counts={row} />
         <span className="font-mono text-[11px] tabular-nums text-muted-foreground">
-          {`${row.passed} passed, ${row.failed} failed${row.warned > 0 ? `, ${row.warned} warned` : ""}${row.errored > 0 ? `, ${row.errored} errored` : ""}`}
+          {`${row.passed} of ${row.tests} passed${row.failed > 0 ? `, ${row.failed} failed` : ""}${row.warned > 0 ? `, ${row.warned} warned` : ""}${row.errored > 0 ? `, ${row.errored} errored` : ""}`}
         </span>
       </div>
     ),
   },
-  { id: "tests", header: "Tests", align: "right", render: (row) => <span className="font-mono tabular-nums">{row.tests}</span> },
   { id: "actor", header: "By", render: (row) => <TruncatedText text={row.actor} maxWidth={180} /> },
   {
     id: "download",

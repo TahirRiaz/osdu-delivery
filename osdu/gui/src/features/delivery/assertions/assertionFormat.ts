@@ -74,6 +74,90 @@ export function standingOf(test: DeliveryAssertionTest): TestStanding {
   return test.latest?.outcome ?? "notRun";
 }
 
+/** A check that asks for a look: one that did not hold, whatever its severity, could not be evaluated, or was skipped. */
+export function needsLook(outcome: Pick<DeliveryAssertionOutcome, "outcome" | "severity">): boolean {
+  return assertionStanding(outcome) !== "passed";
+}
+
+/** How a test's checks came out, counted by where each stands. */
+export interface CheckCounts {
+  total: number;
+  holding: number;
+  failing: number;
+  errored: number;
+  warning: number;
+  noted: number;
+  skipped: number;
+}
+
+export function checkCounts(outcomes: readonly Pick<DeliveryAssertionOutcome, "outcome" | "severity">[]): CheckCounts {
+  const standings = outcomes.map(assertionStanding);
+  const count = (standing: TestStanding) => standings.filter((s) => s === standing).length;
+  return {
+    total: outcomes.length,
+    holding: count("passed"),
+    failing: count("failed"),
+    errored: count("errored"),
+    warning: count("warned"),
+    noted: count("noted"),
+    skipped: count("skipped"),
+  };
+}
+
+/** A phrase and the standing it wears: what a row, a heading or a sheet says beside a test's name. */
+export interface Verdict {
+  text: string;
+  standing: TestStanding;
+}
+
+/** One short phrase saying how a test's checks came out in a result: all of them hold, or how many do not and how. */
+export function checksVerdict(counts: CheckCounts): Verdict {
+  if (counts.total === 0) {
+    return { text: "no check recorded", standing: "skipped" };
+  }
+
+  if (counts.holding === counts.total) {
+    return { text: `all ${counted(counts.total, "check")} hold`, standing: "passed" };
+  }
+
+  const parts = [
+    counts.failing > 0 ? `${counts.failing} fail` : null,
+    counts.errored > 0 ? `${counts.errored} could not be evaluated` : null,
+    counts.warning > 0 ? `${counts.warning} warn` : null,
+    counts.noted > 0 ? `${counts.noted} noted` : null,
+    counts.skipped > 0 ? `${counts.skipped} skipped` : null,
+  ].filter((part): part is string => part !== null);
+  const standing = counts.failing > 0 ? "failed" : counts.errored > 0 ? "errored" : counts.warning > 0 ? "warned" : counts.noted > 0 ? "noted" : "skipped";
+  return { text: `${counts.holding} of ${counts.total} hold · ${parts.join(" · ")}`, standing };
+}
+
+/**
+ * The phrase a board shows beside a test, from its latest result's summary, which counts the checks that did not hold
+ * together whatever their severity; the test's outcome says how heavily they weigh.
+ */
+export function testVerdict(test: DeliveryAssertionTest): Verdict {
+  const standing = standingOf(test);
+  const latest = test.latest;
+  if (standing === "elsewhere") {
+    return { text: `tests ${test.partitions.join(", ")}`, standing };
+  }
+
+  if (latest === null) {
+    return { text: test.problems.length > 0 ? "does not fit its schema" : "not run yet", standing: test.problems.length > 0 ? "errored" : standing };
+  }
+
+  if (standing === "errored") {
+    return { text: "could not be evaluated", standing };
+  }
+
+  if (latest.failedAssertions === 0) {
+    return { text: `all ${counted(latest.assertions, "check")} hold`, standing };
+  }
+
+  const how = standing === "passed" ? "noted" : standing === "warned" ? "warn" : "do not hold";
+  return { text: `${latest.failedAssertions} of ${counted(latest.assertions, "check")} ${how}`, standing: standing === "passed" ? "noted" : standing };
+}
+
 /** How an assertion run's status is shown, in the same families as a test's outcome. */
 export function runStatusVisual(status: AssertionRunStatus): OutcomeVisual {
   switch (status) {

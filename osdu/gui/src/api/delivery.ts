@@ -2170,11 +2170,6 @@ export interface DeliveryAssertionMatrix {
   tests: { test: string; kind: string; cells: (DeliveryAssertionPoint | null)[] }[];
 }
 
-/** One test's results over its recent runs, newest first. */
-export interface DeliveryAssertionTestHistory {
-  test: string;
-  results: DeliveryTestResult[];
-}
 
 export const deliveryApi = {
   /**
@@ -2236,9 +2231,6 @@ export const deliveryApi = {
   /** An assertion flow's recent runs against its tests. */
   assertionMatrix: (pipelineId: string, runs?: number) =>
     get<DeliveryAssertionMatrix>(`/api/v1/delivery/flows/${pipelineId}/assertion-matrix`, runs ? { runs } : {}),
-  /** One test's whole results over its recent runs, newest first. */
-  assertionTestHistory: (pipelineId: string, test: string, runs?: number) =>
-    get<DeliveryAssertionTestHistory>(`/api/v1/delivery/flows/${pipelineId}/assertions/${encodeURIComponent(test)}/history`, runs ? { runs } : {}),
   /** An assertion run with every test's result. */
   assertionRun: (assertionRunId: number) => get<DeliveryAssertionRunDetail>(`/api/v1/delivery/assertion-runs/${assertionRunId}`),
   /** An assertion run's report as the text of the format asked for. */
