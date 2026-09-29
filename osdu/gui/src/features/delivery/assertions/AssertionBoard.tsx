@@ -17,7 +17,7 @@ import { KindText } from "../KindText";
 import { AssertionRunStatusBadge, HistoryStrip, PassRateRing, TagChip, TestOutcomeIcon } from "./AssertionBadges";
 import { AssertionRunDialog, ReportDownloads, type AssertionLaunch } from "./AssertionRunDialog";
 import { AssertionTestSheet } from "./AssertionTestSheet";
-import { OUTCOME_ORDER, OUTCOME_VISUALS, counted, standingOf, type TestStanding } from "./assertionFormat";
+import { OUTCOME_ORDER, OUTCOME_VISUALS, STANDING_TEXT, counted, standingOf, type TestStanding } from "./assertionFormat";
 
 /** What the scoreboard's tiles filter the tests by: where they stand, or what needs a look before they can be trusted. */
 type BoardFilter = TestStanding | "problems" | "changed";
@@ -176,7 +176,10 @@ function TestRow({ test, selected, onSelect, onOpen, onRun, onReport }: {
             </span>
           )
           : (
-            <span className={cn("font-mono text-[12px] tabular-nums", latest!.failedAssertions > 0 && "text-destructive")} title="assertions holding in the latest run">
+            <span
+              className={cn("font-mono text-[12px] tabular-nums", latest!.failedAssertions > 0 && STANDING_TEXT[standing === "passed" ? "noted" : standing])}
+              title="assertions holding in the latest run"
+            >
               {holding}/{latest!.assertions} hold
             </span>
           )}

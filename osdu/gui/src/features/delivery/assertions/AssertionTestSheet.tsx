@@ -15,17 +15,25 @@ import { EmptyState } from "@/components/EmptyState";
 import { SummaryStrip } from "@/components/SummaryStrip";
 import { useThemeMode } from "@/theme/ThemeModeContext";
 import {
-  deliveryApi, type DeliveryAssertionFlow, type DeliveryAssertionTest, type DeliveryTestResult, type TestOutcome,
+  deliveryApi, type DeliveryAssertionFlow, type DeliveryAssertionTest, type DeliveryTestResult,
 } from "../../../api/delivery";
 import { useActivePartition } from "../activePartition";
 import { KindText } from "../KindText";
 import { ProblemView } from "../TemplateSheet";
 import { OutcomeSquare, SeverityChip, TestOutcomeBadge } from "./AssertionBadges";
 import { AssertionOutcomesTable } from "./AssertionOutcomesTable";
-import { duration, standingOf } from "./assertionFormat";
+import { assertionStanding, duration, standingOf, worstStanding, type TestStanding } from "./assertionFormat";
 
 /** How many past runs the sheet reads a test's trend over. */
 const TREND_RUNS = 30;
+
+/** The tone of the holding tile, by the heaviest assertion that does not hold. */
+const HOLDING_TONES: Partial<Record<TestStanding, "destructive" | "warning" | "info">> = {
+  failed: "destructive",
+  errored: "destructive",
+  warned: "warning",
+  noted: "info",
+};
 
 /** Chart ink from the app's own custom properties (DESIGN.md 3.4), re-read when the theme flips. */
 function useInk() {
@@ -39,6 +47,7 @@ function useInk() {
       passed: token("--success"),
       failed: token("--destructive"),
       warned: token("--warning"),
+      noted: token("--info"),
       muted: token("--muted-foreground"),
     };
     // The mode is what changes the tokens' values; the hook reads them again when it flips.
@@ -53,7 +62,7 @@ function when(utc: string | undefined): string {
 interface TrendPoint {
   at: string;
   value: number | null;
-  outcome: TestOutcome;
+  outcome: TestStanding;
 }
 
 /**
@@ -83,10 +92,10 @@ function TestTrend({ results }: { results: readonly DeliveryTestResult[] }) {
     }
 
     const found = (result.assertions ?? []).find((a) => `a:${a.label}` === chosen);
-    return { at: when(result.completedUtc), value: typeof found?.value === "number" ? found.value : null, outcome: found?.outcome ?? "skipped" };
+    return { at: when(result.completedUtc), value: typeof found?.value === "number" ? found.value : null, outcome: found === undefined ? "skipped" : assertionStanding(found) };
   }), [chosen, oldestFirst]);
-  const toneOf = (outcome: TestOutcome) => (
-    outcome === "passed" ? ink.passed : outcome === "failed" || outcome === "errored" ? ink.failed : outcome === "warned" ? ink.warned : ink.muted
+  const toneOf = (outcome: TestStanding) => (
+    outcome === "passed" ? ink.passed : outcome === "failed" || outcome === "errored" ? ink.failed : outcome === "warned" ? ink.warned : outcome === "noted" ? ink.noted : ink.muted
   );
 
   if (points.filter((p) => p.value !== null).length < 2) {
@@ -162,7 +171,7 @@ function AssertionTimeline({ test, results }: { test: DeliveryAssertionTest; res
                   : (
                     <OutcomeSquare
                       key={column}
-                      outcome={found.outcome}
+                      outcome={assertionStanding(found)}
                       title={`${when(result.completedUtc)}${found.actual ? `, found ${found.actual}` : ""}`}
                       size="size-3"
                       testId="timeline-cell"
@@ -354,7 +363,7 @@ export function AssertionTestSheet({ flow, test, onClose, onRun }: {
                         label: "Holding",
                         value: `${(latest.assertions ?? []).filter((a) => a.outcome === "passed").length} of ${(latest.assertions ?? []).length}`,
                         caption: "assertions",
-                        tone: (latest.assertions ?? []).some((a) => a.outcome === "failed" || a.outcome === "errored") ? "destructive" : undefined,
+                        tone: HOLDING_TONES[worstStanding(latest.assertions ?? []) ?? "passed"],
                         testId: "test-holding",
                       },
                       { label: "Took", value: duration(latest.durationMs), caption: latest.completedUtc ? `at ${when(latest.completedUtc)}` : undefined, testId: "test-took" },

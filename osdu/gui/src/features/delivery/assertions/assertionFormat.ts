@@ -1,15 +1,18 @@
 import {
-  CircleCheck, CircleDashed, CircleX, OctagonAlert, SkipForward, TriangleAlert, type LucideIcon,
+  CircleCheck, CircleDashed, CircleX, Info, OctagonAlert, SkipForward, TriangleAlert, type LucideIcon,
 } from "lucide-react";
 import type {
-  AssertionReportFormat, AssertionRunStatus, AssertionSeverity, DeliveryAssertionTest, TestOutcome,
+  AssertionReportFormat, AssertionRunStatus, AssertionSeverity, DeliveryAssertionOutcome, DeliveryAssertionTest, TestOutcome,
 } from "../../../api/delivery";
 import { deliveryApi } from "../../../api/delivery";
 
 export type OutcomeTone = "success" | "destructive" | "info" | "warning" | "muted";
 
-/** Where a test stands on a board: an outcome of its latest run, or that it has not run in the partition. */
-export type TestStanding = TestOutcome | "notRun" | "elsewhere";
+/**
+ * Where a test stands on a board: an outcome of its latest run, or that it has not run in the partition. An assertion also
+ * stands as `noted`: an info assertion that does not hold, which its test reports and does not count against it.
+ */
+export type TestStanding = TestOutcome | "notRun" | "elsewhere" | "noted";
 
 interface OutcomeVisual {
   tone: OutcomeTone;
@@ -30,10 +33,37 @@ export const OUTCOME_VISUALS: Record<TestStanding, OutcomeVisual> = {
   skipped: { tone: "muted", icon: SkipForward, label: "skipped" },
   notRun: { tone: "muted", icon: CircleDashed, label: "not run" },
   elsewhere: { tone: "muted", icon: SkipForward, label: "not in partition" },
+  noted: { tone: "info", icon: Info, label: "noted" },
 };
 
 /** The order outcomes are listed in: what needs a look first. */
 export const OUTCOME_ORDER: readonly TestStanding[] = ["failed", "errored", "warned", "notRun", "passed", "skipped", "elsewhere"];
+
+/** The text colour of a standing that asks for a look; none for one that does not. */
+export const STANDING_TEXT: Partial<Record<TestStanding, string>> = {
+  failed: "text-destructive",
+  errored: "text-destructive",
+  warned: "text-warning",
+  noted: "text-info",
+};
+
+/**
+ * Where one assertion stands. One that does not hold weighs what its severity says, as its test counts it: an error fails,
+ * a warning warns and an info only notes.
+ */
+export function assertionStanding(outcome: Pick<DeliveryAssertionOutcome, "outcome" | "severity">): TestStanding {
+  if (outcome.outcome !== "failed") {
+    return outcome.outcome;
+  }
+
+  return outcome.severity === "warning" ? "warned" : outcome.severity === "info" ? "noted" : "failed";
+}
+
+/** The heaviest standing among assertions that do not hold, or null when every one holds. */
+export function worstStanding(outcomes: readonly Pick<DeliveryAssertionOutcome, "outcome" | "severity">[]): TestStanding | null {
+  const standings = new Set(outcomes.map(assertionStanding));
+  return (["failed", "errored", "warned", "noted"] as const).find((s) => standings.has(s)) ?? null;
+}
 
 /** Where a board's test stands: its latest outcome, or not run, or not in the board's partition at all. */
 export function standingOf(test: DeliveryAssertionTest): TestStanding {

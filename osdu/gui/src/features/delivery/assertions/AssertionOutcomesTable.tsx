@@ -4,6 +4,7 @@ import { CopyButton } from "@/components/CopyButton";
 import { cn } from "@/lib/utils";
 import type { DeliveryAssertionOutcome } from "../../../api/delivery";
 import { SeverityChip, TestOutcomeIcon } from "./AssertionBadges";
+import { STANDING_TEXT, assertionStanding } from "./assertionFormat";
 
 /** A count the way the outcome reads it: the number, or a muted dash when the assertion did not get that far. */
 function Count({ value }: { value: number | null | undefined }) {
@@ -101,6 +102,8 @@ export function AssertionOutcomesTable({ outcomes, testId = "assertion-outcomes"
           {outcomes.map((outcome) => {
             const more = Boolean(outcome.message) || (outcome.examples ?? []).length > 0 || Boolean(outcome.description);
             const expanded = more && open.has(outcome.index);
+            const standing = assertionStanding(outcome);
+            const tone = STANDING_TEXT[standing];
             return (
               <Fragment key={outcome.index}>
                 <tr
@@ -109,7 +112,7 @@ export function AssertionOutcomesTable({ outcomes, testId = "assertion-outcomes"
                   data-testid="assertion-outcome"
                   data-outcome={outcome.outcome}
                 >
-                  <td className="px-2 py-2"><TestOutcomeIcon outcome={outcome.outcome} /></td>
+                  <td className="px-2 py-2"><TestOutcomeIcon outcome={standing} /></td>
                   <td className="px-2 py-2">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-medium">{outcome.label}</span>
@@ -119,10 +122,10 @@ export function AssertionOutcomesTable({ outcomes, testId = "assertion-outcomes"
                   </td>
                   <td className="max-w-[18rem] px-2 py-2 font-mono text-[11.5px]"><span className="line-clamp-2 break-words">{outcome.expected}</span></td>
                   <td className="max-w-[18rem] px-2 py-2 font-mono text-[11.5px]">
-                    <span className={cn("line-clamp-2 break-words", outcome.outcome === "failed" && "text-destructive")}>{outcome.actual ?? "-"}</span>
+                    <span className={cn("line-clamp-2 break-words", outcome.outcome === "failed" && tone)}>{outcome.actual ?? "-"}</span>
                   </td>
                   <td className="px-2 py-2 text-right font-mono"><Count value={outcome.checked} /></td>
-                  <td className={cn("px-2 py-2 text-right font-mono", (outcome.failing ?? 0) > 0 && "text-destructive")}><Count value={outcome.failing} /></td>
+                  <td className={cn("px-2 py-2 text-right font-mono", (outcome.failing ?? 0) > 0 && (tone ?? "text-destructive"))}><Count value={outcome.failing} /></td>
                   <td className="px-2 py-2">
                     {more && (
                       <button

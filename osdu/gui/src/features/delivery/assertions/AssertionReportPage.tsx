@@ -19,7 +19,7 @@ import { ProblemView } from "../TemplateSheet";
 import { AssertionRunStatusBadge, OutcomeBar, PassRateRing, TestOutcomeBadge, TestOutcomeIcon } from "./AssertionBadges";
 import { AssertionOutcomesTable } from "./AssertionOutcomesTable";
 import { AssertionRunDialog, ReportDownloads, type AssertionLaunch } from "./AssertionRunDialog";
-import { OUTCOME_ORDER, counted, duration, kindEntity, selectionText } from "./assertionFormat";
+import { OUTCOME_ORDER, STANDING_TEXT, counted, duration, kindEntity, selectionText, worstStanding } from "./assertionFormat";
 
 const OUTCOMES: readonly TestOutcome[] = ["failed", "errored", "warned", "passed", "skipped"];
 
@@ -33,6 +33,7 @@ function ResultCard({ result, initiallyOpen }: { result: DeliveryTestResult; ini
   const [open, setOpen] = useState(initiallyOpen);
   const assertions = result.assertions ?? [];
   const holding = assertions.filter((a) => a.outcome === "passed").length;
+  const worst = worstStanding(assertions);
   return (
     <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid={`report-result-${result.test}`} data-outcome={result.outcome}>
       <button
@@ -54,7 +55,7 @@ function ResultCard({ result, initiallyOpen }: { result: DeliveryTestResult; ini
           {result.matched !== null && result.matched !== undefined ? `${result.matched.toLocaleString("en-US")} matched` : ""}
           {result.sampled ? ", sample" : ""}
         </span>
-        <span className={cn("hidden text-right font-mono text-[12px] tabular-nums md:block", holding < assertions.length && result.outcome !== "skipped" && "text-destructive")}>
+        <span className={cn("hidden text-right font-mono text-[12px] tabular-nums md:block", result.outcome !== "skipped" && worst !== null && STANDING_TEXT[worst])}>
           {assertions.length === 0 ? "-" : `${holding}/${assertions.length} hold`}
         </span>
         <span className="text-right font-mono text-[11.5px] tabular-nums text-muted-foreground">{duration(result.durationMs)}</span>

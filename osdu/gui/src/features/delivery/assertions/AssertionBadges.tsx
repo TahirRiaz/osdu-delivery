@@ -63,6 +63,7 @@ const SQUARE_CLASSES: Record<TestStanding, string> = {
   skipped: "bg-muted-foreground/25",
   notRun: "border border-dashed border-border",
   elsewhere: "border border-dashed border-border",
+  noted: "bg-info/60",
 };
 
 /**

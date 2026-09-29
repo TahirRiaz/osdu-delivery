@@ -338,8 +338,9 @@ public sealed record AssertionReport(AssertionRunState Run, IReadOnlyList<TestRe
                     html.Append("<table><thead><tr><th>Assertion</th><th>Severity</th><th>Outcome</th><th>Expected</th><th>Actual</th></tr></thead><tbody>");
                     foreach (var a in result.Assertions)
                     {
+                        var standing = Standing(a);
                         html.Append(CultureInfo.InvariantCulture,
-                            $"<tr><td>{E(a.Label)}</td><td>{a.Severity}</td><td><span class=\"badge {a.Outcome}\">{a.Outcome}</span></td><td>{E(a.Expected)}</td><td>{E(a.Actual ?? string.Empty)}{(a.Message is { } message && a.Outcome != TestOutcomes.Passed ? "<br><small>" + E(message) + "</small>" : string.Empty)}</td></tr>");
+                            $"<tr><td>{E(a.Label)}</td><td>{a.Severity}</td><td><span class=\"badge {standing}\">{standing}</span></td><td>{E(a.Expected)}</td><td>{E(a.Actual ?? string.Empty)}{(a.Message is { } message && a.Outcome != TestOutcomes.Passed ? "<br><small>" + E(message) + "</small>" : string.Empty)}</td></tr>");
                         if (a.Examples.Count > 0 && a.Outcome != TestOutcomes.Passed)
                         {
                             html.Append(CultureInfo.InvariantCulture,
@@ -368,8 +369,17 @@ public sealed record AssertionReport(AssertionRunState Run, IReadOnlyList<TestRe
         return html.ToString();
     }
 
+    /// <summary>How an assertion stands in its test: one that does not hold weighs what its severity says (a warning warns, an info notes).</summary>
+    internal static string Standing(AssertionOutcome assertion)
+        => assertion.Outcome != TestOutcomes.Failed ? assertion.Outcome : assertion.Severity switch
+        {
+            "warning" => TestOutcomes.Warned,
+            "info" => "noted",
+            _ => TestOutcomes.Failed,
+        };
+
     private const string Styles = """
-        :root { --bg:#f7f8fa; --card:#ffffff; --ink:#1b1f24; --muted:#5b6470; --line:#e3e6ea; --passed:#1f8f55; --failed:#c62f3b; --warned:#b7791f; --errored:#7a3fc2; --skipped:#8a929c; --neutral:#2c5fb3; }
+        :root { --bg:#f7f8fa; --card:#ffffff; --ink:#1b1f24; --muted:#5b6470; --line:#e3e6ea; --passed:#1f8f55; --failed:#c62f3b; --warned:#b7791f; --errored:#7a3fc2; --skipped:#8a929c; --neutral:#2c5fb3; --noted:#2c5fb3; }
         @media (prefers-color-scheme: dark) { :root { --bg:#111418; --card:#191d22; --ink:#e7eaee; --muted:#9aa3ad; --line:#2a3037; } }
         * { box-sizing:border-box; }
         body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
@@ -390,7 +400,7 @@ public sealed record AssertionReport(AssertionRunState Run, IReadOnlyList<TestRe
         .test.passed { border-left-color:var(--passed); } .test.failed { border-left-color:var(--failed); } .test.warned { border-left-color:var(--warned); } .test.errored { border-left-color:var(--errored); }
         .head { display:flex; justify-content:space-between; align-items:center; gap:12px; }
         .badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px; color:#fff; background:var(--skipped); text-transform:uppercase; letter-spacing:.04em; }
-        .badge.passed { background:var(--passed); } .badge.failed { background:var(--failed); } .badge.warned { background:var(--warned); } .badge.errored { background:var(--errored); }
+        .badge.passed { background:var(--passed); } .badge.failed { background:var(--failed); } .badge.warned { background:var(--warned); } .badge.errored { background:var(--errored); } .badge.noted { background:var(--noted); }
         table { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; } th, td { text-align:left; padding:6px 8px; border-top:1px solid var(--line); vertical-align:top; overflow-wrap:anywhere; }
         th { color:var(--muted); font-weight:600; font-size:12px; } .examples td { padding:0 8px 8px; border-top:none; } details summary { cursor:pointer; color:var(--muted); }
         .alert { border:1px solid var(--failed); color:var(--failed); border-radius:8px; padding:8px 12px; } .note { color:var(--muted); margin:4px 0; font-size:13px; }

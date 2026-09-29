@@ -702,6 +702,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **A warning that does not hold reads as a warning.** An assertion of severity `warning` or `info` that did not hold was
+  shown as a failure everywhere a single assertion shows: a red cross, red found and failing counts, a red "hold" count
+  on the report, the board and the test's sheet, and a red square in its history, so a run that passed with one warned
+  test read all red. Each now wears its severity's tone (amber for a warning, blue for an info, noted), the "hold" counts
+  take the tone of the heaviest assertion that does not hold, and the HTML report badges them the same way.
 - **A test of bulk data reads the Wellbore DDMS's "NaN" as a gap.** The DDMS writes a missing value of a float curve as
   the text `NaN`, which a condition on the column took for a string and failed ("is a string (NaN), which does not
   order against the number 0"), so an `optional` range over a curve with gaps failed every log that had one. It is read
