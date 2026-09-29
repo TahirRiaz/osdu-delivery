@@ -1116,7 +1116,8 @@ captured by a cache flow.
 ## Assertion flow
 
 Tests of what an OSDU partition holds once the data has landed ([docs/assertions-design.md](../../docs/assertions-design.md)).
-A flow holds tests; a test reads one kind and holds assertions about what it read. Each run keeps a report in the
+A flow holds tests; a test reads one type in one version, the one a mapping delivers, and holds assertions about what it
+read. The tests of each mapping's type are a flow of their own. Each run keeps a report in the
 module's database. Nothing a test does writes to OSDU.
 
 ```yaml
@@ -1203,7 +1204,7 @@ A test:
 | --- | --- |
 | `name` | Unique in the flow: a letter or digit, then letters, digits, `.`, `_` and `-`, at most 100. A run names tests by it. At most 500 tests per flow. |
 | `description`, `tags` | What the test is for, and labels a run selects tests by (`{"tags":["smoke"]}`) and the board filters by. |
-| `kind` | The kind it reads, `authority:source:entityType:version`; wildcards read several kinds, but a test that reads fields needs an exact kind. |
+| `kind` | The one type it reads, in one version: `authority:source:entityType:major.minor.patch`, as the `template.kind` of the mapping that delivers it names it. A kind with wildcards is refused: a test is checked against one schema and reads one type node in lineage. |
 | `query` | Lucene over the index, with `{parameter}` tokens. Without it (and without `ids`), every record of the kind. |
 | `ids` | Records named by id instead of a query, read from storage; an id storage does not return is noted in the result. |
 | `spatial` | The search's `spatialFilter` (`field` and one of `byBoundingBox`, `byDistance`, `byGeoPolygon`, `byIntersection`, `byWithinPolygon`), checked when the flow loads. |
@@ -1212,7 +1213,7 @@ A test:
 | `maxRecords` | The most records the test reads (10,000 by default, at most 1,000,000). When more match, the assertions that need records are not evaluated and say so. |
 | `sample` | `true` evaluates the first `maxRecords` records when more match, and marks the result as a sample. |
 | `bulk` | Reads each record's bulk data from the Wellbore DDMS under `source.ddmsRoot`: `columns` narrows the columns read (the ones the assertions name are always read), `maxRows` bounds the rows (1,000,000 by default). Only for a kind the DDMS keeps bulk data for (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement). |
-| `template` | The template version its fields are checked against; the newest saved one of its kind when left out. |
+| `template` | The template version its fields are checked against: the mapping's `template.version`, so the test is checked against the schema the mapping renders to. The newest saved one of its kind when left out. |
 | `partitions` | Narrows the test to some of the flow's partitions; a run in another skips it. |
 | `severity` | The default severity of its assertions: `error` (the default), `warning` or `info`. |
 | `assert` | Its assertions, at least one. |
@@ -2179,7 +2180,7 @@ it ([docs/lineage-design.md](../../docs/lineage-design.md)). What each kind cont
 | Delivery | The record table and every `source.datasets` table, on the server `source.connection` names; the files under the `root` of the payload set its protocol streams; every cache type its mapping reads (`cache.<Type>` sources and `findBy` lines) | The OSDU type its mapping fills (`template.kind`); for `file` and `manifest`, also `protocolOptions.datasetKind` |
 | Cache | Each type's `kind`, wildcards included | Each type's `name` in its partition's cache |
 | Retrieval | Each of `source.kinds`, wildcards included | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest under `target.location` |
-| Assertion | Each test's `kind`, wildcards included, in each partition the flow tests | Nothing: its reports are kept in the module's database, not as data |
+| Assertion | Each test's `kind`, one type in one version, in each partition the flow tests: the type node the delivery flow whose mapping names it writes | Nothing: its reports are kept in the module's database, not as data |
 
 An **OSDU type** node is one exact kind in one partition of one platform: the platform is the flow's endpoint as written
 (`${env:OSDU_URL}`; a literal URL is identified by a hash, never shown), the partition is `data-partition-id` as written,

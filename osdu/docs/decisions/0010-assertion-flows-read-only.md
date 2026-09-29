@@ -11,6 +11,9 @@ kept, and read by people who did not write the mappings.
 
 ## Decision
 
+- A test is of one type in one version, the one a mapping delivers (its `template.kind`), pinned to the schema that
+  mapping pins; a kind with wildcards is refused. The tests of each mapping's type are a flow of their own, so each
+  flow's lineage reads the type node its delivery writes.
 - An assertion flow (`flowType: assertion`) is a flow kind of its own, holding tests of one kind each and assertions
   about what a test reads. It reads search, storage, legal and the Wellbore DDMS, and the delivery ledger; it never
   writes to OSDU, and it is not a delivery flow option, so a check cannot change what a delivery does.

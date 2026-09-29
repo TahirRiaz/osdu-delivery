@@ -62,7 +62,7 @@ the module keys the cache itself (`CacheScope`).
 | Delivery | The record and dataset ingestion tables (unchanged); the payload files under each `source.payloads.<name>.root`; each partition cache type its mapping reads (`cache.<Type>`) | The OSDU type its mapping fills (`template.kind`); for `file` and `manifest`, the dataset kind it registers files as (`protocolOptions.datasetKind`) |
 | Cache | Each declared type's OSDU kind (`types[].kind`, wildcards allowed) | Each declared cache type (`types[].name`) in its partition's cache |
 | Retrieval | Each OSDU kind it retrieves (`source.kinds`) | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest it lands under `target.location`, as file drops a pre flow can read |
-| Assertion | Each test's OSDU kind (`tests[].kind`, wildcards allowed), in every partition the flow tests | Nothing: its reports are kept in the module's database ([assertions-design.md](assertions-design.md)) |
+| Assertion | Each test's OSDU kind (`tests[].kind`, one type in one version, never a wildcard), in every partition the flow tests: the node the delivery flow whose mapping names that type writes | Nothing: its reports are kept in the module's database ([assertions-design.md](assertions-design.md)) |
 
 The delivery flow's OSDU type and cache reads come from its mapping. Lineage reads the mapping the flow pins from the
 repository checkout the sync scans (`render.mappings`, or the `mappings` folder `DeliveryLayout` finds), and only from

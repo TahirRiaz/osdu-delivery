@@ -41,8 +41,16 @@ so a partition's report history is its own.
 
 ## 3. The document
 
-A flow holds tests; a test holds assertions. A test says what it reads: one kind, and the records of it a query, a list
-of ids or a spatial filter selects. Its assertions say what must hold of what it read.
+A flow holds tests; a test holds assertions. A test says what it reads: one type in one version, and the records of it a
+query, a list of ids or a spatial filter selects. Its assertions say what must hold of what it read.
+
+A test is always of one type in one version, `authority:source:entityType:major.minor.patch`: the type a mapping delivers,
+as its `template.kind` names it. A kind with wildcards is refused, since a test of every version of a type could be checked
+against no one schema and would link in lineage to no type a delivery writes. A test pins the schema the mapping pins with
+`template` (the mapping's `template.version`), so it is checked against exactly what the mapping renders to, and in lineage
+it reads the type node the delivery flow writes. The tests of the types two mappings deliver belong in two flows, one per
+mapping: the Recall estate keeps `recall-welllog-04-header-assertion` for `WellLog@1.4.0` and
+`recall-welllog-04-header-assertion-v150` for `WellLog@1.5.0`.
 
 ```yaml
 flowType: assertion
@@ -117,8 +125,8 @@ the record's system properties such as `id`, `kind`, `acl`, `legal`, `tags` and 
 must suit the variable's type (a number compared as a number, a pattern on text), and each operand must be a value the
 variable can hold. A path that is not a variable is reported with the nearest one ("did you mean"). A test that does not
 fit is not evaluated: it is errored, its assertions skipped, and its problems say what to fix, including how to save a
-template that is missing (`sqlflow template capture --kind <kind>`). A test of a kind with wildcards, or one reading no
-field, needs no template.
+template that is missing (`sqlflow template capture --kind <kind>`). A test that reads no field (a count, how records
+were indexed, bulk data alone) needs no template.
 
 Values compare by what they are. Numbers compare as numbers, exactly as written (a decimal in the document is compared
 at its written precision, never through a binary float), within a `tolerance` when one is given; text that holds a number

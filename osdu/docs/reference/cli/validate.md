@@ -54,8 +54,9 @@ document declaring an unknown `flowType` fails naming the kinds the host knows.
 - An assertion names exactly one subject and only the keys that subject takes; its operands suit its operator (a number
   for a comparison, a list of two for `between`, a regular expression that compiles), and its `for`, `values` and
   `severity` are ones the kind knows.
-- A test that reads fields names an exact kind. Every `{token}` in a query, an id or an expected text is a declared
-  parameter or `{partition}`; the partition is not a parameter.
+- Every test names one type in one version (`authority:source:entityType:major.minor.patch`), as a mapping's
+  `template.kind` names it; a kind with wildcards is refused. Every `{token}` in a query, an id or an expected text is a
+  declared parameter or `{partition}`; the partition is not a parameter.
 - `partitions`, the flow's and each test's, follow the delivery flow's rules; a test names only partitions the flow tests.
 
 Whether each path is a variable of the kind is checked against the saved template when the tests run, or with
