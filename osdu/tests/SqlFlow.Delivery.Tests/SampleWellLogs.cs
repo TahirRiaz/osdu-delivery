@@ -241,9 +241,9 @@ public static class SampleWellLogs
         Directory.CreateDirectory(folder);
         var path = Path.Combine(folder, ChunkFileName);
         var columns = log.Columns().Select(c => (c, typeof(double))).ToList();
-        // The pandas entry is what a dataframe reader (and the wellbore DDMS) takes as the row labels, so a session of
-        // several chunks aggregates by depth rather than by position; it needs a descriptor for every column, the index too.
-        var metadata = PandasMetadata.Stored(columns, IndexCurveId);
+        // As pandas writes a grid after reset_index: MD an ordinary column, since the DDMS serves only columns as curves, and
+        // the rows labelled 0..n-1, since a session merges its chunks by row label.
+        var metadata = PandasMetadata.Range(columns, 0, log.Depths.Count);
 
         await using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
         await ParquetFiles.WriteAsync(file, columns, log.Grid(), metadata, ct).ConfigureAwait(false);

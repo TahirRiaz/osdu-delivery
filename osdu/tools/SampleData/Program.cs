@@ -23,9 +23,11 @@ public static partial class Program
     private const string Usage = """
         Usage: SampleData --warehouse <sql-warehouse-id> [--profile <databricks-profile>] [--catalog <catalog>]
                           [--log-source <STAT_COMP>] [--wellbore <uwi>]... [--date <yyyyMMdd>] [--out <data folder>]
+               SampleData --rewrite <data folder>
 
         Exports at most five Recall well logs (the wellbores named, five delivered ones by default) into the sample estate's
-        data folder, replacing the header file, the curve file and the payload chunks it held.
+        data folder, replacing the header file, the curve file and the payload chunks it held. --rewrite reads the logs a data
+        folder holds and writes them again as the exporter writes them, without reaching Databricks.
         """;
 
     [GeneratedRegex("^[A-Za-z0-9_]+$")]
@@ -37,6 +39,11 @@ public static partial class Program
     public static async Task<int> Main(string[] args)
     {
         ArgumentNullException.ThrowIfNull(args);
+        if (args.Length > 0 && args[0] == "--rewrite")
+        {
+            return await RewriteAsync(args).ConfigureAwait(false);
+        }
+
         Options options;
         try
         {
@@ -75,6 +82,37 @@ public static partial class Program
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException or JsonException)
         {
             await Console.Error.WriteLineAsync("The sample data could not be exported: " + ex.Message).ConfigureAwait(false);
+            return 1;
+        }
+    }
+
+    private static async Task<int> RewriteAsync(string[] args)
+    {
+        if (args.Length != 2 || string.IsNullOrWhiteSpace(args[1]))
+        {
+            await Console.Error.WriteLineAsync("--rewrite names the data folder to rewrite." + Environment.NewLine + Usage).ConfigureAwait(false);
+            return 2;
+        }
+
+        var root = Path.GetFullPath(args[1]);
+        try
+        {
+            var logs = await SampleWellLogs.LoadAsync(root).ConfigureAwait(false);
+            var header = Path.GetFileNameWithoutExtension(Directory.GetFiles(Path.Combine(root, SampleWellLogs.LogFolder), "*.csv").Single());
+            var date = header[(header.LastIndexOf('_') + 1)..];
+            if (!DateStamp().IsMatch(date))
+            {
+                throw new InvalidDataException($"The header file {header}.csv does not end in a yyyyMMdd date.");
+            }
+
+            await SampleWellLogs.WriteAsync(root, logs, date).ConfigureAwait(false);
+            var reread = await SampleWellLogs.LoadAsync(root).ConfigureAwait(false);
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Rewrote {reread.Count} log(s) under {root}."));
+            return 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException or InvalidOperationException)
+        {
+            await Console.Error.WriteLineAsync("The sample data could not be rewritten: " + ex.Message).ConfigureAwait(false);
             return 1;
         }
     }
