@@ -744,29 +744,30 @@ mapping document.
 ### What a mapping covers
 
 The Mappings page shows a mapping as the template it pins with the mapping laid over it: the template's variables as
-the record's tree, each row carrying a glyph for whether the mapping fills it, and nothing more. What fills it is read
-on the row's hover, and whole beside the tree: the entry drawn as the pipeline that fills it (`dataset.facility_name`
-then `trim`; `search.Wellbore.id` found by `data.FacilityName = dataset.wellbore_uwi`; `static ["NO"]`), with each lookup
-line in the order it is tried, the modifiers as the steps they are, the condition, and whether the value may be left
-out. The filter matches that as well as a variable's path and description, so a source column, a cached type or a
-modifier answers with the variables it reaches. A mapping pinning a template version nobody saved has no tree to lay
-itself over, and lists its own entries instead.
+the record's tree, a row marked only where something asks for attention (a finding, an attribute filled on some rows
+only, one nothing fills). What fills a variable is read on the row's hover, and whole beside the tree on its Filled by
+tab: the entry drawn as the pipeline that fills it (`dataset.facility_name` then `trim`; `search.Wellbore.id` found by
+`data.FacilityName = dataset.wellbore_uwi`; `static ["NO"]`), with each lookup line in the order it is tried, the
+modifiers as the steps they are, the condition, and whether the value may be left out. The search matches that as well
+as a variable's path and description, so a source column, a cached type or a modifier answers with the variables it
+reaches. A mapping pinning a template version nobody saved has no tree to lay itself over, and lists its own entries
+instead.
 
-It opens as an overview: what the mapping fills, every required variable a check names, and the holders on the way to
-them, so the first read answers what a mapping is doing without a click. A property required inside an object nothing
-fills is left out, as it is left out of the findings: the record holds no such object. Show everything adds the rest of
-the template, and Show required narrows it to what the schema demands.
+It opens on the **Filled** view, the overview: what the mapping fills, every required variable a check names, and the
+holders on the way to them, so the first read answers what a mapping is doing without a click. A property required
+inside an object nothing fills is left out, as it is left out of the findings: the record holds no such object. **All**
+adds the rest of the template, and the **Required** option (under View) narrows any view to what the schema demands.
+Each view carries how many variables it holds.
 
-Two switches ask about the whole template rather than narrowing the overview, and they answer two different questions:
+Two views ask about the whole template rather than narrowing the overview, and they answer two different questions:
 
-- **Show missing** is the validation: what this record requires and the mapping does not fill on every row, which is
-  every variable a check names. An empty tree is the answer that the mapping satisfies the schema, and the tree says
-  so in words. It is the same set the counts line calls "required missing", and the same set the gate stops a delivery
-  for wherever the gate looks.
-- **Show unfilled** is the wider question: every variable of the template nothing fills, whether or not the schema
-  asks for it, which is what a mapping could carry and does not. An entry that may leave a value out is not one of
-  those, because the mapping does fill that variable; what such an entry costs is said where the schema requires it,
-  by the check that names it.
+- **Missing** is the validation: what this record requires and the mapping does not fill on every row, which is every
+  variable a check names. A count of 0 is the answer that the mapping satisfies the schema, and the empty tree says so
+  in words. It is the same set the gate stops a delivery for wherever the gate looks.
+- **Unfilled** is the wider question: every variable of the template nothing fills, whether or not the schema asks for
+  it, which is what a mapping could carry and does not. An entry that may leave a value out is not one of those,
+  because the mapping does fill that variable; what such an entry costs is said where the schema requires it, by the
+  check that names it.
 
 An entry filling a free key of an object that takes them (`osdu.tags.DeliveredBy`) is a row under that object, and an
 entry the template does not let a mapping fill is named above the tree, so no entry of the document goes unseen. A

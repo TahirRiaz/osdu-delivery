@@ -605,33 +605,46 @@ Pipelines like any other flow.
   to the OSDU cache page for what the cache holds and the changes waiting for approval.
 - **Audit trail** (OSDU): every run and intervention across flows, by actor, with parameters and log.
 - **Mappings** (OSDU): the mapping documents the repositories hold, each mapping with the template it pins and a
-  link to the Mapping builder. A mapping opens on its Properties: the template it pins as the record's tree, with the
-  mapping laid over it. Each row carries a glyph for how the mapping reaches that variable (filled on every row, filled
-  on some rows, not filled) and the findings on it; selecting one lays out what fills it as the pipeline that fills it:
-  the value's origin (a dataset column, a cached field with every line the lookup tries in order, a repeater or a
-  static value), the modifiers as the steps they are (drawn inside the lookup for a cache entry, since they change the
-  value compared rather than the cached field), and the condition that decides whether the value is written at all. It
-  opens on what the mapping fills and what a check names, which is the overview; the switches add what OSDU writes, the
-  nested lists or the rest of the template, and answer the two questions a mapping is read for: Show missing is what
-  the record requires and the mapping does not fill on every row, the validation against the schema, and Show unfilled
-  is every variable of the template nothing fills, which is what the mapping could carry and does not. The filter matches what fills a
-  variable as well as its path and description, so a source column name answers which variables it reaches. A mapping
-  pinning a template version nobody saved has no tree to lay itself over, and lists its own entries instead. The YAML
-  tab is the document as written, and the Record shape tab draws the record the mapping renders.
+  link to the Mapping builder. A mapping opens on its Properties, laid out so that what needs a look is what stands
+  out: the data check on one line, then the template the mapping pins as the record's tree beside the selected
+  attribute.
 
-  Above the tree, **Check values** reads the rows of a flow that renders with the mapping in the title bar's partition
-  and finds the ones that will not give an attribute the value its template expects ([Checking a mapping's
-  values](#checking-a-mappings-values)). Pick the flow, its scope's parameters (each offering the values its column holds, see below) and how many rows to read, and
-  **Check all attributes**; or select an attribute and use its own **Check values** button, which checks it and what it
-  holds and names more example records. The answer sums the rows up (held, with an invalid value, leaving an attribute
-  out, clean), each count narrowing the tree to the attributes behind it, and names the attributes with the most
-  failing rows. Every checked row of the tree then carries its count of failing rows in the tone of the worst outcome
-  (the check's own glyph in green for one every row gives a valid value), and a group the worst of what it holds. An attribute's
-  properties show its rows as a bar by outcome (by item for a repeated array's property), then the rows that will not
-  give an expected value grouped by reason, each with the values behind it and, opened, its records: the source key,
-  the label, the file and row, the item and the value, each opening in the flow's Preview tab on that record, with the
-  next hundred listed on request and the loaded ones copied as keys or saved as CSV. Last come the values written, the
-  most frequent first. Each check ends with a notification.
+  - **The tree marks exceptions only.** A row is marked where something asks for attention: a red or amber sign for a
+    finding, a half circle for an attribute filled on some rows only, an open circle for one nothing fills, and after a
+    data check the count of its failing rows in the tone of the worst outcome. An attribute filled on every row, or
+    checked clean, carries no mark (its state is still read by assistive tech and on the row's hover).
+  - **One view control asks the question.** Filled (what the mapping fills and every required attribute a check names,
+    the overview it opens on), Missing (what the record requires and the mapping does not fill on every row, the
+    validation against the schema), Unfilled (every attribute nothing fills, what the mapping could carry and does
+    not), Failing (after a data check, the attributes it found failing rows for) and All. Each carries how many
+    attributes it holds, so the answer shows before the view is picked, and picking the view in view again returns to
+    Filled. **View** holds the options used now and then: Required (only what the schema requires), Minted (what OSDU
+    Delivery writes and OSDU sets) and Nested (lists inside a repeated item). The search matches what fills an
+    attribute as well as its path and description, so a source column answers which attributes it reaches, and says
+    how many more it finds in the whole template when a narrower view hides them.
+  - **The selected attribute reads in three tabs.** Its name, path, requiredness and any finding sit on top with its
+    **Check values** button; below, **Filled by** lays out what fills it as the pipeline that fills it (the value's
+    origin, a dataset column, a cached field with every line the lookup tries in order, a repeater or a static value;
+    the modifiers as the steps they are, drawn inside the lookup for a cache entry since they change the value compared
+    rather than the cached field; and the condition that decides whether the value is written at all), **Data** is what
+    a data check found of it, and **Schema** is what the template says of it.
+
+  A mapping pinning a template version nobody saved has no tree to lay itself over, and lists its own entries instead.
+  The YAML tab is the document as written, and the Record shape tab draws the record the mapping renders.
+
+  The **data check** line reads the rows of a flow that renders with the mapping in the title bar's partition and finds
+  the ones that will not give an attribute the value its template expects ([Checking a mapping's
+  values](#checking-a-mappings-values)). Pick the flow, its scope's parameters (each offering the values its column
+  holds, see below) and how many rows to read, and **Check all attributes**; or select an attribute and use its own
+  **Check values**, which checks it and what it holds and names more example records. Under the controls one line sums
+  the answer up (the rows read, then held, invalid and left out, each narrowing the tree to the attributes behind it,
+  then clean), and narrowing selects the first failing attribute with its Data tab open. The Data tab shows the
+  attribute's rows as a bar by outcome, the outcomes some row came to in its legend (by item for a repeated array's
+  property), then the rows that will not give an expected value grouped by reason, each with the values behind it and,
+  opened, its records: the source key, the label, the file and row, the item and the value, each opening in the flow's
+  Preview tab on that record, with the next hundred listed on request and the loaded ones copied as keys or saved as
+  CSV. The values written, the most frequent first, are a click away under the reasons, and the tab's label carries the
+  count of failing rows. Each check ends with a notification.
 
   **A scope's values are picked, not typed.** Wherever a flow's scope is given its values (the value check here, a
   flow's Preview tab, and the trigger dialog of a delivery flow), a parameter the flow's `source.record.scope` binds to a

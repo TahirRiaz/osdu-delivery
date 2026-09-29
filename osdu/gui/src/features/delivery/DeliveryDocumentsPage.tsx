@@ -160,41 +160,59 @@ export default function DeliveryDocumentsPage() {
           className="w-full gap-0 sm:max-w-[max(48rem,calc(100vw_-_468px))]"
           data-testid="delivery-mapping-detail"
         >
-          <SheetHeader>
-            <SheetTitle>{detail?.mapping.reference ?? "Mapping"}</SheetTitle>
-            <SheetDescription>
-              {detail !== undefined ? `${detail.mapping.kind} from ${detail.mapping.relativePath}` : "Loading."}
-            </SheetDescription>
+          {/*
+            * The header is two lines: the mapping, with the kind it renders and the file it is read from beside its name,
+            * then the tabs with what leads away from the sheet (the template it pins, the builder) at their right. The
+            * room it leaves goes to the tree and the properties, which are what the sheet is opened for.
+            */}
+          <SheetHeader className="gap-0 px-4 pt-3 pr-12 pb-2">
+            <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              <SheetTitle className="font-mono text-[15px]">{detail?.mapping.reference ?? "Mapping"}</SheetTitle>
+              <SheetDescription
+                className="min-w-0 truncate font-mono text-[12px]"
+                title={detail !== undefined ? `${detail.mapping.kind} from ${detail.mapping.relativePath}` : undefined}
+              >
+                {detail !== undefined ? `${detail.mapping.kind} from ${detail.mapping.relativePath}` : "Loading."}
+              </SheetDescription>
+            </div>
           </SheetHeader>
-          <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4">
+          <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-4 pb-4">
             {mapping.isError && <LoadError error={mapping.error} testId="delivery-mapping-error" />}
             {detail !== undefined && (
               <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button asChild size="sm" variant="outline" data-testid="delivery-mapping-open-builder">
-                    <RouterLink to={`/delivery/mappings/build?mappingId=${encodeURIComponent(detail.mapping.id)}`}>
-                      <PencilRuler />
-                      Open in builder
-                    </RouterLink>
-                  </Button>
-                  {templateVersion !== "-" && (
-                    <Button asChild size="sm" variant="ghost" data-testid="delivery-mapping-template">
-                      <RouterLink
-                        to={`/delivery/templates?${new URLSearchParams({ kind: detail.mapping.kind, version: templateVersion }).toString()}`}
-                      >
-                        <LayoutTemplate />
-                        <span className="font-mono text-[12px]">{templateVersion}</span>
-                      </RouterLink>
-                    </Button>
-                  )}
-                </div>
                 {detail.mapping.message && <p className="text-[13px] text-destructive">{detail.mapping.message}</p>}
                 <Tabs defaultValue="coverage" className="min-h-0 flex-1">
-                  <TabsList data-testid="delivery-mapping-tabs">
-                    <TabsTrigger value="coverage" data-testid="delivery-mapping-tab-coverage">Properties</TabsTrigger>
-                    <TabsTrigger value="yaml" data-testid="delivery-mapping-tab-yaml">YAML</TabsTrigger>
-                    <TabsTrigger value="shape" data-testid="delivery-mapping-tab-shape">Record shape</TabsTrigger>
-                  </TabsList>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <TabsList data-testid="delivery-mapping-tabs">
+                      <TabsTrigger value="coverage" data-testid="delivery-mapping-tab-coverage">Properties</TabsTrigger>
+                      <TabsTrigger value="yaml" data-testid="delivery-mapping-tab-yaml">YAML</TabsTrigger>
+                      <TabsTrigger value="shape" data-testid="delivery-mapping-tab-shape">Record shape</TabsTrigger>
+                    </TabsList>
+                    <div className="ml-auto flex items-center gap-1">
+                      {templateVersion !== "-" && (
+                        <Button
+                          asChild
+                          size="sm"
+                          variant="ghost"
+                          title="The template version the mapping pins"
+                          data-testid="delivery-mapping-template"
+                        >
+                          <RouterLink
+                            to={`/delivery/templates?${new URLSearchParams({ kind: detail.mapping.kind, version: templateVersion }).toString()}`}
+                          >
+                            <LayoutTemplate />
+                            <span className="font-mono text-[12px]">{templateVersion}</span>
+                          </RouterLink>
+                        </Button>
+                      )}
+                      <Button asChild size="sm" variant="outline" data-testid="delivery-mapping-open-builder">
+                        <RouterLink to={`/delivery/mappings/build?mappingId=${encodeURIComponent(detail.mapping.id)}`}>
+                          <PencilRuler />
+                          Open in builder
+                        </RouterLink>
+                      </Button>
+                    </div>
+                  </div>
                   <TabsContent value="coverage" className="flex min-h-0 flex-col">
                     <MappingCoverageView
                       mappingId={detail.mapping.id}

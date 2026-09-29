@@ -450,6 +450,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A mapping's Properties show what needs a look, and little else.** The row of switches is one view control, Filled,
+  Missing, Unfilled, Failing (after a data check) and All, each with how many attributes it holds; Required, Minted and
+  Nested wait under View. A row of the tree is marked only for a finding, a partial fill, an attribute nothing fills or
+  failing rows, never for one that is fine. The selected attribute reads in three tabs (Filled by, Data, Schema), the
+  data check sits on one line with its summary under it, and the explanations moved into hovers. The sheet's header is
+  two lines (the mapping with its kind and file, then the tabs with the template it pins and Open in builder), and the
+  tree and the properties take the height that leaves.
 - **A value its modifiers turn into nothing says so.** A required entry whose column holds a value that a `replace` to
   `~` or a `split` with too few parts turns into nothing is held with `dataset.unit is 'NONE', which its modifiers
   (replace(NONE: ~, M: m)) turn into no value`, where it said the column was empty.

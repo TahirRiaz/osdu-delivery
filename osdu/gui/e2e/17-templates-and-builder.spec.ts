@@ -41,6 +41,17 @@ function rowWith(page: Page, table: string, testId: string): Locator {
  */
 const FIRST_VISIT_MS = 30_000;
 
+/**
+ * Turns one of the variable tree's view options (required, minted, nested) on or off. The options wait in a popover the
+ * page renders outside the sheet, so the switch is found on the page, and the popover is closed again after.
+ */
+async function toggleViewOption(page: Page, scope: Locator, option: "required" | "minted" | "nested"): Promise<void> {
+  await scope.getByTestId("templates-view-options").click();
+  await page.getByTestId(`templates-view-show-${option}`).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("templates-view-options-panel")).toHaveCount(0);
+}
+
 async function openTemplates(page: Page): Promise<void> {
   await page.getByTestId("nav-delivery-templates").click();
   await expect(page.getByTestId("page-delivery-templates")).toBeVisible({ timeout: FIRST_VISIT_MS });
@@ -71,7 +82,7 @@ test.describe.serial("templates and the mapping builder", () => {
     await sheet.getByTestId("templates-view-variable-osdu.data").click();
     await expect(sheet.getByTestId("templates-view-variable-osdu.data.FacilityName")).toBeVisible();
     await expect(sheet.getByTestId("templates-view-variable-osdu.id")).toHaveCount(0);
-    await sheet.getByTestId("templates-view-show-minted").click();
+    await toggleViewOption(adminPage, sheet, "minted");
     await expect(sheet.getByTestId("templates-view-variable-osdu.id")).toBeVisible();
 
     // Each writer is marked apart from what a mapping fills: a glyph named for the writer, and no marker on a mapping's variable.
@@ -88,11 +99,11 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(sheet.getByTestId("templates-view-properties-path")).toHaveText("osdu.data.FacilityName");
     await expect(sheet.getByTestId("templates-view-properties-role")).toHaveCount(0);
 
-    // Show required narrows the tree to what the schema demands, keeping the holders on the way to them.
-    await sheet.getByTestId("templates-view-show-required").click();
+    // Required narrows the tree to what the schema demands, keeping the holders on the way to them.
+    await toggleViewOption(adminPage, sheet, "required");
     await expect(sheet.getByTestId("templates-view-variable-osdu.acl")).toBeVisible();
     await expect(sheet.getByTestId("templates-view-variable-osdu.data.FacilityName")).toHaveCount(0);
-    await sheet.getByTestId("templates-view-show-required").click();
+    await toggleViewOption(adminPage, sheet, "required");
     await expect(sheet.getByTestId("templates-view-variable-osdu.data.FacilityName")).toBeVisible();
 
     await sheet.getByTestId("templates-view-tab-schema").click();
@@ -401,7 +412,8 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(detail.getByTestId("delivery-mapping-template")).toContainText(WELLLOG_VERSION, { timeout: 15_000 });
 
     // The properties open first: the template as the record's tree, with what this mapping fills of it. Every row says
-    // how the mapping reaches its variable, and the tree opens on what is filled and what a check names.
+    // how the mapping reaches its variable (drawn only where it asks for attention), and the tree opens on the Filled
+    // view: what is filled and what a check names.
     const properties = detail.getByTestId("delivery-mapping-coverage");
     await expect(properties.getByTestId("templates-view-coverage-osdu.acl")).toHaveAttribute("data-coverage", "Always", { timeout: 30_000 });
     await expect(properties.getByTestId("templates-view-coverage-osdu.data.Name")).toHaveAttribute("data-coverage", "Always");
@@ -452,13 +464,17 @@ test.describe.serial("templates and the mapping builder", () => {
     await expect(properties.getByTestId("templates-view-variable-osdu.data.Name")).toHaveCount(0);
     await properties.getByTestId("templates-view-variables-filter-clear").click();
 
-    // The overview leaves out what the mapping does not fill and the schema does not require; the switch adds it back.
+    // The Filled view leaves out what the mapping does not fill and the schema does not require; All adds it back, and
+    // picking the view in view again returns to Filled.
     await expect(properties.getByTestId("templates-view-variable-osdu.data.ResourceHomeRegionID")).toHaveCount(0);
     await properties.getByTestId("templates-view-show-everything").click();
     await expect(properties.getByTestId("templates-view-variable-osdu.data")).toBeVisible();
     await properties.getByTestId("templates-view-show-everything").click();
+    await expect(properties.getByTestId("templates-view-lens-filled")).toHaveAttribute("data-state", "on");
 
-    // Show missing answers whether the mapping satisfies the schema: the sample fills everything this record requires.
+    // Missing answers whether the mapping satisfies the schema: the sample fills everything this record requires, which
+    // the view's own count says before it is picked.
+    await expect(properties.getByTestId("templates-view-show-missing")).toHaveText(/^Missing\s*0$/);
     await properties.getByTestId("templates-view-show-missing").click();
     await expect(properties.getByTestId("templates-view-variables-empty")).toContainText("Nothing the schema requires");
     await properties.getByTestId("templates-view-show-missing").click();
@@ -474,16 +490,20 @@ test.describe.serial("templates and the mapping builder", () => {
 
     // The mapping's YAML is analysed as the flows are: a key's documentation on hover, and nothing flagged in the sample.
     // The sample opens on its header comment and the editor draws only the lines in view, so it is scrolled until the
-    // template key is drawn.
+    // template key sits inside the window: the editor runs past the window's bottom edge, and a line drawn down there
+    // takes no hover.
     await detail.getByTestId("delivery-mapping-tab-yaml").click();
     const yaml = detail.getByTestId("delivery-mapping-yaml");
     const templateKey = yaml.locator(".view-line").filter({ hasText: /^template:$/ });
+    const windowBottom = (adminPage.viewportSize()?.height ?? 720) - 48;
     await expect(async () => {
-      if (await templateKey.count() === 0) {
+      const drawn = await templateKey.count() === 0 ? null : await templateKey.boundingBox();
+      if (drawn === null || drawn.y + drawn.height > windowBottom) {
         await yaml.hover();
         await adminPage.mouse.wheel(0, 100);
       }
-      await expect(templateKey).toBeVisible({ timeout: 1_000 });
+      const box = await templateKey.boundingBox({ timeout: 1_000 });
+      expect(box !== null && box.y + box.height <= windowBottom).toBe(true);
     }).toPass({ timeout: 30_000 });
     await templateKey.getByText("template", { exact: true }).hover();
     await expect(adminPage.locator(".monaco-hover:not(.hidden)")).toContainText("The saved template version the mapping fills", { timeout: 15_000 });

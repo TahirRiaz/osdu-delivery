@@ -224,7 +224,8 @@ export interface ValueCheckSession {
   /** Narrowing the tree to the variables that fail. */
   filter: FailingFilter | null;
   setFilter: (filter: FailingFilter | null) => void;
-  passes: (path: string) => boolean;
+  /** Whether a check found rows of the variable failing the way named, itself or inside a value another writes whole. */
+  fails: (path: string, how: FailingFilter) => boolean;
   /** A request to show one variable in the tree, from outside it. */
   focus: { path: string; nonce: number } | null;
   requestFocus: (path: string) => void;
@@ -410,17 +411,13 @@ export function useValueCheckSession(mappingId: string, reference: string): Valu
   const inside = useCallback((path: string) => checked
     .filter((result) => result.variable.target !== path && within(result.variable.target, path)), [checked]);
 
-  const passes = useCallback((path: string) => {
-    if (filter === null) {
-      return true;
-    }
-
-    const kinds: OutcomeKey[] = filter === "any" ? ["held", "invalid", "empty"] : [filter];
+  const fails = useCallback((path: string, how: FailingFilter) => {
+    const kinds: OutcomeKey[] = how === "any" ? ["held", "invalid", "empty"] : [how];
     const own = store.variables.get(path);
     return (own !== undefined && kinds.some((kind) => own.variable.rows[kind] > 0))
       || checked.some((result) => result.variable.target !== path
         && result.variable.findings.some((finding) => finding.at === path && (kinds as string[]).includes(finding.outcome)));
-  }, [filter, store.variables, checked]);
+  }, [store.variables, checked]);
 
   const isChecking = useCallback((path: string) => tasks.some((task) => task.page === null
     && (task.targets === null || task.targets.some((target) => within(path, target) || within(target, path)))), [tasks]);
@@ -460,7 +457,7 @@ export function useValueCheckSession(mappingId: string, reference: string): Valu
     failure: store.failure,
     filter,
     setFilter,
-    passes,
+    fails,
     focus,
     requestFocus: (path) => setFocus((current) => ({ path, nonce: (current?.nonce ?? 0) + 1 })),
   };

@@ -34,8 +34,8 @@ import {
 } from "./valueCheck";
 
 /**
- * A variable's rows as one bar, a segment per outcome worst first, with the legend under it: each outcome's glyph, word,
- * count and share, so no outcome is told by its color alone. A legend entry picks that outcome's findings when
+ * A variable's rows as one bar, a segment per outcome worst first, with the legend under it: each outcome some row came
+ * to, with its glyph, word, count and share, so no outcome is told by its color alone. A legend entry picks that outcome's findings when
  * `onSelect` is given; a segment says the same on hover.
  */
 export function OutcomeMeter({
@@ -83,7 +83,7 @@ export function OutcomeMeter({
     <div className="flex flex-col gap-2">
       {bar}
       <div className="flex flex-wrap gap-x-1 gap-y-1" role={onSelect === undefined ? undefined : "group"} aria-label="Outcomes">
-        {OUTCOMES.map((outcome) => {
+        {shown.map((outcome) => {
           const count = counts[outcome.key];
           const Icon = outcome.icon;
           const active = selected === outcome.key;
@@ -123,8 +123,9 @@ export function OutcomeMeter({
 
 /**
  * What a check found of a variable, on its row of the tree: the worst outcome's glyph and how many rows will not give it
- * an expected value, the whole count on hover. A variable every row gives a value the template accepts wears a check; a
- * group wears the worst of what it holds; a variable being checked, a spinner.
+ * an expected value, the whole count on hover; a group, the worst of what it holds; a variable being checked, a spinner.
+ * A variable every row gives an expected value draws nothing, so the tree after a check shows where to look and nothing
+ * else; that it was checked is still said to assistive tech.
  */
 export function ValueCheckChip({ path }: { path: string }) {
   const session = useValueCheckContext();
@@ -168,13 +169,14 @@ export function ValueCheckChip({ path }: { path: string }) {
   const inside = session.inside(path);
   if (inside.length > 0) {
     const failing = inside.filter((result) => failingOf(result.variable.rows) > 0);
+    if (failing.length === 0) {
+      return <Quiet path={path} said={`Every row gives the ${inside.length} checked attributes inside an expected value`} />;
+    }
+
     const worst = OUTCOMES.find((outcome) => inside.some((result) => result.variable.rows[outcome.key] > 0 && outcome.key !== "notApplicable" && outcome.key !== "valid"))
       ?? outcomeVisual("valid");
-    // Clean inside wears the check's own glyph, as a clean attribute does, never a second copy of the coverage check.
-    const Icon = failing.length === 0 ? ScanSearch : worst.icon;
-    const said = failing.length === 0
-      ? `Every row gives the ${inside.length} checked attributes inside an expected value`
-      : `${failing.length} of the ${inside.length} checked attributes inside have rows that will not give an expected value`;
+    const Icon = worst.icon;
+    const said = `${failing.length} of the ${inside.length} checked attributes inside have rows that will not give an expected value`;
     return (
       <span role="img" aria-label={said} title={said} className={cn("inline-flex shrink-0", worst.textClass)} data-testid={`value-check-chip-${path}`} data-outcome={worst.key}>
         <Icon className="size-3" />
@@ -185,17 +187,17 @@ export function ValueCheckChip({ path }: { path: string }) {
   return null;
 }
 
+/** A clean result, said to assistive tech and drawn as nothing. */
+function Quiet({ path, said }: { path: string; said: string }) {
+  return <span className="sr-only" data-testid={`value-check-chip-${path}`} data-outcome="valid">{said}</span>;
+}
+
 function CountChip({ counts, unit, path }: { counts: DeliveryValueCheckCounts; unit: string; path: string }) {
   const failing = failingOf(counts);
   const said = `${formatCount(counts.held)} ${unit} held, ${formatCount(counts.invalid)} invalid, ${formatCount(counts.empty)} empty, `
     + `${formatCount(counts.valid)} valid, ${formatCount(counts.notApplicable)} not applicable, of ${formatCount(counts.total)} checked`;
   if (failing === 0) {
-    // The check's own glyph, so a clean result never reads as a second copy of the coverage check beside it.
-    return (
-      <span role="img" aria-label={said} title={said} className="inline-flex shrink-0 text-success" data-testid={`value-check-chip-${path}`} data-outcome="valid">
-        <ScanSearch className="size-3" />
-      </span>
-    );
+    return <Quiet path={path} said={said} />;
   }
 
   const worst = outcomeVisual(worstOf(counts) ?? "valid");
@@ -217,9 +219,10 @@ function CountChip({ counts, unit, path }: { counts: DeliveryValueCheckCounts; u
 
 /**
  * The button that checks one variable's values, for the header of its properties: what the check of it reads (the
- * variable and everything inside it) is said on its hover, and why it cannot run when it cannot.
+ * variable and everything inside it) is said on its hover, and why it cannot run when it cannot. `onCheck` lets the
+ * properties turn to where the answer will land.
  */
-export function CheckValuesButton({ path, checkable }: { path: string; checkable: boolean }) {
+export function CheckValuesButton({ path, checkable, onCheck }: { path: string; checkable: boolean; onCheck?: () => void }) {
   const session = useValueCheckContext();
   if (session === null) {
     return null;
@@ -234,13 +237,16 @@ export function CheckValuesButton({ path, checkable }: { path: string; checkable
     <Tooltip>
       <TooltipTrigger asChild>
         {/* A disabled button takes no hover, so its wrapper carries the reason it cannot run. */}
-        <span className="ml-auto inline-flex shrink-0">
+        <span className="inline-flex shrink-0">
           <Button
             type="button"
             size="xs"
             variant={checked ? "outline" : "default"}
             disabled={!checkable || !session.ready || checking}
-            onClick={() => session.check([path])}
+            onClick={() => {
+              session.check([path]);
+              onCheck?.();
+            }}
             data-testid="value-check-attribute"
           >
             {checking ? <Loader2 className="animate-spin" /> : <ScanSearch />}
@@ -250,6 +256,81 @@ export function CheckValuesButton({ path, checkable }: { path: string; checkable
       </TooltipTrigger>
       <TooltipContent className="max-w-80">{why}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * What the Data tab's label carries: a spinner while a check reaching the variable runs, and how many rows (or, for an
+ * object, attributes inside) a check found failing, in the worst outcome's tone. Nothing when there is nothing wrong.
+ */
+export function DataTabBadge({ path }: { path: string }) {
+  const session = useValueCheckContext();
+  if (session === null) {
+    return null;
+  }
+
+  if (session.isChecking(path)) {
+    return <Loader2 className="size-3 animate-spin text-muted-foreground" aria-label="Checking values" data-testid="value-check-tab-busy" />;
+  }
+
+  const own = session.resultFor(path);
+  const nested = session.nestedFor(path).filter((n) => n.finding.outcome !== "notApplicable");
+  const inside = own === undefined ? session.inside(path).filter((result) => failingOf(result.variable.rows) > 0) : [];
+  const count = own !== undefined
+    ? failingOf(own.variable.rows)
+    : nested.length > 0 ? nested.reduce((sum, n) => sum + n.finding.count, 0) : inside.length;
+  if (count === 0) {
+    return null;
+  }
+
+  const worst = own !== undefined
+    ? outcomeVisual(worstOf(own.variable.rows) ?? "valid")
+    : OUTCOMES.find((outcome) => nested.some((n) => n.finding.outcome === outcome.key)
+      || inside.some((result) => result.variable.rows[outcome.key] > 0)) ?? outcomeVisual("valid");
+  const said = own !== undefined
+    ? `${formatCount(count)} rows will not give an expected value`
+    : nested.length > 0 ? `${formatCount(count)} values found wrong` : `${count} attributes inside have rows that fail`;
+  return (
+    <span
+      className={cn("rounded-full px-1.5 font-mono text-[10px] leading-4 tabular-nums", worst.chipClass)}
+      title={said}
+      aria-label={said}
+      data-testid="value-check-tab-count"
+    >
+      {compactCount(count)}
+    </span>
+  );
+}
+
+/**
+ * A variable's Data tab: what the checks found of it, or, before any check reached it, what a check would tell and
+ * what stands in its way. The check itself is the button at the top of the properties, the one place it is started.
+ */
+export function VariableDataTab({ path, checkable }: { path: string; checkable: boolean }) {
+  const session = useValueCheckContext();
+  if (session === null) {
+    return null;
+  }
+
+  if (session.resultFor(path) !== undefined || session.nestedFor(path).length > 0 || session.inside(path).length > 0) {
+    return <VariableValueCheck path={path} />;
+  }
+
+  const checking = session.isChecking(path);
+  const said = checking
+    ? `Rendering the rows of ${session.flow === null ? "the flow" : flowLabel(session.flow)} on a node.`
+    : !checkable
+      ? "Nothing of the mapping fills this attribute, so no row has a value of it to check."
+      : session.blocked
+        ?? "Check values renders the rows of the flow picked above as a delivery would, and lists the ones that will not give this attribute the value its template expects: held, written with a value the template does not accept, or left out.";
+  return (
+    <div className="flex flex-col items-start gap-2 rounded-md border border-dashed px-3 py-4" data-testid="value-check-unchecked">
+      <span className="inline-flex items-center gap-1.5 text-[13px] font-medium">
+        {checking ? <Loader2 className="size-4 animate-spin text-muted-foreground" /> : <ScanSearch className="size-4 text-muted-foreground" />}
+        {checking ? "Checking" : "Not checked yet"}
+      </span>
+      <p className="text-[12px] text-muted-foreground">{said}</p>
+    </div>
   );
 }
 
@@ -273,7 +354,7 @@ export function VariableValueCheck({ path }: { path: string }) {
   }
 
   return (
-    <section className="flex flex-col gap-3 rounded-lg border p-3" aria-label="Values" data-testid="value-check-variable">
+    <section className="flex flex-col gap-4" aria-label="Values" data-testid="value-check-variable">
       {own !== undefined && <VariableResult check={own} session={session} />}
       {nested.length > 0 && (
         <div className="flex flex-col gap-2" data-testid="value-check-nested">
@@ -303,6 +384,7 @@ function VariableResult({ check, session }: { check: VariableCheck; session: Val
   const [unit, setUnit] = useState<"rows" | "items">("rows");
   const [only, setOnly] = useState<OutcomeKey | null>(null);
   const [showNotApplicable, setShowNotApplicable] = useState(false);
+  const [showValues, setShowValues] = useState(false);
   const counts = unit === "items" && variable.items !== null && variable.items !== undefined ? variable.items : variable.rows;
   const failures = variable.findings.filter((finding) => finding.outcome !== "notApplicable" && (only === null || finding.outcome === only));
   const notApplicable = variable.findings.filter((finding) => finding.outcome === "notApplicable");
@@ -311,7 +393,6 @@ function VariableResult({ check, session }: { check: VariableCheck; session: Val
   return (
     <div className="flex flex-col gap-3" data-testid="value-check-result">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
-        <span className="font-medium text-foreground">Values</span>
         <span>
           <span className="font-mono tabular-nums">{formatCount(meta.rows.checked)}</span>
           {" rows of "}
@@ -410,18 +491,27 @@ function VariableResult({ check, session }: { check: VariableCheck; session: Val
       )}
 
       {variable.values.length > 0 && (
-        <div className="flex flex-col gap-1" data-testid="value-check-values">
-          <h4 className="text-[12px] font-medium text-muted-foreground">
-            {`Values written, the most frequent first (${formatCount(variable.distinctValues)}${variable.moreValues ? "+" : ""} distinct)`}
-          </h4>
-          <ul className="flex flex-col gap-0.5">
-            {variable.values.map((value) => (
-              <li key={value.value} className="flex min-w-0 items-center gap-2 text-[12px]">
-                <TruncatedText text={value.value} mono maxWidth={320} />
-                <span className="ml-auto shrink-0 font-mono text-muted-foreground tabular-nums">{formatCount(value.count)}</span>
-              </li>
-            ))}
-          </ul>
+        <div className="flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={() => setShowValues((open) => !open)}
+            className="inline-flex items-center gap-1 self-start text-[12px] text-muted-foreground hover:text-foreground"
+            aria-expanded={showValues}
+            data-testid="value-check-values-toggle"
+          >
+            <ChevronRight className={cn("size-3.5 transition-transform", showValues && "rotate-90")} />
+            {`Values written: ${formatCount(variable.distinctValues)}${variable.moreValues ? "+" : ""} distinct, the most frequent first`}
+          </button>
+          {showValues && (
+            <ul className="flex flex-col gap-0.5 pl-5" data-testid="value-check-values">
+              {variable.values.map((value) => (
+                <li key={value.value} className="flex min-w-0 items-center gap-2 text-[12px]">
+                  <TruncatedText text={value.value} mono maxWidth={320} />
+                  <span className="ml-auto shrink-0 font-mono text-muted-foreground tabular-nums">{formatCount(value.count)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

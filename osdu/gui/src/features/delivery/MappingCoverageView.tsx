@@ -25,12 +25,11 @@ interface MappingCoverageViewProps {
 }
 
 /**
- * The template a mapping pins with the mapping laid over it: the record's tree, each variable saying what the document
- * fills it with and whether that reaches every row, and the required ones it leaves empty marked where they sit. It
- * opens on what the mapping fills and what a check names, which is what an author asks of a mapping, at a glance.
- * Nothing is rendered and no cache is read; this is the document against the schema alone, until a value check renders
- * the rows of a flow that uses the mapping and says, attribute by attribute, which rows will not give it the value its
- * template expects.
+ * The template a mapping pins with the mapping laid over it: the data check on one line, then the record's tree beside
+ * the selected attribute. The tree opens on what the mapping fills and what a check names, and marks a row only where
+ * something asks for attention, so the few that need a look are the ones that stand out. Nothing is rendered and no
+ * cache is read; this is the document against the schema alone, until a data check renders the rows of a flow that
+ * uses the mapping and says, attribute by attribute, which rows will not give it the value its template expects.
  */
 export function MappingCoverageView({ mappingId, reference, yaml, path, contentHash }: MappingCoverageViewProps) {
   const valueCheck = useValueCheckSession(mappingId, reference);
@@ -98,21 +97,10 @@ export function MappingCoverageView({ mappingId, reference, yaml, path, contentH
         </p>
       ))}
 
-      {overlay !== undefined && (
-        <p className="text-xs text-muted-foreground" data-testid="delivery-mapping-coverage-note">
-          What the mapping fills, and every required variable a check names. <strong className="font-medium">Show missing</strong>{" "}
-          answers whether the mapping satisfies the schema: what this record requires and the mapping does not fill on
-          every row. Show unfilled is the wider question, every variable of the template nothing fills, and Show
-          everything is the template entire. A delivery is stopped only by a required property of{" "}
-          <span className="font-mono">data</span> that nothing fills; the other findings are warnings, and the record is
-          sent for OSDU to judge.
-        </p>
-      )}
-
       {template.data !== undefined && overlay !== undefined && (
         <ValueCheckContext.Provider value={valueCheck}>
           <ValueCheckBar session={valueCheck} />
-          <TemplateVariableExplorer variables={template.data.variables} mapping={overlay} />
+          <TemplateVariableExplorer variables={template.data.variables} mapping={overlay} fill />
         </ValueCheckContext.Provider>
       )}
 
