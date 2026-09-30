@@ -1157,8 +1157,11 @@ several steps follows each step's reference to the next record (a log's wellbore
 cannot join, so the join is made once per build and kept. Every key's search filter and every value's are written from
 the keys, the exact values the index compares, so a set of values is a filter of the OSDU search whatever the label and
 the cleaning made of them, and values picked across a kind's dimensions compose one search (OR within a dimension, AND
-across them). The dimensions are kept in `osdu.Dimension`, `osdu.DimensionRun`, `osdu.DimensionMember` (the values),
-`osdu.DimensionValue` (the keys) and `osdu.DimensionChange`, each build written in one transaction with what it changed
+across them). A key's attributes (a wellbore's country and field) are read the same way and kept indexed, so a dimension
+is looked up and a search picked by another record's facts; a value is ready for a drop-down, a record's id shown as its
+decoded code where no label is read. The dimensions are kept in `osdu.Dimension`, `osdu.DimensionRun`,
+`osdu.DimensionMember` (the values), `osdu.DimensionValue` (the keys), `osdu.DimensionAttribute` and
+`osdu.DimensionChange`, each build written in one transaction with what it changed
 logged per key; the Dimensions page with its search builder, the API and the CLI read those rows, and a cache flow can
 hold a dimension's values as a lookup table ([documents.md](documents.md#cache-flow)). Lineage orders a dimension flow
 after the flows that write the kinds it reads, and a cache flow holding a dimension after the dimension flow.

@@ -26,7 +26,10 @@ and the name a person filters by (`15/9-F-1`, or the wellbore's country) is in a
   reading the reference to the next record. A build finds those records by id through the search service and reads the
   label there, and the label, cleaned, is the key's value; a key with no label is its own value, cleaned. A key's search
   filter and a value's are written from the keys, so a filter finds exactly the records the index holds under them,
-  whatever the label and the cleaning did, and values picked across dimensions compose one search.
+  whatever the label and the cleaning did, and values picked across dimensions compose one search. A key keeps
+  attributes read the same way, indexed, which values, keys and searches are picked by; a path segment holding objects
+  can filter them (the country among a wellbore's political contexts). A value is ready for a drop-down: a key naming a
+  record and no label read is valued by its id's code, its escapes decoded.
 - The dimensions live in the module's database, in tables of their own keyed by the ledger partition, written per build
   in one transaction under a lock per dimension. What a build no longer finds is marked removed and keeps its id; every
   change to a key is logged. Nothing is counted separately from those rows.

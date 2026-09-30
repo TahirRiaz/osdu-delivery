@@ -215,11 +215,11 @@ one `AssertionRun` row per run of its tests in a partition, and one `AssertionRe
 A result is written the moment its test is evaluated, so a report shows a long run's progress and keeps what a stopped run
 found. The run registers its ledger in the partition first, with the directory's kind `assertion`, like any ledger.
 
-### `osdu.Dimension`, `osdu.DimensionRun`, `osdu.DimensionMember`, `osdu.DimensionValue` and `osdu.DimensionChange`: dimensions
+### `osdu.Dimension`, `osdu.DimensionRun`, `osdu.DimensionMember`, `osdu.DimensionValue`, `osdu.DimensionAttribute` and `osdu.DimensionChange`: dimensions
 
 A dimension flow's builds keep here what they found ([dimension-plan.md](dimension-plan.md), Tables): one `Dimension`
 row per dimension of a flow in a partition, one `DimensionRun` row per build, its values (`DimensionMember`) and its keys
-(`DimensionValue`), and a log of what each build changed of a key. The tables keep the names they were created with: a
+(`DimensionValue`), each key's attributes (`DimensionAttribute`), and a log of what each build changed of a key. The tables keep the names they were created with: a
 **member** is a value, the human-friendly form a person picks, and an **original** is a key, exactly what the index holds
 (an id, for a reference). Every table is keyed by the ledger partition first, and a value, a key and a label compare in
 the binary collation, exactly, as OSDU ids do; a search of them folds case.
@@ -227,26 +227,29 @@ the binary collation, exactly, as OSDU ids do; a search of them folds case.
 | Column | Purpose |
 | --- | --- |
 | `Dimension.DimensionId`, `FlowId`, `FlowName`, `Name` | The dimension, unique by its flow's ledger identity in the partition and its name. |
-| `Kind`, `Query`, `Path`, `LabelJson`, `CleanJson`, `DefinitionHash` | The declaration its last build read with: the query with its tokens filled, and the label's paths (null when keys are their own values). |
+| `Kind`, `Query`, `Path`, `LabelJson`, `AttributesJson`, `CleanJson`, `DefinitionHash` | The declaration its last build read with: the query with its tokens filled, the label's paths (null when keys are their own values), and the attributes it reads (`[{ "name", "steps" }]`, null for none). |
 | `FieldIndex`, `NestedPath`, `AggregateBy`, `Repeats` | How the index stores the field, as a build settled it from the templates: text, keyword, number, boolean or date, the nested array it sits in, the aggregation that reads it, and whether a record holds it more than once. |
 | `Members`, `Originals`, `LastRunId`, `LastBuiltUtc` | The values and keys it holds now, and the build that wrote them. |
 | `DimensionRun.DimensionRunId`, `RunId`, `Actor`, `Status` | One build: the platform run, who asked, and `running`, `completed`, `failed` or `cancelled`. |
 | `Records`, `WithValue`, `Nulls`, `TooLong`, `Unreadable` | How complete it read: the records its query matched, those holding a key the index aggregates, null values, records holding only text too long for the exact field, values not of the field's type. |
 | `Aggregations`, `Slices`, `Splits`, `ScannedSlices`, `ScanPages`, `ScannedUnits`, `CountQueries` | How it read: the aggregations asked, the ranges answered whole, the ranges split, those read by cursor and their pages, and the counts of values' records. |
-| `Labelled`, `Unlabelled`, `LabelQueries` | For a dimension with a label: the keys a label was read for, those left without one (each its own value), and the searches that found the records. |
+| `Labelled`, `Unlabelled`, `LabelQueries` | For a dimension with a label: the keys a label was read for and those left without one (each valued by itself); and the searches that read the labels and attributes. |
 | `MembersAdded` ... `OriginalsRestored`, `Templates`, `Notes`, `Error` | What it changed of values and keys, the kinds and templates it read, what it had to say (why keys have no label among it), and the redacted reason it failed. |
 | `DimensionMember.MemberId`, `Value`, `Records`, `RecordsExact`, `Originals`, `Unfilterable`, `Filter`, `FilterParts` | A value, unique in its dimension, with the records holding any of its keys (exact, or the sum of its keys' counts), its keys and those no query can carry, and its search filter when one query holds it. |
 | `DimensionValue.ValueId`, `Original`, `OriginalHash`, `MemberId`, `LeftOut`, `Note`, `Count`, `Filterable` | A key exactly as the index holds it, unique by its SHA-256, with its value or why it has none (`empty`, `tooLong`, `dropped`, `failed`), what cleaning said, and its count. |
 | `Label`, `LabelFrom`, `Filter` | The label read for the key (at most 1,024 characters) and the id of the record it was read from, null when none was; and the search filter finding exactly the records holding the key, null when no query can carry it. |
+| `DimensionAttribute.ValueId`, `Name`, `Value`, `ValueFrom` | One attribute of one key, keyed by the key and the attribute's name: the value read (at most 256 characters, compared exactly) and the record it came from. Indexed by name and value, so the keys an attribute value holds, and an attribute's values, are one seek. A build rewrites the attributes of the keys it found; a key no build finds any more keeps what its last build read. |
 | `FirstSeenRunId`, `FirstSeenUtc`, `RemovedRunId`, `RemovedUtc`, `MemberSinceRunId` | When a value or key arrived, and when a build no longer found it: it is kept, and keeps its id if a later build finds it again. |
 | `DimensionChange.ChangeId`, `DimensionRunId`, `ValueId`, `Change`, `FromMemberId`, `ToMemberId` | What a build did to one key: `added`, `removed`, `moved` (to another value) or `restored`. A dimension's first build logs no arrivals. |
 
 A build writes its dimension in one transaction under an application lock per dimension, so a reader sees what one build
 left and never half of the next, and two builds of one dimension write one after the other. A build writes a row only
-where something of it changed; a key whose label, value or filter changed is rewritten. The tables came with
+where something of it changed; a key whose label, value or filter changed is rewritten, and so is an attribute read
+differently (the build's notes count them). The tables came with
 `20260930103543_DimensionFlows` (module version 1.17.0); `20260930175349_DimensionLabels` (module version 1.18.0) added
-the label and filter of a key, the declaration's label and a build's label counts. A dimension built before it keeps its
-keys and values, with no label or key filter until its next build.
+the label and filter of a key, the declaration's label and a build's label counts; `20260930190046_DimensionAttributes`
+(module version 1.19.0) added `osdu.DimensionAttribute` and the declaration's attributes. A dimension built before either
+keeps its keys and values, with no label, key filter or attribute until its next build.
 
 ### `osdu.Activity`: the audit trail of runs and interventions
 
@@ -815,6 +818,11 @@ one row per run and intervention, and one index build over it; going back down d
 finding exactly its records. Every column is nullable or defaults to zero, so a dimension built before it keeps every key
 and value as it was, with no label or key filter until its next build writes them. It adds columns only; going back
 down drops them.
+
+`DimensionAttributes` (module version 1.19.0) creates `osdu.DimensionAttribute`, one row per key and attribute keyed by
+the partition, the dimension, the key and the attribute's name, with the index `(PartitionId, DimensionId, Name, Value)`
+an attribute lookup seeks; and adds `AttributesJson` to `osdu.Dimension`. It holds nothing until a dimension declaring
+attributes is built. Going back down drops the table and the column.
 
 `LedgerPartitions` (module version 1.14.0) keys the ledger by partition (see [Partitions](#partitions)). It creates
 `osdu.LedgerPartition` and `osdu.Ledger` and fills them from what the ledger already says, before anything else changes:

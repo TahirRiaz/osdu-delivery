@@ -9,12 +9,16 @@ first thousand, none to group spellings, and none to join a log to its wellbore'
 kind of its own, `flowType: dimension`, with its own tables in the `osdu` schema, and a cache origin that lets a mapping
 read a dimension like any lookup table.
 
+A key can carry **attributes**, further facts read the way its label is (a wellbore's country and field), which values
+and keys are looked up by and a search picks keys by. A value is ready for a drop-down: a key naming an OSDU record and
+no label read is valued by the code its id ends with, its escapes decoded, never the escaped id.
+
 In code and in the tables, a value is a **member** (`DimensionMember`) and a key an **original** (`DimensionValue`), the
 names they were built with; everything a person reads (the API, the CLI, the GUI, the exports, the cache columns) says
 value and key.
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 8 are built; the recall estate
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 9 are built; the recall estate
 (`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose dimensions are the
 filters of the PetroDB log browser (project, wellbore, field, country, set, log). The live check listed under Close-out
 has not been run.
@@ -27,7 +31,9 @@ has not been run.
 | What is stored | Distinct values only: values and the keys under them, with counts, labels and filters | Records stay in OSDU; a dimension is its vocabulary. |
 | What a key is | The value exactly as the index holds it; for a reference, the id | A filter matches what the index holds, and an exact match on text reads the `keyword` sub-field, which holds the value as written. |
 | What a value is | The label read from the record the key names, cleaned; the key cleaned when there is no label | A person picks by name (`15/9-F-1`, `Norway`); the search compares ids. Keeping both, with the filter written from the keys, lets the name choose and the id find. |
-| How a label is read | By id through the search service, 500 ids a search, in the kind of the entity type the id names; up to three records deep | A search cannot join; reading each named record once per build, and keeping what it said, answers every later filter and search from the ledger. |
+| How a label is read | By id through the search service, 500 ids a search, in the kind of the entity type the id names; up to three records deep; a segment holding objects can filter them | A search cannot join; reading each named record once per build, and keeping what it said, answers every later filter and search from the ledger. |
+| Attributes | Read with the label, one row per key and attribute in `DimensionAttribute`, indexed by name and value | A filter panel narrows one dimension by another's facts (wellbores of a country); an indexed row answers that lookup in one seek at any size. |
+| A key with no label | Valued by its id's code, escapes decoded, when it names a record | A value is shown in a drop-down: `us%2Fft` is `us/ft`, and a GUID id is still better than the whole id. |
 | How values are read | The search's `aggregateBy`, paged by value ranges; a cursor scan where aggregation cannot answer | `aggregateBy` returns at most `aggregationSize` buckets (1000 by default, a platform setting, not a request parameter) and has no paging of its own [19 SRC/config/SearchConfigurationProperties.java:23; SRC/util/AggregationParserUtil.java:65-71]. |
 | What cannot be a key | Values search cannot match exactly | A text value longer than 256 characters is not in the `keyword` sub-field at all (`ignore_above: 256`), and a null text is indexed there as the text `null` (`null_value`) [25 IC/util/TypeMapper.java:262-268]. Neither can be filtered on exactly, so both are counted and reported, never stored as keys. |
 | Operation names | `build` (the default) and `plan` | `plan` reads templates and counts, as every kind's plan does, and writes nothing. |
@@ -131,16 +137,37 @@ With a `label`, a build reads each key's label after it has read the keys:
 2. The ids (without their version) are grouped by the entity type they name and searched in that type's kind
    (`*:*:master-data--Wellbore:*`), 500 ids a search, `id:("a" OR "b" ...)`, returning only `id` and the step's path.
 3. For every step but the last, the first record reference the path holds is the next record; the last step's first
-   non-empty text is the label, cut at 1,024 characters.
+   non-empty text is the label, cut at 1,024 characters. A segment holding objects can filter them: `[Property=text]`
+   keeps those whose property equals the text, `[Property*=text]` those whose property contains it ignoring case, so
+   `data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID` reads the country among a wellbore's political
+   contexts; the search is asked to return the filter's property with the path.
 4. A key whose record the search does not hold, whose record holds no reference where a step reads one, or holds nothing
    at the last path, has no label; the build counts them (`Unlabelled`) and says why in its notes, with examples.
 
 The key keeps the id, its label and the id of the record the label came from are kept beside it, and the label is what
-the clean steps turn into the key's value. Keys whose values are the same are one value (every wellbore of a country is
+the clean steps turn into the key's value. A key naming a record with no label (none declared, or none read) starts
+cleaning from the code its id ends with, its escapes decoded (`dev:reference-data--UnitOfMeasure:us%2Fft:` is
+`us/ft`), and a label or attribute that is itself a record reference is kept the same way. Keys whose values are the same are one value (every wellbore of a country is
 one `Norway`). A key is left out of every value, with the reason kept on its row, when cleaning leaves nothing, when the
 value is longer than 256 characters, or when `map` leaves it out. A key a query cannot carry (a control character,
 `nested(`, or inside a nested array a value the service rewrites) stays under its value and is marked unfilterable; the
 value's filter covers the rest and says how many it cannot.
+
+## Attributes
+
+A dimension's `attributes` name further facts of each key, each read as a label is (a path of the record the key names,
+or up to three through its references, filters allowed). A build reads every chain at once, step by step: at each step,
+every record of one entity type any chain needs is found in the same searches, asking for every path needed there, so a
+wellbore's label, country and field take one search per 500 wellbores, then one per 500 countries and fields. A key keeps
+each attribute's value (the first non-empty one the path reaches, at most 256 characters) and the record it came from,
+one row per key and attribute in `DimensionAttribute`; a build rewrites the attributes of the keys it found, and a key
+with no value for one keeps none (the notes count them, by reason).
+
+The attributes are read, never searched in OSDU: they answer from the ledger. A page of values or keys is narrowed by
+them (`attr=Country:Norway`: any value of one attribute, every attribute named, held by one key), an attribute lists the
+values its keys hold with their keys and records (a drop-down's list), a search picks a dimension's keys by them (the
+part compares exactly those keys, at most 1,000), and a cached dimension carries those its `fields` name, so a mapping
+finds a key's attribute from the cache.
 
 ## The filter
 
@@ -206,6 +233,9 @@ keeps its id. A key whose label, value or filter changed is rewritten, and a mov
 | A key that names no record, or one the search does not hold | No label: the key is its own value, and the build's notes count them with examples. |
 | A label path holding several values (an array) | The first non-empty one is read; for a step before the last, the first record reference. |
 | A label that changes (a wellbore renamed) | Read again by the next build; the key moves to the new value and the change log says so. |
+| A wellbore in a region and a country | A filtered segment (`[GeoTypeID*=Country]`) reads the country; without it the first entity is read. |
+| An attribute a key's record does not hold | The key holds no row for it; the build's notes count such keys, by reason. |
+| An id escaping what it cannot hold (`%2F`) | The key keeps it; the value decodes it. |
 | A regular expression that would backtrack | Run with the non-backtracking engine; a pattern it cannot run is refused at load. |
 | A dictionary that is missing or invalid | That dimension fails; the others build. |
 | More keys than `maxValues` (1,000,000 by default, at most 5,000,000) | That dimension fails before writing, naming the count. |
@@ -276,6 +306,18 @@ integration brief's aggregation facts, and the samples README.
   returns records by id, the composed search run against the same fake and finding exactly the expected records; the API
   (keys with labels and filters, a key found by its label, the search, its refusals); the migration from the previous
   version keeping every key.
+
+### Stage 9: attributes, filtered paths and values ready for a drop-down
+
+- The document's `attributes`; a path segment's filter (`[Property=text]`, `[Property*=text]`); `DimensionLabeler`
+  reading the label and every attribute in shared searches; `DimensionAttribute` and the declaration's `AttributesJson`
+  (migration `DimensionAttributes`, module version 1.19.0); values and keys narrowed by attributes, an attribute's
+  values, a search picked by attributes, attributes in the exports and in a cached dimension's `fields`; the API, the
+  CLI (`attributes`, `--attr`, `--where`) and the GUI (attribute columns, the attribute filter, the builder's "where").
+- A key naming a record with no label is valued by the code its id ends with, its escapes decoded.
+- Tests: the attribute and filter rules of the document; the path reader; the decoding; a build reading attributes
+  through a filtered context and two records, looked up, listed, searched by (the query run against the fake), and read
+  again after a rename; the cache carrying an attribute; the API; the migration from the previous version.
 
 ## Close-out
 
