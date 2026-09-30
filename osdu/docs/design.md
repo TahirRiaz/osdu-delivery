@@ -1140,6 +1140,25 @@ one partition and keeps its report in `osdu.AssertionRun` and `osdu.AssertionRes
 written as it finishes; the boards, the report in JSON, Markdown, HTML and JUnit XML, and the CLI read
 those rows. Lineage orders an assertion flow after the flows that write the kinds it reads.
 
+### 15.5 The distinct values of a document
+
+Reading to gather is the dimension kind, `flowType: dimension` ([dimension-plan.md](dimension-plan.md),
+[decisions/0011](decisions/0011-dimension-flows.md)). A dimension reads one path of the records of a kind and keeps
+every distinct value the index holds (an original) beside the clean value its steps make of it (a member). The search
+service's aggregation returns at most 1,000 distinct values and pages none, so a build reads by value ranges: each range
+an aggregation answers whole is complete; one it cuts off is split at a value it returned; one that cannot be split is
+read through the search cursor. How the index stores the path (text through its keyword sub-field, keyword, number,
+boolean, date, inside a nested array) comes from the saved template of each kind the pattern matches, as a mapping's
+references and a test's fields do.
+
+A member's search filter is written from its originals, the exact values the index compares, so a set of members is a
+filter of the OSDU search whatever cleaning did to them. The dimensions are kept in `osdu.Dimension`,
+`osdu.DimensionRun`, `osdu.DimensionMember`, `osdu.DimensionValue` and `osdu.DimensionChange`, each build written in one
+transaction with what it changed logged per original; the Dimensions page, the API and the CLI read those rows, and a
+cache flow can hold a dimension's members as a lookup table ([documents.md](documents.md#cache-flow)). Lineage orders a
+dimension flow after the flows that write the kinds it reads, and a cache flow holding a dimension after the dimension
+flow.
+
 ## 16. Scale: streaming intake, work batches, returned values and fan-out
 
 An ingestion table can hold millions of rows and a flow billions over time. Nothing in the

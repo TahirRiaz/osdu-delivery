@@ -215,6 +215,32 @@ one `AssertionRun` row per run of its tests in a partition, and one `AssertionRe
 A result is written the moment its test is evaluated, so a report shows a long run's progress and keeps what a stopped run
 found. The run registers its ledger in the partition first, with the directory's kind `assertion`, like any ledger.
 
+### `osdu.Dimension`, `osdu.DimensionRun`, `osdu.DimensionMember`, `osdu.DimensionValue` and `osdu.DimensionChange`: dimensions
+
+A dimension flow's builds keep here what they found ([dimension-plan.md](dimension-plan.md), Tables): one `Dimension`
+row per dimension of a flow in a partition, one `DimensionRun` row per build, its members and its originals, and a log of
+what each build changed of an original. Every table is keyed by the ledger partition first, and a clean value and an
+original compare in the binary collation, exactly, as OSDU ids do; a search of them folds case.
+
+| Column | Purpose |
+| --- | --- |
+| `Dimension.DimensionId`, `FlowId`, `FlowName`, `Name` | The dimension, unique by its flow's ledger identity in the partition and its name. |
+| `Kind`, `Query`, `Path`, `CleanJson`, `DefinitionHash` | The declaration its last build read with, the query with its tokens filled. |
+| `FieldIndex`, `NestedPath`, `AggregateBy`, `Repeats` | How the index stores the field, as a build settled it from the templates: text, keyword, number, boolean or date, the nested array it sits in, the aggregation that reads it, and whether a record holds it more than once. |
+| `Members`, `Originals`, `LastRunId`, `LastBuiltUtc` | What it holds now, and the build that wrote it. |
+| `DimensionRun.DimensionRunId`, `RunId`, `Actor`, `Status` | One build: the platform run, who asked, and `running`, `completed`, `failed` or `cancelled`. |
+| `Records`, `WithValue`, `Nulls`, `TooLong`, `Unreadable` | How complete it read: the records its query matched, those holding a value the index aggregates, null values, records holding only text too long for the exact field, values not of the field's type. |
+| `Aggregations`, `Slices`, `Splits`, `ScannedSlices`, `ScanPages`, `ScannedUnits`, `CountQueries` | How it read: the aggregations asked, the ranges answered whole, the ranges split, those read by cursor and their pages, and the counts of members' records. |
+| `MembersAdded` ... `OriginalsRestored`, `Templates`, `Notes`, `Error` | What it changed, the kinds and templates it read, what it had to say, and the redacted reason it failed. |
+| `DimensionMember.MemberId`, `Value`, `Records`, `RecordsExact`, `Originals`, `Unfilterable`, `Filter`, `FilterParts` | A clean value, unique in its dimension, with the records holding any of its originals (exact, or the sum of its originals' counts), its originals and those no query can carry, and its search filter when one query holds it. |
+| `DimensionValue.ValueId`, `Original`, `OriginalHash`, `MemberId`, `LeftOut`, `Note`, `Count`, `Filterable` | An original exactly as the index holds it, unique by its SHA-256, with its member or why it has none (`empty`, `tooLong`, `dropped`, `failed`), what cleaning said, and its count. |
+| `FirstSeenRunId`, `FirstSeenUtc`, `RemovedRunId`, `RemovedUtc`, `MemberSinceRunId` | When a member or original arrived, and when a build no longer found it: it is kept, and keeps its id if a later build finds it again. |
+| `DimensionChange.ChangeId`, `DimensionRunId`, `ValueId`, `Change`, `FromMemberId`, `ToMemberId` | What a build did to one original: `added`, `removed`, `moved` or `restored`. A dimension's first build logs no arrivals. |
+
+A build writes its dimension in one transaction under an application lock per dimension, so a reader sees what one build
+left and never half of the next, and two builds of one dimension write one after the other. A build writes a row only
+where something of it changed. The migration is `20260930103543_DimensionFlows` (module version 1.17.0).
+
 ### `osdu.Activity`: the audit trail of runs and interventions
 
 One row per operator or scheduler action. The runs are `deliver`, `intake` and `drain` (a fan-out member's share),

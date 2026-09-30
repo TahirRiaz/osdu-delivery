@@ -968,9 +968,20 @@ Limits:
 | Sort | A sort over a broad kind can time out after 60 seconds with 504 | [19 docs/docs/api.md:861] |
 | Wildcards in terms | Leading wildcards are disabled | [19 docs/docs/api.md:448] |
 | Reserved characters | Escape `+ - = && \|\| > < ! ( ) { } [ ] ^ " ~ * ? : \ /`; `<` and `>` cannot be escaped | [19 docs/docs/api.md:426-434] |
+| `aggregateBy` buckets | At most `aggregationSize` (`AGGREGATION_SIZE`, 1000 by default), a platform setting and not a request parameter; ordered by count descending, then key ascending, `minDocCount` 1; no paging, and `query_with_cursor` takes no `aggregateBy` | [19 SRC/config/SearchConfigurationProperties.java:23; SRC/util/AggregationParserUtil.java:49-135; docs/docs/api.md:1313] |
+| Bucket keys | The string term, or for a long or double its `key_as_string`, which only a formatted field (a date, a boolean) has: a plain number can come back with no key | [19 SRC/provider/impl/CoreQueryBase.java:203-249, 452-470] |
 
 Kind wildcards: any segment may be `*`, for example `*:*:*:*`, `opendes:*:*:*`, `osdu:wks:*:*`,
 `*:*:master-data--Well:*` [19 docs/docs/api.md:607, 652, 756, 1405-1482; C-search: QueryRequest, L643-645].
+
+Distinct values: `aggregateBy` names a field (`data.Name.keyword`), or `nested(path, field)` for a property of a nested
+array, whose bucket counts are then the array's objects rather than records [19 SRC/util/AggregationParserUtil.java:49-135].
+A text property aggregates only through its `keyword` sub-field, which the indexer maps with `ignore_above: 256` and
+`null_value: "null"`: a longer value is in no bucket, and a null is the text `null` (indexer-service
+`indexer-core/src/main/java/org/opengroup/osdu/indexer/util/TypeMapper.java:262-268`, commit
+`423a9aee9099528361b738f3961d6a03aa13bd8b`). The query reaches Elasticsearch as `query_string`, so a range such as
+`data.Name.keyword:["a" TO "m"}` narrows the records an aggregation reads; dimension flows read every distinct value of a
+field this way, splitting a range the bucket limit cuts off ([../../docs/dimension-plan.md](../../docs/dimension-plan.md)).
 
 Index lag and status:
 

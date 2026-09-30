@@ -1265,6 +1265,88 @@ takes `tests` (names) and `tags`; a run with neither runs every test. A flow's p
 History tab (its tests against its runs) and a Reports tab; OSDU, **Tests** is the board of every assertion flow
 ([operations.md](operations.md#the-gui)).
 
+## Dimension flow
+
+The distinct values of any part of an OSDU document, gathered into dimensions ([dimension-plan.md](dimension-plan.md)).
+A dimension reads one path of the records of a kind: a property of the record (`kind`, `legal.legaltags`, `acl.viewers`,
+`tags.<name>`, `createUser`) or of its data, inside nested arrays too (`data.Curves.Mnemonic`). Every distinct value the
+search index holds is an **original**, kept exactly as the index holds it; the dimension's clean steps turn each original
+into a **member**, one clean value that gathers every original cleaned to it (`GR`, `gr`, and `GR` with a space before
+it, into `GR`). Each member
+carries the search filter that finds every record holding one of its originals, so a set of members is a filter of the
+OSDU search. A build only reads OSDU; everything it finds is kept in the module's database. OSDU's search returns at
+most 1,000 distinct values of a field and pages none of them, so a build reads by value ranges: a range the aggregation
+cuts off is split at a value it returned, until every range answers whole, and a range that cannot be split is read
+record by record through the search cursor.
+
+```yaml
+flowType: dimension
+name: recall-welllog-05-dimensions
+batch: recall
+partitions: [dev]                        # or none: the partition a run names, or the registry's default
+parameters:
+  logSource: { default: STAT_COMP }      # {logSource} in queries; {partition} is always there
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth: { type: oauth2ClientCredentials, secondarySecretRef: ${env:OSDU_CLIENT_ID}, secretRef: ${env:OSDU_CLIENT_SECRET}, token: { url: ${env:OSDU_TOKEN_URL} } }
+  # queryPath: /api/search/v2/query               aggregations and counts
+  # searchPath: /api/search/v2/query_with_cursor  the scans of a range an aggregation cannot answer
+  # aggregationSize: 1000                         the search service's AGGREGATION_SIZE, if the platform raised it
+reliability: { concurrency: 4 }
+
+dimensions:
+  - name: CurveMnemonic
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    path: data.Curves.Mnemonic
+    clean:
+      - trim
+      - collapseSpaces
+      - upper
+      - replace: { pattern: '^(\w+)_\d+$', with: '$1' }
+      - map: CurveAliases                            # a dictionary: the value it gives replaces the one looked up
+      - map: { dictionary: CurveFamilies, field: family, otherwise: ~ }
+
+  - name: LegalTag
+    kind: "*:*:*:*"
+    path: legal.legaltags
+    countRecords: true
+
+  - name: RecallWellbore
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
+    path: data.WellboreID
+```
+
+A dimension:
+
+| Key | Meaning |
+| --- | --- |
+| `name` | Unique in the flow: a letter or digit, then letters, digits, `.`, `_` and `-`, at most 100. A run and a cache flow name the dimension by it. At most 100 dimensions per flow. |
+| `description` | What the dimension is for. |
+| `kind` | The kind whose records are read, `authority:source:entityType:version` with wildcards per segment. Every kind the pattern matches in the partition must store the path the same way. |
+| `query` | Lucene narrowing the records, with `{parameter}` tokens. Without it, every record of the kind. |
+| `path` | The value read: a property of the record, or `data.` and a path of the schema. How the index stores it (text, keyword, number, boolean or date, inside a nested array or not) is read from the saved template of each kind the pattern matches, so every such kind needs its template saved (the Templates page, `sqlflow template capture`). An object, an array of objects and a property the index keeps no exact value of are refused, naming a leaf to read instead. |
+| `clean` | The steps each original runs through, in order, at most 20: `trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`, `foldSeparators` (dashes, underscores and dots to one space), `replace: { pattern, with }` (a regular expression, run without backtracking, one second at most per value; `$1` names a group), and `map` (a dictionary, [Dictionary](#dictionary): the value it gives for the original replaces it; `map: { dictionary, field, otherwise }` names the field of a dictionary with several, and what an unlisted value comes to: kept when left out, left out of every member with `~`, or the text given). The clean value is trimmed; one that is empty, or longer than 256 characters, belongs to no member, and the original keeps why. |
+| `countRecords` | `true` counts each member's records exactly, with one search per member. Without it a member's records are exact where a record holds the path once, and otherwise the sum of its originals' counts. |
+| `maxValues` | The most distinct values a build reads, 1,000,000 by default and 5,000,000 at most: a field with more fails the build rather than filling the database. |
+| `partitions` | Narrows the dimension to some of the flow's partitions; a build in another skips it. |
+
+How a value is compared follows how the index stores it. A text property is read through its `keyword` sub-field, which
+holds the whole value up to 256 characters; a longer value is not aggregated, and a build counts the records holding only
+such values. A number reads in its canonical form (`1.5`, not `1.50`), a date as `yyyy-MM-ddTHH:mm:ss.fffZ`, a boolean as
+`true` or `false`. A value inside a nested array is counted per object of the array, not per record. Originals are
+ordered by code point, as the index orders them.
+
+The operations are `build` (the default) and `plan` (settle each dimension's field and count the records it would read,
+reading no value and keeping nothing). The payload takes `dimensions` (names); a run with none builds every one. A build
+writes each dimension in one transaction: new originals and members are added, what changed is changed, what the build
+no longer found is marked removed (and keeps its id, should a later build find it again), and every change to an
+original is logged. A dimension whose build fails keeps what the build before it wrote, and the run ends failed with
+every other dimension built. A dimension flow's pipeline has a Dimensions tab; OSDU, **Dimensions** is the page of every
+dimension ([operations.md](operations.md#the-gui)). A cache flow can hold a dimension's members as a lookup table
+([Cache flow](#cache-flow)).
+
 ## Cache flow
 
 The reference data the mappings resolve against ([design.md](design.md) section 6.2). A cache flow is the one place what
@@ -1341,11 +1423,12 @@ flow keeps every LogCurveType the partition holds, tens of thousands of them, ra
 | `partitions` | Optional: the OSDU partitions whose caches the flow fills, each written literally as an id segment, at most 64. A refresh names one of them under the run value `partition` (the partition picked in the GUI's title bar, `--set partition=<name>` on `sqlflow run` and `sqlflow trigger`, a schedule's `values`), or, naming none, fills each in turn: a partition that fails leaves the others refreshed, and the run's result says how each went. Each partition's refresh searches with that partition's `data-partition-id`, keeps what it captures in that partition's cache, and resolves its references with the partition's own configuration first. A flow that names its partitions leaves `source.headers.data-partition-id` out. |
 | `types[].partitions` | Optional: the partitions of the flow's `partitions` this type is cached in, when not all of them. A type's name is unique within each partition, and every partition the flow names caches at least one type. |
 | `source.endpoint`, `source.auth`, `source.headers` | The OSDU platform the OSDU types are searched on, written as `target` is on a delivery flow: `${env:NAME}` and `${keyvault:vault/secret}` references and the same auth types. `source.endpoint` is required when the flow declares a type with a `kind`, and refused, with `source.auth`, when every type it declares is a lookup table. `data-partition-id` hard-codes the one partition whose cache the flow fills, an id segment (letters, digits, underscore, hyphen and dot) or a `${env:...}` or `${keyvault:...}` reference, and every search carries it. A flow that names its partitions leaves it out, and so does a flow that names neither and fills every registered partition; each refresh sets it to the partition it fills. |
-| `types` | Required, at least one: the types the flow caches, each from one origin: a `kind` searched on OSDU, or a `dictionary` (a lookup table kept in the repository, [Dictionary](#dictionary)). Each type's name is unique within the flow, because a mapping reads a type by its name. Another cache flow of the same partition may declare the same OSDU type, and the cache then holds one type under it ([The partition cache](#the-partition-cache)); a lookup table is declared by one cache flow of a partition. |
+| `types` | Required, at least one: the types the flow caches, each from one origin: a `kind` searched on OSDU, a `table` an ingestion flow loads, a `dictionary` (a lookup table kept in the repository, [Dictionary](#dictionary)), or a `dimension` a dimension flow builds ([Dimension flow](#dimension-flow)). Each type's name is unique within the flow, because a mapping reads a type by its name. Another cache flow of the same partition may declare the same OSDU type, and the cache then holds one type under it ([The partition cache](#the-partition-cache)); a lookup table is declared by one cache flow of a partition. |
 | `types[].kind` | For an OSDU type: the kind searched, `authority:source:entityType:version` with wildcards per segment. |
 | `source.connection` | The ingestion database the flow's table types are read from, declared exactly as a delivery flow's `source.connection` is: a whole `${env:...}` or `${keyvault:...}` reference, or a SQL Server connection string whose secrets are references; a literal password is refused. Required when the flow declares a type with a `table`, and refused when it declares none. |
 | `types[].table`, `types[].key` | For a lookup table an ingestion flow loads: the three-part name of the table, and the column each row is keyed by. The type is named after the table unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType` or `query`: it holds every row of the table that its ingestion flow has not marked deleted (`DeletedDate_DW`, when the table has it). A key is trimmed, and a key that is empty, longer than 256 characters, or held by two rows once trimmed refuses the capture, naming the rows; so does a table over 100,000 rows. Every value is kept as the text the delivery reader gives it. Lineage orders the flow after the ingestion flow that loads the table. |
 | `types[].dictionary` | For a lookup table kept in the repository: the name of the dictionary document it holds, `dictionaries/<name>.yaml` in the nearest `dictionaries/` folder above the flow. The type is named after the dictionary unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query`, `key` or `fields`: the document names its key and its values. A flow holding a dictionary needs the repository's tree when it runs, and reads the file at the run's commit. |
+| `types[].dimension`, `types[].dimensionFlow` | For a lookup table a dimension flow builds: the dimension and the dimension flow declaring it. The type holds the dimension's members as its last completed build in the partition left them: one row per member, keyed by `value` (its clean value), with `originals` (every original cleaning gathered into it, a set a lookup matches on any one of) and `records` beside it. It is named after the dimension unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query`, `key` or `fields`. A refresh before the dimension's first completed build fails, naming the build to run, and a dimension over 100,000 members or 500,000 originals refuses the capture. A mapping cleans a raw value as the dimension does with `replace from $cache.<name> (originals to value)`. Lineage orders the flow after the dimension flow. |
 | `types[].name`, `types[].entityType` | Optional. The entity type is derived from the kind, and the name from the entity type (`reference-data--UnitOfMeasure` gives `UnitOfMeasure`). A kind that names no entity type needs `entityType`. |
 | `types[].query` | Optional Lucene query narrowing the type; `*` when omitted. |
 | `types[].fields` | For an OSDU type, required: the paths to keep, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. For a table type, required: the columns to keep beside the key, bare (kept under the column's name) or as `{ column: ..., as: ... }`. A dictionary type takes none. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAliases.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |

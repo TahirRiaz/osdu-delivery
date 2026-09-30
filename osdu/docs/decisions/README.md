@@ -16,6 +16,7 @@ teams can confirm or overturn it; the code isolates each one so overturning it i
 | [0008](0008-retrieval-lands-raw-records.md) | The retrieval kind lands records as OSDU holds them. | Proposed |
 | [0009](0009-searched-references.md) | References to business data are searched for on the platform, not cached. | Proposed |
 | [0010](0010-assertion-flows-read-only.md) | Assertion flows read OSDU, check themselves against templates, and keep whole reports. | Proposed |
+| [0011](0011-dimension-flows.md) | Dimension flows read every distinct value by ranges, and keep originals beside clean members. | Proposed |
 
 Not decided here, and still open: storage access grants (design 17.4), Change Data Feed (17.7), library
 ownership between osdu-client and osdu-csharp-client (17.8), and whether the other packages adopt the same

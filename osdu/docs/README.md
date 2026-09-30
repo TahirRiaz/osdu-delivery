@@ -4,7 +4,7 @@ How OSDU Delivery turns rows in the ingestion tables into OSDU records and keeps
 of the whole thing, and how the module meets the vendored SQLFlow, is in [architecture.md](architecture.md); the
 platform underneath is documented in the vendored tree
 ([../../sqlflow/docs/architecture.md](../../sqlflow/docs/architecture.md)). These pages describe the flow kinds
-that run on it, `flowType: delivery`, `flowType: retrieval`, `flowType: cache` and `flowType: assertion`, and the ledger
+that run on it, `flowType: delivery`, `flowType: retrieval`, `flowType: cache`, `flowType: assertion` and `flowType: dimension`, and the ledger
 behind them.
 
 Data arrives through SQLFlow's own flows: a pre-ingestion flow lands the source files, an ingestion flow loads the
@@ -13,8 +13,9 @@ replica.
 
 | Page | What it covers |
 | --- | --- |
-| [design.md](design.md) | The design: the render inputs and the render context, identity, change detection and the cache, the ledger, the delivery protocols, the document model, the preflight gate, streaming, the retrieval and assertion kinds (section 15), the streaming intake, work batches, returned values and fan-out (section 16). Section numbers are referenced from the code. |
-| [documents.md](documents.md) | The delivery flow (a single OSDU type, or a source with interfaces), retrieval flow, assertion flow, cache flow and mapping documents key by key. |
+| [design.md](design.md) | The design: the render inputs and the render context, identity, change detection and the cache, the ledger, the delivery protocols, the document model, the preflight gate, streaming, the retrieval, assertion and dimension kinds (section 15), the streaming intake, work batches, returned values and fan-out (section 16). Section numbers are referenced from the code. |
+| [documents.md](documents.md) | The delivery flow (a single OSDU type, or a source with interfaces), retrieval flow, assertion flow, dimension flow, cache flow and mapping documents key by key. |
+| [dimension-plan.md](dimension-plan.md) | Dimension flows: the distinct values of any part of an OSDU document, read past the search's limit by value ranges, cleaned into members with the originals kept, the tables they live in, and each member's search filter. |
 | [../../docs/assertions-design.md](../../docs/assertions-design.md) | Assertion flows: tests of what a partition holds once the data has landed, how a test is checked against its template and evaluated, the reports and where they are kept. |
 | [mapping-templates.md](mapping-templates.md) | Templates and mappings: the template an OSDU schema becomes and where it is saved, the mapping format as the record tree it lays out (the `$` words of the mapping language, `$findBy`, modifiers, `$when`, `$required`, fixtures), the checks, and the mapping builder. |
 | [ledger.md](ledger.md) | The ledger tables, the cache versions, the record lifecycle, leasing, the indexes behind every listing, retention. |
@@ -34,9 +35,9 @@ replica.
 | `osdu/src/SqlFlow.Delivery` | The whole domain: model, identity, canonical JSON and hashing, the document loader and the four flow kinds, templates and the mapping builder, the cache store, rendering, planning, the preflight gate, the HTTP runtime, storage (work batch files, writers), the ledger, the engine (intake, worker, verifier, the protocols and the workflow contracts, fan-out, the retrieval runner, the assertion runner and its report, the cache refresh and its impact analysis), the run executors, the compute operations, and the sync of mappings and cache definitions. |
 | `osdu/src/SqlFlow.Delivery.Data` | `OsduDbContext`: the `osdu` schema model, its migrations and its schema version. |
 | `osdu/src/SqlFlow.Delivery.ControlPlane` | The delivery and template API under `/api/v1/delivery`, and the cache rollout and data definitions background services. |
-| `osdu/src/SqlFlow.Delivery.Cli` | `sqlflow check`, `sqlflow cache`, `sqlflow template` and `sqlflow assertions`. |
+| `osdu/src/SqlFlow.Delivery.Cli` | `sqlflow check`, `sqlflow cache`, `sqlflow template`, `sqlflow assertions` and `sqlflow dimensions`. |
 | `osdu/hosts` | The control plane, node and CLI hosts that compose SQLFlow with the module and its branding. |
-| `osdu/gui` | The delivery overview, the flow tabs (stats, records, submissions; retrievals for a retrieval flow; tests, history and reports for an assertion flow), the Tests board and the test report page, the record page, the submission page with its batches, the audit trail, mappings, the OSDU cache page, templates and the mapping builder. |
+| `osdu/gui` | The delivery overview, the flow tabs (stats, records, submissions; retrievals for a retrieval flow; tests, history and reports for an assertion flow), the Tests board and the test report page, the Dimensions page, the record page, the submission page with its batches, the audit trail, mappings, the OSDU cache page, templates and the mapping builder. |
 | `osdu/samples/recall` | A complete sample estate, laid out the way a repository is: one folder for the Recall source, holding the pre, ingestion and delivery flows of its well logs (`flows/`), the WellLog mapping (`mappings/`), everything static (`cache/`: the lookups cache flow `recall-lookups-00-cache.yaml`, the lookup tables' files in `cache/data/` and the pre and ingestion flows that load them, and the reference cache flow `recall-reference-00-cache.yaml`, which captures the partition's reference data), the schedules (`schedules.yaml`), and the drop-off folder the pre flows read (`data/`, five real Recall logs with their curve grids). The mapping builds its references with the `ref` and `id` modifiers, each checked against the reference data the reference cache flow captures from OSDU, and searches the platform for the wellbore. |
 | `osdu/samples/cache-records` | Sample records of OSDU reference data, one file per cached type, to import into a partition's cache for work without an OSDU platform. Beside the source folders, never inside one: a cache lives in the module's database, captured there by a run, so a repository holds the flow document and nothing else about it. |
 | `osdu/samples/templates` | The bundled OSDU schemas the suites and the e2e seed save as templates. They sit beside the source folders, not inside one: a template is a catalog object captured from OSDU's schema service through the Templates page, never a file a repository sync reads. |
