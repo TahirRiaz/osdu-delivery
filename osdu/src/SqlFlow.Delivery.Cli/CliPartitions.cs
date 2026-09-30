@@ -65,6 +65,26 @@ internal static class CliPartitions
             : flow.ForRun(null, await RegistryAsync(context, flow.NeedsRegistry(null), ct).ConfigureAwait(false));
     }
 
+    /// <summary>
+    /// <paramref name="flow"/> bound for a command that reads its dimensions: to the partition named as it is, since a
+    /// partition taken out of the registry keeps its dimensions, and as a run would bind it when none is named. A flow whose
+    /// partition is its header's is read as it is.
+    /// </summary>
+    public static async Task<DimensionFlowDefinition> DimensionAsync(CliVerbContext context, DimensionFlowDefinition flow, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(flow);
+        var requested = Requested(context);
+        if (!flow.Partitioned)
+        {
+            return flow.ForRun(requested, RegisteredPartitions.None);
+        }
+
+        return requested is { } named && !string.IsNullOrWhiteSpace(named)
+            ? flow.ForPartition(named)
+            : flow.ForRun(null, await RegistryAsync(context, flow.NeedsRegistry(null), ct).ConfigureAwait(false));
+    }
+
     private static async Task<RegisteredPartitions> RegistryAsync(CliVerbContext context, bool needed, CancellationToken ct)
         => needed
             ? await context.Services.GetRequiredService<IPartitionRegistry>().ReadAsync(ct).ConfigureAwait(false)

@@ -11,7 +11,7 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
-/// Loads the kind's documents: delivery, retrieval, cache and assertion flows (behind the platform's envelope probe, which
+/// Loads the kind's documents: delivery, retrieval, cache, assertion and dimension flows (behind the platform's envelope probe, which
 /// dispatches on flowType) and mappings (which the platform never sees). Unknown keys are a hard parse error
 /// (design.md section 10.4); every failure is a <see cref="FlowValidationException"/> prefixed with the file path.
 /// </summary>
@@ -84,6 +84,17 @@ public sealed class DeliveryDocumentLoader
         return ParseAssertion(File.ReadAllText(path), path);
     }
 
+    public DimensionFlowDefinition LoadDimension(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!File.Exists(path))
+        {
+            throw new FlowValidationException($"Dimension flow file not found: '{path}'.");
+        }
+
+        return ParseDimension(File.ReadAllText(path), path);
+    }
+
     public MappingDefinition LoadMapping(string path) => LoadMapping(path, path);
 
     /// <summary>Loads the mapping file at <paramref name="path"/>, naming it <paramref name="source"/> in every message.</summary>
@@ -99,7 +110,7 @@ public sealed class DeliveryDocumentLoader
         return ParseMapping(File.ReadAllText(path), source);
     }
 
-    /// <summary>The discriminator of a document: "delivery", "retrieval", "cache" or "assertion" for a flow, "mapping" or "dictionary" for a document.</summary>
+    /// <summary>The discriminator of a document: "delivery", "retrieval", "cache", "assertion" or "dimension" for a flow, "mapping" or "dictionary" for a document.</summary>
     public string Probe(string yaml, string source = "<inline>")
     {
         var probe = Deserialize<DocumentProbeYaml>(_probe, yaml, source);
@@ -113,7 +124,7 @@ public sealed class DeliveryDocumentLoader
             return probe!.DocumentType!;
         }
 
-        throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval, cache, assertion) and no 'documentType' (mapping, dictionary).");
+        throw new FlowValidationException($"{source}: the document declares no 'flowType' (delivery, retrieval, cache, assertion, dimension) and no 'documentType' (mapping, dictionary).");
     }
 
     /// <summary>Parses a delivery flow document as a source: every interface it declares, or the one its single form is.</summary>
@@ -187,6 +198,20 @@ public sealed class DeliveryDocumentLoader
 
         var y = Deserialize<AssertionYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
         return AssertionMapper.Map(y, source);
+    }
+
+    /// <summary>Parses a dimension flow document (<c>flowType: dimension</c>): the distinct values of OSDU attributes, cleaned into members.</summary>
+    public DimensionFlowDefinition ParseDimension(string yaml, string source = "<inline>")
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        var kind = Probe(yaml, source);
+        if (!kind.Equals(DimensionFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException($"{source}: expected 'flowType: {DimensionFlowDefinition.FlowTypeName}', found '{kind}'.");
+        }
+
+        var y = Deserialize<DimensionFlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        return DimensionMapper.Map(y, source);
     }
 
     /// <summary>Loads the dictionary file at <paramref name="path"/>, naming it <paramref name="source"/> in every message.</summary>

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace SqlFlow.Delivery.Search;
@@ -14,7 +15,8 @@ namespace SqlFlow.Delivery.Search;
 /// <item><description>
 /// The search service builds a <c>query_string</c> query with <c>escape(false)</c> and <c>defaultOperator(OR)</c>
 /// (<c>QueryNode.toQueryBuilder</c>). Nothing is escaped for the caller, and a bare multi-word value is read as its
-/// words OR'd together, so a value is always a quoted phrase.
+/// words OR'd together, so a value is always a quoted phrase. Elasticsearch reads a phrase compared with a number, a
+/// boolean or a date as a value of that type, so every value is quoted, whatever its type.
 /// </description></item>
 /// <item><description>
 /// It parses a query holding <c>nested(</c> itself before Elasticsearch sees it (<c>QueryParserUtil</c>), counting
@@ -44,10 +46,10 @@ namespace SqlFlow.Delivery.Search;
 /// </remarks>
 public sealed record OsduQuery
 {
-    private OsduQuery(string text, string? termValue)
+    private OsduQuery(string text, IReadOnlyList<string>? compared)
     {
         Text = text;
-        TermValue = termValue;
+        Compared = compared;
     }
 
     /// <summary>The sub-field the indexer gives every text property for exact matching.</summary>
@@ -80,19 +82,22 @@ public sealed record OsduQuery
     /// <summary>The query as the service receives it.</summary>
     public string Text { get; }
 
-    /// <summary>The value a single comparison asks for, or null for a group, which a nested query cannot hold.</summary>
-    private string? TermValue { get; }
+    /// <summary>
+    /// The values a single comparison carries (one for an equality, the bounds for a range), or null for a group, which a
+    /// nested query cannot hold. Each is checked before the comparison can go inside the nested form.
+    /// </summary>
+    private IReadOnlyList<string>? Compared { get; }
 
     public override string ToString() => Text;
 
     /// <summary>
     /// Finds the records whose <paramref name="field"/> is exactly <paramref name="value"/>, whole and unanalysed, asked
-    /// the way the platform stores that property: the keyword sub-field of text, the keyword itself otherwise, inside
+    /// the way the platform stores that property: the keyword sub-field of text, the property itself otherwise, inside
     /// the service's nested form for a property of a nested array. This is the form a lookup that must identify one
-    /// record uses.
+    /// record uses, and the form a filter asks each value in.
     /// </summary>
     /// <param name="field">The property, as the schema of the kind searched says it is indexed.</param>
-    /// <param name="value">The whole value the property must equal.</param>
+    /// <param name="value">The whole value the property must equal: for a number its digits, for a boolean true or false.</param>
     /// <param name="caseInsensitive">
     /// Ask the <c>keywordLower</c> sub-field of a text property instead. Only where the platform enables it: on a
     /// platform that does not, the sub-field does not exist and the query matches nothing.
@@ -102,51 +107,110 @@ public sealed record OsduQuery
     {
         ArgumentNullException.ThrowIfNull(field);
         ArgumentNullException.ThrowIfNull(value);
-        var path = field.Path;
-        CheckValue(path, value, "value");
+        var term = $"{ComparedPath(field, caseInsensitive)}:{LuceneText.Phrase(CheckEqual(field, value, caseInsensitive))}";
+        return field.NestedPath is { } nested ? Nested(nested, new OsduQuery(term, [value])) : new OsduQuery(term, [value]);
+    }
 
-        string term;
-        if (field.Index == OsduFieldIndex.Text)
+    /// <summary>
+    /// Why <paramref name="value"/> cannot be asked for exactly in <paramref name="field"/>, or null when it can: the rule
+    /// <see cref="Equal"/> would refuse it by, without building the query. A filter that holds many values asks this of
+    /// each, so one value no query can carry is set aside rather than failing the rest.
+    /// </summary>
+    public static string? EqualProblem(OsduField field, string value)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        ArgumentNullException.ThrowIfNull(value);
+        try
         {
-            if (value.Length > KeywordIgnoreAbove)
-            {
-                throw new OsduQueryException(
-                    $"the value compared with '{path}' is {value.Length} characters, and the indexer keeps no more than {KeywordIgnoreAbove} in the '{KeywordSubField}' sub-field (ignore_above), so an exact match on it can never succeed.");
-            }
-
-            if (string.Equals(value, KeywordNullValue, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-            {
-                throw new OsduQueryException(
-                    $"the value compared with '{path}' is '{value}', which is what the indexer stores in the '{KeywordSubField}' sub-field for a property that is null (null_value), so the lookup would find every record without a value as well.");
-            }
-
-            var sub = caseInsensitive ? KeywordLowerSubField : KeywordSubField;
-            term = $"{field.QueryPath}.{sub}:{LuceneText.Phrase(value)}";
+            _ = Equal(field, value);
+            return null;
         }
-        else
+        catch (OsduQueryException ex)
         {
-            if (caseInsensitive)
-            {
-                throw new OsduQueryException(
-                    $"'{path}' is indexed as a keyword, which has no '{KeywordLowerSubField}' sub-field, so it cannot be compared regardless of case.");
-            }
-
-            var bytes = Encoding.UTF8.GetByteCount(value);
-            if (bytes > MaxTermBytes)
-            {
-                throw new OsduQueryException(
-                    $"the value compared with '{path}' is {bytes} bytes of UTF-8, and an indexed term holds at most {MaxTermBytes}, so no record can hold it.");
-            }
-
-            term = $"{field.QueryPath}:{LuceneText.Phrase(value)}";
+            return ex.Message;
         }
+    }
 
-        if (field.NestedPath is not { } nested)
+    /// <summary>
+    /// Finds the records whose <paramref name="field"/> is any one of <paramref name="values"/>, each compared exactly as
+    /// <see cref="Equal"/> compares it. Outside a nested array the values are one grouped comparison of the field,
+    /// <c>field:("a" OR "b")</c>; inside one each value is a nested query of its own and the queries are OR'd, because the
+    /// service rewrites what follows <c>OR</c> inside the nested form as a property name, which a value such as an OSDU id
+    /// (<c>osdu:reference-data--X:1:</c>) would be taken for. A value given twice is asked once.
+    /// </summary>
+    /// <remarks>
+    /// Every value is one clause of the query. The service allows 1024 clauses in a query (the search API document), which
+    /// the caller keeps to by asking for as many values at once as leave room for whatever the query is combined with.
+    /// </remarks>
+    /// <exception cref="OsduQueryException">No value was given, or one cannot be asked for exactly; the message names it.</exception>
+    public static OsduQuery AnyOf(OsduField field, IReadOnlyList<string> values)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        ArgumentNullException.ThrowIfNull(values);
+        var distinct = new List<string>(values.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var value in values)
         {
-            return new OsduQuery(term, value);
+            ArgumentNullException.ThrowIfNull(value, nameof(values));
+            if (seen.Add(value))
+            {
+                distinct.Add(value);
+            }
         }
 
-        return Nested(nested, new OsduQuery(term, value));
+        if (distinct.Count == 0)
+        {
+            throw new OsduQueryException(
+                $"'{field.Path}' is compared with no value; a query that should match every record is written as '*' by the caller that means it.");
+        }
+
+        if (distinct.Count == 1)
+        {
+            return Equal(field, distinct[0]);
+        }
+
+        if (field.NestedPath is not null)
+        {
+            return Any(distinct.Select(v => Equal(field, v)).ToArray());
+        }
+
+        var phrases = distinct.Select(v => LuceneText.Phrase(CheckEqual(field, v, caseInsensitive: false)));
+        return new OsduQuery($"{ComparedPath(field, caseInsensitive: false)}:({string.Join(" OR ", phrases)})", compared: null);
+    }
+
+    /// <summary>
+    /// Finds the records whose <paramref name="field"/> holds a value from <paramref name="from"/> (included) up to
+    /// <paramref name="to"/> (left out), compared the way the index orders the field: text by its keyword sub-field, in
+    /// the order of its characters' code points, which is how Elasticsearch orders the UTF-8 bytes of a term; a number,
+    /// a boolean and a date by the value. A null bound leaves that end open.
+    /// </summary>
+    /// <exception cref="OsduQueryException">Both ends are open, or a bound cannot be carried in a query.</exception>
+    public static OsduQuery Range(OsduField field, string? from, string? to)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        if (from is null && to is null)
+        {
+            throw new OsduQueryException(
+                $"a range of '{field.Path}' open at both ends asks for every value; leave the range out instead.");
+        }
+
+        var bounds = new List<string>(2);
+        foreach (var bound in new[] { from, to })
+        {
+            if (bound is not null)
+            {
+                // A bound is a position in the field's order, not a value a record must hold, so text of any length and the
+                // text null are positions like any other; a number, a boolean or a date has to be one of those.
+                CheckValue(field.Path, bound, "range bound");
+                CheckTyped(field, bound);
+                bounds.Add(bound);
+            }
+        }
+
+        var lower = from is null ? "*" : LuceneText.Phrase(from);
+        var upper = to is null ? "*]" : LuceneText.Phrase(to) + "}";
+        var term = $"{field.ExactPath}:[{lower} TO {upper}";
+        return field.NestedPath is { } nested ? Nested(nested, new OsduQuery(term, bounds)) : new OsduQuery(term, bounds);
     }
 
     /// <summary>
@@ -171,7 +235,7 @@ public sealed record OsduQuery
         var path = OsduPath.Of(field);
         ArgumentNullException.ThrowIfNull(value);
         CheckValue(path, value, "phrase");
-        return new OsduQuery($"{path}:{LuceneText.Phrase(value)}", value);
+        return new OsduQuery($"{path}:{LuceneText.Phrase(value)}", [value]);
     }
 
     /// <summary>
@@ -189,18 +253,21 @@ public sealed record OsduQuery
     {
         var parent = OsduPath.Of(path);
         ArgumentNullException.ThrowIfNull(inner);
-        if (inner.TermValue is not { } value)
+        if (inner.Compared is not { } values)
         {
             throw new OsduQueryException(
                 $"a nested query over '{parent}' holds one comparison: the search service rewrites the property names inside the nested form by pattern, and a group of comparisons does not survive that rewriting.");
         }
 
-        if (ServiceParser.NestedQueryProblem(value) is { } problem)
+        foreach (var value in values)
         {
-            throw new OsduQueryException($"the value compared inside the nested array '{parent}' cannot be asked for: {problem}.");
+            if (ServiceParser.NestedQueryProblem(value) is { } problem)
+            {
+                throw new OsduQueryException($"the value compared inside the nested array '{parent}' cannot be asked for: {problem}.");
+            }
         }
 
-        return new OsduQuery($"nested({parent}, ({inner.Text}))", termValue: null);
+        return new OsduQuery($"nested({parent}, ({inner.Text}))", compared: null);
     }
 
     /// <summary>Every one of <paramref name="queries"/> must hold. One query is itself; none is refused.</summary>
@@ -210,6 +277,91 @@ public sealed record OsduQuery
     /// <summary>Any of <paramref name="queries"/> may hold. One query is itself; none is refused.</summary>
     /// <exception cref="OsduQueryException">No query was given.</exception>
     public static OsduQuery Any(params OsduQuery[] queries) => Join("OR", queries);
+
+    /// <summary>The field a comparison of <paramref name="field"/> asks, relative to its nested array when it has one.</summary>
+    private static string ComparedPath(OsduField field, bool caseInsensitive)
+        => caseInsensitive && field.Index == OsduFieldIndex.Text ? $"{field.QueryPath}.{KeywordLowerSubField}" : field.ExactPath;
+
+    /// <summary>Checks a value an exact comparison of <paramref name="field"/> asks for, and returns the text the query carries.</summary>
+    private static string CheckEqual(OsduField field, string value, bool caseInsensitive)
+    {
+        var path = field.Path;
+        CheckValue(path, value, "value");
+        switch (field.Index)
+        {
+            case OsduFieldIndex.Text:
+                if (value.Length > KeywordIgnoreAbove)
+                {
+                    throw new OsduQueryException(
+                        $"the value compared with '{path}' is {value.Length} characters, and the indexer keeps no more than {KeywordIgnoreAbove} in the '{KeywordSubField}' sub-field (ignore_above), so an exact match on it can never succeed.");
+                }
+
+                if (string.Equals(value, KeywordNullValue, caseInsensitive ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                {
+                    throw new OsduQueryException(
+                        $"the value compared with '{path}' is '{value}', which is what the indexer stores in the '{KeywordSubField}' sub-field for a property that is null (null_value), so the lookup would find every record without a value as well.");
+                }
+
+                return value;
+            case OsduFieldIndex.Keyword:
+                RefuseCaseInsensitive(field, caseInsensitive);
+                var bytes = Encoding.UTF8.GetByteCount(value);
+                if (bytes > MaxTermBytes)
+                {
+                    throw new OsduQueryException(
+                        $"the value compared with '{path}' is {bytes} bytes of UTF-8, and an indexed term holds at most {MaxTermBytes}, so no record can hold it.");
+                }
+
+                return value;
+            default:
+                RefuseCaseInsensitive(field, caseInsensitive);
+                CheckTyped(field, value);
+                return value;
+        }
+    }
+
+    /// <summary>
+    /// Refuses text that is not a value of a number, boolean or date field: Elasticsearch parses a compared phrase as the
+    /// field's type and answers 400 for one it cannot parse, which would fail the whole query rather than match nothing.
+    /// </summary>
+    private static void CheckTyped(OsduField field, string value)
+    {
+        switch (field.Index)
+        {
+            case OsduFieldIndex.Number:
+                if (!double.TryParse(value, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowExponent, CultureInfo.InvariantCulture, out var number)
+                    || !double.IsFinite(number))
+                {
+                    throw new OsduQueryException($"'{field.Path}' is indexed as a number, and '{value}' is not one.");
+                }
+
+                break;
+            case OsduFieldIndex.Boolean:
+                if (value is not ("true" or "false"))
+                {
+                    throw new OsduQueryException($"'{field.Path}' is indexed as a boolean, and '{value}' is neither true nor false.");
+                }
+
+                break;
+            case OsduFieldIndex.Date:
+                if (value.Trim().Length != value.Length
+                    || !DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _))
+                {
+                    throw new OsduQueryException($"'{field.Path}' is indexed as a date, and '{value}' is not one.");
+                }
+
+                break;
+        }
+    }
+
+    private static void RefuseCaseInsensitive(OsduField field, bool caseInsensitive)
+    {
+        if (caseInsensitive)
+        {
+            throw new OsduQueryException(
+                $"'{field.Path}' is indexed as a {OsduField.Describe(field.Index)}, which has no '{KeywordLowerSubField}' sub-field, so it cannot be compared regardless of case.");
+        }
+    }
 
     /// <summary>The checks every value passes whatever it is compared with.</summary>
     private static void CheckValue(string path, string value, string what)
@@ -249,7 +401,7 @@ public sealed record OsduQuery
         // One term needs no grouping, and grouping it would only make the query harder to read in a trace.
         return queries.Length == 1
             ? queries[0]
-            : new OsduQuery(string.Join($" {op} ", queries.Select(q => $"({q.Text})")), termValue: null);
+            : new OsduQuery(string.Join($" {op} ", queries.Select(q => $"({q.Text})")), compared: null);
     }
 }
 

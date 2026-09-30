@@ -1173,6 +1173,295 @@ public sealed class DeliveryAssertionResult
 }
 
 /// <summary>
+/// One dimension of a dimension flow in one partition (docs/dimension-plan.md): the declaration its last build read with, the
+/// field it asked the index for, and how many members and originals it holds now. Its members, originals, builds and
+/// changes are rows of <see cref="DeliveryDimensionMember"/>, <see cref="DeliveryDimensionValue"/>,
+/// <see cref="DeliveryDimensionRun"/> and <see cref="DeliveryDimensionChange"/>, keyed by <see cref="DimensionId"/>.
+/// </summary>
+public sealed class DeliveryDimension
+{
+    /// <summary>The longest dimension name, as a run's payload and a page name it.</summary>
+    public const int MaxNameLength = 100;
+
+    /// <summary>The longest path a dimension reads, which a query writes unquoted.</summary>
+    public const int MaxPathLength = 512;
+
+    /// <summary>The longest field the index is asked for: a keyword sub-field inside the service's nested form.</summary>
+    public const int MaxAggregateByLength = 1100;
+
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The ledger identity of the dimension flow in the partition.</summary>
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+
+    public string? Description { get; set; }
+
+    /// <summary>The kind the dimension reads, wildcards allowed per segment.</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The query narrowing the records read, as the last build ran it; null for every record of the kind.</summary>
+    public string? Query { get; set; }
+
+    public string Path { get; set; } = string.Empty;
+
+    /// <summary>How the index stores the field: text, keyword, number, boolean or date. Null until a build has read the templates.</summary>
+    public string? FieldIndex { get; set; }
+
+    /// <summary>The nested array the field sits in, or null.</summary>
+    public string? NestedPath { get; set; }
+
+    /// <summary>The field as the search's aggregateBy names it.</summary>
+    public string? AggregateBy { get; set; }
+
+    /// <summary>Whether one record can hold the field more than once, so members' counts need not be of records.</summary>
+    public bool Repeats { get; set; }
+
+    /// <summary>The clean steps, as JSON.</summary>
+    public string CleanJson { get; set; } = "[]";
+
+    /// <summary>The hash of the dimension's declaration as the last build read it.</summary>
+    public string DefinitionHash { get; set; } = string.Empty;
+
+    /// <summary>The members the dimension holds now.</summary>
+    public long Members { get; set; }
+
+    /// <summary>The originals the dimension holds now, those under no member included.</summary>
+    public long Originals { get; set; }
+
+    /// <summary>The build that last wrote the dimension.</summary>
+    public long? LastRunId { get; set; }
+
+    public DateTime? LastBuiltUtc { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+}
+
+/// <summary>
+/// One build of one dimension: the declaration and the field it read with, how it read (aggregations, ranges, scans), what it
+/// found and how complete that is, and what it changed.
+/// </summary>
+public sealed class DeliveryDimensionRun
+{
+    public short PartitionId { get; set; }
+
+    public long DimensionRunId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The ledger identity of the dimension flow in the partition.</summary>
+    public Guid FlowId { get; set; }
+
+    /// <summary>The platform run the build ran in.</summary>
+    public Guid? RunId { get; set; }
+
+    public string Actor { get; set; } = string.Empty;
+
+    /// <summary>running, completed, failed or cancelled.</summary>
+    public string Status { get; set; } = "running";
+
+    public string DefinitionHash { get; set; } = string.Empty;
+
+    /// <summary>The query as the build ran it, its tokens substituted.</summary>
+    public string? Query { get; set; }
+
+    public string? AggregateBy { get; set; }
+
+    /// <summary>The kinds the pattern matched and the template each was read against, as JSON.</summary>
+    public string? Templates { get; set; }
+
+    /// <summary>The records the query matched; null when that could not be counted.</summary>
+    public long? Records { get; set; }
+
+    /// <summary>The records the exact field holds a value for; null when that could not be counted.</summary>
+    public long? WithValue { get; set; }
+
+    /// <summary>The records (or objects) whose value is null.</summary>
+    public long Nulls { get; set; }
+
+    /// <summary>The records holding only text values longer than the exact field keeps; null when not counted.</summary>
+    public long? TooLong { get; set; }
+
+    /// <summary>Values the index holds that are not of the field's type.</summary>
+    public long Unreadable { get; set; }
+
+    public long Members { get; set; }
+
+    public long Originals { get; set; }
+
+    /// <summary>Originals under no member: cleaned to nothing, to a clean value too long, or dropped by a map.</summary>
+    public long LeftOut { get; set; }
+
+    /// <summary>Originals no query can carry, which their members' filters leave out.</summary>
+    public long Unfilterable { get; set; }
+
+    public long MembersAdded { get; set; }
+
+    public long MembersRemoved { get; set; }
+
+    public long MembersRestored { get; set; }
+
+    public long OriginalsAdded { get; set; }
+
+    public long OriginalsRemoved { get; set; }
+
+    /// <summary>Originals now under another member than before, or none where they had one.</summary>
+    public long OriginalsMoved { get; set; }
+
+    public long OriginalsRestored { get; set; }
+
+    public int Aggregations { get; set; }
+
+    /// <summary>Ranges an aggregation answered whole.</summary>
+    public int Slices { get; set; }
+
+    public int Splits { get; set; }
+
+    public int ScannedSlices { get; set; }
+
+    public int ScanPages { get; set; }
+
+    public long ScannedUnits { get; set; }
+
+    /// <summary>Counts of members' records the build asked the search for.</summary>
+    public int CountQueries { get; set; }
+
+    /// <summary>What the build had to say, as a JSON array of lines.</summary>
+    public string? Notes { get; set; }
+
+    public DateTime StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    public string? Error { get; set; }
+}
+
+/// <summary>
+/// One member of a dimension: a clean value, with how many records hold any of its originals, and the search filter that
+/// finds them. A member a build no longer finds is marked removed and kept, so its id stays its own if it comes back. A build
+/// writes a row only when something of it changed, so every member the dimension holds now was seen by its last build.
+/// </summary>
+public sealed class DeliveryDimensionMember
+{
+    public short PartitionId { get; set; }
+
+    public long MemberId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The clean value, trimmed, compared exactly.</summary>
+    public string Value { get; set; } = string.Empty;
+
+    /// <summary>The records holding any of its originals (or the sum of its originals' counts when <see cref="RecordsExact"/> is false).</summary>
+    public long Records { get; set; }
+
+    public bool RecordsExact { get; set; }
+
+    /// <summary>The originals under it.</summary>
+    public int Originals { get; set; }
+
+    /// <summary>Its originals no query can carry, which the filter leaves out.</summary>
+    public int Unfilterable { get; set; }
+
+    /// <summary>The search filter finding every record holding a filterable original, when it fits one query; null otherwise.</summary>
+    public string? Filter { get; set; }
+
+    /// <summary>How many queries the filter takes: 1 when <see cref="Filter"/> holds it, more when its originals pass one query's clauses, 0 with none filterable.</summary>
+    public int FilterParts { get; set; }
+
+    /// <summary>The build that first found it. One the dimension holds now was found by the dimension's last build.</summary>
+    public long FirstSeenRunId { get; set; }
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    /// <summary>The build that no longer found it, or null while it is there.</summary>
+    public long? RemovedRunId { get; set; }
+
+    public DateTime? RemovedUtc { get; set; }
+}
+
+/// <summary>
+/// One original of a dimension: a value exactly as the index holds it, the member it belongs to or why it belongs to none, and
+/// how many records (or objects of a nested array) hold it.
+/// </summary>
+public sealed class DeliveryDimensionValue
+{
+    /// <summary>The longest original kept; a longer one is counted and left out by the build.</summary>
+    public const int MaxOriginalLength = 1024;
+
+    public short PartitionId { get; set; }
+
+    public long ValueId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The value exactly as the index holds it.</summary>
+    public string Original { get; set; } = string.Empty;
+
+    /// <summary>SHA-256 of the original's UTF-8 bytes: what an original is unique by, exactly, however long it is.</summary>
+    public byte[] OriginalHash { get; set; } = [];
+
+    /// <summary>The member it belongs to, or null when cleaning left it out of every member.</summary>
+    public long? MemberId { get; set; }
+
+    /// <summary>Why it belongs to no member: empty, tooLong, dropped or failed; null when it has a member.</summary>
+    public string? LeftOut { get; set; }
+
+    /// <summary>What cleaning had to say about it.</summary>
+    public string? Note { get; set; }
+
+    public long Count { get; set; }
+
+    /// <summary>Whether a query can carry it, so its member's filter finds its records.</summary>
+    public bool Filterable { get; set; }
+
+    /// <summary>The build that first found it. One the dimension holds now was found by the dimension's last build.</summary>
+    public long FirstSeenRunId { get; set; }
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    /// <summary>The build that no longer found it, or null while it is there.</summary>
+    public long? RemovedRunId { get; set; }
+
+    public DateTime? RemovedUtc { get; set; }
+
+    /// <summary>The build since which it belongs to its member (or to none).</summary>
+    public long MemberSinceRunId { get; set; }
+}
+
+/// <summary>
+/// A change a build made to one original: it arrived (after the dimension's first build), left, came back, or moved from one
+/// member to another. The first build's originals are its arrivals, told by their first build.
+/// </summary>
+public sealed class DeliveryDimensionChange
+{
+    public short PartitionId { get; set; }
+
+    public long ChangeId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    public long DimensionRunId { get; set; }
+
+    public long ValueId { get; set; }
+
+    /// <summary>added, removed, moved or restored.</summary>
+    public string Change { get; set; } = string.Empty;
+
+    public long? FromMemberId { get; set; }
+
+    public long? ToMemberId { get; set; }
+
+    public DateTime ChangedUtc { get; set; }
+}
+
+/// <summary>
 /// The single row that says which version of the osdu schema a database holds: the module version and the last migration
 /// applied, when and by whom, and the oldest SQLFlow catalog migration this schema works with. Written by the module
 /// database's migrate step in the same connection as the migrations, and read by every host at startup.
@@ -1382,6 +1671,12 @@ public static class DeliveryModel
     /// Server's default collation folds case, which would make them one key.
     /// </summary>
     public const string OsduIdCollation = "Latin1_General_100_BIN2";
+
+    /// <summary>
+    /// The collation a search of text the ledger keeps exactly asks it in: case folded, so a person finds a clean value or an
+    /// original by the spelling they know, whatever its case.
+    /// </summary>
+    public const string SearchCollation = "Latin1_General_100_CI_AS";
 
     /// <summary>
     /// The longest ingestion file name a record's origin holds. It keeps the (flow, file, row) index key under SQL Server's
@@ -1726,6 +2021,91 @@ public static class DeliveryModel
             e.HasIndex(r => new { r.PartitionId, r.FlowId, r.TestName, r.AssertionRunId });
         });
 
+        modelBuilder.Entity<DeliveryDimension>(e =>
+        {
+            e.ToTable("Dimension", SchemaName);
+            e.HasKey(d => new { d.PartitionId, d.DimensionId });
+            e.Property(d => d.DimensionId).ValueGeneratedOnAdd();
+            e.Property(d => d.FlowName).HasMaxLength(DeliveryLedger.MaxFlowNameLength).IsRequired();
+            e.Property(d => d.Name).HasMaxLength(DeliveryDimension.MaxNameLength).IsRequired();
+            e.Property(d => d.Description).HasMaxLength(4000);
+            e.Property(d => d.Kind).HasMaxLength(400).IsRequired();
+            e.Property(d => d.Query).HasMaxLength(4000);
+            e.Property(d => d.Path).HasMaxLength(DeliveryDimension.MaxPathLength).IsRequired();
+            e.Property(d => d.FieldIndex).HasMaxLength(16);
+            e.Property(d => d.NestedPath).HasMaxLength(DeliveryDimension.MaxPathLength);
+            e.Property(d => d.AggregateBy).HasMaxLength(DeliveryDimension.MaxAggregateByLength);
+            e.Property(d => d.CleanJson).IsRequired();
+            e.Property(d => d.DefinitionHash).HasMaxLength(16).IsRequired();
+            // A dimension named by its id: every member, original, build and change of it names it so.
+            e.HasIndex(d => d.DimensionId).IsUnique();
+            // A flow's dimension in a partition, by its name: what a build registers and a page finds.
+            e.HasIndex(d => new { d.PartitionId, d.FlowId, d.Name }).IsUnique();
+        });
+
+        modelBuilder.Entity<DeliveryDimensionRun>(e =>
+        {
+            e.ToTable("DimensionRun", SchemaName);
+            e.HasKey(r => new { r.PartitionId, r.DimensionRunId });
+            e.Property(r => r.DimensionRunId).ValueGeneratedOnAdd();
+            e.Property(r => r.Actor).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            e.Property(r => r.DefinitionHash).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Query).HasMaxLength(4000);
+            e.Property(r => r.AggregateBy).HasMaxLength(DeliveryDimension.MaxAggregateByLength);
+            e.Property(r => r.Error).HasMaxLength(4000);
+            e.HasIndex(r => r.DimensionRunId).IsUnique();
+            // A dimension's builds, newest first; and the platform run's builds.
+            e.HasIndex(r => new { r.PartitionId, r.DimensionId, r.StartedUtc });
+            e.HasIndex(r => r.RunId);
+        });
+
+        modelBuilder.Entity<DeliveryDimensionMember>(e =>
+        {
+            e.ToTable("DimensionMember", SchemaName);
+            e.HasKey(m => new { m.PartitionId, m.MemberId });
+            e.Property(m => m.MemberId).ValueGeneratedOnAdd();
+            // A clean value is compared exactly, as a filter an application stored compares it.
+            ExactText(e.Property(m => m.Value)).HasMaxLength(256).IsRequired();
+            e.HasIndex(m => m.MemberId).IsUnique();
+            // A member is a clean value of one dimension, once: what a build matches its members by.
+            e.HasIndex(m => new { m.PartitionId, m.DimensionId, m.Value }).IsUnique();
+            // The members a dimension holds now, and those it held, each read as one range.
+            e.HasIndex(m => new { m.PartitionId, m.DimensionId, m.RemovedRunId });
+            // The members most records hold first, a page at a time.
+            e.HasIndex(m => new { m.PartitionId, m.DimensionId, m.Records, m.Value }).IsDescending(false, false, true, false);
+        });
+
+        modelBuilder.Entity<DeliveryDimensionValue>(e =>
+        {
+            e.ToTable("DimensionValue", SchemaName);
+            e.HasKey(v => new { v.PartitionId, v.ValueId });
+            e.Property(v => v.ValueId).ValueGeneratedOnAdd();
+            ExactText(e.Property(v => v.Original)).HasMaxLength(DeliveryDimensionValue.MaxOriginalLength).IsRequired();
+            e.Property(v => v.OriginalHash).HasMaxLength(32).IsFixedLength().IsRequired();
+            e.Property(v => v.LeftOut).HasMaxLength(16);
+            e.Property(v => v.Note).HasMaxLength(400);
+            e.HasIndex(v => v.ValueId).IsUnique();
+            // An original is one value of one dimension, once, compared by its hash so no length or collation blurs two.
+            e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.OriginalHash }).IsUnique();
+            // A member's originals.
+            e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.MemberId });
+            // The originals most records hold first, a page at a time.
+            e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.Count, v.ValueId }).IsDescending(false, false, true, false);
+        });
+
+        modelBuilder.Entity<DeliveryDimensionChange>(e =>
+        {
+            e.ToTable("DimensionChange", SchemaName);
+            e.HasKey(c => new { c.PartitionId, c.ChangeId });
+            e.Property(c => c.ChangeId).ValueGeneratedOnAdd();
+            e.Property(c => c.Change).HasMaxLength(16).IsRequired();
+            e.HasIndex(c => c.ChangeId).IsUnique();
+            // An original's history, and a build's changes.
+            e.HasIndex(c => new { c.PartitionId, c.DimensionId, c.ValueId, c.ChangeId });
+            e.HasIndex(c => new { c.PartitionId, c.DimensionRunId });
+        });
+
         modelBuilder.Entity<DeliveryMapping>(e =>
         {
             e.ToTable("Mapping", SchemaName);
@@ -1964,6 +2344,12 @@ public static class DeliveryModel
             value => value));
         return property.UseCollation(OsduIdCollation);
     }
+
+    /// <summary>
+    /// A column of text a dimension compares exactly: by the database (<see cref="OsduIdCollation"/>), where the default
+    /// collation would take GR and gr for one member, and by the change tracker.
+    /// </summary>
+    private static PropertyBuilder<string> ExactText(PropertyBuilder<string> property) => OsduId(property);
 
     /// <summary>A nullable column keyed on an OSDU record id, compared exactly as <see cref="OsduId"/> compares a required one.</summary>
     private static PropertyBuilder<string?> OptionalOsduId(PropertyBuilder<string?> property)

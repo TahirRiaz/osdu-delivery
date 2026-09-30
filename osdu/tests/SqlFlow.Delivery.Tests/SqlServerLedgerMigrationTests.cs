@@ -30,13 +30,19 @@ public sealed class SqlServerLedgerMigrationTests
 
     private const string BeforeIdle = "20260929012241_AssertionRuns";
 
+    private const string BeforeDimensions = "20260929220041_ActivityIdle";
+
+    /// <summary>The tables of dimension flows, each a ledger table keyed by the partition first.</summary>
+    private static readonly string[] DimensionTables = ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange"];
+
     private static readonly Guid Mixed = FlowId.Of("wells-mixed-delivery");
 
     private static readonly Guid Retrieved = FlowId.Of("wells-retrieval");
 
     /// <summary>The ledger tables the partition leads the key of.</summary>
     private static readonly string[] LedgerTables =
-        ["Record", "RecordIdentity", "Attempt", "Submission", "WorkBatch", "Lease", "RecordEvent", "SourceWatermark", "Activity", "Retrieval", "AssertionRun", "AssertionResult"];
+        ["Record", "RecordIdentity", "Attempt", "Submission", "WorkBatch", "Lease", "RecordEvent", "SourceWatermark", "Activity", "Retrieval", "AssertionRun", "AssertionResult",
+            .. DimensionTables];
 
     private static readonly DateTime Now = new(2026, 9, 16, 12, 0, 0, DateTimeKind.Utc);
 
@@ -548,6 +554,37 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(5L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Activity];"));
         await database.MigrateAsync(null);
         Assert.Equal(1L, await database.ScalarAsync(Idle));
+    }
+
+    [Fact]
+    public async Task The_tables_of_dimension_flows_are_added_keyed_by_partition_and_go_back_with_the_migration()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeDimensions);
+        const string Tables = "SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name LIKE N'Dimension%';";
+        Assert.Equal(0L, await database.ScalarAsync(Tables));
+
+        await database.MigrateAsync(null);
+
+        Assert.Equal(5L, await database.ScalarAsync(Tables));
+        foreach (var table in DimensionTables)
+        {
+            Assert.Equal("PartitionId", (await database.PrimaryKeyAsync(table))[0]);
+        }
+
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, DimensionTables), await database.IndexesAsync(DimensionTables));
+        }
+
+        // A clean value and an original compare exactly: GR and gr are two members, as a filter asks for them.
+        const string Binary = "SELECT COUNT_BIG(*) FROM sys.columns WHERE [collation_name] = N'Latin1_General_100_BIN2' AND ([object_id] = OBJECT_ID(N'[osdu].[DimensionMember]') AND [name] = N'Value' OR [object_id] = OBJECT_ID(N'[osdu].[DimensionValue]') AND [name] = N'Original');";
+        Assert.Equal(2L, await database.ScalarAsync(Binary));
+
+        await database.MigrateAsync(BeforeDimensions);
+        Assert.Equal(0L, await database.ScalarAsync(Tables));
+        await database.MigrateAsync(null);
+        Assert.Equal(5L, await database.ScalarAsync(Tables));
     }
 
     /// <summary>

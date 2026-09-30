@@ -137,14 +137,20 @@ internal static class CacheMapper
         {
             var where = $"types[{i}]";
             var type = declared[i];
-            var origins = new[] { type.Kind, type.Dictionary, type.Table }.Count(v => !string.IsNullOrWhiteSpace(v));
+            var origins = new[] { type.Kind, type.Dictionary, type.Table, type.Dimension }.Count(v => !string.IsNullOrWhiteSpace(v));
             if (origins > 1)
             {
                 throw new FlowValidationException(
-                    $"{source}: {where} names more than one origin; a type has one: a kind searched on OSDU, a dictionary kept in the repository, or a table an ingestion flow loads.");
+                    $"{source}: {where} names more than one origin; a type has one: a kind searched on OSDU, a dictionary kept in the repository, a table an ingestion flow loads, or a dimension a dimension flow builds.");
             }
 
             var builtFor = MapTypePartitions(type.Partitions, partitions, followsRegistry, where, source);
+            if (!string.IsNullOrWhiteSpace(type.Dimension) || !string.IsNullOrWhiteSpace(type.DimensionFlow))
+            {
+                types.Add(Validated(DimensionType(type, defaultMode, where, source) with { Partitions = builtFor }, where, source));
+                continue;
+            }
+
             if (!string.IsNullOrWhiteSpace(type.Dictionary))
             {
                 types.Add(Validated(DictionaryType(type, defaultMode, where, source) with { Partitions = builtFor }, where, source));
@@ -329,6 +335,50 @@ internal static class CacheMapper
             EntityType = ReferenceType.LookupEntityType(name),
             Origin = CacheOrigin.Dictionary,
             Dictionary = dictionary,
+            OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
+        };
+    }
+
+    /// <summary>
+    /// A type holding a dimension's members (docs/dimension-plan.md, Stage 6): the dimension and the dimension flow declaring
+    /// it, read from the partition's ledger as the dimension's last build left it. Named after the dimension unless it says
+    /// otherwise, kept as a lookup table keyed by each member's clean value, with its originals and records beside it; it takes
+    /// none of the other origins' settings, since its columns are the members'.
+    /// </summary>
+    private static ReferenceTypeSpec DimensionType(CachedTypeYaml type, CacheChangeMode defaultMode, string where, string source)
+    {
+        if (string.IsNullOrWhiteSpace(type.Dimension) || string.IsNullOrWhiteSpace(type.DimensionFlow))
+        {
+            throw new FlowValidationException(
+                $"{source}: {where} holds a dimension's members and names both: dimension (the dimension's name) and dimensionFlow (the dimension flow that declares it).");
+        }
+
+        var dimension = type.Dimension!.Trim();
+        var flow = type.DimensionFlow!.Trim();
+        if (!SelectableNames.IsName(dimension))
+        {
+            throw new FlowValidationException($"{source}: {where}.dimension '{dimension}' is not a dimension's name: {SelectableNames.Rule}.");
+        }
+
+        foreach (var (setting, value) in new (string, object?)[] { ("entityType", type.EntityType), ("query", type.Query), ("fields", type.Fields), ("key", type.Key) })
+        {
+            if (value is not null)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where} holds dimension {dimension}, which takes no '{setting}': its rows are the dimension's members, keyed by '{DimensionColumns.Value}' with '{string.Join("' and '", DimensionColumns.Fields)}' beside it.");
+            }
+        }
+
+        var name = string.IsNullOrWhiteSpace(type.Name) ? dimension : type.Name!.Trim();
+        return new ReferenceTypeSpec
+        {
+            Name = name,
+            EntityType = ReferenceType.LookupEntityType(name),
+            Origin = CacheOrigin.Dimension,
+            Dimension = dimension,
+            DimensionFlow = flow,
+            Key = DimensionColumns.Value,
+            Fields = DimensionColumns.FieldSpecs(),
             OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
         };
     }

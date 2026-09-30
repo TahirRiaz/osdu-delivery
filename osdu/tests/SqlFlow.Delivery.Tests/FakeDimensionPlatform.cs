@@ -1,0 +1,466 @@
+using System.Globalization;
+using System.Net;
+using System.Text;
+using System.Text.Json.Nodes;
+using SqlFlow.Delivery.Engine.Dimensions;
+using SqlFlow.Delivery.Search;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// A stand-in for the search service as a dimension build reads it, built from its source (<c>AggregationParserUtil</c>,
+/// <c>CoreQueryBase</c>, <c>TypeMapper</c>) and the pinned contract: an aggregation that returns at most
+/// <see cref="AggregationSize"/> groups, by count and then by key, over the records a query matches (every value of a
+/// matched record counted, each object of a nested array counted as one); a keyword sub-field that keeps no text longer than
+/// 256 characters and keeps a null as the text null; a plain number's groups without keys when <see cref="NumberKeysMissing"/>
+/// says so; cursor paging; and exact counts. Its query parser reads exactly the forms a dimension writes: clauses joined by
+/// AND, NOT, a group of ORs, the nested form, _exists_, a range, a value and a list of values. Every request is recorded as
+/// <see cref="FakeHttpHandler"/> records them, so the contract harness checks them.
+/// </summary>
+internal sealed class FakeDimensionPlatform : HttpMessageHandler
+{
+    public const string Endpoint = "http://localhost";
+
+    private const string Keyword = ".keyword";
+
+    private readonly Lock _gate = new();
+    private readonly Dictionary<string, (List<JsonObject> Hits, int Next)> _cursors = new(StringComparer.Ordinal);
+    private int _cursorCount;
+
+    public List<FakeHttpHandler.Request> Calls { get; } = [];
+
+    public List<JsonObject> Records { get; } = [];
+
+    /// <summary>The most groups an aggregation returns: the platform's AGGREGATION_SIZE.</summary>
+    public int AggregationSize { get; set; } = 1000;
+
+    /// <summary>When true, a plain number's groups come back without keys, as the service renders them from key_as_string.</summary>
+    public bool NumberKeysMissing { get; set; }
+
+    /// <summary>Answers a request with this status instead, when it says so.</summary>
+    public Func<string?, HttpStatusCode?>? Fail { get; set; }
+
+    public JsonObject Add(string id, string kind, JsonObject data, string[]? legalTags = null, JsonObject? tags = null)
+    {
+        var record = new JsonObject
+        {
+            ["id"] = id,
+            ["kind"] = kind,
+            ["version"] = 1_700_000_000_000_000,
+            ["acl"] = new JsonObject { ["viewers"] = new JsonArray("data.default.viewers@dev.dataservices.energy") },
+            ["legal"] = new JsonObject { ["legaltags"] = new JsonArray((legalTags ?? ["dev-legal"]).Select(t => (JsonNode?)JsonValue.Create(t)).ToArray()) },
+            ["data"] = data,
+        };
+        if (tags is not null)
+        {
+            record["tags"] = tags;
+        }
+
+        Records.Add(record);
+        return record;
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+        var headers = request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value), StringComparer.OrdinalIgnoreCase);
+        lock (_gate)
+        {
+            Calls.Add(new FakeHttpHandler.Request(request.Method, request.RequestUri!, body, request.Content?.Headers.ContentType?.MediaType, headers));
+            if (Fail?.Invoke(body) is { } status)
+            {
+                return FakeHttpHandler.Json(status, """{"code":503,"reason":"Service Unavailable","message":"the service failed"}""");
+            }
+
+            var path = request.RequestUri!.AbsolutePath;
+            var json = string.IsNullOrEmpty(body) ? null : JsonNode.Parse(body) as JsonObject;
+            if (request.Method == HttpMethod.Post && path.EndsWith("/api/search/v2/query", StringComparison.Ordinal))
+            {
+                return Ok(Query(json!));
+            }
+
+            if (request.Method == HttpMethod.Post && path.EndsWith("/api/search/v2/query_with_cursor", StringComparison.Ordinal))
+            {
+                return Ok(Cursor(json!));
+            }
+
+            if (request.Method == HttpMethod.Delete && path.Contains("/api/search/v2/query_with_cursor/", StringComparison.Ordinal))
+            {
+                _cursors.Remove(path[(path.LastIndexOf('/') + 1)..]);
+                return Ok(new JsonObject { ["results"] = new JsonArray(), ["totalCount"] = 0 });
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("no route for " + request.RequestUri) };
+        }
+    }
+
+    private static HttpResponseMessage Ok(JsonObject body) => FakeHttpHandler.Json(HttpStatusCode.OK, body.ToJsonString());
+
+    private List<JsonObject> Matching(JsonObject body)
+    {
+        var kind = body["kind"]!.GetValue<string>();
+        var query = body["query"]?.GetValue<string>();
+        return Records.Where(r => KindMatches(kind, r["kind"]!.GetValue<string>()) && Holds(r, query)).ToList();
+    }
+
+    private JsonObject Query(JsonObject body)
+    {
+        var matched = Matching(body);
+        var result = new JsonObject { ["results"] = new JsonArray(), ["totalCount"] = matched.Count };
+        if (body["aggregateBy"]?.GetValue<string>() is { } aggregateBy)
+        {
+            result["aggregations"] = Aggregate(matched, aggregateBy);
+        }
+
+        return result;
+    }
+
+    private JsonObject Cursor(JsonObject body)
+    {
+        var limit = body["limit"]?.GetValue<int>() ?? 10;
+        string handle;
+        if (body["cursor"]?.GetValue<string>() is { } named)
+        {
+            handle = named;
+        }
+        else
+        {
+            handle = "cursor" + (++_cursorCount).ToString(CultureInfo.InvariantCulture);
+            _cursors[handle] = (Matching(body), 0);
+        }
+
+        var (hits, next) = _cursors[handle];
+        var page = hits.Skip(next).Take(limit).ToList();
+        _cursors[handle] = (hits, next + page.Count);
+        var result = new JsonObject
+        {
+            ["results"] = new JsonArray(page.Select(r => (JsonNode?)r.DeepClone()).ToArray()),
+            ["cursor"] = page.Count == 0 ? null : handle,
+        };
+        if (body["cursor"] is null)
+        {
+            result["totalCount"] = hits.Count;
+        }
+
+        return result;
+    }
+
+    /// <summary>The groups of a field over the matched records, as the service answers <c>aggregateBy</c>.</summary>
+    private JsonArray Aggregate(List<JsonObject> matched, string aggregateBy)
+    {
+        var (nested, field) = aggregateBy.StartsWith("nested(", StringComparison.Ordinal)
+            ? (aggregateBy[7..aggregateBy.IndexOf(',', StringComparison.Ordinal)], aggregateBy[(aggregateBy.IndexOf(',', StringComparison.Ordinal) + 1)..^1].Trim())
+            : ((string?)null, aggregateBy);
+        var counts = new Dictionary<string, long>(StringComparer.Ordinal);
+        var numeric = false;
+        foreach (var record in matched)
+        {
+            var units = nested is null ? [record] : Values(record, nested).Where(v => v.Node is JsonObject).Select(v => (JsonNode)v.Node!).ToList();
+            foreach (var unit in units)
+            {
+                foreach (var key in Keys(unit, field).Distinct(StringComparer.Ordinal))
+                {
+                    counts[key] = counts.GetValueOrDefault(key) + 1;
+                }
+            }
+
+            numeric |= units.Any(u => Values(u, field).Any(v => v.Node is JsonValue n && n.GetValueKind() == System.Text.Json.JsonValueKind.Number));
+        }
+
+        var order = numeric ? DimensionValueText.Order(OsduFieldIndex.Number) : DimensionValueText.Order(OsduFieldIndex.Keyword);
+        return new JsonArray(counts
+            .OrderByDescending(kv => kv.Value)
+            .ThenBy(kv => kv.Key, order)
+            .Take(AggregationSize)
+            .Select(kv => (JsonNode?)new JsonObject { ["key"] = numeric && NumberKeysMissing ? null : JsonValue.Create(kv.Key), ["count"] = kv.Value })
+            .ToArray());
+    }
+
+    /// <summary>The terms a field holds: the keyword sub-field's (no text over 256 characters, a null as the text null), or the value's own.</summary>
+    private static IEnumerable<string> Keys(JsonNode root, string field)
+    {
+        var keyword = field.EndsWith(Keyword, StringComparison.Ordinal);
+        var path = keyword ? field[..^Keyword.Length] : field;
+        foreach (var (isNull, node) in Values(root, path))
+        {
+            if (isNull)
+            {
+                if (keyword)
+                {
+                    yield return OsduQuery.KeywordNullValue;
+                }
+
+                continue;
+            }
+
+            if (node is not JsonValue value)
+            {
+                continue;
+            }
+
+            var text = Text(value);
+            if (!keyword || text.Length <= OsduQuery.KeywordIgnoreAbove)
+            {
+                yield return text;
+            }
+        }
+    }
+
+    private static string Text(JsonValue value) => value.GetValueKind() switch
+    {
+        System.Text.Json.JsonValueKind.String => value.GetValue<string>(),
+        System.Text.Json.JsonValueKind.True => "true",
+        System.Text.Json.JsonValueKind.False => "false",
+        _ => DimensionValueText.CanonicalNumber(value.ToJsonString()) ?? value.ToJsonString(),
+    };
+
+    /// <summary>Every value a path reaches, arrays crossed wherever they are met, a null kept as one.</summary>
+    private static List<(bool IsNull, JsonNode? Node)> Values(JsonNode? node, string path)
+    {
+        var found = new List<(bool, JsonNode?)>();
+        Walk(node, path.Split('.'), 0, found);
+        return found;
+    }
+
+    private static void Walk(JsonNode? node, string[] path, int at, List<(bool, JsonNode?)> found)
+    {
+        if (node is JsonArray array)
+        {
+            foreach (var item in array)
+            {
+                if (item is null && at == path.Length)
+                {
+                    found.Add((true, null));
+                }
+                else
+                {
+                    Walk(item, path, at, found);
+                }
+            }
+
+            return;
+        }
+
+        if (at == path.Length)
+        {
+            found.Add((node is null, node));
+            return;
+        }
+
+        if (node is JsonObject obj && obj.TryGetPropertyValue(path[at], out var child))
+        {
+            if (child is null)
+            {
+                if (at == path.Length - 1)
+                {
+                    found.Add((true, null));
+                }
+
+                return;
+            }
+
+            Walk(child, path, at + 1, found);
+        }
+    }
+
+    private static bool KindMatches(string pattern, string kind)
+    {
+        var want = pattern.Split(':');
+        var have = kind.Split(':');
+        return want.Length == have.Length && want.Zip(have).All(p => p.First == "*" || string.Equals(p.First, p.Second, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Whether a record holds for a query of the forms a dimension writes.</summary>
+    private static bool Holds(JsonNode record, string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query) || query.Trim() == "*")
+        {
+            return true;
+        }
+
+        return Split(Strip(query), " AND ").All(clause => Clause(record, Strip(clause)));
+    }
+
+    private static bool Clause(JsonNode record, string clause)
+    {
+        if (clause.StartsWith("NOT ", StringComparison.Ordinal))
+        {
+            return !Clause(record, Strip(clause[4..]));
+        }
+
+        var alternatives = Split(clause, " OR ");
+        if (alternatives.Count > 1)
+        {
+            return alternatives.Any(a => Clause(record, Strip(a)));
+        }
+
+        if (clause.StartsWith("nested(", StringComparison.Ordinal))
+        {
+            var comma = clause.IndexOf(',', StringComparison.Ordinal);
+            var parent = clause[7..comma];
+            var inner = Strip(clause[(comma + 1)..^1].Trim());
+            return Values(record, parent).Where(v => v.Node is JsonObject).Any(v => Clause(v.Node!, inner));
+        }
+
+        if (clause.StartsWith("_exists_:", StringComparison.Ordinal))
+        {
+            var field = clause[9..];
+            return field.EndsWith(Keyword, StringComparison.Ordinal)
+                ? Keys(record, field).Any()
+                : Values(record, field).Any(v => !v.IsNull);
+        }
+
+        var colon = clause.IndexOf(':', StringComparison.Ordinal);
+        var name = clause[..colon];
+        var operand = clause[(colon + 1)..];
+        var keys = Keys(record, name.EndsWith(Keyword, StringComparison.Ordinal) ? name : name).ToList();
+        if (operand.StartsWith('['))
+        {
+            var close = operand[^1];
+            var body = operand[1..^1];
+            var to = body.IndexOf(" TO ", StringComparison.Ordinal);
+            var from = Bound(body[..to]);
+            var upto = Bound(body[(to + 4)..]);
+            var order = keys.Any(k => DimensionValueText.CanonicalNumber(k) is null) || (from is not null && DimensionValueText.CanonicalNumber(from) is null)
+                ? DimensionValueText.Order(OsduFieldIndex.Keyword)
+                : DimensionValueText.Order(OsduFieldIndex.Number);
+            return keys.Any(k => (from is null || order.Compare(k, from) >= 0) && (upto is null || (close == '}' ? order.Compare(k, upto) < 0 : order.Compare(k, upto) <= 0)));
+        }
+
+        if (operand.StartsWith('('))
+        {
+            var values = Split(operand[1..^1], " OR ").Select(Unquote).ToHashSet(StringComparer.Ordinal);
+            return keys.Any(values.Contains);
+        }
+
+        var wanted = Unquote(operand);
+        return keys.Any(k => k == wanted || DimensionValueText.CanonicalNumber(k) is { } n && n == DimensionValueText.CanonicalNumber(wanted));
+    }
+
+    private static string? Bound(string text) => text.Trim() == "*" ? null : Unquote(text.Trim());
+
+    private static string Unquote(string text)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.Length < 2 || trimmed[0] != '"' || trimmed[^1] != '"')
+        {
+            return trimmed;
+        }
+
+        var builder = new StringBuilder(trimmed.Length);
+        for (var i = 1; i < trimmed.Length - 1; i++)
+        {
+            if (trimmed[i] == '\\' && i + 1 < trimmed.Length - 1)
+            {
+                i++;
+            }
+
+            builder.Append(trimmed[i]);
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>A clause without the parentheses that wrap the whole of it.</summary>
+    private static string Strip(string clause)
+    {
+        var text = clause.Trim();
+        while (text.StartsWith('(') && Closing(text, 0) == text.Length - 1)
+        {
+            text = text[1..^1].Trim();
+        }
+
+        return text;
+    }
+
+    /// <summary>Splits on <paramref name="separator"/> where it stands outside every parenthesis, bracket and quote.</summary>
+    private static List<string> Split(string text, string separator)
+    {
+        var parts = new List<string>();
+        var depth = 0;
+        var quoted = false;
+        var start = 0;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (quoted)
+            {
+                if (c == '\\')
+                {
+                    i++;
+                }
+                else if (c == '"')
+                {
+                    quoted = false;
+                }
+
+                continue;
+            }
+
+            switch (c)
+            {
+                case '"':
+                    quoted = true;
+                    break;
+                case '(' or '[':
+                    depth++;
+                    break;
+                case ')' or ']' or '}':
+                    depth--;
+                    break;
+                default:
+                    if (depth == 0 && string.CompareOrdinal(text, i, separator, 0, separator.Length) == 0)
+                    {
+                        parts.Add(text[start..i]);
+                        start = i + separator.Length;
+                        i += separator.Length - 1;
+                    }
+
+                    break;
+            }
+        }
+
+        parts.Add(text[start..]);
+        return parts;
+    }
+
+    /// <summary>The index of the parenthesis closing the one at <paramref name="open"/>, quotes honoured.</summary>
+    private static int Closing(string text, int open)
+    {
+        var depth = 0;
+        var quoted = false;
+        for (var i = open; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (quoted)
+            {
+                if (c == '\\')
+                {
+                    i++;
+                }
+                else if (c == '"')
+                {
+                    quoted = false;
+                }
+
+                continue;
+            }
+
+            if (c == '"')
+            {
+                quoted = true;
+            }
+            else if (c == '(')
+            {
+                depth++;
+            }
+            else if (c == ')' && --depth == 0)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+}

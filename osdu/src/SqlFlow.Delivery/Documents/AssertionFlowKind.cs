@@ -73,10 +73,10 @@ public sealed class AssertionFlowKind : IFlowDocumentKind
         DeliveryOperations.RefuseBuiltInOverrides(parameters, AssertionFlowDefinition.FlowTypeName, "a test reads what OSDU holds now; name the tests to run in the payload.");
         var payload = DeliveryRunPayload.Parse(parameters);
         if (payload.Force || payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Slices.Count > 0
-            || payload.Interface is not null || payload.Interfaces.Count > 0)
+            || payload.Interface is not null || payload.Interfaces.Count > 0 || payload.SelectsDimensions)
         {
             throw new SqlFlowException(
-                "An assertion flow's payload names the tests a run runs (tests, tags) and nothing else; a test has no submission, record, slice or interface to name.");
+                "An assertion flow's payload names the tests a run runs (tests, tags) and nothing else; a test has no submission, record, slice, interface or dimension to name.");
         }
     }
 

@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { ArrowRight, BookOpen, DatabaseZap, GitCompare, History, Pin, Search, ShieldCheck, Table2 } from "lucide-react";
+import { ArrowRight, BookOpen, DatabaseZap, GitCompare, History, Pin, Search, Shapes, ShieldCheck, Table2 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -250,7 +251,7 @@ function said(row: DeliveryCachedItem, earlier: string[]): string[] {
 
 /**
  * Where one cache flow's declaration of a type takes its records from, in a line: the kind it searches on OSDU, or the
- * ingestion table or dictionary it holds, with the name a lookup row is keyed by.
+ * ingestion table, dictionary or dimension it holds, with the name a lookup row is keyed by.
  */
 function SourceLine({ source }: { source: DeliveryCacheTypeSource }) {
   switch (source.origin) {
@@ -270,6 +271,22 @@ function SourceLine({ source }: { source: DeliveryCacheTypeSource }) {
           <BookOpen className="size-3.5 shrink-0" />
           <span>Dictionary</span>
           <span className="font-mono text-foreground">{source.dictionaryPath}</span>
+          <span>keyed by</span>
+          <span className="font-mono text-foreground">{source.keyField}</span>
+        </>
+      );
+    case "dimension":
+      return (
+        <>
+          <Shapes className="size-3.5 shrink-0" />
+          <span>Dimension</span>
+          <Link
+            to="/delivery/dimensions"
+            className="font-mono text-foreground hover:underline"
+            title="The dimension's members, as its last build in this partition left them"
+          >
+            {source.sourceObject}
+          </Link>
           <span>keyed by</span>
           <span className="font-mono text-foreground">{source.keyField}</span>
         </>

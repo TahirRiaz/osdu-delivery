@@ -179,9 +179,9 @@ public static class DeliveryAssertionEndpoints
             return problem!;
         }
 
-        if (!AssertionNames.IsName(test))
+        if (!SelectableNames.IsName(test))
         {
-            return TypedResults.Problem(detail: $"'{test}' is not a test name: {AssertionNames.Rule}.", statusCode: StatusCodes.Status400BadRequest, title: "Invalid test name");
+            return TypedResults.Problem(detail: $"'{test}' is not a test name: {SelectableNames.Rule}.", statusCode: StatusCodes.Status400BadRequest, title: "Invalid test name");
         }
 
         var results = await ledger.AssertionHistoryAsync(bound.LedgerId, test, Math.Clamp(runs ?? 30, 1, 200), withDetail: true, ct).ConfigureAwait(false);

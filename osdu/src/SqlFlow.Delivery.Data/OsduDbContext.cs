@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.16.0";
+    public const string ModuleVersion = "1.17.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -60,6 +60,21 @@ public sealed class OsduDbContext : DbContext
 
     /// <summary>The result of every test in every run of an assertion flow.</summary>
     public DbSet<DeliveryAssertionResult> DeliveryAssertionResults => Set<DeliveryAssertionResult>();
+
+    /// <summary>The dimensions of dimension flows, one row per dimension and partition.</summary>
+    public DbSet<DeliveryDimension> DeliveryDimensions => Set<DeliveryDimension>();
+
+    /// <summary>Every build of every dimension.</summary>
+    public DbSet<DeliveryDimensionRun> DeliveryDimensionRuns => Set<DeliveryDimensionRun>();
+
+    /// <summary>The members of the dimensions: their clean values.</summary>
+    public DbSet<DeliveryDimensionMember> DeliveryDimensionMembers => Set<DeliveryDimensionMember>();
+
+    /// <summary>The originals of the dimensions: their values exactly as the index holds them.</summary>
+    public DbSet<DeliveryDimensionValue> DeliveryDimensionValues => Set<DeliveryDimensionValue>();
+
+    /// <summary>What each build changed of the dimensions' originals.</summary>
+    public DbSet<DeliveryDimensionChange> DeliveryDimensionChanges => Set<DeliveryDimensionChange>();
 
     public DbSet<DeliveryMapping> DeliveryMappings => Set<DeliveryMapping>();
 

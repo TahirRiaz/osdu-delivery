@@ -150,7 +150,8 @@ public sealed partial class ConfiguredRunDispatcher : IRunDispatcher
         && (flowKind.Equals(FlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase)
             || flowKind.Equals(CacheDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase)
             || flowKind.Equals(RetrievalDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase)
-            || flowKind.Equals(AssertionFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase));
+            || flowKind.Equals(AssertionFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase)
+            || flowKind.Equals(DimensionFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// The configuration for a repository, or nothing when the module has no database or the read fails. A run is never

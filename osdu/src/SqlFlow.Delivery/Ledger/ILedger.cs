@@ -1350,6 +1350,8 @@ public static class LedgerKinds
     public const string Retrieval = "retrieval";
 
     public const string Assertion = "assertion";
+
+    public const string Dimension = "dimension";
 }
 
 /// <summary>
@@ -1831,6 +1833,73 @@ public interface ILedger
     /// test's latest result stays however old, so a board always shows where each test stands. Returns the runs removed.
     /// </summary>
     Task<int> PruneAssertionRunsAsync(DateTime olderThanUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Registers a dimension a build is about to read (its declaration as the build reads it, in the ledger the build
+    /// registered) and opens the build's row, returning both with their ids and the partition they are kept in.
+    /// </summary>
+    Task<(DimensionState Dimension, DimensionRunState Run)> StartDimensionRunAsync(
+        DimensionDeclaration declaration, Guid? runId, string actor, DateTime startedUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Writes a completed build's originals and members into its dimension and closes the build, in one transaction: what is
+    /// new is added, what changed is changed, what the build no longer found is marked removed, and every change to an
+    /// original is logged. Returns the closed build with what it changed. A failure writes nothing and leaves the build open
+    /// for <see cref="CloseDimensionRunAsync"/>.
+    /// </summary>
+    Task<DimensionRunState> WriteDimensionAsync(DimensionWrite write, CancellationToken ct = default);
+
+    /// <summary>Closes a build that wrote nothing, as failed or cancelled, with what it read before it stopped and why.</summary>
+    Task CloseDimensionRunAsync(long dimensionRunId, string status, DimensionReadCounts read, string? failure, DateTime completedUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// The dimensions of one flow's ledger (<paramref name="flowId"/>), of one partition (by its data-partition-id), or of
+    /// every partition when both are null; by flow and name.
+    /// </summary>
+    Task<IReadOnlyList<DimensionState>> ListDimensionsAsync(string? partition, Guid? flowId, CancellationToken ct = default);
+
+    /// <summary>The dimension <paramref name="dimensionId"/> names, naming its partition, or null.</summary>
+    Task<DimensionState?> GetDimensionAsync(int dimensionId, CancellationToken ct = default);
+
+    /// <summary>The dimension named <paramref name="name"/> in the ledger <paramref name="flowId"/> names, or null.</summary>
+    Task<DimensionState?> FindDimensionAsync(Guid flowId, string name, CancellationToken ct = default);
+
+    /// <summary>A dimension's builds, newest first.</summary>
+    Task<IReadOnlyList<DimensionRunState>> ListDimensionRunsAsync(int dimensionId, int max, CancellationToken ct = default);
+
+    /// <summary>The newest build of each dimension named, whatever it came to; a dimension never built has none.</summary>
+    Task<IReadOnlyList<DimensionRunState>> LatestDimensionRunsAsync(IReadOnlyCollection<int> dimensionIds, CancellationToken ct = default);
+
+    /// <summary>The builds named by id; an id the ledger does not hold is left out.</summary>
+    Task<IReadOnlyList<DimensionRunState>> GetDimensionRunsAsync(IReadOnlyCollection<long> dimensionRunIds, CancellationToken ct = default);
+
+    /// <summary>The builds a platform run made, one per dimension it built.</summary>
+    Task<IReadOnlyList<DimensionRunState>> DimensionRunsOfAsync(Guid runId, CancellationToken ct = default);
+
+    /// <summary>A page of a dimension's members, in order of their clean values or with the most records first.</summary>
+    Task<IReadOnlyList<DimensionMemberState>> ListDimensionMembersAsync(int dimensionId, DimensionMemberQuery query, CancellationToken ct = default);
+
+    /// <summary>The members of a dimension named by id or by clean value, removed ones included, in order of their clean values.</summary>
+    Task<IReadOnlyList<DimensionMemberState>> GetDimensionMembersAsync(
+        int dimensionId, IReadOnlyCollection<long> memberIds, IReadOnlyCollection<string> values, CancellationToken ct = default);
+
+    /// <summary>A page of a dimension's originals, in the order they arrived or with the most records first.</summary>
+    Task<IReadOnlyList<DimensionValueState>> ListDimensionValuesAsync(int dimensionId, DimensionValueQuery query, CancellationToken ct = default);
+
+    /// <summary>Every original the dimension holds now under the members <paramref name="memberIds"/> names, with each member's clean value.</summary>
+    Task<IReadOnlyList<DimensionValueState>> MemberOriginalsAsync(int dimensionId, IReadOnlyCollection<long> memberIds, CancellationToken ct = default);
+
+    /// <summary>
+    /// The originals most records hold of each member <paramref name="memberIds"/> names, at most <paramref name="perMember"/>
+    /// of each, with the member's clean value: what a page of members shows beside each.
+    /// </summary>
+    Task<IReadOnlyList<DimensionValueState>> TopMemberOriginalsAsync(int dimensionId, IReadOnlyCollection<long> memberIds, int perMember, CancellationToken ct = default);
+
+    /// <summary>
+    /// A page of a dimension's change log, newest first: of every build, or of one build, one original or one member, of one
+    /// kind of change or of every kind, as <paramref name="query"/> narrows it.
+    /// </summary>
+    Task<IReadOnlyList<DimensionChangeState>> ListDimensionChangesAsync(int dimensionId, DimensionChangeQuery query, CancellationToken ct = default);
 
     Task<ActivityRecord> StartActivityAsync(ActivityRecord activity, CancellationToken ct = default);
 

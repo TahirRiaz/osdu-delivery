@@ -49,7 +49,8 @@ public sealed class DeliveryModuleTests
         Assert.Contains(RetrievalDefinition.FlowTypeName, kinds);
         Assert.Contains(CacheDefinition.FlowTypeName, kinds);
         Assert.Contains(AssertionFlowDefinition.FlowTypeName, kinds);
-        Assert.Equal(4, executors.Count);
+        Assert.Contains(DimensionFlowDefinition.FlowTypeName, kinds);
+        Assert.Equal(5, executors.Count);
         Assert.Equal(
             ["delivery-check-values", "delivery-delete", "delivery-preview", "delivery-probe", "delivery-read", "delivery-scope-values", "delivery-source"],
             operations.Order(StringComparer.Ordinal).ToList());

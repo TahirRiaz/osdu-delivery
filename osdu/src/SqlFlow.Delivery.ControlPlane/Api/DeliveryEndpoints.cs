@@ -453,6 +453,9 @@ public static class DeliveryEndpoints
 
         // The report of assertion flows: boards, runs, history and the report of a run in every format.
         DeliveryAssertionEndpoints.MapReads(delivery);
+
+        // The dimensions of dimension flows: boards, members and originals, builds, the change log, filters and exports.
+        DeliveryDimensionEndpoints.MapReads(delivery);
         delivery.MapGet("/caches", ListCachesAsync).WithName("ListDeliveryCaches");
         delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
         delivery.MapGet("/cache/versions", ListCacheVersionsAsync).WithName("ListDeliveryCacheVersions");

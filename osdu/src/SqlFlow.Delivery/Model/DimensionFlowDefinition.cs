@@ -1,0 +1,436 @@
+using System.Text.Json.Serialization;
+using SqlFlow.Delivery.Snapshots;
+
+namespace SqlFlow.Delivery.Model;
+
+/// <summary>
+/// A dimension flow (<c>flowType: dimension</c>, docs/dimension-plan.md): the distinct values attributes of OSDU records
+/// hold, each kept exactly as the search index holds it (an original) and grouped under a cleaned value (a member), so an
+/// application can offer the clean values as a filter and search OSDU for every record holding any original behind the ones
+/// picked. A build reads every distinct value through the search's aggregation, paged by value ranges, and keeps them in the
+/// flow's ledger; nothing is ever written to OSDU.
+/// </summary>
+public sealed record DimensionFlowDefinition
+{
+    public const string FlowTypeName = "dimension";
+
+    /// <summary>The most dimensions one flow declares.</summary>
+    public const int MaxDimensions = 100;
+
+    /// <summary>Path of the file the flow was loaded from, for error messages. Null for inline documents.</summary>
+    public string? SourcePath { get; init; }
+
+    /// <summary>The flow's name: its pipeline identity, and the name its ledger is kept under.</summary>
+    public required string Name { get; init; }
+
+    public string? Description { get; init; }
+
+    /// <summary>The platform batch the flow belongs to, from the envelope.</summary>
+    public string? Batch { get; init; }
+
+    /// <summary>Parameters the dimensions' queries may use as <c>{name}</c> tokens.</summary>
+    public IReadOnlyDictionary<string, FlowParameter> Parameters { get; init; } = new Dictionary<string, FlowParameter>(StringComparer.Ordinal);
+
+    /// <summary>The OSDU platform the dimensions are read from.</summary>
+    public required DimensionSource Source { get; init; }
+
+    /// <summary>
+    /// The partitions the flow builds dimensions in (<c>partitions</c>, docs/partitions-design.md section 2), in document
+    /// order; empty for a flow that names none, which builds in the partition its <c>source.headers</c> name or in every
+    /// registered one.
+    /// </summary>
+    public IReadOnlyList<string> Partitions { get; init; } = [];
+
+    /// <summary>
+    /// The partition this definition is bound to (<see cref="ForPartition"/>): the one a run builds in. Null for a flow whose
+    /// partition is its header's, and for one that works in partitions before it is bound.
+    /// </summary>
+    public string? Partition { get; init; }
+
+    /// <summary>True when the flow names the partitions it builds in.</summary>
+    public bool DeclaresPartitions => Partitions.Count > 0;
+
+    /// <summary>True for a flow that names neither its partitions nor a <c>data-partition-id</c> header: it builds in every registered partition.</summary>
+    public bool FollowsRegistry { get; init; }
+
+    /// <summary>True when the flow builds in partitions, named or registered, rather than the one its header names.</summary>
+    public bool Partitioned => DeclaresPartitions || FollowsRegistry;
+
+    /// <summary>The dimensions, in the order the document declares them; names are unique within the flow.</summary>
+    public required IReadOnlyList<DimensionSpec> Dimensions { get; init; }
+
+    public FlowReliability Reliability { get; init; } = new();
+
+    /// <summary>True when a dimension cleans its values through a dictionary document, which the run reads at its commit.</summary>
+    public bool ReadsDictionaries => Dimensions.Any(d => d.Clean.Any(s => s.Kind == CleanStepKind.Map));
+
+    /// <summary>
+    /// The ledger identity the flow's dimensions are kept under: derived from the name and the bound partition for a flow that
+    /// works in partitions, so each partition keeps dimensions of its own, and from the name alone for a flow whose partition
+    /// is its header's.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The flow works in partitions and is bound to none.</exception>
+    [JsonIgnore]
+    public Guid LedgerId => Partitioned
+        ? Identity.FlowId.Of(Name, BoundPartition())
+        : Identity.FlowId.Of(Name);
+
+    /// <summary>The ledger's name as pages show it: <c>name@partition</c> for a flow that works in partitions, the name otherwise.</summary>
+    [JsonIgnore]
+    public string LedgerName => Partitioned ? $"{Name}@{BoundPartition()}" : Name;
+
+    /// <summary>
+    /// Whether settling the partition a run builds in (<paramref name="requested"/>, or none) needs the registry: always for a
+    /// flow that follows it, and for one that names several partitions when none is named.
+    /// </summary>
+    public bool NeedsRegistry(string? requested)
+        => FollowsRegistry || (DeclaresPartitions && string.IsNullOrWhiteSpace(requested) && Partitions.Count > 1);
+
+    /// <summary>The partitions the flow builds in: those it names, every registered one for a flow that follows the registry, none for a header flow.</summary>
+    public IReadOnlyList<string> Served(RegisteredPartitions registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        return DeclaresPartitions ? Partitions : FollowsRegistry ? registry.Names : [];
+    }
+
+    /// <summary>
+    /// This definition bound to <paramref name="partition"/>: its requests carry the partition as <c>data-partition-id</c>, its
+    /// <c>{partition}</c> token is the partition, and its dimensions are kept in the partition's ledger.
+    /// </summary>
+    /// <exception cref="DeliveryException">The flow's partition is its header's, or the flow does not build in this partition.</exception>
+    public DimensionFlowDefinition ForPartition(string partition)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(partition);
+        var wanted = partition.Trim();
+        if (!Partitioned)
+        {
+            throw new DeliveryException(
+                $"Dimension flow '{Name}' names no partitions; it builds in the partition its source.headers name, so it cannot be bound to '{wanted}'.");
+        }
+
+        var declared = DeclaresPartitions
+            ? Partitions.FirstOrDefault(p => string.Equals(p, wanted, StringComparison.OrdinalIgnoreCase))
+                ?? throw new DeliveryException($"Dimension flow '{Name}' does not build in partition '{wanted}'; it names {PartitionNames.Listed(Partitions)}.")
+            : CacheScope.IsPartitionId(wanted)
+                ? wanted
+                : throw new DeliveryException($"Dimension flow '{Name}' cannot build in '{wanted}': a partition is a data-partition-id (letters, digits, underscore, hyphen and dot).");
+        var headers = new Dictionary<string, string>(Source.Headers, StringComparer.OrdinalIgnoreCase)
+        {
+            [CacheScope.PartitionHeader] = declared,
+        };
+        return this with { Partition = declared, Source = Source with { Headers = headers } };
+    }
+
+    /// <summary>
+    /// The flow as a run builds it (docs/partitions-design.md section 3): the partition the run names, which the flow has to
+    /// serve; when it names none, the registry's default when the flow serves it, else the flow's only partition. A flow
+    /// whose partition is its header's is built as it is. A run builds in one partition: <see cref="PartitionNames.Every"/>
+    /// is refused, since a run's result and its builds describe one partition.
+    /// </summary>
+    /// <exception cref="DeliveryException">The partition cannot be settled, or is not one the flow builds in.</exception>
+    public DimensionFlowDefinition ForRun(string? requested, RegisteredPartitions registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+        var wanted = string.IsNullOrWhiteSpace(requested) ? null : requested.Trim();
+        if (!Partitioned)
+        {
+            return wanted is null
+                ? this
+                : throw new DeliveryException(
+                    $"Dimension flow '{Name}' names no partitions; it builds in the partition its source.headers name, so a run cannot target '{wanted}'. Leave the partition out, or take the header out so the flow builds in every registered partition.");
+        }
+
+        if (wanted == PartitionNames.Every)
+        {
+            throw new DeliveryException(
+                $"Dimension flow '{Name}' builds in one partition per run, since a run's builds describe one partition; name the partition to build in instead of '{PartitionNames.Every}'.");
+        }
+
+        if (wanted is not null)
+        {
+            return ForPartition(FollowsRegistry ? registry.Find(wanted) ?? throw new DeliveryException(registry.NotRegistered(wanted)) : wanted);
+        }
+
+        var served = Served(registry);
+        if (registry.Default is { } fallback && served.Contains(fallback, StringComparer.OrdinalIgnoreCase))
+        {
+            return ForPartition(fallback);
+        }
+
+        if (DeclaresPartitions && Partitions.Count == 1)
+        {
+            return ForPartition(Partitions[0]);
+        }
+
+        throw new DeliveryException(FollowsRegistry && registry.All.Count == 0
+            ? $"No partition is registered with the catalog, so dimension flow '{Name}' has none to build in. Register one on the Partitions page or with 'sqlflow partition add <name>'."
+            : $"Dimension flow '{Name}' builds in {PartitionNames.Listed(served)}, and {(registry.Default is null ? "no partition is the default" : $"the default partition '{registry.Default}' is not one of them")}; name the partition this run builds in.");
+    }
+
+    /// <summary>The dimension named <paramref name="name"/> (case-insensitively), or null.</summary>
+    public DimensionSpec? Dimension(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        return Dimensions.FirstOrDefault(d => string.Equals(d.Name, name.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>The dimensions a run builds: those <paramref name="names"/> names, in document order; every dimension when it names none.</summary>
+    /// <exception cref="DeliveryException">A name is not a dimension of the flow.</exception>
+    public IReadOnlyList<DimensionSpec> Select(IReadOnlyCollection<string> names)
+    {
+        ArgumentNullException.ThrowIfNull(names);
+        if (names.Count == 0)
+        {
+            return Dimensions;
+        }
+
+        var unknown = names.Where(n => Dimension(n) is null).ToList();
+        if (unknown.Count > 0)
+        {
+            var known = Dimensions.Select(d => d.Name).ToList();
+            throw new DeliveryException(
+                $"Dimension flow '{Name}' has no dimension named {string.Join(", ", unknown.Select(n => $"'{n}'"))}; its dimensions are "
+                + (known.Count <= 20 ? string.Join(", ", known) : string.Join(", ", known.Take(20)) + $" and {known.Count - 20} more") + ".");
+        }
+
+        return Dimensions.Where(d => names.Contains(d.Name, StringComparer.OrdinalIgnoreCase)).ToList();
+    }
+
+    /// <summary>The secret references the source declares, keyed by document path; references only, never values.</summary>
+    public IEnumerable<KeyValuePair<string, string>> CredentialReferences()
+    {
+        if (Source.Auth.SecretRef is { } secret)
+        {
+            yield return new("source.auth.secretRef", secret);
+        }
+
+        if (Source.Auth.SecondarySecretRef is { } secondary)
+        {
+            yield return new("source.auth.secondarySecretRef", secondary);
+        }
+
+        if (IsReference(Source.Endpoint))
+        {
+            yield return new("source.endpoint", Source.Endpoint);
+        }
+
+        foreach (var (name, value) in Source.Headers.Where(kv => IsReference(kv.Value)).OrderBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            yield return new($"source.headers.{name}", value);
+        }
+
+        if (Source.Auth.Token is { } token)
+        {
+            foreach (var (name, value) in token.Body.Where(kv => IsReference(kv.Value)).OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                yield return new($"source.auth.token.body.{name}", value);
+            }
+        }
+    }
+
+    private string BoundPartition() => Partition
+        ?? throw new InvalidOperationException(
+            DeclaresPartitions
+                ? $"Dimension flow '{Name}' builds in each of {PartitionNames.Listed(Partitions)}; bind it to the partition a run builds in before asking for its ledger."
+                : $"Dimension flow '{Name}' builds in every registered partition; bind it to the partition a run builds in before asking for its ledger.");
+
+    private static bool IsReference(string value) => value.Contains("${", StringComparison.Ordinal);
+}
+
+/// <summary>Where a flow's dimensions are read: the platform's endpoint and credentials, its search paths, and how many groups its aggregation returns.</summary>
+public sealed record DimensionSource
+{
+    public const string DefaultQueryPath = "/api/search/v2/query";
+    public const string DefaultSearchPath = "/api/search/v2/query_with_cursor";
+
+    /// <summary>
+    /// The search service's own default for how many groups an aggregation returns (<c>aggregationSize</c> in
+    /// <c>SearchConfigurationProperties</c>), which a platform's operators can change with <c>AGGREGATION_SIZE</c>.
+    /// </summary>
+    public const int DefaultAggregationSize = 1000;
+
+    /// <summary>The platform base URL; ${env:NAME} and ${keyvault:NAME} references allowed.</summary>
+    public required string Endpoint { get; init; }
+
+    public TargetAuth Auth { get; init; } = new() { Type = TargetAuthType.None };
+
+    public IReadOnlyDictionary<string, string> Headers { get; init; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The offset search an aggregation and a count ask (openapi search v2, POST /query).</summary>
+    public string QueryPath { get; init; } = DefaultQueryPath;
+
+    /// <summary>The cursor search a scan pages through (openapi search v2, POST /query_with_cursor).</summary>
+    public string SearchPath { get; init; } = DefaultSearchPath;
+
+    /// <summary>
+    /// How many groups the platform's aggregation returns. A slice answered with fewer is taken as complete, so this must not
+    /// be more than the platform's setting; less only asks more often.
+    /// </summary>
+    public int AggregationSize { get; init; } = DefaultAggregationSize;
+}
+
+/// <summary>
+/// One dimension: the attribute of a kind's records whose distinct values it holds, and how each value is cleaned into the
+/// member it belongs to.
+/// </summary>
+public sealed record DimensionSpec
+{
+    /// <summary>The most distinct values a dimension keeps unless it says otherwise.</summary>
+    public const long DefaultMaxValues = 1_000_000;
+
+    /// <summary>The most distinct values any dimension may keep: a build holds its values in memory while it groups them.</summary>
+    public const long MaxValuesCeiling = 5_000_000;
+
+    /// <summary>The longest clean value a member is kept under.</summary>
+    public const int MaxCleanLength = 256;
+
+    /// <summary>The longest original a dimension keeps; a longer one is counted and left out.</summary>
+    public const int MaxOriginalLength = 1024;
+
+    /// <summary>The most clean steps one dimension applies.</summary>
+    public const int MaxCleanSteps = 20;
+
+    public required string Name { get; init; }
+
+    public string? Description { get; init; }
+
+    /// <summary>The kind whose records are read, <c>authority:source:entityType:version</c>, wildcards allowed per segment.</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>A Lucene query narrowing the records read, with <c>{parameter}</c> and <c>{partition}</c> tokens; null reads every record of the kind.</summary>
+    public string? Query { get; init; }
+
+    /// <summary>The attribute, as a path from the record's root: <c>data.Curves.Mnemonic</c>, <c>legal.legaltags</c>, <c>tags.Source</c>.</summary>
+    public required string Path { get; init; }
+
+    /// <summary>The steps each original is cleaned by, in order; none keeps the original as the clean value.</summary>
+    public IReadOnlyList<CleanStep> Clean { get; init; } = [];
+
+    /// <summary>
+    /// Count each member's records exactly, with one count of the search per member whose originals could share a record: where
+    /// the attribute repeats in a record, the index's own counts are of values held, not of records.
+    /// </summary>
+    public bool CountRecords { get; init; }
+
+    /// <summary>The most distinct values the dimension keeps; a build that finds more fails before it writes anything.</summary>
+    public long MaxValues { get; init; } = DefaultMaxValues;
+
+    /// <summary>The partitions of the flow the dimension is built in, when not all of them; empty builds in every partition the flow does.</summary>
+    public IReadOnlyList<string> Partitions { get; init; } = [];
+
+    /// <summary>
+    /// A hash of what the document says of the dimension, so a build says whether the dimension changed since the build
+    /// before it. Two documents stating the same dimension the same way hash the same, whatever their layout.
+    /// </summary>
+    public string DefinitionHash { get; init; } = string.Empty;
+
+    /// <summary>Whether the dimension is built in <paramref name="partition"/>: every partition when it names none.</summary>
+    public bool BuildsIn(string? partition)
+        => Partitions.Count == 0 || partition is null || Partitions.Contains(partition, StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>What a clean step does.</summary>
+public enum CleanStepKind
+{
+    /// <summary>Removes white space at both ends.</summary>
+    Trim,
+
+    /// <summary>Makes every run of white space one space.</summary>
+    CollapseSpaces,
+
+    /// <summary>Upper case, by the invariant culture's rules, so it never depends on the machine.</summary>
+    Upper,
+
+    /// <summary>Lower case, by the invariant culture's rules.</summary>
+    Lower,
+
+    /// <summary>Unicode normalization form C: composed characters.</summary>
+    Nfc,
+
+    /// <summary>Unicode normalization form KC: compatibility characters folded to their plain forms, then composed.</summary>
+    Nfkc,
+
+    /// <summary>Letters and digits kept in order, every run of anything else one hyphen, lower-cased: the cache's separator fold.</summary>
+    FoldSeparators,
+
+    /// <summary>A regular expression replaced, run without backtracking.</summary>
+    Replace,
+
+    /// <summary>A dictionary document looked up: the value it gives replaces the one looked up.</summary>
+    Map,
+}
+
+/// <summary>What a <c>map</c> step does with a value the dictionary does not list.</summary>
+public enum MapOtherwise
+{
+    /// <summary>The value goes on as it is.</summary>
+    Keep,
+
+    /// <summary>The value is left out of every member, with the reason kept on its original.</summary>
+    LeaveOut,
+
+    /// <summary>The value becomes <see cref="CleanStep.OtherwiseText"/>.</summary>
+    Text,
+}
+
+/// <summary>One step a dimension cleans its originals by.</summary>
+public sealed record CleanStep
+{
+    public required CleanStepKind Kind { get; init; }
+
+    /// <summary>For <see cref="CleanStepKind.Replace"/>: the regular expression.</summary>
+    public string? Pattern { get; init; }
+
+    /// <summary>For <see cref="CleanStepKind.Replace"/>: what each match is replaced with, <c>$1</c> naming a group.</summary>
+    public string? With { get; init; }
+
+    /// <summary>For <see cref="CleanStepKind.Map"/>: the dictionary document looked up.</summary>
+    public string? Dictionary { get; init; }
+
+    /// <summary>
+    /// For <see cref="CleanStepKind.Map"/>: the dictionary's field that gives the clean value; null takes the one field an entry
+    /// holds beside its key.
+    /// </summary>
+    public string? Field { get; init; }
+
+    /// <summary>For <see cref="CleanStepKind.Map"/>: what a value the dictionary does not list comes to.</summary>
+    public MapOtherwise Otherwise { get; init; } = MapOtherwise.Keep;
+
+    /// <summary>For <see cref="MapOtherwise.Text"/>: the text an unlisted value becomes.</summary>
+    public string? OtherwiseText { get; init; }
+
+    /// <summary>The step as a person reads it, the way the document writes it.</summary>
+    public string Describe()
+    {
+        switch (Kind)
+        {
+            case CleanStepKind.Replace:
+                return $"replace /{Pattern}/ with '{With}'";
+            case CleanStepKind.Map:
+                var field = Field is null ? string.Empty : $" ({Field})";
+                var otherwise = Otherwise switch
+                {
+                    MapOtherwise.LeaveOut => "leave it out",
+                    MapOtherwise.Text => $"'{OtherwiseText}'",
+                    _ => "keep",
+                };
+                return $"map through dictionary {Dictionary}{field}, otherwise {otherwise}";
+            default:
+                return Name(Kind);
+        }
+    }
+
+    /// <summary>How a step without settings is written in a document.</summary>
+    public static string Name(CleanStepKind kind) => kind switch
+    {
+        CleanStepKind.Trim => "trim",
+        CleanStepKind.CollapseSpaces => "collapseSpaces",
+        CleanStepKind.Upper => "upper",
+        CleanStepKind.Lower => "lower",
+        CleanStepKind.Nfc => "nfc",
+        CleanStepKind.Nfkc => "nfkc",
+        CleanStepKind.FoldSeparators => "foldSeparators",
+        CleanStepKind.Replace => "replace",
+        _ => "map",
+    };
+}

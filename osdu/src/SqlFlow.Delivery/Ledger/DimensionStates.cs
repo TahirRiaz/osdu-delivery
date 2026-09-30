@@ -1,0 +1,360 @@
+namespace SqlFlow.Delivery.Ledger;
+
+/// <summary>What a dimension build comes to.</summary>
+public static class DimensionRunStatus
+{
+    public const string Running = "running";
+
+    /// <summary>Every value read, cleaned and written.</summary>
+    public const string Completed = "completed";
+
+    /// <summary>The build stopped before it wrote; the dimension holds what the build before it wrote.</summary>
+    public const string Failed = "failed";
+
+    public const string Cancelled = "cancelled";
+}
+
+/// <summary>Why an original belongs to no member, as its row keeps the reason.</summary>
+public static class DimensionLeftOut
+{
+    /// <summary>Cleaning left nothing.</summary>
+    public const string Empty = "empty";
+
+    /// <summary>The clean value is longer than a member's may be.</summary>
+    public const string TooLong = "tooLong";
+
+    /// <summary>A map step left it out.</summary>
+    public const string Dropped = "dropped";
+
+    /// <summary>A step could not run on it.</summary>
+    public const string Failed = "failed";
+}
+
+/// <summary>What a build changed of one original.</summary>
+public static class DimensionChangeKinds
+{
+    /// <summary>It arrived, in a build after the dimension's first.</summary>
+    public const string Added = "added";
+
+    /// <summary>The build no longer found it.</summary>
+    public const string Removed = "removed";
+
+    /// <summary>It is under another member than before, or under none where it had one, or under one where it had none.</summary>
+    public const string Moved = "moved";
+
+    /// <summary>A build found it again after one had not.</summary>
+    public const string Restored = "restored";
+}
+
+/// <summary>A dimension as a build registers it: the flow's ledger in a partition, and the declaration the build reads with.</summary>
+public sealed record DimensionDeclaration
+{
+    /// <summary>The ledger identity of the dimension flow in the partition, which the build registered.</summary>
+    public required Guid FlowId { get; init; }
+
+    public required string FlowName { get; init; }
+
+    public required string Name { get; init; }
+
+    public string? Description { get; init; }
+
+    public required string Kind { get; init; }
+
+    /// <summary>The query as the build runs it, its tokens substituted; null for every record of the kind.</summary>
+    public string? Query { get; init; }
+
+    public required string Path { get; init; }
+
+    /// <summary>The clean steps, as JSON.</summary>
+    public required string CleanJson { get; init; }
+
+    public required string DefinitionHash { get; init; }
+}
+
+/// <summary>How the index stores a dimension's field, as a build settled it from the templates or the record's own mapping.</summary>
+/// <param name="Index">text, keyword, number, boolean or date.</param>
+/// <param name="NestedPath">The nested array the field sits in, or null.</param>
+/// <param name="AggregateBy">The field as the search's aggregateBy names it.</param>
+/// <param name="Repeats">Whether one record can hold the field more than once.</param>
+public sealed record DimensionFieldState(string Index, string? NestedPath, string AggregateBy, bool Repeats);
+
+/// <summary>A dimension as the ledger holds it, with its current counts and its last build.</summary>
+public sealed record DimensionState
+{
+    public required int DimensionId { get; init; }
+
+    public required Guid FlowId { get; init; }
+
+    public required string FlowName { get; init; }
+
+    /// <summary>The data-partition-id the dimension is kept in.</summary>
+    public string? Partition { get; init; }
+
+    public required string Name { get; init; }
+
+    public string? Description { get; init; }
+
+    public required string Kind { get; init; }
+
+    public string? Query { get; init; }
+
+    public required string Path { get; init; }
+
+    /// <summary>How the index stores the field; null until a build has settled it.</summary>
+    public DimensionFieldState? Field { get; init; }
+
+    public required string CleanJson { get; init; }
+
+    public required string DefinitionHash { get; init; }
+
+    public long Members { get; init; }
+
+    public long Originals { get; init; }
+
+    /// <summary>The build that last wrote the dimension; null when none has.</summary>
+    public long? LastRunId { get; init; }
+
+    public DateTime? LastBuiltUtc { get; init; }
+
+    public DateTime CreatedUtc { get; init; }
+}
+
+/// <summary>How a build read its dimension's values, and how complete that is.</summary>
+public sealed record DimensionReadCounts
+{
+    public static DimensionReadCounts None { get; } = new();
+
+    public long? Records { get; init; }
+
+    public long? WithValue { get; init; }
+
+    public long Nulls { get; init; }
+
+    public long? TooLong { get; init; }
+
+    public long Unreadable { get; init; }
+
+    public int Aggregations { get; init; }
+
+    public int Slices { get; init; }
+
+    public int Splits { get; init; }
+
+    public int ScannedSlices { get; init; }
+
+    public int ScanPages { get; init; }
+
+    public long ScannedUnits { get; init; }
+
+    public int CountQueries { get; init; }
+
+    /// <summary>The kinds the pattern matched and the template each was read against, as JSON; null when none was needed.</summary>
+    public string? Templates { get; init; }
+
+    /// <summary>What the build had to say, a line each.</summary>
+    public IReadOnlyList<string> Notes { get; init; } = [];
+}
+
+/// <summary>One build of one dimension as the ledger holds it.</summary>
+public sealed record DimensionRunState
+{
+    public required long DimensionRunId { get; init; }
+
+    public required int DimensionId { get; init; }
+
+    public required Guid FlowId { get; init; }
+
+    public Guid? RunId { get; init; }
+
+    public required string Actor { get; init; }
+
+    public required string Status { get; init; }
+
+    public required string DefinitionHash { get; init; }
+
+    public string? Query { get; init; }
+
+    public string? AggregateBy { get; init; }
+
+    public DimensionReadCounts Read { get; init; } = DimensionReadCounts.None;
+
+    public long Members { get; init; }
+
+    public long Originals { get; init; }
+
+    public long LeftOut { get; init; }
+
+    public long Unfilterable { get; init; }
+
+    public DimensionChangeCounts Changes { get; init; } = DimensionChangeCounts.None;
+
+    public required DateTime StartedUtc { get; init; }
+
+    public DateTime? CompletedUtc { get; init; }
+
+    public string? Error { get; init; }
+}
+
+/// <summary>What one build changed of a dimension.</summary>
+public sealed record DimensionChangeCounts(
+    long MembersAdded, long MembersRemoved, long MembersRestored, long OriginalsAdded, long OriginalsRemoved, long OriginalsMoved, long OriginalsRestored)
+{
+    public static DimensionChangeCounts None { get; } = new(0, 0, 0, 0, 0, 0, 0);
+
+    /// <summary>True when the build changed nothing a filter or a page shows but counts.</summary>
+    public bool IsNone => this == None;
+}
+
+/// <summary>One original as a build found it: its member's clean value or why it has none, and its count.</summary>
+public sealed record DimensionOriginalWrite(string Original, string? CleanValue, string? LeftOut, string? Note, long Count, bool Filterable);
+
+/// <summary>One member as a build made it: its clean value, its count, and its filter.</summary>
+public sealed record DimensionMemberWrite(string Value, long Records, bool RecordsExact, int Originals, int Unfilterable, string? Filter, int FilterParts);
+
+/// <summary>Everything one completed build writes of its dimension, in one transaction.</summary>
+public sealed record DimensionWrite
+{
+    public required long DimensionRunId { get; init; }
+
+    public required int DimensionId { get; init; }
+
+    public required Guid FlowId { get; init; }
+
+    /// <summary>
+    /// How the index stores the field, as the build settled it; null when it could not (no record of the kind for its templates
+    /// to be read by), which leaves the field the dimension had.
+    /// </summary>
+    public required DimensionFieldState? Field { get; init; }
+
+    public required IReadOnlyList<DimensionOriginalWrite> Originals { get; init; }
+
+    public required IReadOnlyList<DimensionMemberWrite> Members { get; init; }
+
+    public required DimensionReadCounts Read { get; init; }
+
+    public required DateTime CompletedUtc { get; init; }
+}
+
+/// <summary>A member as a page or a filter reads it.</summary>
+public sealed record DimensionMemberState
+{
+    public required long MemberId { get; init; }
+
+    public required int DimensionId { get; init; }
+
+    public required string Value { get; init; }
+
+    public long Records { get; init; }
+
+    public bool RecordsExact { get; init; }
+
+    public int Originals { get; init; }
+
+    public int Unfilterable { get; init; }
+
+    public string? Filter { get; init; }
+
+    public int FilterParts { get; init; }
+
+    public long FirstSeenRunId { get; init; }
+
+    public DateTime FirstSeenUtc { get; init; }
+
+    public long? RemovedRunId { get; init; }
+
+    public DateTime? RemovedUtc { get; init; }
+}
+
+/// <summary>An original as a page or a filter reads it.</summary>
+public sealed record DimensionValueState
+{
+    public required long ValueId { get; init; }
+
+    public required int DimensionId { get; init; }
+
+    public required string Original { get; init; }
+
+    public long? MemberId { get; init; }
+
+    /// <summary>The clean value of its member, when it has one.</summary>
+    public string? MemberValue { get; init; }
+
+    public string? LeftOut { get; init; }
+
+    public string? Note { get; init; }
+
+    public long Count { get; init; }
+
+    public bool Filterable { get; init; }
+
+    public long FirstSeenRunId { get; init; }
+
+    public DateTime FirstSeenUtc { get; init; }
+
+    public long MemberSinceRunId { get; init; }
+
+    public long? RemovedRunId { get; init; }
+
+    public DateTime? RemovedUtc { get; init; }
+}
+
+/// <summary>A change a build made to one original, as the change log reads it.</summary>
+public sealed record DimensionChangeState(
+    long ChangeId, long DimensionRunId, long ValueId, string Original, string Change, long? FromMemberId, string? FromValue, long? ToMemberId, string? ToValue,
+    DateTime ChangedUtc);
+
+/// <summary>Which changes a page of a dimension's change log reads, newest first.</summary>
+/// <param name="DimensionRunId">Only the changes of this build.</param>
+/// <param name="ValueId">Only the changes of this original.</param>
+/// <param name="MemberId">Only the changes that took an original from this member or brought one to it.</param>
+/// <param name="Change">Only changes of this kind (<see cref="DimensionChangeKinds"/>).</param>
+/// <param name="Before">The change the page before ended at; null starts at the newest.</param>
+/// <param name="Limit">The most changes the page holds.</param>
+public sealed record DimensionChangeQuery(long? DimensionRunId, long? ValueId, long? MemberId, string? Change, long? Before, int Limit);
+
+/// <summary>The order a page of members reads in.</summary>
+public enum DimensionMemberOrder
+{
+    /// <summary>By clean value, in code point order: the order the index keeps the values in.</summary>
+    Value,
+
+    /// <summary>The members most records hold first, then by clean value.</summary>
+    Records,
+}
+
+/// <summary>Where a page of members ended: its last member's clean value and records, which the next page starts after.</summary>
+public sealed record DimensionMemberCursor(string Value, long Records);
+
+/// <summary>Which members a page reads.</summary>
+/// <param name="Search">Text the clean value or one of its originals contains, ignoring case; null reads every member.</param>
+/// <param name="IncludeRemoved">Read the members no build finds any more as well.</param>
+/// <param name="After">Where the page before ended, in the page's order; null starts at the first.</param>
+/// <param name="Limit">The most members the page holds.</param>
+/// <param name="Order">The order the page reads in.</param>
+public sealed record DimensionMemberQuery(
+    string? Search, bool IncludeRemoved, DimensionMemberCursor? After, int Limit, DimensionMemberOrder Order = DimensionMemberOrder.Value);
+
+/// <summary>The order a page of originals reads in.</summary>
+public enum DimensionValueOrder
+{
+    /// <summary>In the order the builds found them.</summary>
+    Arrival,
+
+    /// <summary>The originals most records hold first, then in the order the builds found them.</summary>
+    Count,
+}
+
+/// <summary>Where a page of originals ended: its last original's id and count, which the next page starts after.</summary>
+public sealed record DimensionValueCursor(long ValueId, long Count);
+
+/// <summary>Which originals a page reads.</summary>
+/// <param name="Search">Text the original contains, ignoring case; null reads every original.</param>
+/// <param name="MemberId">Only the originals of this member.</param>
+/// <param name="LeftOutOnly">Only the originals under no member.</param>
+/// <param name="IncludeRemoved">Read the originals no build finds any more as well.</param>
+/// <param name="After">Where the page before ended, in the page's order; null starts at the first.</param>
+/// <param name="Limit">The most originals the page holds.</param>
+/// <param name="Order">The order the page reads in.</param>
+public sealed record DimensionValueQuery(
+    string? Search, long? MemberId, bool LeftOutOnly, bool IncludeRemoved, DimensionValueCursor? After, int Limit,
+    DimensionValueOrder Order = DimensionValueOrder.Arrival);

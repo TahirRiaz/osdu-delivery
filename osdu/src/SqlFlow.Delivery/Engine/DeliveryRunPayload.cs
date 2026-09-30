@@ -12,7 +12,7 @@ using SqlFlow.Delivery.Source;
 
 namespace SqlFlow.Delivery.Engine;
 
-/// <summary>The operations a run of the delivery, cache, retrieval and assertion kinds performs, by the names runs carry.</summary>
+/// <summary>The operations a run of the delivery, cache, retrieval, assertion and dimension kinds performs, by the names runs carry.</summary>
 public static class DeliveryOperations
 {
     /// <summary>Plan the source and deliver what changed: the delivery kind's default.</summary>
@@ -48,6 +48,9 @@ public static class DeliveryOperations
 
     /// <summary>Run an assertion flow's tests against what OSDU holds and record their results: the assertion kind's default.</summary>
     public const string Test = "test";
+
+    /// <summary>Read every distinct value of a dimension flow's dimensions and keep them with their clean values: the dimension kind's default.</summary>
+    public const string Build = "build";
 
     /// <summary>The operation a run of a delivery flow performs: the one it names, or <see cref="Deliver"/>.</summary>
     public static string Of(RunParameters parameters)
@@ -241,12 +244,15 @@ public sealed record DeliveryRunPayload
     /// <summary>The tags of an assertion flow's tests a run runs: every test carrying one of them.</summary>
     public const string TagsProperty = "tags";
 
+    /// <summary>The dimensions of a dimension flow a run builds, by name.</summary>
+    public const string DimensionsProperty = "dimensions";
+
     /// <summary>The most test names, and the most tags, one run selects.</summary>
     public const int MaxSelected = AssertionFlowDefinition.MaxTests;
 
     private static readonly string[] Properties =
         [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty, PartitionReferencesProperty,
-            TestsProperty, TagsProperty];
+            TestsProperty, TagsProperty, DimensionsProperty];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -308,18 +314,24 @@ public sealed record DeliveryRunPayload
     /// <summary>True when the payload selects tests of an assertion flow, by name or by tag.</summary>
     public bool SelectsTests => Tests.Count > 0 || Tags.Count > 0;
 
+    /// <summary>The dimensions of a dimension flow the run builds, by name; with none, every dimension is built.</summary>
+    public IReadOnlyList<string> Dimensions { get; init; } = [];
+
+    /// <summary>True when the payload selects dimensions of a dimension flow.</summary>
+    public bool SelectsDimensions => Dimensions.Count > 0;
+
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
         => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests;
+            && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests && !SelectsDimensions;
 
     /// <summary>
     /// True when the payload carries nothing but the central configuration the control plane supplied: what the payload of
-    /// a kind that names no submission, record, slice or test may hold.
+    /// a kind that names no submission, record, slice, test or dimension may hold.
     /// </summary>
     public bool CarriesOnlyConfiguration
         => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && !SelectsTests;
+            && !SelectsTests && !SelectsDimensions;
 
     /// <summary>
     /// The configuration a run resolves its references with when it acts on <paramref name="partition"/>: the partition's
@@ -394,6 +406,7 @@ public sealed record DeliveryRunPayload
             PartitionReferences = PartitionReferenceMap(root[PartitionReferencesProperty]),
             Tests = Selection(root[TestsProperty], TestsProperty, "test names"),
             Tags = Selection(root[TagsProperty], TagsProperty, "tags"),
+            Dimensions = Selection(root[DimensionsProperty], DimensionsProperty, "dimension names"),
         };
     }
 
@@ -476,6 +489,11 @@ public sealed record DeliveryRunPayload
         {
             throw new SqlFlowException(
                 $"payload {(Tests.Count > 0 ? TestsProperty : TagsProperty)} does not apply to a delivery flow: only an assertion flow's runs select tests.");
+        }
+
+        if (SelectsDimensions)
+        {
+            throw new SqlFlowException($"payload {DimensionsProperty} does not apply to a delivery flow: only a dimension flow's runs select dimensions.");
         }
 
         switch (operation)
@@ -601,6 +619,11 @@ public sealed record DeliveryRunPayload
         if (Tags.Count > 0)
         {
             root[TagsProperty] = new JsonArray(Tags.Select(t => (JsonNode?)JsonValue.Create(t)).ToArray());
+        }
+
+        if (Dimensions.Count > 0)
+        {
+            root[DimensionsProperty] = new JsonArray(Dimensions.Select(d => (JsonNode?)JsonValue.Create(d)).ToArray());
         }
 
         return root.ToJsonString();
@@ -736,9 +759,9 @@ public sealed record DeliveryRunPayload
     }
 
     /// <summary>
-    /// A selection of an assertion flow's tests or tags: an array of names, each a name as a flow writes one
-    /// (<see cref="AssertionNames.IsName"/>), none twice. Whether each names a test or a tag of the flow is the run's to
-    /// check, since a payload is validated before the flow document is read.
+    /// A selection of an assertion flow's tests or tags, or of a dimension flow's dimensions: an array of names, each a name as
+    /// a flow writes one (<see cref="SelectableNames.IsName"/>), none twice. Whether each names something of the flow is the
+    /// run's to check, since a payload is validated before the flow document is read.
     /// </summary>
     private static IReadOnlyList<string> Selection(JsonNode? node, string property, string what)
     {
@@ -756,9 +779,9 @@ public sealed record DeliveryRunPayload
         foreach (var item in array)
         {
             var name = Text(item, property);
-            if (!AssertionNames.IsName(name))
+            if (!SelectableNames.IsName(name))
             {
-                throw new SqlFlowException($"payload {property} holds '{name}', which is not a name: {AssertionNames.Rule}.");
+                throw new SqlFlowException($"payload {property} holds '{name}', which is not a name: {SelectableNames.Rule}.");
             }
 
             if (names.Contains(name, StringComparer.OrdinalIgnoreCase))

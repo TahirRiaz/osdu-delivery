@@ -261,10 +261,13 @@ public sealed record AssertionFlowDefinition
     }
 }
 
-/// <summary>The rule every test name and tag keeps to, so a name travels in a URL, a payload and a report unchanged.</summary>
-public static partial class AssertionNames
+/// <summary>
+/// The rule every name a run selects by keeps to (an assertion flow's tests and tags, a dimension flow's dimensions), so a
+/// name travels in a URL, a payload and a report unchanged.
+/// </summary>
+public static partial class SelectableNames
 {
-    /// <summary>The longest test name or tag.</summary>
+    /// <summary>The longest name.</summary>
     public const int MaxLength = 100;
 
     /// <summary>The rule, as messages state it.</summary>

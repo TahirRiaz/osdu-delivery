@@ -7,9 +7,10 @@ namespace SqlFlow.Delivery.Documents;
 
 /// <summary>
 /// What a cache flow contributes to SQLFlow's lineage (docs/lineage-design.md section 3): it reads each declared OSDU type's
-/// kind (wildcards allowed) on its platform and partition, and each dictionary type's file in the repository, and writes
-/// each declared type into its partition's cache. A delivery flow reading a cache type is so ordered after the cache flow
-/// writing it, and a cache flow reading a kind a delivery flow writes after that delivery flow.
+/// kind (wildcards allowed) on its platform and partition, each dictionary type's file in the repository, and each dimension
+/// type's dimension in its partition, and writes each declared type into its partition's cache. A delivery flow reading a
+/// cache type is so ordered after the cache flow writing it, a cache flow reading a kind a delivery flow writes after that
+/// delivery flow, and one holding a dimension after the dimension flow building it.
 /// </summary>
 public static class CacheLineage
 {
@@ -67,6 +68,15 @@ public static class CacheLineage
                     datasets.Add(read);
                 }
 
+                // A dimension type reads what the dimension flow's build wrote, so the cache flow is ordered after it; two types
+                // holding one dimension read its node once.
+                if (type is { Origin: CacheOrigin.Dimension, Dimension: { } dimension, DimensionFlow: { } dimensionFlow }
+                    && OsduLineage.Dimension(LineageRelation.Reads, partition, dimensionFlow, dimension, who, warnings) is { } built
+                    && !datasets.Contains(built))
+                {
+                    datasets.Add(built);
+                }
+
                 if (OsduLineage.CacheType(LineageRelation.Writes, partition, type.Name, who, warnings) is { } write)
                 {
                     datasets.Add(write);
@@ -89,8 +99,11 @@ public static class CacheLineage
             : flow.Types.Where(t => t.Origin == CacheOrigin.Table).Select(t => DeclaredDataObject.Reads(connection, t.Table!)).Distinct().ToList();
     }
 
-    /// <summary>The dictionary's file relative to the flow's folder, as a file location is declared, or null when there is none.</summary>
-    private static string? DictionaryFile(string name, RegisteredLineageContext context)
+    /// <summary>
+    /// The dictionary's file relative to the flow's folder, as a file location is declared, or null when there is none. A
+    /// dimension flow's map steps find their dictionaries the same way.
+    /// </summary>
+    internal static string? DictionaryFile(string name, RegisteredLineageContext context)
     {
         if (DictionaryCatalog.Locate(context.DocumentFolder, context.Contains) is not { } directory)
         {

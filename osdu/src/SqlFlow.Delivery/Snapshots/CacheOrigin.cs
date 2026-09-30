@@ -14,6 +14,12 @@ public enum CacheOrigin
 
     /// <summary>The entries of a dictionary document kept in the repository, each entry keyed by its key.</summary>
     Dictionary,
+
+    /// <summary>
+    /// The members a dimension flow's dimension holds in the partition, each keyed by its clean value with the originals it
+    /// gathers and the records holding them (docs/dimension-plan.md, Stage 6).
+    /// </summary>
+    Dimension,
 }
 
 /// <summary>How an origin is written in a cache flow, the catalog and the API.</summary>
@@ -25,10 +31,13 @@ public static class CacheOrigins
 
     public const string DictionaryText = "dictionary";
 
+    public const string DimensionText = "dimension";
+
     public static string Text(CacheOrigin origin) => origin switch
     {
         CacheOrigin.Table => TableText,
         CacheOrigin.Dictionary => DictionaryText,
+        CacheOrigin.Dimension => DimensionText,
         _ => OsduText,
     };
 
@@ -37,8 +46,9 @@ public static class CacheOrigins
     {
         TableText => CacheOrigin.Table,
         DictionaryText => CacheOrigin.Dictionary,
+        DimensionText => CacheOrigin.Dimension,
         null or "" or OsduText => CacheOrigin.Osdu,
-        _ => throw new DeliveryException($"'{text}' is not a cache origin; a cached type comes from osdu, a table or a dictionary."),
+        _ => throw new DeliveryException($"'{text}' is not a cache origin; a cached type comes from osdu, a table, a dictionary or a dimension."),
     };
 }
 

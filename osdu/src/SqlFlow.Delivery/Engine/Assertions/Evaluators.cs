@@ -750,7 +750,8 @@ internal sealed class GroupEvaluator(int index, GroupAssertion assertion, int ex
     {
         var field = AggregationField(SearchField(assertion.Field), scope.Template);
         var (_, buckets) = await scope.Search.AggregateAsync(scope.Query with { ReturnedFields = ["id"] }, field, ct).ConfigureAwait(false);
-        var found = buckets.GroupBy(b => b.Key, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Sum(b => b.Count), StringComparer.Ordinal);
+        // A group the service named no key for (a plain number's) is shown as null, the way its JSON reads.
+        var found = buckets.GroupBy(b => b.Key ?? "null", StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.Sum(b => b.Count), StringComparer.Ordinal);
         var failures = new List<AssertionExample>();
         foreach (var group in assertion.Groups)
         {
@@ -793,9 +794,11 @@ internal sealed class GroupEvaluator(int index, GroupAssertion assertion, int ex
     internal static string SearchField(string path) => System.Text.RegularExpressions.Regex.Replace(path, @"\[(\*|\d+)\]", string.Empty);
 
     /// <summary>
-    /// The field the search aggregates: a property of data the schema has indexed as text is aggregated by its keyword
-    /// sub-field, since the search refuses to aggregate text ("Aggregations are not supported for one or more of the
-    /// specified fields"). Every other field, the record's own properties among them, is aggregated as it is named.
+    /// The field the search aggregates (<see cref="OsduField.AggregateBy"/>): a property of data the schema has indexed as
+    /// text is aggregated by its keyword sub-field, since the search refuses to aggregate text ("Aggregations are not
+    /// supported for one or more of the specified fields"), and a property of a nested array through the service's
+    /// <c>nested(path, field)</c> form. Every other field, the record's own properties among them, is aggregated as it is
+    /// named.
     /// </summary>
     internal static string AggregationField(string path, OsduTemplate? template)
     {
@@ -804,8 +807,10 @@ internal sealed class GroupEvaluator(int index, GroupAssertion assertion, int ex
             return path;
         }
 
+        // The form aggregateBy names the field by: the keyword sub-field of text, and the service's nested(path, field) form
+        // for a property of a nested array, which a plain dotted path into the array aggregates nothing of.
         var (field, _) = SearchFields.Classify(template.Schema, path);
-        return field is { Index: OsduFieldIndex.Text, NestedPath: null } ? path + "." + OsduQuery.KeywordSubField : path;
+        return field?.AggregateBy ?? path;
     }
 }
 

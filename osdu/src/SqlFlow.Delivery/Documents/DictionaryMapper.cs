@@ -231,6 +231,12 @@ internal static partial class DictionaryMapper
     private static FlowValidationException Error(string source, YamlNode node, string message)
         => new($"{source}: line {node.Start.Line}: {message}");
 
+    /// <summary>Whether <paramref name="name"/> can name a dictionary: a letter followed by letters, digits, '_' or '-', at most 200 characters.</summary>
+    internal static bool IsDictionaryName(string? name) => name is not null && NamePattern().IsMatch(name);
+
+    /// <summary>Whether <paramref name="name"/> can name a dictionary's key or field: an identifier of at most 128 characters.</summary>
+    internal static bool IsFieldName(string? name) => name is not null && FieldPattern().IsMatch(name);
+
     [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9_\-]{0,199}$")]
     private static partial Regex NamePattern();
 

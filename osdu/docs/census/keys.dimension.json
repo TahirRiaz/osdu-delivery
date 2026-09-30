@@ -1,0 +1,538 @@
+{
+  "version": 1,
+  "product": "OSDU Delivery",
+  "flowType": "dimension",
+  "strictKeys": true,
+  "includeEnvelope": true,
+  "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
+  "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
+  "keyCount": 78,
+  "keys": [
+    {
+      "path": "batch",
+      "type": "string",
+      "required": false,
+      "description": "Optional grouping label (the source system) the platform files the flow's pipeline and runs under. A blank value counts as none."
+    },
+    {
+      "path": "description",
+      "type": "string",
+      "required": false,
+      "description": "Optional text describing what the dimensions are for."
+    },
+    {
+      "path": "dimensions",
+      "type": "list",
+      "required": true,
+      "description": "The dimensions, at least one and at most 100, names unique ignoring case. Each reads every distinct value of one attribute of one kind's records, however many there are."
+    },
+    {
+      "path": "dimensions[]",
+      "type": "object",
+      "required": true,
+      "description": "One dimension: the attribute whose distinct values it holds (`kind`, `query`, `path`) and how each value is cleaned into the member it belongs to (`clean`)."
+    },
+    {
+      "path": "dimensions[].clean",
+      "type": "list",
+      "required": false,
+      "description": "The steps each original is cleaned by, in order, at most 20; the clean value is trimmed at the end. Written as a step's name (`trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`, `foldSeparators`) or as a step with its settings (`replace`, `map`). Left out, each original is its own clean value, trimmed."
+    },
+    {
+      "path": "dimensions[].clean[]",
+      "type": "object",
+      "required": false,
+      "description": "One step: `trim` (white space removed at both ends), `collapseSpaces` (every run of white space one space), `upper` and `lower` (case by the invariant culture), `nfc` and `nfkc` (Unicode normalization), `foldSeparators` (letters and digits kept, every run of anything else one hyphen, lower-cased), `replace` (written `{ replace: { pattern, with } }`) and `map` (written `{ map: <dictionary> }` or `{ map: { dictionary, field, otherwise } }`). A step that leaves nothing, or a clean value longer than 256 characters, leaves the original out of every member with the reason kept on it.",
+      "freeForm": true
+    },
+    {
+      "path": "dimensions[].clean[].map",
+      "type": "object",
+      "required": false,
+      "description": "A dictionary document of the repository looked up, found as `dictionaries/<name>.yaml` above the flow: a listed value is replaced by the entry's value, matched exactly, or ignoring case when that finds one entry. Written as the dictionary's name, or with its settings."
+    },
+    {
+      "path": "dimensions[].clean[].map.dictionary",
+      "type": "string",
+      "required": true,
+      "description": "The dictionary's name: a letter followed by letters, digits, `_` or `-`."
+    },
+    {
+      "path": "dimensions[].clean[].map.field",
+      "type": "string",
+      "required": false,
+      "description": "The entry's field that gives the clean value. Left out, the one field an entry holds beside its key (`value` for a dictionary of pairs)."
+    },
+    {
+      "path": "dimensions[].clean[].map.otherwise",
+      "type": "string",
+      "required": false,
+      "description": "What a value the dictionary does not list comes to: left out, it goes on as it is; `~`, it is left out of every member; a text, it becomes that text. An entry that lists a value with no value leaves it out as well."
+    },
+    {
+      "path": "dimensions[].clean[].replace",
+      "type": "object",
+      "required": false,
+      "description": "A regular expression replaced in the value. Run by .NET's non-backtracking engine, in time linear in the value: a backreference, a lookaround or an atomic group is refused when the flow is loaded."
+    },
+    {
+      "path": "dimensions[].clean[].replace.pattern",
+      "type": "string",
+      "required": true,
+      "description": "The regular expression whose matches are replaced."
+    },
+    {
+      "path": "dimensions[].clean[].replace.with",
+      "type": "string",
+      "required": true,
+      "description": "What each match is replaced by; `$1` names the first group. Write `''` to remove the matches."
+    },
+    {
+      "path": "dimensions[].countRecords",
+      "type": "boolean",
+      "required": false,
+      "description": "Count each member's records exactly, with one count of the search per member whose originals could share a record. Where the attribute repeats in a record (a list, an array of objects) the index counts values held, not records, so without this such a member's count is the sum of its originals' and marked as not exact.",
+      "default": false
+    },
+    {
+      "path": "dimensions[].description",
+      "type": "string",
+      "required": false,
+      "description": "Optional text describing the dimension."
+    },
+    {
+      "path": "dimensions[].kind",
+      "type": "string",
+      "required": true,
+      "description": "The kind whose records are read, `authority:source:entityType:version`, wildcards allowed per segment (`osdu:wks:master-data--Wellbore:*`). For a property of `data`, a build reads the saved template of every kind the pattern matches in the partition, and every one must index the property the same way."
+    },
+    {
+      "path": "dimensions[].maxValues",
+      "type": "integer",
+      "required": false,
+      "description": "The most distinct values the dimension keeps, between 1 and 5000000: a build that finds more fails before it writes anything, since it holds the values in memory while it groups them.",
+      "default": 1000000
+    },
+    {
+      "path": "dimensions[].name",
+      "type": "string",
+      "required": true,
+      "description": "The dimension's name: a letter or digit followed by letters, digits, `.`, `_` and `-`, at most 100 characters. A run, a page, a filter and a cache type name the dimension by it."
+    },
+    {
+      "path": "dimensions[].partitions",
+      "type": "list",
+      "required": false,
+      "description": "The partitions of the flow the dimension is built in, when not all of them; left out, it is built in every partition the flow builds in."
+    },
+    {
+      "path": "dimensions[].partitions[]",
+      "type": "string",
+      "required": false,
+      "description": "One partition the dimension is built in, one the flow names (or, for a flow building in every registered partition, any partition)."
+    },
+    {
+      "path": "dimensions[].path",
+      "type": "string",
+      "required": true,
+      "description": "The attribute, as a path from the record's root: any property search can match exactly. A property of `data` (`data.FacilityName`, `data.Curves.Mnemonic` inside a nested array, a value inside a flattened array, a list of values), or a property of the record itself: `id`, `kind`, `type`, `namespace`, `authority`, `source`, `version`, `createUser`, `modifyUser`, `createTime`, `modifyTime`, `collaborationId`, `acl.viewers`, `acl.owners`, `legal.legaltags`, `legal.otherRelevantDataCountries`, `legal.status`, `ancestry.parents`, `index.statusCode`, or a tag as `tags.<name>`. An array of objects without an `x-osdu-indexing` hint, an object and a value inside a nested array inside another are refused: search holds no exact value there."
+    },
+    {
+      "path": "dimensions[].query",
+      "type": "string",
+      "required": false,
+      "description": "Optional Lucene query narrowing the records read, with `{parameter}` and `{partition}` tokens. Left out, every record of the kind is read. The members' filters select by value alone: combine them with this query where a search should read the same records."
+    },
+    {
+      "path": "flowType",
+      "type": "enum(dimension)",
+      "required": true,
+      "description": "The document kind: `dimension`, the distinct values attributes of OSDU records hold, each kept exactly as the search index holds it (an original) and grouped under a cleaned value (a member), with the search filter each member stands for. The loader chooses the reader by it and refuses a document that declares no `flowType` or `documentType`.",
+      "enumValues": [
+        "dimension"
+      ]
+    },
+    {
+      "path": "name",
+      "type": "string",
+      "required": true,
+      "description": "The dimension flow's name: its pipeline identity, and the name its dimensions are kept under. A flow that builds in partitions keeps its dimensions per partition, shown as `name@partition`."
+    },
+    {
+      "path": "parameters",
+      "type": "map",
+      "required": false,
+      "description": "Optional: the flow's parameters, by name. `{name}` tokens are usable in a dimension's `query`; `{partition}` is always the partition the run builds in, so no parameter may be called `partition`. Values come from `--set name=value`, the run's values, or the schedule's `values`."
+    },
+    {
+      "path": "parameters.<name>",
+      "type": "object",
+      "required": false,
+      "description": "One parameter; `<name>` is the name its `{name}` tokens use. A run supplying a value for a name the flow does not declare is refused."
+    },
+    {
+      "path": "parameters.<name>.default",
+      "type": "string",
+      "required": false,
+      "description": "The value used when a run supplies none."
+    },
+    {
+      "path": "parameters.<name>.description",
+      "type": "string",
+      "required": false,
+      "description": "Text describing what the parameter is for."
+    },
+    {
+      "path": "parameters.<name>.required",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, a run that supplies no value, for a parameter without a default, fails with \"parameter 'name' is required\". A scheduled fire supplies only the schedule's `values`, so give it one there.",
+      "default": "false"
+    },
+    {
+      "path": "partitions",
+      "type": "list",
+      "required": false,
+      "description": "The OSDU data partitions the flow builds dimensions in, hard-coded: each by its `data-partition-id` written literally, never a reference, at least one, at most 64, none twice. A run builds in one of them: the one it names, else the registry's default when the flow names it, else the flow's only one; `*` is refused. Left out, with no `data-partition-id` header, the flow builds in every registered partition. Each partition keeps dimensions of its own."
+    },
+    {
+      "path": "partitions[]",
+      "type": "string",
+      "required": false,
+      "description": "One partition the flow builds dimensions in, by its `data-partition-id`."
+    },
+    {
+      "path": "reliability",
+      "type": "object",
+      "required": false,
+      "description": "The HTTP settings (timeout, retry, rate limit, TLS, URL allowlist and response size), and `concurrency`: the tests evaluated at once, and the requests each has in flight. `reliability.parallelInterfaces` is refused."
+    },
+    {
+      "path": "reliability.batchRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: rendered documents per work batch file. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.batchSize",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: records claimed per ledger round trip when retrying records. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "50"
+    },
+    {
+      "path": "reliability.concurrency",
+      "type": "integer",
+      "required": false,
+      "description": "The tests evaluated at once, and the requests (storage reads, reference lookups, bulk reads) one test has in flight. At least 1.",
+      "default": "8"
+    },
+    {
+      "path": "reliability.fanOut",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the member runs a large submission spreads over. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.fanOutMinRecords",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: below this many records a submission never fans out. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "1000"
+    },
+    {
+      "path": "reliability.leaseSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: how long a worker's lease on a record lasts. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "300"
+    },
+    {
+      "path": "reliability.maxRequestBodyBytes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the target's declared request body ceiling (0 = not declared). The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.maxResponseBytes",
+      "type": "integer",
+      "required": false,
+      "description": "The largest response body read, in bytes. A larger response fails the request with a message naming this setting.",
+      "default": "67108864"
+    },
+    {
+      "path": "reliability.parallelInterfaces",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery source's setting: how many of its interfaces run at once. An assertion flow runs no interfaces, so the loader refuses it here."
+    },
+    {
+      "path": "reliability.rateLimitRps",
+      "type": "number",
+      "required": false,
+      "description": "The most requests per second the flow sends to the platform; 0 means unlimited. Token requests are not limited.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.renderParallelism",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: renderers in the intake pipeline on one node, 0 to 256 (0 takes half the machine's processors, at least one). The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "0"
+    },
+    {
+      "path": "reliability.retry",
+      "type": "object",
+      "required": false,
+      "description": "How one request is repeated inline. Only requests that are safe to repeat are repeated, on 408, 425, 429, 503 and 504 and on a transport failure; 500 and 502 are not replayed."
+    },
+    {
+      "path": "reliability.retry.attempts",
+      "type": "integer",
+      "required": false,
+      "description": "The most attempts one request gets, the first included.",
+      "default": "4"
+    },
+    {
+      "path": "reliability.retry.backoff",
+      "type": "enum(exponential|fixed)",
+      "required": false,
+      "description": "The wait between attempts: `exponential` doubles `baseDelayMs` per attempt, `fixed` waits `baseDelayMs` each time; both are capped at `maxDelayMs`.",
+      "enumValues": [
+        "exponential",
+        "fixed"
+      ],
+      "default": "exponential"
+    },
+    {
+      "path": "reliability.retry.baseDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The first wait between attempts, in milliseconds.",
+      "default": "500"
+    },
+    {
+      "path": "reliability.retry.honorRetryAfter",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether a `Retry-After` the service sends is honoured. A requested wait within `maxDelayMs` becomes the floor of the backoff; a longer one is never shortened, so the request stops instead of waiting it out.",
+      "default": "true"
+    },
+    {
+      "path": "reliability.retry.maxDelayMs",
+      "type": "integer",
+      "required": false,
+      "description": "The longest wait between attempts, in milliseconds.",
+      "default": "30000"
+    },
+    {
+      "path": "reliability.retry.recordBaseDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the first wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "1"
+    },
+    {
+      "path": "reliability.retry.recordMaxDelayMinutes",
+      "type": "integer",
+      "required": false,
+      "description": "A delivery flow's setting: the longest wait between a record's attempts across worker passes, in minutes. The loader accepts it as on a delivery flow; an assertion flow does not use it.",
+      "default": "60"
+    },
+    {
+      "path": "reliability.skipStatusCodes",
+      "type": "list",
+      "required": false,
+      "description": "A delivery flow's setting: statuses that hold a record instead of retrying it. The loader accepts it as on a delivery flow; an assertion flow does not use it."
+    },
+    {
+      "path": "reliability.skipStatusCodes[]",
+      "type": "integer",
+      "required": false,
+      "description": "One HTTP status code."
+    },
+    {
+      "path": "reliability.timeoutSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "How long one HTTP request may take, in seconds.",
+      "default": "100"
+    },
+    {
+      "path": "reliability.urlAllowlist",
+      "type": "list",
+      "required": false,
+      "description": "The hosts requests may reach (an SSRF guard), checked on every request and every redirect hop. Empty allows any host the deployment's network policy reaches; token requests are not checked against it."
+    },
+    {
+      "path": "reliability.urlAllowlist[]",
+      "type": "string",
+      "required": false,
+      "description": "A host name, or `*.suffix` to match the bare domain and any subdomain of it. Compared ignoring case."
+    },
+    {
+      "path": "reliability.verifyTls",
+      "type": "boolean",
+      "required": false,
+      "description": "Whether the platform's TLS certificate is verified. `false` also needs `SQLFLOW_DELIVERY_ALLOW_INSECURE_TLS=true` on the node, or the run is refused.",
+      "default": "true"
+    },
+    {
+      "path": "source",
+      "type": "object",
+      "required": true,
+      "description": "The OSDU platform the dimensions are read from. A build only reads: nothing is ever written to OSDU."
+    },
+    {
+      "path": "source.aggregationSize",
+      "type": "integer",
+      "required": false,
+      "description": "How many groups the platform's aggregation returns: its `AGGREGATION_SIZE`, 1000 unless its operators changed it, between 10 and 10000. A build pages past it by value ranges, taking a range answered with fewer groups as complete, so this must not be more than the platform's setting; less only asks more often.",
+      "default": 1000
+    },
+    {
+      "path": "source.auth",
+      "type": "object",
+      "required": false,
+      "description": "How requests to the OSDU platform authenticate, written as `target.auth` is on a delivery flow. Secrets are references only: ${env:NAME} or ${keyvault:vault/secret}. Left out, requests carry no credentials (type `none`).",
+      "appliesWhen": "Optional; written as `target.auth` on a delivery flow."
+    },
+    {
+      "path": "source.auth.headerName",
+      "type": "string",
+      "required": false,
+      "description": "The header an `apiKeyHeader` auth sends the key in.",
+      "appliesWhen": "source.auth.type is apiKeyHeader, which needs it."
+    },
+    {
+      "path": "source.auth.secondarySecretRef",
+      "type": "string",
+      "required": false,
+      "description": "The secondary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}): the username for `basic`, the client id for `oauth2ClientCredentials` (sent as `client_id` unless the token body names one).",
+      "appliesWhen": "source.auth.type is basic or oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.secretRef",
+      "type": "string",
+      "required": false,
+      "description": "The primary secret, as a reference (${env:NAME} or ${keyvault:vault/secret}), never a literal: the token for `bearer`, the key for `apiKeyHeader`, the password for `basic`, the client secret for `oauth2ClientCredentials` (sent as `client_secret` unless the token body names one).",
+      "appliesWhen": "Needed by bearer, apiKeyHeader and basic; used by oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token",
+      "type": "object",
+      "required": false,
+      "description": "The OAuth2 token endpoint: where a token is requested and how it is read from the answer. One token serves the run and is requested again shortly before it expires.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials, which needs it."
+    },
+    {
+      "path": "source.auth.token.applyPrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the access token in the `Authorization` header.",
+      "default": "\"Bearer \"",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.basicAuthClient",
+      "type": "boolean",
+      "required": false,
+      "description": "When true, the client id and secret are sent as an HTTP Basic `Authorization` header on the token request instead of in its form body.",
+      "default": "false",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body",
+      "type": "map",
+      "required": false,
+      "description": "Extra form fields of the token request, by name. `grant_type` is `client_credentials` unless set here, and `client_id` and `client_secret` come from `secondarySecretRef` and `secretRef` unless set here.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.body.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One form field of the token request; `<name>` is the field name (such as `scope`). The value may be a reference (${env:NAME} or ${keyvault:vault/secret}), resolved before the request is sent.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.discoveryUrl",
+      "type": "string",
+      "required": false,
+      "description": "An OIDC discovery document whose `token_endpoint` is the token URL. When set it is used instead of `url`; it may be a reference.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or url."
+    },
+    {
+      "path": "source.auth.token.tokenPath",
+      "type": "string",
+      "required": false,
+      "description": "The path of the access token in the token endpoint's JSON answer.",
+      "default": "access_token",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials."
+    },
+    {
+      "path": "source.auth.token.url",
+      "type": "string",
+      "required": false,
+      "description": "The token endpoint URL, usually a reference such as `${env:OSDU_TOKEN_URL}`.",
+      "appliesWhen": "source.auth.type is oauth2ClientCredentials; give this or discoveryUrl."
+    },
+    {
+      "path": "source.auth.type",
+      "type": "enum(none|bearer|apiKeyHeader|basic|oauth2ClientCredentials)",
+      "required": false,
+      "description": "The auth scheme: `none`, `bearer` (a token as a reference), `apiKeyHeader` (a key in a named header), `basic` (username and password) or `oauth2ClientCredentials` (a token requested from `token`). Read ignoring case.",
+      "enumValues": [
+        "none",
+        "bearer",
+        "apiKeyHeader",
+        "basic",
+        "oauth2ClientCredentials"
+      ],
+      "default": "none"
+    },
+    {
+      "path": "source.auth.valuePrefix",
+      "type": "string",
+      "required": false,
+      "description": "The text put before the secret in the header value of a `bearer` or `apiKeyHeader` auth. An OAuth2 token takes `token.applyPrefix` instead.",
+      "default": "\"Bearer \" for bearer; nothing for apiKeyHeader",
+      "appliesWhen": "source.auth.type is bearer or apiKeyHeader."
+    },
+    {
+      "path": "source.endpoint",
+      "type": "string",
+      "required": true,
+      "description": "The base URL of the OSDU platform, usually a reference such as `${env:OSDU_URL}`."
+    },
+    {
+      "path": "source.headers",
+      "type": "map",
+      "required": false,
+      "description": "Headers sent with every request. A flow that names its partitions, or builds in every registered one, may not name `data-partition-id` here: each run sets it to the partition it builds in. A flow that names neither builds in the partition this header names."
+    },
+    {
+      "path": "source.headers.<name>",
+      "type": "string",
+      "required": false,
+      "description": "One header; `<name>` is the header name (`data-partition-id: dev`). A value may be a reference (${env:NAME} or ${keyvault:vault/secret})."
+    },
+    {
+      "path": "source.queryPath",
+      "type": "string",
+      "required": false,
+      "description": "The search service's offset search, which aggregates a dimension's values and counts records (openapi search v2, POST /query).",
+      "default": "/api/search/v2/query"
+    },
+    {
+      "path": "source.searchPath",
+      "type": "string",
+      "required": false,
+      "description": "The search service's cursor search, which a build scans the records of a range through when an aggregation cannot answer it (openapi search v2, POST /query_with_cursor).",
+      "default": "/api/search/v2/query_with_cursor"
+    }
+  ]
+}

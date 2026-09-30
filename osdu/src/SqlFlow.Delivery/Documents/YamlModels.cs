@@ -1005,6 +1005,12 @@ internal sealed class CachedTypeYaml
     /// <summary>For a table type: the column each row is keyed by.</summary>
     public string? Key { get; set; }
 
+    /// <summary>The dimension the type holds the members of, in place of a kind: a lookup table a dimension flow builds.</summary>
+    public string? Dimension { get; set; }
+
+    /// <summary>For a dimension type: the dimension flow that declares the dimension.</summary>
+    public string? DimensionFlow { get; set; }
+
     /// <summary>The partitions of the flow this type is built for; every partition of the flow when left out.</summary>
     public List<string>? Partitions { get; set; }
 }
@@ -1306,4 +1312,71 @@ internal sealed class AssertionColumnsYaml
 
     [YamlMember(Alias = "equals")]
     public List<string>? Exactly { get; set; }
+}
+
+internal sealed class DimensionFlowYaml
+{
+    public string? FlowType { get; set; }
+
+    public string? Name { get; set; }
+
+    public string? Description { get; set; }
+
+    public string? Batch { get; set; }
+
+    public object? Schedule { get; set; }
+
+    public object? Mode { get; set; }
+
+    public object? Lifecycle { get; set; }
+
+    public Dictionary<string, FlowParameterYaml>? Parameters { get; set; }
+
+    public DimensionSourceYaml? Source { get; set; }
+
+    /// <summary>The partitions the flow builds dimensions in, each by its data-partition-id.</summary>
+    public List<string>? Partitions { get; set; }
+
+    public List<DimensionYaml>? Dimensions { get; set; }
+
+    public FlowReliabilityYaml? Reliability { get; set; }
+}
+
+internal sealed class DimensionSourceYaml
+{
+    public string? Endpoint { get; set; }
+
+    public TargetAuthYaml? Auth { get; set; }
+
+    public Dictionary<string, string>? Headers { get; set; }
+
+    public string? QueryPath { get; set; }
+
+    public string? SearchPath { get; set; }
+
+    /// <summary>How many groups the platform's aggregation returns: its AGGREGATION_SIZE, 1000 unless its operators changed it.</summary>
+    public int? AggregationSize { get; set; }
+}
+
+internal sealed class DimensionYaml
+{
+    public string? Name { get; set; }
+
+    public string? Description { get; set; }
+
+    public string? Kind { get; set; }
+
+    public string? Query { get; set; }
+
+    public string? Path { get; set; }
+
+    // Each step a name ("trim") or a one-key map ({ replace: { pattern, with } }, { map: CurveAliases }), read by the mapper.
+    public List<object>? Clean { get; set; }
+
+    public bool? CountRecords { get; set; }
+
+    public long? MaxValues { get; set; }
+
+    /// <summary>The partitions of the flow this dimension is built in; every partition of the flow when left out.</summary>
+    public List<string>? Partitions { get; set; }
 }

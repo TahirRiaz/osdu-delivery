@@ -1,6 +1,6 @@
 import {
   CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch, PencilRuler,
-  ScrollText, ShieldCheck, Workflow,
+  ScrollText, Shapes, ShieldCheck, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
 import type { Column } from "@/components/DataTable";
@@ -11,12 +11,14 @@ import { Deferred } from "./features/delivery/Deferred";
 import { AssertionRunActions, AssertionRunCounts } from "./features/delivery/assertions/AssertionRunHeader";
 import { AssertionTriggerFields } from "./features/delivery/assertions/AssertionTriggerFields";
 import { CacheRunActions, DeliveryRunActions, DeliveryRunCounts, DeliveryRunMeta } from "./features/delivery/DeliveryRunHeader";
+import { DimensionRunActions, DimensionRunCounts } from "./features/delivery/dimensions/DimensionRunHeader";
+import { DimensionTriggerFields } from "./features/delivery/dimensions/DimensionTriggerFields";
 import { DeliveryTriggerFields } from "./features/delivery/DeliveryTriggerFields";
 import { activePartition } from "./features/delivery/activePartition";
 import { PartitionSwitcher } from "./features/delivery/PartitionSwitcher";
 import { shortId } from "./features/delivery/idTail";
 
-// The OSDU Delivery module: its pages, its navigation, the panels of the delivery, retrieval, cache and assertion kinds on SQLFlow's
+// The OSDU Delivery module: its pages, its navigation, the panels of the delivery, retrieval, cache, assertion and dimension kinds on SQLFlow's
 // pipeline, run and trigger pages, the delivery records in search, and the product's branding. Everything heavy (the
 // pages, the panels, anything with the code editor) loads with the surface that shows it.
 
@@ -33,6 +35,7 @@ const DeliveryCachePage = lazyRoute("DeliveryCachePage", () => import("./feature
 const DeliveryPartitionsPage = lazyRoute("DeliveryPartitionsPage", () => import("./features/delivery/DeliveryPartitionsPage"));
 const DeliveryAssertionsPage = lazyRoute("DeliveryAssertionsPage", () => import("./features/delivery/assertions/DeliveryAssertionsPage"));
 const AssertionReportPage = lazyRoute("AssertionReportPage", () => import("./features/delivery/assertions/AssertionReportPage"));
+const DeliveryDimensionsPage = lazyRoute("DeliveryDimensionsPage", () => import("./features/delivery/dimensions/DeliveryDimensionsPage"));
 
 const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
@@ -66,6 +69,10 @@ const AssertionReportsPanel = lazyRoute(
   "AssertionReportsPanel",
   () => import("./features/delivery/assertions/AssertionFlowPanels").then((loaded) => ({ default: loaded.AssertionReportsPanel })),
 );
+const DimensionsPanel = lazyRoute(
+  "DimensionsPanel",
+  () => import("./features/delivery/dimensions/DimensionFlowPanels").then((loaded) => ({ default: loaded.DimensionsPanel })),
+);
 const DeliveryRunCard = lazyRoute("DeliveryRunCard", () => import("./features/delivery/DeliveryRunCard"));
 const RecordSearchHits = lazyRoute(
   "RecordSearchHits",
@@ -74,7 +81,7 @@ const RecordSearchHits = lazyRoute(
 
 /**
  * The key census of every document this module adds, so the YAML editor documents, colours and checks them as it does
- * SQLFlow's own flows: the delivery, retrieval, cache and assertion flows by their flowType, the mapping and the dictionary
+ * SQLFlow's own flows: the delivery, retrieval, cache, assertion and dimension flows by their flowType, the mapping and the dictionary
  * by their documentType. Each file loads when the editor first starts, not with the page.
  */
 const census: GuiModule["census"] = [
@@ -82,6 +89,7 @@ const census: GuiModule["census"] = [
   { flowType: "retrieval", load: () => import("../../docs/census/keys.retrieval.json?raw").then((file) => file.default) },
   { flowType: "cache", load: () => import("../../docs/census/keys.cache.json?raw").then((file) => file.default) },
   { flowType: "assertion", load: () => import("../../docs/census/keys.assertion.json?raw").then((file) => file.default) },
+  { flowType: "dimension", load: () => import("../../docs/census/keys.dimension.json?raw").then((file) => file.default) },
   { documentType: "mapping", load: () => import("../../docs/census/keys.mapping.json?raw").then((file) => file.default) },
   { documentType: "dictionary", load: () => import("../../docs/census/keys.dictionary.json?raw").then((file) => file.default) },
 ];
@@ -113,8 +121,9 @@ function runPanels(extra: Omit<RunDetailContribution, "card" | "hiddenTabs">): R
 
 // The module's kinds wear the icons of the pages they feed (Delivery, Cache, Tests), in colours of their own: a delivery
 // flow in the one tone SQLFlow leaves to modules, a cache flow in orange, so a pre, ingestion, cache and delivery flow of
-// one source each read differently; a retrieval flow brings records in, as SQLFlow's blue kinds do, and an assertion flow
-// checks, as SQLFlow's neutral kinds do.
+// one source each read differently; a retrieval flow brings records in, as SQLFlow's blue kinds do, an assertion flow
+// checks, as SQLFlow's neutral kinds do, and a dimension flow shapes what OSDU holds into tables of its own, as SQLFlow's
+// violet kinds shape theirs.
 const deliveryKind: FlowKindContribution = {
   kind: "delivery",
   identity: { label: "Delivery", icon: PackageCheck, tone: "magenta" },
@@ -239,6 +248,27 @@ const assertionKind: FlowKindContribution = {
   trigger: { Fields: AssertionTriggerFields },
 };
 
+const dimensionKind: FlowKindContribution = {
+  kind: "dimension",
+  identity: { label: "Dimension", icon: Shapes, tone: "violet" },
+  pipelineTabs: [
+    {
+      value: "dimensions",
+      label: "Dimensions",
+      testId: "pipeline-tab-dimensions",
+      render: (pipeline) => <Deferred><DimensionsPanel pipelineId={pipeline.id} /></Deferred>,
+    },
+  ],
+  defaultPipelineTab: "dimensions",
+  hiddenPipelineTabs: HIDDEN_PIPELINE_TABS,
+  runColumns,
+  run: runPanels({
+    headerActions: () => <DimensionRunActions />,
+    headerDetails: (run) => <DimensionRunCounts run={run} />,
+  }),
+  trigger: { Fields: DimensionTriggerFields },
+};
+
 export const osduDeliveryModule: GuiModule = {
   id: "osdu-delivery",
   routes: [
@@ -256,6 +286,7 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/partitions", component: DeliveryPartitionsPage },
     { path: "/delivery/assertions", component: DeliveryAssertionsPage },
     { path: "/delivery/assertions/runs/:assertionRunId", component: AssertionReportPage },
+    { path: "/delivery/dimensions", component: DeliveryDimensionsPage },
   ],
   // Everything this product adds is one group of its own, rather than entries threaded through the platform's generic
   // ones. It sits straight after Workspace, and its entries read in the order the work is done: what has been delivered,
@@ -272,6 +303,7 @@ export const osduDeliveryModule: GuiModule = {
     { group: OSDU_GROUP, label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents" },
     { group: OSDU_GROUP, label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
     { group: OSDU_GROUP, label: "Cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache" },
+    { group: OSDU_GROUP, label: "Dimensions", to: "/delivery/dimensions", icon: Shapes, testId: "nav-delivery-dimensions" },
     { group: OSDU_GROUP, label: "Partitions", to: "/delivery/partitions", icon: Layers, testId: "nav-delivery-partitions" },
     { group: OSDU_GROUP, label: "Mapping builder", to: "/delivery/mappings/build", icon: PencilRuler, testId: "nav-delivery-mapping-builder" },
   ],
@@ -280,7 +312,7 @@ export const osduDeliveryModule: GuiModule = {
     { pattern: /^\/delivery\/submissions\/([^/]+)/, title: (match) => `Submission ${shortId(match[1])}` },
     { pattern: /^\/delivery\/assertions\/runs\/(\d+)/, title: (match) => `Report #${match[1]}` },
   ],
-  kinds: [deliveryKind, retrievalKind, cacheKind, assertionKind],
+  kinds: [deliveryKind, retrievalKind, cacheKind, assertionKind, dimensionKind],
   searchCategories: [
     {
       key: "records",

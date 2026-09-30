@@ -93,6 +93,122 @@ public class SearchFieldsTests
         Assert.Contains("a search compares text", SearchFields.Classify(wellbore, "data.VerticalMeasurements.VerticalMeasurement").Problem, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("data.FacilityName", OsduFieldIndex.Text, false)]
+    [InlineData("data.LegacyRef", OsduFieldIndex.Keyword, false)]
+    // A value, rather than a text comparison, may be a number, a date or a boolean, as the indexer stores it.
+    [InlineData("data.TotalDepth", OsduFieldIndex.Number, false)]
+    [InlineData("data.Count", OsduFieldIndex.Number, false)]
+    [InlineData("data.SpudDate", OsduFieldIndex.Date, false)]
+    // A list holds several values in one record.
+    [InlineData("data.Codes", OsduFieldIndex.Text, true)]
+    [InlineData("data.LegacyRefs", OsduFieldIndex.Keyword, true)]
+    [InlineData("data.Depths", OsduFieldIndex.Number, true)]
+    // So does an array of objects, nested or flattened; a flattened one holds keywords whatever their type.
+    [InlineData("data.FacilitySpecifications.Size", OsduFieldIndex.Keyword, true)]
+    [InlineData("data.Location.Label", OsduFieldIndex.Text, false)]
+    public void A_value_is_read_as_the_index_stores_it_and_says_whether_a_record_holds_several(string path, OsduFieldIndex index, bool repeats)
+    {
+        var shape = SearchFields.ClassifyValue(SearchSourceTests.WellboreSchema(), path);
+
+        Assert.Null(shape.Problem);
+        Assert.Equal(OsduField.Of(path, index), shape.Field);
+        Assert.Equal(repeats, shape.Repeats);
+    }
+
+    [Fact]
+    public void A_value_inside_a_nested_array_is_read_through_it_and_repeats()
+    {
+        var shape = SearchFields.ClassifyValue(SearchSourceTests.WellboreSchema(), "data.VerticalMeasurements.VerticalMeasurementID");
+
+        Assert.Equal(OsduField.Text("data.VerticalMeasurements.VerticalMeasurementID", "data.VerticalMeasurements"), shape.Field);
+        Assert.True(shape.Repeats);
+    }
+
+    [Fact]
+    public void A_boolean_and_a_number_inside_a_nested_array_are_values_too()
+    {
+        var schema = Snapshots.SchemaSnapshot.Parse("osdu:wks:work-product-component--WellLog:1.0.0", """
+            {
+              "type": "object",
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "IsActive": { "type": "boolean" },
+                    "Curves": {
+                      "type": "array",
+                      "x-osdu-indexing": { "type": "nested" },
+                      "items": { "type": "object", "properties": { "Mnemonic": { "type": "string" }, "Depth": { "type": "integer" } } }
+                    }
+                  }
+                }
+              }
+            }
+            """, DateTimeOffset.UnixEpoch);
+
+        Assert.Equal(OsduField.Boolean("data.IsActive"), SearchFields.ClassifyValue(schema, "data.IsActive").Field);
+        Assert.Equal(OsduField.Number("data.Curves.Depth", "data.Curves"), SearchFields.ClassifyValue(schema, "data.Curves.Depth").Field);
+
+        // A lookup compares text, so for it neither is a property it can ask for.
+        Assert.Null(SearchFields.Classify(schema, "data.IsActive").Field);
+    }
+
+    [Theory]
+    [InlineData("data.Plain.Code", "no x-osdu-indexing hint")]
+    [InlineData("data.VerticalMeasurements.Readings.Value", "a nested array inside the nested array")]
+    [InlineData("data.Location", "is an object, not a value")]
+    [InlineData("data.NameAliases", "list of objects, not a value")]
+    [InlineData("data.Untyped", "declares no type")]
+    [InlineData("data.NoSuchThing", "has no property data.NoSuchThing")]
+    public void A_value_the_index_holds_no_exact_form_of_is_refused_with_the_reason(string path, string reason)
+    {
+        var shape = SearchFields.ClassifyValue(SearchSourceTests.WellboreSchema(), path);
+
+        Assert.Null(shape.Field);
+        Assert.Contains(reason, shape.Problem, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("kind", OsduFieldIndex.Keyword, false)]
+    [InlineData("id", OsduFieldIndex.Keyword, false)]
+    [InlineData("authority", OsduFieldIndex.Keyword, false)]
+    [InlineData("version", OsduFieldIndex.Number, false)]
+    [InlineData("createTime", OsduFieldIndex.Date, false)]
+    [InlineData("createUser", OsduFieldIndex.Keyword, false)]
+    [InlineData("acl.viewers", OsduFieldIndex.Keyword, true)]
+    [InlineData("acl.owners", OsduFieldIndex.Keyword, true)]
+    [InlineData("legal.legaltags", OsduFieldIndex.Keyword, true)]
+    [InlineData("legal.otherRelevantDataCountries", OsduFieldIndex.Keyword, true)]
+    [InlineData("legal.status", OsduFieldIndex.Keyword, false)]
+    [InlineData("ancestry.parents", OsduFieldIndex.Keyword, true)]
+    [InlineData("index.statusCode", OsduFieldIndex.Number, false)]
+    [InlineData("tags.Source", OsduFieldIndex.Keyword, false)]
+    public void A_property_of_the_record_itself_is_read_as_the_indexer_maps_it_for_every_kind(string path, OsduFieldIndex index, bool repeats)
+    {
+        var shape = SearchFields.RecordProperty(path);
+
+        Assert.Null(shape.Problem);
+        Assert.Equal(OsduField.Of(path, index), shape.Field);
+        Assert.Equal(repeats, shape.Repeats);
+    }
+
+    [Theory]
+    [InlineData("tags", "name one tag")]
+    [InlineData("tags.Source.Inner", "reaches inside the tag")]
+    [InlineData("acl", "under acl it holds acl.viewers, acl.owners")]
+    [InlineData("legal.somethingElse", "under legal it holds")]
+    [InlineData("meta", "not a property the index holds")]
+    [InlineData("data.FacilityName", "the kind's schema describes")]
+    [InlineData("x-acl", "not a property path")]
+    public void A_property_of_the_record_the_index_holds_no_value_of_is_refused_with_the_reason(string path, string reason)
+    {
+        var shape = SearchFields.RecordProperty(path);
+
+        Assert.Null(shape.Field);
+        Assert.Contains(reason, shape.Problem, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void A_mapping_is_resolved_against_the_schema_its_search_pins_and_every_problem_is_listed()
     {

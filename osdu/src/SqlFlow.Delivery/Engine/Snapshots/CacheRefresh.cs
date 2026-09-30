@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 
@@ -88,7 +89,13 @@ public sealed class CacheRefresher
                 "Captured {Count} {Type} row(s) from dictionary {Dictionary}, keyed by {Key}.", loaded.Dictionary.Entries.Count, type.Name, loaded.ShownPath, loaded.Dictionary.Key);
         }
 
-        var write = await builder.WriteAsync(captured, new CacheCapture(runId, actor, string.Join("; ", origins)), readings, ct).ConfigureAwait(false);
+        foreach (var type in spec.Types.Where(t => t.Origin == CacheOrigin.Dimension))
+        {
+            captured.Add(await DimensionCapture.CaptureAsync(DimensionLedger(flow, type), scope, type, _logger, ct).ConfigureAwait(false));
+            origins.Add(type.Describe());
+        }
+
+        var write =await builder.WriteAsync(captured, new CacheCapture(runId, actor, string.Join("; ", origins)), readings, ct).ConfigureAwait(false);
         var snapshot = write.Snapshot;
         var previousVersion = write.Previous?.Version;
 
@@ -194,6 +201,16 @@ public sealed class CacheRefresher
                 loaded.Dictionary.Entries.Count));
         }
 
+        foreach (var type in spec.Types.Where(t => t.Origin == CacheOrigin.Dimension))
+        {
+            var dimension = await DimensionCapture.FindAsync(DimensionLedger(flow, type), scope, type, ct).ConfigureAwait(false);
+            _logger.LogInformation(
+                "plan {Type}: dimension {Dimension} of {Flow} holds {Members} member(s) from {Originals} original(s)",
+                type.Name, dimension.Name, dimension.FlowName, dimension.Members, dimension.Originals);
+            types.Add(new CachePlanType(
+                type.Name, CacheOrigins.Text(type.Origin), type.Describe(), null, "*", [DimensionColumns.Value, .. DimensionColumns.Fields], dimension.Members));
+        }
+
         var searched = spec.Types.Where(t => t.Origin == CacheOrigin.Osdu).ToList();
         if (searched.Count == 0)
         {
@@ -246,6 +263,11 @@ public sealed class CacheRefresher
         }
     }
 
+    /// <summary>The ledger a dimension type's members are read from: the module's, which every host that refreshes a cache has.</summary>
+    private ILedger DimensionLedger(CacheDefinition flow, ReferenceTypeSpec type)
+        => _context.Ledger ?? throw new DeliveryException(
+            $"Cache flow '{flow.Name}' holds {type.Describe()}, whose members live in the module's database, and this host was started without it. Run it through the control plane or a node, or start the CLI with the module's connection.");
+
     /// <summary>A path as a message names it: from the folder holding the dictionaries directory, so it reads dictionaries/Name.yaml.</summary>
     private static string Shown(string full, string flowFolder)
     {
@@ -280,8 +302,8 @@ public sealed record CacheRefreshOutcome(
 }
 
 /// <summary>
-/// One cached type as the refresh left it, with what its changes did to the delivered estate: its origin (osdu, table or
-/// dictionary), where its records came from as a person reads it, for an OSDU type the kind searched, its content hash, and
+/// One cached type as the refresh left it, with what its changes did to the delivered estate: its origin (osdu, table,
+/// dictionary or dimension), where its records came from as a person reads it, for an OSDU type the kind searched, its content hash, and
 /// by that hash how the version the refresh left holds it against the version before: <paramref name="Change"/> is added,
 /// changed or unchanged. Only a type that was added or changed is analysed for what it reaches.
 /// </summary>

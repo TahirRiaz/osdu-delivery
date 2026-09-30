@@ -79,8 +79,14 @@ public sealed class OsduSearchPage
     public int Returned { get; }
 }
 
-/// <summary>One group of an aggregation: a distinct value of the field and how many records hold it.</summary>
-public sealed record OsduSearchBucket(string Key, long Count);
+/// <summary>
+/// One group of an aggregation: a distinct value of the field and how many records (for a property of a nested array, how
+/// many of the array's objects) hold it. <paramref name="Key"/> is null when the service named no key: it renders a number
+/// term's key from Elasticsearch's <c>key_as_string</c>, which only a formatted field (a date, a boolean) carries, so a plain
+/// number's group can come back without one (<c>CoreQueryBase.getAggregationFromSearchResponse</c>). That is kept apart
+/// from the text <c>null</c>, which is a key like any other.
+/// </summary>
+public sealed record OsduSearchBucket(string? Key, long Count);
 
 /// <summary>
 /// The OSDU search service as the module reads it (openapi search v2): the exact count of what a query matches, the distinct
@@ -179,10 +185,12 @@ public sealed class OsduSearch
             foreach (var bucket in aggregations.EnumerateArray())
             {
                 if (bucket.ValueKind == JsonValueKind.Object
-                    && bucket.TryGetProperty("key", out var key)
                     && bucket.TryGetProperty("count", out var n) && n.ValueKind == JsonValueKind.Number && n.TryGetInt64(out var c))
                 {
-                    buckets.Add(new OsduSearchBucket(key.ValueKind == JsonValueKind.String ? key.GetString() ?? string.Empty : key.GetRawText(), c));
+                    var key = !bucket.TryGetProperty("key", out var named) || named.ValueKind == JsonValueKind.Null
+                        ? null
+                        : named.ValueKind == JsonValueKind.String ? named.GetString() : named.GetRawText();
+                    buckets.Add(new OsduSearchBucket(key, c));
                 }
             }
         }

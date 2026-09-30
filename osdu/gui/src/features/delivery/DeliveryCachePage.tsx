@@ -38,7 +38,7 @@ function typeHint(type: CachedTypeSummary): string {
   const count = type.items.toLocaleString();
   const held = type.key === null
     ? `${type.family.toLowerCase()} · ${count} record${type.items === 1 ? "" : "s"}`
-    : `lookup table from ${type.origin === "dictionary" ? "a dictionary" : "an ingestion table"} · ${count} row${type.items === 1 ? "" : "s"}`;
+    : `lookup table from ${type.origin === "dictionary" ? "a dictionary" : type.origin === "dimension" ? "a dimension" : "an ingestion table"} · ${count} row${type.items === 1 ? "" : "s"}`;
   return held + (type.onChange === "approve" ? " · changes need approval" : "");
 }
 

@@ -27,6 +27,12 @@ public static class OsduLineage
     /// <summary>The group every cache type of a partition is listed under.</summary>
     public const string CacheGroup = "cache";
 
+    /// <summary>
+    /// The system a partition's dimensions belong to; the graph captions their nodes "osdu dimension". A dimension is kept in
+    /// the module database per partition, under the dimension flow that builds it, whichever platform it was read from.
+    /// </summary>
+    public const string DimensionSystem = "osdu-dimension";
+
     /// <summary>What separates the segments of a kind: a wildcard never matches across it.</summary>
     public const char KindSeparator = ':';
 
@@ -105,6 +111,35 @@ public static class OsduLineage
             System = CacheSystem,
             Namespace = partition,
             Group = CacheGroup,
+            Name = trimmed,
+        };
+        return Fits(dataset, flow, what, warnings) ? dataset : null;
+    }
+
+    /// <summary>
+    /// A dimension a flow builds or reads: a node per dimension in a partition, grouped under the dimension flow that builds
+    /// it, or null with a warning when a name cannot identify a node. A cache type holding a dimension reads it, so the cache
+    /// flow is ordered after the dimension flow that builds it.
+    /// </summary>
+    public static DeclaredDataset? Dimension(LineageRelation relation, string partition, string dimensionFlow, string name, string flow, ICollection<string> warnings)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(flow);
+        ArgumentNullException.ThrowIfNull(warnings);
+        var group = dimensionFlow?.Trim() ?? string.Empty;
+        var trimmed = name?.Trim() ?? string.Empty;
+        var what = $"dimension '{Shown(group)}/{Shown(trimmed)}'";
+        if (new[] { group, trimmed }.Any(part => part.Length == 0 || part.Contains('*', StringComparison.Ordinal) || part.Contains('|', StringComparison.Ordinal) || part.Any(char.IsControl)))
+        {
+            warnings.Add($"{flow} shows no node for {what}: a dimension and its flow are named without wildcards, '|' or control characters.");
+            return null;
+        }
+
+        var dataset = new DeclaredDataset
+        {
+            Relation = relation,
+            System = DimensionSystem,
+            Namespace = partition,
+            Group = group,
             Name = trimmed,
         };
         return Fits(dataset, flow, what, warnings) ? dataset : null;

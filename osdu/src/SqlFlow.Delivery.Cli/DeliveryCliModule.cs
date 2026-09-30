@@ -8,10 +8,10 @@ using SqlFlow.Delivery.Hosting;
 namespace SqlFlow.Delivery.Cli;
 
 /// <summary>
-/// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval, cache and assertion flow kinds (so SQLFlow's
+/// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval, cache, assertion and dimension flow kinds (so SQLFlow's
 /// own <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
 /// module's database, and the module's own verbs: <c>check</c>, <c>preview</c>, <c>values</c>, <c>fixtures</c>, <c>records</c>, <c>config</c>,
-/// <c>partition</c>, <c>cache</c>, <c>template</c> and <c>assertions</c>.
+/// <c>partition</c>, <c>cache</c>, <c>template</c>, <c>assertions</c> and <c>dimensions</c>.
 /// </summary>
 /// <remarks>
 /// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless
@@ -208,6 +208,37 @@ public sealed class DeliveryCliModule : ICliModule
         {
             Subcommands = ["list", "status", "report"],
             ValueOptions = ["--partition", "--max", "--run", "--format", "--out"],
+        },
+        new CliVerb(
+            "dimensions",
+            [
+                "sqlflow dimensions list <flow.yaml> [--partition <id>]",
+                "                                   A dimension flow's dimensions in a partition: what each holds, when it",
+                "                                   was built, and a newer build that failed or is running (needs --db)",
+                "sqlflow dimensions members <flow.yaml> --dimension <name> [--search <text>] [--order value|records] [--removed] [--max <n>]",
+                "                                   A dimension's members, each clean value with its records and the",
+                "                                   originals most records hold (needs --db)",
+                "sqlflow dimensions originals <flow.yaml> --dimension <name> [--member <value> | --left-out] [--search <text>] [--order arrival|count] [--max <n>]",
+                "                                   The originals exactly as the index holds them, each with its member or",
+                "                                   why it has none (needs --db)",
+                "sqlflow dimensions filter <flow.yaml> --dimension <name> --member <value> [--member <value> ...]",
+                "                                   The search that finds every record holding the members named: one query",
+                "                                   a line on the console, ready to send, what it leaves out on the error",
+                "                                   stream (needs --db)",
+                "sqlflow dimensions history <flow.yaml> --dimension <name> [--max <n>]",
+                "                                   The builds, newest first: what each found, read and changed (needs --db)",
+                "sqlflow dimensions changes <flow.yaml> --dimension <name> [--build <n>] [--member <value>] [--change added|removed|moved|restored] [--max <n>]",
+                "                                   The change log, newest first: originals that arrived, left, came back or",
+                "                                   moved to another member (needs --db)",
+                "sqlflow dimensions export <flow.yaml> --dimension <name> [--set members|originals] [--format csv|jsonl] [--out <file>]",
+                "                                   The whole of a dimension's members or originals (needs --db). Building",
+                "                                   is a run: sqlflow run <flow.yaml> --payload '{\"dimensions\":[\"name\"]}'",
+            ],
+            DeliveryDimensionVerbs.DimensionsAsync)
+        {
+            Subcommands = ["list", "members", "originals", "filter", "history", "changes", "export"],
+            ValueOptions = ["--partition", "--dimension", "--search", "--order", "--member", "--max", "--build", "--change", "--set", "--format", "--out"],
+            Flags = ["--removed", "--left-out"],
         },
     ];
 

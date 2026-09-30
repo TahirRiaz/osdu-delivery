@@ -26,7 +26,9 @@ public sealed record ReferenceCaptureSpec
 /// One type a cache holds, as its cache flow declares it: where its records come from (<see cref="Origin"/>) and what of each
 /// record the cache keeps. An OSDU type is searched for (<see cref="Kind"/>, <see cref="Query"/>) and keeps paths of each
 /// record; a table type reads columns of an ingestion table (<see cref="Table"/>) keyed by one of them; a dictionary type
-/// holds the entries of a dictionary document (<see cref="Dictionary"/>), whose key and fields the document names.
+/// holds the entries of a dictionary document (<see cref="Dictionary"/>), whose key and fields the document names; a
+/// dimension type holds the members of a dimension flow's dimension (<see cref="Dimension"/> of <see cref="DimensionFlow"/>),
+/// each keyed by its clean value with its originals and records.
 /// </summary>
 public sealed record ReferenceTypeSpec
 {
@@ -53,6 +55,12 @@ public sealed record ReferenceTypeSpec
 
     /// <summary>For a dictionary type: the name of the dictionary document whose entries the type holds.</summary>
     public string? Dictionary { get; init; }
+
+    /// <summary>For a dimension type: the name of the dimension whose members the type holds.</summary>
+    public string? Dimension { get; init; }
+
+    /// <summary>For a dimension type: the name of the dimension flow declaring the dimension.</summary>
+    public string? DimensionFlow { get; init; }
 
     /// <summary>
     /// For a dictionary type whose document has been found: the document's file, relative to the repository root, as the
@@ -82,7 +90,7 @@ public sealed record ReferenceTypeSpec
     /// </summary>
     public IReadOnlyList<string> Partitions { get; init; } = [];
 
-    /// <summary>True for a type whose records are not OSDU records: a table or a dictionary.</summary>
+    /// <summary>True for a type whose records are not OSDU records: a table, a dictionary or a dimension.</summary>
     public bool IsLookup => Origin != CacheOrigin.Osdu;
 
     /// <summary>Whether the type is built for <paramref name="partition"/>: every type is, unless it names its partitions.</summary>
@@ -97,6 +105,7 @@ public sealed record ReferenceTypeSpec
     {
         CacheOrigin.Table => $"table {Table}",
         CacheOrigin.Dictionary => $"dictionary {Dictionary}",
+        CacheOrigin.Dimension => $"dimension {Dimension} of {DimensionFlow}",
         _ => $"kind {Kind}",
     };
 
@@ -121,6 +130,9 @@ public sealed record ReferenceTypeSpec
             case CacheOrigin.Table:
                 ValidateTable();
                 break;
+            case CacheOrigin.Dimension:
+                ValidateDimension();
+                break;
             default:
                 ValidateDictionary();
                 break;
@@ -137,6 +149,7 @@ public sealed record ReferenceTypeSpec
         Refuse(Table, "table");
         Refuse(Key, "key");
         Refuse(Dictionary, "dictionary");
+        Refuse(Dimension, "dimension");
         if (Fields.Count == 0)
         {
             throw new FlowValidationException($"Cached type '{Name}' declares no fields to capture.");
@@ -173,6 +186,7 @@ public sealed record ReferenceTypeSpec
 
         Refuse(Kind, "kind");
         Refuse(Dictionary, "dictionary");
+        Refuse(Dimension, "dimension");
         RefuseQuery();
         ValidateLookupEntityType();
         if (Fields.Count == 0)
@@ -192,6 +206,7 @@ public sealed record ReferenceTypeSpec
 
         Refuse(Kind, "kind");
         Refuse(Table, "table");
+        Refuse(Dimension, "dimension");
         RefuseQuery();
         ValidateLookupEntityType();
 
@@ -208,6 +223,30 @@ public sealed record ReferenceTypeSpec
         }
 
         ValidateLookupNames(Key.Trim(), $"entry of dictionary {Dictionary}");
+    }
+
+    /// <summary>
+    /// A dimension type names the dimension and the flow declaring it, and holds the members' fixed columns: the clean value as
+    /// its key, the originals and the records beside it.
+    /// </summary>
+    private void ValidateDimension()
+    {
+        if (string.IsNullOrWhiteSpace(Dimension) || string.IsNullOrWhiteSpace(DimensionFlow))
+        {
+            throw new FlowValidationException($"Cached type '{Name}' needs the dimension it holds and the dimension flow that declares it.");
+        }
+
+        Refuse(Kind, "kind");
+        Refuse(Table, "table");
+        Refuse(Dictionary, "dictionary");
+        RefuseQuery();
+        ValidateLookupEntityType();
+        if (!string.Equals(Key, DimensionColumns.Value, StringComparison.Ordinal)
+            || !Fields.Select(f => f.Name).SequenceEqual(DimensionColumns.Fields, StringComparer.Ordinal))
+        {
+            throw new FlowValidationException(
+                $"Cached type '{Name}' holds dimension {Dimension}, whose rows are its members: keyed by '{DimensionColumns.Value}' with '{string.Join("' and '", DimensionColumns.Fields)}' beside it.");
+        }
     }
 
     /// <summary>A lookup row's key is its id: neither the key nor a field is called id, and no two share a name.</summary>
@@ -259,7 +298,7 @@ public sealed record ReferenceTypeSpec
     {
         if (!string.IsNullOrWhiteSpace(value))
         {
-            throw new FlowValidationException($"Cached type '{Name}' comes from {Describe()}, which takes no '{setting}'. A type has one origin: kind, table or dictionary.");
+            throw new FlowValidationException($"Cached type '{Name}' comes from {Describe()}, which takes no '{setting}'. A type has one origin: kind, table, dictionary or dimension.");
         }
     }
 }
@@ -283,4 +322,26 @@ public sealed record ReferenceFieldSpec
 
     /// <summary>The name the value is cached under, and the name a mapping matches or selects by.</summary>
     public string Name { get; }
+}
+
+/// <summary>
+/// The columns of a cached type holding a dimension's members: each row keyed by the member's clean value, with the originals
+/// cleaning gathered into it (a set, which a lookup matches on any one of) and the records holding them.
+/// </summary>
+public static class DimensionColumns
+{
+    /// <summary>The key: the member's clean value.</summary>
+    public const string Value = "value";
+
+    /// <summary>The originals the member gathers, exactly as the index holds them.</summary>
+    public const string Originals = "originals";
+
+    /// <summary>The records holding any of them, as the dimension counts them.</summary>
+    public const string Records = "records";
+
+    /// <summary>The columns kept beside the key, in the order the type lists them.</summary>
+    public static IReadOnlyList<string> Fields { get; } = [Originals, Records];
+
+    /// <summary>The fields a dimension type keeps beside its key, as a cache flow's mapper declares them.</summary>
+    public static IReadOnlyList<ReferenceFieldSpec> FieldSpecs() => Fields.Select(field => new ReferenceFieldSpec(field, field)).ToList();
 }

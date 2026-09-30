@@ -807,7 +807,12 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         Snapshots.CacheOrigins.Text(type.Origin),
         type.Origin == Snapshots.CacheOrigin.Osdu ? ClipOrNull(cache.Source.Endpoint, 1000) : null,
         type.Origin == Snapshots.CacheOrigin.Table ? ClipOrNull(cache.Source.Connection, 1000) : null,
-        type.Origin == Snapshots.CacheOrigin.Table ? type.Table : null,
+        type.Origin switch
+        {
+            Snapshots.CacheOrigin.Table => type.Table,
+            Snapshots.CacheOrigin.Dimension => $"{type.DimensionFlow}/{type.Dimension}",
+            _ => null,
+        },
         type.IsLookup ? type.Key : null,
         type.Origin == Snapshots.CacheOrigin.Dictionary ? ClipOrNull(type.DictionaryPath, 1000) : null,
         relative,

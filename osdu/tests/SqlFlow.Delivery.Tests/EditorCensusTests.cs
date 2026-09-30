@@ -35,6 +35,7 @@ public sealed class EditorCensusTests
     [InlineData("keys.cache.json", "cache")]
     [InlineData("keys.retrieval.json", "retrieval")]
     [InlineData("keys.assertion.json", "assertion")]
+    [InlineData("keys.dimension.json", "dimension")]
     [InlineData("keys.mapping.json", "mapping")]
     [InlineData("keys.dictionary.json", "dictionary")]
     public void A_census_file_names_its_kind_and_documents_every_key_it_lists(string file, string kind)
@@ -68,6 +69,7 @@ public sealed class EditorCensusTests
     [InlineData("keys.cache.json", typeof(CacheYaml))]
     [InlineData("keys.retrieval.json", typeof(RetrievalYaml))]
     [InlineData("keys.assertion.json", typeof(AssertionYaml))]
+    [InlineData("keys.dimension.json", typeof(DimensionFlowYaml))]
     public void A_flow_kinds_census_documents_exactly_the_keys_its_loader_accepts(string file, Type model)
     {
         var accepted = YamlKeyPaths.Of(model);
@@ -125,6 +127,21 @@ public sealed class EditorCensusTests
             .Concat(ExpressionFunctions.All.Select(f => f.Signature));
         var unnamed = words.Where(word => !grammar.Contains(word, StringComparison.Ordinal)).ToList();
         Assert.True(unnamed.Count == 0, $"record.<name> does not describe: {string.Join(", ", unnamed)}");
+    }
+
+    [Fact]
+    public void The_dimension_census_documents_every_clean_step_and_every_setting_a_step_takes()
+    {
+        var census = Keys(Census("keys.dimension.json"));
+        var step = census.Single(k => k["path"]!.GetValue<string>() == "dimensions[].clean[]");
+        Assert.True(step["freeForm"]?.GetValue<bool>() ?? false, "a clean step is a name or a one-key map the mapper reads by hand.");
+        var described = step["description"]!.GetValue<string>();
+        var unnamed = DimensionMapper.StepNames.Where(name => !described.Contains($"`{name}`", StringComparison.Ordinal)).ToList();
+        Assert.True(unnamed.Count == 0, $"dimensions[].clean[] does not describe: {string.Join(", ", unnamed)}");
+
+        var documented = Paths(Census("keys.dimension.json"));
+        Assert.All(DimensionMapper.ReplaceSettings, setting => Assert.Contains($"dimensions[].clean[].replace.{setting}", documented));
+        Assert.All(DimensionMapper.MapSettings, setting => Assert.Contains($"dimensions[].clean[].map.{setting}", documented));
     }
 
     [Fact]

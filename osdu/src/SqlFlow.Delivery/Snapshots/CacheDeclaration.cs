@@ -162,6 +162,7 @@ public sealed class CacheDeclaration
     {
         CacheOrigin.Table => "a table",
         CacheOrigin.Dictionary => "a dictionary",
+        CacheOrigin.Dimension => "a dimension",
         _ => $"kind {declaration.Kind}",
     };
 }

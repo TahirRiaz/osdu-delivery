@@ -227,9 +227,9 @@ internal static partial class AssertionMapper
         }
 
         var name = FlowMapper.Require(t.Name, at + ".name", source);
-        if (!AssertionNames.IsName(name))
+        if (!SelectableNames.IsName(name))
         {
-            throw new FlowValidationException($"{source}: {at}.name '{name}' is not a test name: {AssertionNames.Rule}.");
+            throw new FlowValidationException($"{source}: {at}.name '{name}' is not a test name: {SelectableNames.Rule}.");
         }
 
         var where = $"{at} '{name}'";
@@ -392,9 +392,9 @@ internal static partial class AssertionMapper
         foreach (var raw in declared)
         {
             var tag = raw?.Trim() ?? string.Empty;
-            if (!AssertionNames.IsName(tag))
+            if (!SelectableNames.IsName(tag))
             {
-                throw new FlowValidationException($"{source}: {where}: tag '{Shown(tag)}' is not a tag: {AssertionNames.Rule}.");
+                throw new FlowValidationException($"{source}: {where}: tag '{Shown(tag)}' is not a tag: {SelectableNames.Rule}.");
             }
 
             if (tags.Contains(tag, StringComparer.OrdinalIgnoreCase))

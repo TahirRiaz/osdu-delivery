@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 75,
+  "keyCount": 77,
   "keys": [
     {
       "path": "batch",
@@ -434,6 +434,20 @@
       "required": false,
       "description": "The name of the dictionary document the type holds: `dictionaries/<name>.yaml` in the nearest `dictionaries/` folder above the flow. The type is named after the dictionary unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query` or `fields`, since the document names its key and values. The run reads the file at its commit, so it needs the repository's tree.",
       "appliesWhen": "Dictionary origin only: a type with `dictionary`, held from the repository's dictionaries/ folder. Not combined with `kind` or `table`."
+    },
+    {
+      "path": "types[].dimension",
+      "type": "string",
+      "required": false,
+      "description": "The name of a dimension a dimension flow builds (`flowType: dimension`), whose members the type holds: one row per member, keyed by its clean value (`value`), with `originals` (the originals cleaning gathered into it, a set a lookup matches on any one of) and `records` beside it, as the dimension's last completed build in the partition left them. The type is named after the dimension unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query`, `fields` or `key`. A dimension over 100,000 members or 500,000 originals refuses the capture. Lineage orders the flow after the dimension flow that builds it. A mapping cleans a raw value with `replace from $cache.<name> (originals to value)`.",
+      "appliesWhen": "Dimension origin only: a type with `dimension` and `dimensionFlow`. Not combined with `kind`, `table` or `dictionary`."
+    },
+    {
+      "path": "types[].dimensionFlow",
+      "type": "string",
+      "required": false,
+      "description": "The name of the dimension flow that declares `dimension`. The dimension is read from the partition's ledger, so the dimension flow has to have built it in the partition the cache is refreshed for; a refresh before its first completed build fails, naming the build to run.",
+      "appliesWhen": "Dimension origin only: required with `dimension`."
     },
     {
       "path": "types[].entityType",

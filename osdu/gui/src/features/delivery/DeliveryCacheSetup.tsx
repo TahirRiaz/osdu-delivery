@@ -106,6 +106,13 @@ function SourceText({ source }: { source: DeliveryCacheTypeSource }) {
           <span className="truncate text-[11px] text-muted-foreground">keyed by {source.keyField}</span>
         </span>
       );
+    case "dimension":
+      return (
+        <span className="flex min-w-0 flex-col font-mono text-[12px]">
+          <span className="truncate" title={source.sourceObject ?? undefined}>dimension {source.sourceObject}</span>
+          <span className="truncate text-[11px] text-muted-foreground">its members, keyed by {source.keyField}</span>
+        </span>
+      );
     default:
       return source.kind === null ? null : <KindText kind={source.kind} />;
   }
