@@ -183,7 +183,7 @@ record:
 
 **Every word of the mapping language starts with `$`, and every other key is a property of the record.** A template's
 property is therefore never read as the language, whatever it is called (a template may well declare a property called
-`Source`, `Value` or `Description`), and a column never is either. A property is one of six nodes:
+`Source`, `Value` or `Description`), and a column never is either. A property is one of seven nodes:
 
 | Node | Written as | Writes |
 | --- | --- | --- |
@@ -193,6 +193,7 @@ property is therefore never read as the language, whatever it is called (a templ
 | A `$coalesce` node | `Name: { $coalesce: [ { $from: log_name }, { $from: log_source } ] }` | The value of the first of its alternatives that gives one, each a value node of its own. See [Coalesce](#coalesce). |
 | A `$forEach` node | `Curves: { $forEach: curves, $item: { ... } }` | An array with one item per row of a child dataset, each laid out under `$item`. |
 | A list of values | `viewers: ["{$param.aclViewer}", { $cache: ..., $findAll: ... }]` | What each item gives, in order: a literal, or a value node. See [Lists of values](#lists-of-values). |
+| A list of objects | `TechnicalAssurances: [ { TechnicalAssuranceTypeID: { $expr: ... } } ]` | The object each item gives, in order: an object laid out as the tree is, whose properties read the row the list is in, or a literal object. See [Lists of objects](#lists-of-objects). |
 
 A map holding any `$` key is a node, and all of its keys start with `$`: mixing the language's words with the record's
 properties in one map is refused, and so is a word the language does not have, naming the one it most likely meant
@@ -222,7 +223,8 @@ A `$forEach` node takes `$forEach: <child dataset>` and `$item`, which lays out 
 under `$item` read the item's row by bare column names and the dataset's own row with `$dataset.<column>`. A repeated
 array inside a repeated item is not supported, and neither is an array of values whose items come from a child
 dataset's rows; the loader refuses both by name. A list of values whose items come from the cache is a
-[list of values](#lists-of-values).
+[list of values](#lists-of-values), and an array of objects the mapping writes item by item, each object's properties
+read from the row the array is in, is a [list of objects](#lists-of-objects).
 
 Each property the tree writes is a template variable, named by its path in the record: `record.data.Curves.$item.CurveID`
 fills `osdu.data.Curves[].CurveID`. Messages name a node by where the document writes it, and the builder, the coverage
@@ -506,12 +508,49 @@ flow does not capture than a field every row leaves empty, and would let every r
 A list some of whose items are value nodes is a list of values: the items, in order, each a literal or a value node (a
 `$findAll` among them), and the list is what they give, one after another, a value given twice (whatever its case)
 written once where it is first given. An item that gives nothing adds nothing, and one that holds holds the record, as it
-would on its own. An item is never an object, a list, a `$coalesce` or a `$forEach`.
+would on its own. An item is never a list, a `$coalesce` or a `$forEach`, and a list with an object among its items is
+a [list of objects](#lists-of-objects).
 
 The access lists take one: `acl.owners` and `acl.viewers` may add to the literal values every record carries, of which
 they list at least one, so no record goes out without an owner or a viewer whatever its nodes find. The legal lists
 never do: the legal service checks a record's tags and countries before a run, which it can only do for a list the same
 on every record.
+
+### Lists of objects
+
+A list some of whose items are objects is a list of objects: each item is an object laid out as the record tree lays
+out an object, and a node anywhere inside one makes its properties entries of their own. A property of an item is a
+literal, an object of properties, a value node, a `$coalesce` node or a list of values, with its `$modifiers`, `$when`
+and `$required` as anywhere in the tree, and it fills the variable of the list's items it names:
+`record.data.TechnicalAssurances[0].TechnicalAssuranceTypeID` fills `osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID`,
+and it is converted to the type that variable takes and checked against it, a `ref` building the reference of the entity
+type that variable points to. The properties read the row the list is in: the dataset's own row.
+
+```yaml
+# Certified for a log source starting "stat_" (e.g. STAT_COMP); every other log is unevaluated, also when log_source
+# is blank.
+TechnicalAssurances:
+  - TechnicalAssuranceTypeID:
+      $expr: iif(startsWith(log_source, "stat_"), "Certified", "Unevaluated")
+      $modifiers:
+        - id: "{$param.dataPartition}:reference-data--TechnicalAssuranceType:{$value}:"
+    Comment: Set by the Recall conversion
+```
+
+The list is the object each item gives, in the order the items are written, an object two items give alike written
+once. An item is the object its properties give: a property that gives no value (an optional node with nothing to read,
+a `$when` that does not hold) is left out of it, an item none of whose properties gives a value adds nothing, and a list
+none of whose items gives one is left out of the record. A property that holds holds the record, as it would anywhere,
+naming the variable inside the items (`osdu.data.TechnicalAssurances[].Comment: dataset.remark is empty, and the entry is
+required`). An item written as the literal it is (`- TechnicalAssuranceTypeID: "...:Unevaluated:"`) is carried by every
+record, as the items of a literal list are.
+
+A list is one of objects or one of values, since the variable it fills takes one or the other: an item that is a value,
+a value node or a list beside an object is refused by name. An item has no settings of its own, so a condition goes on
+the properties it decides for. A path steps into one array at most, so an item never repeats a child dataset's rows,
+never holds a list of objects of its own, and a list of objects is never inside the items of a `$forEach`; the loader
+refuses each of them by name. The preflight checks each property against the variable it fills and names what it finds
+on the list, and refuses a list of objects where the template takes a list of values.
 
 ### Access by field and country
 
@@ -737,6 +776,8 @@ types are the ones a render writes:
 - A repeated array has one item, and a note says it takes one item per row of its child dataset, and which rows its
   `$where` keeps.
 - A list of values filled from one source is a list of one placeholder, as a render writes a list of one.
+- An item of a list of objects is drawn as its properties are, each a literal or a placeholder at its place in the
+  item.
 
 Nothing is read, rendered for delivery or stored. `POST /api/v1/delivery/mapping-builder/shape` draws the same for any
 mapping document.
@@ -777,14 +818,17 @@ filled on some rows. Such a property has no entry of its own, so beside the tree
 `osdu.data.TechnicalAssurances`", with every value that static value gives it
 (`{$param.dataPartition}:reference-data--TechnicalAssuranceType:Unevaluated:`); the row's hover says the same, and the
 filter finds it by those values. A `$coalesce`'s literal alternative fills what it holds the same way, on the rows it is
-taken. An object an entry writes whole from a value only the render knows (a cached field holding an object) holds
+taken. The items of a list of objects fill the properties they write: a property every item writes on every row is
+filled, one only some items write, or one an item may leave out, is filled on some rows, and beside the tree it is
+filled by "the items of" the list, with the values its literal items and literal properties give it. An object an entry writes whole from a value only the render knows (a cached field holding an object) holds
 whatever that value holds, so its properties read as written by that entry on some rows, never as filled by nothing, and
 a property the schema requires in it is a warning that the value may leave it out.
 
 The mapping builder lists them the same way: a variable no entry of its own fills but an entry above it writes reads "In
-the static value of" (or "Written whole by") that entry with what it gives, offers no cache entry of its own, and opens
-the entry that writes it, which is where it is edited; a static value that leaves it out reads "Not in the static value
-of" that entry. Beside the tree, an entry whose id may go out without its record says so (`$unverified`), and a cache
+the static value of" (or "Written whole by", or "In the items of" a list of objects) that entry with what it gives, offers
+no cache entry of its own, and opens the entry that writes it, which is where it is edited; a static value that leaves
+it out reads "Not in the static value of" that entry, and a list none of whose items writes it "Not in the items of"
+it. Beside the tree, an entry whose id may go out without its record says so (`$unverified`), and a cache
 lookup that tries once more with punctuation and spacing folded away says that too (`$ignoreSeparators`).
 
 Each row says how the document reaches its variable.
@@ -945,7 +989,9 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
 4. For each variable the person chooses dataset, repeater, cache, lookup (once the mapping declares a lookup), search
    (once it declares a search), static, "first value of" (a `$coalesce`, whose alternatives are each edited as an input
    of their own and ordered in the list) or, for a list, "list of values" (whose items are each a fixed value or an input
-   of their own, with its own condition, required flag and description), and adds modifiers, a condition and the
+   of their own, with its own condition, required flag and description), or for a list of objects "list of objects"
+   (whose items are each an object, listing the variables of the list's items, each filled as a variable is anywhere,
+   or a fixed object), and adds modifiers, a condition and the
    required flag; a value that builds an id can be let out unverified. A cache input finds one record by its `$findBy`
    lines, or reads every matching row with a `$findAll`: the key field and the column, fixed text or field of a lookup's
    record it holds, and the fields a row must hold nothing under. The mapping's lookups are a card of their own: each
@@ -965,8 +1011,8 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
    nodes hold) is named with a request for a value to check with. What is typed there is never written into the mapping.
 
 An existing mapping opens in the builder with everything it says: its lookups, the nodes reading them, its `$findAll`
-nodes, its lists of values, and the search answers and cached rows its fixtures declare, so writing it back gives the
-same mapping. The builder writes the whole document from what it holds, so the comments of a hand-written mapping are
+nodes, its lists of values and of objects, and the search answers and cached rows its fixtures declare, so writing it
+back gives the same mapping. The builder writes the whole document from what it holds, so the comments of a hand-written mapping are
 not kept.
 
 ## What is removed
