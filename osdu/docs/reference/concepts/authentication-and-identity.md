@@ -34,8 +34,9 @@ revocable act by an administrator.
 ## The ledger records who asked
 
 Every delivery run and every intervention is attributed. The run row records who requested it, or the trigger
-source (`schedule`, `manual`, `cli`) when nobody did, and the ledger's audit trail records the requesting user
-against each release, redelivery, verification and removal, with the run or compute task it produced. Revoking an
+source (`schedule:<name>`, `manual`, `cli`) when nobody did, and the ledger's audit trail records the requesting user
+against each release, redelivery, verification and removal, with the run or compute task it produced. A run recorded
+before the platform named the schedule that fired it reads `unknown`. Revoking an
 account does not rewrite that history: it is the record of what was done to the data.
 
 Because a personal access token's effective scopes are its own cap intersected with the owner's current role,

@@ -217,14 +217,30 @@ found. The run registers its ledger in the partition first, with the directory's
 
 ### `osdu.Activity`: the audit trail of runs and interventions
 
-One row per operator or scheduler action: `deliver`, `intake`, `drain`, `submit`, `verify`,
-`release`, `redeliver`, `delete`. Each carries the actor (the run's requesting user, `schedule` or `manual` for a run;
-`user:<name>` for an intervention from the GUI or the API; `cli:<user>` from a workstation), start and end,
-outcome (`running`, `completed`, `failed`, `cancelled`), the parameters as JSON, the submission, record and
-platform run it targeted when it targeted one, a summary and, for runs, the captured run log.
+One row per operator or scheduler action. The runs are `deliver`, `intake` and `drain` (a fan-out member's share),
+`verify`, and the scheduled reachability `probe`; the interventions are `sync`, `release`, `redeliver` and `delete`.
+Each carries the actor (`schedule:<name>` for a run a schedule fired, the requesting user or `manual:<user>` for a run
+started by hand, `user:<name>` for an intervention from the GUI or the API, `cli:<user>` from a workstation,
+`service:<name>` for the control plane's own; `unknown` on runs recorded before the platform named who started them),
+start and end, outcome (`running`, `completed`, `failed`, `cancelled`), the parameters as JSON, the submission, record
+and platform run it targeted when it targeted one, a summary and, for runs, the captured run log.
+
+The summary of a run names only the counts that are not zero: what it planned, delivered, found unchanged or stale,
+held, blocked, failed, left retrying or waiting ("3 delivered, 2 unchanged"), or that it had nothing to deliver. The
+counts are the run's own; the submission holds its totals across every run that worked on it, and the run's result and
+log hold every count.
+
+`Idle` marks a run that completed having changed nothing: a deliver or intake run that planned, held and blocked no
+record and sent none, left none waiting on an approval or on a record it refers to, a drain that settled nothing, a
+verify that found nothing to check. Rows read and found unchanged or stale change nothing. The run sets it when it
+completes; a failed or cancelled run never is idle, and neither is an intervention, which always stays in view. A
+schedule firing every hour writes mostly idle runs, so the audit trail leaves them out unless asked (`idle=false` on
+`GET /activities`, the **Show idle runs** switch in the GUI) and counts what it left out; the rows themselves stay, as
+the record that the schedule fired and found nothing.
 
 Record history is the attempts; run and intervention history is the activities. A record's page in the GUI
-shows both, plus its verify outcomes; a run's page links to what it did to each record through the run id.
+shows both, plus its verify outcomes; a run's page links to what it did to each record through the run id. An idle run
+wrote nothing to any record, so a record's history never misses one.
 
 ### `osdu.SourceWatermark`: tier 0
 
@@ -627,7 +643,7 @@ do not are seeks on an id that is unique across partitions, where the partition 
 | `Lease (PartitionId, Token)` primary key, unique `(Token)`, `(PartitionId, FlowId, ExpiresUtc)`, `(SubmissionId, ExpiresUtc)` | a lease by token, the leases of a flow that ran out, for the recovery; the next expiry a run waits for, for a flow and for one submission |
 | `RecordEvent (PartitionId, EventId)` primary key, `(LeaseToken, FlowId, DeliveryKey, EventId)`, `(PartitionId, FlowId, AtUtc) INCLUDE (LeaseToken)` | one lease's events in record order, a slice at a time, for its checkpoint; a flow's old events, for the recovery of those whose lease is gone |
 | `Attempt (PartitionId, AttemptId)` primary key, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, PartitionId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order across every partition |
-| `Activity (PartitionId, ActivityId)` primary key, unique `(ActivityId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(PartitionId, Kind, StartedUtc)`, `(PartitionId, Actor, StartedUtc)`, `(PartitionId, StartedUtc)`, `(SubmissionId)`, `(RunId)` | an activity by id, the audit views and their filters in a partition, one record's interventions, a submission's and a run's |
+| `Activity (PartitionId, ActivityId)` primary key, unique `(ActivityId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(PartitionId, Kind, StartedUtc)`, `(PartitionId, Actor, StartedUtc)`, `(PartitionId, StartedUtc)`, `(PartitionId, Idle, StartedUtc)`, `(SubmissionId)`, `(RunId)` | an activity by id, the audit views and their filters in a partition, the trail without its idle runs and the count of them, one record's interventions, a submission's and a run's |
 | `Retrieval (PartitionId, RetrievalId)` primary key, unique `(RetrievalId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval by id, a retrieval flow's runs, the watermark chain (the last done run), the run's row |
 | `AssertionRun (PartitionId, AssertionRunId)` primary key, unique `(AssertionRunId)`, `(PartitionId, FlowId, StartedUtc)`, `(RunId)` | a report by number, an assertion flow's runs newest first, the platform run's report |
 | `AssertionResult (PartitionId, ResultId)` primary key, unique `(ResultId)`, `(PartitionId, AssertionRunId)`, `(PartitionId, FlowId, TestName, AssertionRunId)` | a run's results, and each test's latest result and history, one seek per flow, for the boards, the matrix and a test's trend |
@@ -752,6 +768,13 @@ sized by its row count, and runs while no host is up.
 inside the transaction of every write to the record table, and it grouped a flow into a handful of rows, so every node
 delivering that flow met every other one there. The statistics are counted from the records instead, and going back
 down recreates the view. It holds no data of its own, so nothing is lost either way.
+
+`ActivityIdle` (module version 1.16.0) adds `Idle` to `osdu.Activity` and the index `(PartitionId, Idle, StartedUtc)`
+the audit trail opens on. A run written before the column is marked idle from what the ledger still says of it: a
+`deliver` or `intake` run that completed, whose submission planned, delivered, held, blocked and failed nothing and leaves
+nothing waiting, and under whose run id no attempt was made. Every other row stays as it was, including a run that held
+records its submission has since let go of, which the ledger no longer shows. It is one update over the activity table,
+one row per run and intervention, and one index build over it; going back down drops both.
 
 `LedgerPartitions` (module version 1.14.0) keys the ledger by partition (see [Partitions](#partitions)). It creates
 `osdu.LedgerPartition` and `osdu.Ledger` and fills them from what the ledger already says, before anything else changes:

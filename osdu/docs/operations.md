@@ -118,7 +118,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /records/{flowId}/{key}/chain` | read | The record's row through its ingestion table: the table (`sourceTable`), when the row first arrived (`insertedUtc`), and every change of it the ledger recorded, newest first: `loaded` (the insert), `reloaded` (inserted again after earlier versions), `earliest` (the earliest version held, when the arrival is not known), `changed` and `deleted`, each with its file and row, the ingestion run that was writing the table when the row was stamped (`loading`), and the last landing of its file before that run (`landing`). A run that reloaded the row unchanged made no change and is not listed; a run the catalog does not prove is left out rather than guessed, and `note` says what could not be named. At most 50 changes, the newest and the arrival (`truncated`). |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
-| `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time; one activity with its captured log. |
+| `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time and `idle` (`false` leaves out the runs that changed nothing, `true` lists only them); one activity with its captured log. |
 | `GET /mappings`, `/mappings/{id}` | read | The mapping documents the repositories hold. |
 | `GET /mappings/{id}/flows` | read | The interfaces of the repository's delivery flows that render with the mapping, as the last sync described them, in every partition: each one's pipeline, flow, interface, partition, ledger identity, record table and route. What a value check of the mapping reads the rows of ([Checking a mapping's values](#checking-a-mappings-values)). An interface the repository no longer declares, or whose pipeline the catalog does not hold as an active delivery flow, is left out. |
 | `GET /templates` | read | The saved template versions, by kind and newest first, each with where it came from, who saved it and how many synced mappings pin it ([mapping-templates.md](mapping-templates.md)). |
@@ -649,7 +649,12 @@ Pipelines like any other flow.
   failed, errored and warned tests; **Run again** repeats the run's pick; **Report** opens the HTML report in a tab of its
   own or downloads it as HTML, Markdown, JSON or JUnit XML. The platform run's page links here (**Open the report**) and
   shows the counts in place of row counts.
-- **Audit trail** (OSDU): every run and intervention across flows, by actor, with parameters and log.
+- **Audit trail** (OSDU): every run and intervention across flows, newest first: when, flow, action, who started it (a
+  schedule, a person, the command line or a service), the result (how it ended and the counts that are not zero) and
+  what it worked on (the record, else the submission, else the run). The runs that changed nothing are left out and
+  counted beside **Show idle runs**, which brings them back dimmed. An entry opens on the whole ids of its record,
+  submission and run, its parameters and, for a run, its captured log. The table fits its page: the flow and the result
+  clip with the whole value on hover rather than scrolling sideways.
 - **Mappings** (OSDU): the mapping documents the repositories hold, each mapping with the template it pins and a
   link to the Mapping builder. A mapping opens on its Properties, laid out so that what needs a look is what stands
   out: the data check on one line, then the template the mapping pins as the record's tree beside the selected
