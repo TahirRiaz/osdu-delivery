@@ -206,13 +206,14 @@ public sealed class DimensionRunTests : IDisposable
         var a = keys["dev:master-data--Wellbore:A:"];
         Assert.Equal(("15/9-A", "dev:master-data--Wellbore:A", "15/9-A"), (a.Label, a.LabelFrom, a.MemberValue));
 
-        // A key whose record the search does not hold, or whose record holds no name, is its own value, and the build says why.
-        Assert.Equal((null, "dev:master-data--Wellbore:Z:"), (keys["dev:master-data--Wellbore:Z:"].Label, keys["dev:master-data--Wellbore:Z:"].MemberValue));
+        // A key whose record the search does not hold, or whose record holds no name, is valued by the code its id ends with,
+        // and the build says why.
+        Assert.Equal((null, "Z"), (keys["dev:master-data--Wellbore:Z:"].Label, keys["dev:master-data--Wellbore:Z:"].MemberValue));
         Assert.Equal((null, "dev:master-data--Wellbore:C"), (keys["dev:master-data--Wellbore:C:"].Label, keys["dev:master-data--Wellbore:C:"].LabelFrom));
         var run = (await ledger.ListDimensionRunsAsync(wellbores.DimensionId, 1)).Single();
         Assert.Equal((2L, 2L, 1), (run.Read.Labelled, run.Read.Unlabelled, run.Read.LabelQueries));
         Assert.Contains(run.Read.Notes, n => n.Contains("the search holds no record they name", StringComparison.Ordinal));
-        Assert.Contains(run.Read.Notes, n => n.Contains("holds nothing at the label's path", StringComparison.Ordinal));
+        Assert.Contains(run.Read.Notes, n => n.Contains("holds nothing at the path it is read from", StringComparison.Ordinal));
 
         // Each key's filter finds exactly the records holding it, and so does its value's.
         Assert.Equal(["dev:work-product-component--WellLog:1", "dev:work-product-component--WellLog:2"], _platform.Find(WellLog, a.Filter!));
@@ -241,6 +242,111 @@ public sealed class DimensionRunTests : IDisposable
         var within = await DimensionSearch.ComposeAsync(
             ledger, [new DimensionPick(countries, [], ["Norway"])], null, "id:\"dev:work-product-component--WellLog:3\"", CancellationToken.None);
         Assert.Equal(["dev:work-product-component--WellLog:3"], _platform.Find(WellLog, within.Query));
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task A_key_s_attributes_are_read_through_the_records_it_names_kept_and_looked_up_and_a_search_is_picked_by_them()
+    {
+        // Wellbores whose ids escape a slash, each in a region and a country (the country told by the context's type), one of
+        // them in a field; logs of each.
+        const string Norway = "dev:master-data--GeoPoliticalEntity:NO";
+        const string Denmark = "dev:master-data--GeoPoliticalEntity:DK";
+        const string NorthSea = "dev:master-data--GeoPoliticalEntity:NorthSea";
+        _platform.Add(Norway, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Norway" });
+        _platform.Add(Denmark, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Denmark" });
+        _platform.Add(NorthSea, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "North Sea" });
+        _platform.Add("dev:master-data--Field:STATFJORD", "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = "Statfjord" });
+        JsonObject Context(string entity, string type) => new() { ["GeoPoliticalEntityID"] = entity + ":", ["GeoTypeID"] = $"dev:reference-data--GeoPoliticalEntityType:{type}:" };
+        _platform.Add("dev:master-data--Wellbore:15%2F9-A", Wellbore, new JsonObject
+        {
+            ["FacilityName"] = "NO 15/9-A",
+            ["GeoContexts"] = new JsonArray(Context(NorthSea, "Region"), Context(Norway, "Country"), new JsonObject { ["FieldID"] = "dev:master-data--Field:STATFJORD:" }),
+        });
+        _platform.Add("dev:master-data--Wellbore:15%2F9-B", Wellbore, new JsonObject
+        {
+            ["FacilityName"] = "NO 15/9-B",
+            ["GeoContexts"] = new JsonArray(Context(NorthSea, "Region"), Context(Norway, "Country")),
+        });
+        _platform.Add("dev:master-data--Wellbore:5504%2F7-1", Wellbore, new JsonObject
+        {
+            ["FacilityName"] = "DK 5504/7-1",
+            ["GeoContexts"] = new JsonArray(Context(Denmark, "Country")),
+        });
+        foreach (var (log, wellbore) in new[] { ("1", "15%2F9-A"), ("2", "15%2F9-A"), ("3", "15%2F9-B"), ("4", "5504%2F7-1") })
+        {
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:{wellbore}:" });
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+                attributes:
+                  Country: ['data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID', data.GeoPoliticalEntityName]
+                  Field: [data.GeoContexts.FieldID, data.FieldName]
+              - name: WellboreCode
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((2, 0), (outcome.Built, outcome.Failed));
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var keys = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
+            .ToDictionary(k => k.Original, StringComparer.Ordinal);
+
+        // Each key keeps its attributes: the country read through the context whose type is Country, not the region before it.
+        var a = keys["dev:master-data--Wellbore:15%2F9-A:"];
+        Assert.Equal(
+            [("Country", "Norway", (string?)Norway), ("Field", "Statfjord", "dev:master-data--Field:STATFJORD")],
+            a.Attributes.Select(x => (x.Name, x.Value, x.From)));
+        Assert.Equal(["Country"], keys["dev:master-data--Wellbore:15%2F9-B:"].Attributes.Select(x => x.Name));
+        var run = (await ledger.ListDimensionRunsAsync(wellbores.DimensionId, 1)).Single();
+        Assert.Contains(run.Read.Notes, n => n.Contains("key(s) have no Field", StringComparison.Ordinal));
+
+        // A key naming a record with no label is valued by the code its id ends with, its escapes decoded.
+        var codes = (await ledger.FindDimensionAsync(flow.LedgerId, "WellboreCode"))!;
+        Assert.Equal(["15/9-A", "15/9-B", "5504/7-1"], (await MembersAsync(ledger, codes.DimensionId)).Select(m => m.Value));
+
+        // Values and keys are looked up by their attributes, and an attribute lists its values with their keys and records.
+        var norwegian = await ledger.ListDimensionMembersAsync(
+            wellbores.DimensionId, new DimensionMemberQuery(null, false, null, 10, DimensionMemberOrder.Value, [new DimensionAttributeMatch("Country", ["Norway"])]));
+        Assert.Equal(["NO 15/9-A", "NO 15/9-B"], norwegian.Select(m => m.Value));
+        Assert.Contains(norwegian[0].Attributes, x => x is { Name: "Country", Value: "Norway", Keys: 1 });
+        var both = await ledger.ListDimensionValuesAsync(
+            wellbores.DimensionId,
+            new DimensionValueQuery(null, null, false, false, null, 10, DimensionValueOrder.Arrival,
+                [new DimensionAttributeMatch("Country", ["Norway", "Denmark"]), new DimensionAttributeMatch("Field", ["Statfjord"])]));
+        Assert.Equal(["dev:master-data--Wellbore:15%2F9-A:"], both.Select(k => k.Original));
+        Assert.Equal(
+            [("Norway", 2, 3L), ("Denmark", 1, 1L)],
+            (await ledger.ListDimensionAttributeValuesAsync(wellbores.DimensionId, "Country", null, 10)).Select(v => (v.Value, v.Keys, v.Records)));
+
+        // A search picked by an attribute finds the logs of every wellbore holding it.
+        var inNorway = await DimensionSearch.ComposeAsync(
+            ledger, [new DimensionPick(wellbores, [], [], [new DimensionAttributeMatch("country", ["Norway"])])], null, null, CancellationToken.None);
+        Assert.Equal(
+            ["dev:work-product-component--WellLog:1", "dev:work-product-component--WellLog:2", "dev:work-product-component--WellLog:3"],
+            _platform.Find(WellLog, inNorway.Query));
+        Assert.Equal(["NO 15/9-A", "NO 15/9-B"], Assert.Single(inNorway.Parts).Values.Select(v => v.Value).Order(StringComparer.Ordinal));
+        var unknown = await Assert.ThrowsAsync<DeliveryException>(() => DimensionSearch.ComposeAsync(
+            ledger, [new DimensionPick(wellbores, [], [], [new DimensionAttributeMatch("Basin", ["X"])])], null, null, CancellationToken.None));
+        Assert.Contains("reads no attribute 'Basin'; it reads Country, Field", unknown.Message, StringComparison.Ordinal);
+
+        // A second build reads the attributes again: a country renamed is rewritten, a field no longer named is dropped.
+        _platform.Records.Single(r => r["id"]!.GetValue<string>() == Norway)["data"]!["GeoPoliticalEntityName"] = "Kingdom of Norway";
+        var first = _platform.Records.Single(r => r["id"]!.GetValue<string>() == "dev:master-data--Wellbore:15%2F9-A")["data"]!.AsObject();
+        first["GeoContexts"] = new JsonArray(Context(NorthSea, "Region"), Context(Norway, "Country"));
+        await runner.BuildAsync(["Wellbore"], Guid.NewGuid(), "tests", CancellationToken.None);
+        var again = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
+            .Single(k => k.Original == "dev:master-data--Wellbore:15%2F9-A:");
+        Assert.Equal([("Country", "Kingdom of Norway")], again.Attributes.Select(x => (x.Name, x.Value)));
+        var second = (await ledger.ListDimensionRunsAsync(wellbores.DimensionId, 1)).Single();
+        Assert.Contains(second.Read.Notes, n => n.Contains("attribute value(s) of keys were added, rewritten or dropped", StringComparison.Ordinal));
         OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
     }
 

@@ -1,4 +1,5 @@
 using SqlFlow.Core;
+using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.Snapshots;
 
@@ -226,8 +227,8 @@ public sealed record ReferenceTypeSpec
     }
 
     /// <summary>
-    /// A dimension type names the dimension and the flow declaring it, and holds the members' fixed columns: the clean value as
-    /// its key, the originals and the records beside it.
+    /// A dimension type names the dimension and the flow declaring it, and holds the values' fixed columns (the value as its
+    /// key, its keys, records and filter beside it), then the attributes of the dimension it names.
     /// </summary>
     private void ValidateDimension()
     {
@@ -242,10 +243,11 @@ public sealed record ReferenceTypeSpec
         RefuseQuery();
         ValidateLookupEntityType();
         if (!string.Equals(Key, DimensionColumns.Value, StringComparison.Ordinal)
-            || !Fields.Select(f => f.Name).SequenceEqual(DimensionColumns.Fields, StringComparer.Ordinal))
+            || !Fields.Take(DimensionColumns.Fields.Count).Select(f => f.Name).SequenceEqual(DimensionColumns.Fields, StringComparer.Ordinal)
+            || Fields.Skip(DimensionColumns.Fields.Count).Any(f => !DimensionAttributeSpec.IsName(f.Name) || DimensionAttributeSpec.Reserved.Contains(f.Name)))
         {
             throw new FlowValidationException(
-                $"Cached type '{Name}' holds dimension {Dimension}, whose rows are its values: keyed by '{DimensionColumns.Value}' with '{string.Join("' and '", DimensionColumns.Fields)}' beside it.");
+                $"Cached type '{Name}' holds dimension {Dimension}, whose rows are its values: keyed by '{DimensionColumns.Value}' with '{string.Join("' and '", DimensionColumns.Fields)}' beside it, then the attributes of the dimension it carries.");
         }
     }
 
@@ -326,8 +328,9 @@ public sealed record ReferenceFieldSpec
 
 /// <summary>
 /// The columns of a cached type holding a dimension's values: each row keyed by a human-friendly value, with the keys it stands
-/// for exactly as the index holds them (a set, which a lookup matches on any one of), the records holding them, and the
-/// search filter finding those records.
+/// for exactly as the index holds them (a set, which a lookup matches on any one of), the records holding them, the search
+/// filter finding those records, and the attributes the type names, each under its name (a set when the value's keys hold
+/// several).
 /// </summary>
 public static class DimensionColumns
 {

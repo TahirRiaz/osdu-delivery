@@ -11,9 +11,10 @@ import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { deliveryApi, type DeliveryDimensionValue } from "../../../api/delivery";
+import { deliveryApi, type DeliveryDimensionValue, type DimensionAttributeCondition } from "../../../api/delivery";
 import { ProblemView } from "../TemplateSheet";
 import { counted } from "../assertions/assertionFormat";
+import { DimensionAttributeFilter, ValueAttributeCell } from "./DimensionAttributeFilter";
 import { MoreFooter } from "./DimensionBadges";
 import { DimensionFilterSheet } from "./DimensionFilterSheet";
 import { DimensionValueText } from "./DimensionValueText";
@@ -115,7 +116,8 @@ function FilterCell({ value, onFilter }: { value: DeliveryDimensionValue; onFilt
 /**
  * A dimension's values: each human-friendly value with a bar of the records holding it, the keys it stands for (the
  * commonest first, each exactly as the index holds it, with its count), and the search filter that finds its records. Read
- * with the most records first or in value order, a page at a time, found by the value or any of its keys. Values are picked
+ * with the most records first or in value order, a page at a time, found by the value or any of its keys, and narrowed by
+ * the attributes its keys hold (a column each shows the values they hold). Values are picked
  * to write the search that finds the records of all of them together; a value opens in a sheet with everything the ledger
  * holds of it.
  */
@@ -130,11 +132,13 @@ export function DimensionValues({ entry, dimensionId, onValue }: {
   const [removed, setRemoved] = useState(false);
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [filtering, setFiltering] = useState<number[] | null>(null);
+  const [conditions, setConditions] = useState<DimensionAttributeCondition[]>([]);
+  const attributes = entry.dimension.attributes;
   // A new build rewrites the values, so its id keys every page: pages read before it are read again rather than mixed in.
   const built = entry.dimension.current?.buildId ?? null;
   const pages = useInfiniteQuery({
-    queryKey: ["delivery", "dimensions", "values", dimensionId, built, search, order, removed],
-    queryFn: ({ pageParam }) => deliveryApi.dimensionValues(dimensionId, { search, order, removed, after: pageParam, limit: PAGE }),
+    queryKey: ["delivery", "dimensions", "values", dimensionId, built, search, order, removed, conditions],
+    queryFn: ({ pageParam }) => deliveryApi.dimensionValues(dimensionId, { search, order, removed, after: pageParam, limit: PAGE, attributes: conditions }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next,
     placeholderData: keepPreviousData,
@@ -171,6 +175,11 @@ export function DimensionValues({ entry, dimensionId, onValue }: {
       floor: 220,
       render: (row) => <KeysCell value={row} search={search} />,
     },
+    ...attributes.map((attribute): Column<DeliveryDimensionValue> => ({
+      id: `attribute-${attribute.name}`,
+      header: attribute.name,
+      render: (row) => <ValueAttributeCell values={row.attributes.filter((a) => a.name === attribute.name).map((a) => a.value)} />,
+    })),
     {
       id: "filter",
       header: "Filter",
@@ -218,6 +227,7 @@ export function DimensionValues({ entry, dimensionId, onValue }: {
           <Switch id={`removed-${dimensionId}`} checked={removed} onCheckedChange={setRemoved} data-testid="dimension-values-removed" />
           <Label htmlFor={`removed-${dimensionId}`} className="text-[13px] font-normal">Removed too</Label>
         </div>
+        <DimensionAttributeFilter dimensionId={dimensionId} attributes={attributes} conditions={conditions} onChange={setConditions} testId="dimension-values-attributes" />
       </FilterBar>
 
       {pages.isError
@@ -240,7 +250,9 @@ export function DimensionValues({ entry, dimensionId, onValue }: {
                 testId="dimension-values-footer"
               />
             )}
-            emptyMessage={search !== "" ? "No value, nor any of its keys, holds the search." : "The dimension holds no value: its last build found no key."}
+            emptyMessage={conditions.length > 0
+              ? "No value has a key holding every attribute picked."
+              : search !== "" ? "No value, nor any of its keys, holds the search." : "The dimension holds no value: its last build found no key."}
             data-testid="dimension-values-table"
           />
         )}

@@ -71,6 +71,9 @@ public sealed record DimensionDeclaration
     /// <summary>Where each key's label is read, as a JSON array of paths; null when keys are their own values.</summary>
     public string? LabelJson { get; init; }
 
+    /// <summary>The attributes each key is read with, as a JSON array of <c>{ "name", "steps" }</c>; null when none.</summary>
+    public string? AttributesJson { get; init; }
+
     public required string DefinitionHash { get; init; }
 }
 
@@ -110,6 +113,9 @@ public sealed record DimensionState
 
     /// <summary>Where each key's label is read, as a JSON array of paths; null when keys are their own values.</summary>
     public string? LabelJson { get; init; }
+
+    /// <summary>The attributes each key is read with, as a JSON array of <c>{ "name", "steps" }</c>; null when none.</summary>
+    public string? AttributesJson { get; init; }
 
     public required string DefinitionHash { get; init; }
 
@@ -160,7 +166,7 @@ public sealed record DimensionReadCounts
     /// <summary>Keys the build could not label: a key naming no record, a record the search does not hold, or one without the path.</summary>
     public long Unlabelled { get; init; }
 
-    /// <summary>Searches the build asked to read labels.</summary>
+    /// <summary>Searches the build asked to read labels and attributes.</summary>
     public int LabelQueries { get; init; }
 
     /// <summary>The kinds the pattern matched and the template each was read against, as JSON; null when none was needed.</summary>
@@ -222,11 +228,32 @@ public sealed record DimensionChangeCounts(
 
 /// <summary>
 /// One original (a key) as a build found it: its member's clean value (the key's value) or why it has none, its count, the
-/// label read for it and the record it was read from, and the search filter finding its records.
+/// label read for it and the record it was read from, the search filter finding its records, and its attributes.
 /// </summary>
 public sealed record DimensionOriginalWrite(
     string Original, string? CleanValue, string? LeftOut, string? Note, long Count, bool Filterable,
-    string? Label = null, string? LabelFrom = null, string? Filter = null);
+    string? Label = null, string? LabelFrom = null, string? Filter = null, IReadOnlyList<DimensionAttributeState>? Attributes = null);
+
+/// <summary>One attribute of a key: its name, the value read, and the id of the record it was read from.</summary>
+public sealed record DimensionAttributeState(string Name, string Value, string? From);
+
+/// <summary>
+/// A value one attribute holds among a member's keys, as a page of members shows it: the value, and how many of the member's
+/// keys hold it.
+/// </summary>
+public sealed record DimensionMemberAttributeValue(string Name, string Value, int Keys);
+
+/// <summary>The values each attribute holds among one member's keys.</summary>
+public sealed record DimensionMemberAttributes(long MemberId, IReadOnlyList<DimensionMemberAttributeValue> Attributes);
+
+/// <summary>A value an attribute holds among a dimension's keys: the value, the keys holding it, and their records (summed).</summary>
+public sealed record DimensionAttributeValueState(string Value, int Keys, long Records);
+
+/// <summary>
+/// Keys an attribute has to hold: one of <paramref name="Values"/> under <paramref name="Name"/>, compared exactly. Several
+/// matches are all to hold, by the same key.
+/// </summary>
+public sealed record DimensionAttributeMatch(string Name, IReadOnlyList<string> Values);
 
 /// <summary>One member as a build made it: its clean value, its count, and its filter.</summary>
 public sealed record DimensionMemberWrite(string Value, long Records, bool RecordsExact, int Originals, int Unfilterable, string? Filter, int FilterParts);
@@ -283,6 +310,12 @@ public sealed record DimensionMemberState
     public long? RemovedRunId { get; init; }
 
     public DateTime? RemovedUtc { get; init; }
+
+    /// <summary>
+    /// The values each attribute holds among its keys, the most keys first and at most a few per attribute, as a page of
+    /// members reads them; empty elsewhere.
+    /// </summary>
+    public IReadOnlyList<DimensionMemberAttributeValue> Attributes { get; init; } = [];
 }
 
 /// <summary>An original as a page or a filter reads it.</summary>
@@ -325,6 +358,9 @@ public sealed record DimensionValueState
     public long? RemovedRunId { get; init; }
 
     public DateTime? RemovedUtc { get; init; }
+
+    /// <summary>Its attributes, as its last build read them, in the order the dimension declares them.</summary>
+    public IReadOnlyList<DimensionAttributeState> Attributes { get; init; } = [];
 }
 
 /// <summary>A change a build made to one original, as the change log reads it.</summary>
@@ -360,8 +396,10 @@ public sealed record DimensionMemberCursor(string Value, long Records);
 /// <param name="After">Where the page before ended, in the page's order; null starts at the first.</param>
 /// <param name="Limit">The most members the page holds.</param>
 /// <param name="Order">The order the page reads in.</param>
+/// <param name="Attributes">Only the members holding a key that holds every match; null or empty reads every member.</param>
 public sealed record DimensionMemberQuery(
-    string? Search, bool IncludeRemoved, DimensionMemberCursor? After, int Limit, DimensionMemberOrder Order = DimensionMemberOrder.Value);
+    string? Search, bool IncludeRemoved, DimensionMemberCursor? After, int Limit, DimensionMemberOrder Order = DimensionMemberOrder.Value,
+    IReadOnlyList<DimensionAttributeMatch>? Attributes = null);
 
 /// <summary>The order a page of originals reads in.</summary>
 public enum DimensionValueOrder
@@ -377,13 +415,16 @@ public enum DimensionValueOrder
 public sealed record DimensionValueCursor(long ValueId, long Count);
 
 /// <summary>Which originals a page reads.</summary>
-/// <param name="Search">Text the original contains, ignoring case; null reads every original.</param>
+/// <param name="Search">Text the original or its label contains, ignoring case; null reads every original.</param>
 /// <param name="MemberId">Only the originals of this member.</param>
 /// <param name="LeftOutOnly">Only the originals under no member.</param>
 /// <param name="IncludeRemoved">Read the originals no build finds any more as well.</param>
 /// <param name="After">Where the page before ended, in the page's order; null starts at the first.</param>
 /// <param name="Limit">The most originals the page holds.</param>
 /// <param name="Order">The order the page reads in.</param>
+/// <param name="Attributes">Only the originals holding every match; null or empty reads every original.</param>
+/// <param name="MemberIds">Only the originals of these members; null reads the originals of every member (and of none).</param>
 public sealed record DimensionValueQuery(
     string? Search, long? MemberId, bool LeftOutOnly, bool IncludeRemoved, DimensionValueCursor? After, int Limit,
-    DimensionValueOrder Order = DimensionValueOrder.Arrival);
+    DimensionValueOrder Order = DimensionValueOrder.Arrival, IReadOnlyList<DimensionAttributeMatch>? Attributes = null,
+    IReadOnlyCollection<long>? MemberIds = null);

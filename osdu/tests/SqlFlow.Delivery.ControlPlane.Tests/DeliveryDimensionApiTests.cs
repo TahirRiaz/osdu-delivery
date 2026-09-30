@@ -68,6 +68,8 @@ public sealed class DeliveryDimensionApiTests
                 kind: "{{WellLog}}"
                 path: data.WellboreID
                 label: data.FacilityName
+                attributes:
+                  Country: ['data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID', data.GeoPoliticalEntityName]
             """;
         var flow = new DeliveryDocumentLoader().ParseDimension(yaml, "flows/" + flowName + ".yaml").ForRun(partition, RegisteredPartitions.None);
         var spec = flow.Dimensions[0];
@@ -112,7 +114,8 @@ public sealed class DeliveryDimensionApiTests
             // The wellbores are keyed by the id each log refers to, and valued by the name read from the wellbore; one wellbore
             // the label search did not find is valued by its id.
             var wellbores = await WellboresAsync(ledger, flow, now.AddMinutes(-30),
-                ("dev:master-data--Wellbore:1001:", "15/9-F-1", 7), ("dev:master-data--Wellbore:1002:", "15/9-F-4", 3), ("dev:master-data--Wellbore:9999:", null, 1));
+                ("dev:master-data--Wellbore:1001:", "15/9-F-1", 7, "Norway"), ("dev:master-data--Wellbore:1002:", "15/9-F-4", 3, "Norway"),
+                ("dev:master-data--Wellbore:9999:", null, 1, null));
             var wellboreId = wellbores.DimensionId;
 
             await using var factory = new ControlPlaneAppFactory()
@@ -145,6 +148,7 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal("search answered 503", dimension.GetProperty("latest").GetProperty("error").GetString());
             Assert.Equal("nested(data.Curves, Mnemonic.keyword)", dimension.GetProperty("field").GetProperty("aggregateBy").GetString());
             Assert.Equal(["data.FacilityName"], dimensions[1].GetProperty("label").EnumerateArray().Select(l => l.GetString()));
+            Assert.Equal(["Country"], dimensions[1].GetProperty("attributes").EnumerateArray().Select(a => a.GetProperty("name").GetString()));
             Assert.Equal((2L, 1L), (dimensions[1].GetProperty("current").GetProperty("labelled").GetInt64(), dimensions[1].GetProperty("current").GetProperty("unlabelled").GetInt64()));
             var own = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId}/dimensions?partition={partition}");
             var totals = own.GetProperty("totals");
@@ -207,6 +211,20 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(("dev:master-data--Wellbore:1002:", "15/9-F-4", "dev:master-data--Wellbore:1002", "15/9-F-4"),
                 (named.GetProperty("key").GetString(), named.GetProperty("label").GetString(), named.GetProperty("labelFrom").GetString(), named.GetProperty("value").GetString()));
             Assert.Equal(DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1002:"])[0], named.GetProperty("filter").GetString());
+            var country = Assert.Single(named.GetProperty("attributes").EnumerateArray());
+            Assert.Equal(("Country", "Norway"), (country.GetProperty("name").GetString(), country.GetProperty("value").GetString()));
+
+            // Values and keys are looked up by an attribute, and an attribute lists its values: the lookup a drop-down reads.
+            var inNorway = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/values?attr=country:Norway&order=value");
+            var norwegian = inNorway.GetProperty("items").EnumerateArray().ToList();
+            Assert.Equal(["15/9-F-1", "15/9-F-4"], norwegian.Select(v => v.GetProperty("value").GetString()));
+            Assert.Equal("Norway", norwegian[0].GetProperty("attributes")[0].GetProperty("value").GetString());
+            Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?attr=Country:Norway&search=F-4")).GetProperty("items").EnumerateArray());
+            var countries = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country");
+            var norway = Assert.Single(countries.EnumerateArray());
+            Assert.Equal(("Norway", 2, 10L), (norway.GetProperty("value").GetString(), norway.GetProperty("keys").GetInt32(), norway.GetProperty("records").GetInt64()));
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Basin", HttpStatusCode.NotFound, "reads no attribute 'Basin'; it reads Country");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/values?attr=Norway", HttpStatusCode.BadRequest, "is not Name:value");
             var unnamed = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?search=9999")).GetProperty("items").EnumerateArray());
             Assert.Equal(("dev:master-data--Wellbore:9999:", JsonValueKind.Null), (unnamed.GetProperty("value").GetString(), unnamed.GetProperty("label").ValueKind));
 
@@ -249,6 +267,21 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(["CurveMnemonic", "Wellbore"], search.GetProperty("parts").EnumerateArray().Select(p => p.GetProperty("dimension").GetString()));
             var picked = Assert.Single(search.GetProperty("parts")[1].GetProperty("values").EnumerateArray());
             Assert.Equal(("15/9-F-1", 7L), (picked.GetProperty("value").GetString(), picked.GetProperty("records").GetInt64()));
+
+            // A pick by attribute: every wellbore in Norway, with the curve GR.
+            var byCountry = await PostJsonAsync(client, token, "/api/v1/delivery/dimensions/search", new
+            {
+                picks = new object[]
+                {
+                    new { dimensionId, values = new[] { "GR" } },
+                    new { dimensionId = wellboreId, attributes = new[] { new { name = "Country", values = new[] { "Norway" } } } },
+                },
+            });
+            var norwayFilter = DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:", "dev:master-data--Wellbore:1002:"])[0];
+            Assert.Equal($"({curveFilter}) AND ({norwayFilter})", byCountry.GetProperty("query").GetString());
+            var byPart = byCountry.GetProperty("parts")[1];
+            Assert.Equal("Country", byPart.GetProperty("attributes")[0].GetProperty("name").GetString());
+            Assert.Equal(["15/9-F-1", "15/9-F-4"], byPart.GetProperty("values").EnumerateArray().Select(v => v.GetProperty("value").GetString()).Order(StringComparer.Ordinal));
 
             // A search reads one kind: one the dimensions' kind does not cover is refused, and so is a dimension picked twice.
             using (var outside = await PostAsync(client, token, "/api/v1/delivery/dimensions/search", new
@@ -353,6 +386,9 @@ public sealed class DeliveryDimensionApiTests
         Path = spec.Path,
         CleanJson = spec.Clean.Count == 0 ? "[]" : """[{"kind":"trim"},{"kind":"upper"}]""",
         LabelJson = spec.Label.Count == 0 ? null : JsonSerializer.Serialize(spec.Label),
+        AttributesJson = spec.Attributes.Count == 0
+            ? null
+            : JsonSerializer.Serialize(spec.Attributes.Select(a => new { name = a.Name, steps = a.Steps }).ToList()),
         DefinitionHash = spec.DefinitionHash,
     };
 
@@ -377,13 +413,14 @@ public sealed class DeliveryDimensionApiTests
     /// itself when the label search found none.
     /// </summary>
     private static async Task<DimensionRunState> WellboresAsync(
-        OsduLedger ledger, DimensionFlowDefinition flow, DateTime startedUtc, params (string Key, string? Label, long Count)[] found)
+        OsduLedger ledger, DimensionFlowDefinition flow, DateTime startedUtc, params (string Key, string? Label, long Count, string? Country)[] found)
     {
         var (dimension, run) = await ledger.StartDimensionRunAsync(Declaration(flow, flow.Dimensions[1]), Guid.NewGuid(), "dimension api tests", startedUtc);
         var field = OsduField.Text("data.WellboreID");
         var keys = found
             .Select(f => new DimensionOriginalWrite(f.Key, f.Label ?? f.Key, null, null, f.Count, Filterable: true,
-                Label: f.Label, LabelFrom: f.Label is null ? null : f.Key.TrimEnd(':'), Filter: DimensionFilters.Of(field, [f.Key])[0]))
+                Label: f.Label, LabelFrom: f.Label is null ? null : f.Key.TrimEnd(':'), Filter: DimensionFilters.Of(field, [f.Key])[0],
+                Attributes: f.Country is null ? null : [new DimensionAttributeState("Country", f.Country, "dev:master-data--GeoPoliticalEntity:" + f.Country)]))
             .ToList();
         var read = new DimensionReadCounts
         {

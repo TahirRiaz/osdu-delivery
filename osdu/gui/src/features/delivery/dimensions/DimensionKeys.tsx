@@ -12,8 +12,10 @@ import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { deliveryApi, type DeliveryDimensionKey } from "../../../api/delivery";
+import { deliveryApi, type DeliveryDimensionAttributeSpec, type DeliveryDimensionKey, type DimensionAttributeCondition } from "../../../api/delivery";
 import { ProblemView } from "../TemplateSheet";
+import { DimensionAttributeFilter } from "./DimensionAttributeFilter";
+import { keyAttributeColumns } from "./dimensionColumns";
 import { MoreFooter } from "./DimensionBadges";
 import { DimensionValueText } from "./DimensionValueText";
 import { LEFT_OUT_TEXT } from "./dimensionFormat";
@@ -68,14 +70,16 @@ export function KeyFilterCell({ row }: { row: DeliveryDimensionKey }) {
 /**
  * A dimension's keys, exactly as the index holds them (an id, for a reference): each with the label read for it from the
  * record it names, the value it was cleaned into (which opens it) or why it belongs to none, how many records hold it, the
- * search filter that finds exactly those records, a note cleaning left, and when it arrived. Read with the most records
- * first or in the order the builds found them, a page at a time, found by the key or its label; narrowed to those of no
- * value, which is where a clean step that needs a look shows.
+ * search filter that finds exactly those records, its attributes (a column each), a note cleaning left, and when it arrived.
+ * Read with the most records first or in the order the builds found them, a page at a time, found by the key or its label
+ * and narrowed by its attributes; narrowed to those of no value, which is where a clean step that needs a look shows.
  */
-export function DimensionKeys({ dimensionId, labelled, onValue }: {
+export function DimensionKeys({ dimensionId, labelled, attributes, onValue }: {
   dimensionId: number;
   /** The dimension reads a label for its keys, so the Label column says what each was read as. */
   labelled: boolean;
+  /** The attributes the dimension reads of its keys, a column and a filter each. */
+  attributes: DeliveryDimensionAttributeSpec[];
   onValue: (valueId: number) => void;
 }) {
   const [typed, setTyped] = useState("");
@@ -83,10 +87,11 @@ export function DimensionKeys({ dimensionId, labelled, onValue }: {
   const [scope, setScope] = useState<Scope>("all");
   const [order, setOrder] = useState<KeyOrder>("count");
   const [removed, setRemoved] = useState(false);
+  const [conditions, setConditions] = useState<DimensionAttributeCondition[]>([]);
   const pages = useInfiniteQuery({
-    queryKey: ["delivery", "dimensions", "keys", dimensionId, search, scope, order, removed],
+    queryKey: ["delivery", "dimensions", "keys", dimensionId, search, scope, order, removed, conditions],
     queryFn: ({ pageParam }) => deliveryApi.dimensionKeys(dimensionId, {
-      search, order, removed, leftOut: scope === "leftOut" ? true : undefined, after: pageParam, limit: PAGE,
+      search, order, removed, leftOut: scope === "leftOut" ? true : undefined, after: pageParam, limit: PAGE, attributes: conditions,
     }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next,
@@ -139,6 +144,7 @@ export function DimensionKeys({ dimensionId, labelled, onValue }: {
       align: "right",
       render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.count.toLocaleString("en-US")}</span>,
     },
+    ...keyAttributeColumns(attributes),
     { id: "filter", header: "Filter", render: (row) => <KeyFilterCell row={row} /> },
     {
       id: "note",
@@ -190,6 +196,7 @@ export function DimensionKeys({ dimensionId, labelled, onValue }: {
           <Switch id={`keys-removed-${dimensionId}`} checked={removed} onCheckedChange={setRemoved} data-testid="dimension-keys-removed" />
           <Label htmlFor={`keys-removed-${dimensionId}`} className="text-[13px] font-normal">Removed too</Label>
         </div>
+        <DimensionAttributeFilter dimensionId={dimensionId} attributes={attributes} conditions={conditions} onChange={setConditions} testId="dimension-keys-attributes" />
       </FilterBar>
 
       {pages.isError
@@ -211,7 +218,9 @@ export function DimensionKeys({ dimensionId, labelled, onValue }: {
             )}
             emptyMessage={scope === "leftOut"
               ? "Cleaning gave every key a value."
-              : search !== "" ? "No key, nor any label, holds the search." : "The dimension holds no key."}
+              : conditions.length > 0
+                ? "No key holds every attribute picked."
+                : search !== "" ? "No key, nor any label, holds the search." : "The dimension holds no key."}
             data-testid="dimension-keys-table"
           />
         )}

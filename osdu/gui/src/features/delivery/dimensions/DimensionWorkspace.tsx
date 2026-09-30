@@ -26,7 +26,7 @@ const VIEW_PURPOSE: Record<DimensionView, string> = {
   keys: "Every key exactly as the index holds it (an id, for a reference), with the label read for it, the value it belongs to, and the search filter finding exactly its records.",
   changes: "What each build changed: the keys that arrived, left, came back, or moved to another value.",
   builds: "Every build: what it found, how it read the index and the labels, how complete the keys are, and what it changed.",
-  definition: "How the flow declares the dimension: the kind, query and path it reads, where a key's label is read, how the index stores the field, and the steps that clean each value.",
+  definition: "How the flow declares the dimension: the kind, query and path it reads, where a key's label and attributes are read, how the index stores the field, and the steps that clean each value.",
 };
 
 const VIEW_LABEL: Record<DimensionView, string> = {
@@ -250,7 +250,7 @@ export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaun
                 <DimensionValues entry={entry} dimensionId={dimension.dimensionId} onValue={onValue} />
               </TabsContent>
               <TabsContent value="keys">
-                <DimensionKeys dimensionId={dimension.dimensionId} labelled={labelled} onValue={onValue} />
+                <DimensionKeys dimensionId={dimension.dimensionId} labelled={labelled} attributes={dimension.attributes} onValue={onValue} />
               </TabsContent>
               <TabsContent value="changes">
                 <DimensionChanges dimensionId={dimension.dimensionId} onValue={onValue} />
@@ -262,7 +262,7 @@ export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaun
                 <DimensionDefinition entry={entry} />
               </TabsContent>
             </Tabs>
-            <DimensionValueSheet dimensionId={dimension.dimensionId} labelled={labelled} valueId={value} onClose={() => onValue(null)} />
+            <DimensionValueSheet dimensionId={dimension.dimensionId} labelled={labelled} attributes={dimension.attributes} valueId={value} onClose={() => onValue(null)} />
           </>
         )}
     </div>

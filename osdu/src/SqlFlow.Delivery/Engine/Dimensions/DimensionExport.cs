@@ -7,8 +7,9 @@ using SqlFlow.Delivery.Ledger;
 namespace SqlFlow.Delivery.Engine.Dimensions;
 
 /// <summary>
-/// What a dimension export holds: its values (each human-friendly value with the keys it stands for and its filter), or its
-/// keys (each exactly as the index holds it, with its label, its value and its own filter).
+/// What a dimension export holds: its values (each human-friendly value with the keys it stands for, its filter and the values
+/// its keys' attributes hold), or its keys (each exactly as the index holds it, with its label, its value, its own filter and
+/// its attributes).
 /// </summary>
 public enum DimensionExportSet
 {
@@ -29,7 +30,8 @@ public enum DimensionExportFormat
 /// <summary>
 /// Writes a dimension's values or keys to a stream, a ledger page at a time, so an export of millions of keys never holds
 /// more than one page (docs/dimension-plan.md, Stage 5). The API's download and the CLI's export both write through here, so
-/// the two are the same file. Every row carries the search filter that finds its records.
+/// the two are the same file. Every row carries the search filter that finds its records, and a column per attribute the
+/// dimension reads (in CSV, a value's several attribute values joined by <c>; </c>).
 /// </summary>
 /// <remarks>
 /// A CSV cell a spreadsheet would run as a formula (text starting <c>=</c>, <c>+</c>, <c>-</c>, <c>@</c>, a tab or a
@@ -38,6 +40,9 @@ public enum DimensionExportFormat
 /// </remarks>
 public static class DimensionExport
 {
+    /// <summary>The most values of one attribute a value's row names.</summary>
+    private const int MaxAttributeValues = 100;
+
     /// <summary>How a CSV line ends (RFC 4180).</summary>
     private const string CsvLineEnd = "\r\n";
 
@@ -108,16 +113,22 @@ public static class DimensionExport
         ArgumentNullException.ThrowIfNull(dimension);
         ArgumentNullException.ThrowIfNull(output);
         var ending = format == DimensionExportFormat.Csv ? CsvLineEnd : JsonLineEnd;
+        var attributes = DimensionRunner.AttributesOf(dimension.AttributesJson).Select(a => a.Name).ToList();
         return set == DimensionExportSet.Values
-            ? await ValuesAsync(ledger, dimension.DimensionId, format, output, ending, ct).ConfigureAwait(false)
-            : await KeysAsync(ledger, dimension.DimensionId, format, output, ending, ct).ConfigureAwait(false);
+            ? await ValuesAsync(ledger, dimension.DimensionId, attributes, format, output, ending, ct).ConfigureAwait(false)
+            : await KeysAsync(ledger, dimension.DimensionId, attributes, format, output, ending, ct).ConfigureAwait(false);
     }
 
-    private static async Task<long> ValuesAsync(ILedger ledger, int dimensionId, DimensionExportFormat format, TextWriter writer, string ending, CancellationToken ct)
+    /// <summary>The header of a CSV export: its fixed columns, then a column per attribute, named <c>attribute_&lt;name&gt;</c>.</summary>
+    private static string Header(IEnumerable<string> columns, IReadOnlyList<string> attributes)
+        => Csv([.. columns, .. attributes.Select(a => "attribute_" + a)]);
+
+    private static async Task<long> ValuesAsync(
+        ILedger ledger, int dimensionId, IReadOnlyList<string> attributes, DimensionExportFormat format, TextWriter writer, string ending, CancellationToken ct)
     {
         if (format == DimensionExportFormat.Csv)
         {
-            await writer.WriteAsync(string.Join(',', ValueColumns) + ending).ConfigureAwait(false);
+            await writer.WriteAsync(Header(ValueColumns, attributes) + ending).ConfigureAwait(false);
         }
 
         long rows = 0;
@@ -126,12 +137,18 @@ public static class DimensionExport
         {
             ct.ThrowIfCancellationRequested();
             var page = await ledger.ListDimensionMembersAsync(dimensionId, new DimensionMemberQuery(null, false, after, OsduLedger.MaxDimensionPage), ct).ConfigureAwait(false);
+            var held = attributes.Count == 0
+                ? new Dictionary<long, IReadOnlyList<DimensionMemberAttributeValue>>()
+                : (await ledger.MemberAttributesAsync(dimensionId, page.Select(m => m.MemberId).ToList(), MaxAttributeValues, ct).ConfigureAwait(false))
+                    .ToDictionary(m => m.MemberId, m => m.Attributes);
             foreach (var member in page)
             {
+                var own = held.TryGetValue(member.MemberId, out var list) ? list : [];
                 var line = format == DimensionExportFormat.Csv
-                    ? Csv(
+                    ? Csv([
                         Number(member.MemberId), member.Value, Number(member.Records), Bool(member.RecordsExact), Number(member.Originals),
-                        Number(member.Unfilterable), Number(member.FilterParts), member.Filter, Instant(member.FirstSeenUtc))
+                        Number(member.Unfilterable), Number(member.FilterParts), member.Filter, Instant(member.FirstSeenUtc),
+                        .. attributes.Select(a => Joined(own.Where(v => v.Name == a).Select(v => v.Value)))])
                     : Json(w =>
                     {
                         w.WriteNumber("valueId", member.MemberId);
@@ -143,6 +160,22 @@ public static class DimensionExport
                         w.WriteNumber("filterParts", member.FilterParts);
                         w.WriteString("filter", member.Filter);
                         w.WriteString("firstSeenUtc", Instant(member.FirstSeenUtc));
+                        if (attributes.Count > 0)
+                        {
+                            w.WriteStartObject("attributes");
+                            foreach (var name in attributes)
+                            {
+                                w.WriteStartArray(name);
+                                foreach (var value in own.Where(v => v.Name == name))
+                                {
+                                    w.WriteStringValue(value.Value);
+                                }
+
+                                w.WriteEndArray();
+                            }
+
+                            w.WriteEndObject();
+                        }
                     });
                 await writer.WriteAsync(line + ending).ConfigureAwait(false);
                 rows++;
@@ -157,11 +190,12 @@ public static class DimensionExport
         }
     }
 
-    private static async Task<long> KeysAsync(ILedger ledger, int dimensionId, DimensionExportFormat format, TextWriter writer, string ending, CancellationToken ct)
+    private static async Task<long> KeysAsync(
+        ILedger ledger, int dimensionId, IReadOnlyList<string> attributes, DimensionExportFormat format, TextWriter writer, string ending, CancellationToken ct)
     {
         if (format == DimensionExportFormat.Csv)
         {
-            await writer.WriteAsync(string.Join(',', KeyColumns) + ending).ConfigureAwait(false);
+            await writer.WriteAsync(Header(KeyColumns, attributes) + ending).ConfigureAwait(false);
         }
 
         long rows = 0;
@@ -174,9 +208,10 @@ public static class DimensionExport
             foreach (var value in page)
             {
                 var line = format == DimensionExportFormat.Csv
-                    ? Csv(
+                    ? Csv([
                         Number(value.ValueId), value.Original, value.Label, value.LabelFrom, value.MemberValue, value.LeftOut, value.Note, Number(value.Count),
-                        Bool(value.Filterable), value.Filter, Instant(value.FirstSeenUtc))
+                        Bool(value.Filterable), value.Filter, Instant(value.FirstSeenUtc),
+                        .. attributes.Select(a => value.Attributes.FirstOrDefault(v => v.Name == a)?.Value)])
                     : Json(w =>
                     {
                         w.WriteNumber("keyId", value.ValueId);
@@ -190,6 +225,16 @@ public static class DimensionExport
                         w.WriteBoolean("filterable", value.Filterable);
                         w.WriteString("filter", value.Filter);
                         w.WriteString("firstSeenUtc", Instant(value.FirstSeenUtc));
+                        if (attributes.Count > 0)
+                        {
+                            w.WriteStartObject("attributes");
+                            foreach (var name in attributes)
+                            {
+                                w.WriteString(name, value.Attributes.FirstOrDefault(v => v.Name == name)?.Value);
+                            }
+
+                            w.WriteEndObject();
+                        }
                     });
                 await writer.WriteAsync(line + ending).ConfigureAwait(false);
                 rows++;
@@ -258,6 +303,13 @@ public static class DimensionExport
     }
 
     private static string Number(long value) => value.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>Several values of one attribute in one CSV cell, joined by <c>; </c>; null for none.</summary>
+    private static string? Joined(IEnumerable<string> values)
+    {
+        var list = values.ToList();
+        return list.Count == 0 ? null : string.Join("; ", list);
+    }
 
     private static string Bool(bool value) => value ? "true" : "false";
 

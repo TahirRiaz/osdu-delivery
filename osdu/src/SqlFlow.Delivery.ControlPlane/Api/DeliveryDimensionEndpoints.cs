@@ -50,8 +50,21 @@ public sealed record DeliveryDimensionBuildDto(
 /// </summary>
 public sealed record DeliveryDimensionDto(
     int? DimensionId, string Name, string? Description, string Kind, string? Query, string? BuiltQuery, string Path, IReadOnlyList<string> Label,
-    IReadOnlyList<string> Clean, bool CountRecords, long MaxValues, bool Declared, bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field,
-    long Values, long Keys, DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current, DeliveryDimensionBuildDto? Latest);
+    IReadOnlyList<DeliveryDimensionAttributeSpecDto> Attributes, IReadOnlyList<string> Clean, bool CountRecords, long MaxValues, bool Declared,
+    bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field, long Values, long Keys, DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current,
+    DeliveryDimensionBuildDto? Latest);
+
+/// <summary>An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names.</summary>
+public sealed record DeliveryDimensionAttributeSpecDto(string Name, IReadOnlyList<string> Steps);
+
+/// <summary>An attribute of a key: the value read, and the id of the record it was read from.</summary>
+public sealed record DeliveryDimensionAttributeDto(string Name, string Value, string? From);
+
+/// <summary>A value an attribute holds among a value's keys, with how many of them hold it.</summary>
+public sealed record DeliveryDimensionValueAttributeDto(string Name, string Value, int Keys);
+
+/// <summary>A value an attribute holds among a dimension's keys: the keys holding it and their records (summed).</summary>
+public sealed record DeliveryDimensionAttributeValueDto(string Value, int Keys, long Records);
 
 /// <summary>
 /// One dimension flow in the partition a board is read in: its dimensions, the partitions it builds in and whether the
@@ -80,11 +93,12 @@ public sealed record DeliveryDimensionKeyBriefDto(string Key, string? Label, lon
 /// A value of a dimension: the human-friendly value a person picks, the records holding any of its keys (exact, or the sum of
 /// its keys' counts), how many keys it stands for and how many of them no query can carry, the search filter finding its
 /// records when one query holds it (<c>FilterParts</c> queries otherwise), when it arrived and when a build stopped finding
-/// it, and the keys most records hold (<c>Top</c>).
+/// it, the keys most records hold (<c>Top</c>), and the values its keys' attributes hold (the most keys first).
 /// </summary>
 public sealed record DeliveryDimensionValueDto(
     long ValueId, string Value, long Records, bool RecordsExact, int Keys, int Unfilterable, string? Filter, int FilterParts,
-    long FirstSeenBuildId, DateTime FirstSeenUtc, long? RemovedBuildId, DateTime? RemovedUtc, IReadOnlyList<DeliveryDimensionKeyBriefDto> Top);
+    long FirstSeenBuildId, DateTime FirstSeenUtc, long? RemovedBuildId, DateTime? RemovedUtc, IReadOnlyList<DeliveryDimensionKeyBriefDto> Top,
+    IReadOnlyList<DeliveryDimensionValueAttributeDto> Attributes);
 
 /// <summary>A page of values, with the cursor of the next page; null when this is the last.</summary>
 public sealed record DeliveryDimensionValuePageDto(IReadOnlyList<DeliveryDimensionValueDto> Items, string? Next);
@@ -96,7 +110,8 @@ public sealed record DeliveryDimensionValuePageDto(IReadOnlyList<DeliveryDimensi
 /// </summary>
 public sealed record DeliveryDimensionKeyDto(
     long KeyId, string Key, string? Label, string? LabelFrom, long? ValueId, string? Value, string? LeftOut, string? Note, long Count, bool Filterable,
-    string? Filter, long FirstSeenBuildId, DateTime FirstSeenUtc, long ValueSinceBuildId, long? RemovedBuildId, DateTime? RemovedUtc);
+    string? Filter, long FirstSeenBuildId, DateTime FirstSeenUtc, long ValueSinceBuildId, long? RemovedBuildId, DateTime? RemovedUtc,
+    IReadOnlyList<DeliveryDimensionAttributeDto> Attributes);
 
 /// <summary>A page of keys, with the cursor of the next page; null when this is the last.</summary>
 public sealed record DeliveryDimensionKeyPageDto(IReadOnlyList<DeliveryDimensionKeyDto> Items, string? Next);
@@ -135,8 +150,15 @@ public sealed record DeliveryDimensionValueDetailDto(
 /// <summary>A build a platform run made, with the name of the dimension it built.</summary>
 public sealed record DeliveryDimensionRunBuildDto(string Dimension, DeliveryDimensionBuildDto Build);
 
-/// <summary>The values picked in one dimension: by id, by value, or both.</summary>
-public sealed record DeliveryDimensionPickRequest(int DimensionId, IReadOnlyList<long>? ValueIds, IReadOnlyList<string>? Values);
+/// <summary>
+/// What is picked in one dimension: values by id, by value, or both, and attribute values its keys hold (with values too,
+/// the keys of those values that hold them).
+/// </summary>
+public sealed record DeliveryDimensionPickRequest(
+    int DimensionId, IReadOnlyList<long>? ValueIds, IReadOnlyList<string>? Values, IReadOnlyList<DeliveryDimensionAttributePickRequest>? Attributes = null);
+
+/// <summary>An attribute picked: its name, and the values a key has to hold one of.</summary>
+public sealed record DeliveryDimensionAttributePickRequest(string Name, IReadOnlyList<string>? Values);
 
 /// <summary>
 /// A search to compose: the values picked in each dimension, the kind to search (left out, the one kind every dimension
@@ -144,10 +166,13 @@ public sealed record DeliveryDimensionPickRequest(int DimensionId, IReadOnlyList
 /// </summary>
 public sealed record DeliveryDimensionSearchRequest(IReadOnlyList<DeliveryDimensionPickRequest>? Picks, string? Kind, string? Within);
 
-/// <summary>One dimension's part of a composed search: the values picked it holds now, the keys they compare, and its filter.</summary>
+/// <summary>
+/// One dimension's part of a composed search: the values it covers, the keys compared, its filter, and the attribute values
+/// its keys were picked by.
+/// </summary>
 public sealed record DeliveryDimensionSearchPartDto(
     int DimensionId, string Dimension, string AggregateBy, IReadOnlyList<DeliveryDimensionFilterValueDto> Values, int Keys, int Unfilterable, string Filter,
-    string? Query);
+    string? Query, IReadOnlyList<DeliveryDimensionAttributePickRequest> Attributes);
 
 /// <summary>
 /// A composed search: the kind and the query to send, the request body the search service takes, each dimension's part, how
@@ -201,6 +226,7 @@ public static class DeliveryDimensionEndpoints
         delivery.MapGet("/dimensions/{dimensionId:int}/values", ListValuesAsync).WithName("ListDeliveryDimensionValues");
         delivery.MapGet("/dimensions/{dimensionId:int}/values/{valueId:long}", GetValueAsync).WithName("GetDeliveryDimensionValue");
         delivery.MapGet("/dimensions/{dimensionId:int}/keys", ListKeysAsync).WithName("ListDeliveryDimensionKeys");
+        delivery.MapGet("/dimensions/{dimensionId:int}/attributes/{name}", ListAttributeValuesAsync).WithName("ListDeliveryDimensionAttributeValues");
         delivery.MapGet("/dimensions/{dimensionId:int}/builds", ListBuildsAsync).WithName("ListDeliveryDimensionBuilds");
         delivery.MapGet("/dimensions/{dimensionId:int}/changes", ListChangesAsync).WithName("ListDeliveryDimensionChanges");
         delivery.MapGet("/dimensions/{dimensionId:int}/export", ExportAsync).WithName("ExportDeliveryDimension");
@@ -265,7 +291,7 @@ public static class DeliveryDimensionEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryDimensionValuePageDto>, ProblemHttpResult>> ListValuesAsync(
-        int dimensionId, string? search, string? order, bool? removed, string? after, int? limit, ILedger ledger, CancellationToken ct)
+        int dimensionId, string? search, string? order, bool? removed, string? after, int? limit, string[]? attr, ILedger ledger, CancellationToken ct)
     {
         if (SearchProblem(search) is { } badSearch)
         {
@@ -295,13 +321,19 @@ public static class DeliveryDimensionEndpoints
             }
         }
 
-        if (await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is null)
+        if (await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension)
         {
             return NoDimension(dimensionId);
         }
 
+        var (matches, badAttribute) = AttributeMatches(dimension, attr);
+        if (badAttribute is not null)
+        {
+            return badAttribute;
+        }
+
         var take = PageSize(limit);
-        var members = await ledger.ListDimensionMembersAsync(dimensionId, new DimensionMemberQuery(search, removed ?? false, cursor, take, sorted), ct).ConfigureAwait(false);
+        var members = await ledger.ListDimensionMembersAsync(dimensionId, new DimensionMemberQuery(search, removed ?? false, cursor, take, sorted, matches), ct).ConfigureAwait(false);
         var top = (await ledger.TopMemberOriginalsAsync(dimensionId, members.Select(m => m.MemberId).ToList(), TopKeys, ct).ConfigureAwait(false))
             .GroupBy(v => v.MemberId ?? 0)
             .ToDictionary(g => g.Key, g => (IReadOnlyList<DeliveryDimensionKeyBriefDto>)g
@@ -322,6 +354,11 @@ public static class DeliveryDimensionEndpoints
 
         var named = await ledger.GetDimensionMembersAsync(dimensionId, [valueId], [], ct).ConfigureAwait(false);
         var member = named.Count > 0 ? named[0] : null;
+        if (member is not null
+            && (await ledger.MemberAttributesAsync(dimensionId, [valueId], OsduLedger.MemberAttributeValues, ct).ConfigureAwait(false)) is [var held, ..])
+        {
+            member = member with { Attributes = held.Attributes };
+        }
         if (member is null)
         {
             return Problem(StatusCodes.Status404NotFound, "Not found", $"Dimension {dimension.Name} has no value {valueId}.");
@@ -354,7 +391,8 @@ public static class DeliveryDimensionEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryDimensionKeyPageDto>, ProblemHttpResult>> ListKeysAsync(
-        int dimensionId, string? search, long? value, bool? leftOut, bool? removed, string? order, string? after, int? limit, ILedger ledger, CancellationToken ct)
+        int dimensionId, string? search, long? value, bool? leftOut, bool? removed, string? order, string? after, int? limit, string[]? attr, ILedger ledger,
+        CancellationToken ct)
     {
         if (SearchProblem(search) is { } badSearch)
         {
@@ -389,15 +427,46 @@ public static class DeliveryDimensionEndpoints
             }
         }
 
-        if (await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is null)
+        if (await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension)
         {
             return NoDimension(dimensionId);
         }
 
+        var (matches, badAttribute) = AttributeMatches(dimension, attr);
+        if (badAttribute is not null)
+        {
+            return badAttribute;
+        }
+
         var take = PageSize(limit);
         var keys = await ledger.ListDimensionValuesAsync(
-            dimensionId, new DimensionValueQuery(search, value, leftOut ?? false, removed ?? false, cursor, take, sorted), ct).ConfigureAwait(false);
+            dimensionId, new DimensionValueQuery(search, value, leftOut ?? false, removed ?? false, cursor, take, sorted, matches), ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryDimensionKeyPageDto(keys.Select(ToDto).ToList(), keys.Count == take ? KeyCursor(keys[^1]) : null));
+    }
+
+    /// <summary>The values an attribute of the dimension holds among its keys a build finds now, the most records first.</summary>
+    private static async Task<Results<Ok<IReadOnlyList<DeliveryDimensionAttributeValueDto>>, ProblemHttpResult>> ListAttributeValuesAsync(
+        int dimensionId, string name, string? search, int? limit, ILedger ledger, CancellationToken ct)
+    {
+        if (SearchProblem(search) is { } badSearch)
+        {
+            return badSearch;
+        }
+
+        if (await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension)
+        {
+            return NoDimension(dimensionId);
+        }
+
+        var declared = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        var attribute = declared.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (attribute is null)
+        {
+            return Problem(StatusCodes.Status404NotFound, "No such attribute", NoAttribute(dimension, name, declared));
+        }
+
+        var values = await ledger.ListDimensionAttributeValuesAsync(dimensionId, attribute.Name, search, PageSize(limit), ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryDimensionAttributeValueDto>>(values.Select(v => new DeliveryDimensionAttributeValueDto(v.Value, v.Keys, v.Records)).ToList());
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryDimensionBuildDto>>, ProblemHttpResult>> ListBuildsAsync(
@@ -495,7 +564,15 @@ public static class DeliveryDimensionEndpoints
                 return Problem(StatusCodes.Status400BadRequest, "Invalid value", $"A value is at most {DimensionSpec.MaxCleanLength} characters.");
             }
 
-            picks.Add(new DimensionPick(dimension, pick.ValueIds ?? [], values));
+            var attributes = (pick.Attributes ?? [])
+                .Select(a => new DimensionAttributeMatch(a.Name ?? string.Empty, (a.Values ?? []).Where(v => v is not null).ToList()))
+                .ToList();
+            if (attributes.Any(a => a.Values.Any(v => v.Length > DimensionSpec.MaxAttributeValueLength)))
+            {
+                return Problem(StatusCodes.Status400BadRequest, "Invalid attribute value", $"An attribute value is at most {DimensionSpec.MaxAttributeValueLength} characters.");
+            }
+
+            picks.Add(new DimensionPick(dimension, pick.ValueIds ?? [], values, attributes));
         }
 
         try
@@ -507,7 +584,8 @@ public static class DeliveryDimensionEndpoints
                 set.Parts.Select(p => new DeliveryDimensionSearchPartDto(
                     p.DimensionId, p.Dimension, p.AggregateBy,
                     p.Values.Select(v => new DeliveryDimensionFilterValueDto(v.MemberId, v.Value, v.Records, v.RecordsExact, v.Originals)).ToList(),
-                    p.Keys, p.Unfilterable, p.Filter, p.Query)).ToList(),
+                    p.Keys, p.Unfilterable, p.Filter, p.Query,
+                    p.Attributes.Select(a => new DeliveryDimensionAttributePickRequest(a.Name, a.Values)).ToList())).ToList(),
                 set.Clauses, set.Removed, set.Missing, set.Notes));
         }
         catch (Exception ex) when (ex is DeliveryException or OsduQueryException)
@@ -736,6 +814,7 @@ public static class DeliveryDimensionEndpoints
             current?.Query ?? state?.Query,
             spec?.Path ?? state!.Path,
             spec?.Label ?? DimensionRunner.LabelOf(state?.LabelJson),
+            (spec?.Attributes ?? DimensionRunner.AttributesOf(state?.AttributesJson)).Select(a => new DeliveryDimensionAttributeSpecDto(a.Name, a.Steps)).ToList(),
             steps.Select(s => s.Describe()).ToList(),
             spec?.CountRecords ?? false,
             spec?.MaxValues ?? DimensionSpec.DefaultMaxValues,
@@ -763,11 +842,63 @@ public static class DeliveryDimensionEndpoints
 
     private static DeliveryDimensionValueDto ToDto(DimensionMemberState m, IReadOnlyList<DeliveryDimensionKeyBriefDto> top) => new(
         m.MemberId, m.Value, m.Records, m.RecordsExact, m.Originals, m.Unfilterable, m.Filter, m.FilterParts, m.FirstSeenRunId, m.FirstSeenUtc, m.RemovedRunId,
-        m.RemovedUtc, top);
+        m.RemovedUtc, top, m.Attributes.Select(a => new DeliveryDimensionValueAttributeDto(a.Name, a.Value, a.Keys)).ToList());
 
     private static DeliveryDimensionKeyDto ToDto(DimensionValueState v) => new(
         v.ValueId, v.Original, v.Label, v.LabelFrom, v.MemberId, v.MemberValue, v.LeftOut, v.Note, v.Count, v.Filterable, v.Filter, v.FirstSeenRunId,
-        v.FirstSeenUtc, v.MemberSinceRunId, v.RemovedRunId, v.RemovedUtc);
+        v.FirstSeenUtc, v.MemberSinceRunId, v.RemovedRunId, v.RemovedUtc, v.Attributes.Select(a => new DeliveryDimensionAttributeDto(a.Name, a.Value, a.From)).ToList());
+
+    /// <summary>
+    /// The attribute matches the <c>attr</c> parameters ask for, each <c>Name:value</c> (the value everything after the first
+    /// colon), named as the dimension declares them: several of one attribute are any of their values, several attributes
+    /// are all of them. A problem when one is not a match, or names no attribute of the dimension.
+    /// </summary>
+    private static (IReadOnlyList<DimensionAttributeMatch>? Matches, ProblemHttpResult? Problem) AttributeMatches(DimensionState dimension, string[]? asked)
+    {
+        if (asked is null || asked.Length == 0)
+        {
+            return (null, null);
+        }
+
+        var declared = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        var matches = new List<DimensionAttributeMatch>();
+        foreach (var text in asked)
+        {
+            var at = text?.IndexOf(':', StringComparison.Ordinal) ?? -1;
+            if (text is null || at <= 0 || at == text.Length - 1)
+            {
+                return (null, Problem(StatusCodes.Status400BadRequest, "Invalid attribute filter", $"attr '{text}' is not Name:value."));
+            }
+
+            var name = text[..at].Trim();
+            var value = text[(at + 1)..];
+            if (value.Length > DimensionSpec.MaxAttributeValueLength)
+            {
+                return (null, Problem(StatusCodes.Status400BadRequest, "Invalid attribute filter", $"An attribute value is at most {DimensionSpec.MaxAttributeValueLength} characters."));
+            }
+
+            var attribute = declared.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (attribute is null)
+            {
+                return (null, Problem(StatusCodes.Status400BadRequest, "No such attribute", NoAttribute(dimension, name, declared)));
+            }
+
+            var index = matches.FindIndex(m => m.Name == attribute.Name);
+            if (index >= 0)
+            {
+                matches[index] = matches[index] with { Values = [.. matches[index].Values, value] };
+            }
+            else
+            {
+                matches.Add(new DimensionAttributeMatch(attribute.Name, [value]));
+            }
+        }
+
+        return (matches, null);
+    }
+
+    private static string NoAttribute(DimensionState dimension, string name, IReadOnlyList<DimensionAttributeSpec> declared)
+        => $"Dimension {dimension.Name} reads no attribute '{name}'{(declared.Count == 0 ? "; it reads none" : $"; it reads {string.Join(", ", declared.Select(a => a.Name))}")}.";
 
     private static DeliveryDimensionChangeDto ToDto(DimensionChangeState c) => new(
         c.ChangeId, c.DimensionRunId, c.ValueId, c.Original, c.Change, c.FromMemberId, c.FromValue, c.ToMemberId, c.ToValue, c.ChangedUtc);

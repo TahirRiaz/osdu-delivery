@@ -20,7 +20,8 @@ import { DimensionRail } from "./DimensionRail";
 import { DimensionSearchBuilder } from "./DimensionSearchBuilder";
 import { DimensionWorkspace } from "./DimensionWorkspace";
 import {
-  DIMENSION_VIEWS, SEARCH_REF, STANDING_VISUALS, dimensionEntries, picksOf, picksText, type DimensionEntry, type DimensionView,
+  DIMENSION_VIEWS, SEARCH_REF, STANDING_VISUALS, attributePicksOf, attributePicksText, dimensionEntries, picksOf, picksText, type DimensionEntry,
+  type DimensionView,
 } from "./dimensionFormat";
 
 /** How often the board is read again, so a build under way shows its outcome as it lands. */
@@ -107,6 +108,7 @@ export default function DeliveryDimensionsPage() {
   const valueParam = Number.parseInt(params.get("value") ?? "", 10);
   const value = Number.isSafeInteger(valueParam) && valueParam > 0 ? valueParam : null;
   const picks = useMemo(() => picksOf(params.get("p")), [params]);
+  const attributePicks = useMemo(() => attributePicksOf(params.get("a")), [params]);
 
   const update = (changes: Record<string, string | null>) => setParams((current) => {
     const next = new URLSearchParams(current);
@@ -121,7 +123,7 @@ export default function DeliveryDimensionsPage() {
     return next;
   }, { replace: true });
 
-  const open = (ref: string | null) => update({ d: ref, view: null, value: null, kind: null, p: null });
+  const open = (ref: string | null) => update({ d: ref, view: null, value: null, kind: null, p: null, a: null });
   const firstNeedingLook = entries.find((entry) => entry.standing === "failed" || entry.standing === "changed") ?? null;
   const options: FilterOption[] = [
     { value: SEARCH_REF, label: "Build a search", hint: "pick values across a kind's dimensions" },
@@ -196,9 +198,11 @@ export default function DeliveryDimensionsPage() {
                         <DimensionSearchBuilder
                           entries={entries}
                           kind={params.get("kind")}
-                          onKind={(kind) => update({ kind, p: null })}
+                          onKind={(kind) => update({ kind, p: null, a: null })}
                           picks={picks}
                           onPicks={(next) => update({ p: picksText(next) === "" ? null : picksText(next) })}
+                          attributes={attributePicks}
+                          onAttributes={(next) => update({ a: attributePicksText(next) === "" ? null : attributePicksText(next) })}
                         />
                       )
                       : selected === null

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
+using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Snapshots;
 
@@ -9,8 +10,8 @@ namespace SqlFlow.Delivery.Engine.Snapshots;
 /// <summary>
 /// Captures a cached type that holds a dimension's values (docs/dimension-plan.md, Stage 6): the values the dimension's last
 /// build wrote in the partition, each a lookup row keyed by the value, with the keys it stands for as a set (so a mapping finds
-/// the value of any key, as a lookup matches a set on any one of its values), the records holding them, and the search filter
-/// finding them. Everything is read from the ledger, a page at a time; nothing is asked of OSDU, since the dimension flow's
+/// the value of any key, as a lookup matches a set on any one of its values), the records holding them, the search filter
+/// finding them, and the attributes the type names (so a mapping finds a key's attribute the same way). Everything is read from the ledger, a page at a time; nothing is asked of OSDU, since the dimension flow's
 /// build already read it.
 /// </summary>
 internal static class DimensionCapture
@@ -24,6 +25,9 @@ internal static class DimensionCapture
     /// <summary>The members whose originals one ledger read takes.</summary>
     private const int OriginalsChunk = 500;
 
+    /// <summary>The most values of one attribute a cached value carries: a value standing for many keys holds them as a set.</summary>
+    private const int MaxAttributeValues = 1000;
+
     /// <summary>The members of the dimension <paramref name="type"/> holds, in <paramref name="partition"/>, as a lookup table.</summary>
     public static async Task<ReferenceType> CaptureAsync(ILedger ledger, string partition, ReferenceTypeSpec type, ILogger log, CancellationToken ct)
     {
@@ -31,6 +35,15 @@ internal static class DimensionCapture
         ArgumentNullException.ThrowIfNull(type);
         ArgumentNullException.ThrowIfNull(log);
         var dimension = await FindAsync(ledger, partition, type, ct).ConfigureAwait(false);
+        var carried = type.Fields.Skip(DimensionColumns.Fields.Count).Select(f => f.Name).ToList();
+        var declared = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        var unread = carried.Where(name => declared.All(a => !string.Equals(a.Name, name, StringComparison.Ordinal))).ToList();
+        if (unread.Count > 0)
+        {
+            throw new DeliveryException(
+                $"Cached type '{type.Name}' carries {string.Join(", ", unread)}, which dimension {dimension.Name} of {dimension.FlowName} does not read as it was last built{(declared.Count == 0 ? " (it reads no attribute)" : $" (it reads {string.Join(", ", declared.Select(a => a.Name))})")}. Name an attribute the dimension declares, exactly, and build it.");
+        }
+
         if (dimension.Members > LookupKeys.MaxRows || dimension.Originals > MaxOriginals)
         {
             throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
@@ -66,6 +79,20 @@ internal static class DimensionCapture
             }
         }
 
+        // The attributes each value carries: every value its keys hold, a set when there are several.
+        var attributes = new Dictionary<long, IReadOnlyList<DimensionMemberAttributeValue>>();
+        if (carried.Count > 0)
+        {
+            foreach (var chunk in members.Select(m => m.MemberId).Chunk(OriginalsChunk))
+            {
+                ct.ThrowIfCancellationRequested();
+                foreach (var held in await ledger.MemberAttributesAsync(dimension.DimensionId, chunk, MaxAttributeValues, ct).ConfigureAwait(false))
+                {
+                    attributes[held.MemberId] = held.Attributes;
+                }
+            }
+        }
+
         var rows = members.Select(member =>
         {
             var gathered = originals.TryGetValue(member.MemberId, out var list) ? list : [];
@@ -82,6 +109,23 @@ internal static class DimensionCapture
             if (member.Filter is { } filter)
             {
                 fields[DimensionColumns.Filter] = ReferenceValue.Of(filter);
+            }
+
+            foreach (var name in carried)
+            {
+                var values = (attributes.TryGetValue(member.MemberId, out var held) ? held : [])
+                    .Where(a => string.Equals(a.Name, name, StringComparison.Ordinal))
+                    .Select(a => a.Value)
+                    .Order(StringComparer.Ordinal)
+                    .ToList();
+                if (values.Count == 1)
+                {
+                    fields[name] = ReferenceValue.Of(values[0]);
+                }
+                else if (values.Count > 1)
+                {
+                    fields[name] = ReferenceValue.OfMany(values.Select(v => (JsonNode)JsonValue.Create(v)).ToList());
+                }
             }
 
             return new ReferenceItem(member.Value, fields);

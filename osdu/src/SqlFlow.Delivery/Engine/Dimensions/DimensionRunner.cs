@@ -277,6 +277,7 @@ public sealed class DimensionRunner
                 Path = dimension.Path,
                 CleanJson = JsonSerializer.Serialize(dimension.Clean, StepJson),
                 LabelJson = dimension.Label.Count == 0 ? null : JsonSerializer.Serialize(dimension.Label),
+                AttributesJson = AttributesText(dimension.Attributes),
                 DefinitionHash = dimension.DefinitionHash,
             },
             runId, actor, Now, ct).ConfigureAwait(false);
@@ -302,9 +303,9 @@ public sealed class DimensionRunner
             read = Counts(values, templatesJson, 0, [], KeyLabels.None);
 
             // A key naming a record is followed to it for its label, which is what the key's value is cleaned from.
-            var labels = dimension.Label.Count == 0
+            var labels = dimension.Label.Count == 0 && dimension.Attributes.Count == 0
                 ? KeyLabels.None
-                : await new DimensionLabeler(search, _log).LabelAsync(values.Values.Keys.ToList(), dimension.Label, ct).ConfigureAwait(false);
+                : await new DimensionLabeler(search, _log).ReadAsync(values.Values.Keys.ToList(), dimension.Label, dimension.Attributes, ct).ConfigureAwait(false);
             read = Counts(values, templatesJson, 0, [], labels);
 
             var cleaner = Cleaner(dimension);
@@ -358,15 +359,17 @@ public sealed class DimensionRunner
                 continue;
             }
 
-            // The key's value is its label, cleaned, when it has one, and the key itself, cleaned, when it has none; the key
-            // keeps its own filter, the search that finds exactly the records holding it.
+            // The key's value is its label, cleaned, when it has one, and the key's own text, cleaned, when it has none: for a
+            // key naming an OSDU record, the code its id ends with, its escapes decoded, so a value is ready to show. The key
+            // keeps its own filter, the search that finds exactly the records holding it, and its attributes.
             var labelled = labels.Labels.TryGetValue(original, out var found) ? found : null;
-            var cleaned = cleaner.Clean(labelled?.Label ?? original);
+            var cleaned = cleaner.Clean(labelled?.Label ?? DimensionLabeler.DisplayOf(original));
             var filterable = DimensionFilters.Filterable(field, original);
             var filter = filterable ? DimensionFilters.Of(field, [original])[0] : null;
+            var attributes = labels.Attributes.GetValueOrDefault(original);
             if (cleaned.Outcome == CleanOutcome.Member)
             {
-                var kept = new DimensionOriginalWrite(original, cleaned.Value, null, cleaned.Note, count, filterable, labelled?.Label, labelled?.From, filter);
+                var kept = new DimensionOriginalWrite(original, cleaned.Value, null, cleaned.Note, count, filterable, labelled?.Label, labelled?.From, filter, attributes);
                 originals.Add(kept);
                 (groups.TryGetValue(cleaned.Value!, out var group) ? group : groups[cleaned.Value!] = []).Add(kept);
                 if (!filterable)
@@ -377,7 +380,7 @@ public sealed class DimensionRunner
             else
             {
                 var reason = LeftOut(cleaned.Outcome);
-                originals.Add(new DimensionOriginalWrite(original, null, reason, cleaned.Note, count, filterable, labelled?.Label, labelled?.From, filter));
+                originals.Add(new DimensionOriginalWrite(original, null, reason, cleaned.Note, count, filterable, labelled?.Label, labelled?.From, filter, attributes));
                 leftOut[reason] = leftOut.GetValueOrDefault(reason) + 1;
             }
         }
@@ -682,6 +685,39 @@ public sealed class DimensionRunner
             return [];
         }
     }
+
+    /// <summary>The attributes a build keeps of its dimension, as JSON (<see cref="DimensionState.AttributesJson"/>); null for none.</summary>
+    internal static string? AttributesText(IReadOnlyList<DimensionAttributeSpec> attributes)
+        => attributes.Count == 0
+            ? null
+            : JsonSerializer.Serialize(attributes.Select(a => new AttributeText(a.Name, a.Steps.ToList())).ToList(), StepJson);
+
+    /// <summary>
+    /// The attributes a build kept of its dimension (<see cref="DimensionState.AttributesJson"/>), in the order declared; none
+    /// when it reads none or the text is not the list a build writes.
+    /// </summary>
+    public static IReadOnlyList<DimensionAttributeSpec> AttributesOf(string? attributesJson)
+    {
+        if (string.IsNullOrWhiteSpace(attributesJson))
+        {
+            return [];
+        }
+
+        try
+        {
+            return (JsonSerializer.Deserialize<List<AttributeText>>(attributesJson, StepJson) ?? [])
+                .Where(a => DimensionAttributeSpec.IsName(a.Name) && a.Steps is { Count: > 0 })
+                .Select(a => new DimensionAttributeSpec(a.Name, a.Steps!))
+                .ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>An attribute as its dimension's row keeps it.</summary>
+    private sealed record AttributeText(string Name, List<string>? Steps);
 
     /// <summary>
     /// The label paths a build kept of its dimension (<see cref="DimensionState.LabelJson"/>), as it wrote them; none when the

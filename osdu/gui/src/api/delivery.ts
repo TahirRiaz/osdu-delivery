@@ -2322,6 +2322,8 @@ export interface DeliveryDimension {
   path: string;
   /** Where a key's label is read: the paths through the records a key names; empty when keys are their own values. */
   label: string[];
+  /** The attributes each key is read with, each by its name and the paths it is read through. */
+  attributes: DeliveryDimensionAttributeSpec[];
   /** The clean steps, as the document writes them. */
   clean: string[];
   countRecords: boolean;
@@ -2386,6 +2388,33 @@ export interface DeliveryDimensionDetail {
   dimension: DeliveryDimension;
 }
 
+/** An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names. */
+export interface DeliveryDimensionAttributeSpec {
+  name: string;
+  steps: string[];
+}
+
+/** An attribute of a key: the value read, and the id of the record it was read from. */
+export interface DeliveryDimensionAttribute {
+  name: string;
+  value: string;
+  from: string | null;
+}
+
+/** A value an attribute holds among a value's keys, with how many of them hold it. */
+export interface DeliveryDimensionValueAttribute {
+  name: string;
+  value: string;
+  keys: number;
+}
+
+/** A value an attribute holds among a dimension's keys: the keys holding it and their records (summed). */
+export interface DeliveryDimensionAttributeValue {
+  value: string;
+  keys: number;
+  records: number;
+}
+
 /** A key as a list of values shows it beside its value. */
 export interface DeliveryDimensionKeyBrief {
   key: string;
@@ -2411,6 +2440,8 @@ export interface DeliveryDimensionValue {
   removedUtc: string | null;
   /** The keys most records hold. */
   top: DeliveryDimensionKeyBrief[];
+  /** The values its keys' attributes hold, the most keys first. */
+  attributes: DeliveryDimensionValueAttribute[];
 }
 
 export interface DeliveryDimensionValuePage {
@@ -2439,6 +2470,8 @@ export interface DeliveryDimensionKey {
   valueSinceBuildId: number;
   removedBuildId: number | null;
   removedUtc: string | null;
+  /** Its attributes, as its last build read them. */
+  attributes: DeliveryDimensionAttribute[];
 }
 
 export interface DeliveryDimensionKeyPage {
@@ -2498,11 +2531,18 @@ export interface DeliveryDimensionRunBuild {
   build: DeliveryDimensionBuild;
 }
 
-/** The values picked in one dimension, by id or as the dimension holds them. */
+/** An attribute picked: its name, and the values a key has to hold one of. */
+export interface DeliveryDimensionAttributePick {
+  name: string;
+  values: string[];
+}
+
+/** What is picked in one dimension: values by id or as the dimension holds them, and attribute values its keys hold. */
 export interface DeliveryDimensionPick {
   dimensionId: number;
   valueIds?: number[];
   values?: string[];
+  attributes?: DeliveryDimensionAttributePick[];
 }
 
 /** A search to compose from the values picked across dimensions. */
@@ -2533,6 +2573,8 @@ export interface DeliveryDimensionSearchPart {
   unfilterable: number;
   filter: string;
   query: string | null;
+  /** The attribute values its keys were picked by. */
+  attributes: DeliveryDimensionAttributePick[];
 }
 
 /** A composed search: the kind and query to send, the request body the search service takes, and what the picks left out. */
@@ -2554,6 +2596,8 @@ export interface DeliveryDimensionValueQuery {
   removed?: boolean;
   after?: string | null;
   limit?: number;
+  /** Only the values holding a key that holds every attribute value named. */
+  attributes?: DimensionAttributeCondition[];
 }
 
 export interface DeliveryDimensionKeyQuery {
@@ -2564,6 +2608,14 @@ export interface DeliveryDimensionKeyQuery {
   order?: "arrival" | "count";
   after?: string | null;
   limit?: number;
+  /** Only the keys holding every attribute value named. */
+  attributes?: DimensionAttributeCondition[];
+}
+
+/** One attribute value a key has to hold: several of one attribute are any of them, several attributes all of them. */
+export interface DimensionAttributeCondition {
+  name: string;
+  value: string;
 }
 
 export interface DeliveryDimensionChangeQuery {
@@ -2577,6 +2629,20 @@ export interface DeliveryDimensionChangeQuery {
 
 export type DimensionExportSet = "values" | "keys";
 export type DimensionExportFormat = "csv" | "jsonl";
+
+/** The attribute conditions of a page as the path's query carries them: `attr=Name:value`, once each. */
+function attributesQuery(conditions: DimensionAttributeCondition[] | undefined): string {
+  if (conditions === undefined || conditions.length === 0) {
+    return "";
+  }
+
+  const params = new URLSearchParams();
+  for (const condition of conditions) {
+    params.append("attr", `${condition.name}:${condition.value}`);
+  }
+
+  return `?${params.toString()}`;
+}
 
 /** A query without the parameters it leaves unset, so the request carries only what was asked. */
 function defined(query: object): QueryParams {
@@ -2656,14 +2722,18 @@ export const deliveryApi = {
   /** A dimension with its declaration, the build that wrote what it holds and its newest build. */
   dimension: (dimensionId: number) => get<DeliveryDimensionDetail>(`/api/v1/delivery/dimensions/${dimensionId}`),
   /** A page of a dimension's values, in value order or with the most records first. */
-  dimensionValues: (dimensionId: number, query: DeliveryDimensionValueQuery = {}) =>
-    get<DeliveryDimensionValuePage>(`/api/v1/delivery/dimensions/${dimensionId}/values`, defined(query)),
+  dimensionValues: (dimensionId: number, { attributes, ...query }: DeliveryDimensionValueQuery = {}) =>
+    get<DeliveryDimensionValuePage>(`/api/v1/delivery/dimensions/${dimensionId}/values${attributesQuery(attributes)}`, defined(query)),
   /** A value with its keys, filter and history. */
   dimensionValue: (dimensionId: number, valueId: number) =>
     get<DeliveryDimensionValueDetail>(`/api/v1/delivery/dimensions/${dimensionId}/values/${valueId}`),
   /** A page of a dimension's keys, each with its label and filter. */
-  dimensionKeys: (dimensionId: number, query: DeliveryDimensionKeyQuery = {}) =>
-    get<DeliveryDimensionKeyPage>(`/api/v1/delivery/dimensions/${dimensionId}/keys`, defined(query)),
+  dimensionKeys: (dimensionId: number, { attributes, ...query }: DeliveryDimensionKeyQuery = {}) =>
+    get<DeliveryDimensionKeyPage>(`/api/v1/delivery/dimensions/${dimensionId}/keys${attributesQuery(attributes)}`, defined(query)),
+  /** The values an attribute of a dimension holds among its keys, the most records first; those containing `search`. */
+  dimensionAttributeValues: (dimensionId: number, name: string, search?: string, limit?: number) =>
+    get<DeliveryDimensionAttributeValue[]>(
+      `/api/v1/delivery/dimensions/${dimensionId}/attributes/${encodeURIComponent(name)}`, defined({ search, limit })),
   /** A dimension's builds, newest first. */
   dimensionBuilds: (dimensionId: number, max?: number) =>
     get<DeliveryDimensionBuild[]>(`/api/v1/delivery/dimensions/${dimensionId}/builds`, max ? { max } : {}),

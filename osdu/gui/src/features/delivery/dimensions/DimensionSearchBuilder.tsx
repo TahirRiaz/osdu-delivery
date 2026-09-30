@@ -13,10 +13,11 @@ import { CopyButton } from "@/components/CopyButton";
 import { EmptyState } from "@/components/EmptyState";
 import { RichTooltip } from "@/components/RichTooltip";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { deliveryApi, type DeliveryDimensionSearch } from "../../../api/delivery";
+import { deliveryApi, type DeliveryDimensionAttributePick, type DeliveryDimensionSearch, type DimensionAttributeCondition } from "../../../api/delivery";
 import { KindText } from "../KindText";
 import { ProblemView } from "../TemplateSheet";
 import { counted } from "../assertions/assertionFormat";
+import { DimensionAttributeFilter } from "./DimensionAttributeFilter";
 import { StandingGlyph } from "./DimensionBadges";
 import { DimensionValueText } from "./DimensionValueText";
 import type { DimensionEntry } from "./dimensionFormat";
@@ -32,6 +33,19 @@ const MAX_CLAUSES = 1000;
 
 /** Picks by dimension: the ids of the values picked in each. */
 export type SearchPicks = ReadonlyMap<number, ReadonlySet<number>>;
+
+/** Attribute picks by dimension: the attribute values its keys have to hold. */
+export type SearchAttributePicks = ReadonlyMap<number, readonly DimensionAttributeCondition[]>;
+
+/** Conditions as a pick sends them: grouped by attribute, any of each one's values. */
+function attributePicks(conditions: readonly DimensionAttributeCondition[]): DeliveryDimensionAttributePick[] {
+  const byName = new Map<string, string[]>();
+  for (const condition of conditions) {
+    (byName.get(condition.name) ?? byName.set(condition.name, []).get(condition.name)!).push(condition.value);
+  }
+
+  return [...byName.entries()].map(([name, values]) => ({ name, values }));
+}
 
 /**
  * The values of one dimension to pick from: those most records hold, narrowed by what is typed (a value, or any key it
@@ -102,13 +116,18 @@ function ValuePicker({ dimensionId, name, picked, onPick }: {
   );
 }
 
-/** One dimension of the kind: its name and what it reads, the values picked in it, and the picker adding more. */
-function DimensionPicks({ entry, picked, names, onPick, onUnpick }: {
+/**
+ * One dimension of the kind: its name and what it reads, the values picked in it and the picker adding more, and the
+ * attribute values its keys have to hold ("where").
+ */
+function DimensionPicks({ entry, picked, names, onPick, onUnpick, conditions, onConditions }: {
   entry: DimensionEntry;
   picked: ReadonlySet<number>;
   names: ReadonlyMap<number, string>;
   onPick: (valueId: number, value: string) => void;
   onUnpick: (valueId: number) => void;
+  conditions: readonly DimensionAttributeCondition[];
+  onConditions: (next: DimensionAttributeCondition[]) => void;
 }) {
   const { dimension } = entry;
   const reads = dimension.label.length > 0 ? `${dimension.path}, labelled by ${dimension.label.at(-1)}` : dimension.path;
@@ -142,6 +161,18 @@ function DimensionPicks({ entry, picked, names, onPick, onUnpick }: {
               </button>
             </span>
           ))}
+        </div>
+      )}
+      {dimension.attributes.length > 0 && (
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="text-[11px] text-muted-foreground">where</span>
+          <DimensionAttributeFilter
+            dimensionId={dimension.dimensionId!}
+            attributes={dimension.attributes}
+            conditions={[...conditions]}
+            onChange={onConditions}
+            testId="search-builder-where"
+          />
         </div>
       )}
     </div>
@@ -180,7 +211,13 @@ function ComposedSearch({ search }: { search: DeliveryDimensionSearch }) {
             <li key={part.dimensionId} className="flex min-w-0 flex-wrap items-baseline gap-1.5">
               {index > 0 && <span className="font-mono text-[11px] font-medium text-primary">AND</span>}
               <span className="font-medium">{part.dimension}</span>
-              <span className="text-muted-foreground">{part.values.length === 1 ? "is" : "is one of"}</span>
+              {part.attributes.length > 0
+                ? (
+                  <span className="text-muted-foreground" data-testid="search-builder-part-where">
+                    where {part.attributes.map((a) => `${a.name} is ${a.values.join(" or ")}`).join(" and ")}:
+                  </span>
+                )
+                : <span className="text-muted-foreground">{part.values.length === 1 ? "is" : "is one of"}</span>}
               {part.values.map((value, at) => (
                 <span key={value.valueId} className="inline-flex items-baseline">
                   <DimensionValueText value={value.value} maxWidth={200} />
@@ -222,13 +259,15 @@ function ComposedSearch({ search }: { search: DeliveryDimensionSearch }) {
  * picked within one), each value standing for the exact keys the index holds. The query and the request body are ready to
  * copy; nothing is sent to OSDU from here. The kind and the picks live in the URL, so a link carries the search.
  */
-export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks }: {
+export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks, attributes, onAttributes }: {
   entries: DimensionEntry[];
   /** The kind the link names; null or a kind no built dimension reads picks the kind most dimensions read. */
   kind: string | null;
   onKind: (kind: string) => void;
   picks: SearchPicks;
   onPicks: (picks: SearchPicks) => void;
+  attributes: SearchAttributePicks;
+  onAttributes: (picks: SearchAttributePicks) => void;
 }) {
   const [typedWithin, setTypedWithin] = useState("");
   const within = useDebouncedValue(typedWithin.trim(), TYPING_DELAY_MS);
@@ -245,8 +284,14 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks }
   }, [built]);
   const chosen = kind !== null && kinds.some((option) => option.name === kind) ? kind : kinds[0]?.name ?? null;
   const rows = built.filter((entry) => entry.dimension.kind === chosen);
-  const own = new Map([...picks].filter(([dimensionId, values]) => values.size > 0 && rows.some((row) => row.dimension.dimensionId === dimensionId)));
-  const request = [...own].map(([dimensionId, values]) => ({ dimensionId, valueIds: [...values].sort((a, b) => a - b) }));
+  const inView = (dimensionId: number) => rows.some((row) => row.dimension.dimensionId === dimensionId);
+  const own = new Map([...picks].filter(([dimensionId, values]) => values.size > 0 && inView(dimensionId)));
+  const where = new Map([...attributes].filter(([dimensionId, conditions]) => conditions.length > 0 && inView(dimensionId)));
+  const request = [...new Set([...own.keys(), ...where.keys()])].sort((a, b) => a - b).map((dimensionId) => ({
+    dimensionId,
+    valueIds: [...(own.get(dimensionId) ?? [])].sort((a, b) => a - b),
+    attributes: attributePicks(where.get(dimensionId) ?? []),
+  }));
 
   const composed = useQuery({
     queryKey: ["delivery", "dimensions", "search", chosen, request, within],
@@ -294,7 +339,7 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks }
     );
   }
 
-  const pickCount = [...own.values()].reduce((sum, values) => sum + values.size, 0);
+  const pickCount = [...own.values()].reduce((sum, values) => sum + values.size, 0) + [...where.values()].reduce((sum, conditions) => sum + conditions.length, 0);
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="search-builder">
       <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
@@ -332,9 +377,15 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks }
           <div className="flex h-9 items-center gap-2 border-b border-border px-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
             <span>Dimensions</span>
             {pickCount > 0 && (
-              <Button variant="ghost" size="xs" className="ml-auto normal-case tracking-normal" onClick={() => onPicks(new Map())} data-testid="search-builder-clear">
+              <Button
+                variant="ghost"
+                size="xs"
+                className="ml-auto normal-case tracking-normal"
+                onClick={() => { onPicks(new Map()); onAttributes(new Map()); }}
+                data-testid="search-builder-clear"
+              >
                 <X />
-                Clear {counted(pickCount, "value")}
+                Clear {counted(pickCount, "pick")}
               </Button>
             )}
           </div>
@@ -349,6 +400,8 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks }
                 change(entry.dimension.dimensionId!, valueId, !(own.get(entry.dimension.dimensionId!)?.has(valueId) ?? false));
               }}
               onUnpick={(valueId) => change(entry.dimension.dimensionId!, valueId, false)}
+              conditions={where.get(entry.dimension.dimensionId!) ?? []}
+              onConditions={(next) => onAttributes(new Map([...where, [entry.dimension.dimensionId!, next]]))}
             />
           ))}
           <div className="flex flex-col gap-1 border-t border-border px-3 py-2.5">
@@ -369,7 +422,7 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks }
             ? (
               <p className="flex items-center gap-2 text-[13px] text-muted-foreground" data-testid="search-builder-empty">
                 <Search className="size-4 shrink-0" />
-                Pick a value in any dimension to compose its search.
+                Pick a value in any dimension, or an attribute its keys hold, to compose its search.
               </p>
             )
             : composed.isError

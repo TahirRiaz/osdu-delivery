@@ -439,7 +439,7 @@
       "path": "types[].dimension",
       "type": "string",
       "required": false,
-      "description": "The name of a dimension a dimension flow builds (`flowType: dimension`), whose values the type holds: one row per value, keyed by the value (`value`), with `keys` (the keys the index holds that the value stands for, a set a lookup matches on any one of), `records` and `filter` (the search finding the value's records, when one query holds it) beside it, as the dimension's last completed build in the partition left them. The type is named after the dimension unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query`, `fields` or `key`. A dimension over 100,000 values or 500,000 keys refuses the capture. Lineage orders the flow after the dimension flow that builds it. A mapping turns a raw key into its value with `replace from $cache.<name> (keys to value)`.",
+      "description": "The name of a dimension a dimension flow builds (`flowType: dimension`), whose values the type holds: one row per value, keyed by the value (`value`), with `keys` (the keys the index holds that the value stands for, a set a lookup matches on any one of), `records` and `filter` (the search finding the value's records, when one query holds it) beside it, as the dimension's last completed build in the partition left them. The type is named after the dimension unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query` or `key`; its `fields` name attributes of the dimension each row carries beside those (a set when the value's keys hold several), so a mapping finds a key's attribute with `replace from $cache.<name> (keys to Country)`. A dimension over 100,000 values or 500,000 keys refuses the capture. Lineage orders the flow after the dimension flow that builds it. A mapping turns a raw key into its value with `replace from $cache.<name> (keys to value)`.",
       "appliesWhen": "Dimension origin only: a type with `dimension` and `dimensionFlow`. Not combined with `kind`, `table` or `dictionary`."
     },
     {
@@ -460,8 +460,8 @@
       "path": "types[].fields",
       "type": "list",
       "required": false,
-      "description": "What the cache keeps of each record. For an OSDU type: the paths to keep. For a table type: the columns to keep beside the key. A path that yields nothing on every record is reported at capture.",
-      "appliesWhen": "Required for an OSDU type (`kind`) and a table type (`table`); refused for a dictionary type (`dictionary`)."
+      "description": "What the cache keeps of each record. For an OSDU type: the paths to keep. For a table type: the columns to keep beside the key. A path that yields nothing on every record is reported at capture. For a dimension type: the attributes of the dimension each row carries, by name (`fields: [Country, Field]`), each one the dimension reads.",
+      "appliesWhen": "Required for an OSDU type (`kind`) and a table type (`table`); optional for a dimension type (`dimension`), naming the attributes it carries; refused for a dictionary type (`dictionary`)."
     },
     {
       "path": "types[].fields[]",

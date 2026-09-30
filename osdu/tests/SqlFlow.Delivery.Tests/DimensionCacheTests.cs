@@ -45,7 +45,14 @@ public sealed class DimensionCacheTests : IDisposable
     }
 
     /// <summary>Writes a completed build of CurveMnemonic with <paramref name="originals"/> (original, member, count), as a build writes it.</summary>
-    private async Task BuildAsync(OsduLedger ledger, params (string Original, string Member, long Count)[] originals)
+    private Task BuildAsync(OsduLedger ledger, params (string Original, string Member, long Count)[] originals)
+        => BuildAsync(ledger, null, originals.Select(o => (o.Original, o.Member, o.Count, (string?)null)).ToArray());
+
+    /// <summary>
+    /// Writes a completed build of CurveMnemonic reading the attribute Family when <paramref name="attributes"/> declares it,
+    /// with <paramref name="originals"/> (original, member, count, its Family or none), as a build writes it.
+    /// </summary>
+    private async Task BuildAsync(OsduLedger ledger, string? attributes, params (string Original, string Member, long Count, string? Family)[] originals)
     {
         await ledger.RegisterLedgerAsync(new LedgerEntry
         {
@@ -55,7 +62,7 @@ public sealed class DimensionCacheTests : IDisposable
             new DimensionDeclaration
             {
                 FlowId = DimensionLedger, FlowName = DimensionFlowName, Name = "CurveMnemonic", Kind = "osdu:wks:work-product-component--WellLog:*",
-                Path = "data.Curves.Mnemonic", CleanJson = """[{"kind":"upper"}]""", DefinitionHash = "0123456789abcdef",
+                Path = "data.Curves.Mnemonic", CleanJson = """[{"kind":"upper"}]""", DefinitionHash = "0123456789abcdef", AttributesJson = attributes,
             },
             Guid.NewGuid(), "tests", _clock.GetUtcNow().UtcDateTime);
         _clock.Advance(TimeSpan.FromMinutes(1));
@@ -65,7 +72,9 @@ public sealed class DimensionCacheTests : IDisposable
             DimensionId = dimension.DimensionId,
             FlowId = DimensionLedger,
             Field = new DimensionFieldState("text", "data.Curves", "nested(data.Curves, Mnemonic.keyword)", true),
-            Originals = originals.Select(o => new DimensionOriginalWrite(o.Original, o.Member, null, null, o.Count, true)).ToList(),
+            Originals = originals.Select(o => new DimensionOriginalWrite(
+                o.Original, o.Member, null, null, o.Count, true,
+                Attributes: o.Family is null ? null : [new DimensionAttributeState("Family", o.Family, "dev:reference-data--LogCurveFamily:" + o.Family)])).ToList(),
             Members = originals.GroupBy(o => o.Member, StringComparer.Ordinal)
                 .Select(g => new DimensionMemberWrite(g.Key, g.Sum(o => o.Count), false, g.Count(), 0, $"filter of {g.Key}", 1)).ToList(),
             Read = DimensionReadCounts.None,
@@ -105,7 +114,12 @@ public sealed class DimensionCacheTests : IDisposable
         Assert.Contains("names both", Refused(Flow("{ dimension: CurveMnemonic }")), StringComparison.Ordinal);
         Assert.Contains("names both", Refused(Flow("{ name: Curves, dimensionFlow: welllog-dimensions }")), StringComparison.Ordinal);
         Assert.Contains("names more than one origin", Refused(Flow("{ dimension: CurveMnemonic, dimensionFlow: welllog-dimensions, dictionary: CurveAliases }")), StringComparison.Ordinal);
-        Assert.Contains("which takes no 'fields'", Refused(Flow("{ dimension: CurveMnemonic, dimensionFlow: welllog-dimensions, fields: [value] }")), StringComparison.Ordinal);
+        Assert.Contains("is a column the rows hold already", Refused(Flow("{ dimension: CurveMnemonic, dimensionFlow: welllog-dimensions, fields: [value] }")), StringComparison.Ordinal);
+        Assert.Contains("is not an attribute's name", Refused(Flow("{ dimension: CurveMnemonic, dimensionFlow: welllog-dimensions, fields: ['not a name'] }")), StringComparison.Ordinal);
+
+        // A dimension type's fields name the attributes of the dimension its rows carry, after the fixed columns.
+        var carrying = loader.ParseCache(Flow("{ dimension: CurveMnemonic, dimensionFlow: welllog-dimensions, fields: [Family] }"), "cache/curve-lookups.yaml");
+        Assert.Equal(["keys", "records", "filter", "Family"], carrying.Types[0].Fields.Select(f => f.Name));
         Assert.Contains("which takes no 'key'", Refused(Flow("{ dimension: CurveMnemonic, dimensionFlow: welllog-dimensions, key: code }")), StringComparison.Ordinal);
         Assert.Contains("is not a dimension's name", Refused(Flow("{ dimension: \"Curve Mnemonic\", dimensionFlow: welllog-dimensions }")), StringComparison.Ordinal);
     }
@@ -149,5 +163,33 @@ public sealed class DimensionCacheTests : IDisposable
         Assert.Equal(2, Assert.Single((await refresher.PlanAsync(flow, new Dictionary<string, string>(), CancellationToken.None)).Types).Records);
         _clock.Advance(TimeSpan.FromMinutes(1));
         Assert.False((await refresher.RefreshAsync(flow, new Dictionary<string, string>(), Guid.NewGuid(), "tests", CancellationToken.None)).Written);
+    }
+
+    [Fact]
+    public async Task A_cached_dimension_carries_the_attributes_its_fields_name_so_a_mapping_finds_a_key_s_attribute()
+    {
+        var ledger = _db.Ledger(_clock);
+        var store = _db.Caches();
+        var engine = Samples.Engine(ledger, _clock, cache: store);
+        var refresher = new CacheRefresher(engine, Samples.Logger<CacheRefresher>());
+        await BuildAsync(ledger, """[{"name":"Family","steps":["data.LogCurveFamilyID","data.Name"]}]""",
+            ("GR", "GR", 5, "Gamma Ray"), ("gr", "GR", 3, "Gamma"), ("DT", "DT", 4, "Sonic"), ("RHOB", "RHOB", 2, null));
+
+        var flow = new DeliveryDocumentLoader().LoadCache(WriteFlow(Flow("{ dimension: CurveMnemonic, dimensionFlow: welllog-dimensions, fields: [Family] }")));
+        var refreshed = await refresher.RefreshAsync(flow, new Dictionary<string, string>(), Guid.NewGuid(), "tests", CancellationToken.None);
+
+        var members = (await store.LoadAsync("dev", refreshed.Version))!.Type("CurveMnemonic")!;
+        Assert.Equal("Sonic", members.Value(members.Match(DimensionColumns.Keys, "DT")!, "Family")!.Text);
+        // A value whose keys hold several values of the attribute carries them as a set; one holding none carries no field.
+        var gr = members.Value(members.Match(DimensionColumns.Keys, "gr")!, "Family")!;
+        Assert.True(gr.IsSet);
+        Assert.Equal(2, gr.Count);
+        Assert.Null(members.Value(members.Match(DimensionColumns.Keys, "RHOB")!, "Family"));
+
+        // A type carrying an attribute the dimension does not read says so, naming those it does.
+        var wrong = new DeliveryDocumentLoader().LoadCache(WriteFlow(Flow("{ dimension: CurveMnemonic, dimensionFlow: welllog-dimensions, fields: [Unit] }")));
+        var refused = await Assert.ThrowsAsync<DeliveryException>(() => refresher.RefreshAsync(wrong, new Dictionary<string, string>(), Guid.NewGuid(), "tests", CancellationToken.None));
+        Assert.Contains("carries Unit, which dimension CurveMnemonic of welllog-dimensions does not read", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("it reads Family", refused.Message, StringComparison.Ordinal);
     }
 }

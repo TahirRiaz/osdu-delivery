@@ -208,7 +208,7 @@ public sealed class CacheRefresher
                 "plan {Type}: dimension {Dimension} of {Flow} holds {Members} member(s) from {Originals} original(s)",
                 type.Name, dimension.Name, dimension.FlowName, dimension.Members, dimension.Originals);
             types.Add(new CachePlanType(
-                type.Name, CacheOrigins.Text(type.Origin), type.Describe(), null, "*", [DimensionColumns.Value, .. DimensionColumns.Fields], dimension.Members));
+                type.Name, CacheOrigins.Text(type.Origin), type.Describe(), null, "*", [DimensionColumns.Value, .. type.Fields.Select(f => f.Name)], dimension.Members));
         }
 
         var searched = spec.Types.Where(t => t.Origin == CacheOrigin.Osdu).ToList();

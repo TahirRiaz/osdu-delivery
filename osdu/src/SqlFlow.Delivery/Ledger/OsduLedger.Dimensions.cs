@@ -43,6 +43,7 @@ public sealed partial class OsduLedger
             dimension.Path = declaration.Path;
             dimension.CleanJson = declaration.CleanJson;
             dimension.LabelJson = declaration.LabelJson;
+            dimension.AttributesJson = declaration.AttributesJson;
             dimension.DefinitionHash = declaration.DefinitionHash;
             try
             {
@@ -104,6 +105,13 @@ public sealed partial class OsduLedger
             run.OriginalsRemoved = written.Changes.OriginalsRemoved;
             run.OriginalsMoved = written.Changes.OriginalsMoved;
             run.OriginalsRestored = written.Changes.OriginalsRestored;
+            if (written.AttributesChanged > 0)
+            {
+                var notes = run.Notes is null ? [] : JsonSerializer.Deserialize<List<string>>(run.Notes) ?? [];
+                notes.Add(string.Create(CultureInfo.InvariantCulture, $"{written.AttributesChanged} attribute value(s) of keys were added, rewritten or dropped."));
+                run.Notes = JsonSerializer.Serialize(notes.Take(MaxDimensionNotes).ToList());
+            }
+
             run.CompletedUtc = write.CompletedUtc;
             run.Error = null;
             closed = run;
@@ -280,6 +288,101 @@ public sealed partial class OsduLedger
             return [];
         }
 
+        var page = await MemberPageAsync(partition, dimensionId, query, ct).ConfigureAwait(false);
+        return await WithMemberAttributesAsync(partition, dimensionId, page, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The most values of one attribute a page of members shows beside each member, the most keys first.</summary>
+    public const int MemberAttributeValues = 5;
+
+    /// <summary>
+    /// <paramref name="page"/> with the values each attribute holds among each member's keys a build finds now: the most keys
+    /// first, at most <see cref="MemberAttributeValues"/> per attribute. One read for the page.
+    /// </summary>
+    private async Task<IReadOnlyList<DimensionMemberState>> WithMemberAttributesAsync(
+        short partition, int dimensionId, IReadOnlyList<DimensionMemberState> page, CancellationToken ct)
+    {
+        if (page.Count == 0)
+        {
+            return page;
+        }
+
+        var byMember = (await MemberAttributesAsync(partition, dimensionId, page.Select(m => m.MemberId).ToList(), MemberAttributeValues, ct).ConfigureAwait(false))
+            .ToDictionary(m => m.MemberId, m => m.Attributes);
+        return byMember.Count == 0
+            ? page
+            : page.Select(m => byMember.TryGetValue(m.MemberId, out var attributes) ? m with { Attributes = attributes } : m).ToList();
+    }
+
+    public async Task<IReadOnlyList<DimensionMemberAttributes>> MemberAttributesAsync(
+        int dimensionId, IReadOnlyCollection<long> memberIds, int perAttribute, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(memberIds);
+        if (memberIds.Count == 0 || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        var found = new List<DimensionMemberAttributes>();
+        foreach (var chunk in memberIds.Distinct().Chunk(LookupChunk))
+        {
+            found.AddRange(await MemberAttributesAsync(partition, dimensionId, chunk, perAttribute, ct).ConfigureAwait(false));
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// The values each attribute holds among the keys a build finds now of each member of <paramref name="ids"/>, the most
+    /// keys first, at most <paramref name="perAttribute"/> per attribute, in one read grouped by member, name and value.
+    /// </summary>
+    private async Task<IReadOnlyList<DimensionMemberAttributes>> MemberAttributesAsync(
+        short partition, int dimensionId, IReadOnlyCollection<long> ids, int perAttribute, CancellationToken ct)
+    {
+        var chosen = ids.ToList();
+        var rows = await ReadAsync(
+            db => db.DeliveryDimensionAttributeValues.AsNoTracking()
+                .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId)
+                .Join(
+                    db.DeliveryDimensionValues.Where(v => v.PartitionId == partition && v.DimensionId == dimensionId && v.RemovedRunId == null
+                        && v.MemberId != null && chosen.Contains(v.MemberId.Value)),
+                    a => a.ValueId, v => v.ValueId, (a, v) => new { MemberId = v.MemberId!.Value, a.Name, a.Value })
+                .GroupBy(x => new { x.MemberId, x.Name, x.Value })
+                .Select(g => new { g.Key.MemberId, g.Key.Name, g.Key.Value, Keys = g.Count() })
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+        var take = Math.Max(1, perAttribute);
+        return rows
+            .GroupBy(r => r.MemberId)
+            .Select(g => new DimensionMemberAttributes(g.Key, g
+                .GroupBy(r => r.Name, StringComparer.Ordinal)
+                .OrderBy(n => n.Key, StringComparer.Ordinal)
+                .SelectMany(n => n.OrderByDescending(r => r.Keys).ThenBy(r => r.Value, StringComparer.Ordinal).Take(take))
+                .Select(r => new DimensionMemberAttributeValue(r.Name, r.Value, r.Keys))
+                .ToList()))
+            .ToList();
+    }
+
+    /// <summary>
+    /// <paramref name="keys"/> narrowed to those holding every match of <paramref name="matches"/>: under the attribute's
+    /// name, one of its values, each compared exactly, through the attribute index.
+    /// </summary>
+    private static IQueryable<DeliveryDimensionValue> WithAttributes(
+        OsduDbContext db, IQueryable<DeliveryDimensionValue> keys, short partition, int dimensionId, IReadOnlyList<DimensionAttributeMatch> matches)
+    {
+        foreach (var match in matches)
+        {
+            var name = match.Name;
+            var wanted = match.Values.Distinct(StringComparer.Ordinal).ToList();
+            keys = keys.Where(v => db.DeliveryDimensionAttributeValues.Any(a => a.PartitionId == partition && a.DimensionId == dimensionId && a.ValueId == v.ValueId
+                && a.Name == name && wanted.Contains(a.Value)));
+        }
+
+        return keys;
+    }
+
+    private async Task<IReadOnlyList<DimensionMemberState>> MemberPageAsync(short partition, int dimensionId, DimensionMemberQuery query, CancellationToken ct)
+    {
         var take = Math.Clamp(query.Limit, 1, MaxDimensionPage);
         var search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim();
         return await ReadAsync(
@@ -289,6 +392,15 @@ public sealed partial class OsduLedger
                 if (!query.IncludeRemoved)
                 {
                     members = members.Where(m => m.RemovedRunId == null);
+                }
+
+                if (query.Attributes is { Count: > 0 } matches)
+                {
+                    // A member holding a key that holds every attribute asked for: one key, not several between them.
+                    var matching = WithAttributes(
+                        db, db.DeliveryDimensionValues.Where(v => v.PartitionId == partition && v.DimensionId == dimensionId && v.RemovedRunId == null),
+                        partition, dimensionId, matches);
+                    members = members.Where(m => matching.Any(v => v.MemberId == m.MemberId));
                 }
 
                 if (search is not null)
@@ -377,6 +489,32 @@ public sealed partial class OsduLedger
             return [];
         }
 
+        var page = await ValuePageAsync(partition, dimensionId, query, ct).ConfigureAwait(false);
+        if (page.Count == 0)
+        {
+            return page;
+        }
+
+        // Every attribute of the page's keys, in one read by their ids.
+        var ids = page.Select(v => v.ValueId).ToList();
+        var attributes = (await ReadAsync(
+                db => db.DeliveryDimensionAttributeValues.AsNoTracking()
+                    .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId && ids.Contains(a.ValueId))
+                    .Select(a => new { a.ValueId, a.Name, a.Value, a.ValueFrom })
+                    .ToListAsync(ct),
+                ct).ConfigureAwait(false))
+            .GroupBy(a => a.ValueId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<DimensionAttributeState>)g
+                .OrderBy(a => a.Name, StringComparer.Ordinal)
+                .Select(a => new DimensionAttributeState(a.Name, a.Value, a.ValueFrom))
+                .ToList());
+        return attributes.Count == 0
+            ? page
+            : page.Select(v => attributes.TryGetValue(v.ValueId, out var held) ? v with { Attributes = held } : v).ToList();
+    }
+
+    private async Task<IReadOnlyList<DimensionValueState>> ValuePageAsync(short partition, int dimensionId, DimensionValueQuery query, CancellationToken ct)
+    {
         var take = Math.Clamp(query.Limit, 1, MaxDimensionPage);
         var search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim();
         return await ReadAsync(
@@ -396,6 +534,17 @@ public sealed partial class OsduLedger
                 if (query.LeftOutOnly)
                 {
                     values = values.Where(v => v.MemberId == null);
+                }
+
+                if (query.MemberIds is { Count: > 0 } memberIds)
+                {
+                    var ids = memberIds.Distinct().ToList();
+                    values = values.Where(v => v.MemberId != null && ids.Contains(v.MemberId.Value));
+                }
+
+                if (query.Attributes is { Count: > 0 } matches)
+                {
+                    values = WithAttributes(db, values, partition, dimensionId, matches);
                 }
 
                 if (search is not null)
@@ -508,6 +657,42 @@ public sealed partial class OsduLedger
 
     /// <summary>The most originals of one member <see cref="TopMemberOriginalsAsync"/> reads.</summary>
     public const int MaxTopOriginals = 50;
+
+    public async Task<IReadOnlyList<DimensionAttributeValueState>> ListDimensionAttributeValuesAsync(
+        int dimensionId, string name, string? search, int limit, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        var take = Math.Clamp(limit, 1, MaxDimensionPage);
+        var text = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+        var rows = await ReadAsync(
+            db =>
+            {
+                var attributes = db.DeliveryDimensionAttributeValues.AsNoTracking()
+                    .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId && a.Name == name);
+                if (text is not null)
+                {
+                    attributes = attributes.Where(a => EF.Functions.Collate(a.Value, DeliveryModel.SearchCollation).Contains(text));
+                }
+
+                // An attribute's values over the keys a build finds now, from the index on name and value.
+                return attributes
+                    .Join(
+                        db.DeliveryDimensionValues.Where(v => v.PartitionId == partition && v.DimensionId == dimensionId && v.RemovedRunId == null),
+                        a => a.ValueId, v => v.ValueId, (a, v) => new { a.Value, v.Count })
+                    .GroupBy(x => x.Value)
+                    .Select(g => new { Value = g.Key, Keys = g.Count(), Records = g.Sum(x => x.Count) })
+                    .OrderByDescending(x => x.Records).ThenBy(x => x.Value)
+                    .Take(take)
+                    .ToListAsync(ct);
+            },
+            ct).ConfigureAwait(false);
+        return rows.Select(r => new DimensionAttributeValueState(r.Value, r.Keys, r.Records)).ToList();
+    }
 
     public async Task<IReadOnlyList<DimensionChangeState>> ListDimensionChangesAsync(int dimensionId, DimensionChangeQuery query, CancellationToken ct = default)
     {
@@ -635,6 +820,7 @@ public sealed partial class OsduLedger
         Field = d.FieldIndex is { } index && d.AggregateBy is { } aggregateBy ? new DimensionFieldState(index, d.NestedPath, aggregateBy, d.Repeats) : null,
         CleanJson = d.CleanJson,
         LabelJson = d.LabelJson,
+        AttributesJson = d.AttributesJson,
         DefinitionHash = d.DefinitionHash,
         Members = d.Members,
         Originals = d.Originals,

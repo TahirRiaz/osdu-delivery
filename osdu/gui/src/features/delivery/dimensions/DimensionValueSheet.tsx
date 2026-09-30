@@ -6,16 +6,17 @@ import { CopyButton } from "@/components/CopyButton";
 import { DataTable, type Column } from "@/components/DataTable";
 import { DetailPair } from "@/components/DetailPair";
 import { RelativeTime } from "@/components/RelativeTime";
-import { deliveryApi, type DeliveryDimensionChange, type DeliveryDimensionKey } from "../../../api/delivery";
+import { deliveryApi, type DeliveryDimensionAttributeSpec, type DeliveryDimensionChange, type DeliveryDimensionKey } from "../../../api/delivery";
 import { ProblemView } from "../TemplateSheet";
 import { counted } from "../assertions/assertionFormat";
 import { KeyFilterCell, LabelCell } from "./DimensionKeys";
+import { keyAttributeColumns } from "./dimensionColumns";
 import { DimensionFilterView } from "./DimensionFilterSheet";
 import { DimensionValueText } from "./DimensionValueText";
 import { CHANGE_TEXT } from "./dimensionFormat";
 
-/** The columns of a value's keys: each key with its label when the dimension reads one, its count, its filter and when it arrived. */
-function keyColumns(labelled: boolean): Column<DeliveryDimensionKey>[] {
+/** The columns of a value's keys: each key with its label when the dimension reads one, its count, its attributes, its filter and when it arrived. */
+function keyColumns(labelled: boolean, attributes: DeliveryDimensionAttributeSpec[]): Column<DeliveryDimensionKey>[] {
   return [
     {
       id: "key",
@@ -31,6 +32,7 @@ function keyColumns(labelled: boolean): Column<DeliveryDimensionKey>[] {
       align: "right",
       render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.count.toLocaleString("en-US")}</span>,
     },
+    ...keyAttributeColumns(attributes),
     { id: "filter", header: "Filter", render: (row) => <KeyFilterCell row={row} /> },
     {
       id: "since",
@@ -68,10 +70,12 @@ function HistoryRow({ change, valueId }: { change: DeliveryDimensionChange; valu
  * the most records first; the search that finds the value's records; and the changes that brought keys to it or took them
  * away.
  */
-export function DimensionValueSheet({ dimensionId, labelled, valueId, onClose }: {
+export function DimensionValueSheet({ dimensionId, labelled, attributes, valueId, onClose }: {
   dimensionId: number;
   /** The dimension reads a label for its keys. */
   labelled: boolean;
+  /** The attributes the dimension reads of its keys. */
+  attributes: DeliveryDimensionAttributeSpec[];
   /** The value to show; null closes the sheet. */
   valueId: number | null;
   onClose: () => void;
@@ -130,7 +134,7 @@ export function DimensionValueSheet({ dimensionId, labelled, valueId, onClose }:
               <section className="flex flex-col gap-2">
                 <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Keys</h3>
                 <DataTable
-                  columns={keyColumns(labelled)}
+                  columns={keyColumns(labelled, attributes)}
                   rows={data.keys}
                   rowKey={(row) => row.keyId}
                   emptyMessage="No build finds a key of this value now."

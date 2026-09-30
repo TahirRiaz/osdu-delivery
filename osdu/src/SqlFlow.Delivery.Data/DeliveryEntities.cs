@@ -1232,6 +1232,12 @@ public sealed class DeliveryDimension
     /// </summary>
     public string? LabelJson { get; set; }
 
+    /// <summary>
+    /// The attributes each key is read with, as a JSON array of <c>{ "name", "steps" }</c>: the paths each is read through,
+    /// from the record the key names. Null when the dimension reads none.
+    /// </summary>
+    public string? AttributesJson { get; set; }
+
     /// <summary>The hash of the dimension's declaration as the last build read it.</summary>
     public string DefinitionHash { get; set; } = string.Empty;
 
@@ -1466,6 +1472,36 @@ public sealed class DeliveryDimensionValue
 
     /// <summary>The build since which it belongs to its member (or to none).</summary>
     public long MemberSinceRunId { get; set; }
+}
+
+/// <summary>
+/// One attribute of one original (a key): the value the build read under the attribute's name from the record the key
+/// names, and the record it was read from. A key has at most one row per attribute, rewritten when a build reads another
+/// value, and removed when a build finds the key without it; a key no build finds any more keeps what its last build read.
+/// </summary>
+public sealed class DeliveryDimensionAttributeValue
+{
+    /// <summary>The longest attribute name.</summary>
+    public const int MaxNameLength = 64;
+
+    /// <summary>The longest attribute value kept; a longer one is cut by the build, with a note.</summary>
+    public const int MaxValueLength = 256;
+
+    public short PartitionId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The original the attribute is of (<see cref="DeliveryDimensionValue.ValueId"/>).</summary>
+    public long ValueId { get; set; }
+
+    /// <summary>The attribute's name, as the dimension declares it.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The value read, trimmed, compared exactly.</summary>
+    public string Value { get; set; } = string.Empty;
+
+    /// <summary>The id of the record it was read from: the record the original names, or the last one the attribute's steps reached.</summary>
+    public string? ValueFrom { get; set; }
 }
 
 /// <summary>
@@ -2128,6 +2164,18 @@ public static class DeliveryModel
             e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.MemberId });
             // The originals most records hold first, a page at a time.
             e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.Count, v.ValueId }).IsDescending(false, false, true, false);
+        });
+
+        modelBuilder.Entity<DeliveryDimensionAttributeValue>(e =>
+        {
+            e.ToTable("DimensionAttribute", SchemaName);
+            // A key's attributes, read with it a page at a time.
+            e.HasKey(a => new { a.PartitionId, a.DimensionId, a.ValueId, a.Name });
+            ExactText(e.Property(a => a.Name)).HasMaxLength(DeliveryDimensionAttributeValue.MaxNameLength).IsRequired();
+            ExactText(e.Property(a => a.Value)).HasMaxLength(DeliveryDimensionAttributeValue.MaxValueLength).IsRequired();
+            e.Property(a => a.ValueFrom).HasMaxLength(DeliveryDimensionValue.MaxOriginalLength);
+            // The keys an attribute value holds (Country is Norway), and an attribute's values: one seek either way.
+            e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.Name, a.Value });
         });
 
         modelBuilder.Entity<DeliveryDimensionChange>(e =>

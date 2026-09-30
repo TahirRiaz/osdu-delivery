@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Engine.Dimensions;
@@ -220,6 +221,7 @@ internal static class DimensionMapper
             Query = query,
             Path = path,
             Label = MapLabel(d.Label, where, source),
+            Attributes = MapAttributes(d.Attributes, where, source),
             Clean = MapClean(d.Clean, where, source),
             CountRecords = d.CountRecords ?? false,
             MaxValues = maxValues,
@@ -258,31 +260,91 @@ internal static class DimensionMapper
     /// returns it, so it is any path of the record: <c>data.</c> and its properties, or the record's own.
     /// </summary>
     private static IReadOnlyList<string> MapLabel(object? declared, string where, string source)
+        => MapSteps(declared, "label", where, source);
+
+    /// <summary>
+    /// The attributes of a dimension's keys, each by its name and read as a label is (<see cref="MapLabel"/>): at most
+    /// <see cref="DimensionSpec.MaxAttributes"/>, each named by a letter, then letters, digits and underscores, unique
+    /// ignoring case, and none a name a cached dimension's rows hold already.
+    /// </summary>
+    private static IReadOnlyList<DimensionAttributeSpec> MapAttributes(Dictionary<string, object?>? declared, string where, string source)
+    {
+        if (declared is null || declared.Count == 0)
+        {
+            return [];
+        }
+
+        if (declared.Count > DimensionSpec.MaxAttributes)
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: attributes names {declared.Count}; a dimension reads at most {DimensionSpec.MaxAttributes}, a search per attribute step for every key.");
+        }
+
+        var attributes = new List<DimensionAttributeSpec>(declared.Count);
+        foreach (var (name, steps) in declared)
+        {
+            var trimmed = name.Trim();
+            if (!DimensionAttributeSpec.IsName(trimmed))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: attributes.{name} is not an attribute name: a letter, then letters, digits and underscores, at most {DimensionAttributeSpec.MaxNameLength}.");
+            }
+
+            if (DimensionAttributeSpec.Reserved.Contains(trimmed))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: attributes.{trimmed} takes a name a dimension's rows hold already ({string.Join(", ", DimensionAttributeSpec.Reserved.Order(StringComparer.Ordinal))}); name it after what it holds.");
+            }
+
+            if (attributes.Any(a => string.Equals(a.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new FlowValidationException($"{source}: {where}: attributes.{trimmed} is named twice, ignoring case.");
+            }
+
+            var read = MapSteps(steps, $"attributes.{trimmed}", where, source);
+            if (read.Count == 0)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: attributes.{trimmed} reads nothing; give the path of the record the key names it is read from (attributes: {{ {trimmed}: data.Name }}).");
+            }
+
+            attributes.Add(new DimensionAttributeSpec(trimmed, read));
+        }
+
+        return attributes;
+    }
+
+    /// <summary>
+    /// The paths a label or an attribute is read through: one path, or a list of them, at most
+    /// <see cref="DimensionSpec.MaxLabelSteps"/>, each a property path.
+    /// </summary>
+    private static IReadOnlyList<string> MapSteps(object? declared, string what, string where, string source)
     {
         List<string> steps = declared switch
         {
             null => [],
             string one => [one],
             IEnumerable<object?> many => many.Select((step, i) => step as string
-                ?? throw new FlowValidationException($"{source}: {where}: label[{i}] is not a path; each step of a label is a path, such as data.FacilityName.")).ToList(),
+                ?? throw new FlowValidationException($"{source}: {where}: {what}[{i}] is not a path; each step of a {Kind(what)} is a path, such as data.FacilityName.")).ToList(),
             _ => throw new FlowValidationException(
-                $"{source}: {where}: label is a path (label: data.FacilityName) or a list of paths (label: [data.GeoContexts.FieldID, data.FieldName]); it is neither."),
+                $"{source}: {where}: {what} is a path ({what}: data.FacilityName) or a list of paths ({what}: [data.GeoContexts.FieldID, data.FieldName]); it is neither."),
         };
 
         if (steps.Count > DimensionSpec.MaxLabelSteps)
         {
             throw new FlowValidationException(
-                $"{source}: {where}: label reads through {steps.Count} records; a label reads through at most {DimensionSpec.MaxLabelSteps}, a search per step for every key.");
+                $"{source}: {where}: {what} reads through {steps.Count} records; a {Kind(what)} reads through at most {DimensionSpec.MaxLabelSteps}, a search per step for every key.");
         }
 
         var trimmed = new List<string>(steps.Count);
         for (var i = 0; i < steps.Count; i++)
         {
             var step = steps[i].Trim();
-            if (!OsduPath.IsPath(step))
+            var (path, problem) = DimensionPath.Parse(step);
+            if (path is null || !OsduPath.IsPath(string.Join('.', path.Segments.Select(s => s.Name))))
             {
                 throw new FlowValidationException(
-                    $"{source}: {where}: label{(steps.Count > 1 ? string.Create(CultureInfo.InvariantCulture, $"[{i}]") : string.Empty)} '{step}' is not a property path: segments of letters, digits and underscores separated by dots, such as data.FacilityName.");
+                    $"{source}: {where}: {what}{(steps.Count > 1 ? string.Create(CultureInfo.InvariantCulture, $"[{i}]") : string.Empty)} '{step}' is not a property path{(problem is null ? string.Empty : $" ({problem})")}: segments of letters, digits and underscores separated by dots, such as data.FacilityName, a segment holding objects filtered by [Property=text] or [Property*=text], such as data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID.");
             }
 
             trimmed.Add(step);
@@ -510,9 +572,24 @@ internal static class DimensionMapper
 
     private static string? Optional(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    /// <summary>What a list of steps is read for, as a message names it: a label, or an attribute.</summary>
+    private static string Kind(string what) => what == "label" ? "label" : "attribute";
+
+    /// <summary>
+    /// The hash of what a dimension declares. A label and attributes it does not declare are left out, so a dimension
+    /// declared before either existed keeps the hash it was built with.
+    /// </summary>
     private static string Hash(DimensionSpec dimension)
     {
-        var node = JsonSerializer.SerializeToNode(dimension with { DefinitionHash = string.Empty }, HashJson);
+        var node = JsonSerializer.SerializeToNode(dimension with { DefinitionHash = string.Empty }, HashJson)!.AsObject();
+        foreach (var name in new[] { nameof(DimensionSpec.Label), nameof(DimensionSpec.Attributes) })
+        {
+            if (node.TryGetPropertyValue(name, out var value) && value is JsonArray { Count: 0 })
+            {
+                node.Remove(name);
+            }
+        }
+
         return Hashing.ContentHash.Of(CanonicalJson.ToBytes(node))[..16];
     }
 }

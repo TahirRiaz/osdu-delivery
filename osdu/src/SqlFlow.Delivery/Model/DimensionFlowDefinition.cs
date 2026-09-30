@@ -314,6 +314,24 @@ public sealed record DimensionSpec
     /// <summary>The most records a label reads through, one per step.</summary>
     public const int MaxLabelSteps = 3;
 
+    /// <summary>
+    /// Further facts of each key read the way its label is, each under a name: a path of the record the key names
+    /// (<c>SpudDate: data.SpudDate</c>), or several read through its references (<c>Country:
+    /// [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]</c>). A key keeps each attribute's value, so a
+    /// dimension's values and keys can be looked up and a search picked by them (<c>Wellbore where Country is Norway</c>).
+    /// </summary>
+    public IReadOnlyList<DimensionAttributeSpec> Attributes { get; init; } = [];
+
+    /// <summary>The most attributes a dimension reads.</summary>
+    public const int MaxAttributes = 20;
+
+    /// <summary>The longest attribute value kept; a longer one is cut, with a note.</summary>
+    public const int MaxAttributeValueLength = 256;
+
+    /// <summary>The attribute <paramref name="name"/> names, ignoring case; null when the dimension reads none of that name.</summary>
+    public DimensionAttributeSpec? Attribute(string name)
+        => Attributes.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
+
     /// <summary>The steps each value is cleaned by, in order (a key's label when it has one, else the key); none keeps it as it is.</summary>
     public IReadOnlyList<CleanStep> Clean { get; init; } = [];
 
@@ -341,6 +359,29 @@ public sealed record DimensionSpec
 }
 
 /// <summary>What a clean step does.</summary>
+/// <summary>
+/// One attribute of a dimension's keys: its name, and the paths it is read through, from the record a key names, each but
+/// the last reading the reference to the next record.
+/// </summary>
+/// <param name="Name">A letter, then letters, digits and underscores, at most 64; unique in its dimension ignoring case.</param>
+/// <param name="Steps">The paths, one to <see cref="DimensionSpec.MaxLabelSteps"/>.</param>
+public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps)
+{
+    /// <summary>The longest attribute name.</summary>
+    public const int MaxNameLength = 64;
+
+    /// <summary>
+    /// Names an attribute cannot take: the columns a cached dimension's rows hold already, and the words a key's own facts
+    /// are known by.
+    /// </summary>
+    public static readonly IReadOnlySet<string> Reserved =
+        new HashSet<string>(["value", "keys", "key", "records", "filter", "label", "id"], StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether <paramref name="name"/> is an attribute name: a letter, then letters, digits and underscores.</summary>
+    public static bool IsName(string? name)
+        => name is { Length: > 0 and <= MaxNameLength } && char.IsAsciiLetter(name[0]) && name.All(c => char.IsAsciiLetterOrDigit(c) || c == '_');
+}
+
 public enum CleanStepKind
 {
     /// <summary>Removes white space at both ends.</summary>

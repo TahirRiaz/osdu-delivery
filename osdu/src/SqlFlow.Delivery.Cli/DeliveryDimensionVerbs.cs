@@ -18,7 +18,8 @@ namespace SqlFlow.Delivery.Cli;
 /// index holds them), <c>filter</c> writes the search that finds the records of the values named, <c>search</c> composes the
 /// search across the flow's dimensions from the values picked in each, <c>history</c> lists the builds and <c>changes</c> the
 /// change log, and <c>export</c> writes the whole as CSV or JSON Lines; the filter, the search and the export are written by
-/// the same code as the API's. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
+/// the same code as the API's; <c>attributes</c> lists the values an attribute of a dimension's keys holds, and <c>--attr</c>
+/// narrows values and keys by them. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
 /// </summary>
 internal static class DeliveryDimensionVerbs
 {
@@ -53,9 +54,9 @@ internal static class DeliveryDimensionVerbs
             return await SearchAsync(context, ledger, flow, ct).ConfigureAwait(false);
         }
 
-        if (verb is not ("values" or "keys" or "filter" or "history" or "changes" or "export"))
+        if (verb is not ("values" or "keys" or "attributes" or "filter" or "history" or "changes" or "export"))
         {
-            return context.UsageError("say what to show: list, values, keys, filter, search, history, changes or export.");
+            return context.UsageError("say what to show: list, values, keys, attributes, filter, search, history, changes or export.");
         }
 
         var dimension = await DimensionAsync(context, ledger, flow, ct).ConfigureAwait(false);
@@ -63,6 +64,7 @@ internal static class DeliveryDimensionVerbs
         {
             "values" => await ValuesAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "keys" => await KeysAsync(context, ledger, dimension, ct).ConfigureAwait(false),
+            "attributes" => await AttributesAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "filter" => await FilterAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "history" => await HistoryAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "changes" => await ChangesAsync(context, ledger, dimension, ct).ConfigureAwait(false),
@@ -95,6 +97,11 @@ internal static class DeliveryDimensionVerbs
                         ["kind"] = spec.Kind,
                         ["path"] = spec.Path,
                         ["label"] = spec.Label.Count == 0 ? null : new JsonArray(spec.Label.Select(l => (JsonNode)JsonValue.Create(l)!).ToArray()),
+                        ["attributes"] = new JsonArray(spec.Attributes.Select(a => (JsonNode)new JsonObject
+                        {
+                            ["name"] = a.Name,
+                            ["steps"] = new JsonArray(a.Steps.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()),
+                        }).ToArray()),
                         ["aggregateBy"] = dimension?.Field?.AggregateBy,
                         ["values"] = dimension?.Members,
                         ["keys"] = dimension?.Originals,
@@ -110,7 +117,8 @@ internal static class DeliveryDimensionVerbs
         foreach (var spec in flow.Dimensions)
         {
             var dimension = held.GetValueOrDefault(spec.Name);
-            var label = spec.Label.Count == 0 ? string.Empty : " labelled by " + string.Join(" > ", spec.Label);
+            var label = (spec.Label.Count == 0 ? string.Empty : " labelled by " + string.Join(" > ", spec.Label))
+                + (spec.Attributes.Count == 0 ? string.Empty : "; attributes " + string.Join(", ", spec.Attributes.Select(a => a.Name)));
             if (dimension is null)
             {
                 context.Out.WriteLine($"  {spec.Name}  ({spec.Kind} {spec.Path}{label})  not built yet");
@@ -145,8 +153,11 @@ internal static class DeliveryDimensionVerbs
             var other => throw new FlowValidationException($"--order '{other}' is not one of value, records."),
         };
         var max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max");
+        var matches = AttributeMatches(context, dimension);
         var members = await ledger.ListDimensionMembersAsync(
-            dimension.DimensionId, new DimensionMemberQuery(context.Arguments.GetOption("--search"), context.Arguments.HasFlag("--removed"), null, max, order), ct).ConfigureAwait(false);
+            dimension.DimensionId,
+            new DimensionMemberQuery(context.Arguments.GetOption("--search"), context.Arguments.HasFlag("--removed"), null, max, order, matches),
+            ct).ConfigureAwait(false);
         var top = (await ledger.TopMemberOriginalsAsync(dimension.DimensionId, members.Select(m => m.MemberId).ToList(), ShownKeys, ct).ConfigureAwait(false))
             .GroupBy(v => v.MemberId ?? 0)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(v => v.Count).ThenBy(v => v.ValueId).Select(v => v.Original).ToList());
@@ -167,6 +178,7 @@ internal static class DeliveryDimensionVerbs
                     ["filterParts"] = m.FilterParts,
                     ["removedUtc"] = m.RemovedUtc,
                     ["top"] = new JsonArray((top.GetValueOrDefault(m.MemberId) ?? []).Select(o => (JsonNode)JsonValue.Create(o)!).ToArray()),
+                    ["attributes"] = new JsonArray(m.Attributes.Select(a => (JsonNode)new JsonObject { ["name"] = a.Name, ["value"] = a.Value, ["keys"] = a.Keys }).ToArray()),
                 }).ToArray()),
             }));
             return 0;
@@ -179,8 +191,11 @@ internal static class DeliveryDimensionVerbs
             var shown = top.GetValueOrDefault(member.MemberId) ?? [];
             var more = member.Originals > shown.Count ? string.Create(CultureInfo.InvariantCulture, $", {member.Originals - shown.Count} more") : string.Empty;
             var removed = member.RemovedUtc is { } gone ? "  (no build finds it since " + Stamp(gone) + ")" : string.Empty;
+            var attributes = member.Attributes.Count == 0
+                ? string.Empty
+                : "  [" + string.Join("; ", member.Attributes.GroupBy(a => a.Name).Select(g => $"{g.Key}: {string.Join(", ", g.Select(a => a.Value))}")) + "]";
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {records,12}  {member.Value}  <- {string.Join(", ", shown.Select(Quoted))}{more}{removed}"));
+                $"  {records,12}  {member.Value}  <- {string.Join(", ", shown.Select(Quoted))}{more}{removed}{attributes}"));
         }
 
         return 0;
@@ -213,7 +228,8 @@ internal static class DeliveryDimensionVerbs
         var max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max");
         var keys = await ledger.ListDimensionValuesAsync(
             dimension.DimensionId,
-            new DimensionValueQuery(context.Arguments.GetOption("--search"), memberId, leftOut, context.Arguments.HasFlag("--removed"), null, max, order),
+            new DimensionValueQuery(
+                context.Arguments.GetOption("--search"), memberId, leftOut, context.Arguments.HasFlag("--removed"), null, max, order, AttributeMatches(context, dimension)),
             ct).ConfigureAwait(false);
         if (context.Json)
         {
@@ -232,6 +248,7 @@ internal static class DeliveryDimensionVerbs
                     ["count"] = k.Count,
                     ["filterable"] = k.Filterable,
                     ["filter"] = k.Filter,
+                    ["attributes"] = new JsonObject(k.Attributes.Select(a => KeyValuePair.Create(a.Name, (JsonNode?)JsonValue.Create(a.Value)))),
                     ["removedUtc"] = k.RemovedUtc,
                 }).ToArray()),
             }));
@@ -246,6 +263,11 @@ internal static class DeliveryDimensionVerbs
             var unfilterable = key.Filterable ? string.Empty : "  (no query can carry it)";
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
                 $"  {key.Count,12:N0}  {Quoted(key.Original)}  {of}{label}{unfilterable}{(key.Note is { Length: > 0 } note ? "  " + note : string.Empty)}"));
+            if (key.Attributes.Count > 0)
+            {
+                context.Out.WriteLine("                " + string.Join("; ", key.Attributes.Select(a => $"{a.Name}: {a.Value}")));
+            }
+
             if (key.Filter is { } filter)
             {
                 context.Out.WriteLine("                search " + filter);
@@ -320,9 +342,11 @@ internal static class DeliveryDimensionVerbs
     private static async Task<int> SearchAsync(CliVerbContext context, ILedger ledger, DimensionFlowDefinition flow, CancellationToken ct)
     {
         var given = context.Arguments.GetOptions("--pick");
-        if (given.Count == 0)
+        var where = context.Arguments.GetOptions("--where");
+        if (given.Count + where.Count == 0)
         {
-            return context.UsageError("pick the values to search for: --pick <dimension>=<value> (repeat it for more values and dimensions).");
+            return context.UsageError(
+                "pick what to search for: --pick <dimension>=<value>, or --where <dimension>.<attribute>=<value> (repeat either for more).");
         }
 
         // A pick is split at its first '=': a dimension's name holds none, and a value may.
@@ -339,6 +363,23 @@ internal static class DeliveryDimensionVerbs
             (byDimension.TryGetValue(name, out var values) ? values : byDimension[name] = []).Add(pick[(at + 1)..]);
         }
 
+        // A where is split at its first '=', and what is before it at its last '.': an attribute's name holds no dot.
+        var byAttribute = new Dictionary<string, List<DimensionAttributeMatch>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var condition in where)
+        {
+            var equals = condition.IndexOf('=', StringComparison.Ordinal);
+            var dot = equals <= 0 ? -1 : condition.LastIndexOf('.', equals - 1);
+            if (equals <= 0 || dot <= 0 || dot == equals - 1)
+            {
+                return context.UsageError($"--where '{condition}' is not <dimension>.<attribute>=<value>.");
+            }
+
+            var dimensionName = condition[..dot].Trim();
+            (byAttribute.TryGetValue(dimensionName, out var list) ? list : byAttribute[dimensionName] = [])
+                .Add(new DimensionAttributeMatch(condition[(dot + 1)..equals].Trim(), [condition[(equals + 1)..]]));
+            byDimension.TryAdd(dimensionName, []);
+        }
+
         var picks = new List<DimensionPick>(byDimension.Count);
         foreach (var (name, values) in byDimension)
         {
@@ -347,7 +388,7 @@ internal static class DeliveryDimensionVerbs
             var dimension = await ledger.FindDimensionAsync(flow.LedgerId, spec.Name, ct).ConfigureAwait(false)
                 ?? throw new FlowValidationException(
                     $"Dimension {spec.Name} has not been built in {flow.LedgerName} yet. Build it with: sqlflow run <flow.yaml> --payload '{{\"dimensions\":[\"{spec.Name}\"]}}'");
-            picks.Add(new DimensionPick(dimension, [], values.Distinct(StringComparer.Ordinal).ToList()));
+            picks.Add(new DimensionPick(dimension, [], values.Distinct(StringComparer.Ordinal).ToList(), byAttribute.GetValueOrDefault(name)));
         }
 
         var set = await DimensionSearch.ComposeAsync(ledger, picks, context.Arguments.GetOption("--kind"), context.Arguments.GetOption("--within"), ct).ConfigureAwait(false);
@@ -368,6 +409,11 @@ internal static class DeliveryDimensionVerbs
                     ["unfilterable"] = p.Unfilterable,
                     ["filter"] = p.Filter,
                     ["query"] = p.Query,
+                    ["attributes"] = new JsonArray(p.Attributes.Select(a => (JsonNode)new JsonObject
+                    {
+                        ["name"] = a.Name,
+                        ["values"] = new JsonArray(a.Values.Select(v => (JsonNode)JsonValue.Create(v)!).ToArray()),
+                    }).ToArray()),
                 }).ToArray()),
                 ["removed"] = new JsonArray(set.Removed.Select(r => (JsonNode)JsonValue.Create(r)!).ToArray()),
                 ["missing"] = new JsonArray(set.Missing.Select(m => (JsonNode)JsonValue.Create(m)!).ToArray()),
@@ -379,8 +425,9 @@ internal static class DeliveryDimensionVerbs
         context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"kind {set.Kind}, {set.Parts.Count} dimension(s), {set.Clauses} clause(s)"));
         foreach (var part in set.Parts)
         {
+            var by = part.Attributes.Count == 0 ? string.Empty : " where " + string.Join(" and ", part.Attributes.Select(a => $"{a.Name} is {string.Join(" or ", a.Values.Select(Quoted))}"));
             context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {part.Dimension}: {string.Join(", ", part.Values.Select(v => Quoted(v.Value)))} ({part.Keys} key(s) of {part.AggregateBy})"));
+                $"  {part.Dimension}{by}: {string.Join(", ", part.Values.Take(10).Select(v => Quoted(v.Value)))}{(part.Values.Count > 10 ? ", ..." : string.Empty)} ({part.Keys} key(s) of {part.AggregateBy})"));
         }
 
         foreach (var line in set.Removed.Select(r => "  no build finds this any more: " + r)
@@ -529,6 +576,85 @@ internal static class DeliveryDimensionVerbs
 
         context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote {rows} {(set == DimensionExportSet.Values ? "value(s)" : "key(s)")} of {dimension.Name} to {full}"));
         return 0;
+    }
+
+    /// <summary>
+    /// The values the attribute --attribute names holds among the dimension's keys, the most records first, those containing
+    /// --search when given.
+    /// </summary>
+    private static async Task<int> AttributesAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
+    {
+        var declared = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        if (context.Arguments.GetOption("--attribute") is not { } asked || string.IsNullOrWhiteSpace(asked))
+        {
+            return context.UsageError(declared.Count == 0
+                ? $"name the attribute with --attribute <name>; dimension {dimension.Name} reads none."
+                : $"name the attribute with --attribute <name>; dimension {dimension.Name} reads {string.Join(", ", declared.Select(a => a.Name))}.");
+        }
+
+        var attribute = declared.FirstOrDefault(a => string.Equals(a.Name, asked.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?? throw new FlowValidationException(
+                $"Dimension {dimension.Name} reads no attribute '{asked}'{(declared.Count == 0 ? "; it reads none" : $"; it reads {string.Join(", ", declared.Select(a => a.Name))}")}.");
+        var max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max");
+        var values = await ledger.ListDimensionAttributeValuesAsync(dimension.DimensionId, attribute.Name, context.Arguments.GetOption("--search"), max, ct).ConfigureAwait(false);
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["dimension"] = dimension.Name,
+                ["attribute"] = attribute.Name,
+                ["values"] = new JsonArray(values.Select(v => (JsonNode)new JsonObject { ["value"] = v.Value, ["keys"] = v.Keys, ["records"] = v.Records }).ToArray()),
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{dimension.Name}.{attribute.Name}: {values.Count} value(s)"));
+        foreach (var value in values)
+        {
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  {value.Records,12:N0}  {Quoted(value.Value)}  ({value.Keys} key(s))"));
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// The attribute matches --attr asks for, each <c>Name=value</c> (the value everything after the first '='), named as
+    /// the dimension declares them: several of one attribute are any of their values, several attributes all of them.
+    /// </summary>
+    private static List<DimensionAttributeMatch>? AttributeMatches(CliVerbContext context, DimensionState dimension)
+    {
+        var asked = context.Arguments.GetOptions("--attr");
+        if (asked.Count == 0)
+        {
+            return null;
+        }
+
+        var declared = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        var matches = new List<DimensionAttributeMatch>();
+        foreach (var text in asked)
+        {
+            var at = text.IndexOf('=', StringComparison.Ordinal);
+            if (at <= 0 || at == text.Length - 1)
+            {
+                throw new FlowValidationException($"--attr '{text}' is not <attribute>=<value>.");
+            }
+
+            var name = text[..at].Trim();
+            var attribute = declared.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))
+                ?? throw new FlowValidationException(
+                    $"Dimension {dimension.Name} reads no attribute '{name}'{(declared.Count == 0 ? "; it reads none" : $"; it reads {string.Join(", ", declared.Select(a => a.Name))}")}.");
+            var index = matches.FindIndex(m => m.Name == attribute.Name);
+            if (index >= 0)
+            {
+                matches[index] = matches[index] with { Values = [.. matches[index].Values, text[(at + 1)..]] };
+            }
+            else
+            {
+                matches.Add(new DimensionAttributeMatch(attribute.Name, [text[(at + 1)..]]));
+            }
+        }
+
+        return matches;
     }
 
     /// <summary>The dimension --dimension names, as the flow's ledger in its partition holds it.</summary>

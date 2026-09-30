@@ -149,6 +149,55 @@ public class DimensionDocumentTests
         Assert.Contains(reason, refused.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Attributes_are_read_like_a_label_each_under_its_name_and_a_step_can_filter_the_objects_it_holds()
+    {
+        var flow = Parse(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+                attributes:
+                  Country: ['data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID', data.GeoPoliticalEntityName]
+                  SpudDate: data.SpudDate
+            """);
+
+        var wellbore = flow.Dimensions[0];
+        Assert.Equal(["Country", "SpudDate"], wellbore.Attributes.Select(a => a.Name));
+        Assert.Equal(["data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID", "data.GeoPoliticalEntityName"], wellbore.Attribute("country")!.Steps);
+        Assert.Equal(["data.SpudDate"], wellbore.Attribute("SpudDate")!.Steps);
+
+        // Another attribute is another declaration; a dimension that reads none keeps the hash it had before attributes existed.
+        var plain = Parse(Head + Curves).Dimensions[0].DefinitionHash;
+        Assert.NotEqual(plain, Parse(Head + Curves + "\n    attributes: { Family: data.Name }").Dimensions[0].DefinitionHash);
+        Assert.Equal(plain, Parse(Head + Curves + "\n    attributes: {}").Dimensions[0].DefinitionHash);
+    }
+
+    [Theory]
+    [InlineData("attributes: { 'not a name': data.A }", "is not an attribute name")]
+    [InlineData("attributes: { Keys: data.A }", "takes a name a dimension's rows hold already")]
+    [InlineData("attributes: { Area: data.A, area: data.B }", "is named twice")]
+    [InlineData("attributes: { Area: [] }", "reads nothing")]
+    [InlineData("attributes: { Area: 'data.A[B]' }", "is not [Property=text]")]
+    [InlineData("attributes: { Area: 'data.A[B=' }", "has no closing ]")]
+    [InlineData("attributes: { Area: 'data.A[=x]' }", "is not [Property=text]")]
+    [InlineData("attributes: { Area: 'data..A' }", "is not a property name")]
+    [InlineData("attributes: { Area: [data.A, data.B, data.C, data.D] }", "at most 3")]
+    public void An_attribute_that_breaks_a_rule_is_refused_naming_the_rule(string attributes, string reason)
+    {
+        var refused = Refused(Head + Curves + "\n    " + attributes);
+        Assert.Contains("dimensions[0] 'CurveMnemonic'", refused.Message, StringComparison.Ordinal);
+        Assert.Contains(reason, refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void More_attributes_than_a_dimension_reads_are_refused()
+    {
+        var many = string.Join(", ", Enumerable.Range(0, DimensionSpec.MaxAttributes + 1).Select(i => $"A{i}: data.A{i}"));
+        Assert.Contains("at most 20", Refused(Head + Curves + "\n    attributes: { " + many + " }").Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("kind", "osdu:wks:master-data--Wellbore:*")]
     [InlineData("id", "osdu:wks:*:*")]

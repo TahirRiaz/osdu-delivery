@@ -40,7 +40,7 @@ function CleanSteps({ steps, labelled }: { steps: string[]; labelled: boolean })
  * Where a key's label is read: from the record the key names, through each step's reference to the next record, to the
  * text the last step holds; or that each key is its own value.
  */
-function LabelSteps({ steps }: { steps: string[] }) {
+function LabelSteps({ steps, end = "label" }: { steps: string[]; end?: string }) {
   if (steps.length === 0) {
     return <p className="text-[13px] text-muted-foreground">None: each key is cleaned into its value itself.</p>;
   }
@@ -57,7 +57,7 @@ function LabelSteps({ steps }: { steps: string[] }) {
         </Fragment>
       ))}
       <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden />
-      <li className="font-mono text-[12px] text-muted-foreground">label</li>
+      <li className="font-mono text-[12px] text-muted-foreground">{end}</li>
     </ol>
   );
 }
@@ -102,6 +102,17 @@ export function DimensionDefinition({ entry }: { entry: DimensionEntry }) {
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Label</span>
           <LabelSteps steps={dimension.label} />
         </div>
+        {dimension.attributes.length > 0 && (
+          <div className="flex flex-col gap-1.5" data-testid="dimension-attributes">
+            <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Attributes</span>
+            {dimension.attributes.map((attribute) => (
+              <div key={attribute.name} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="w-28 shrink-0 text-[13px] font-medium">{attribute.name}</span>
+                <LabelSteps steps={attribute.steps} end={attribute.name} />
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex flex-col gap-1.5">
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Clean</span>
           <CleanSteps steps={dimension.clean} labelled={dimension.label.length > 0} />

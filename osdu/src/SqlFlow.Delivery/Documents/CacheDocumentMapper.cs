@@ -340,10 +340,10 @@ internal static class CacheMapper
     }
 
     /// <summary>
-    /// A type holding a dimension's members (docs/dimension-plan.md, Stage 6): the dimension and the dimension flow declaring
+    /// A type holding a dimension's values (docs/dimension-plan.md, Stage 6): the dimension and the dimension flow declaring
     /// it, read from the partition's ledger as the dimension's last build left it. Named after the dimension unless it says
-    /// otherwise, kept as a lookup table keyed by each member's clean value, with its originals and records beside it; it takes
-    /// none of the other origins' settings, since its columns are the members'.
+    /// otherwise, kept as a lookup table keyed by each value, with its keys, records and filter beside it, and the attributes
+    /// its <c>fields</c> name (attributes the dimension reads, by name); it takes none of the other origins' settings.
     /// </summary>
     private static ReferenceTypeSpec DimensionType(CachedTypeYaml type, CacheChangeMode defaultMode, string where, string source)
     {
@@ -360,13 +360,34 @@ internal static class CacheMapper
             throw new FlowValidationException($"{source}: {where}.dimension '{dimension}' is not a dimension's name: {SelectableNames.Rule}.");
         }
 
-        foreach (var (setting, value) in new (string, object?)[] { ("entityType", type.EntityType), ("query", type.Query), ("fields", type.Fields), ("key", type.Key) })
+        foreach (var (setting, value) in new (string, object?)[] { ("entityType", type.EntityType), ("query", type.Query), ("key", type.Key) })
         {
             if (value is not null)
             {
                 throw new FlowValidationException(
-                    $"{source}: {where} holds dimension {dimension}, which takes no '{setting}': its rows are the dimension's members, keyed by '{DimensionColumns.Value}' with '{string.Join("' and '", DimensionColumns.Fields)}' beside it.");
+                    $"{source}: {where} holds dimension {dimension}, which takes no '{setting}': its rows are the dimension's values, keyed by '{DimensionColumns.Value}' with '{string.Join("' and '", DimensionColumns.Fields)}' beside it, and the attributes 'fields' names.");
             }
+        }
+
+        // The attributes each row carries beside the fixed columns, named as the dimension declares them.
+        var attributes = new List<ReferenceFieldSpec>();
+        foreach (var (field, index) in (type.Fields ?? []).Select((f, i) => (f, i)))
+        {
+            var at = string.Create(CultureInfo.InvariantCulture, $"{where}.fields[{index}]");
+            if (field is not string text || !DimensionAttributeSpec.IsName(text.Trim()))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at} is not an attribute's name; a dimension type's fields name attributes its dimension reads (fields: [Country, Field]).");
+            }
+
+            var attribute = text.Trim();
+            if (DimensionAttributeSpec.Reserved.Contains(attribute) || attributes.Any(a => string.Equals(a.Name, attribute, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {at} '{attribute}' is a column the rows hold already, or is named twice; name the attributes of the dimension to carry.");
+            }
+
+            attributes.Add(new ReferenceFieldSpec(attribute, attribute));
         }
 
         var name = string.IsNullOrWhiteSpace(type.Name) ? dimension : type.Name!.Trim();
@@ -378,7 +399,7 @@ internal static class CacheMapper
             Dimension = dimension,
             DimensionFlow = flow,
             Key = DimensionColumns.Value,
-            Fields = DimensionColumns.FieldSpecs(),
+            Fields = [.. DimensionColumns.FieldSpecs(), .. attributes],
             OnChange = FlowMapper.ParseEnum(type.OnChange, defaultMode, $"{where}.onChange", source),
         };
     }

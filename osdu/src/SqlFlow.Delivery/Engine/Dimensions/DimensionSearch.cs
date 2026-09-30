@@ -5,8 +5,17 @@ using SqlFlow.Delivery.Search;
 
 namespace SqlFlow.Delivery.Engine.Dimensions;
 
-/// <summary>The values picked in one dimension: by value id, by value, or both.</summary>
-public sealed record DimensionPick(DimensionState Dimension, IReadOnlyCollection<long> ValueIds, IReadOnlyCollection<string> Values);
+/// <summary>
+/// What is picked in one dimension: values, by id or as the dimension holds them, and attribute values its keys hold
+/// (<c>Country</c> is <c>Norway</c>). With attributes alone, every key holding them; with both, the keys of the values picked
+/// that hold them.
+/// </summary>
+public sealed record DimensionPick(
+    DimensionState Dimension, IReadOnlyCollection<long> ValueIds, IReadOnlyCollection<string> Values, IReadOnlyList<DimensionAttributeMatch>? Attributes = null)
+{
+    /// <summary>Whether the pick picks anything.</summary>
+    public bool Picks => ValueIds.Count + Values.Count > 0 || Attributes is { Count: > 0 };
+}
 
 /// <summary>One dimension's part of a composed search: the values it covers, how many keys they hold, and its filter.</summary>
 /// <param name="DimensionId">The dimension.</param>
@@ -17,8 +26,10 @@ public sealed record DimensionPick(DimensionState Dimension, IReadOnlyCollection
 /// <param name="Unfilterable">Keys of the values picked that no query can carry, which the filter leaves out.</param>
 /// <param name="Filter">The part's filter: one query, or several joined with OR when the keys are more than one query holds.</param>
 /// <param name="Query">The dimension's own query, the records its values were read from; null for every record of its kind.</param>
+/// <param name="Attributes">The attribute values the keys were picked by, each under its declared name; empty for a pick of values alone.</param>
 public sealed record DimensionSearchPart(
-    int DimensionId, string Dimension, string AggregateBy, IReadOnlyList<DimensionMemberState> Values, int Keys, int Unfilterable, string Filter, string? Query);
+    int DimensionId, string Dimension, string AggregateBy, IReadOnlyList<DimensionMemberState> Values, int Keys, int Unfilterable, string Filter, string? Query,
+    IReadOnlyList<DimensionAttributeMatch> Attributes);
 
 /// <summary>
 /// A search composed from values picked across dimensions: the kind to search, the query (each dimension's own query once,
@@ -31,8 +42,9 @@ public sealed record DimensionSearchSet(
 /// <summary>
 /// Composes the OSDU search that finds the records holding the values picked across a kind's dimensions (docs/dimension-plan.md,
 /// The search): within a dimension, a record holding any key of the values picked; across dimensions, a record matching every
-/// dimension; within each dimension's own query, the records its values were read from. The API and the CLI compose through
-/// here, so a search is the same text wherever it comes from.
+/// dimension; within each dimension's own query, the records its values were read from. A dimension's keys can be picked
+/// by the attribute values they hold as well as by value. The API and the CLI compose through here, so a search is the same
+/// text wherever it comes from.
 /// </summary>
 public static class DimensionSearch
 {
@@ -60,7 +72,7 @@ public static class DimensionSearch
     {
         ArgumentNullException.ThrowIfNull(ledger);
         ArgumentNullException.ThrowIfNull(picks);
-        var picked = picks.Where(p => p.ValueIds.Count + p.Values.Count > 0).ToList();
+        var picked = picks.Where(p => p.Picks).ToList();
         if (picked.Count == 0)
         {
             throw new DeliveryException("A search is composed from at least one value picked in a dimension.");
@@ -83,6 +95,12 @@ public static class DimensionSearch
         var notes = new List<string>();
         foreach (var pick in picked)
         {
+            if (pick.Attributes is { Count: > 0 })
+            {
+                parts.Add(await ByAttributesAsync(ledger, pick, removed, missing, notes, ct).ConfigureAwait(false));
+                continue;
+            }
+
             var set = await DimensionFilters.ForMembersAsync(ledger, pick.Dimension, pick.ValueIds, pick.Values, ct).ConfigureAwait(false);
             removed.AddRange(set.Removed.Select(v => $"{pick.Dimension.Name}: {v}"));
             missing.AddRange(set.Missing.Select(v => $"{pick.Dimension.Name}: {v}"));
@@ -101,7 +119,7 @@ public static class DimensionSearch
             var filter = set.Filters.Count == 1 ? set.Filters[0] : "(" + string.Join(" OR ", set.Filters.Select(f => $"({f})")) + ")";
             parts.Add(new DimensionSearchPart(
                 pick.Dimension.DimensionId, pick.Dimension.Name, set.AggregateBy, set.Members, set.Originals, set.Unfilterable, filter,
-                pick.Dimension.Query));
+                pick.Dimension.Query, []));
         }
 
         // Each dimension's own query once, since dimensions of one flow often read the same records; then every filter.
@@ -122,6 +140,94 @@ public static class DimensionSearch
         // Every term is grouped when there are several, so an OR inside one never reaches across the AND between them.
         var query = terms.Count == 1 ? terms[0] : string.Join(" AND ", terms.Select(t => $"({t})"));
         return new DimensionSearchSet(searched, query, parts, clauses, removed, missing, notes);
+    }
+
+    /// <summary>
+    /// The part of a pick by attributes: the keys holding every attribute value picked (and belonging to one of the values
+    /// picked, when there are some), at most <see cref="OsduLedger.MaxDimensionPage"/>, and the filter finding their records.
+    /// </summary>
+    private static async Task<DimensionSearchPart> ByAttributesAsync(
+        ILedger ledger, DimensionPick pick, List<string> removed, List<string> missing, List<string> notes, CancellationToken ct)
+    {
+        var dimension = pick.Dimension;
+        var declared = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        var matches = new List<DimensionAttributeMatch>();
+        foreach (var match in pick.Attributes!)
+        {
+            var attribute = declared.FirstOrDefault(a => string.Equals(a.Name, match.Name, StringComparison.OrdinalIgnoreCase))
+                ?? throw new DeliveryException(
+                    $"Dimension {dimension.Name} reads no attribute '{match.Name}'{(declared.Count == 0 ? "; it reads none" : $"; it reads {string.Join(", ", declared.Select(a => a.Name))}")}.");
+            var values = match.Values.Where(v => !string.IsNullOrEmpty(v)).Distinct(StringComparer.Ordinal).ToList();
+            if (values.Count == 0)
+            {
+                throw new DeliveryException($"Attribute {attribute.Name} of dimension {dimension.Name} is picked with no value.");
+            }
+
+            // Several matches of one attribute are one: any of their values.
+            var index = matches.FindIndex(m => m.Name == attribute.Name);
+            if (index >= 0)
+            {
+                matches[index] = matches[index] with { Values = matches[index].Values.Concat(values).Distinct(StringComparer.Ordinal).ToList() };
+            }
+            else
+            {
+                matches.Add(new DimensionAttributeMatch(attribute.Name, values));
+            }
+        }
+
+        IReadOnlyCollection<long>? memberIds = null;
+        var picked = new List<DimensionMemberState>();
+        if (pick.ValueIds.Count + pick.Values.Count > 0)
+        {
+            var named = await ledger.GetDimensionMembersAsync(dimension.DimensionId, pick.ValueIds, pick.Values, ct).ConfigureAwait(false);
+            missing.AddRange(pick.ValueIds.Where(id => named.All(m => m.MemberId != id)).Select(id => $"{dimension.Name}: {id.ToString(CultureInfo.InvariantCulture)}")
+                .Concat(pick.Values.Where(v => named.All(m => !string.Equals(m.Value, v, StringComparison.Ordinal))).Select(v => $"{dimension.Name}: {v}")));
+            removed.AddRange(named.Where(m => m.RemovedRunId is not null).Select(m => $"{dimension.Name}: {m.Value}"));
+            picked = named.Where(m => m.RemovedRunId is null).ToList();
+            memberIds = picked.Select(m => m.MemberId).ToList();
+            if (memberIds.Count == 0)
+            {
+                throw new DeliveryException($"Nothing picked in dimension {dimension.Name} can be searched for: no value picked is one it holds now.");
+            }
+        }
+
+        var keys = await ledger.ListDimensionValuesAsync(
+            dimension.DimensionId,
+            new DimensionValueQuery(null, null, false, false, null, OsduLedger.MaxDimensionPage, DimensionValueOrder.Arrival, matches, memberIds),
+            ct).ConfigureAwait(false);
+        var described = string.Join(" and ", matches.Select(m => $"{m.Name} is {string.Join(" or ", m.Values)}"));
+        if (keys.Count >= OsduLedger.MaxDimensionPage)
+        {
+            throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
+                $"The keys of dimension {dimension.Name} where {described} are {OsduLedger.MaxDimensionPage} or more, more than one search holds. Pick narrower attribute values, or values of the dimension with them."));
+        }
+
+        var filterable = keys.Where(k => k.Filterable).Select(k => k.Original).ToList();
+        if (filterable.Count == 0)
+        {
+            throw new DeliveryException(keys.Count == 0
+                ? $"No key of dimension {dimension.Name} holds what is picked: {described}."
+                : $"No key of dimension {dimension.Name} where {described} can be carried in a query.");
+        }
+
+        if (keys.Count > filterable.Count)
+        {
+            notes.Add(string.Create(CultureInfo.InvariantCulture,
+                $"{dimension.Name}: {keys.Count - filterable.Count} key(s) where {described} cannot be carried in a query, so the search does not find the records holding them."));
+        }
+
+        var field = DimensionFilters.FieldOf(dimension.Path, dimension.Field)
+            ?? throw new DeliveryException($"Dimension {dimension.Name} has not been built with a field yet, so no filter can be written for it. Build it first.");
+        var filters = DimensionFilters.Of(field, filterable);
+        var filter = filters.Count == 1 ? filters[0] : "(" + string.Join(" OR ", filters.Select(f => $"({f})")) + ")";
+        if (picked.Count == 0)
+        {
+            var ids = keys.Where(k => k.MemberId is not null).Select(k => k.MemberId!.Value).Distinct().ToList();
+            picked = (await ledger.GetDimensionMembersAsync(dimension.DimensionId, ids, [], ct).ConfigureAwait(false)).ToList();
+        }
+
+        return new DimensionSearchPart(
+            dimension.DimensionId, dimension.Name, field.AggregateBy, picked, filterable.Count, keys.Count - filterable.Count, filter, dimension.Query, matches);
     }
 
     /// <summary>

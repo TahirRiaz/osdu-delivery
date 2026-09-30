@@ -2,7 +2,7 @@ import { CircleCheck, CircleDashed, CircleX, Loader2, PencilLine, Unlink, type L
 import { formatDurationSeconds, parseUtc } from "@/lib/time";
 import {
   deliveryApi, type DeliveryDimension, type DeliveryDimensionBoard, type DeliveryDimensionBuild, type DeliveryDimensionField, type DeliveryDimensionFlow,
-  type DimensionChangeKind, type DimensionExportFormat, type DimensionExportSet, type DimensionLeftOut,
+  type DimensionAttributeCondition, type DimensionChangeKind, type DimensionExportFormat, type DimensionExportSet, type DimensionLeftOut,
 } from "../../../api/delivery";
 
 /**
@@ -203,6 +203,39 @@ export function picksOf(text: string | null): Map<number, Set<number>> {
     const valueId = Number(match[2]);
     if (Number.isSafeInteger(dimensionId) && Number.isSafeInteger(valueId)) {
       (picks.get(dimensionId) ?? picks.set(dimensionId, new Set()).get(dimensionId)!).add(valueId);
+    }
+  }
+
+  return picks;
+}
+
+/**
+ * A search's attribute picks as a link carries them: each as `<dimensionId>:<name>:<value>`, the name and the value
+ * escaped, comma separated.
+ */
+export function attributePicksText(picks: ReadonlyMap<number, readonly DimensionAttributeCondition[]>): string {
+  return [...picks.entries()]
+    .flatMap(([dimensionId, conditions]) => conditions.map((c) => `${dimensionId}:${encodeURIComponent(c.name)}:${encodeURIComponent(c.value)}`))
+    .join(",");
+}
+
+/** The attribute picks a link carries; what is not one is passed over. */
+export function attributePicksOf(text: string | null): Map<number, DimensionAttributeCondition[]> {
+  const picks = new Map<number, DimensionAttributeCondition[]>();
+  for (const part of (text ?? "").split(",")) {
+    const [id, name, value, ...rest] = part.trim().split(":");
+    const dimensionId = Number(id);
+    if (rest.length > 0 || name === undefined || value === undefined || !Number.isSafeInteger(dimensionId) || dimensionId <= 0) {
+      continue;
+    }
+
+    try {
+      const condition = { name: decodeURIComponent(name), value: decodeURIComponent(value) };
+      if (condition.name !== "" && condition.value !== "") {
+        (picks.get(dimensionId) ?? picks.set(dimensionId, []).get(dimensionId)!).push(condition);
+      }
+    } catch {
+      // An escape that is not one names no pick.
     }
   }
 
