@@ -474,7 +474,10 @@ public sealed record ReplaceFallback(ReplaceFallbackKind Kind, string? Text = nu
 /// <summary>One mapping entry: a template variable and where its value comes from.</summary>
 public sealed partial record MappingEntry
 {
-    /// <summary>The entry's position in the record tree, in document order.</summary>
+    /// <summary>
+    /// The entry's position in the record tree, in document order. An alternative or an item carries its node's; a property
+    /// of an item of a list of objects is numbered by its place in the item.
+    /// </summary>
     public required int Index { get; init; }
 
     /// <summary>Where the document writes the entry (<c>record.data.Curves.item.CurveUnit</c>), for messages.</summary>
@@ -532,42 +535,75 @@ public sealed partial record MappingEntry
     public IReadOnlyList<MappingEntry> Alternatives { get; init; } = [];
 
     /// <summary>
-    /// For a list of values whose items are not all literal (<c>viewers: ["{$param.aclViewer}", {$cache: ...}]</c>): every
-    /// item, in the order the list writes them, each a literal or a value node with the list's target. The list is what they
+    /// For a list whose items are not all literal: every item, in the order the list writes them, each with the list's
+    /// target. The items of a list of values (<c>viewers: ["{$param.aclViewer}", {$cache: ...}]</c>) are each a literal or
+    /// a value node; those of a list of objects (<c>TechnicalAssurances: [ { TechnicalAssuranceTypeID: { $expr: ... } } ]</c>)
+    /// are each a literal object or an object whose properties read values (<see cref="Properties"/>). The list is what they
     /// give, one after another, with a value given twice (whatever its case) written once. <see cref="Static"/> holds the
     /// literal items alone, which is what anything that reads a list's fixed part (the envelope, the gate) reads. Empty for
     /// any other entry.
     /// </summary>
     public IReadOnlyList<MappingEntry> Parts { get; init; } = [];
 
+    /// <summary>
+    /// For an item of a list of objects some of whose properties read values: the item's properties, in the order the item
+    /// writes them, each an entry laid out as the record tree lays out a property (a literal, a value node, a
+    /// <c>$coalesce</c> node, or a list of values, an object's properties each an entry of their own) and filling a variable
+    /// inside the list's items (<c>osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID</c>). They read the row the list
+    /// is in. The item is the object they give, and one none of them gives a value to adds nothing to the list. Empty for
+    /// any other entry.
+    /// </summary>
+    public IReadOnlyList<MappingEntry> Properties { get; init; } = [];
+
     public string? Description { get; init; }
 
     /// <summary>True for a <c>$coalesce</c> node: one whose value is the first of its alternatives that gives one.</summary>
     public bool IsCoalesce => Alternatives.Count > 0;
 
-    /// <summary>True for a list of values some of whose items are value nodes.</summary>
+    /// <summary>True for a list some of whose items are value nodes, or objects whose properties read values.</summary>
     public bool IsList => Parts.Count > 0;
+
+    /// <summary>True for an item of a list of objects some of whose properties read values.</summary>
+    public bool IsObject => Properties.Count > 0;
 
     /// <summary>
     /// The value nodes the entry reads its value with: the entry itself, then its alternatives for a <c>$coalesce</c> node,
-    /// or the value nodes among its items for a list. Anything that asks what an entry reads (columns, cached types,
-    /// searches, the ids it builds) asks each of them.
+    /// or for a list the value nodes among its items and the value nodes of its object items' properties. Anything that asks
+    /// what an entry reads (columns, cached types, searches, the ids it builds) asks each of them.
     /// </summary>
     public IEnumerable<MappingEntry> ValueNodes => Alternatives.Count > 0
         ? [this, .. Alternatives]
-        : Parts.Count > 0 ? [this, .. Parts.Where(part => !part.IsPlainLiteral)] : [this];
+        : Parts.Count > 0 ? [this, .. Parts.SelectMany(PartNodes)] : [this];
+
+    /// <summary>
+    /// The entries that fill variables of the template through this one, each at its own target: the entry itself, then the
+    /// properties of its object items and the properties inside those in turn. Anything that asks which variables a mapping
+    /// fills, rather than what it reads, asks each of them.
+    /// </summary>
+    public IEnumerable<MappingEntry> Fillers => [this, .. Parts.SelectMany(part => part.Properties).SelectMany(property => property.Fillers)];
+
+    /// <summary>
+    /// The value nodes one item of a list reads with: none for a literal, the item itself for a value node, and for an object
+    /// those of each of its properties.
+    /// </summary>
+    private static IEnumerable<MappingEntry> PartNodes(MappingEntry part)
+        => part.IsObject ? part.Properties.SelectMany(property => property.ValueNodes) : part.IsPlainLiteral ? [] : [part];
 
     /// <summary>An item of a list written as the literal it is: no source, and no condition of its own.</summary>
-    public bool IsPlainLiteral => Source is null && AppliesWhen is null;
+    public bool IsPlainLiteral => IsStatic && AppliesWhen is null;
 
-    public bool IsStatic => Source is null;
+    /// <summary>True for an entry that reads nothing: a literal, or a list whose items it holds. An object item's properties read values, so it is not.</summary>
+    public bool IsStatic => Source is null && Properties.Count == 0;
 
     public bool IsRepeater => Source?.Kind == MappingSourceKind.DatasetRows;
 
     /// <summary>How messages name the entry: where the document writes it, or its template variable.</summary>
     public string Where => Location ?? Target.Text;
 
-    /// <summary>The entry's expressions: the one its value is computed by, its <c>$when</c> and its <c>$where</c>.</summary>
+    /// <summary>
+    /// The entry's expressions: the one its value is computed by, its <c>$when</c> and its <c>$where</c>, then those of its
+    /// alternatives, its items and an object item's properties.
+    /// </summary>
     public IEnumerable<MappingExpression> Expressions
     {
         get
@@ -587,7 +623,7 @@ public sealed partial record MappingEntry
                 yield return filter;
             }
 
-            foreach (var alternative in Alternatives.Concat(Parts))
+            foreach (var alternative in Alternatives.Concat(Parts).Concat(Properties))
             {
                 foreach (var expression in alternative.Expressions)
                 {
@@ -600,7 +636,7 @@ public sealed partial record MappingEntry
     /// <summary>
     /// Every dataset column the entry reads: the column its source reads, those its expressions read, its findBy values
     /// and the tokens of an id it builds, a <c>$findAll</c> operand and what its lookup reads, and for a <c>$coalesce</c>
-    /// node or a list those of every alternative or item.
+    /// node or a list those of every alternative, item and object item's property.
     /// </summary>
     public IEnumerable<DatasetColumn> Columns
     {

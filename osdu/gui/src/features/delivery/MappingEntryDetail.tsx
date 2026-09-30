@@ -15,6 +15,7 @@ const SOURCE_LABEL: Record<MappingDraftInput, string> = {
   Coalesce: "The first of these that gives a value",
   Lookup: "Field of the record a lookup finds",
   List: "Every value these give, in order, each once",
+  Group: "The object its properties give",
 };
 
 /** One end of the pipeline: where the value comes from, or the property it lands on. */
@@ -81,7 +82,7 @@ export function EntryDetail({ row, target = true }: { row: PropertyRow; target?:
       )}
 
       <Node
-        label={SOURCE_LABEL[row.input]}
+        label={row.input === "List" && row.objects ? "Every object these items give, in order, each once" : SOURCE_LABEL[row.input]}
         value={row.input === "Coalesce"
           ? `${row.alternatives.length} alternatives, tried in order`
           : row.input === "List" ? `${row.items.length} item${row.items.length === 1 ? "" : "s"}` : row.sourceValue}

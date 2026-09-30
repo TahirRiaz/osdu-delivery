@@ -16,8 +16,8 @@ import type {
 } from "../../api/delivery";
 import { ChoiceOrText, FindByLinesEditor, IconAction, ModifierListEditor, Section, type ChoiceOption } from "./MappingEditorParts";
 import {
-  ACCESS_TARGETS, alternativeText, bareColumn, emptyEntry, findLinesOf, findsOf, ID_MODIFIER_KINDS, inputsFor, KEY_NAME, knownColumns,
-  MODIFIER_KINDS, moveItem, parseJson, repeaterOf, staticModeFor, type FindLine, type StaticMode,
+  ACCESS_TARGETS, alternativeText, bareColumn, emptyEntry, entryText, findLinesOf, findsOf, ID_MODIFIER_KINDS, inputsFor, KEY_NAME, knownColumns,
+  MODIFIER_KINDS, moveItem, parseJson, putEntry, repeaterOf, staticModeFor, withinItem, type FindLine, type StaticMode,
 } from "./mappingDraft";
 import { shapeText } from "./templateFormat";
 
@@ -46,10 +46,19 @@ const CHOICE_LABELS: Record<Choice, string> = {
   Expression: "Expression",
   Coalesce: "First value of",
   List: "List of values",
+  Group: "Object",
 };
 
 /** The inputs one item of a list of values may read: one value each, or with a find all many. */
 const ITEM_INPUTS: MappingDraftInput[] = ["Static", "Dataset", "Expression", "Cache", "Lookup", "Search"];
+
+/** The inputs one item of a list of objects may be: an object whose properties are each filled on their own, or a fixed object. */
+const OBJECT_ITEM_INPUTS: MappingDraftInput[] = ["Group", "Static"];
+
+/** How the input choice names an input for a variable: a list filling a list of objects is a list of objects. */
+function choiceLabel(input: Choice, variable: Pick<DeliveryTemplateVariable, "shape">): string {
+  return input === "List" && variable.shape === "GroupList" ? "List of objects" : CHOICE_LABELS[input];
+}
 
 /** What a find all compares its field with: a dataset column, a fixed text, or a field of a lookup's record. */
 type FindAllMode = "column" | "text" | "lookup";
@@ -120,9 +129,12 @@ function staticJsonOf(mode: StaticMode, state: StaticState, variable: DeliveryTe
   }
 }
 
-/** How a nested form edits one part of an entry: an alternative of a coalesce, or an item of a list of values. */
+/**
+ * How a nested form edits one part of an entry: an alternative of a coalesce, an item of a list, or a property of an item
+ * of a list of objects.
+ */
 interface NestedRole {
-  kind: "alternative" | "item";
+  kind: "alternative" | "item" | "property";
   /** How the form's title names the part: "alternative 2", "item 3". */
   label: string;
 }
@@ -130,6 +142,8 @@ interface NestedRole {
 interface EntryFormProps {
   target: EntryEditorTarget;
   draft: MappingDraft;
+  /** The template's variables, of which an item of a list of objects fills those inside the list's items. */
+  variables: DeliveryTemplateVariable[];
   /** The types of the cache the mapping reads, offered to a cache entry; empty when no cache is picked. */
   cacheTypes: DeliveryCachedType[];
   issues: MappingDraftIssue[];
@@ -139,37 +153,57 @@ interface EntryFormProps {
    * Set when the form edits one part of an entry. An alternative of a coalesce reads one value of its own input, without
    * what only the whole entry decides (its condition, whether it is required, its description). An item of a list of
    * values reads one value, or many with a find all, and has a condition, a required flag and a description of its own.
+   * An item of a list of objects is a group of properties or a fixed object, with no settings of its own. A property of
+   * such an item is an entry of its own for the variable inside the list's items it fills.
    */
   nested?: NestedRole;
 }
 
-/** The part the nested editor edits: which list, its place there (the end for a new one), and a number per opening. */
+/**
+ * The part the nested editor edits: which list, its place there (the end for a new one), for a property the variable
+ * inside the list's items it fills, and a number per opening.
+ */
 interface EditedPart {
-  list: "alternatives" | "items";
+  list: "alternatives" | "items" | "properties";
   index: number;
   entry: MappingDraftEntry | null;
+  variable: DeliveryTemplateVariable | null;
   session: number;
 }
 
-function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested }: EntryFormProps) {
+function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClose, nested }: EntryFormProps) {
   const ids = useId();
   const { variable, entry, keyHolder, outside } = target;
   const known = useMemo(() => knownColumns(draft), [draft]);
+  const variableOrder = useMemo(() => new Map(variables.map((candidate, index) => [candidate.path, index])), [variables]);
   const isAlternative = nested?.kind === "alternative";
   const isItem = nested?.kind === "item";
-  // An item of a list is one value of the list's items, so a fixed item is edited as one value of that type.
-  const valueVariable: DeliveryTemplateVariable = isItem ? { ...variable, shape: "Value", type: variable.itemType ?? "string" } : variable;
+  const isProperty = nested?.kind === "property";
+  // An item of a list of objects is one object: a group of properties each filled on its own, or a fixed object.
+  const objectItem = isItem && variable.shape === "GroupList";
+  // An item of a list of values is one value of the list's items, so a fixed item is edited as one value of that type.
+  const valueVariable: DeliveryTemplateVariable = objectItem
+    ? { ...variable, shape: "Group", type: "object" }
+    : isItem ? { ...variable, shape: "Value", type: variable.itemType ?? "string" } : variable;
 
   const searches = draft.searches;
   const lookups = draft.lookups;
+  // A property of an item of a list of objects is filled as its variable is anywhere, except that the item repeats no rows
+  // and a list of objects inside it is written whole.
   const offered: MappingDraftInput[] = outside !== null
     ? ["Dataset", "Expression", "Repeat", "Cache", "Lookup", "Search", "Static"]
-    : isItem ? ITEM_INPUTS : inputsFor(variable);
-  // A search is offered once the mapping declares one to look in, and a lookup once it declares one to read. A part of an
-  // entry reads values of its own, so it is neither a repeat, a coalesce nor a list.
+    : objectItem
+      ? OBJECT_ITEM_INPUTS
+      : isItem
+        ? ITEM_INPUTS
+        : isProperty
+          ? inputsFor(variable).filter((input) => input !== "Repeat" && !(input === "List" && variable.shape === "GroupList"))
+          : inputsFor(variable);
+  // A search is offered once the mapping declares one to look in, and a lookup once it declares one to read. An
+  // alternative or an item reads values of its own, so it is neither a repeat, a coalesce nor a list.
   const allowed = offered.filter((input) => (input !== "Search" || searches.length > 0)
     && (input !== "Lookup" || lookups.length > 0)
-    && (nested === undefined || (input !== "Repeat" && input !== "Coalesce" && input !== "List")));
+    && (nested === undefined || isProperty || (input !== "Repeat" && input !== "Coalesce" && input !== "List")));
   if (entry !== null && !allowed.includes(entry.input)) {
     allowed.push(entry.input);
   }
@@ -179,7 +213,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
   const initialAll = entry?.findAll ?? null;
   const initialAllLookup = (initialAll?.lookup ?? "").trim();
 
-  const [choice, setChoice] = useState<Choice>(entry?.input ?? (keyHolder !== null || nested !== undefined ? allowed[0] : "None"));
+  const [choice, setChoice] = useState<Choice>(entry?.input ?? (keyHolder !== null || (nested !== undefined && !isProperty) ? allowed[0] : "None"));
   const [keyName, setKeyName] = useState("");
   const [column, setColumn] = useState(entry?.column ?? "");
   const [child, setChild] = useState(entry?.child ?? "");
@@ -209,6 +243,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
   const [unverified, setUnverified] = useState(entry?.unverified ?? false);
   const [alternatives, setAlternatives] = useState<MappingDraftEntry[]>(entry?.alternatives ?? []);
   const [items, setItems] = useState<MappingDraftEntry[]>(entry?.items ?? []);
+  const [properties, setProperties] = useState<MappingDraftEntry[]>(entry?.properties ?? []);
   const [editing, setEditing] = useState<EditedPart | null>(null);
   const [openings, setOpenings] = useState(0);
   const [jsonMode, setJsonMode] = useState(() => typedMode === "json" || staticModeFor(valueVariable, initialStatic) === "json");
@@ -217,10 +252,14 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
   const mode: StaticMode = jsonMode ? "json" : typedMode;
   const staticResult = choice === "Static" ? staticJsonOf(mode, staticState, valueVariable) : { json: null, error: null };
   const newTarget = keyHolder !== null ? `${keyHolder.path}.${keyName.trim()}` : variable.path;
-  const repeater = repeaterOf(newTarget);
-  const repeaterChild = repeater === null
-    ? null
-    : draft.entries.find((candidate) => candidate.target === repeater && candidate.input === "Repeat")?.child ?? null;
+  // Inside the items of an array a child dataset's rows fill, a column reads the item's row; the items of a list of objects
+  // read the dataset row, as the record's own properties do.
+  const repeatedIn = repeaterOf(newTarget);
+  const repeat = repeatedIn === null ? undefined : draft.entries.find((candidate) => candidate.target === repeatedIn && candidate.input === "Repeat");
+  const listed = repeatedIn !== null && repeat === undefined
+    && draft.entries.some((candidate) => candidate.target === repeatedIn && candidate.input === "List");
+  const repeater = isProperty || listed ? null : repeatedIn;
+  const repeaterChild = repeat?.child ?? null;
   const repoTypes = cacheTypes;
   const typeFields = repoTypes.find((type) => type.name === cacheType.trim())?.fields ?? [];
   const fieldOptions: ChoiceOption[] = [...new Set([...typeFields, "id"])].map((field) => ({ value: field, group: "Cached fields" }));
@@ -256,6 +295,16 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
   const modified = choice === "Dataset" || choice === "Expression" || (resolves && !(findsAll && allMode !== "column"));
   const buildsId = modifiers.some((modifier) => ID_MODIFIER_KINDS.includes(modifier.kind));
   const access = ACCESS_TARGETS.includes(newTarget);
+  const objectList = choice === "List" && variable.shape === "GroupList";
+
+  // The variables an item of this list of objects holds, in template order, each a property the item may fill. A list of
+  // objects inside the items is left out, since an array inside the items of another is not supported.
+  const itemPrefix = `${variable.path}[].`;
+  const itemVariables = objectItem
+    ? variables.filter((candidate) => candidate.path.startsWith(itemPrefix) && candidate.role === "Mapping" && !candidate.nested
+      && !candidate.path.slice(itemPrefix.length).includes("[]"))
+    : [];
+  const strayProperties = properties.filter((property) => !itemVariables.some((candidate) => candidate.path === property.target));
 
   let keyError: string | null = null;
   if (keyHolder !== null) {
@@ -269,7 +318,8 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
     }
   }
 
-  const error = keyError ?? staticResult.error;
+  const groupError = choice === "Group" && properties.length === 0 ? "Fill at least one property of the item." : null;
+  const error = keyError ?? groupError ?? staticResult.error;
   const columnsList = `${ids}-columns`;
   const childrenList = `${ids}-children`;
   const columnPlaceholder = repeater === null ? "column" : `${repeaterChild ?? "child"}.column`;
@@ -284,14 +334,15 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
 
   /**
    * The entry the form holds for an input, as Save writes it. An alternative keeps nothing only the whole entry decides, a
-   * coalesce entry carries its alternatives and a list its items under its own target, and a list has no settings of its
-   * own, since it is written as its items alone.
+   * coalesce entry carries its alternatives and a list its items under its own target, a group its properties under
+   * theirs, and a list, a group and an item of a list of objects have no settings of their own, since each is written as
+   * what it holds alone.
    */
   const build = (kind: MappingDraftInput): MappingDraftEntry => {
     const looks = kind === "Cache" || kind === "Search";
     const all = kind === "Cache" && findMode === "all";
     const takesModifiers = kind === "Dataset" || kind === "Expression" || (looks && !(all && allMode !== "column"));
-    const own = !isAlternative && kind !== "List";
+    const own = !isAlternative && !objectItem && kind !== "List" && kind !== "Group";
     return {
       ...(entry ?? emptyEntry(newTarget, kind)),
       target: newTarget,
@@ -309,26 +360,34 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
       expression: kind === "Expression" ? expression.trim() : null,
       when: own && conditionOn && condition.trim() !== "" ? condition.trim() : null,
       where: kind === "Repeat" && whereOn && where.trim() !== "" ? where.trim() : null,
-      required: kind === "Static" || kind === "List" || isAlternative ? true : required,
+      required: kind === "Static" || kind === "List" || kind === "Group" || isAlternative || objectItem ? true : required,
       ignoreSeparators: kind === "Cache" && !all && ignoreSeparators,
       unverified: (kind === "Dataset" || kind === "Expression") && buildsId && unverified,
       alternatives: kind === "Coalesce" ? alternatives.map((alternative) => ({ ...alternative, target: newTarget })) : [],
       items: kind === "List" ? items.map((item) => ({ ...item, target: newTarget })) : [],
+      properties: kind === "Group" ? properties : [],
       static: kind === "Static" ? staticResult.json : null,
       description: own && description.trim() !== "" ? description.trim() : null,
       prefilled: false,
     };
   };
 
-  const openPart = (list: EditedPart["list"], index: number, part: MappingDraftEntry | null) => {
+  const openPart = (list: "alternatives" | "items", index: number, part: MappingDraftEntry | null) => {
     const session = openings + 1;
     setOpenings(session);
-    setEditing({ list, index, entry: part, session });
+    setEditing({ list, index, entry: part, variable: null, session });
+  };
+
+  // A property of the item is edited as an entry of its own for the variable inside the list's items it fills.
+  const openProperty = (property: DeliveryTemplateVariable, part: MappingDraftEntry | null) => {
+    const session = openings + 1;
+    setOpenings(session);
+    setEditing({ list: "properties", index: -1, entry: part, variable: property, session });
   };
 
   const choose = (next: Choice) => {
     const previous = choice;
-    const reads = previous !== "None" && previous !== "Repeat" && previous !== "Coalesce" && previous !== "List";
+    const reads = previous !== "None" && previous !== "Repeat" && previous !== "Coalesce" && previous !== "List" && previous !== "Group";
     setChoice(next);
     if (next === "Coalesce") {
       // What the form already reads becomes the first alternative, so turning an entry into a coalesce keeps it.
@@ -494,29 +553,31 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
             className="flex-wrap"
             data-testid="mapping-builder-entry-input"
           >
-            {keyHolder === null && nested === undefined && (
+            {keyHolder === null && (nested === undefined || isProperty) && (
               <ToggleGroupItem value="None" data-testid="mapping-builder-entry-input-none">{CHOICE_LABELS.None}</ToggleGroupItem>
             )}
             {allowed.map((input) => (
               <ToggleGroupItem key={input} value={input} data-testid={`mapping-builder-entry-input-${input.toLowerCase()}`}>
-                {CHOICE_LABELS[input]}
+                {choiceLabel(input, variable)}
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
           {choice === "None" && (
             <p className="text-xs text-muted-foreground">
-              A variable without an entry is left out of the record.
-              {variable.required && " The template requires this one, so the check reports it until it is filled."}
+              {isProperty ? "A property the item does not fill is left out of it." : "A variable without an entry is left out of the record."}
+              {variable.required && !isProperty && " The template requires this one, so the check reports it until it is filled."}
             </p>
           )}
         </Section>
 
         {(choice === "Coalesce" || choice === "List") && (
           <Section
-            title={choice === "Coalesce" ? "Alternatives" : "Values"}
+            title={choice === "Coalesce" ? "Alternatives" : objectList ? "Items" : "Values"}
             hint={choice === "Coalesce"
               ? "Tried in order, and the first that gives a value is written: one that gives nothing (an empty column, no cached record, an id the partition holds no record under) passes to the next, and one that meets a mistake, such as a date that is not a date, holds the record. A static value can only be the last, the value when none of the others gives one."
-              : `Every value the items give, in the order they are written, a value given twice (whatever its case) written once. An item that gives nothing adds nothing, and one that holds holds the record, as it would on its own; an item reading every matching row with a find all adds each of them.${access ? " Every record carries the fixed values without a condition, so list at least one." : ""}`}
+              : objectList
+                ? "Every object the items give, in the order they are written, an object given twice written once. An item is an object whose properties are each filled on their own from the dataset row, or a fixed object. An item none of whose properties gives a value adds nothing, and a property that holds holds the record, as it would on its own."
+                : `Every value the items give, in the order they are written, a value given twice (whatever its case) written once. An item that gives nothing adds nothing, and one that holds holds the record, as it would on its own; an item reading every matching row with a find all adds each of them.${access ? " Every record carries the fixed values without a condition, so list at least one." : ""}`}
             action={(
               <Button
                 variant="outline"
@@ -525,7 +586,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
                 data-testid={`mapping-builder-entry-${partName}-add`}
               >
                 <Plus />
-                {choice === "Coalesce" ? "Add an alternative" : "Add a value"}
+                {choice === "Coalesce" ? "Add an alternative" : objectList ? "Add an item" : "Add a value"}
               </Button>
             )}
             testId={choice === "Coalesce" ? "mapping-builder-entry-alternatives" : "mapping-builder-entry-items"}
@@ -533,7 +594,9 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
             {choice === "Coalesce" && alternatives.length < 2 && (
               <p className="text-xs text-destructive">Add at least two alternatives; one alternative is an input of its own.</p>
             )}
-            {choice === "List" && items.length === 0 && <p className="text-xs text-destructive">Add at least one value.</p>}
+            {choice === "List" && items.length === 0 && (
+              <p className="text-xs text-destructive">{objectList ? "Add at least one item." : "Add at least one value."}</p>
+            )}
             {choice === "List" && access && items.length > 0 && !items.some((item) => item.input === "Static" && item.when === null) && (
               <p className="text-xs text-destructive" data-testid="mapping-builder-entry-items-fixed">
                 Every record carries {newTarget}, so list at least one fixed value without a condition.
@@ -561,6 +624,72 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
                   <ArrowDown />
                 </IconAction>
                 <IconAction label={`Remove this ${partName}`} onClick={() => setParts((current) => current.filter((_, i) => i !== index))} testId={`mapping-builder-entry-${partName}-remove-${index}`}>
+                  <X />
+                </IconAction>
+              </div>
+            ))}
+          </Section>
+        )}
+
+        {choice === "Group" && (
+          <Section
+            title="Properties"
+            hint={`The item is the object its properties give, each filled as the variable is anywhere, from the dataset row the record is rendered from. A property left unfilled is left out of the item, and an item none of whose properties gives a value adds nothing to ${variable.path}.`}
+            testId="mapping-builder-entry-properties"
+          >
+            {properties.length === 0 && <p className="text-xs text-destructive">Fill at least one property.</p>}
+            {itemVariables.length === 0 && (
+              <p className="text-xs text-muted-foreground">The template names no property of the items of {variable.path}.</p>
+            )}
+            {itemVariables.map((property) => {
+              const name = withinItem(variable.path, property.path);
+              const filled = properties.find((candidate) => candidate.target === property.path) ?? null;
+              return (
+                <div
+                  key={property.path}
+                  className="flex items-center gap-2 rounded-md border border-border p-2"
+                  data-testid={`mapping-builder-entry-property-${name}`}
+                >
+                  <span className="w-44 shrink-0 break-all font-mono text-[12px]" style={{ paddingLeft: (name.split(".").length - 1) * 12 }}>
+                    {name}
+                  </span>
+                  <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{shapeText(property)}</span>
+                  <span className={cn("min-w-0 flex-1 break-all font-mono text-[12px]", filled === null && "text-muted-foreground")}>
+                    {filled === null ? "Not filled" : entryText(filled)}
+                  </span>
+                  <IconAction
+                    label={filled === null ? "Fill this property" : "Edit this property"}
+                    onClick={() => openProperty(property, filled)}
+                    testId={`mapping-builder-entry-property-edit-${name}`}
+                  >
+                    {filled === null ? <Plus /> : <Pencil />}
+                  </IconAction>
+                  {filled !== null && (
+                    <IconAction
+                      label="Leave this property out"
+                      onClick={() => setProperties((current) => current.filter((candidate) => candidate.target !== property.path))}
+                      testId={`mapping-builder-entry-property-remove-${name}`}
+                    >
+                      <X />
+                    </IconAction>
+                  )}
+                </div>
+              );
+            })}
+            {strayProperties.map((property, index) => (
+              <div
+                key={`${property.target}-${index}`}
+                className="flex items-center gap-2 rounded-md border border-destructive/40 p-2"
+                data-testid={`mapping-builder-entry-property-stray-${index}`}
+              >
+                <span className="min-w-0 flex-1 break-all font-mono text-[12px] text-destructive">
+                  {property.target} is not a variable of the items of {variable.path}
+                </span>
+                <IconAction
+                  label="Remove this property"
+                  onClick={() => setProperties((current) => current.filter((candidate) => candidate !== property))}
+                  testId={`mapping-builder-entry-property-stray-remove-${index}`}
+                >
                   <X />
                 </IconAction>
               </div>
@@ -949,7 +1078,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
           </ModifierListEditor>
         )}
 
-        {choice !== "None" && choice !== "List" && !isAlternative && (
+        {choice !== "None" && choice !== "List" && choice !== "Group" && !isAlternative && !objectItem && (
           <Section
             title="When it applies"
             hint={choice === "Repeat"
@@ -974,7 +1103,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
           </Section>
         )}
 
-        {choice !== "None" && choice !== "Static" && choice !== "List" && !isAlternative && (
+        {choice !== "None" && choice !== "Static" && choice !== "List" && choice !== "Group" && !isAlternative && !objectItem && (
           <Section
             title="Required"
             hint={variable.required && !isItem
@@ -992,7 +1121,7 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
           </Section>
         )}
 
-        {choice !== "None" && choice !== "List" && !isAlternative && (
+        {choice !== "None" && choice !== "List" && choice !== "Group" && !isAlternative && !objectItem && (
           <Section title="Description">
             <Input
               className="h-8"
@@ -1010,27 +1139,48 @@ function EntryForm({ target, draft, cacheTypes, issues, onSave, onClose, nested 
         )}
         <Button variant="ghost" size="sm" onClick={onClose} data-testid="mapping-builder-entry-cancel">Cancel</Button>
         <Button size="sm" onClick={save} disabled={error !== null} data-testid="mapping-builder-entry-save">
-          {isAlternative ? "Save alternative" : isItem ? "Save value" : choice === "None" && entry !== null ? "Remove entry" : "Save entry"}
+          {isAlternative
+            ? "Save alternative"
+            : objectItem
+              ? "Save item"
+              : isItem
+                ? "Save value"
+                : isProperty
+                  ? choice === "None" ? "Leave the property out" : "Save property"
+                  : choice === "None" && entry !== null ? "Remove entry" : "Save entry"}
         </Button>
       </SheetFooter>
-      {/* One alternative of the coalesce, or one item of the list, edited as an input of its own over the entry's form. */}
+      {/*
+        One alternative of the coalesce, one item of the list, or one property of the item, edited as an input of its own
+        over the entry's form.
+      */}
       <Sheet open={editing !== null} onOpenChange={(open) => { if (!open) { setEditing(null); } }}>
         <SheetContent
           className="w-full gap-0 sm:max-w-2xl"
-          data-testid={editing?.list === "items" ? "mapping-builder-item-editor" : "mapping-builder-alternative-editor"}
+          data-testid={editing?.list === "items"
+            ? "mapping-builder-item-editor"
+            : editing?.list === "properties" ? "mapping-builder-property-editor" : "mapping-builder-alternative-editor"}
         >
           {editing !== null && (
             <EntryForm
               key={editing.session}
-              target={{ variable, entry: editing.entry, keyHolder: null, outside: null, session: editing.session }}
+              target={{ variable: editing.variable ?? variable, entry: editing.entry, keyHolder: null, outside: null, session: editing.session }}
               draft={draft}
+              variables={variables}
               cacheTypes={cacheTypes}
               issues={[]}
               nested={editing.list === "items"
                 ? { kind: "item", label: `item ${editing.index + 1}` }
-                : { kind: "alternative", label: `alternative ${editing.index + 1}` }}
-              onSave={(_, value) => {
-                if (value !== null) {
+                : editing.list === "properties"
+                  ? { kind: "property", label: nested?.label ?? "the item" }
+                  : { kind: "alternative", label: `alternative ${editing.index + 1}` }}
+              onSave={(path, value) => {
+                if (editing.list === "properties") {
+                  // A property is kept in template order, and one left unfilled is taken out of the item.
+                  setProperties((current) => (value === null
+                    ? current.filter((candidate) => candidate.target !== path)
+                    : putEntry(current, value, variableOrder)));
+                } else if (value !== null) {
                   const at = editing.index;
                   const put = (current: MappingDraftEntry[]) => (at < current.length ? current.map((old, i) => (i === at ? value : old)) : [...current, value]);
                   if (editing.list === "items") {
@@ -1055,6 +1205,8 @@ interface MappingEntryEditorProps {
   /** What to edit; null closes the editor. */
   target: EntryEditorTarget | null;
   draft: MappingDraft;
+  /** The template's variables, of which an item of a list of objects fills those inside the list's items. */
+  variables: DeliveryTemplateVariable[];
   /** The types of the cache the mapping reads, offered to a cache entry; empty when no cache is picked. */
   cacheTypes: DeliveryCachedType[];
   /** Every issue of the last check; the editor shows the ones about its target. */
@@ -1066,11 +1218,11 @@ interface MappingEntryEditorProps {
 
 /**
  * The entry editor: where one variable's value comes from (a dataset column, a child dataset's rows, a cached record, a
- * lookup's record, a search, a static value, the first of several alternatives or a list of values), with its modifiers,
+ * lookup's record, a search, a static value, the first of several alternatives, a list of values or a list of objects), with its modifiers,
  * condition, requiredness and description. It edits a copy, and Save puts the entry into the draft, so Cancel leaves the
  * draft as it was.
  */
-export function MappingEntryEditor({ target, draft, cacheTypes, issues, onSave, onClose }: MappingEntryEditorProps) {
+export function MappingEntryEditor({ target, draft, variables, cacheTypes, issues, onSave, onClose }: MappingEntryEditorProps) {
   // The sheet slides out showing what it showed, so the last target stays rendered while it closes.
   const [shown, setShown] = useState<EntryEditorTarget | null>(target);
   if (target !== null && target !== shown) {
@@ -1085,6 +1237,7 @@ export function MappingEntryEditor({ target, draft, cacheTypes, issues, onSave, 
             key={shown.session}
             target={shown}
             draft={draft}
+            variables={variables}
             cacheTypes={cacheTypes}
             issues={shown.keyHolder === null ? issues.filter((issue) => issue.target === shown.variable.path) : []}
             onSave={onSave}

@@ -470,7 +470,7 @@ public class YamlDocumentLoaderTests
             TestSchema.MappingDocument().ReplaceLineEndings("\n").Replace("record:\n", "record:\n  $from: x\n", StringComparison.Ordinal), "m.yaml")).Message, StringComparison.Ordinal);
 
         // What a list of values, an item and an id cannot hold, and the tokens of the vocabulary before the marker.
-        Assert.Contains("is an object, and a list with value nodes among its items is a list of values", Refused("Aliases: [{ Name: a }, { $from: a }]"), StringComparison.Ordinal);
+        Assert.Contains("record.data.Aliases[1] is a node of the mapping language, and the items of a list of objects are objects laid out as the record tree", Refused("Aliases: [{ Name: a }, { $from: a }]"), StringComparison.Ordinal);
         Assert.Contains("An array of values from rows is not supported yet", Refused("Curves: { $forEach: curves, $item: { $from: curve_id } }"), StringComparison.Ordinal);
         Assert.Contains(
             "{param.dataPartition} is not a column; the mapping's own tokens start with '$', so write {$param.dataPartition}",

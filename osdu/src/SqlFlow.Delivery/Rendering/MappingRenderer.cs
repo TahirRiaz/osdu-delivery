@@ -29,7 +29,7 @@ public sealed class MappingRenderer
     private readonly IReadOnlyList<string>? _owned;
     private readonly ResolvedSearches _searches;
     private readonly IRecordSearch _search;
-    private readonly IReadOnlyDictionary<(int Index, string? EntityType), (IdTemplate? Template, string? Problem)> _referenceTemplates;
+    private readonly IReadOnlyDictionary<(string Target, string? EntityType), (IdTemplate? Template, string? Problem)> _referenceTemplates;
     private readonly IReadOnlyDictionary<string, ReferenceSnapshot> _fixtureCaches;
 
     private static readonly IReadOnlyDictionary<string, ReferenceSnapshot> NoFixtureCaches = new Dictionary<string, ReferenceSnapshot>(StringComparer.Ordinal);
@@ -106,13 +106,15 @@ public sealed class MappingRenderer
         _requiredData = schema.RequiredAt("data");
         _recordEntries = mapping.Entries.Where(e => !e.IsRepeater && !e.Target.IsRepeated).ToList();
         _repeaters = mapping.Entries.Where(e => e.IsRepeater).Select(r => (r, (IReadOnlyList<MappingEntry>)mapping.ItemEntries(r).ToList())).ToList();
-        // A ref resolves by the variable it fills and the entity type it names, so every alternative of a $coalesce node
-        // that writes one shares the node's variable and is told apart by what it names.
+        // A ref resolves by the variable its node fills and the entity type it names: every alternative of a $coalesce node
+        // that writes one shares the node's variable and is told apart by what it names, and a property of an item of a
+        // list of objects fills the variable inside the list's items, whichever item it is in.
         _referenceTemplates = mapping.Entries
-            .SelectMany(e => e.ValueNodes.Select(node => (Entry: e, Ref: node.Modifiers.LastOrDefault(m => m.Kind == ModifierKind.Ref))))
+            .SelectMany(e => e.ValueNodes)
+            .Select(node => (Node: node, Ref: node.Modifiers.LastOrDefault(m => m.Kind == ModifierKind.Ref)))
             .Where(r => r.Ref is not null)
-            .DistinctBy(r => (r.Entry.Index, r.Ref!.EntityType))
-            .ToDictionary(r => (r.Entry.Index, r.Ref!.EntityType), r => ResolveReference(r.Entry, r.Ref!, schema));
+            .DistinctBy(r => (r.Node.Target.Text, r.Ref!.EntityType))
+            .ToDictionary(r => (r.Node.Target.Text, r.Ref!.EntityType), r => ResolveReference(r.Node, r.Ref!, schema));
 
         // A DSPDM business object row lists the attributes its mapping fills, which are the ones a save may clear.
         _owned = DspdmKinds.Is(mapping.Kind)
@@ -414,7 +416,7 @@ public sealed class MappingRenderer
     internal IdTemplate? ReferenceTemplate(MappingEntry entry, out string? problem)
     {
         var reference = entry.Modifiers.LastOrDefault(m => m.Kind == ModifierKind.Ref);
-        if (reference is not null && _referenceTemplates.TryGetValue((entry.Index, reference.EntityType), out var resolved))
+        if (reference is not null && _referenceTemplates.TryGetValue((entry.Target.Text, reference.EntityType), out var resolved))
         {
             problem = resolved.Problem;
             return resolved.Template;
@@ -711,7 +713,8 @@ public sealed class MappingRenderer
         return unique;
     }
 
-    private static void SetPath(JsonObject root, IReadOnlyList<string> segments, JsonNode value)
+    /// <summary>Writes <paramref name="value"/> at the property the names lead to below <paramref name="root"/>, making the objects on the way.</summary>
+    internal static void SetPath(JsonObject root, IReadOnlyList<string> segments, JsonNode value)
     {
         var current = root;
         for (var i = 0; i < segments.Count - 1; i++)

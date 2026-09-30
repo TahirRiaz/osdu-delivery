@@ -1640,10 +1640,11 @@ export interface DeliveryBuilderCache {
 /**
  * Where a draft entry's value comes from: a dataset column, a child dataset's rows, a cached record, a fixed value, the
  * id of a record found by searching the platform, a value an expression computes from the row, the first of several
- * alternatives that gives a value ($coalesce), a field of the record one of the mapping's lookups finds ($lookup), or a
- * list of values whose items are fixed values and value nodes.
+ * alternatives that gives a value ($coalesce), a field of the record one of the mapping's lookups finds ($lookup), a list
+ * (of values whose items are fixed values and value nodes, or of objects whose items are groups and fixed objects), or a
+ * group: an item of a list of objects, the object its properties give.
  */
-export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search" | "Expression" | "Coalesce" | "Lookup" | "List";
+export type MappingDraftInput = "Dataset" | "Repeat" | "Cache" | "Static" | "Search" | "Expression" | "Coalesce" | "Lookup" | "List" | "Group";
 
 export type MappingDraftModifierKind = "trim" | "upper" | "lower" | "split" | "replace" | "equals" | "date" | "number" | "id" | "ref";
 
@@ -1735,10 +1736,17 @@ export interface MappingDraftEntry {
    */
   alternatives: MappingDraftEntry[];
   /**
-   * List: the items in the order they are written, each an entry of its own input with its own condition, required flag
-   * and description; a fixed item holds one value. Their target is this entry's, which itself takes no condition.
+   * List: the items in the order they are written, each an entry of its own input. A fixed item of a list of values holds
+   * one value, with its own condition, required flag and description; an item of a list of objects is a group or a fixed
+   * object. Their target is this entry's, which itself takes no condition.
    */
   items: MappingDraftEntry[];
+  /**
+   * Group, an item of a list of objects: its properties in the order they are written, each an entry of its own input
+   * whose target is the variable inside the list's items it fills (`osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID`).
+   * The group itself takes no condition, required flag or description; its properties do.
+   */
+  properties: MappingDraftEntry[];
   /** Static: the value as JSON text, such as "[\"a\"]", "\"MD\"", "5" or "true". */
   static: string | null;
   description: string | null;

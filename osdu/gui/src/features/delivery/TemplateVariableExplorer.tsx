@@ -142,10 +142,17 @@ function textMatches(variable: DeliveryTemplateVariable, term: string, covered: 
     || (covered?.values ?? []).some((value) => value.toLowerCase().includes(term));
 }
 
-/** What fills a variable, on one line for a row's hover: its entry, or the static value further up that writes it. */
+/**
+ * What fills a variable, on one line for a row's hover: its entry, the static value further up that writes it, or the
+ * items of a list of objects that do.
+ */
 function fillText(covered: CoverageView | undefined): string[] {
   if (covered?.entry != null) {
     return [entryText(covered.entry)];
+  }
+
+  if (covered?.writtenBy != null && covered.holder?.input === "List") {
+    return [`items of ${covered.writtenBy}${covered.values.length === 0 ? `: ${entryText(covered.holder)}` : `: ${covered.values.join(", ")}`}`];
   }
 
   if (covered?.writtenBy != null) {
@@ -490,7 +497,16 @@ function FillDetails({ covered }: { covered: CoverageView }) {
       )}
       {covered.entry === null && covered.writtenBy !== null && (
         <div data-testid="templates-view-properties-written-by">
-          {covered.holder?.input === "Static" || covered.values.length > 0
+          {covered.holder?.input === "List"
+            ? (
+              <span className="text-[13px]">
+                {"The items of "}
+                <span className="font-mono text-[12px]">{covered.writtenBy}</span>
+                {covered.values.length === 0 ? ", which write it" : ", which give it"}
+                <span className="mt-1 block font-mono text-[12px] break-all">{entryText(covered.holder)}</span>
+              </span>
+            )
+            : covered.holder?.input === "Static" || covered.values.length > 0
             ? (
               <span className="text-[13px]">
                 {covered.holder?.input === "Static" ? "The static value of " : "A static alternative of "}

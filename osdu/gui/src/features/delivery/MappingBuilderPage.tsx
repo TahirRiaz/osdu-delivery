@@ -799,6 +799,7 @@ export default function MappingBuilderPage() {
         <MappingEntryEditor
           target={editing}
           draft={draft}
+          variables={detail.data?.variables ?? []}
           cacheTypes={cache?.types ?? []}
           issues={issues}
           onSave={saveEntry}

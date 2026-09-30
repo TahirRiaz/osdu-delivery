@@ -364,7 +364,7 @@ public sealed class AccessListTests
         legal:
           legaltags: [tag]
           otherRelevantDataCountries: [NO]
-        """, "is a list, and a list with value nodes among its items is a list of values")]
+        """, "is a list, and an item of a list is a value or an object, never a list of its own")]
     public void A_list_of_values_is_refused_where_it_cannot_be_what_it_says(string record, string expected)
     {
         var ex = Assert.Throws<FlowValidationException>(() => Mapping(record: record));

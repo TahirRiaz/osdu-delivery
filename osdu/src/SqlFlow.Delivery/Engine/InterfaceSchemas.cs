@@ -6,9 +6,9 @@ namespace SqlFlow.Delivery.Engine;
 /// <summary>
 /// What an interface's records refer to, read from its mapping and the template the mapping fills: every property the
 /// mapping writes whose schema declares an <c>x-osdu-relationship</c> (docs/interfaces-design.md section 6). A property is
-/// counted however it is filled (a column, the cache, a static value), because the record carries the reference either
-/// way. The run's preflight, <c>sqlflow check</c> and the control plane's listing of a flow's interfaces all describe an
-/// interface here, so they order a source the same way.
+/// counted however it is filled (a column, the cache, a static value), and wherever it is written (the items of a list of
+/// objects too), because the record carries the reference either way. The run's preflight, <c>sqlflow check</c> and the
+/// control plane's listing of a flow's interfaces all describe an interface here, so they order a source the same way.
 /// </summary>
 public static class InterfaceSchemas
 {
@@ -18,7 +18,7 @@ public static class InterfaceSchemas
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(template);
         var references = new List<InterfaceReference>();
-        foreach (var entry in mapping.Entries)
+        foreach (var entry in mapping.Entries.SelectMany(e => e.Fillers))
         {
             if (template.Find(entry.Target) is not { Relationships.Count: > 0 } variable
                 || references.Any(r => string.Equals(r.Property, entry.Target.Text, StringComparison.Ordinal)))

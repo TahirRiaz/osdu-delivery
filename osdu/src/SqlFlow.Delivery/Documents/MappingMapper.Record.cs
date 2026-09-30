@@ -16,7 +16,9 @@ namespace SqlFlow.Delivery.Documents;
 /// written as the value it is. An object is a map of property names. A value node reads one value with <c>$from</c> (a
 /// column), <c>$expr</c> (an expression over the row), <c>$value</c> (a literal with settings), <c>$cache</c> or
 /// <c>$search</c>, and takes its settings beside it. A <c>$forEach</c> node repeats the rows of a child dataset as the
-/// items of an array, each item laid out under <c>$item</c>, and keeps only the rows its <c>$where</c> holds for. A bare column name reads the row the node is in (under a <c>$forEach</c>, the item's row), and
+/// items of an array, each item laid out under <c>$item</c>, and keeps only the rows its <c>$where</c> holds for. A list
+/// holding nodes is a list of values, each item a literal or a value node, or a list of objects, each item an object laid
+/// out as the tree is. A bare column name reads the row the node is in (under a <c>$forEach</c>, the item's row), and
 /// <c>$dataset.&lt;column&gt;</c> the dataset's own row from anywhere. A property whose own name starts with <c>$</c> is
 /// written with one more: <c>$$name</c>.
 /// </summary>
@@ -80,7 +82,8 @@ internal static partial class MappingMapper
 
     /// <summary>
     /// What a column a node names reads: the dataset's own row, or the item row of the <c>$forEach</c> the node is under;
-    /// and the mapping's lookups, which a node anywhere in the tree reads by name.
+    /// the mapping's lookups, which a node anywhere in the tree reads by name; and the list of objects whose item the node
+    /// is in, if any.
     /// </summary>
     private sealed record TreeScope(string? Child)
     {
@@ -89,6 +92,9 @@ internal static partial class MappingMapper
         public static TreeScope Root { get; } = new((string?)null);
 
         public IReadOnlyDictionary<string, MappingLookup> Lookups { get; init; } = NoLookups;
+
+        /// <summary>Where the document writes the list of objects whose item the node is in, or null outside one.</summary>
+        public string? List { get; init; }
 
         public string Rows => Child is null ? "the dataset's own row" : $"the rows of {Child}, which the enclosing {ForEachKey} repeats";
     }
@@ -230,7 +236,10 @@ internal static partial class MappingMapper
             case IEnumerable<object> list:
                 if (MappedItem(list, string.Empty) is not null)
                 {
-                    entries.Add(ListOfValues(list.ToList(), path, location, scope, entries.Count, source));
+                    var items = list.ToList();
+                    entries.Add(items.Any(IsObjectItem)
+                        ? ListOfObjects(items, path, location, scope, entries.Count, source)
+                        : ListOfValues(items, path, location, scope, entries.Count, source));
                     return;
                 }
 
@@ -292,8 +301,8 @@ internal static partial class MappingMapper
     /// <summary>
     /// A list of values some of whose items are value nodes: each item is a literal value or a node that reads one value or,
     /// with <c>$findAll</c>, many, and the list is what they give in the order they are written, a value given twice
-    /// written once. An item is never an object or a list of its own: a list of objects whose items come from rows is a
-    /// <c>$forEach</c> node.
+    /// written once. An item is never a list of its own, and a list with an object among its items is a list of objects
+    /// (<see cref="ListOfObjects"/>); a list of objects whose items come from rows is a <c>$forEach</c> node.
     /// </summary>
     private static MappingEntry ListOfValues(List<object> list, IReadOnlyList<string> path, string location, TreeScope scope, int index, string source)
     {
@@ -335,14 +344,97 @@ internal static partial class MappingMapper
                     break;
 
                 case IDictionary<object, object> or IEnumerable<object>:
+                    // An item that is an object makes the list a list of objects, so only a list inside the list reaches here.
                     throw new FlowValidationException(
-                        $"{itemAt} is {(list[i] is IDictionary<object, object> ? "an object" : "a list")}, and a list with value nodes among its items is a list of values: each item is a literal value or a node that reads values.");
+                        $"{itemAt} is a list, and an item of a list is a value or an object, never a list of its own: a list of values holds literal values and nodes that read values.");
 
                 default:
                     var literal = TreeLiteral(list[i]!, itemAt);
                     literals.Add(literal.DeepClone());
                     parts.Add(new MappingEntry { Index = index, Location = itemLocation, Target = target, Static = literal });
                     break;
+            }
+        }
+
+        return new MappingEntry
+        {
+            Index = index,
+            Location = location,
+            Target = target,
+            Static = literals,
+            Parts = parts,
+        };
+    }
+
+    /// <summary>An item of a list that is an object laid out as the record tree: a map whose keys are properties, not words of the mapping language.</summary>
+    private static bool IsObjectItem(object? item) => item is IDictionary<object, object> map && !map.Keys.Select(KeyText).Any(IsNodeKey);
+
+    /// <summary>
+    /// A list of objects some of whose properties read values: each item is an object laid out as the record tree lays out
+    /// an object's properties (literals, value nodes, <c>$coalesce</c> nodes, objects, lists of values), filling the
+    /// variables of the list's items (<c>osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID</c>) and reading the row
+    /// the list is in. The list is the objects its items give, in the order they are written, an object given twice written
+    /// once; an item none of whose properties gives a value adds nothing, and a property that holds holds the record. An
+    /// item written as the literal it is is carried by every record. A list is one of objects or one of values, since the
+    /// variable it fills takes one or the other, and a path steps into one array at most, so an item's properties never
+    /// repeat rows and a list of objects is never inside the items of another array.
+    /// </summary>
+    private static MappingEntry ListOfObjects(List<object> list, IReadOnlyList<string> path, string location, TreeScope scope, int index, string source)
+    {
+        var at = $"{source}: {location}";
+        var target = Target(path, at);
+        if (target.Repeater is { } outer)
+        {
+            throw new FlowValidationException(
+                $"{at} is a list of objects inside the items of {outer.Text}, and a list of objects inside the items of another array is not supported.");
+        }
+
+        var example = $"- {{ TechnicalAssuranceTypeID: {{ {ExprKey}: iif(startsWith(log_source, \"stat_\"), \"Certified\", \"Unevaluated\") }} }}";
+        var first = list.FindIndex(IsObjectItem);
+        var itemPath = path.Take(path.Count - 1).Append(path[^1] + "[]").ToList();
+        var itemScope = scope with { List = location };
+        var parts = new List<MappingEntry>(list.Count);
+        var literals = new JsonArray();
+        for (var i = 0; i < list.Count; i++)
+        {
+            var itemLocation = $"{location}[{i.ToString(CultureInfo.InvariantCulture)}]";
+            var itemAt = $"{source}: {itemLocation}";
+            switch (list[i])
+            {
+                case null:
+                    throw new FlowValidationException($"{itemAt} is empty; give the item the properties it holds, or remove it.");
+
+                case IDictionary<object, object> { Count: 0 }:
+                    throw new FlowValidationException($"{itemAt} is an empty object; name the properties the item holds, or remove it.");
+
+                case IDictionary<object, object> map when IsObjectItem(map):
+                    if (MappedItem(map, string.Empty) is null)
+                    {
+                        // An item written as the literal it is: every record carries it, as it carries the items of a literal list.
+                        var literal = TreeLiteral(map, itemAt);
+                        literals.Add(literal.DeepClone());
+                        parts.Add(new MappingEntry { Index = index, Location = itemLocation, Target = target, Static = literal });
+                        break;
+                    }
+
+                    var properties = new List<MappingEntry>(map.Count);
+                    foreach (var (key, child) in map)
+                    {
+                        var name = KeyText(key);
+                        Node(child, [.. itemPath, PropertyName(name, itemAt)], $"{itemLocation}.{name}", itemScope, properties, source);
+                    }
+
+                    parts.Add(new MappingEntry { Index = index, Location = itemLocation, Target = target, Properties = properties });
+                    break;
+
+                case IDictionary<object, object>:
+                    throw new FlowValidationException(
+                        $"{itemAt} is a node of the mapping language, and the items of a list of objects are objects laid out as the record tree, whose keys are the item's properties, such as {example}. "
+                        + "A condition goes on the properties it decides for; an item none of whose properties gives a value adds nothing to the list.");
+
+                default:
+                    throw new FlowValidationException(
+                        $"{itemAt} is {(list[i] is IEnumerable<object> ? "a list" : "a value")}, and {location}[{first.ToString(CultureInfo.InvariantCulture)}] is an object: the items of a list are all objects, or all values.");
             }
         }
 
@@ -380,6 +472,12 @@ internal static partial class MappingMapper
         {
             throw new FlowValidationException(
                 $"{at} repeats rows inside the items of the {ForEachKey} over {scope.Child}; a repeated array inside a repeated item is not supported.");
+        }
+
+        if (scope.List is not null)
+        {
+            throw new FlowValidationException(
+                $"{at} repeats rows inside an item of the list of objects at {scope.List}; a repeated array inside the item of a list is not supported.");
         }
 
         var child = Get(map, ForEachKey) is { } named and not (IDictionary<object, object> or IEnumerable<object>) ? ScalarText(named).Trim() : string.Empty;

@@ -144,7 +144,11 @@ public static class MappingCoverage
             own[entry.Target.Text] = Best(own, entry.Target.Text, state);
             direct.Add(entry.Target.Text);
             var walk = new LiteralWalk(own, literals, entry.Target.Text);
-            if (entry.IsStatic && entry.Static is { } literal)
+            if (entry.Parts.Any(part => part.IsObject))
+            {
+                WrittenByItems(walk, entry, state);
+            }
+            else if (entry.IsStatic && entry.Static is { } literal)
             {
                 WrittenBy(walk, entry.Target.Text, [literal], state);
             }
@@ -320,6 +324,111 @@ public static class MappingCoverage
             }
 
             WrittenBy(walk, path, values, reached);
+        }
+    }
+
+    /// <summary>
+    /// Records what the items of a list of objects write at <c>path[].name</c>: a literal item each property it holds, and an
+    /// item whose properties read values each of those properties and every object on the way to one. What every item
+    /// writes on every row is written as surely as the list is; what only some items write, or what an item may leave out
+    /// (<c>$required: false</c> or <c>$when</c>), no more than sometimes. The values literals give a property are kept once
+    /// each, in the order the items give them, so a view can show them where the property is.
+    /// </summary>
+    private static void WrittenByItems(LiteralWalk walk, MappingEntry list, CoverageState state)
+    {
+        var written = new List<string>();
+        var everyRow = new Dictionary<string, int>(StringComparer.Ordinal);
+        var values = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var part in list.Parts)
+        {
+            var reached = new Dictionary<string, CoverageState>(StringComparer.Ordinal);
+            if (part.Static is JsonObject item)
+            {
+                LiteralPaths(list.Target.Text + "[].", item, reached, values);
+            }
+
+            foreach (var property in part.Properties)
+            {
+                var fills = FillsEveryRow(property) ? CoverageState.Always : CoverageState.Sometimes;
+                for (var path = property.Target; path is not null && !path.Equals(list.Target); path = path.Parent)
+                {
+                    reached[path.Text] = Better(reached.GetValueOrDefault(path.Text, CoverageState.Empty), fills);
+                }
+
+                if (property.Static is JsonObject literal)
+                {
+                    LiteralPaths(property.Target.Text + ".", literal, reached, values);
+                }
+                else if (property.Static is JsonValue value)
+                {
+                    Add(values, property.Target.Text, ValueText(value));
+                }
+            }
+
+            foreach (var (path, reach) in reached)
+            {
+                if (!everyRow.ContainsKey(path))
+                {
+                    written.Add(path);
+                    everyRow[path] = 0;
+                }
+
+                everyRow[path] += reach == CoverageState.Always ? 1 : 0;
+            }
+        }
+
+        foreach (var path in written)
+        {
+            var reached = everyRow[path] == list.Parts.Count ? state : CoverageState.Sometimes;
+            walk.Written[path] = Best(walk.Written, path, reached);
+            if (!walk.Literals.TryGetValue(path, out var literal))
+            {
+                literal = (walk.Holder, []);
+                walk.Literals[path] = literal;
+            }
+
+            foreach (var text in values.GetValueOrDefault(path, []).Where(text => !literal.Values.Contains(text, StringComparer.Ordinal)))
+            {
+                literal.Values.Add(text);
+            }
+        }
+    }
+
+    /// <summary>Every property a literal object holds a value for below <paramref name="prefix"/>, written on every row, with the values it gives them.</summary>
+    private static void LiteralPaths(string prefix, JsonObject literal, Dictionary<string, CoverageState> reached, Dictionary<string, List<string>> values)
+    {
+        foreach (var (name, child) in literal)
+        {
+            if (child is null)
+            {
+                continue;
+            }
+
+            var path = prefix + name;
+            reached[path] = CoverageState.Always;
+            switch (child)
+            {
+                case JsonObject nested:
+                    LiteralPaths(path + ".", nested, reached, values);
+                    break;
+                case JsonValue value:
+                    Add(values, path, ValueText(value));
+                    break;
+            }
+        }
+    }
+
+    private static void Add(Dictionary<string, List<string>> values, string path, string text)
+    {
+        if (!values.TryGetValue(path, out var list))
+        {
+            list = [];
+            values[path] = list;
+        }
+
+        if (!list.Contains(text, StringComparer.Ordinal))
+        {
+            list.Add(text);
         }
     }
 

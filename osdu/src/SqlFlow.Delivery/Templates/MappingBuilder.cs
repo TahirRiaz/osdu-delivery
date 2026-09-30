@@ -42,10 +42,17 @@ public enum MappingDraftInput
     Lookup,
 
     /// <summary>
-    /// A list of values: its items in order, each a fixed value or a node reading values of its own (a <c>$findAll</c> among
-    /// them), the list being every value they give, a value given twice written once.
+    /// A list: its items in order, the list being everything they give, a value given twice written once. The items of a
+    /// list of values are each a fixed value or a node reading values of its own (a <c>$findAll</c> among them); those of a
+    /// list of objects are each an object input or a fixed object.
     /// </summary>
     List,
+
+    /// <summary>
+    /// An item of a list of objects, a group of properties: the object its properties give, each property an entry of its
+    /// own input filling a variable inside the list's items (<c>osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID</c>).
+    /// </summary>
+    Group,
 }
 
 /// <summary>
@@ -194,11 +201,21 @@ public sealed record MappingDraftEntry
     public IReadOnlyList<MappingDraftEntry> Alternatives { get; init; } = [];
 
     /// <summary>
-    /// For a list input: the items in the order they are written, each an entry of its own input with its own condition,
-    /// required flag and description; a fixed item holds one value. Their target is the entry's, and the entry itself takes
-    /// no condition, since a list is written as the items alone.
+    /// For a list input: the items in the order they are written, each an entry of its own input; a fixed item of a list of
+    /// values holds one value, with its own condition, required flag and description, and a fixed item of a list of objects
+    /// one object. Their target is the entry's, and the entry itself takes no condition, since a list is written as the
+    /// items alone.
     /// </summary>
     public IReadOnlyList<MappingDraftEntry> Items { get; init; } = [];
+
+    /// <summary>
+    /// For a group input, an item of a list of objects: its properties in the order they are written, each an entry of its
+    /// own input (a fixed value, a value read from the dataset, the cache, a lookup or a search, the first of several, or a
+    /// list of values) whose target is the variable inside the list's items it fills
+    /// (<c>osdu.data.TechnicalAssurances[].TechnicalAssuranceTypeID</c>). The item takes no condition, required flag or
+    /// description of its own; its properties do.
+    /// </summary>
+    public IReadOnlyList<MappingDraftEntry> Properties { get; init; } = [];
 
     /// <summary>For a static input: the value as JSON text.</summary>
     public string? Static { get; init; }
@@ -444,6 +461,9 @@ public static partial class MappingBuilder
                 case MappingDraftInput.List:
                     ListIssues(draft, entry, target, scope, Error);
                     break;
+                case MappingDraftInput.Group:
+                    Error($"{target}: an object input is an item of a list of objects; choose a list input and add the object as one of its items.", target);
+                    break;
                 default:
                     ValueIssues(draft, entry, target, target, scope, Error);
                     break;
@@ -483,8 +503,12 @@ public static partial class MappingBuilder
     /// <summary>The issue target that names a lookup, so the page can open the lookup an issue is about.</summary>
     public static string LookupTarget(string name) => "lookups." + name;
 
-    /// <summary>An entry and the value nodes it reads through: a coalesce entry's alternatives, and a list's items.</summary>
-    private static IEnumerable<MappingDraftEntry> ValueNodesOf(MappingDraftEntry entry) => [entry, .. entry.Alternatives, .. entry.Items];
+    /// <summary>
+    /// An entry and the value nodes it reads through: a coalesce entry's alternatives, a list's items, and the properties of
+    /// an item of a list of objects with what they read through in turn.
+    /// </summary>
+    private static IEnumerable<MappingDraftEntry> ValueNodesOf(MappingDraftEntry entry)
+        => [entry, .. entry.Alternatives, .. entry.Items.SelectMany(ValueNodesOf), .. entry.Properties.SelectMany(ValueNodesOf)];
 
     /// <summary>The lookups one value node reads: the one a lookup input reads, and the one a find all line keys by.</summary>
     private static IEnumerable<string> LookupsRead(MappingDraftEntry node)
@@ -563,12 +587,20 @@ public static partial class MappingBuilder
     }
 
     /// <summary>
-    /// What a list of values lacks: items, each one value of its own input that is complete as an entry of that input would
-    /// be, a fixed item holding one value. The access lists keep a fixed value no record goes without, and the legal lists
+    /// What a list lacks: items, each one value of its own input that is complete as an entry of that input would be, a
+    /// fixed item holding one value; or, for a list of objects, items that are each an object input or a fixed object
+    /// (<see cref="ObjectItemIssues"/>). The access lists keep a fixed value no record goes without, and the legal lists
     /// hold fixed values alone, since the legal service checks them before a run.
     /// </summary>
     private static void ListIssues(MappingDraft draft, MappingDraftEntry entry, string target, string? scope, Action<string, string?> error)
     {
+        var objects = IsObjectList(entry);
+        if (objects && TemplatePath.TryParse(target, out var path, out _) && path!.Repeater is { } outer)
+        {
+            error($"{target} is a list of objects inside the items of {outer.Text}, and a list of objects inside the items of another array is not supported.", target);
+            return;
+        }
+
         if (target is "osdu.legal.legaltags" or "osdu.legal.otherRelevantDataCountries")
         {
             error($"{target}: the legal service checks a record's tags and countries before a run, which it can only do for a list the same on every record; give fixed values.", target);
@@ -581,18 +613,26 @@ public static partial class MappingBuilder
 
         if (entry.Items.Count == 0)
         {
-            error($"{target}: add the list's items, each a fixed value or a value read from the dataset, the cache, a lookup or a search.", target);
+            error($"{target}: add the list's items, each a fixed value or a value read from the dataset, the cache, a lookup or a search, or for a list of objects each an object whose properties read them.", target);
         }
 
         if (!string.IsNullOrWhiteSpace(entry.When))
         {
-            error($"{target}: a list of values is written as its items alone, so it takes no condition; give the items that need one a condition of their own.", target);
+            error(objects
+                ? $"{target}: a list of objects is written as its items alone, so it takes no condition; give the properties that need one a condition of their own."
+                : $"{target}: a list of values is written as its items alone, so it takes no condition; give the items that need one a condition of their own.", target);
         }
 
         for (var i = 0; i < entry.Items.Count; i++)
         {
             var item = entry.Items[i];
             var name = $"{target} item {i + 1}";
+            if (objects)
+            {
+                ObjectItemIssues(draft, item, name, target, scope, error);
+                continue;
+            }
+
             if (item.Input is MappingDraftInput.Repeat or MappingDraftInput.Coalesce or MappingDraftInput.List)
             {
                 error($"{name}: an item gives values of its own; choose a fixed value, a dataset column, an expression, the cache, a lookup or a search.", target);
@@ -635,11 +675,155 @@ public static partial class MappingBuilder
         }
         else if (node is not JsonValue)
         {
-            error($"{name}: an item of a list of values is one value, a text, a number or true/false; a list of objects whose items come from rows repeats a child dataset.", target);
+            error($"{name}: an item of a list of values is one value, a text, a number or true/false; a list of objects holds objects, each an object input or a fixed object.", target);
         }
         else if (MappingMapper.LiteralTokenProblem(node) is { } problem)
         {
             error($"{name}: {problem}", target);
+        }
+    }
+
+    /// <summary>
+    /// What an item of a list of objects lacks: an object input whose properties each fill a variable inside the list's items
+    /// once and are complete as entries of their own input would be, or a fixed object. An item takes no condition of its
+    /// own, since a condition goes on the properties it decides for. A property never repeats rows or holds a list of objects
+    /// of its own, since a path steps into one array at most. What a property lacks concerns the list, whose entry it is
+    /// part of, so it names the list's target.
+    /// </summary>
+    private static void ObjectItemIssues(MappingDraft draft, MappingDraftEntry item, string name, string target, string? scope, Action<string, string?> error)
+    {
+        if (item.Input == MappingDraftInput.Static)
+        {
+            ObjectLiteralIssue(item, name, target, error);
+            return;
+        }
+
+        if (item.Input != MappingDraftInput.Group)
+        {
+            error($"{name}: the items of a list are all objects or all values, and this list holds objects; make the item an object whose properties read the values.", target);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(item.When) || !string.IsNullOrWhiteSpace(item.Description) || !item.Required)
+        {
+            error($"{name}: an object item is written as its properties alone, so it takes no condition, required flag or description; give them to its properties.", target);
+        }
+
+        if (item.Properties.Count == 0)
+        {
+            error($"{name}: add the item's properties, each a variable of the items of {target}, such as {target}[].Name.", target);
+            return;
+        }
+
+        void AtList(string message, string? _) => error(message, target);
+        var placed = new List<(string Name, TreeSlot Slot)>();
+        var leftOut = new List<LeftOutEntry>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in item.Properties)
+        {
+            var propertyTarget = property.Target?.Trim() ?? string.Empty;
+            if (!TemplatePath.TryParse(propertyTarget, out var path, out _) || path!.Repeater?.Text != target)
+            {
+                error($"{name}: {(propertyTarget.Length == 0 ? "a property names no variable" : $"{propertyTarget} is not a variable of the items of {target}")}; an item's property fills {target}[].<name>.", target);
+                continue;
+            }
+
+            var at = $"{propertyTarget} in {name}";
+            if (!seen.Add(propertyTarget))
+            {
+                error($"{at} has more than one entry.", target);
+                continue;
+            }
+
+            Place(placed, path.WithinItem, property, propertyTarget, leftOut);
+            switch (property.Input)
+            {
+                case MappingDraftInput.Repeat:
+                    error($"{at} repeats a child dataset's rows, and a repeated array inside an item of a list is not supported.", target);
+                    continue;
+                case MappingDraftInput.Group:
+                    error($"{at}: an object input is an item of a list of objects; the item's own properties are its entries.", target);
+                    continue;
+                case MappingDraftInput.List when IsObjectList(property):
+                    error($"{at} is a list of objects inside an item of a list, which is not supported.", target);
+                    continue;
+                case MappingDraftInput.List:
+                    ListIssues(draft, property, at, scope, AtList);
+                    break;
+                case MappingDraftInput.Coalesce:
+                    CoalesceIssues(draft, property, at, scope, AtList);
+                    break;
+                default:
+                    ValueIssues(draft, property, at, target, scope, error);
+                    break;
+            }
+
+            if (!string.IsNullOrWhiteSpace(property.When) && MappingMapper.ReadCondition(property.When.Trim(), MappingMapper.WhenKey, scope, out var whenProblem) is null)
+            {
+                error($"{at}: {whenProblem}", target);
+            }
+        }
+
+        foreach (var left in leftOut.Where(l => l.Reason is not null))
+        {
+            error($"{name}: {left.Reason}.", target);
+        }
+    }
+
+    /// <summary>
+    /// True for a list of objects: one with a group input, or a fixed object written as the object it is, among its items,
+    /// which is how the loader reads the list the draft is written as. A fixed value with a condition or a description is
+    /// written under <c>$value</c>, a node, so it makes no list one of objects.
+    /// </summary>
+    private static bool IsObjectList(MappingDraftEntry list)
+        => list.Items.Any(item => item.Input == MappingDraftInput.Group
+            || (item.Input == MappingDraftInput.Static && StaticNode(item.Static) is JsonObject { Count: > 0 }
+                && string.IsNullOrWhiteSpace(item.When) && string.IsNullOrWhiteSpace(item.Description)));
+
+    /// <summary>A fixed value's JSON, or null when it is empty or not JSON.</summary>
+    private static JsonNode? StaticNode(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonNode.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>A fixed item of a list of objects: one object, written as the object it is, so it takes no condition or description.</summary>
+    private static void ObjectLiteralIssue(MappingDraftEntry item, string name, string target, Action<string, string?> error)
+    {
+        JsonNode? node;
+        try
+        {
+            node = string.IsNullOrWhiteSpace(item.Static) ? null : JsonNode.Parse(item.Static);
+        }
+        catch (JsonException)
+        {
+            error($"{name}: the fixed value is not valid JSON.", target);
+            return;
+        }
+
+        if (node is not JsonObject { Count: > 0 })
+        {
+            error($"{name}: a fixed item of a list of objects is one object holding the item's properties, such as {{\"Name\": \"MD\"}}.", target);
+        }
+        else if (MappingMapper.LiteralTokenProblem(node) is { } problem)
+        {
+            error($"{name}: {problem}", target);
+        }
+
+        if (!string.IsNullOrWhiteSpace(item.When) || !string.IsNullOrWhiteSpace(item.Description))
+        {
+            error($"{name}: a fixed item is written as the object it is, so it takes no condition or description; make it an object item and give its properties one.", target);
         }
     }
 
@@ -658,7 +842,7 @@ public static partial class MappingBuilder
         {
             var alternative = entry.Alternatives[i];
             var name = $"{target} alternative {i + 1}";
-            if (alternative.Input is MappingDraftInput.Repeat or MappingDraftInput.Coalesce or MappingDraftInput.List)
+            if (alternative.Input is MappingDraftInput.Repeat or MappingDraftInput.Coalesce or MappingDraftInput.List or MappingDraftInput.Group)
             {
                 error($"{name}: an alternative reads one value; choose a dataset column, an expression, the cache, a lookup, a search or a fixed value.", target);
                 continue;
@@ -1023,7 +1207,8 @@ public static partial class MappingBuilder
     /// <summary>
     /// The draft of a loaded mapping, for opening it in the builder: everything the document says, so writing the draft back
     /// gives the same mapping. Its lookups, the nodes reading them, the rows a <c>$findAll</c> reads, the items of a list of
-    /// values and the cached rows a fixture declares all have their place in the draft.
+    /// values, the object items of a list of objects with their properties, and the cached rows a fixture declares all have
+    /// their place in the draft.
     /// </summary>
     public static MappingDraft FromDefinition(MappingDefinition mapping)
     {
@@ -1100,12 +1285,23 @@ public static partial class MappingBuilder
     {
         if (entry.IsList)
         {
-            // A list is its items alone: each a literal, or a node with its own condition, required flag and description.
+            // A list is its items alone: each a literal, a node with its own condition, required flag and description, or an
+            // object whose properties are entries of their own.
             return new MappingDraftEntry
             {
                 Target = entry.Target.Text,
                 Input = MappingDraftInput.List,
                 Items = entry.Parts.Select(DraftNode).ToList(),
+            };
+        }
+
+        if (entry.IsObject)
+        {
+            return new MappingDraftEntry
+            {
+                Target = entry.Target.Text,
+                Input = MappingDraftInput.Group,
+                Properties = entry.Properties.Select(Draft).ToList(),
             };
         }
 
@@ -1232,9 +1428,12 @@ public static partial class MappingBuilder
         foreach (var (entry, index, path) in parsed.Where(p => p.Path is { IsRepeated: true }))
         {
             var array = path!.Repeater!;
-            if (Find(root, array.Segments.Select(s => s.Name).ToList()) is not { Entry.Input: MappingDraftInput.Repeat } repeat)
+            var holder = Find(root, array.Segments.Select(s => s.Name).ToList());
+            if (holder is not { Entry.Input: MappingDraftInput.Repeat } repeat)
             {
-                leftOut.Add(new LeftOutEntry(path.Text, $"{path.Text} fills a property of the items of {array.Text}, and no entry repeats a child dataset's rows at {array.Text}"));
+                leftOut.Add(new LeftOutEntry(path.Text, holder is { Entry.Input: MappingDraftInput.List }
+                    ? $"{path.Text} fills a property of the items of {array.Text}, whose items a list writes; fill it in an item of that list"
+                    : $"{path.Text} fills a property of the items of {array.Text}, and no entry repeats a child dataset's rows at {array.Text}"));
                 continue;
             }
 
@@ -1392,7 +1591,14 @@ public static partial class MappingBuilder
             line(key + ":");
             foreach (var item in entry.Items)
             {
-                WriteItem(item, indent + 2, scope, valueNode: false, line);
+                if (item.Input == MappingDraftInput.Group)
+                {
+                    WriteObjectItem(item, entry.Target.Trim(), indent + 2, scope, line);
+                }
+                else
+                {
+                    WriteItem(item, indent + 2, scope, valueNode: false, line);
+                }
             }
 
             return;
@@ -1561,10 +1767,69 @@ public static partial class MappingBuilder
             return;
         }
 
+        if (!valueNode && settled && node is JsonObject { Count: > 0 } bareObject)
+        {
+            // A fixed item of a list of objects is the object it is, laid out as the tree lays out a literal.
+            var written = new List<string>();
+            WriteObject(bareObject, indent + 2, escape: true, written.Add);
+            WriteDashed(written, indent, line);
+            return;
+        }
+
         WriteLiteralNode(node, indent, line);
         if (!settled)
         {
             WriteSettings(item, new string(' ', indent + 2), line);
+        }
+    }
+
+    /// <summary>
+    /// An object item of a list of objects at <paramref name="indent"/>: its properties laid out as the record tree lays out
+    /// an object's, each at the place its target names inside the items of <paramref name="list"/>, with the item's dash
+    /// beside the first. A property the item has no place for is left out with a comment saying why, which the checks report.
+    /// </summary>
+    private static void WriteObjectItem(MappingDraftEntry item, string list, int indent, string? scope, Action<string> line)
+    {
+        var properties = new List<(string Name, TreeSlot Slot)>();
+        var leftOut = new List<LeftOutEntry>();
+        foreach (var property in item.Properties)
+        {
+            var text = property.Target?.Trim() ?? string.Empty;
+            if (TemplatePath.TryParse(text, out var path, out _) && path!.Repeater?.Text == list)
+            {
+                Place(properties, path.WithinItem, property, path.Text, leftOut);
+            }
+            else
+            {
+                leftOut.Add(new LeftOutEntry(text, $"{(text.Length == 0 ? "a property naming no variable" : text)} is not a variable of the items of {list}"));
+            }
+        }
+
+        var pad = new string(' ', indent);
+        foreach (var left in leftOut)
+        {
+            line($"{pad}# Left out: {Comment(left.Reason ?? $"{left.Target} has another entry in the item, which is written")}.");
+        }
+
+        var written = new List<string>();
+        WriteProperties(properties, indent + 2, scope, written.Add);
+        if (written.Count == 0)
+        {
+            // An item with no property is written as the empty object it is; the loader refuses it, and the checks name it.
+            line(pad + "- {}");
+            return;
+        }
+
+        WriteDashed(written, indent, line);
+    }
+
+    /// <summary>Lines laid out at <paramref name="indent"/> + 2 written as one list item at <paramref name="indent"/>: the item's dash beside the first of them.</summary>
+    private static void WriteDashed(IReadOnlyList<string> lines, int indent, Action<string> line)
+    {
+        var pad = new string(' ', indent);
+        for (var i = 0; i < lines.Count; i++)
+        {
+            line(i == 0 ? pad + "- " + lines[i].TrimStart() : lines[i]);
         }
     }
 
@@ -1750,18 +2015,15 @@ public static partial class MappingBuilder
             switch (item)
             {
                 case JsonObject obj:
-                    var first = true;
                     var inner = new List<string>();
                     WriteObject(obj, indent + 2, escape, inner.Add);
-                    foreach (var text in inner)
-                    {
-                        line(first ? pad + "- " + text.TrimStart() : text);
-                        first = false;
-                    }
-
-                    if (first)
+                    if (inner.Count == 0)
                     {
                         line(pad + "- {}");
+                    }
+                    else
+                    {
+                        WriteDashed(inner, indent, line);
                     }
 
                     break;

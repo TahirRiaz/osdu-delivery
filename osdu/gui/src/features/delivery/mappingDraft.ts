@@ -121,15 +121,37 @@ export function emptyEntry(target: string, input: MappingDraftInput): MappingDra
     unverified: false,
     alternatives: [],
     items: [],
+    properties: [],
     static: null,
     description: null,
     prefilled: false,
   };
 }
 
-/** An entry and the value nodes it reads through: a coalesce entry's alternatives, and a list's items. */
+/**
+ * An entry and the value nodes it reads through: a coalesce entry's alternatives, a list's items, and the properties of
+ * an item of a list of objects with what they read through in turn.
+ */
 export function valueNodesOf(entry: MappingDraftEntry): MappingDraftEntry[] {
-  return [entry, ...entry.alternatives, ...entry.items];
+  return [entry, ...entry.alternatives, ...entry.items.flatMap(valueNodesOf), ...entry.properties.flatMap(valueNodesOf)];
+}
+
+/** A list of objects: one with a group, or a fixed object without a condition or description, among its items. */
+export function isObjectList(entry: Pick<MappingDraftEntry, "input" | "items">): boolean {
+  return entry.input === "List" && entry.items.some((item) => item.input === "Group"
+    || (item.input === "Static" && isPlainObject(parseJson(item.static)) && item.when === null && (item.description ?? "") === ""));
+}
+
+/** True for a parsed JSON object holding at least one property. */
+function isPlainObject(parsed: ReturnType<typeof parseJson>): boolean {
+  return parsed.ok && parsed.value !== null && typeof parsed.value === "object" && !Array.isArray(parsed.value)
+    && Object.keys(parsed.value as object).length > 0;
+}
+
+/** Where a property of an item of the list at `list` lies inside the item: `Detail.Note` for `osdu.data.X[].Detail.Note`. */
+export function withinItem(list: string, target: string): string {
+  const prefix = `${list}[].`;
+  return target.startsWith(prefix) ? target.slice(prefix.length) : target;
 }
 
 /** The lookup a find all line keys by, from its `wellbore.GeoContexts.FieldID`; null when it keys by none. */
@@ -153,7 +175,9 @@ export function renameLookup(entries: readonly MappingDraftEntry[], from: string
     const findAll = node.findAll !== null && findAllLookup(node.findAll) === from
       ? { ...node.findAll, lookup: `${to}${(node.findAll.lookup ?? "").trim().slice(from.length)}` }
       : node.findAll;
-    return { ...node, lookup, findAll, alternatives: node.alternatives.map(rename), items: node.items.map(rename) };
+    return {
+      ...node, lookup, findAll, alternatives: node.alternatives.map(rename), items: node.items.map(rename), properties: node.properties.map(rename),
+    };
   };
   return entries.map(rename);
 }
@@ -186,8 +210,9 @@ export function newModifier(kind: MappingDraftModifierKind): MappingDraftModifie
 /**
  * The inputs a variable takes, as the preflight allows them: a value or a list of values from a dataset column, the cache,
  * a lookup, a search of the platform or a static value, and a list of values from items that are each one of those; a
- * list of objects from a repeater or a static list; an object only from a static value. The legal lists are static, and
- * the access lists static or a list of values that keeps a fixed value every record carries.
+ * list of objects from a repeater, a static list, or a list whose items are objects of properties each filled on its
+ * own; an object only from a static value. The legal lists are static, and the access lists static or a list of values
+ * that keeps a fixed value every record carries.
  */
 export function inputsFor(variable: Pick<DeliveryTemplateVariable, "shape" | "path">): MappingDraftInput[] {
   if (ACCESS_TARGETS.includes(variable.path)) {
@@ -204,7 +229,7 @@ export function inputsFor(variable: Pick<DeliveryTemplateVariable, "shape" | "pa
     case "ValueList":
       return ["Dataset", "Expression", "Cache", "Lookup", "Search", "Static", "Coalesce", "List"];
     case "GroupList":
-      return ["Repeat", "Static"];
+      return ["Repeat", "List", "Static"];
     case "Group":
     case "Whole":
       return ["Static"];
@@ -276,7 +301,16 @@ export function entrySummary(entry: MappingDraftEntry): string {
       return `lookup.${entry.lookup ?? ""}.${entry.cacheField ?? ""}`;
     case "List":
       return entry.items.map(entrySummary).join(", ");
+    case "Group":
+      return groupText(entry, entrySummary);
   }
+}
+
+/** An item of a list of objects on one line, each property by its place in the item: `{ TypeID: dataset.type, Note: static "x" }`. */
+function groupText(group: MappingDraftEntry, text: (property: MappingDraftEntry) => string): string {
+  return group.properties.length === 0
+    ? "{ }"
+    : `{ ${group.properties.map((property) => `${withinItem(group.target, property.target)}: ${text(property)}`).join(", ")} }`;
 }
 
 /** Whether an entry finds a record by findBy lines, or rows by a find all: out of the cache, or by searching the platform. */
@@ -305,7 +339,7 @@ function lookupPhrase(entry: MappingDraftEntry): string {
 /**
  * An entry on one line, without the target it fills: where the value comes from, the lookup that finds it, what is done
  * to it, and when it applies. `dataset.facility_name | trim`, `search.Wellbore.id by data.FacilityName = dataset.wellbore_uwi`.
- * A list reads as its items, one after another.
+ * A list reads as its items, one after another, and an item of a list of objects as its properties in braces.
  */
 export function entryText(entry: MappingDraftEntry): string {
   if (entry.input === "Coalesce") {
@@ -318,6 +352,10 @@ export function entryText(entry: MappingDraftEntry): string {
 
   if (entry.input === "List") {
     return entry.items.map(entryText).join("; ");
+  }
+
+  if (entry.input === "Group") {
+    return groupText(entry, entryText);
   }
 
   return [
@@ -336,10 +374,11 @@ export function alternativeText(alternative: MappingDraftEntry): string {
 
 /**
  * What an entry further up writes into a target no entry of its own fills: the nearest entry whose target holds it and
- * that writes what it holds (a static value, a value written whole such as a cached field holding an object, or a
- * coalesce of them), with the values a static value gives the target, once each. `present` is false when that entry is a
- * static value without the target in it, which leaves the target out. Null when nothing above writes it; a repeat does
- * not, since each property of its items has an entry of its own.
+ * that writes what it holds (a static value, a value written whole such as a cached field holding an object, a coalesce
+ * of them, or a list of objects whose items write it), with the values a static value gives the target, once each.
+ * `present` is false when that entry is a static value without the target in it, or a list none of whose items writes
+ * it, which leaves the target out. Null when nothing above writes it; a repeat does not, since each property of its items
+ * has an entry of its own.
  */
 export interface InheritedFill {
   holder: MappingDraftEntry;
@@ -360,12 +399,47 @@ export function inheritedFill(entries: readonly MappingDraftEntry[], target: str
     return null;
   }
 
+  if (holder.input === "List") {
+    return listFill(holder, target);
+  }
+
   const literals = holder.input === "Static"
     ? [holder.static]
     : holder.input === "Coalesce" ? holder.alternatives.filter((alternative) => alternative.input === "Static").map((alternative) => alternative.static) : [];
   const found = literals.flatMap((text) => valuesAt(text, target.slice(holder.target.length)));
-  const values = [...new Set(found.filter((value) => value !== undefined).map(scalarText).filter((text): text is string => text !== null))];
-  return { holder, values, present: holder.input !== "Static" || found.length > 0 };
+  return { holder, values: shownValues(found), present: holder.input !== "Static" || found.length > 0 };
+}
+
+/**
+ * What the items of a list of objects write into a variable inside them: the values its fixed items and the fixed
+ * properties of its groups give it, and whether any item writes it at all, fixed or read from the row.
+ */
+function listFill(list: MappingDraftEntry, target: string): InheritedFill {
+  const rest = target.slice(list.target.length);
+  const fixed = list.items.filter((item) => item.input === "Static").map((item) => parseJson(item.static))
+    .flatMap((parsed) => (parsed.ok && parsed.value !== undefined ? [parsed.value] : []));
+  const found = valuesAt(JSON.stringify(fixed), rest);
+  let written = false;
+  for (const property of list.items.filter((item) => item.input === "Group").flatMap((item) => item.properties)) {
+    if (property.target === target) {
+      written = true;
+      if (property.input === "Static") {
+        found.push(...valuesAt(property.static, ""));
+      }
+    } else if (target.startsWith(`${property.target}.`) || target.startsWith(`${property.target}[].`)) {
+      // A property filled whole holds the variable when its value does.
+      const inside = property.input === "Static" ? valuesAt(property.static, target.slice(property.target.length)) : [];
+      written ||= property.input !== "Static" || inside.length > 0;
+      found.push(...inside);
+    }
+  }
+
+  return { holder: list, values: shownValues(found), present: written || found.length > 0 };
+}
+
+/** The values a static value gives a variable as a view shows them: each text, number or boolean once. */
+function shownValues(found: unknown[]): string[] {
+  return [...new Set(found.filter((value) => value !== undefined).map(scalarText).filter((text): text is string => text !== null))];
 }
 
 /** What a static value's JSON holds at a path below it (`.Name`, `[].TypeID`, `.Items[].Code`): every value along it. */
@@ -418,6 +492,8 @@ export interface PropertyRow {
   alternatives: string[];
   /** List: each item on one line, in the order they are written; empty for any other entry. */
   items: string[];
+  /** List: its items are objects, each a group of properties or a fixed object, rather than values. */
+  objects: boolean;
   /** The id the entry builds goes out even when the cache holds no such record ($unverified). */
   unverified: boolean;
   /** A cache lookup tries once more with punctuation and spacing folded away ($ignoreSeparators). */
@@ -466,6 +542,7 @@ export function propertyRow(entry: MappingDraftEntry): PropertyRow {
     findsAll: entry.input === "Cache" && entry.findAll !== null,
     alternatives: entry.input === "Coalesce" ? entry.alternatives.map(alternativeText) : [],
     items: entry.input === "List" ? entry.items.map(entryText) : [],
+    objects: isObjectList(entry),
     unverified: entry.unverified,
     ignoreSeparators: entry.input === "Cache" && entry.ignoreSeparators,
     modifiers,

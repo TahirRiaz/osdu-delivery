@@ -27,7 +27,7 @@ interface MappingBuilderVariablesProps {
 
 /**
  * What fills a variable without an entry of its own: the entry above it that writes it (a static value with what it gives
- * it, or a value written whole), or nothing.
+ * it, a value written whole, or a list of objects whose items write it), or nothing.
  */
 function InheritedSummary({ fill }: { fill: InheritedFill | null }) {
   if (fill === null) {
@@ -37,13 +37,15 @@ function InheritedSummary({ fill }: { fill: InheritedFill | null }) {
   if (!fill.present) {
     return (
       <span className="min-w-0 text-muted-foreground" data-testid="mapping-builder-inherited">
-        {"Not in the static value of "}
+        {fill.holder.input === "List" ? "Not in the items of " : "Not in the static value of "}
         <span className="font-mono text-[12px]">{fill.holder.target}</span>
       </span>
     );
   }
 
-  const where = fill.holder.input === "Static" ? "In the static value of" : fill.values.length > 0 ? "In a static alternative of" : "Written whole by";
+  const where = fill.holder.input === "List"
+    ? "In the items of"
+    : fill.holder.input === "Static" ? "In the static value of" : fill.values.length > 0 ? "In a static alternative of" : "Written whole by";
   return (
     <span className="flex min-w-0 items-center gap-1" data-testid="mapping-builder-inherited">
       <span className="shrink-0 text-muted-foreground">{where}</span>

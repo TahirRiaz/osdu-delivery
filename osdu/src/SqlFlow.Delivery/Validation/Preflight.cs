@@ -211,17 +211,33 @@ public static partial class Preflight
 
         if (variable.Nested)
         {
-            issues.Add(ValidationIssue.Error($"{name}: {entry.Target.Text} is a list inside a repeated item; a $forEach inside a $forEach is not supported."));
+            issues.Add(ValidationIssue.Error(
+                $"{name}: {entry.Target.Text} is a list of objects inside the items of another array, which a mapping does not fill: neither a $forEach inside a $forEach nor a list inside the item of a list is supported."));
             return;
         }
 
-        // A $coalesce node fills its variable with whichever alternative gives a value, and a list with what every item
-        // gives, so each alternative or item is checked as a node of its own against the variable, and named by where it is
-        // written.
-        foreach (var node in entry.ValueNodes)
+        if (entry.Parts.Any(part => part.IsObject) && variable.Shape != TemplateVariableShape.GroupList)
+        {
+            issues.Add(ValidationIssue.Error(
+                $"{name} is a list of objects whose properties read values, which fills a list of objects the template breaks into properties, and {entry.Target.Text} is {Describe(variable)}."));
+            return;
+        }
+
+        // A $coalesce node fills its variable with whichever alternative gives a value, and a list of values with what every
+        // item gives, so each alternative or item is checked as a node of its own against the variable, and named by where
+        // it is written. The value nodes of an object item's properties fill variables inside the list's items instead, so
+        // they are left to the properties' own checks below.
+        foreach (var node in entry.ValueNodes.Where(node => node.Target.Equals(entry.Target)))
         {
             // The node itself is checked without its alternatives or items, whose expressions it would otherwise count as its own.
             CheckValueNode(ReferenceEquals(node, entry) ? entry with { Alternatives = [], Parts = [] } : node, variable, references, renderer, issues, ReferenceEquals(node, entry) ? name : $"{where}: {node.Where}");
+        }
+
+        // Each property of an item of a list of objects is checked as an entry of its own against the variable of the list's
+        // items it fills; what it finds concerns the list, whose entry it is part of.
+        foreach (var property in entry.Parts.SelectMany(part => part.Properties))
+        {
+            CheckEntryInto(property, template, references, renderer, issues, where);
         }
     }
 

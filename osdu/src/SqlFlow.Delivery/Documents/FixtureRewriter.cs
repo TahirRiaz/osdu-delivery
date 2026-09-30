@@ -122,18 +122,19 @@ public static class FixtureRewriter
     /// <summary>
     /// Where each property of a rendered record sorts: the position in the mapping's record tree of the first entry that
     /// writes it or a property inside it, by its path of names (<c>data.Curves.CurveID</c>, an array's items under the
-    /// array's own name). The id and the kind the engine writes come first.
+    /// array's own name), the properties of a list's object items where the list is. The id and the kind the engine
+    /// writes come first.
     /// </summary>
     private static Dictionary<string, int> Order(MappingDefinition mapping)
     {
         var order = new Dictionary<string, int>(StringComparer.Ordinal) { ["id"] = -2, ["kind"] = -1 };
-        foreach (var entry in mapping.Entries)
+        foreach (var entry in mapping.Entries.SelectMany(e => e.Fillers))
         {
             var path = string.Empty;
             foreach (var segment in entry.Target.Segments)
             {
                 path = path.Length == 0 ? segment.Name : path + "." + segment.Name;
-                order.TryAdd(path, entry.Index);
+                order.TryAdd(path, order.Count);
             }
         }
 

@@ -47,6 +47,11 @@ internal static partial class EntryValues
             return Listed(entry, root, item, renderer, holds, usages, searched);
         }
 
+        if (entry.IsObject)
+        {
+            return Assembled(entry, root, item, renderer, holds, usages, searched);
+        }
+
         object? raw;
         if (entry.Static is { } fixedValue)
         {
@@ -230,6 +235,21 @@ internal static partial class EntryValues
             }
 
             return items.Count > 0 ? items : null;
+        }
+
+        if (entry.IsObject)
+        {
+            // An item of a list of objects as its properties are drawn, each at its place in the item.
+            var drawn = new JsonObject();
+            foreach (var itemProperty in entry.Properties)
+            {
+                if (Describe(itemProperty, renderer, notes) is { } value)
+                {
+                    MappingRenderer.SetPath(drawn, itemProperty.Target.WithinItem, value);
+                }
+            }
+
+            return drawn.Count > 0 ? drawn : null;
         }
 
         if (entry.Static is { } fixedValue)
@@ -998,6 +1018,26 @@ internal static partial class EntryValues
     }
 
     /// <summary>
+    /// The value of an item of a list of objects: the object its properties give, each written at its place in the item as
+    /// the record's own properties are, or null when none of them gives one, which leaves the item out of the list. A
+    /// property that holds holds the record, as it would anywhere in it.
+    /// </summary>
+    private static JsonNode? Assembled(
+        MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, RenderTrail searched)
+    {
+        var written = new JsonObject();
+        foreach (var property in entry.Properties)
+        {
+            if (Evaluate(property, root, item, renderer, holds, usages, searched) is { } value)
+            {
+                MappingRenderer.SetPath(written, property.Target.WithinItem, value);
+            }
+        }
+
+        return written.Count > 0 ? written : null;
+    }
+
+    /// <summary>
     /// The value of a <c>$findAll</c> node: the field it reads from every row of its type whose key field holds a value its
     /// operand gives and whose every field the node asks to be empty holds nothing, as a list in the order of the rows' ids,
     /// a value two rows give written once. Every key is recorded with the rows it found, none included, and so is every
@@ -1367,16 +1407,18 @@ internal static partial class EntryValues
                 return obj;
             }
 
+            // An object bound to a list of objects is a list of one, as a single value bound to a list of values is: a
+            // literal item of a list of objects, or a cached field holding one object.
+            if (type == SchemaType.Array && property?.ItemScalarType is SchemaType.Object)
+            {
+                return new JsonArray(obj.DeepClone());
+            }
+
             holds.Add($"{path}: an object cannot be written where the template takes a {Name(type)}");
             return null;
         }
 
         var scalar = raw is JsonValue value ? Native(value) : raw;
-        if (type == SchemaType.Array && property?.ItemScalarType is SchemaType.Object && raw is JsonObject item)
-        {
-            return new JsonArray(item.DeepClone());
-        }
-
         if (type == SchemaType.Array && property?.ItemScalarType is { } itemType && itemType != SchemaType.Object)
         {
             var single = Scalar(scalar, itemType, property?.ItemFormat, path, holds);
