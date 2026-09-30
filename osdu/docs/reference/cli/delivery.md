@@ -228,34 +228,38 @@ sqlflow assertions report flows/recall-welllog-04-header-assertion.yaml --partit
 
 ```bash
 sqlflow dimensions list <flow.yaml> [--partition <name>] [--db <ref>] [--json]
-sqlflow dimensions members <flow.yaml> --dimension <name> [--search <text>] [--order value|records] [--removed] [--max <n>] [--db <ref>] [--json]
-sqlflow dimensions originals <flow.yaml> --dimension <name> [--member <value> | --left-out] [--search <text>] [--order arrival|count] [--removed] [--max <n>] [--db <ref>] [--json]
-sqlflow dimensions filter <flow.yaml> --dimension <name> --member <value> [--member <value> ...] [--db <ref>] [--json]
+sqlflow dimensions values <flow.yaml> --dimension <name> [--search <text>] [--order value|records] [--removed] [--max <n>] [--db <ref>] [--json]
+sqlflow dimensions keys <flow.yaml> --dimension <name> [--value <value> | --left-out] [--search <text>] [--order arrival|count] [--removed] [--max <n>] [--db <ref>] [--json]
+sqlflow dimensions filter <flow.yaml> --dimension <name> --value <value> [--value <value> ...] [--db <ref>] [--json]
+sqlflow dimensions search <flow.yaml> --pick <dimension>=<value> [--pick ...] [--kind <kind>] [--within <query>] [--db <ref>] [--json]
 sqlflow dimensions history <flow.yaml> --dimension <name> [--max <n>] [--db <ref>] [--json]
-sqlflow dimensions changes <flow.yaml> --dimension <name> [--build <n>] [--member <value>] [--change added|removed|moved|restored] [--max <n>] [--db <ref>] [--json]
-sqlflow dimensions export <flow.yaml> --dimension <name> [--set members|originals] [--format csv|jsonl] [--out <file>] [--db <ref>]
+sqlflow dimensions changes <flow.yaml> --dimension <name> [--build <n>] [--value <value>] [--change added|removed|moved|restored] [--max <n>] [--db <ref>] [--json]
+sqlflow dimensions export <flow.yaml> --dimension <name> [--set values|keys] [--format csv|jsonl] [--out <file>] [--db <ref>]
 ```
 
 The dimensions a dimension flow's builds keep in the module database ([documents.md](../../documents.md#dimension-flow)),
 read at a terminal or in a script, without a control plane. Every form needs the module database (`--db <ref>`) and
-reads the flow's dimensions in the partition `--partition` names, as a run would settle it when it names none. A member is
-named by its clean value, exactly.
+reads the flow's dimensions in the partition `--partition` names, as a run would settle it when it names none. A **key**
+is exactly what the index holds (an id, for a reference); a **value** is the human-friendly form a person picks (the
+label read from the record a key names, cleaned). A value is named exactly as the dimension holds it.
 
 | Verb | What it does |
 | --- | --- |
-| `list` | Each dimension the flow declares: what it reads, its members and originals, when it was built, and a newer build that failed or is running. |
-| `members` | A page of a dimension's members (50 unless `--max` says otherwise, at most 1,000) in value order or with the most records first, each with its records (`~` when summed from its originals) and its commonest originals; `--search` finds a member by its value or any original, ignoring case. |
-| `originals` | A page of a dimension's originals, each with its member or why it has none, its count, whether a query can carry it and what cleaning said: every one, one member's (`--member`), or those under no member (`--left-out`). |
-| `filter` | The search that finds every record holding one of the members' originals: each query on its own line on the console, joined with the dimension's own query, ready for a search request; what it covers and leaves out goes to the error stream. Exits 1 when no query can be written. |
-| `history` | The dimension's builds, newest first: status, what each found and changed, how it read the index, and its notes. |
-| `changes` | The change log, newest first, narrowed to a build, a member or one kind of change. |
-| `export` | The whole of a dimension's members (the default) or originals, as CSV (the default) or JSON Lines, to `--out` (written beside its name and moved into place, so a failure never leaves half a file) or the console. The same file the API's export gives. |
+| `list` | Each dimension the flow declares: what it reads and where its label is read, its values and keys, when it was built, and a newer build that failed or is running. |
+| `values` | A page of a dimension's values (50 unless `--max` says otherwise, at most 1,000) in value order or with the most records first, each with its records (`~` when summed from its keys), its search filter and its commonest keys; `--search` finds a value by itself or any key, ignoring case. |
+| `keys` | A page of a dimension's keys, each with its label and the record it was read from, its value or why it has none, its count, the search filter finding exactly its records (or that no query can carry it) and what cleaning said: every one, one value's (`--value`), or those of no value (`--left-out`); `--search` finds a key by itself or its label. |
+| `filter` | The search that finds every record holding one of the values' keys: each query on its own line on the console, joined with the dimension's own query, ready for a search request; what it covers and leaves out goes to the error stream. Exits 1 when no query can be written. |
+| `search` | The search across the flow's dimensions: every record holding one of the values picked in each dimension `--pick` names (OR within a dimension, AND across them, each dimension's own query once, `--within` added). The dimensions have to read one kind, or the one `--kind` names, which each dimension's kind has to cover; the query holds at most 1,000 clauses. The query goes to the console alone; what each dimension adds and what the picks left out goes to the error stream; `--json` gives the whole, with the request body to send. A pick is split at its first `=`, so a value may hold one. |
+| `history` | The dimension's builds, newest first: status, what each found and changed, how it read the index and the labels, and its notes. |
+| `changes` | The change log, newest first, narrowed to a build, a value or one kind of change. |
+| `export` | The whole of a dimension's values (the default) or keys, as CSV (the default) or JSON Lines, to `--out` (written beside its name and moved into place, so a failure never leaves half a file) or the console. Every row carries its search filter; a key its label too. The same file the API's export gives. |
 
 Building is a run like any other: `sqlflow run <flow.yaml>` builds every dimension, and the payload picks some:
 
 ```bash
-sqlflow run flows/recall-welllog-05-dimensions.yaml --set partition=dev --payload '{"dimensions":["CurveMnemonic"]}' --db osdu
-sqlflow dimensions filter flows/recall-welllog-05-dimensions.yaml --dimension CurveMnemonic --member GR --member RHOB --db osdu
+sqlflow run flows/recall-welllog-05-dimensions.yaml --set partition=dev --payload '{"dimensions":["Wellbore","Country"]}' --db osdu
+sqlflow dimensions filter flows/recall-welllog-05-dimensions.yaml --dimension Log --value GR --value RHOB --db osdu
+sqlflow dimensions search flows/recall-welllog-05-dimensions.yaml --pick Country=Norway --pick Set=STAT_COMP --pick Log=GR --db osdu
 ```
 
 ## The run options
@@ -288,7 +292,7 @@ parameter; a retrieval flow refuses it.
 | `retrieval` | `retrieve`, `plan` | `retrieve` |
 | `cache` | `refresh` (capture every declared type and merge it into the partition's cache), `plan` (count what each type's search matches, write nothing) | `refresh` |
 | `assertion` | `test` (run the tests and keep their report), `plan` (check each test against its template and count what it matches and would read; record nothing) | `test` |
-| `dimension` | `build` (read every distinct value of each dimension's path, clean them into members and keep them), `plan` (settle each dimension's field from the templates and count the records it would read; read no value, keep nothing) | `build` |
+| `dimension` | `build` (read every distinct key of each dimension's path, read each key's label where the dimension asks for one, clean them into values and keep them), `plan` (settle each dimension's field from the templates and count the records it would read; read no value, keep nothing) | `build` |
 
 A delivery flow needs the catalog for every operation: `deliver`, `plan` and `intake` render against the template
 and the cache version saved there, and `verify` and `drain` work on the ledger. A cache flow's `refresh` needs it

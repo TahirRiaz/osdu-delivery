@@ -1,26 +1,35 @@
 # Plan: dimension flows
 
 A dimension is the set of distinct values one attribute of an OSDU kind holds, each kept exactly as the search index holds
-it (the original) and grouped under a cleaned value (the member). Its purpose is filtering OSDU search: a person or an
-application picks clean values, and the dimension gives the query that finds every record holding any of their originals.
-OSDU has no way to list the distinct values of an attribute beyond the first thousand, and none to group spellings, so
-this is a flow kind of its own, `flowType: dimension`, with its own tables in the `osdu` schema, and a cache origin that
-lets a mapping read a dimension like any lookup table.
+it (the **key**: the text a search compares, the id for a reference) and grouped under the human-friendly **value** a
+person picks (the **label** read from the record the key names, or the key itself, cleaned). Its purpose is filtering
+OSDU search: a person or an application picks values, in one dimension or across several, and the dimensions give the
+query that finds every record holding their keys. OSDU has no way to list the distinct values of an attribute beyond the
+first thousand, none to group spellings, and none to join a log to its wellbore's name or country, so this is a flow
+kind of its own, `flowType: dimension`, with its own tables in the `osdu` schema, and a cache origin that lets a mapping
+read a dimension like any lookup table.
+
+In code and in the tables, a value is a **member** (`DimensionMember`) and a key an **original** (`DimensionValue`), the
+names they were built with; everything a person reads (the API, the CLI, the GUI, the exports, the cache columns) says
+value and key.
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 7 are built; the recall estate
-(`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`. The live check listed
-under Close-out has not been run.
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 8 are built; the recall estate
+(`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose dimensions are the
+filters of the PetroDB log browser (project, wellbore, field, country, set, log). The live check listed under Close-out
+has not been run.
 
 ## Decisions
 
 | Decision | Choice | Why |
 | --- | --- | --- |
 | Where the data lives | A flow kind of its own with tables of its own, not a cache origin | The cache is loaded whole for every render (lookup tables stop at 100,000 rows) and one partition-wide version moves whenever anything in it does; a dimension carries counts and first and last seen that move with every build. Retrieval and assertion flows set the pattern: each reverse-direction job is its own kind reading through the shared search client. |
-| What is stored | Distinct values only: members and the originals under them, with counts | Records stay in OSDU; a dimension is its vocabulary. |
-| What an original is | The value exactly as the index holds it | A filter matches what the index holds, and an exact match on text reads the `keyword` sub-field, which holds the value as written. |
+| What is stored | Distinct values only: values and the keys under them, with counts, labels and filters | Records stay in OSDU; a dimension is its vocabulary. |
+| What a key is | The value exactly as the index holds it; for a reference, the id | A filter matches what the index holds, and an exact match on text reads the `keyword` sub-field, which holds the value as written. |
+| What a value is | The label read from the record the key names, cleaned; the key cleaned when there is no label | A person picks by name (`15/9-F-1`, `Norway`); the search compares ids. Keeping both, with the filter written from the keys, lets the name choose and the id find. |
+| How a label is read | By id through the search service, 500 ids a search, in the kind of the entity type the id names; up to three records deep | A search cannot join; reading each named record once per build, and keeping what it said, answers every later filter and search from the ledger. |
 | How values are read | The search's `aggregateBy`, paged by value ranges; a cursor scan where aggregation cannot answer | `aggregateBy` returns at most `aggregationSize` buckets (1000 by default, a platform setting, not a request parameter) and has no paging of its own [19 SRC/config/SearchConfigurationProperties.java:23; SRC/util/AggregationParserUtil.java:65-71]. |
-| What cannot be a member | Values search cannot match exactly | A text value longer than 256 characters is not in the `keyword` sub-field at all (`ignore_above: 256`), and a null text is indexed there as the text `null` (`null_value`) [25 IC/util/TypeMapper.java:262-268]. Neither can be filtered on exactly, so both are counted and reported, never stored as members. |
+| What cannot be a key | Values search cannot match exactly | A text value longer than 256 characters is not in the `keyword` sub-field at all (`ignore_above: 256`), and a null text is indexed there as the text `null` (`null_value`) [25 IC/util/TypeMapper.java:262-268]. Neither can be filtered on exactly, so both are counted and reported, never stored as keys. |
 | Operation names | `build` (the default) and `plan` | `plan` reads templates and counts, as every kind's plan does, and writes nothing. |
 
 Sources, read on 2026-09-30 through the GitLab API at the head of `master`:
@@ -69,19 +78,24 @@ dimensions:
       - trim
       - upper
       - map: { dictionary: CurveAliases, otherwise: keep }
-    countRecords: true               # a record count per member where the index counts objects or repeated values
+    countRecords: true               # a record count per value where the index counts objects or repeated values
   - name: Operator
     kind: "osdu:wks:master-data--Wellbore:*"
-    path: data.CurrentOperatorID
+    path: data.CurrentOperatorID     # keys: the organisation ids
+    label: data.OrganisationName     # values: each organisation's name
+  - name: Country
+    kind: "osdu:wks:work-product-component--WellLog:*"
+    path: data.WellboreID            # keys: the wellbore ids
+    label: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]   # through the wellbore to its country
 reliability: { concurrency: 4, timeoutSeconds: 100 }
 schedule: { cron: "0 3 * * *" }
 ```
 
-Clean steps, applied in order to each original: `trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`,
-`foldSeparators` (letters and digits kept, every run of anything else one hyphen, lower-cased: the cache's own separator
-fold), `replace: { pattern, with }` (a regular expression run without backtracking), and `map: { dictionary, field,
-otherwise }` (a dictionary document of the repository; `otherwise` is `keep`, `drop` or a text). No steps keep the
-original as the clean value.
+Clean steps, applied in order to each key's label (or the key, when it has none): `trim`, `collapseSpaces`, `upper`,
+`lower`, `nfc`, `nfkc`, `foldSeparators` (letters and digits kept, every run of anything else one hyphen, lower-cased: the
+cache's own separator fold), `replace: { pattern, with }` (a regular expression run without backtracking), and `map: {
+dictionary, field, otherwise }` (a dictionary document of the repository; `otherwise` left out keeps an unlisted value,
+`~` leaves the key out of every value, and a text replaces it). No steps keep the label, or the key, as the value.
 
 ## Reading every value
 
@@ -103,26 +117,58 @@ For each dimension, in its partition:
 4. **Scanning.** A slice that cannot be split (one key left in range, or no usable split point), and a numeric attribute
    whose buckets carry no key, are read through the search cursor instead, returning only the attribute, and counted the
    way the aggregation counts.
-5. **Completeness.** Beside the members, each build counts the records the query matches, and for text outside a nested
+5. **Completeness.** Beside the keys, each build counts the records the query matches, and for text outside a nested
    array the records holding a value but no keyword (values over 256 characters) and those whose value is null. Buckets
    that sum to less than the records holding a value say the index moved during the build or values are repeated; the
    build says so and keeps what it read.
 
-## Cleaning and grouping
+## Keys and values
 
-Each original is cleaned; originals whose clean value is the same are one member. An original is left out of every member,
-with the reason kept on its row, when cleaning leaves nothing, when the clean value is longer than 256 characters, or when
-`map` drops it. An original a query cannot carry (a control character, `nested(`, or inside a nested array a value the
-service rewrites) stays under its member and is marked unfilterable; the member's filter covers the rest and says how
-many it cannot.
+With a `label`, a build reads each key's label after it has read the keys:
+
+1. A key that is a record reference (`partition:entity-type:id:` with an optional version) names a record; any other key
+   has no label.
+2. The ids (without their version) are grouped by the entity type they name and searched in that type's kind
+   (`*:*:master-data--Wellbore:*`), 500 ids a search, `id:("a" OR "b" ...)`, returning only `id` and the step's path.
+3. For every step but the last, the first record reference the path holds is the next record; the last step's first
+   non-empty text is the label, cut at 1,024 characters.
+4. A key whose record the search does not hold, whose record holds no reference where a step reads one, or holds nothing
+   at the last path, has no label; the build counts them (`Unlabelled`) and says why in its notes, with examples.
+
+The key keeps the id, its label and the id of the record the label came from are kept beside it, and the label is what
+the clean steps turn into the key's value. Keys whose values are the same are one value (every wellbore of a country is
+one `Norway`). A key is left out of every value, with the reason kept on its row, when cleaning leaves nothing, when the
+value is longer than 256 characters, or when `map` leaves it out. A key a query cannot carry (a control character,
+`nested(`, or inside a nested array a value the service rewrites) stays under its value and is marked unfilterable; the
+value's filter covers the rest and says how many it cannot.
 
 ## The filter
 
-A member's filter is the query that finds every record holding any of its filterable originals, written the way the index
-holds the attribute: `data.X.keyword:("a" OR "b")` for text, `data.X:("a" OR "b")` for a keyword, numbers unquoted, and
-`nested(data.C, (M.keyword:"a")) OR nested(data.C, (M.keyword:"b"))` inside a nested array, one nested clause per original,
-since the service rewrites `OR x:` inside one. A filter holds at most 500 originals, leaving room in the service's 1024
-clauses for the query it is combined with; a member with more has its filter in parts. The kind is the dimension's.
+A key's filter is the query that finds exactly the records holding it; a value's is the query that finds every record
+holding any of its filterable keys. Both are written the way the index holds the attribute: `data.X.keyword:("a" OR "b")`
+for text, `data.X:("a" OR "b")` for a keyword, numbers unquoted, and `nested(data.C, (M.keyword:"a")) OR nested(data.C,
+(M.keyword:"b"))` inside a nested array, one nested clause per key, since the service rewrites `OR x:` inside one. A
+filter holds at most 500 keys, leaving room in the service's 1024 clauses for the query it is combined with; a value with
+more has its filter in parts. The kind is the dimension's.
+
+## The search
+
+Values picked across dimensions compose one search (`POST /dimensions/search`, `sqlflow dimensions search`, the search
+builder of the Dimensions page):
+
+- Within a dimension, a record holding any key of the values picked there: the value filters joined with OR.
+- Across dimensions, a record matching every dimension picked in: the parts joined with AND.
+- Each dimension's own query is added once (dimensions of one flow usually share it), then a query of one's own.
+- Every term is parenthesised when there are several, so an OR inside one never reaches across the AND between them.
+- The dimensions have to read one kind, or the kind named, which each dimension's kind has to cover segment by segment:
+  a dimension's keys filter only the kind they were read from.
+- At most 20 dimensions and 1,000 clauses (each key compared is one; the service allows 1,024). A pick past that is
+  refused, saying how many keys the values hold, rather than cut short.
+- A value no build finds any more, and a name that is no value, are said to be left out; a key no query can carry is
+  counted in the notes.
+
+The search reads the ledger only; nothing is sent to OSDU. It answers the query, the request body the search service
+takes, each dimension's part (the values it holds now, the keys compared, its filter) and the clause count.
 
 ## Tables
 
@@ -130,16 +176,16 @@ All in the `osdu` schema, keyed by the ledger partition first, under a ledger of
 
 | Table | One row per | Holds |
 | --- | --- | --- |
-| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the field asked, the clean steps, the definition hash, current member and original counts, the last build. |
-| `DimensionRun` | dimension and build | Status, counts (records, members, originals, added, removed, moved, left out, unfilterable, too long, null), requests, slices, scanned records, templates used, notes. |
-| `DimensionMember` | clean value | Stable id, clean value, count and whether it is exact, originals, filter and parts, first and last seen, removed. |
-| `DimensionValue` | original | Stable id, the original, its member or why it has none, count, filterable, first and last seen, removed, the build it joined its member. |
-| `DimensionChange` | original that moved, left, came back or arrived after the first build | The build, the original, from and to member. |
+| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the field asked, the clean steps, the definition hash, current value and key counts, the last build. |
+| `DimensionRun` | dimension and build | Status, counts (records, values, keys, added, removed, moved, left out, unfilterable, too long, null, labelled, unlabelled), requests (label searches among them), slices, scanned records, templates used, notes. |
+| `DimensionMember` | value | Stable id, the value, count and whether it is exact, keys, filter and parts, first and last seen, removed. |
+| `DimensionValue` | key | Stable id, the key, its label and the record it came from, its value or why it has none, count, filterable, its filter, first and last seen, removed, the build it joined its value. |
+| `DimensionChange` | key that moved, left, came back or arrived after the first build | The build, the key, from and to value. |
 
 A build writes in one transaction: its values are copied into temporary tables, and set-based statements add, update and
 mark removed; an application lock per dimension keeps two builds of it from interleaving. A failed build writes nothing
-but its run row. Nothing is deleted: a member or original a build no longer finds is marked removed, and one that comes
-back keeps its id.
+but its run row. Nothing is deleted: a value or key a build no longer finds is marked removed, and one that comes back
+keeps its id. A key whose label, value or filter changed is rewritten, and a move to another value is logged.
 
 ## Edge cases
 
@@ -149,21 +195,26 @@ back keeps its id.
 | A record holding many values (arrays, nested arrays) | Out-of-range buckets are dropped per slice; a slice they fill is split, and one that cannot split is scanned. |
 | A split point the service would misread | The nearest usable key is taken; with none, the slice is scanned. |
 | Numbers with no bucket key | Scanned. |
-| Text over 256 characters | Not in the keyword field: counted as too long, never a member. |
-| Null text | Indexed as `null`: counted as null, never a member; a literal text `null` cannot be told apart and is treated the same. |
-| An attribute no record holds | Zero members; the build says so. |
+| Text over 256 characters | Not in the keyword field: counted as too long, never a key. |
+| Null text | Indexed as `null`: counted as null, never a key; a literal text `null` cannot be told apart and is treated the same. |
+| An attribute no record holds | Zero keys; the build says so. |
 | An attribute the index cannot match exactly (unindexed arrays of objects, geo shapes, objects) | Refused when the flow is loaded or when the template is read, naming why. |
 | A kind whose versions index the path differently, or one without a saved template | Refused, naming the kinds. |
 | Aggregation answers nothing though records hold the attribute | The dimension fails, saying the field asked and suggesting the template does not match the index. |
 | The index changes during a build | Slices are disjoint, so nothing is counted twice; counts may lag, and the build says when the totals disagree. |
-| Clean steps that produce nothing, or text over 256 | The original is kept with the reason, under no member. |
+| Clean steps that produce nothing, or text over 256 | The key is kept with the reason, of no value. |
+| A key that names no record, or one the search does not hold | No label: the key is its own value, and the build's notes count them with examples. |
+| A label path holding several values (an array) | The first non-empty one is read; for a step before the last, the first record reference. |
+| A label that changes (a wellbore renamed) | Read again by the next build; the key moves to the new value and the change log says so. |
 | A regular expression that would backtrack | Run with the non-backtracking engine; a pattern it cannot run is refused at load. |
 | A dictionary that is missing or invalid | That dimension fails; the others build. |
-| More originals than `maxValues` (1,000,000 by default, at most 5,000,000) | That dimension fails before writing, naming the count. |
+| More keys than `maxValues` (1,000,000 by default, at most 5,000,000) | That dimension fails before writing, naming the count. |
 | Two builds of one dimension at once | The second waits for the first's lock and fails with a clear message if it cannot get it. |
 | A search failure part way | Retried by the flow's reliability settings; a dimension that still fails writes nothing and the others build. |
-| A member whose filter would pass the clause limit | Its filter is in parts; the API and the CLI hand every part. |
-| A member that disappears and comes back | Keeps its id; the change log says when. |
+| A value whose filter would pass the clause limit | Its filter is in parts; the API and the CLI hand every part. |
+| Values picked across dimensions holding more than 1,000 keys | The search is refused, saying how many keys they hold. |
+| Dimensions of different kinds picked in one search | Refused unless a kind is named that each dimension's kind covers. |
+| A value that disappears and comes back | Keeps its id; the change log says when. |
 
 ## Stages
 
@@ -196,23 +247,35 @@ back keeps its id.
 
 ### Stage 5: reading dimensions
 
-- API endpoints (dimensions, one dimension, its members and values, filters, builds and changes), CLI verbs, and the GUI
-  (a Dimensions page, a dimension page with members, originals, filters and builds, and the pipeline panels).
+- API endpoints (dimensions, one dimension, its values and keys, filters, builds and changes), CLI verbs, and the GUI
+  (a Dimensions page, a dimension page with values, keys, filters and builds, and the pipeline panels).
 - Tests: API tests; GUI build and lint.
 
 ### Stage 6: dimensions in the cache
 
 - A cache type `dimension: <name>` with `dimensionFlow: <flow>` (a dimension is named by its flow, since two flows of a
-  partition may each declare one of a name) holds the members the dimension's last completed build wrote as a lookup
-  table keyed by the clean value (`value`), with `originals` (a set, which a lookup matches on any one of) and `records`
-  beside it, so a mapping conforms a source value to its clean form with `replace from $cache.<name> (originals to value)`.
-  A dimension over 100,000 members or 500,000 originals refuses the capture.
+  partition may each declare one of a name) holds the values the dimension's last completed build wrote as a lookup
+  table keyed by the value (`value`), with `keys` (a set, which a lookup matches on any one of), `records` and `filter`
+  beside it, so a mapping turns a raw key into its value with `replace from $cache.<name> (keys to value)`. A dimension
+  over 100,000 values or 500,000 keys refuses the capture.
 - Tests: the capture, a refresh before the first build, lineage ordering the dimension flow first.
 
 ### Stage 7: documentation
 
 `documents.md`, `design.md` section 15, `ledger.md`, `operations.md`, the CLI reference, the decision record, the
 integration brief's aggregation facts, and the samples README.
+
+### Stage 8: keys, values, labels and the search
+
+- The document's `label` (a path, or up to three); `DimensionLabeler` reading labels by id through the search service;
+  each key's label, the record it came from and its own filter kept; the migration `DimensionLabels` (module version
+  1.18.0) with the build's label counts.
+- `DimensionSearch` composing the search across dimensions, `POST /dimensions/search`, `sqlflow dimensions search`, and
+  the GUI's search builder; the API, CLI, exports and cache columns named in keys and values.
+- Tests: the label rules of the document; a build labelling through one record and through two against a fake search that
+  returns records by id, the composed search run against the same fake and finding exactly the expected records; the API
+  (keys with labels and filters, a key found by its label, the search, its refusals); the migration from the previous
+  version keeping every key.
 
 ## Close-out
 

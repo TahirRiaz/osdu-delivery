@@ -1,4 +1,4 @@
-# 0011: Dimension flows read every distinct value by ranges, and keep originals beside clean members
+# 0011: Dimension flows read every distinct value by ranges, and keep each key beside the value a person picks
 
 Status: proposed. Design reference: [dimension-plan.md](../dimension-plan.md).
 
@@ -9,7 +9,8 @@ returns at most `AGGREGATION_SIZE` (1,000 by default) distinct values, ordered b
 query takes an aggregation. A field with more values, a wildcard kind, or a property inside a nested array, has no API
 that lists all of it. The values it does return are the index's exact values, spelled as each source spelled them, so a
 dimension a person can filter by needs them cleaned, and the spelling each record holds still has to be what a search
-compares.
+compares. A reference is worse: the index holds the id of the record it names (`dev:master-data--Wellbore:NO-15-9-F-1:`),
+and the name a person filters by (`15/9-F-1`, or the wellbore's country) is in another record, which a search cannot join.
 
 ## Decision
 
@@ -20,14 +21,17 @@ compares.
   a value it returned until each answers whole, and a range that cannot be split read record by record through the
   search cursor. How the index stores the path (text through its keyword sub-field, keyword, number, boolean, date, and
   the nested array it sits in) is read from the saved template of each kind, never guessed from the path.
-- Each distinct value is kept exactly as the index holds it (an **original**), beside the clean value it becomes (its
-  **member**). A member's search filter is written from its originals, so the filter finds exactly the records the index
-  holds under them, whatever cleaning did.
+- Each distinct value is kept exactly as the index holds it (a **key**), beside the human-friendly **value** a person
+  picks. A dimension may name a **label**: a path of the record a key names, or up to three paths, each but the last
+  reading the reference to the next record. A build finds those records by id through the search service and reads the
+  label there, and the label, cleaned, is the key's value; a key with no label is its own value, cleaned. A key's search
+  filter and a value's are written from the keys, so a filter finds exactly the records the index holds under them,
+  whatever the label and the cleaning did, and values picked across dimensions compose one search.
 - The dimensions live in the module's database, in tables of their own keyed by the ledger partition, written per build
   in one transaction under a lock per dimension. What a build no longer finds is marked removed and keeps its id; every
-  change to an original is logged. Nothing is counted separately from those rows.
-- A cache flow can hold a dimension's members as a lookup table, so a mapping cleans a raw value as the dimension does,
-  and lineage orders it after the dimension flow.
+  change to a key is logged. Nothing is counted separately from those rows.
+- A cache flow can hold a dimension's values as a lookup table, so a mapping turns a raw key into its value as the
+  dimension does, and lineage orders it after the dimension flow.
 
 ## Consequences
 
@@ -37,3 +41,8 @@ compares.
 - A value longer than the keyword sub-field keeps (256 characters) is not aggregated by OSDU; a build counts the records
   holding only such values rather than pretending they are absent.
 - A dimension reads the index as it stands: a record written seconds before a build may not be in it yet.
+- A label costs a search per 500 keys per step, so a dimension of a hundred thousand wellbore ids labelled through their
+  country takes a few hundred searches; a label is read again on every build, so a renamed wellbore or country shows at
+  the next build, and the change log says which keys moved to another value.
+- A value standing for many keys (a country's wellbores) filters by all of them, so a composed search is bounded by the
+  clauses one query holds (1,000 kept of the service's 1,024), and says so rather than truncating.

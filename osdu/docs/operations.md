@@ -117,13 +117,14 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /dimensions` | read | The dimensions of every active dimension flow ([dimension-plan.md](dimension-plan.md)) in the partition `?partition=` names, else the workbench's: per flow its partitions and whether it builds in this one (`buildsPartition`), its ledger, the `parameters` a run takes, and each dimension it declares (and each its ledger keeps that it no longer declares) with its declaration, how the index stores its field, what it holds, the build that wrote that (`current`), the newest build when that is another one (`latest`: failed, cancelled or running), and whether its declaration `changed` since; and the `totals`. A flow whose document does not parse, or that does not build in the partition, says why in `problem`. |
 | `GET /flows/{pipelineId}/dimensions` | read | One dimension flow's dimensions, as above. 409 for a pipeline that is not a dimension flow. |
 | `GET /dimensions/{dimensionId}` | read | One dimension, with the pipeline that declares it and the parameters a build takes. |
-| `GET /dimensions/{dimensionId}/members?search=&order=&removed=&after=&limit=` | read | A page of its members (100 by default, at most 1,000) in value order or with the most records first (`order=records`), found by the value or any original (`search`, ignoring case), each with its commonest originals (`top`). `next` is the cursor of the next page, handed back as `after`. |
-| `GET /dimensions/{dimensionId}/members/{memberId}` | read | One member: its originals, the most records first; its filter, or why none can be written; and the changes that brought originals to it or took them away. |
-| `GET /dimensions/{dimensionId}/values?search=&member=&leftOut=&removed=&order=&after=&limit=` | read | A page of its originals, every one, one member's, or those under no member (`leftOut=true`), in arrival order or with the most records first (`order=count`). |
-| `GET /dimensions/{dimensionId}/builds?max=` | read | Its builds, newest first: what each found, how it read and how complete it is, what it changed, its notes. |
-| `GET /dimensions/{dimensionId}/changes?build=&value=&member=&change=&before=&limit=` | read | A page of its change log, newest first, narrowed to a build, an original, a member or one kind of change (`added`, `removed`, `moved`, `restored`). |
-| `POST /dimensions/{dimensionId}/filter` | read | The search filter of the members `{ "memberIds": [...], "values": [...] }` names (at most 1,000, holding at most 50,000 originals): the kind, the filter queries (500 originals each) and each joined with the dimension's query (`searches`), and what it leaves out: originals no query can carry, members no build finds any more, names that are no member. Reads only. |
-| `GET /dimensions/{dimensionId}/export?set=members\|originals&format=csv\|jsonl` | read | The whole dimension as a file, written a ledger page at a time: CSV (RFC 4180; a cell a spreadsheet would run as a formula starts with an apostrophe) or JSON Lines (every value exactly). |
+| `GET /dimensions/{dimensionId}/values?search=&order=&removed=&after=&limit=` | read | A page of its values (100 by default, at most 1,000) in value order or with the most records first (`order=records`), found by the value or any key (`search`, ignoring case), each with its records, its search filter and the keys most records hold (`top`, each with its label). `next` is the cursor of the next page, handed back as `after`. |
+| `GET /dimensions/{dimensionId}/values/{valueId}` | read | One value: its keys, the most records first, each with its label and filter; the value's filter, or why none can be written; and the changes that brought keys to it or took them away. |
+| `GET /dimensions/{dimensionId}/keys?search=&value=&leftOut=&removed=&order=&after=&limit=` | read | A page of its keys, exactly as the index holds them: every one, one value's, or those of no value (`leftOut=true`), in arrival order or with the most records first (`order=count`), found by the key or its label; each with its `label` and the record it was read from (`labelFrom`), its value, its count and the search `filter` finding exactly its records. |
+| `GET /dimensions/{dimensionId}/builds?max=` | read | Its builds, newest first: what each found, how it read the index and the labels (`labelled`, `unlabelled`, `labelQueries`), how complete it is, what it changed, its notes. |
+| `GET /dimensions/{dimensionId}/changes?build=&key=&value=&change=&before=&limit=` | read | A page of its change log, newest first, narrowed to a build, a key, a value or one kind of change (`added`, `removed`, `moved`, `restored`). |
+| `POST /dimensions/{dimensionId}/filter` | read | The search filter of the values `{ "valueIds": [...], "values": [...] }` names (at most 1,000, holding at most 50,000 keys): the kind, the filter queries (500 keys each) and each joined with the dimension's query (`searches`), and what it leaves out: keys no query can carry, values no build finds any more, names that are no value. Reads only. |
+| `POST /dimensions/search` | read | The OSDU search finding the records that hold one of the values picked in each dimension, `{ "picks": [{ "dimensionId", "valueIds", "values" }], "kind", "within" }`: OR within a dimension, AND across them, each dimension's own query once, `within` added. The dimensions have to read one kind, or `kind`, which each dimension's kind has to cover; at most 20 dimensions and 1,000 clauses. It answers the `kind`, the `query`, the `request` body for `POST /api/search/v2/query`, each dimension's part (the values it holds now, the keys compared, its filter), the clauses, and what the picks left out (`missing`, `removed`, `notes`). Reads only; nothing is sent to OSDU. |
+| `GET /dimensions/{dimensionId}/export?set=values\|keys&format=csv\|jsonl` | read | The whole dimension as a file, written a ledger page at a time, every row with its search filter: CSV (RFC 4180; a cell a spreadsheet would run as a formula starts with an apostrophe) or JSON Lines (every value exactly). |
 | `GET /runs/{runId}/dimension-builds` | read | The builds a platform run made, each with the dimension it built. |
 | `GET /records/{flowId}/{key}`, `/attempts`, `/activities` | read | One flow's record, its delivery history, its interventions. A record is addressed by the ledger's flow id and the delivery key together, because the same row read by several flows is one record per flow. |
 | `GET /records/{flowId}/{key}/chain` | read | The record's row through its ingestion table: the table (`sourceTable`), when the row first arrived (`insertedUtc`), and every change of it the ledger recorded, newest first: `loaded` (the insert), `reloaded` (inserted again after earlier versions), `earliest` (the earliest version held, when the arrival is not known), `changed` and `deleted`, each with its file and row, the ingestion run that was writing the table when the row was stamped (`loading`), and the last landing of its file before that run (`landing`). A run that reloaded the row unchanged made no change and is not listed; a run the catalog does not prove is left out rather than guessed, and `note` says what could not be named. At most 50 changes, the newest and the arrival (`truncated`). |
@@ -649,28 +650,37 @@ Pipelines like any other flow.
   reads: the type, the schema it is checked against, the records it selects (the query to copy), how it reads them, its
   checks' default severity, tags and partitions.
 - **Dimensions** (OSDU): the dimensions of every dimension flow in the workbench's partition
-  ([dimension-plan.md](dimension-plan.md)). A strip heads the page: how many dimensions are built, the members and
-  originals they hold, what needs a look (a failed newest build, a declaration changed since the values were read) and
-  when anything was last built. Beside the page, the dimensions by flow, each with where it stands (a glyph in its status
-  colour, the words on hover) and how many members it holds; **Every dimension** shows each as a card with the members
-  most records hold as bars of their share, so a card says at a glance whether it is a handful of values or a long tail.
-  A dimension opens with its kind, path and how the index stores it, **Export** (members or originals, CSV or JSON
-  Lines) and **Build**; what its newest build or declaration asks of the reader (the failure with **Build again**, a build
-  running, a changed declaration); its facts (members, coverage: the share of the records read that hold a value, the
-  originals cleaning left out, when it was built and how much changed); and five tabs. **Members**: each clean value with
-  a bar of its records, its commonest originals with their counts, and its filter to copy; searched by the value or any
-  original, with the most records first or by value, removed ones on request, a page at a time. Members are picked with
-  their boxes, and **Write their search** opens the OSDU search that finds all their records: each query to copy, the
-  whole search request, and what it leaves out. A member opens in a sheet: its originals, its search, and every change
-  that moved an original to it or away. **Originals**: every value exactly as the index holds it, what a reader could not
-  see (a space at an end, a tab, a control character) drawn as a mark, with the member it went to or why it has none,
-  its count, what cleaning said and whether a query can carry it; **Under no member** narrows it to what cleaning left
-  out. **Changes**: the change log by build, narrowed to what arrived, left, moved or came back. **Builds**: every build
-  with its outcome, duration, members, coverage, changes and how it read, each opening whole (its notes, the kinds and
-  templates it read, every count). **Definition**: the kind, query, path, field and aggregation, and the clean steps as a
-  pipeline from original to member. The dimension, tab and member open in a sheet are in the address, so a link lands on
-  the same view. A dimension flow's page (Pipelines) has a **Dimensions** tab with **Build** per dimension and **Build
-  all**; its trigger dialog picks the dimensions a run builds, and a run's header counts what it built.
+  ([dimension-plan.md](dimension-plan.md)). A dimension keeps a **key** (exactly what the index holds, an id for a
+  reference) apart from its **value** (the human-friendly form a person picks, read from the record a key names and
+  cleaned), and every key and value carries the search that finds its records. A strip heads the page: how many
+  dimensions are built, the values and keys they hold, what needs a look (a failed newest build, a declaration changed
+  since the values were read) and when anything was last built. Beside the page, the dimensions by flow, each with where
+  it stands (a glyph in its status colour, the words on hover) and how many values it holds; **Every dimension** shows
+  each as a card with the values most records hold as bars of their share, so a card says at a glance whether it is a
+  handful of values or a long tail. A dimension opens with its kind, path, where its label is read and how the index
+  stores it, **Export** (values or keys, CSV or JSON Lines) and **Build**; what its newest build or declaration asks of
+  the reader (the failure with **Build again**, a build running, a changed declaration); its facts (values and the keys
+  left without a label, coverage: the share of the records read that hold a key, the keys cleaning left out, when it was
+  built and how much changed); and five tabs. **Values**: each value with a bar of its records, the keys (ids) it stands
+  for with their counts, and its filter to copy; searched by the value or any key, with the most records first or by
+  value, removed ones on request, a page at a time. Values are picked with their boxes, and **Write their search** opens
+  the OSDU search that finds all their records: each query to copy, the whole search request, and what it leaves out. A
+  value opens in a sheet: its keys with their labels and filters, its search, and every change that moved a key to it or
+  away. **Keys**: every key exactly as the index holds it, what a reader could not see (a space at an end, a tab, a
+  control character) drawn as a mark, with the label read for it (the record it was read from on hover), the value it
+  went to or why it has none, its count, the filter finding exactly its records, and what cleaning said; **Of no value**
+  narrows it to what cleaning left out. **Changes**: the change log by build, narrowed to what arrived, left, moved or
+  came back. **Builds**: every build with its outcome, duration, values, coverage, changes and how it read, each opening
+  whole (its notes, the kinds and templates it read, the keys labelled, every count). **Definition**: the kind, query,
+  path, field and aggregation, the label as a path from the key's record to the text read, and the clean steps as a
+  pipeline from label (or key) to value. **Build a search** (beside **Every dimension**) composes the OSDU search a
+  filter panel needs: pick the kind, then values in any of its dimensions through a picker that finds a value by itself
+  or any key; the control plane composes the query (OR within a dimension, AND across them, within their own queries and
+  a query of one's own), shown with its clause count, each dimension's part, what the picks left out, and the query and
+  the request body to copy. Nothing is sent to OSDU from the page. The dimension, tab and value open in a sheet, and the
+  builder's kind and picks, are in the address, so a link lands on the same view. A dimension flow's page (Pipelines) has
+  a **Dimensions** tab with **Build** per dimension and **Build all**; its trigger dialog picks the dimensions a run
+  builds, and a run's header counts the values and keys it built.
 - **An assertion flow's page** (Pipelines): **Tests** is that flow's board. **History** and **Reports** hold the runs
   before the last, for whoever asks: History lays the tests against the last 30 runs with each test's pass rate and how
   often it flipped (three or more is marked), a column opening its run's report; Reports lists the runs with their
@@ -890,7 +900,7 @@ Pipelines like any other flow.
 | `sqlflow assertions list <flow.yaml> [--partition <name>] [--max <n>] [--db <ref>] [--json]` | An assertion flow's runs in a partition, newest first: status, counts, when and by whom, and why a run failed. |
 | `sqlflow assertions status <flow.yaml> [--partition <name>] [--db <ref>] [--json]` | Where each test of the flow stands: its latest outcome and report, what it matched, how many of its assertions failed and why it errored, and whether the test changed since. |
 | `sqlflow assertions report <flow.yaml> [--partition <name>] [--run <n>] [--format json\|md\|html\|junit] [--out <file>] [--db <ref>]` | A run's full report (the latest when `--run` is left out), rendered by the same code as the API's; `--out` writes it to a file, which a CI job publishes (JUnit XML for its test view). |
-| `sqlflow dimensions list\|members\|originals\|filter\|history\|changes\|export <flow.yaml> [--dimension <name>] [--partition <name>] [--db <ref>] [--json]` | A dimension flow's dimensions in a partition, read from the module database: each dimension and its last build, a dimension's members or originals, the search that finds the records of the members `--member` names (one query a line, ready to send), its builds, its change log, and the whole of it as CSV or JSON Lines, written by the same code as the API's ([cli/delivery.md](reference/cli/delivery.md#dimensions)). A dimension flow builds with `sqlflow run <flow.yaml> --payload '{"dimensions":["CurveMnemonic"]}'`. |
+| `sqlflow dimensions list\|values\|keys\|filter\|search\|history\|changes\|export <flow.yaml> [--dimension <name>] [--partition <name>] [--db <ref>] [--json]` | A dimension flow's dimensions in a partition, read from the module database: each dimension and its last build, a dimension's values or keys (each key with its label and filter), the search that finds the records of the values `--value` names (one query a line, ready to send), the search across dimensions from the values `--pick <dimension>=<value>` names, its builds, its change log, and the whole of it as CSV or JSON Lines, written by the same code as the API's ([cli/delivery.md](reference/cli/delivery.md#dimensions)). A dimension flow builds with `sqlflow run <flow.yaml> --payload '{"dimensions":["Wellbore"]}'`. |
 | `sqlflow records list <flow.yaml> [--interface <name>] [--partition <name>] [--search <term>] [--contains] [--status <status>] [--max <n>] [--db <ref>] [--json]` | The interface's records from the ledger: the delivery key, the status, the source key, the OSDU id and version, what a waiting record waits for, and the last error of each. A source is read one interface at a time, and says which interfaces it has when it is not told. |
 | `sqlflow records show <flow.yaml> --key <delivery key \| source key> [--interface <name>] [--partition <name>] [--attempts <n>] [--db <ref>] [--json]` | One record and every try it took: the custody state and where the row came from, then each attempt with its outcome, what it delivered, how long it took, the steps it ran with what the target answered, and the error that stopped it. The source key finds the record as surely as the delivery key, because that is what an operator holds. |
 | `sqlflow cache list <partition\|cache.yaml> [--partition <name>] [--db <ref>] [--json]` | The versions of a partition's cache (a cache flow's file lists the partition it fills, or every partition it serves, or the one `--partition` names), newest first: the cache flow that wrote each, when it was captured, by whom and in which run, and what it holds. |

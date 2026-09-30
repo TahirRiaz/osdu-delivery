@@ -1267,17 +1267,23 @@ History tab (its tests against its runs) and a Reports tab; OSDU, **Tests** is t
 
 ## Dimension flow
 
-The distinct values of any part of an OSDU document, gathered into dimensions ([dimension-plan.md](dimension-plan.md)).
-A dimension reads one path of the records of a kind: a property of the record (`kind`, `legal.legaltags`, `acl.viewers`,
-`tags.<name>`, `createUser`) or of its data, inside nested arrays too (`data.Curves.Mnemonic`). Every distinct value the
-search index holds is an **original**, kept exactly as the index holds it; the dimension's clean steps turn each original
-into a **member**, one clean value that gathers every original cleaned to it (`GR`, `gr`, and `GR` with a space before
-it, into `GR`). Each member
-carries the search filter that finds every record holding one of its originals, so a set of members is a filter of the
-OSDU search. A build only reads OSDU; everything it finds is kept in the module's database. OSDU's search returns at
-most 1,000 distinct values of a field and pages none of them, so a build reads by value ranges: a range the aggregation
-cuts off is split at a value it returned, until every range answers whole, and a range that cannot be split is read
-record by record through the search cursor.
+The distinct values of any part of an OSDU document, gathered into dimensions ([dimension-plan.md](dimension-plan.md)),
+so a person can pick values and get the OSDU search that finds the records holding them. A dimension reads one path of
+the records of a kind: a property of the record (`kind`, `legal.legaltags`, `acl.viewers`, `tags.<name>`, `createUser`)
+or of its data, inside nested arrays too (`data.Curves.Mnemonic`). It keeps two things apart:
+
+- a **key** is exactly what the search index holds, the text a query compares. For a reference such as
+  `data.WellboreID`, the key is the id (`dev:master-data--Wellbore:NO-15-9-F-1:`), never a name.
+- a **value** is the human-friendly form a person picks. With a `label`, it is read from the record the key names (the
+  wellbore's `FacilityName`) and cleaned; without one, the key itself is cleaned. The clean steps gather several keys
+  into one value (`GR`, `gr`, and `GR` with a space before it, into `GR`; or every wellbore of a country into `Norway`).
+
+Every key carries the search filter that finds exactly its records, and every value the filter that finds the records
+holding any of its keys; values picked across dimensions compose one search (the search builder, `sqlflow dimensions
+search`). A build only reads OSDU; everything it finds is kept in the module's database. OSDU's search returns at most
+1,000 distinct values of a field and pages none of them, so a build reads by value ranges: a range the aggregation cuts
+off is split at a value it returned, until every range answers whole, and a range that cannot be split is read record by
+record through the search cursor.
 
 ```yaml
 flowType: dimension
@@ -1290,14 +1296,27 @@ parameters:
 source:
   endpoint: ${env:OSDU_URL}
   auth: { type: oauth2ClientCredentials, secondarySecretRef: ${env:OSDU_CLIENT_ID}, secretRef: ${env:OSDU_CLIENT_SECRET}, token: { url: ${env:OSDU_TOKEN_URL} } }
-  # queryPath: /api/search/v2/query               aggregations and counts
+  # queryPath: /api/search/v2/query               aggregations, counts and the label searches
   # searchPath: /api/search/v2/query_with_cursor  the scans of a range an aggregation cannot answer
   # aggregationSize: 1000                         the search service's AGGREGATION_SIZE, if the platform raised it
 reliability: { concurrency: 4 }
 
 dimensions:
+  - name: Wellbore
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery"'
+    path: data.WellboreID                          # keys: the wellbore ids
+    label: data.FacilityName                       # values: each wellbore's name
+
+  - name: Country
+    kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery"'
+    path: data.WellboreID
+    label: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]   # through the wellbore to its country
+
   - name: CurveMnemonic
     kind: osdu:wks:work-product-component--WellLog:1.4.0
+    query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
     path: data.Curves.Mnemonic
     clean:
       - trim
@@ -1311,41 +1330,44 @@ dimensions:
     kind: "*:*:*:*"
     path: legal.legaltags
     countRecords: true
-
-  - name: RecallWellbore
-    kind: osdu:wks:work-product-component--WellLog:1.4.0
-    query: 'tags.DeliveredBy:"osdu-delivery" AND data.Name:"{logSource}"'
-    path: data.WellboreID
 ```
 
 A dimension:
 
 | Key | Meaning |
 | --- | --- |
-| `name` | Unique in the flow: a letter or digit, then letters, digits, `.`, `_` and `-`, at most 100. A run and a cache flow name the dimension by it. At most 100 dimensions per flow. |
+| `name` | Unique in the flow: a letter or digit, then letters, digits, `.`, `_` and `-`, at most 100. A run, a search and a cache flow name the dimension by it. At most 100 dimensions per flow. |
 | `description` | What the dimension is for. |
 | `kind` | The kind whose records are read, `authority:source:entityType:version` with wildcards per segment. Every kind the pattern matches in the partition must store the path the same way. |
-| `query` | Lucene narrowing the records, with `{parameter}` tokens. Without it, every record of the kind. |
-| `path` | The value read: a property of the record, or `data.` and a path of the schema. How the index stores it (text, keyword, number, boolean or date, inside a nested array or not) is read from the saved template of each kind the pattern matches, so every such kind needs its template saved (the Templates page, `sqlflow template capture`). An object, an array of objects and a property the index keeps no exact value of are refused, naming a leaf to read instead. |
-| `clean` | The steps each original runs through, in order, at most 20: `trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`, `foldSeparators` (dashes, underscores and dots to one space), `replace: { pattern, with }` (a regular expression, run without backtracking, one second at most per value; `$1` names a group), and `map` (a dictionary, [Dictionary](#dictionary): the value it gives for the original replaces it; `map: { dictionary, field, otherwise }` names the field of a dictionary with several, and what an unlisted value comes to: kept when left out, left out of every member with `~`, or the text given). The clean value is trimmed; one that is empty, or longer than 256 characters, belongs to no member, and the original keeps why. |
-| `countRecords` | `true` counts each member's records exactly, with one search per member. Without it a member's records are exact where a record holds the path once, and otherwise the sum of its originals' counts. |
-| `maxValues` | The most distinct values a build reads, 1,000,000 by default and 5,000,000 at most: a field with more fails the build rather than filling the database. |
+| `query` | Lucene narrowing the records, with `{parameter}` tokens. Without it, every record of the kind. Every filter of the dimension selects by key alone; a composed search joins it with this query. Dimensions meant to compose into one search usually share it. |
+| `path` | The key read: a property of the record, or `data.` and a path of the schema. How the index stores it (text, keyword, number, boolean or date, inside a nested array or not) is read from the saved template of each kind the pattern matches, so every such kind needs its template saved (the Templates page, `sqlflow template capture`). An object, an array of objects and a property the index keeps no exact value of are refused, naming a leaf to read instead. |
+| `label` | Where a key's label is read, for a key that names an OSDU record: one path of that record (`label: data.FacilityName`), or a list of paths, each but the last reading the reference the next record is found by (`label: [data.GeoContexts.FieldID, data.FieldName]`), at most 3. A build finds the records by id through the search service, 500 ids a search, in the kind of the entity type the id names, and reads the path from the record as the search returns it. A key that names no record, a record the search does not hold, and one holding nothing at the path, have no label and are their own value; the build's notes say how many and why. The label is cleaned into the key's value; the key stays the id. |
+| `clean` | The steps each key (or its label) runs through, in order, at most 20: `trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`, `foldSeparators` (dashes, underscores and dots to one space), `replace: { pattern, with }` (a regular expression, run without backtracking, one second at most per value; `$1` names a group), and `map` (a dictionary, [Dictionary](#dictionary): the value it gives replaces the one looked up; `map: { dictionary, field, otherwise }` names the field of a dictionary with several, and what an unlisted value comes to: kept when left out, the key left out of every value with `~`, or the text given). The value is trimmed; one that is empty, or longer than 256 characters, leaves the key of no value, and the key keeps why. |
+| `countRecords` | `true` counts each value's records exactly, with one search per value. Without it a value's records are exact where a record holds the path once, and otherwise the sum of its keys' counts. |
+| `maxValues` | The most distinct keys a build reads, 1,000,000 by default and 5,000,000 at most: a field with more fails the build rather than filling the database. |
 | `partitions` | Narrows the dimension to some of the flow's partitions; a build in another skips it. |
 
-How a value is compared follows how the index stores it. A text property is read through its `keyword` sub-field, which
+How a key is compared follows how the index stores it. A text property is read through its `keyword` sub-field, which
 holds the whole value up to 256 characters; a longer value is not aggregated, and a build counts the records holding only
 such values. A number reads in its canonical form (`1.5`, not `1.50`), a date as `yyyy-MM-ddTHH:mm:ss.fffZ`, a boolean as
-`true` or `false`. A value inside a nested array is counted per object of the array, not per record. Originals are
-ordered by code point, as the index orders them.
+`true` or `false`. A key inside a nested array is counted per object of the array, not per record. Keys are ordered by
+code point, as the index orders them.
+
+A search composed from values picked across dimensions finds a record holding one of the values picked in each dimension:
+the values of one dimension are joined with OR, the dimensions with AND, each dimension's own query is added once, and a
+query of one's own narrows it further. Every dimension picked in has to read the kind searched (the one kind they all
+read, or one their kind patterns cover), and the query holds at most 1,000 clauses, each key compared being one (the
+service allows 1,024). A key no query can carry (a text over 256 characters, a value the query language cannot state
+exactly) is left out and said to be.
 
 The operations are `build` (the default) and `plan` (settle each dimension's field and count the records it would read,
 reading no value and keeping nothing). The payload takes `dimensions` (names); a run with none builds every one. A build
-writes each dimension in one transaction: new originals and members are added, what changed is changed, what the build
-no longer found is marked removed (and keeps its id, should a later build find it again), and every change to an
-original is logged. A dimension whose build fails keeps what the build before it wrote, and the run ends failed with
-every other dimension built. A dimension flow's pipeline has a Dimensions tab; OSDU, **Dimensions** is the page of every
-dimension ([operations.md](operations.md#the-gui)). A cache flow can hold a dimension's members as a lookup table
-([Cache flow](#cache-flow)).
+writes each dimension in one transaction: new keys and values are added, what changed is changed (a key's label, value
+or filter), what the build no longer found is marked removed (and keeps its id, should a later build find it again), and
+every change to a key is logged. A dimension whose build fails keeps what the build before it wrote, and the run ends
+failed with every other dimension built. A dimension flow's pipeline has a Dimensions tab; OSDU, **Dimensions** is the
+page of every dimension and of the search builder ([operations.md](operations.md#the-gui)). A cache flow can hold a
+dimension's values as a lookup table ([Cache flow](#cache-flow)).
 
 ## Cache flow
 
@@ -1428,7 +1450,7 @@ flow keeps every LogCurveType the partition holds, tens of thousands of them, ra
 | `source.connection` | The ingestion database the flow's table types are read from, declared exactly as a delivery flow's `source.connection` is: a whole `${env:...}` or `${keyvault:...}` reference, or a SQL Server connection string whose secrets are references; a literal password is refused. Required when the flow declares a type with a `table`, and refused when it declares none. |
 | `types[].table`, `types[].key` | For a lookup table an ingestion flow loads: the three-part name of the table, and the column each row is keyed by. The type is named after the table unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType` or `query`: it holds every row of the table that its ingestion flow has not marked deleted (`DeletedDate_DW`, when the table has it). A key is trimmed, and a key that is empty, longer than 256 characters, or held by two rows once trimmed refuses the capture, naming the rows; so does a table over 100,000 rows. Every value is kept as the text the delivery reader gives it. Lineage orders the flow after the ingestion flow that loads the table. |
 | `types[].dictionary` | For a lookup table kept in the repository: the name of the dictionary document it holds, `dictionaries/<name>.yaml` in the nearest `dictionaries/` folder above the flow. The type is named after the dictionary unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query`, `key` or `fields`: the document names its key and its values. A flow holding a dictionary needs the repository's tree when it runs, and reads the file at the run's commit. |
-| `types[].dimension`, `types[].dimensionFlow` | For a lookup table a dimension flow builds: the dimension and the dimension flow declaring it. The type holds the dimension's members as its last completed build in the partition left them: one row per member, keyed by `value` (its clean value), with `originals` (every original cleaning gathered into it, a set a lookup matches on any one of) and `records` beside it. It is named after the dimension unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query`, `key` or `fields`. A refresh before the dimension's first completed build fails, naming the build to run, and a dimension over 100,000 members or 500,000 originals refuses the capture. A mapping cleans a raw value as the dimension does with `replace from $cache.<name> (originals to value)`. Lineage orders the flow after the dimension flow. |
+| `types[].dimension`, `types[].dimensionFlow` | For a lookup table a dimension flow builds: the dimension and the dimension flow declaring it. The type holds the dimension's values as its last completed build in the partition left them: one row per value, keyed by `value`, with `keys` (every key the value stands for, a set a lookup matches on any one of), `records`, and `filter` (the search finding the value's records, when one query holds it) beside it. It is named after the dimension unless `name` says otherwise, is kept as `lookup--<name>`, and takes no `kind`, `entityType`, `query`, `key` or `fields`. A refresh before the dimension's first completed build fails, naming the build to run, and a dimension over 100,000 values or 500,000 keys refuses the capture. A mapping turns a raw key into its value as the dimension does with `replace from $cache.<name> (keys to value)`. Lineage orders the flow after the dimension flow. |
 | `types[].name`, `types[].entityType` | Optional. The entity type is derived from the kind, and the name from the entity type (`reference-data--UnitOfMeasure` gives `UnitOfMeasure`). A kind that names no entity type needs `entityType`. |
 | `types[].query` | Optional Lucene query narrowing the type; `*` when omitted. |
 | `types[].fields` | For an OSDU type, required: the paths to keep, written bare (`data.Code`, cached as `Code`) or as `{ path: ..., as: ... }`. For a table type, required: the columns to keep beside the key, bare (kept under the column's name) or as `{ column: ..., as: ... }`. A dictionary type takes none. Whatever a path yields is cached as it is: a scalar, a set of values, or a nested object. A path crosses arrays implicitly, so `data.NameAliases.AliasName` reaches through an array of objects and caches the set of aliases it finds. A path that yields nothing on every record is reported at capture. |
