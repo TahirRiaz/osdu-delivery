@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import type { DeliveryRecord, DeliveryRecordLink } from "../../api/delivery";
+import { shortId } from "./idTail";
 
 type Tone = "destructive" | "warning" | "info" | "muted";
 
@@ -218,7 +219,7 @@ export function RecordSituation({ record, waitsOn, waitedOnBy }: {
               <span>
                 {`A rendered document (${pendingWhat(record)}) waits to be dispatched`}
                 {record.workBatch !== null && ` in work batch ${record.workBatch}`}
-                {record.lastSubmissionId !== null && <span>{" of submission "}<span className="font-mono">{record.lastSubmissionId.slice(0, 8)}</span></span>}
+                {record.lastSubmissionId !== null && <span>{" of submission "}<span className="font-mono" title={record.lastSubmissionId}>{shortId(record.lastSubmissionId)}</span></span>}
                 .
               </span>
             )

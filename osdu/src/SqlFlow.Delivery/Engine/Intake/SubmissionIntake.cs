@@ -29,6 +29,15 @@ public sealed record IntakeCounts(long Records, long Planned, long Skipped, long
             Untracked + other.Untracked, Batches + other.Batches, Stale + other.Stale, AwaitingApproval + other.AwaitingApproval);
     }
 
+    /// <summary>Whether the intake changed nothing: it planned, held and blocked no record, and none waits on an approval.</summary>
+    public bool Idle => Planned == 0 && Held == 0 && Blocked == 0 && AwaitingApproval == 0;
+
+    /// <summary>The counts that are not zero, as the audit trail shows an intake run: "12 planned, 3 unchanged".</summary>
+    public string Headline => CountLine.Of(
+        "nothing to plan",
+        (Planned, "planned"), (Skipped, "unchanged"), (AwaitingApproval, "awaiting approval"), (Stale, "stale"), (Held, "held"), (Blocked, "blocked"),
+        (Untracked, "untracked"));
+
     public override string ToString()
         => string.Create(CultureInfo.InvariantCulture, $"{Records} record(s): {Planned} to deliver in {Batches} batch(es), {Skipped} unchanged, {AwaitingApproval} awaiting approval, {Stale} stale, {Held} held, {Blocked} blocked, {Untracked} untracked");
 }

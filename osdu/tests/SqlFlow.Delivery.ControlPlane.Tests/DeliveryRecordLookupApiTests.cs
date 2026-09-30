@@ -348,6 +348,10 @@ public sealed class DeliveryRecordLookupApiTests
                 await ledger.StartActivityAsync(new ActivityRecord { FlowId = flow, FlowName = marker, Kind = "release", Actor = "user:" + marker, StartedUtc = DateTime.UtcNow });
             }
 
+            // A scheduled run that found nothing to do.
+            var quiet = await ledger.StartActivityAsync(new ActivityRecord { FlowId = inSecond, FlowName = marker, Kind = "deliver", Actor = "schedule:" + marker, StartedUtc = DateTime.UtcNow });
+            await ledger.CompleteActivityAsync(quiet.ActivityId, "completed", "nothing to deliver", null, DateTime.UtcNow, idle: true);
+
             await using var factory = Factory(cs);
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
@@ -374,6 +378,15 @@ public sealed class DeliveryRecordLookupApiTests
             var entry = Assert.Single(trail.GetProperty("items").EnumerateArray().ToList());
             Assert.Equal((inFirst, first), (entry.GetProperty("flowId").GetGuid(), entry.GetProperty("partition").GetString()));
             Assert.Equal(2, (await ReadAsync(client, token, $"/api/v1/delivery/activities?actor=user:{marker}", null)).GetProperty("total").GetInt64());
+
+            // The idle run is on the trail and says so; idle=false leaves it out, and idle=true lists only such runs.
+            var scheduled = Assert.Single((await ReadAsync(client, token, $"/api/v1/delivery/activities?actor=schedule:{marker}", null)).GetProperty("items").EnumerateArray().ToList());
+            Assert.True(scheduled.GetProperty("idle").GetBoolean());
+            Assert.False(entry.GetProperty("idle").GetBoolean());
+            Assert.Equal(0, (await ReadAsync(client, token, $"/api/v1/delivery/activities?actor=schedule:{marker}&idle=false", null)).GetProperty("total").GetInt64());
+            Assert.Equal(2, (await ReadAsync(client, token, $"/api/v1/delivery/activities?actor=user:{marker}&idle=false", null)).GetProperty("total").GetInt64());
+            Assert.Equal(1, (await ReadAsync(client, token, $"/api/v1/delivery/activities?actor=schedule:{marker}&idle=true", second)).GetProperty("total").GetInt64());
+            Assert.Equal(0, (await ReadAsync(client, token, $"/api/v1/delivery/activities?actor=schedule:{marker}&idle=true", first)).GetProperty("total").GetInt64());
             var searched = await ReadAsync(client, token, $"/api/v1/search/categories/records?q={marker}-", second);
             Assert.Equal(1, searched.GetProperty("total").GetInt64());
 

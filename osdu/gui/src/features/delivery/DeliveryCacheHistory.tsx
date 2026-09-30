@@ -26,6 +26,7 @@ import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cachedFieldsText, cachedText } from "./cacheFormat";
 import { CachedRecordId } from "./DeliveryCacheRecords";
 import { shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
+import { shortId } from "./idTail";
 
 const ALL = "all";
 
@@ -482,7 +483,7 @@ function WrittenBy({ entry }: { entry: DeliveryCacheHistoryEntry }) {
             onClick={(event) => event.stopPropagation()}
             data-testid="delivery-cache-history-run"
           >
-            run {entry.version.runId.slice(0, 8)}
+            run {shortId(entry.version.runId)}
           </RouterLink>
         )
         : <TruncatedText text={entry.version.origin} maxWidth={1200} className="text-[12px]" />}

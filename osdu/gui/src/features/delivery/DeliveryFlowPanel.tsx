@@ -33,6 +33,7 @@ import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./Re
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
+import { shortId } from "./idTail";
 
 const ALL = "all";
 
@@ -283,7 +284,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                     className="font-mono text-[12px] text-primary hover:underline"
                     title={s.lastSubmission.submissionId}
                   >
-                    {s.lastSubmission.submissionId.slice(0, 8)}
+                    {shortId(s.lastSubmission.submissionId)}
                   </RouterLink>
                   <span className="text-muted-foreground">received <RelativeTime value={s.lastSubmission.receivedUtc} /></span>
                   <SubmissionCounts submission={s.lastSubmission} hideZeros />
@@ -356,17 +357,17 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             </Label>
             {submissionFilter && (
               <Button variant="outline" size="sm" className="h-8" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete("submission"); return next; })} data-testid="delivery-records-clear-submission">
-                last planned by submission {submissionFilter.slice(0, 8)}: clear
+                last planned by submission {shortId(submissionFilter)}: clear
               </Button>
             )}
             {deliveredFilter && (
               <Button variant="outline" size="sm" className="h-8" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete("delivered"); return next; })} data-testid="delivery-records-clear-delivered">
-                delivered by submission {deliveredFilter.slice(0, 8)}: clear
+                delivered by submission {shortId(deliveredFilter)}: clear
               </Button>
             )}
             {runFilter && (
               <Button variant="outline" size="sm" className="h-8" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete("run"); return next; })} data-testid="delivery-records-clear-run">
-                run {runFilter.slice(0, 8)}: clear
+                run {shortId(runFilter)}: clear
               </Button>
             )}
           </FilterBar>

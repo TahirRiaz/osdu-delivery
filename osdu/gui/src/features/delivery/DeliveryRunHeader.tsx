@@ -5,6 +5,7 @@ import type { RunDetail } from "@/api/types";
 import { DetailPair } from "@/components/DetailPair";
 import { IdChip } from "@/components/IdChip";
 import { runRecordCounts, runResult, runSubmissionId } from "./runOutcome";
+import { shortId } from "./idTail";
 
 /** A record counter: grouped for readability, a real zero kept distinct from an unreported value (muted dash). */
 function RecordCount({ value, testId }: { value: number | null; testId: string }) {
@@ -56,6 +57,7 @@ export function DeliveryRunMeta({ run }: { run: RunDetail }) {
       <IdChip
         label="submission"
         value={submissionId}
+        display={shortId(submissionId)}
         to={`/delivery/submissions/${submissionId}`}
         testId="run-submission"
         copyTestId="copy-run-submission"

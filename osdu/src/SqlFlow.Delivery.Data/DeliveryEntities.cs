@@ -555,6 +555,13 @@ public sealed class DeliveryActivity
     public string? Summary { get; set; }
 
     public string? Log { get; set; }
+
+    /// <summary>
+    /// A run that completed having changed nothing: it planned, held, blocked and sent no record, and left none waiting.
+    /// The schedule fired and found nothing new. The audit trail leaves these out unless asked for them, and says how many
+    /// it left out; an intervention is never idle.
+    /// </summary>
+    public bool Idle { get; set; }
 }
 
 /// <summary>A mapping document as the sync found it in a repository: the read model behind the mappings page.</summary>
@@ -1657,6 +1664,9 @@ public static class DeliveryModel
             e.HasIndex(a => new { a.PartitionId, a.Kind, a.StartedUtc });
             e.HasIndex(a => new { a.PartitionId, a.Actor, a.StartedUtc });
             e.HasIndex(a => new { a.PartitionId, a.StartedUtc });
+            // The trail as it opens, without the idle runs, and the count of those it leaves out: a partition whose schedules
+            // fire every hour holds mostly idle runs, so both are a seek rather than a walk past them.
+            e.HasIndex(a => new { a.PartitionId, a.Idle, a.StartedUtc });
         });
 
         modelBuilder.Entity<DeliveryRetrieval>(e =>

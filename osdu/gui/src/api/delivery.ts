@@ -356,6 +356,8 @@ export interface DeliveryActivity {
   log: string | null;
   /** The partition the activity's ledger is kept under. */
   partition?: string | null;
+  /** A run that completed having changed nothing: it planned, held and sent no record. An intervention never is. */
+  idle: boolean;
 }
 
 /** A mapping document as the sync found it in a repository. */
@@ -1383,6 +1385,8 @@ export interface DeliveryActivityListQuery extends PageQuery {
   kind?: string;
   actor?: string;
   outcome?: string;
+  /** False leaves out the runs that changed nothing, true lists only them (its total is how many were left out). */
+  idle?: boolean;
   since?: string;
   until?: string;
 }

@@ -20,6 +20,7 @@ import { AssertionRunStatusBadge, OutcomeBar, StatusStrip, TestOutcomeIcon, type
 import { CheckList } from "./AssertionChecks";
 import { AssertionRunDialog, ReportDownloads, type AssertionLaunch } from "./AssertionRunDialog";
 import { OUTCOME_ORDER, STANDING_TEXT, checkCounts, checksVerdict, counted, duration, selectionText } from "./assertionFormat";
+import { shortId } from "../idTail";
 
 function tally(results: readonly DeliveryTestResult[]) {
   const count = (outcome: TestOutcome) => results.filter((r) => r.outcome === outcome).length;
@@ -222,7 +223,7 @@ export default function AssertionReportPage() {
         subtitle={<Subtitle detail={detail.data} />}
         actions={(
           <>
-            {run.runId !== null && <IdChip label="run" value={run.runId} to={`/runs/${run.runId}`} testId="assertion-report-run" />}
+            {run.runId !== null && <IdChip label="run" value={run.runId} display={shortId(run.runId)} to={`/runs/${run.runId}`} testId="assertion-report-run" />}
             {notPassing.length > 0 && (
               <Button size="sm" onClick={() => again(notPassing, [])} disabled={!launchable} data-testid="assertion-report-rerun-failing">
                 <RotateCcw />

@@ -1088,6 +1088,9 @@ public sealed record ActivityQuery
 
     public string? Outcome { get; init; }
 
+    /// <summary>False leaves out the runs that changed nothing, true reads only them, and null reads every activity.</summary>
+    public bool? Idle { get; init; }
+
     public DateTime? SinceUtc { get; init; }
 
     public DateTime? UntilUtc { get; init; }
@@ -1331,6 +1334,12 @@ public sealed record ActivityRecord
 
     /// <summary>Captured log lines (capped), for actions run from the service.</summary>
     public string? Log { get; init; }
+
+    /// <summary>
+    /// A run that completed having changed nothing: it planned, held, blocked and sent no record, and left none waiting.
+    /// Only a completed activity is idle, and an intervention never is.
+    /// </summary>
+    public bool Idle { get; init; }
 }
 
 /// <summary>The kinds of flow a ledger belongs to.</summary>
@@ -1825,8 +1834,11 @@ public interface ILedger
 
     Task<ActivityRecord> StartActivityAsync(ActivityRecord activity, CancellationToken ct = default);
 
-    /// <summary>Closes an activity with its outcome, summary and captured log, and the submission it turned out to work on.</summary>
-    Task CompleteActivityAsync(long activityId, string outcome, string? summary, string? log, DateTime completedUtc, Guid? submissionId = null, CancellationToken ct = default);
+    /// <summary>
+    /// Closes an activity with its outcome, summary and captured log, the submission it turned out to work on, and whether
+    /// it changed nothing (<see cref="ActivityRecord.Idle"/>), which only a completed activity can be.
+    /// </summary>
+    Task CompleteActivityAsync(long activityId, string outcome, string? summary, string? log, DateTime completedUtc, Guid? submissionId = null, bool idle = false, CancellationToken ct = default);
 
     Task<ActivityRecord?> GetActivityAsync(long activityId, CancellationToken ct = default);
 

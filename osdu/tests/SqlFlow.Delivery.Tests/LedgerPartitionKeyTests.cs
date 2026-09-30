@@ -140,6 +140,44 @@ public sealed class LedgerPartitionKeyTests : IDisposable
     }
 
     [Fact]
+    public async Task The_trail_leaves_out_the_runs_that_changed_nothing_when_asked_and_counts_them_apart()
+    {
+        await Ledger.RegisterAsync(Dev, _dev);
+        await Ledger.RegisterAsync(Test, _test);
+        async Task RunAsync(Guid flow, string name, string outcome, bool idle)
+        {
+            var started = await Ledger.StartActivityAsync(new ActivityRecord { FlowId = flow, FlowName = name, Kind = "deliver", Actor = "schedule:wells", StartedUtc = Now });
+            Assert.False(started.Idle);
+            await Ledger.CompleteActivityAsync(started.ActivityId, outcome, idle ? "nothing to deliver" : "3 delivered", null, Now, idle: idle);
+            _clock.Advance(TimeSpan.FromMinutes(1));
+        }
+
+        await RunAsync(_dev, "wells@dev", "completed", idle: false);
+        await RunAsync(_dev, "wells@dev", "completed", idle: true);
+        await RunAsync(_dev, "wells@dev", "completed", idle: true);
+        // A run that failed is never idle, whatever it says of itself: the trail always shows it.
+        await RunAsync(_dev, "wells@dev", "failed", idle: true);
+        await RunAsync(_test, "wells@test", "completed", idle: true);
+
+        var busy = await Ledger.ListActivitiesAsync(new ActivityQuery { Partition = Dev, Idle = false });
+        Assert.Equal(["failed", "completed"], busy.Select(a => a.Outcome));
+        Assert.All(busy, a => Assert.False(a.Idle));
+        Assert.False((await Ledger.GetActivityAsync(busy[0].ActivityId))!.Idle);
+        var quiet = await Ledger.ListActivitiesAsync(new ActivityQuery { Partition = Dev, Idle = true });
+        Assert.Equal(2, quiet.Count);
+        Assert.All(quiet, a => Assert.Equal(("completed", true, "nothing to deliver"), (a.Outcome, a.Idle, a.Summary)));
+        Assert.Equal(2, await Ledger.CountActivitiesAsync(new ActivityQuery { Partition = Dev, Idle = true }));
+        Assert.Equal(4, await Ledger.CountActivitiesAsync(new ActivityQuery { Partition = Dev }));
+
+        // Across partitions, and beside the other filters, it narrows the same way.
+        Assert.Equal(3, await Ledger.CountActivitiesAsync(new ActivityQuery { Idle = true }));
+        Assert.Equal(3, (await Ledger.ListActivitiesAsync(new ActivityQuery { Idle = true })).Count);
+        Assert.Single(await Ledger.ListActivitiesAsync(new ActivityQuery { Idle = false, Outcome = "completed" }));
+        Assert.Single(await Ledger.ListActivitiesAsync(new ActivityQuery { FlowId = _test, Idle = true }));
+        Assert.Empty(await Ledger.ListActivitiesAsync(new ActivityQuery { FlowId = _test, Idle = false }));
+    }
+
+    [Fact]
     public async Task The_audit_trail_and_the_submissions_are_read_per_partition_and_merged_across_them()
     {
         await Ledger.RegisterAsync(Dev, _dev);

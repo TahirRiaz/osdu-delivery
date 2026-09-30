@@ -28,6 +28,8 @@ public sealed class SqlServerLedgerMigrationTests
 
     private const string BeforePartitionKeys = "20260928053849_PartitionRegistry";
 
+    private const string BeforeIdle = "20260929012241_AssertionRuns";
+
     private static readonly Guid Mixed = FlowId.Of("wells-mixed-delivery");
 
     private static readonly Guid Retrieved = FlowId.Of("wells-retrieval");
@@ -493,6 +495,59 @@ public sealed class SqlServerLedgerMigrationTests
         var again = new OsduLedger(database.Context, TimeProvider.System);
         Assert.Equal(("test", "dev"), ((await again.GetLedgerAsync(Logs))!.Partition, (await again.GetLedgerAsync(Wellbores))!.Partition));
         Assert.Equal(5, (await again.ListRecentAsync(10)).Count);
+    }
+
+    [Fact]
+    public async Task A_run_that_changed_nothing_before_idle_was_recorded_is_marked_idle_from_what_the_ledger_says()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeIdle);
+        var quiet = Guid.NewGuid();
+        var busy = Guid.NewGuid();
+        var resent = Guid.NewGuid();
+        var resentRun = Guid.NewGuid();
+        await database.ExecuteAsync(
+            """
+            INSERT INTO [osdu].[Submission] ([PartitionId], [SubmissionId], [FlowId], [FlowName], [MappingReference], [RenderContext], [ParametersJson],
+                [RecordCount], [BatchCount], [Slices], [Status], [ReceivedUtc], [Planned], [SkippedUnchanged], [AwaitingApproval], [SkippedStale],
+                [UnchangedAtPush], [Blocked], [Delivered], [Held], [Failed], [Untracked], [Kind], [SourceConnection], [SourceObject])
+            VALUES
+                (1, @quiet, @logs, N'logs', N'WellLog@1.4.0', N'{}', N'{}', 5, 0, 0, N'completed', @now, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0,
+                    N'full', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog'),
+                (1, @busy, @logs, N'logs', N'WellLog@1.4.0', N'{}', N'{}', 2, 1, 1, N'completed', @now, 2, 0, 0, 0, 0, 0, 2, 0, 0, 0,
+                    N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog'),
+                (1, @resent, @logs, N'logs', N'WellLog@1.4.0', N'{}', N'{}', 0, 0, 0, N'completed', @now, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    N'incremental', N'${env:OSDU_DATA_DB}', N'OsduData.arc.WellLog');
+            INSERT INTO [osdu].[Attempt] ([PartitionId], [DeliveryKey], [FlowId], [SubmissionId], [RunId], [Worker], [StartedUtc], [CompletedUtc], [Outcome], [Phase])
+            VALUES (1, NEWID(), @logs, @busy, @resentRun, N'w', @now, @now, N'delivered', N'metadata');
+            INSERT INTO [osdu].[Activity] ([PartitionId], [FlowId], [FlowName], [Kind], [Actor], [StartedUtc], [Outcome], [SubmissionId], [RunId], [Summary])
+            VALUES
+                (1, @logs, N'logs', N'deliver', N'unknown', @now, N'completed', @quiet, NEWID(), N'quiet'),
+                (1, @logs, N'logs', N'deliver', N'unknown', @now, N'completed', @busy, NEWID(), N'busy'),
+                (1, @logs, N'logs', N'deliver', N'unknown', @now, N'completed', @resent, @resentRun, N'resent'),
+                (1, @logs, N'logs', N'deliver', N'unknown', @now, N'failed', @quiet, NEWID(), N'failed'),
+                (1, @logs, N'logs', N'release', N'user:tahir', @now, N'completed', @quiet, NEWID(), N'released');
+            """,
+            ("quiet", quiet), ("busy", busy), ("resent", resent), ("resentRun", resentRun));
+
+        await database.MigrateAsync(null);
+
+        // Only the completed run whose submission did nothing, and under whose run no attempt was made, is idle: not the one
+        // that delivered, nor the one that sent another submission's record, nor the failed run, nor the intervention.
+        const string Idle = "SELECT COUNT_BIG(*) FROM [osdu].[Activity] WHERE [Idle] = 1;";
+        Assert.Equal(1L, await database.ScalarAsync(Idle));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Activity] WHERE [Idle] = 1 AND [Summary] = N'quiet';"));
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, ["Activity"]), await database.IndexesAsync(["Activity"]));
+        }
+
+        // Back down, the column and its index go with it; up again, the same run is marked.
+        await database.MigrateAsync(BeforeIdle);
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [name] = N'Idle' AND [object_id] = OBJECT_ID(N'[osdu].[Activity]');"));
+        Assert.Equal(5L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Activity];"));
+        await database.MigrateAsync(null);
+        Assert.Equal(1L, await database.ScalarAsync(Idle));
     }
 
     /// <summary>

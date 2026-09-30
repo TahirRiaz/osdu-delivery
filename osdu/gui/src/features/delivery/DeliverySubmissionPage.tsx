@@ -27,6 +27,7 @@ import { SubmissionCounts } from "./DeliveryFlowPanel";
 import { prettyJson } from "./prettyJson";
 import { RemovalDialog } from "./RemovalDialog";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
+import { shortId } from "./idTail";
 
 /** Everything the ledger holds about one submission: what it was, how it went, every attempt it produced, and the runs
  * that carried it, with a way back to the records it touched and the removal of what it put into OSDU. */
@@ -133,7 +134,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
     queryFn: () => deliveryApi.submissionBatches(submissionId, { page: 1, pageSize: 500 }),
     refetchInterval: 10000,
   });
-  useTabTitle(query.data ? `Submission ${submissionId.slice(0, 8)}` : undefined);
+  useTabTitle(query.data ? `Submission ${shortId(submissionId)}` : undefined);
 
   // A removal that finished on a node changed the ledger for every record it touched: the attempts, the counts and
   // the delivered set are read again once the task settles, so the page shows what it did without a manual reload.
@@ -211,7 +212,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
       id: "run",
       header: "Run",
       render: (row) => (row.runId
-        ? <RouterLink to={`/runs/${row.runId}`} className="font-mono text-[12px] text-primary hover:underline">{row.runId.slice(0, 8)}</RouterLink>
+        ? <RouterLink to={`/runs/${row.runId}`} className="font-mono text-[12px] text-primary hover:underline" title={`run ${row.runId}`}>{shortId(row.runId)}</RouterLink>
         : <span className="text-muted-foreground">-</span>),
     },
     { id: "error", header: "Error", render: (row) => <TruncatedText text={row.error} maxWidth={300} /> },
@@ -227,7 +228,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
       )}
 
       <DetailHeaderCard
-        title={`Submission ${s.submissionId.slice(0, 8)}`}
+        title={`Submission ${shortId(s.submissionId)}`}
         badges={(
           <>
             <SubmissionStatusBadge status={s.status} />
@@ -238,10 +239,10 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         actions={<BatchActions detail={detail} onQueued={setRemovalTaskId} />}
         meta={(
           <>
-            <IdChip label="submission" value={s.submissionId} testId="submission-id" copyTestId="copy-submission-id" />
+            <IdChip label="submission" value={s.submissionId} display={shortId(s.submissionId)} testId="submission-id" copyTestId="copy-submission-id" />
             {detail.pipelineId && <IdChip label="flow" value={detail.pipelineId} display={s.flowName} to={`/pipelines/${detail.pipelineId}`} testId="submission-pipeline-link" copyTestId="copy-submission-pipeline" />}
             {detail.runIds.map((runId) => (
-              <IdChip key={runId} label="run" value={runId} to={`/runs/${runId}`} testId={`submission-run-${runId}`} copyTestId={`copy-submission-run-${runId}`} />
+              <IdChip key={runId} label="run" value={runId} display={shortId(runId)} to={`/runs/${runId}`} testId={`submission-run-${runId}`} copyTestId={`copy-submission-run-${runId}`} />
             ))}
           </>
         )}

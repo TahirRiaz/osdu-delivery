@@ -98,7 +98,45 @@ public sealed record EngineContext(
 }
 
 /// <summary>What a deliver run did: the intake, the drain, the submission it left, and how far it fanned out.</summary>
-public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, SubmissionState Submission, int IntakeMembers = 0, int DrainMembers = 0);
+public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, SubmissionState Submission, int IntakeMembers = 0, int DrainMembers = 0)
+{
+    /// <summary>
+    /// What the run did itself: a run re-sending two records of a delivered submission counts two, and one that found the
+    /// submission already completed counts none. A fan-out root is the exception, because its members' planning and
+    /// deliveries are summed only in the submission, so it counts the submission it covers.
+    /// </summary>
+    public RunCounts Own => IntakeMembers > 0 || DrainMembers > 0
+        ? new RunCounts(
+            Submission.Planned, Submission.SkippedUnchanged, Submission.AwaitingApproval, Submission.SkippedStale, Submission.UnchangedAtPush,
+            Submission.Blocked, Submission.Delivered, Submission.Held, Submission.Failed, Work.Retried, Submission.BatchCount, Submission.Waiting)
+        : new RunCounts(
+            Intake.Counts.Planned, Intake.Counts.Skipped, Intake.Counts.AwaitingApproval, Intake.Counts.Stale, Work.Unchanged, Intake.Counts.Blocked,
+            Work.Delivered, Intake.Counts.Held + Work.Held, Work.Failed, Work.Retried, Intake.Counts.Batches, Work.Waiting);
+
+    /// <summary>
+    /// Whether the run changed nothing: it planned, held, blocked and sent no record, and left none waiting on an approval
+    /// or on a record it refers to. Rows it read and found unchanged or stale change nothing. The audit trail leaves such a
+    /// run out unless asked for it.
+    /// </summary>
+    public bool Idle => Work.Processed == 0
+        && Own is { Planned: 0, AwaitingApproval: 0, UnchangedAtPush: 0, Blocked: 0, Delivered: 0, Held: 0, Failed: 0, Retried: 0, Waiting: 0 };
+}
+
+/// <summary>
+/// The counts of what one deliver run did (<see cref="RunResult.Own"/>). <c>SkippedUnchanged</c> and <c>SkippedStale</c>
+/// count rows it read and had no reason to send; <c>UnchangedAtPush</c> the records the final hash check found OSDU
+/// already holding, settled without sending anything.
+/// </summary>
+public sealed record RunCounts(
+    long Planned, long SkippedUnchanged, long AwaitingApproval, long SkippedStale, long UnchangedAtPush, long Blocked, long Delivered, long Held,
+    long Failed, long Retried, int Batches, long Waiting)
+{
+    /// <summary>The counts that are not zero, as the audit trail shows the run: "3 delivered, 2 unchanged".</summary>
+    public override string ToString() => CountLine.Of(
+        "nothing to deliver",
+        (Planned, "planned"), (Delivered, "delivered"), (SkippedUnchanged + UnchangedAtPush, "unchanged"), (AwaitingApproval, "awaiting approval"),
+        (SkippedStale, "stale"), (Blocked, "blocked"), (Held, "held"), (Failed, "failed"), (Retried, "retrying"), (Waiting, "waiting"));
+}
 
 /// <summary>
 /// One flow, resolved and ready: parameters applied, render inputs pinned (the mapping from the flow's repository, the
@@ -491,13 +529,13 @@ public sealed class FlowRuntime : IDisposable
                     var leftovers = await SendSettledLeftoversAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
                     if (sent.Processed == 0 && leftovers.Processed == 0 && sent.Waiting == 0 && leftovers.Waiting == 0)
                     {
-                        return (new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers), SubmissionIntake.Summarize(intake.Submission), intake.Submission.SubmissionId);
+                        return Tracked(new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers));
                     }
 
                     var settled = sent.Processed > 0 || sent.Waiting > 0
                         ? await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false)
                         : intake.Submission;
-                    return (new RunResult(intake, sent.Add(leftovers), settled, intakeMembers), SubmissionIntake.Summarize(settled), settled.SubmissionId);
+                    return Tracked(new RunResult(intake, sent.Add(leftovers), settled, intakeMembers));
                 }
 
                 var (work, drainMembers) = await DrainWithFanOutAsync(intake.Submission, h => handle = h, ct).ConfigureAwait(false);
@@ -506,7 +544,7 @@ public sealed class FlowRuntime : IDisposable
 
                 // Its own records sent, the run takes what settled submissions still hold (records released after their run).
                 var settledLeftovers = await SendSettledLeftoversAsync(await WorkerAsync(ct).ConfigureAwait(false), intake.Submission.SubmissionId, ct).ConfigureAwait(false);
-                return (new RunResult(intake, work.Add(settledLeftovers), submission, intakeMembers, drainMembers), SubmissionIntake.Summarize(submission), submission.SubmissionId);
+                return Tracked(new RunResult(intake, work.Add(settledLeftovers), submission, intakeMembers, drainMembers));
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -519,6 +557,9 @@ public sealed class FlowRuntime : IDisposable
                 await SettleStoppedAsync().ConfigureAwait(false);
                 throw;
             }
+
+            // What the audit trail records of the run: what it did itself, the submission it worked on, and whether it changed nothing.
+            static (RunResult, string, Guid?, bool) Tracked(RunResult run) => (run, run.Own.ToString(), run.Submission.SubmissionId, run.Idle);
         }, ct);
 
     /// <summary>
@@ -555,7 +596,7 @@ public sealed class FlowRuntime : IDisposable
         {
             await EnsureLegalTagsAsync(ct).ConfigureAwait(false);
             var intake = await Intake.IntakeAsync(Flow, Mapping, Parameters, Request, force, ct).ConfigureAwait(false);
-            return (intake, intake.AlreadyProcessed ? SubmissionIntake.Summarize(intake.Submission) : intake.Counts.ToString(), intake.Submission.SubmissionId);
+            return (intake, intake.AlreadyProcessed ? "the submission was already planned" : intake.Counts.Headline, intake.Submission.SubmissionId, intake.Counts.Idle);
         }, ct);
 
     /// <summary>Drains the pending work of the flow (one pass, or until nothing is due), optionally of one submission: the <c>drain</c> operation.</summary>
@@ -570,7 +611,7 @@ public sealed class FlowRuntime : IDisposable
                 await Intake.CompleteAsync(s, Flow.Id, ct).ConfigureAwait(false);
             }
 
-            return (summary, summary.ToString(), submissionId);
+            return (summary, summary.Headline, submissionId, summary.Idle);
         }, ct);
 
     /// <summary>The drift pass: the <c>verify</c> operation.</summary>
@@ -579,7 +620,7 @@ public sealed class FlowRuntime : IDisposable
         {
             var verifier = await VerifierAsync(ct).ConfigureAwait(false);
             var summary = await verifier.RunAsync(max, notVerifiedWithin, reconcile, keys, ct).ConfigureAwait(false);
-            return (summary, summary.ToString(), (Guid?)null);
+            return (summary, summary.ToString(), (Guid?)null, summary.Idle);
         }, ct);
 
     /// <summary>
@@ -593,7 +634,7 @@ public sealed class FlowRuntime : IDisposable
         {
             var sync = new SourceSync(_context, Flow, RequireLedger(), Parameters, RunId, _context.Loggers.CreateLogger<SourceSync>());
             var summary = await sync.RunAsync(keys, ct).ConfigureAwait(false);
-            return (summary, summary.ToString(), (Guid?)null);
+            return (summary, summary.ToString(), (Guid?)null, false);
         }, ct);
 
     /// <summary>Releases held, failed or deleted records (all of them when <paramref name="keys"/> is null).</summary>
@@ -602,7 +643,7 @@ public sealed class FlowRuntime : IDisposable
         {
             var released = await RequireLedger().ReleaseAsync(Flow.Id, keys, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
             await EmitAsync("record.released", keys, $"released by {Actor}", ct).ConfigureAwait(false);
-            return (released, $"released {released} record(s)", (Guid?)null);
+            return (released, $"released {released} record(s)", (Guid?)null, false);
         }, ct);
 
     /// <summary>
@@ -622,7 +663,7 @@ public sealed class FlowRuntime : IDisposable
             await EmitAsync("record.redeliver", keys, $"redelivery of {selection} requested by {Actor}", ct).ConfigureAwait(false);
             return (marked, keys is null
                 ? $"marked every delivered record, {marked} in all, for redelivery of {selection}"
-                : $"marked {marked} record(s) for redelivery of {selection}", (Guid?)null);
+                : $"marked {marked} record(s) for redelivery of {selection}", (Guid?)null, false);
         }, ct);
     }
 
@@ -744,7 +785,7 @@ public sealed class FlowRuntime : IDisposable
             }
 
             var summary = RemovalSummary.Of(scope, keys.Count, results);
-            return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null);
+            return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null, false);
         }, ct);
     }
 
@@ -1124,7 +1165,12 @@ public sealed class FlowRuntime : IDisposable
             : RemovalRecordResult.Removed(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId);
     }
 
-    private async Task<T> TrackAsync<T>(string kind, object? parameters, DeliveryKey? key, Func<Task<(T Result, string Summary, Guid? SubmissionId)>> action, CancellationToken ct)
+    /// <summary>
+    /// Runs one operation under its activity: started before it, completed with what the operation says of itself (its
+    /// summary, the submission it worked on, and whether it changed nothing), or settled as failed or cancelled. Only a run
+    /// can be idle; an intervention (sync, release, redeliver, delete) always says false, so the trail always shows it.
+    /// </summary>
+    private async Task<T> TrackAsync<T>(string kind, object? parameters, DeliveryKey? key, Func<Task<(T Result, string Summary, Guid? SubmissionId, bool Idle)>> action, CancellationToken ct)
     {
         var ledger = _context.Ledger;
         if (ledger is null)
@@ -1149,8 +1195,8 @@ public sealed class FlowRuntime : IDisposable
 
         try
         {
-            var (result, summary, submissionId) = await action().ConfigureAwait(false);
-            await CompleteActivityAsync(ledger, activity.ActivityId, "completed", summary, submissionId).ConfigureAwait(false);
+            var (result, summary, submissionId, idle) = await action().ConfigureAwait(false);
+            await CompleteActivityAsync(ledger, activity.ActivityId, "completed", summary, submissionId, idle).ConfigureAwait(false);
             return result;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1194,7 +1240,7 @@ public sealed class FlowRuntime : IDisposable
     {
         try
         {
-            await CompleteActivityAsync(ledger, activityId, outcome, summary, null).ConfigureAwait(false);
+            await CompleteActivityAsync(ledger, activityId, outcome, summary, null, idle: false).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or InvalidOperationException or System.Data.Common.DbException)
         {
@@ -1202,15 +1248,11 @@ public sealed class FlowRuntime : IDisposable
         }
     }
 
-    private async Task CompleteActivityAsync(ILedger ledger, long activityId, string outcome, string summary, Guid? submissionId)
+    /// <summary>Closes an activity; the submission it worked on is on the row itself, where every view of it links it.</summary>
+    private async Task CompleteActivityAsync(ILedger ledger, long activityId, string outcome, string summary, Guid? submissionId, bool idle)
     {
         var log = ActivityLog?.Invoke();
-        if (submissionId is { } s)
-        {
-            summary = $"{summary} (submission {s:D})";
-        }
-
-        await ledger.CompleteActivityAsync(activityId, outcome, summary, log, _context.Time.GetUtcNow().UtcDateTime, submissionId, CancellationToken.None).ConfigureAwait(false);
+        await ledger.CompleteActivityAsync(activityId, outcome, summary, log, _context.Time.GetUtcNow().UtcDateTime, submissionId, idle, CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task EmitAsync(string kind, IReadOnlyList<DeliveryKey>? keys, string detail, CancellationToken ct)

@@ -456,6 +456,23 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The audit trail shows what happened, and fits its page.** A run that completed having changed nothing (it planned,
+  held and sent no record: a schedule that fired and found nothing new) is marked `Idle` in `osdu.Activity` (migration
+  `ActivityIdle`, module version 1.16.0, which marks the earlier such runs from their submissions and attempts). The
+  trail leaves idle runs out and counts them beside **Show idle runs**, which brings them back dimmed; `GET
+  /api/v1/delivery/activities` takes `idle` and answers it on every row. A run's summary names only the counts that are
+  not zero ("3 delivered, 2 unchanged"), its own rather than its submission's, and no longer repeats the submission id
+  the row carries. The table no longer scrolls sideways: the flow keeps to a width that steps down as the page narrows,
+  the result (how it ended, as an icon, and the summary) takes the rest, who started it reads as an icon (schedule,
+  person, command line, service) and its name, and the target is one link, the record, else the submission, else the
+  run, by the random end of its id (`submission …36bc72`) rather than the timestamp its first characters hold. An
+  entry opens on the whole ids of its record, submission and run. The Action filter offers `probe` and no longer offers
+  `submit`, which nothing writes.
+- **Run and submission ids read by their end everywhere.** Their first characters are a timestamp, so a run and the
+  submission it created looked the same. Every place the OSDU pages shorten one now shows its random tail (`…36bc72`)
+  with the whole id on hover and in a copy: the record page's submission chip and timeline, the submission page's title,
+  tab, id chip, run chips and runs, the run page's submission chip, a flow's last submission and its record filters, a
+  cache version's run, a test report's run, and the audit trail. The links are one component shared by those pages.
 - **A mapping's Properties show what needs a look, and little else.** The row of switches is one view control, Filled,
   Missing, Unfilled, Failing (after a data check) and All, each with how many attributes it holds; Required, Minted and
   Nested wait under View. A row of the tree is marked only for a finding, a partial fill, an attribute nothing fills or

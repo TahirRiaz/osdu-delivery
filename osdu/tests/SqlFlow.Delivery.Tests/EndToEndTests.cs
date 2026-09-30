@@ -110,6 +110,56 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_deliver_run_that_changes_nothing_is_idle_and_every_run_says_only_what_it_did()
+    {
+        var tables = await EstateAsync();
+        var (runtime, _, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            runtime.Actor = "schedule:wells";
+            runtime.RunId = Guid.NewGuid();
+            var first = await runtime.RunAsync(force: false);
+            Assert.False(first.Idle);
+
+            // The schedule fires again with nothing new in the ingestion tables.
+            _clock.Advance(TimeSpan.FromHours(1));
+            runtime.RunId = Guid.NewGuid();
+            var second = await runtime.RunAsync(force: false);
+            Assert.True(second.Idle);
+            Assert.Equal(0, second.Work.Processed);
+
+            var trail = await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "deliver" });
+            Assert.Equal([true, false], trail.Select(a => a.Idle));
+            Assert.Equal([second.Submission.SubmissionId, first.Submission.SubmissionId], trail.Select(a => a.SubmissionId));
+
+            // Each summary names only the counts that are not zero; the submission is on the row, not in its text.
+            Assert.Equal($"{LogCount} planned, {LogCount} delivered", trail[1].Summary);
+            Assert.Equal(second.Own.ToString(), trail[0].Summary);
+            Assert.All(trail, a => Assert.DoesNotContain("submission", a.Summary!, StringComparison.Ordinal));
+            Assert.DoesNotContain(" 0 ", " " + trail[0].Summary, StringComparison.Ordinal);
+
+            var shown = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Idle = false }));
+            Assert.Equal(first.Submission.SubmissionId, shown.SubmissionId);
+        }
+    }
+
+    [Fact]
+    public void A_run_says_only_the_counts_that_are_not_zero()
+    {
+        Assert.Equal("nothing to deliver", new RunCounts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0).ToString());
+        Assert.Equal("5 unchanged, 1 stale", new RunCounts(0, 3, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0).ToString());
+        Assert.Equal("4 planned, 3 delivered, 1 failed, 2 waiting", new RunCounts(4, 0, 0, 0, 0, 0, 3, 0, 1, 0, 1, 2).ToString());
+        Assert.Equal("nothing due", WorkerSummary.Empty.Headline);
+        Assert.Equal("2 delivered, 1 retrying", new WorkerSummary(3, 2, 1, 0, 0).Headline);
+        Assert.Equal("nothing to plan", IntakeCounts.Empty.Headline);
+        Assert.Equal("2 planned, 1 held", new IntakeCounts(3, 2, 0, 1, 0, 0, 1).Headline);
+        Assert.True(IntakeCounts.Empty.Idle);
+        Assert.False(new IntakeCounts(1, 0, 0, 1, 0, 0, 0).Idle);
+        Assert.True(WorkerSummary.Empty.Idle);
+        Assert.False(new WorkerSummary(0, 0, 0, 0, 0, Waiting: 1).Idle);
+    }
+
+    [Fact]
     public async Task A_record_waits_for_the_record_it_refers_to_and_goes_out_when_that_one_lands()
     {
         var tables = await EstateAsync();

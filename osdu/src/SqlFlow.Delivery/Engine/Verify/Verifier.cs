@@ -10,6 +10,9 @@ namespace SqlFlow.Delivery.Engine.Verify;
 
 public sealed record VerifySummary(int Checked, int Matched, int Drifted, int Missing, int Errors)
 {
+    /// <summary>Whether the pass changed nothing: it found no record to check.</summary>
+    public bool Idle => Checked == 0;
+
     public override string ToString() => $"{Checked} checked: {Matched} match, {Drifted} drifted, {Missing} missing, {Errors} errors";
 }
 

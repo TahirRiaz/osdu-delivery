@@ -664,29 +664,20 @@ public sealed record DeliverOutcome(
     public long RowsLoaded => Delivered;
 
     /// <summary>
-    /// A run's counts are its own work: a run re-sending two records of a delivered submission reports two, and one that
-    /// found the submission already completed reports none. A fan-out root is the exception, because its members'
-    /// deliveries are summed only in the submission, so it reports the submission it covers.
+    /// A run's counts are its own work (<see cref="RunResult.Own"/>): a run re-sending two records of a delivered submission
+    /// reports two, and one that found the submission already completed reports none, while a fan-out root reports the
+    /// submission it covers. The submission's own totals come alongside.
     /// </summary>
     public static DeliverOutcome From(RunResult run, string operation, string source, string selection, Guid? requestedSubmission, long requestedRecords)
     {
         ArgumentNullException.ThrowIfNull(run);
         var s = run.Submission;
         var totals = new SubmissionTotals(s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, s.BatchCount, s.Waiting);
-        if (run.IntakeMembers > 0 || run.DrainMembers > 0)
-        {
-            return new DeliverOutcome(
-                operation, s.SubmissionId, source, selection, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
-                s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, run.Work.Retried, s.BatchCount,
-                run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requestedSubmission, requestedRecords, s.Error, totals, s.Waiting);
-        }
-
-        var planned = run.Intake.Counts;
-        var work = run.Work;
+        var own = run.Own;
         return new DeliverOutcome(
             operation, s.SubmissionId, source, selection, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
-            planned.Planned, planned.Skipped, planned.AwaitingApproval, planned.Stale, work.Unchanged, planned.Blocked, work.Delivered, planned.Held + work.Held, work.Failed, work.Retried, planned.Batches,
-            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requestedSubmission, requestedRecords, s.Error, totals, work.Waiting);
+            own.Planned, own.SkippedUnchanged, own.AwaitingApproval, own.SkippedStale, own.UnchangedAtPush, own.Blocked, own.Delivered, own.Held, own.Failed, own.Retried, own.Batches,
+            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requestedSubmission, requestedRecords, s.Error, totals, own.Waiting);
     }
 }
 

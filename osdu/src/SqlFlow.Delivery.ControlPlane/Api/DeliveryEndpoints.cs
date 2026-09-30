@@ -166,12 +166,12 @@ public sealed record DeliveryAttemptDto(
 
 /// <summary>
 /// One entry of the audit trail: who did what, when, with which inputs, and how it ended, and the partition whose ledger it
-/// was done to.
+/// was done to. <c>Idle</c> marks a run that completed having changed nothing.
 /// </summary>
 public sealed record DeliveryActivityDto(
     long ActivityId, Guid FlowId, string FlowName, string Kind, string Actor, DateTime StartedUtc, DateTime? CompletedUtc,
     string Outcome, string? ParametersJson, Guid? SubmissionId, Guid? DeliveryKey, Guid? RunId, string? Summary, string? Log,
-    string? Partition = null);
+    string? Partition = null, bool Idle = false);
 
 /// <summary>A submission with the pipeline, interface and partition that planned it, and the runs that carried it.</summary>
 public sealed record DeliverySubmissionDetailDto(
@@ -1081,8 +1081,12 @@ public static class DeliveryEndpoints
         return TypedResults.Ok(new PagedResult<DeliveryWorkBatchDto>(items.Select(ToDto).ToList(), p, size, (int)Math.Min(total, int.MaxValue)));
     }
 
+    /// <summary>
+    /// The audit trail, newest first. <paramref name="idle"/> false leaves out the runs that changed nothing, true lists only
+    /// them (its total is how many the trail left out), and leaving it out lists every activity.
+    /// </summary>
     private static async Task<Results<Ok<PagedResult<DeliveryActivityDto>>, ProblemHttpResult>> ListActivitiesAsync(
-        Guid? pipelineId, Guid? submissionId, Guid? runId, string? kind, string? actor, string? outcome, DateTime? since, DateTime? until,
+        Guid? pipelineId, Guid? submissionId, Guid? runId, string? kind, string? actor, string? outcome, bool? idle, DateTime? since, DateTime? until,
         int? page, int? pageSize, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
         IPartitionRegistry partitions, ILedger ledger, HttpRequest request, CancellationToken ct)
     {
@@ -1115,6 +1119,7 @@ public static class DeliveryEndpoints
             Kind = string.IsNullOrWhiteSpace(kind) ? null : kind.Trim().ToLowerInvariant(),
             Actor = string.IsNullOrWhiteSpace(actor) ? null : actor.Trim(),
             Outcome = string.IsNullOrWhiteSpace(outcome) ? null : outcome.Trim().ToLowerInvariant(),
+            Idle = idle,
             SinceUtc = since is { } s ? DateTime.SpecifyKind(s.ToUniversalTime(), DateTimeKind.Utc) : null,
             UntilUtc = until is { } u ? DateTime.SpecifyKind(u.ToUniversalTime(), DateTimeKind.Utc) : null,
             Offset = (p - 1) * size,
@@ -2713,7 +2718,7 @@ public static class DeliveryEndpoints
 
     private static DeliveryActivityDto ToDto(ActivityRecord a) => new(
         a.ActivityId, a.FlowId, a.FlowName, a.Kind, a.Actor, a.StartedUtc, a.CompletedUtc, a.Outcome, a.ParametersJson, a.SubmissionId,
-        a.DeliveryKey, a.RunId, a.Summary, a.Log, a.Partition);
+        a.DeliveryKey, a.RunId, a.Summary, a.Log, a.Partition, a.Idle);
 
     private static DeliveryMappingDto ToDto(DeliveryMapping m) => new(
         m.Id, m.RepoId, m.Reference, m.Name, m.Version, m.Kind, m.RelativePath, m.ContentHash, m.Status, m.Message, ParseJson(m.SummaryJson),

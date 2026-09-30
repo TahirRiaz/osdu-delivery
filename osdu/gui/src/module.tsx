@@ -14,6 +14,7 @@ import { CacheRunActions, DeliveryRunActions, DeliveryRunCounts, DeliveryRunMeta
 import { DeliveryTriggerFields } from "./features/delivery/DeliveryTriggerFields";
 import { activePartition } from "./features/delivery/activePartition";
 import { PartitionSwitcher } from "./features/delivery/PartitionSwitcher";
+import { shortId } from "./features/delivery/idTail";
 
 // The OSDU Delivery module: its pages, its navigation, the panels of the delivery, retrieval, cache and assertion kinds on SQLFlow's
 // pipeline, run and trigger pages, the delivery records in search, and the product's branding. Everything heavy (the
@@ -276,7 +277,7 @@ export const osduDeliveryModule: GuiModule = {
   ],
   detailTitles: [
     { pattern: /^\/delivery\/records\/[^/]+/, title: () => "Record" },
-    { pattern: /^\/delivery\/submissions\/([^/]+)/, title: (match) => `Submission ${match[1].slice(0, 8)}` },
+    { pattern: /^\/delivery\/submissions\/([^/]+)/, title: (match) => `Submission ${shortId(match[1])}` },
     { pattern: /^\/delivery\/assertions\/runs\/(\d+)/, title: (match) => `Report #${match[1]}` },
   ],
   kinds: [deliveryKind, retrievalKind, cacheKind, assertionKind],

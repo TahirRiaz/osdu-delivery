@@ -29,6 +29,13 @@ public sealed record WorkerSummary(long Processed, long Delivered, long Retried,
         Processed + other.Processed, Delivered + other.Delivered, Retried + other.Retried, Held + other.Held, Failed + other.Failed, Batches + other.Batches,
         Unchanged + other.Unchanged, Waiting + other.Waiting);
 
+    /// <summary>Whether the drain changed nothing: it settled no record and left none waiting for a record it refers to.</summary>
+    public bool Idle => Processed == 0 && Waiting == 0;
+
+    /// <summary>The counts that are not zero, as the audit trail shows a drain run: "3 delivered, 1 failed".</summary>
+    public string Headline => CountLine.Of(
+        "nothing due", (Delivered, "delivered"), (Unchanged, "unchanged"), (Retried, "retrying"), (Held, "held"), (Failed, "failed"), (Waiting, "waiting"));
+
     public override string ToString()
         => string.Create(CultureInfo.InvariantCulture, $"{Processed} processed in {Batches} batch(es): {Delivered} delivered, {Unchanged} already held (nothing sent), {Retried} retrying later, {Held} held, {Failed} failed, {Waiting} waiting for a record they refer to");
 }

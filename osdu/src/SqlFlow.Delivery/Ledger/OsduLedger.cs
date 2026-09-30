@@ -2808,7 +2808,7 @@ public sealed partial class OsduLedger : ILedger
         return ToRecord(entity) with { Partition = await PartitionNameAsync(partition, ct).ConfigureAwait(false) };
     }
 
-    public async Task CompleteActivityAsync(long activityId, string outcome, string? summary, string? log, DateTime completedUtc, Guid? submissionId = null, CancellationToken ct = default)
+    public async Task CompleteActivityAsync(long activityId, string outcome, string? summary, string? log, DateTime completedUtc, Guid? submissionId = null, bool idle = false, CancellationToken ct = default)
     {
         await using var db = Open();
         var entity = await db.DeliveryActivities.FirstOrDefaultAsync(a => a.ActivityId == activityId, ct).ConfigureAwait(false)
@@ -2818,6 +2818,8 @@ public sealed partial class OsduLedger : ILedger
         entity.Summary = Truncate(summary, 2000);
         entity.Log = Truncate(log, MaxLogLength);
         entity.CompletedUtc = completedUtc;
+        // A failed or cancelled run is never idle: the trail always shows it.
+        entity.Idle = idle && outcome == "completed";
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
@@ -2885,6 +2887,7 @@ public sealed partial class OsduLedger : ILedger
                     Summary = a.Summary,
                     // The log is fetched per activity, not in listings.
                     Log = null,
+                    Idle = a.Idle,
                 })
                 .ToListAsync(ct),
             ct);
@@ -2969,6 +2972,11 @@ public sealed partial class OsduLedger : ILedger
             rows = rows.Where(a => a.Outcome == query.Outcome);
         }
 
+        if (query.Idle is { } idle)
+        {
+            rows = rows.Where(a => a.Idle == idle);
+        }
+
         if (query.SinceUtc is { } since)
         {
             rows = rows.Where(a => a.StartedUtc >= since);
@@ -3048,6 +3056,7 @@ public sealed partial class OsduLedger : ILedger
         RunId = a.RunId,
         Summary = a.Summary,
         Log = a.Log,
+        Idle = a.Idle,
     };
 
     private static WorkBatchState ToState(DeliveryWorkBatch b) => new()

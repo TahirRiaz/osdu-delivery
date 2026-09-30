@@ -26,6 +26,7 @@ import { RemovalDialog } from "./RemovalDialog";
 import { TaskResultCard } from "./TaskResultCard";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
 import { useRecordOsduRead } from "./useRecordOsduRead";
+import { shortId } from "./idTail";
 
 /**
  * The record page's tabs, one question each: what happened to it, where it came from, what the mapping makes of it
@@ -283,7 +284,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           {(detail.record.partition ?? detail.partition) && (
             <IdChip label="partition" value={(detail.record.partition ?? detail.partition)!} testId="record-partition" copyTestId="copy-record-partition" />
           )}
-          {record.lastSubmissionId && <IdChip label="submission" value={record.lastSubmissionId} to={`/delivery/submissions/${record.lastSubmissionId}`} testId="record-submission-link" copyTestId="copy-record-submission" />}
+          {record.lastSubmissionId && <IdChip label="submission" value={record.lastSubmissionId} display={shortId(record.lastSubmissionId)} to={`/delivery/submissions/${record.lastSubmissionId}`} testId="record-submission-link" copyTestId="copy-record-submission" />}
         </div>
         <RecordSituation record={record} waitsOn={detail.waitsOn} waitedOnBy={detail.waitedOnBy ?? []} />
       </Card>

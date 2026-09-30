@@ -21,6 +21,7 @@ import type {
   DeliveryActivity, DeliveryAttempt, DeliveryAttemptStep, DeliveryChainLanding, DeliveryChainRun, DeliveryRecord,
   DeliveryRecordChain, DeliverySourceChange, DeliverySourceChangeKind,
 } from "../../api/delivery";
+import { RunRef, SubmissionRef } from "./DeliveryRefs";
 import { Fact, FactGrid, NoFact } from "./Facts";
 import { prettyJson } from "./prettyJson";
 import { RecordName } from "./RecordName";
@@ -152,44 +153,6 @@ function Origin({ file, row, inCell = false }: { file: string | null; row: numbe
       {row !== null && <span className="shrink-0">{"row "}<Mono>{row}</Mono></span>}
     </span>
   );
-}
-
-/**
- * The part of an id that tells it apart. Run and submission ids are UUIDv7, whose first characters are a timestamp: a
- * run and the submission it created, or two runs a minute apart, share them. The last characters are random.
- */
-function idTail(id: string): string {
-  return id.replace(/-/g, "").slice(-6).toLowerCase();
-}
-
-function RunRef({ runId }: { runId: string | null }) {
-  return runId === null
-    ? null
-    : (
-      <RouterLink
-        to={`/runs/${runId}`}
-        className="font-mono text-[12px] text-primary hover:underline"
-        title={`run ${runId.toLowerCase()}`}
-        onClick={(event) => event.stopPropagation()}
-      >
-        {`run …${idTail(runId)}`}
-      </RouterLink>
-    );
-}
-
-function SubmissionRef({ submissionId }: { submissionId: string | null }) {
-  return submissionId === null
-    ? null
-    : (
-      <RouterLink
-        to={`/delivery/submissions/${submissionId}`}
-        className="font-mono text-[12px] text-primary hover:underline"
-        title={`submission ${submissionId.toLowerCase()}`}
-        onClick={(event) => event.stopPropagation()}
-      >
-        {`submission …${idTail(submissionId)}`}
-      </RouterLink>
-    );
 }
 
 function FlowRef({ run }: { run: DeliveryChainRun }) {
