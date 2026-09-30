@@ -40,13 +40,13 @@ export function BuildStatusPill({ status, testId = "dimension-build-status" }: {
 }
 
 const EXPORTS: readonly { set: DimensionExportSet; format: DimensionExportFormat; label: string; hint: string }[] = [
-  { set: "members", format: "csv", label: "Members as CSV", hint: "each clean value, its records and its filter" },
-  { set: "originals", format: "csv", label: "Originals as CSV", hint: "each original with the member it belongs to" },
-  { set: "members", format: "jsonl", label: "Members as JSON Lines", hint: "every value exactly, for a program" },
-  { set: "originals", format: "jsonl", label: "Originals as JSON Lines", hint: "every original exactly, for a program" },
+  { set: "values", format: "csv", label: "Values as CSV", hint: "each value, its records, its keys and its filter" },
+  { set: "keys", format: "csv", label: "Keys as CSV", hint: "each key with its label, value and filter" },
+  { set: "values", format: "jsonl", label: "Values as JSON Lines", hint: "every value exactly, for a program" },
+  { set: "keys", format: "jsonl", label: "Keys as JSON Lines", hint: "every key exactly, for a program" },
 ];
 
-/** The whole of a dimension, downloaded: its members or its originals, as CSV for a spreadsheet or JSON Lines for a program. */
+/** The whole of a dimension, downloaded: its values or its keys, as CSV for a spreadsheet or JSON Lines for a program. */
 export function DimensionExportMenu({ dimensionId, flowName, partition, name }: {
   dimensionId: number;
   flowName: string;

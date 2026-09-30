@@ -219,6 +219,7 @@ internal static class DimensionMapper
             Kind = kind,
             Query = query,
             Path = path,
+            Label = MapLabel(d.Label, where, source),
             Clean = MapClean(d.Clean, where, source),
             CountRecords = d.CountRecords ?? false,
             MaxValues = maxValues,
@@ -248,6 +249,46 @@ internal static class DimensionMapper
         {
             throw new FlowValidationException($"{source}: {where}: path {problem}");
         }
+    }
+
+    /// <summary>
+    /// Where a key's label is read: one path of the record the key names (<c>label: data.FacilityName</c>), or a list of paths,
+    /// each but the last reading the reference the next record is found by (<c>label: [data.GeoContexts.FieldID,
+    /// data.FieldName]</c>), at most <see cref="DimensionSpec.MaxLabelSteps"/>. A path is read from the record as the search
+    /// returns it, so it is any path of the record: <c>data.</c> and its properties, or the record's own.
+    /// </summary>
+    private static IReadOnlyList<string> MapLabel(object? declared, string where, string source)
+    {
+        List<string> steps = declared switch
+        {
+            null => [],
+            string one => [one],
+            IEnumerable<object?> many => many.Select((step, i) => step as string
+                ?? throw new FlowValidationException($"{source}: {where}: label[{i}] is not a path; each step of a label is a path, such as data.FacilityName.")).ToList(),
+            _ => throw new FlowValidationException(
+                $"{source}: {where}: label is a path (label: data.FacilityName) or a list of paths (label: [data.GeoContexts.FieldID, data.FieldName]); it is neither."),
+        };
+
+        if (steps.Count > DimensionSpec.MaxLabelSteps)
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: label reads through {steps.Count} records; a label reads through at most {DimensionSpec.MaxLabelSteps}, a search per step for every key.");
+        }
+
+        var trimmed = new List<string>(steps.Count);
+        for (var i = 0; i < steps.Count; i++)
+        {
+            var step = steps[i].Trim();
+            if (!OsduPath.IsPath(step))
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: label{(steps.Count > 1 ? string.Create(CultureInfo.InvariantCulture, $"[{i}]") : string.Empty)} '{step}' is not a property path: segments of letters, digits and underscores separated by dots, such as data.FacilityName.");
+            }
+
+            trimmed.Add(step);
+        }
+
+        return trimmed;
     }
 
     private static IReadOnlyList<string> MapDimensionPartitions(
@@ -428,7 +469,7 @@ internal static class DimensionMapper
                                 if (string.IsNullOrWhiteSpace(otherwiseText))
                                 {
                                     throw new FlowValidationException(
-                                        $"{at}: otherwise is empty text; leave it out to keep an unlisted value, write ~ to leave it out of every member, or give the text it becomes.");
+                                        $"{at}: otherwise is empty text; leave it out to keep an unlisted value, write ~ to leave the key out of every value, or give the text it becomes.");
                                 }
                             }
 

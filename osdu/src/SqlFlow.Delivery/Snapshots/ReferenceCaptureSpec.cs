@@ -245,7 +245,7 @@ public sealed record ReferenceTypeSpec
             || !Fields.Select(f => f.Name).SequenceEqual(DimensionColumns.Fields, StringComparer.Ordinal))
         {
             throw new FlowValidationException(
-                $"Cached type '{Name}' holds dimension {Dimension}, whose rows are its members: keyed by '{DimensionColumns.Value}' with '{string.Join("' and '", DimensionColumns.Fields)}' beside it.");
+                $"Cached type '{Name}' holds dimension {Dimension}, whose rows are its values: keyed by '{DimensionColumns.Value}' with '{string.Join("' and '", DimensionColumns.Fields)}' beside it.");
         }
     }
 
@@ -325,22 +325,26 @@ public sealed record ReferenceFieldSpec
 }
 
 /// <summary>
-/// The columns of a cached type holding a dimension's members: each row keyed by the member's clean value, with the originals
-/// cleaning gathered into it (a set, which a lookup matches on any one of) and the records holding them.
+/// The columns of a cached type holding a dimension's values: each row keyed by a human-friendly value, with the keys it stands
+/// for exactly as the index holds them (a set, which a lookup matches on any one of), the records holding them, and the
+/// search filter finding those records.
 /// </summary>
 public static class DimensionColumns
 {
-    /// <summary>The key: the member's clean value.</summary>
+    /// <summary>The row's key: the dimension's value.</summary>
     public const string Value = "value";
 
-    /// <summary>The originals the member gathers, exactly as the index holds them.</summary>
-    public const string Originals = "originals";
+    /// <summary>The keys the value stands for, exactly as the index holds them.</summary>
+    public const string Keys = "keys";
 
     /// <summary>The records holding any of them, as the dimension counts them.</summary>
     public const string Records = "records";
 
+    /// <summary>The search filter finding those records, when one query holds it.</summary>
+    public const string Filter = "filter";
+
     /// <summary>The columns kept beside the key, in the order the type lists them.</summary>
-    public static IReadOnlyList<string> Fields { get; } = [Originals, Records];
+    public static IReadOnlyList<string> Fields { get; } = [Keys, Records, Filter];
 
     /// <summary>The fields a dimension type keeps beside its key, as a cache flow's mapper declares them.</summary>
     public static IReadOnlyList<ReferenceFieldSpec> FieldSpecs() => Fields.Select(field => new ReferenceFieldSpec(field, field)).ToList();

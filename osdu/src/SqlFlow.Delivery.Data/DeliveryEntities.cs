@@ -1226,6 +1226,12 @@ public sealed class DeliveryDimension
     /// <summary>The clean steps, as JSON.</summary>
     public string CleanJson { get; set; } = "[]";
 
+    /// <summary>
+    /// Where each key's label is read, as a JSON array of paths: the record the key names, then each record a path before
+    /// it refers to. Null when keys are their own values.
+    /// </summary>
+    public string? LabelJson { get; set; }
+
     /// <summary>The hash of the dimension's declaration as the last build read it.</summary>
     public string DefinitionHash { get; set; } = string.Empty;
 
@@ -1332,6 +1338,15 @@ public sealed class DeliveryDimensionRun
     /// <summary>Counts of members' records the build asked the search for.</summary>
     public int CountQueries { get; set; }
 
+    /// <summary>Keys whose label the build read from the record they name.</summary>
+    public long Labelled { get; set; }
+
+    /// <summary>Keys the build could not label: a key that names no record, a record the search does not hold, or one without the path.</summary>
+    public long Unlabelled { get; set; }
+
+    /// <summary>Searches the build asked to read labels.</summary>
+    public int LabelQueries { get; set; }
+
     /// <summary>What the build had to say, as a JSON array of lines.</summary>
     public string? Notes { get; set; }
 
@@ -1395,6 +1410,12 @@ public sealed class DeliveryDimensionValue
     /// <summary>The longest original kept; a longer one is counted and left out by the build.</summary>
     public const int MaxOriginalLength = 1024;
 
+    /// <summary>The longest label kept; a longer one is cut, with a note.</summary>
+    public const int MaxLabelLength = 1024;
+
+    /// <summary>The longest filter of one original: the original quoted and escaped, inside the field's nested form.</summary>
+    public const int MaxFilterLength = 4000;
+
     public short PartitionId { get; set; }
 
     public long ValueId { get; set; }
@@ -1415,6 +1436,18 @@ public sealed class DeliveryDimensionValue
 
     /// <summary>What cleaning had to say about it.</summary>
     public string? Note { get; set; }
+
+    /// <summary>
+    /// The label the dimension read for it from the record it names (<c>NO 15/9-19 A</c> for a wellbore's id), before
+    /// cleaning; null for a dimension that reads no label, or when the build could not read one.
+    /// </summary>
+    public string? Label { get; set; }
+
+    /// <summary>The id of the record the label was read from: the record the original names, or the last one a label's steps reached.</summary>
+    public string? LabelFrom { get; set; }
+
+    /// <summary>The search filter finding the records holding it, exactly as the index holds it; null when no query can carry it.</summary>
+    public string? Filter { get; set; }
 
     public long Count { get; set; }
 
@@ -2085,6 +2118,9 @@ public static class DeliveryModel
             e.Property(v => v.OriginalHash).HasMaxLength(32).IsFixedLength().IsRequired();
             e.Property(v => v.LeftOut).HasMaxLength(16);
             e.Property(v => v.Note).HasMaxLength(400);
+            e.Property(v => v.Label).HasMaxLength(DeliveryDimensionValue.MaxLabelLength);
+            e.Property(v => v.LabelFrom).HasMaxLength(DeliveryDimensionValue.MaxOriginalLength);
+            e.Property(v => v.Filter).HasMaxLength(DeliveryDimensionValue.MaxFilterLength);
             e.HasIndex(v => v.ValueId).IsUnique();
             // An original is one value of one dimension, once, compared by its hash so no length or collation blurs two.
             e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.OriginalHash }).IsUnique();

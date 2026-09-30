@@ -16,54 +16,54 @@ import { DimensionValueText } from "./DimensionValueText";
 import type { DimensionLaunch } from "./DimensionBuildDialog";
 import { percent, type DimensionEntry } from "./dimensionFormat";
 
-/** The members a card shows: the ones most records hold. */
-const CARD_MEMBERS = 5;
+/** The values a card shows: the ones most records hold. */
+const CARD_VALUES = 5;
 
 /**
- * The members most records hold, each with a bar of its share of the records the dimension's members hold together, so a
+ * The values most records hold, each with a bar of its share of the records the dimension's values hold together, so a
  * card says at a glance whether a dimension is a handful of values or a long tail. Fetched as the card nears the viewport.
  */
-function TopMembers({ entry }: { entry: DimensionEntry }) {
+function TopValues({ entry }: { entry: DimensionEntry }) {
   const [ref, near] = useNearViewport<HTMLDivElement>();
   const dimensionId = entry.dimension.dimensionId;
   const top = useQuery({
-    queryKey: ["delivery", "dimensions", "top", dimensionId, entry.dimension.current?.dimensionRunId ?? null],
-    queryFn: () => deliveryApi.dimensionMembers(dimensionId!, { order: "records", limit: CARD_MEMBERS }),
-    enabled: near && dimensionId !== null && entry.dimension.members > 0,
+    queryKey: ["delivery", "dimensions", "top", dimensionId, entry.dimension.current?.buildId ?? null],
+    queryFn: () => deliveryApi.dimensionValues(dimensionId!, { order: "records", limit: CARD_VALUES }),
+    enabled: near && dimensionId !== null && entry.dimension.values > 0,
     staleTime: 60_000,
   });
   const total = entry.dimension.current?.withValue ?? null;
   const rows = top.data?.items ?? [];
-  const widest = Math.max(1, ...rows.map((member) => member.records));
+  const widest = Math.max(1, ...rows.map((value) => value.records));
 
   return (
     <div ref={ref} className="flex flex-col gap-1" data-testid="dimension-card-top">
-      {entry.dimension.members === 0
-        ? <p className="py-2 text-[12px] text-muted-foreground">{entry.dimension.current === null ? "No build has read it yet." : "Its last build found no value."}</p>
+      {entry.dimension.values === 0
+        ? <p className="py-2 text-[12px] text-muted-foreground">{entry.dimension.current === null ? "No build has read it yet." : "Its last build found no key."}</p>
         : top.isPending
-          ? Array.from({ length: Math.min(CARD_MEMBERS, entry.dimension.members) }, (_, index) => <Skeleton key={index} className="h-4 w-full" />)
-          : rows.map((member) => (
-            <div key={member.memberId} className="grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-2">
+          ? Array.from({ length: Math.min(CARD_VALUES, entry.dimension.values) }, (_, index) => <Skeleton key={index} className="h-4 w-full" />)
+          : rows.map((value) => (
+            <div key={value.valueId} className="grid grid-cols-[minmax(0,1fr)_4.5rem] items-center gap-2">
               <div className="relative h-5 min-w-0 overflow-hidden rounded-sm">
-                <div className="absolute inset-y-0 left-0 rounded-sm bg-chart-1/20" style={{ width: `${(member.records / widest) * 100}%` }} />
+                <div className="absolute inset-y-0 left-0 rounded-sm bg-chart-1/20" style={{ width: `${(value.records / widest) * 100}%` }} />
                 <span className="relative flex h-5 items-center px-1.5">
-                  <DimensionValueText value={member.value} maxWidth={220} />
+                  <DimensionValueText value={value.value} maxWidth={220} />
                 </span>
               </div>
               <span className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">
-                {member.recordsExact ? "" : "~"}{member.records.toLocaleString("en-US")}
-                {total !== null && total > 0 && member.recordsExact && <span className="ml-1 text-muted-foreground/60">{percent(member.records / total)}</span>}
+                {value.recordsExact ? "" : "~"}{value.records.toLocaleString("en-US")}
+                {total !== null && total > 0 && value.recordsExact && <span className="ml-1 text-muted-foreground/60">{percent(value.records / total)}</span>}
               </span>
             </div>
           ))}
-      {entry.dimension.members > CARD_MEMBERS && rows.length > 0 && (
-        <span className="text-[11px] text-muted-foreground">and {counted(entry.dimension.members - rows.length, "more member")}</span>
+      {entry.dimension.values > CARD_VALUES && rows.length > 0 && (
+        <span className="text-[11px] text-muted-foreground">and {counted(entry.dimension.values - rows.length, "more value")}</span>
       )}
     </div>
   );
 }
 
-/** One dimension as a card: where it stands, what it reads, its commonest members, and when it was built. */
+/** One dimension as a card: where it stands, what it reads, its commonest values, and when it was built. */
 function DimensionCard({ entry, onOpen }: { entry: DimensionEntry; onOpen: () => void }) {
   const { dimension } = entry;
   const latest = dimension.latest;
@@ -83,13 +83,15 @@ function DimensionCard({ entry, onOpen }: { entry: DimensionEntry; onOpen: () =>
       <div className="flex min-w-0 items-center gap-2">
         <StandingGlyph standing={entry.standing} />
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{dimension.name}</span>
-        <span className="shrink-0 font-mono text-[12px] tabular-nums text-muted-foreground">{counted(dimension.members, "member")}</span>
+        <span className="shrink-0 font-mono text-[12px] tabular-nums text-muted-foreground">{counted(dimension.values, "value")}</span>
       </div>
       <div className="flex min-w-0 flex-col gap-0.5 text-muted-foreground">
         <KindText kind={dimension.kind} />
-        <span className="truncate font-mono text-[11px]" title={dimension.path}>{dimension.path}</span>
+        <span className="truncate font-mono text-[11px]" title={dimension.path}>
+          {dimension.path}{dimension.label.length > 0 && <span className="text-muted-foreground/70"> labelled by {dimension.label.at(-1)}</span>}
+        </span>
       </div>
-      <TopMembers entry={entry} />
+      <TopValues entry={entry} />
       <div className="mt-auto flex min-w-0 items-center gap-1.5 border-t border-border pt-2 text-[11px] text-muted-foreground">
         {latest !== null && latest.status === "failed"
           ? <span className="truncate text-destructive" title={latest.error ?? undefined}>Newest build failed: {latest.error ?? "no reason kept"}</span>
@@ -97,7 +99,7 @@ function DimensionCard({ entry, onOpen }: { entry: DimensionEntry; onOpen: () =>
             ? <span>Not built yet</span>
             : (
               <>
-                <span className="font-mono tabular-nums">{counted(dimension.originals, "original")}</span>
+                <span className="font-mono tabular-nums">{counted(dimension.keys, "key")}</span>
                 <span className="text-muted-foreground/60">·</span>
                 <span>built <RelativeTime value={dimension.lastBuiltUtc} absolute={false} /></span>
               </>
@@ -126,7 +128,7 @@ function FlowHeading({ flow, onBuild }: { flow: DeliveryDimensionFlow; onBuild: 
 }
 
 /**
- * Every dimension of the partition, flow by flow, as cards: where each stands, what it reads, the members most records
+ * Every dimension of the partition, flow by flow, as cards: where each stands, what it reads, the values most records
  * hold with their share, and when it was last built. A card opens its dimension. Flows that do not build in the partition
  * are named at the foot, so an absent flow reads as elsewhere rather than missing.
  */

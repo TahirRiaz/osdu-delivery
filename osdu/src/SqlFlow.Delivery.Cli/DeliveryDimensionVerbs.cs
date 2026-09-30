@@ -14,18 +14,19 @@ namespace SqlFlow.Delivery.Cli;
 /// <summary>
 /// The <c>dimensions</c> verb: a dimension flow's dimensions where an operator already is, at a terminal or in a script,
 /// without a control plane to reach (docs/dimension-plan.md, Stage 5). <c>list</c> shows each dimension and its last build,
-/// <c>members</c> and <c>originals</c> page through what a dimension holds, <c>filter</c> writes the search that finds the
-/// records of the members named, <c>history</c> lists the builds and <c>changes</c> the change log, and <c>export</c> writes
-/// the whole as CSV or JSON Lines; the filter and the export are written by the same code as the API's. Building is a run
-/// like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
+/// <c>values</c> and <c>keys</c> page through what a dimension holds (the human-friendly values, and the keys exactly as the
+/// index holds them), <c>filter</c> writes the search that finds the records of the values named, <c>search</c> composes the
+/// search across the flow's dimensions from the values picked in each, <c>history</c> lists the builds and <c>changes</c> the
+/// change log, and <c>export</c> writes the whole as CSV or JSON Lines; the filter, the search and the export are written by
+/// the same code as the API's. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
 /// </summary>
 internal static class DeliveryDimensionVerbs
 {
-    /// <summary>Members, originals, builds or changes listed when the command line asks for no count.</summary>
+    /// <summary>Values, keys, builds or changes listed when the command line asks for no count.</summary>
     private const int DefaultMax = 50;
 
-    /// <summary>The originals a member's line names beside it.</summary>
-    private const int ShownOriginals = 3;
+    /// <summary>The keys a value's line names beside it.</summary>
+    private const int ShownKeys = 3;
 
     public static async Task<int> DimensionsAsync(CliVerbContext context)
     {
@@ -47,16 +48,21 @@ internal static class DeliveryDimensionVerbs
             return await ListAsync(context, ledger, flow, ct).ConfigureAwait(false);
         }
 
-        if (verb is not ("members" or "originals" or "filter" or "history" or "changes" or "export"))
+        if (verb == "search")
         {
-            return context.UsageError("say what to show: list, members, originals, filter, history, changes or export.");
+            return await SearchAsync(context, ledger, flow, ct).ConfigureAwait(false);
+        }
+
+        if (verb is not ("values" or "keys" or "filter" or "history" or "changes" or "export"))
+        {
+            return context.UsageError("say what to show: list, values, keys, filter, search, history, changes or export.");
         }
 
         var dimension = await DimensionAsync(context, ledger, flow, ct).ConfigureAwait(false);
         return verb switch
         {
-            "members" => await MembersAsync(context, ledger, dimension, ct).ConfigureAwait(false),
-            "originals" => await OriginalsAsync(context, ledger, dimension, ct).ConfigureAwait(false),
+            "values" => await ValuesAsync(context, ledger, dimension, ct).ConfigureAwait(false),
+            "keys" => await KeysAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "filter" => await FilterAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "history" => await HistoryAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "changes" => await ChangesAsync(context, ledger, dimension, ct).ConfigureAwait(false),
@@ -88,9 +94,10 @@ internal static class DeliveryDimensionVerbs
                         ["dimensionId"] = dimension?.DimensionId,
                         ["kind"] = spec.Kind,
                         ["path"] = spec.Path,
+                        ["label"] = spec.Label.Count == 0 ? null : new JsonArray(spec.Label.Select(l => (JsonNode)JsonValue.Create(l)!).ToArray()),
                         ["aggregateBy"] = dimension?.Field?.AggregateBy,
-                        ["members"] = dimension?.Members,
-                        ["originals"] = dimension?.Originals,
+                        ["values"] = dimension?.Members,
+                        ["keys"] = dimension?.Originals,
                         ["lastBuiltUtc"] = dimension?.LastBuiltUtc,
                         ["latestBuild"] = newest is null ? null : Described(newest),
                     };
@@ -103,15 +110,16 @@ internal static class DeliveryDimensionVerbs
         foreach (var spec in flow.Dimensions)
         {
             var dimension = held.GetValueOrDefault(spec.Name);
+            var label = spec.Label.Count == 0 ? string.Empty : " labelled by " + string.Join(" > ", spec.Label);
             if (dimension is null)
             {
-                context.Out.WriteLine($"  {spec.Name}  ({spec.Kind} {spec.Path})  not built yet");
+                context.Out.WriteLine($"  {spec.Name}  ({spec.Kind} {spec.Path}{label})  not built yet");
                 continue;
             }
 
             var built = dimension.LastBuiltUtc is { } at ? "built " + Stamp(at) : "not built yet";
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {spec.Name}  ({spec.Kind} {spec.Path})  {dimension.Members} member(s) from {dimension.Originals} original(s), {built}"));
+                $"  {spec.Name}  ({spec.Kind} {spec.Path}{label})  {dimension.Members} value(s) from {dimension.Originals} key(s), {built}"));
             if (latest.TryGetValue(dimension.DimensionId, out var newest) && newest.DimensionRunId != dimension.LastRunId)
             {
                 context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
@@ -127,8 +135,8 @@ internal static class DeliveryDimensionVerbs
         return 0;
     }
 
-    /// <summary>A page of the dimension's members, in value order or with the most records first, each with its commonest originals.</summary>
-    private static async Task<int> MembersAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
+    /// <summary>A page of the dimension's values, in value order or with the most records first, each with its commonest keys.</summary>
+    private static async Task<int> ValuesAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
     {
         var order = context.Arguments.GetOption("--order")?.Trim().ToLowerInvariant() switch
         {
@@ -139,7 +147,7 @@ internal static class DeliveryDimensionVerbs
         var max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max");
         var members = await ledger.ListDimensionMembersAsync(
             dimension.DimensionId, new DimensionMemberQuery(context.Arguments.GetOption("--search"), context.Arguments.HasFlag("--removed"), null, max, order), ct).ConfigureAwait(false);
-        var top = (await ledger.TopMemberOriginalsAsync(dimension.DimensionId, members.Select(m => m.MemberId).ToList(), ShownOriginals, ct).ConfigureAwait(false))
+        var top = (await ledger.TopMemberOriginalsAsync(dimension.DimensionId, members.Select(m => m.MemberId).ToList(), ShownKeys, ct).ConfigureAwait(false))
             .GroupBy(v => v.MemberId ?? 0)
             .ToDictionary(g => g.Key, g => g.OrderByDescending(v => v.Count).ThenBy(v => v.ValueId).Select(v => v.Original).ToList());
         if (context.Json)
@@ -147,13 +155,13 @@ internal static class DeliveryDimensionVerbs
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
             {
                 ["dimension"] = dimension.Name,
-                ["members"] = new JsonArray(members.Select(m => (JsonNode)new JsonObject
+                ["values"] = new JsonArray(members.Select(m => (JsonNode)new JsonObject
                 {
-                    ["memberId"] = m.MemberId,
+                    ["valueId"] = m.MemberId,
                     ["value"] = m.Value,
                     ["records"] = m.Records,
                     ["recordsExact"] = m.RecordsExact,
-                    ["originals"] = m.Originals,
+                    ["keys"] = m.Originals,
                     ["unfilterable"] = m.Unfilterable,
                     ["filter"] = m.Filter,
                     ["filterParts"] = m.FilterParts,
@@ -164,7 +172,7 @@ internal static class DeliveryDimensionVerbs
             return 0;
         }
 
-        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{dimension.Name}: {members.Count} of {dimension.Members} member(s)"));
+        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{dimension.Name}: {members.Count} of {dimension.Members} value(s)"));
         foreach (var member in members)
         {
             var records = member.RecordsExact ? member.Records.ToString("N0", CultureInfo.InvariantCulture) : "~" + member.Records.ToString("N0", CultureInfo.InvariantCulture);
@@ -178,8 +186,11 @@ internal static class DeliveryDimensionVerbs
         return 0;
     }
 
-    /// <summary>A page of the dimension's originals: every one, a member's, or those under none, in arrival order or most records first.</summary>
-    private static async Task<int> OriginalsAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
+    /// <summary>
+    /// A page of the dimension's keys, each exactly as the index holds it with its label and filter: every one, a value's, or
+    /// those of no value, in arrival order or most records first.
+    /// </summary>
+    private static async Task<int> KeysAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
     {
         var order = context.Arguments.GetOption("--order")?.Trim().ToLowerInvariant() switch
         {
@@ -189,18 +200,18 @@ internal static class DeliveryDimensionVerbs
         };
         var leftOut = context.Arguments.HasFlag("--left-out");
         long? memberId = null;
-        if (context.Arguments.GetOption("--member") is { } value)
+        if (context.Arguments.GetOption("--value") is { } named)
         {
             if (leftOut)
             {
-                return context.UsageError("an original under a member is not left out: give --member or --left-out, not both.");
+                return context.UsageError("a key of a value is not left out: give --value or --left-out, not both.");
             }
 
-            memberId = (await MembersNamedAsync(ledger, dimension, [value], ct).ConfigureAwait(false))[0].MemberId;
+            memberId = (await ValuesNamedAsync(ledger, dimension, [named], ct).ConfigureAwait(false))[0].MemberId;
         }
 
         var max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max");
-        var originals = await ledger.ListDimensionValuesAsync(
+        var keys = await ledger.ListDimensionValuesAsync(
             dimension.DimensionId,
             new DimensionValueQuery(context.Arguments.GetOption("--search"), memberId, leftOut, context.Arguments.HasFlag("--removed"), null, max, order),
             ct).ConfigureAwait(false);
@@ -209,40 +220,48 @@ internal static class DeliveryDimensionVerbs
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
             {
                 ["dimension"] = dimension.Name,
-                ["originals"] = new JsonArray(originals.Select(o => (JsonNode)new JsonObject
+                ["keys"] = new JsonArray(keys.Select(k => (JsonNode)new JsonObject
                 {
-                    ["valueId"] = o.ValueId,
-                    ["original"] = o.Original,
-                    ["member"] = o.MemberValue,
-                    ["leftOut"] = o.LeftOut,
-                    ["note"] = o.Note,
-                    ["count"] = o.Count,
-                    ["filterable"] = o.Filterable,
-                    ["removedUtc"] = o.RemovedUtc,
+                    ["keyId"] = k.ValueId,
+                    ["key"] = k.Original,
+                    ["label"] = k.Label,
+                    ["labelFrom"] = k.LabelFrom,
+                    ["value"] = k.MemberValue,
+                    ["leftOut"] = k.LeftOut,
+                    ["note"] = k.Note,
+                    ["count"] = k.Count,
+                    ["filterable"] = k.Filterable,
+                    ["filter"] = k.Filter,
+                    ["removedUtc"] = k.RemovedUtc,
                 }).ToArray()),
             }));
             return 0;
         }
 
-        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{dimension.Name}: {originals.Count} of {dimension.Originals} original(s)"));
-        foreach (var original in originals)
+        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{dimension.Name}: {keys.Count} of {dimension.Originals} key(s)"));
+        foreach (var key in keys)
         {
-            var under = original.MemberValue is { } member ? "-> " + member : "under no member (" + original.LeftOut + ")";
-            var unfilterable = original.Filterable ? string.Empty : "  (no query can carry it)";
+            var of = key.MemberValue is { } member ? "-> " + member : "of no value (" + key.LeftOut + ")";
+            var label = key.Label is { } read && !string.Equals(read, key.MemberValue, StringComparison.Ordinal) ? "  label " + Quoted(read) : string.Empty;
+            var unfilterable = key.Filterable ? string.Empty : "  (no query can carry it)";
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {original.Count,12:N0}  {Quoted(original.Original)}  {under}{unfilterable}{(original.Note is { Length: > 0 } note ? "  " + note : string.Empty)}"));
+                $"  {key.Count,12:N0}  {Quoted(key.Original)}  {of}{label}{unfilterable}{(key.Note is { Length: > 0 } note ? "  " + note : string.Empty)}"));
+            if (key.Filter is { } filter)
+            {
+                context.Out.WriteLine("                search " + filter);
+            }
         }
 
         return 0;
     }
 
-    /// <summary>The search that finds the records of the members --member names, one query a line, ready to send.</summary>
+    /// <summary>The search that finds the records of the values --value names, one query a line, ready to send.</summary>
     private static async Task<int> FilterAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
     {
-        var named = context.Arguments.GetOptions("--member");
+        var named = context.Arguments.GetOptions("--value");
         if (named.Count == 0)
         {
-            return context.UsageError("name the members to filter by, by clean value: --member <value> (repeat it for more).");
+            return context.UsageError("name the values to filter by, exactly as the dimension holds them: --value <value> (repeat it for more).");
         }
 
         var filter = await DimensionFilters.ForMembersAsync(ledger, dimension, [], named, ct).ConfigureAwait(false);
@@ -256,8 +275,8 @@ internal static class DeliveryDimensionVerbs
                 ["aggregateBy"] = filter.AggregateBy,
                 ["filters"] = new JsonArray(filter.Filters.Select(f => (JsonNode)JsonValue.Create(f)!).ToArray()),
                 ["searches"] = new JsonArray(filter.Searches.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()),
-                ["members"] = new JsonArray(filter.Members.Select(m => (JsonNode)JsonValue.Create(m.Value)!).ToArray()),
-                ["originals"] = filter.Originals,
+                ["values"] = new JsonArray(filter.Members.Select(m => (JsonNode)JsonValue.Create(m.Value)!).ToArray()),
+                ["keys"] = filter.Originals,
                 ["unfilterable"] = filter.Unfilterable,
                 ["removed"] = new JsonArray(filter.Removed.Select(r => (JsonNode)JsonValue.Create(r)!).ToArray()),
                 ["missing"] = new JsonArray(filter.Missing.Select(m => (JsonNode)JsonValue.Create(m)!).ToArray()),
@@ -268,11 +287,11 @@ internal static class DeliveryDimensionVerbs
         // The searches go to the console alone, a line each, so a script can take them as they are; what the filter covers and
         // leaves out goes to the error stream.
         context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture,
-            $"{dimension.Name}: kind {filter.Kind}, {filter.Members.Count} member(s), {filter.Originals} original(s) in {filter.Searches.Count} search(es)"));
+            $"{dimension.Name}: kind {filter.Kind}, {filter.Members.Count} value(s), {filter.Originals} key(s) in {filter.Searches.Count} search(es)"));
         if (filter.Unfilterable > 0)
         {
             context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {filter.Unfilterable} original(s) no query can carry are left out: {string.Join(", ", filter.UnfilterableNamed.Take(5).Select(Quoted))}"));
+                $"  {filter.Unfilterable} key(s) no query can carry are left out: {string.Join(", ", filter.UnfilterableNamed.Take(5).Select(Quoted))}"));
         }
 
         if (filter.Removed.Count > 0)
@@ -282,7 +301,7 @@ internal static class DeliveryDimensionVerbs
 
         if (filter.Missing.Count > 0)
         {
-            context.Error.WriteLine("  no member of the dimension: " + string.Join(", ", filter.Missing.Select(Quoted)));
+            context.Error.WriteLine("  no value of the dimension: " + string.Join(", ", filter.Missing.Select(Quoted)));
         }
 
         foreach (var search in filter.Searches)
@@ -291,6 +310,88 @@ internal static class DeliveryDimensionVerbs
         }
 
         return filter.Searches.Count == 0 ? 1 : 0;
+    }
+
+    /// <summary>
+    /// The search that finds the records holding one of the values picked in each dimension --pick names: OR within a
+    /// dimension, AND across them, in the kind every dimension reads or the one --kind names, narrowed by --within. The query
+    /// goes to the console alone, so a script takes it as it is; with --json, the whole composition with the request to send.
+    /// </summary>
+    private static async Task<int> SearchAsync(CliVerbContext context, ILedger ledger, DimensionFlowDefinition flow, CancellationToken ct)
+    {
+        var given = context.Arguments.GetOptions("--pick");
+        if (given.Count == 0)
+        {
+            return context.UsageError("pick the values to search for: --pick <dimension>=<value> (repeat it for more values and dimensions).");
+        }
+
+        // A pick is split at its first '=': a dimension's name holds none, and a value may.
+        var byDimension = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pick in given)
+        {
+            var at = pick.IndexOf('=', StringComparison.Ordinal);
+            if (at <= 0)
+            {
+                return context.UsageError($"--pick '{pick}' is not <dimension>=<value>.");
+            }
+
+            var name = pick[..at].Trim();
+            (byDimension.TryGetValue(name, out var values) ? values : byDimension[name] = []).Add(pick[(at + 1)..]);
+        }
+
+        var picks = new List<DimensionPick>(byDimension.Count);
+        foreach (var (name, values) in byDimension)
+        {
+            var spec = flow.Dimension(name)
+                ?? throw new FlowValidationException($"{flow.Name} declares no dimension named '{name}'; it declares {string.Join(", ", flow.Dimensions.Select(d => d.Name))}.");
+            var dimension = await ledger.FindDimensionAsync(flow.LedgerId, spec.Name, ct).ConfigureAwait(false)
+                ?? throw new FlowValidationException(
+                    $"Dimension {spec.Name} has not been built in {flow.LedgerName} yet. Build it with: sqlflow run <flow.yaml> --payload '{{\"dimensions\":[\"{spec.Name}\"]}}'");
+            picks.Add(new DimensionPick(dimension, [], values.Distinct(StringComparer.Ordinal).ToList()));
+        }
+
+        var set = await DimensionSearch.ComposeAsync(ledger, picks, context.Arguments.GetOption("--kind"), context.Arguments.GetOption("--within"), ct).ConfigureAwait(false);
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["kind"] = set.Kind,
+                ["query"] = set.Query,
+                ["request"] = new JsonObject { ["kind"] = set.Kind, ["query"] = set.Query, ["limit"] = 1000 },
+                ["clauses"] = set.Clauses,
+                ["parts"] = new JsonArray(set.Parts.Select(p => (JsonNode)new JsonObject
+                {
+                    ["dimension"] = p.Dimension,
+                    ["aggregateBy"] = p.AggregateBy,
+                    ["values"] = new JsonArray(p.Values.Select(v => (JsonNode)JsonValue.Create(v.Value)!).ToArray()),
+                    ["keys"] = p.Keys,
+                    ["unfilterable"] = p.Unfilterable,
+                    ["filter"] = p.Filter,
+                    ["query"] = p.Query,
+                }).ToArray()),
+                ["removed"] = new JsonArray(set.Removed.Select(r => (JsonNode)JsonValue.Create(r)!).ToArray()),
+                ["missing"] = new JsonArray(set.Missing.Select(m => (JsonNode)JsonValue.Create(m)!).ToArray()),
+                ["notes"] = new JsonArray(set.Notes.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray()),
+            }));
+            return 0;
+        }
+
+        context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"kind {set.Kind}, {set.Parts.Count} dimension(s), {set.Clauses} clause(s)"));
+        foreach (var part in set.Parts)
+        {
+            context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  {part.Dimension}: {string.Join(", ", part.Values.Select(v => Quoted(v.Value)))} ({part.Keys} key(s) of {part.AggregateBy})"));
+        }
+
+        foreach (var line in set.Removed.Select(r => "  no build finds this any more: " + r)
+                     .Concat(set.Missing.Select(m => "  no value of the dimension: " + m))
+                     .Concat(set.Notes.Select(n => "  " + n)))
+        {
+            context.Error.WriteLine(line);
+        }
+
+        context.Out.WriteLine(set.Query);
+        return 0;
     }
 
     /// <summary>The dimension's builds, newest first: what each came to, how it read, and what it changed.</summary>
@@ -313,7 +414,7 @@ internal static class DeliveryDimensionVerbs
         {
             var changes = run.Changes;
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
-                $"  {run.DimensionRunId,8}  {run.Status,-9}  {Stamp(run.StartedUtc)}  {run.Members} member(s) from {run.Originals} original(s), {run.LeftOut} under none; {changes.OriginalsAdded} arrived, {changes.OriginalsRemoved} left, {changes.OriginalsMoved} moved, {changes.OriginalsRestored} came back; {run.Read.Aggregations} aggregation(s), {run.Read.Splits} split(s), {run.Read.ScanPages} scan page(s)  by {run.Actor}"));
+                $"  {run.DimensionRunId,8}  {run.Status,-9}  {Stamp(run.StartedUtc)}  {run.Members} value(s) from {run.Originals} key(s), {run.LeftOut} of none; {changes.OriginalsAdded} arrived, {changes.OriginalsRemoved} left, {changes.OriginalsMoved} moved, {changes.OriginalsRestored} came back; {run.Read.Aggregations} aggregation(s), {run.Read.Splits} split(s), {run.Read.ScanPages} scan page(s), {run.Read.Labelled} labelled in {run.Read.LabelQueries} search(es)  by {run.Actor}"));
             if (run.Error is { Length: > 0 } error)
             {
                 context.Out.WriteLine("            " + error);
@@ -328,7 +429,7 @@ internal static class DeliveryDimensionVerbs
         return 0;
     }
 
-    /// <summary>The change log, newest first: of every build, of the one --build names, of one member, or of one kind of change.</summary>
+    /// <summary>The change log, newest first: of every build, of the one --build names, of one value, or of one kind of change.</summary>
     private static async Task<int> ChangesAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
     {
         long? build = null;
@@ -346,9 +447,9 @@ internal static class DeliveryDimensionVerbs
         }
 
         long? memberId = null;
-        if (context.Arguments.GetOption("--member") is { } value)
+        if (context.Arguments.GetOption("--value") is { } value)
         {
-            memberId = (await MembersNamedAsync(ledger, dimension, [value], ct).ConfigureAwait(false))[0].MemberId;
+            memberId = (await ValuesNamedAsync(ledger, dimension, [value], ct).ConfigureAwait(false))[0].MemberId;
         }
 
         var max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max");
@@ -362,7 +463,7 @@ internal static class DeliveryDimensionVerbs
                 {
                     ["changeId"] = c.ChangeId,
                     ["build"] = c.DimensionRunId,
-                    ["original"] = c.Original,
+                    ["key"] = c.Original,
                     ["change"] = c.Change,
                     ["from"] = c.FromValue,
                     ["to"] = c.ToValue,
@@ -377,9 +478,9 @@ internal static class DeliveryDimensionVerbs
         {
             var move = c.Change switch
             {
-                DimensionChangeKinds.Moved => $"from {c.FromValue ?? "no member"} to {c.ToValue ?? "no member"}",
-                DimensionChangeKinds.Removed => $"left {c.FromValue ?? "no member"}",
-                _ => $"under {c.ToValue ?? "no member"}",
+                DimensionChangeKinds.Moved => $"from {c.FromValue ?? "no value"} to {c.ToValue ?? "no value"}",
+                DimensionChangeKinds.Removed => $"left {c.FromValue ?? "no value"}",
+                _ => $"to {c.ToValue ?? "no value"}",
             };
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  {Stamp(c.ChangedUtc)}  build {c.DimensionRunId,-6}  {c.Change,-8}  {Quoted(c.Original)}  {move}"));
         }
@@ -387,11 +488,11 @@ internal static class DeliveryDimensionVerbs
         return 0;
     }
 
-    /// <summary>The dimension's members or originals, whole, as CSV or JSON Lines, to --out or the console.</summary>
+    /// <summary>The dimension's values or keys, whole, as CSV or JSON Lines, to --out or the console.</summary>
     private static async Task<int> ExportAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
     {
         var set = DimensionExport.SetOf(context.Arguments.GetOption("--set"))
-            ?? throw new FlowValidationException($"--set '{context.Arguments.GetOption("--set")}' is not one of members, originals.");
+            ?? throw new FlowValidationException($"--set '{context.Arguments.GetOption("--set")}' is not one of values, keys.");
         var format = DimensionExport.FormatOf(context.Arguments.GetOption("--format"))
             ?? throw new FlowValidationException($"--format '{context.Arguments.GetOption("--format")}' is not one of csv, jsonl.");
         if (context.Arguments.GetOption("--out") is not { } outPath)
@@ -426,7 +527,7 @@ internal static class DeliveryDimensionVerbs
             throw;
         }
 
-        context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote {rows} {(set == DimensionExportSet.Members ? "member(s)" : "original(s)")} of {dimension.Name} to {full}"));
+        context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote {rows} {(set == DimensionExportSet.Values ? "value(s)" : "key(s)")} of {dimension.Name} to {full}"));
         return 0;
     }
 
@@ -446,12 +547,12 @@ internal static class DeliveryDimensionVerbs
                 $"Dimension {spec.Name} has not been built in {flow.LedgerName} yet. Build it with: sqlflow run <flow.yaml> --payload '{{\"dimensions\":[\"{spec.Name}\"]}}'");
     }
 
-    /// <summary>The members named by clean value, each one the dimension holds, in the order named.</summary>
-    private static async Task<IReadOnlyList<DimensionMemberState>> MembersNamedAsync(ILedger ledger, DimensionState dimension, IReadOnlyList<string> values, CancellationToken ct)
+    /// <summary>The values named, each one the dimension holds, in the order named.</summary>
+    private static async Task<IReadOnlyList<DimensionMemberState>> ValuesNamedAsync(ILedger ledger, DimensionState dimension, IReadOnlyList<string> values, CancellationToken ct)
     {
         var found = await ledger.GetDimensionMembersAsync(dimension.DimensionId, [], values, ct).ConfigureAwait(false);
         return values.Select(v => found.FirstOrDefault(m => string.Equals(m.Value, v, StringComparison.Ordinal))
-                ?? throw new FlowValidationException($"Dimension {dimension.Name} has no member '{v}'. Members are named by their clean value, exactly."))
+                ?? throw new FlowValidationException($"Dimension {dimension.Name} has no value '{v}'. Values are named exactly as the dimension holds them."))
             .ToList();
     }
 
@@ -460,14 +561,17 @@ internal static class DeliveryDimensionVerbs
         ["build"] = run.DimensionRunId,
         ["runId"] = run.RunId?.ToString("D"),
         ["status"] = run.Status,
-        ["members"] = run.Members,
-        ["originals"] = run.Originals,
+        ["values"] = run.Members,
+        ["keys"] = run.Originals,
         ["leftOut"] = run.LeftOut,
         ["unfilterable"] = run.Unfilterable,
-        ["originalsAdded"] = run.Changes.OriginalsAdded,
-        ["originalsRemoved"] = run.Changes.OriginalsRemoved,
-        ["originalsMoved"] = run.Changes.OriginalsMoved,
-        ["originalsRestored"] = run.Changes.OriginalsRestored,
+        ["keysAdded"] = run.Changes.OriginalsAdded,
+        ["keysRemoved"] = run.Changes.OriginalsRemoved,
+        ["keysMoved"] = run.Changes.OriginalsMoved,
+        ["keysRestored"] = run.Changes.OriginalsRestored,
+        ["labelled"] = run.Read.Labelled,
+        ["unlabelled"] = run.Read.Unlabelled,
+        ["labelQueries"] = run.Read.LabelQueries,
         ["records"] = run.Read.Records,
         ["withValue"] = run.Read.WithValue,
         ["aggregations"] = run.Read.Aggregations,

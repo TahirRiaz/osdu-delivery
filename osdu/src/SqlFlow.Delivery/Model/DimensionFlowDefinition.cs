@@ -303,7 +303,18 @@ public sealed record DimensionSpec
     /// <summary>The attribute, as a path from the record's root: <c>data.Curves.Mnemonic</c>, <c>legal.legaltags</c>, <c>tags.Source</c>.</summary>
     public required string Path { get; init; }
 
-    /// <summary>The steps each original is cleaned by, in order; none keeps the original as the clean value.</summary>
+    /// <summary>
+    /// Where each key's human-friendly value is read, for a key that names an OSDU record (<c>data.WellboreID</c> holds
+    /// <c>dev:master-data--Wellbore:...:</c>): a path of the record the key names (<c>data.FacilityName</c>), or several,
+    /// each but the last reading a reference to the record the next is read from (<c>data.GeoContexts.GeoPoliticalEntityID</c>,
+    /// then <c>data.GeoPoliticalEntityName</c>). Empty reads no label: a key is its own value, cleaned by <see cref="Clean"/>.
+    /// </summary>
+    public IReadOnlyList<string> Label { get; init; } = [];
+
+    /// <summary>The most records a label reads through, one per step.</summary>
+    public const int MaxLabelSteps = 3;
+
+    /// <summary>The steps each value is cleaned by, in order (a key's label when it has one, else the key); none keeps it as it is.</summary>
     public IReadOnlyList<CleanStep> Clean { get; init; } = [];
 
     /// <summary>

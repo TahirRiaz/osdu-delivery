@@ -7,10 +7,10 @@ using SqlFlow.Delivery.Snapshots;
 namespace SqlFlow.Delivery.Engine.Snapshots;
 
 /// <summary>
-/// Captures a cached type that holds a dimension's members (docs/dimension-plan.md, Stage 6): the members the dimension's last
-/// build wrote in the partition, each a lookup row keyed by its clean value, with the originals cleaning gathered into it as a
-/// set (so a mapping finds the member of any original, as a lookup matches a set on any one of its values) and the records
-/// holding them. Everything is read from the ledger, a page at a time; nothing is asked of OSDU, since the dimension flow's
+/// Captures a cached type that holds a dimension's values (docs/dimension-plan.md, Stage 6): the values the dimension's last
+/// build wrote in the partition, each a lookup row keyed by the value, with the keys it stands for as a set (so a mapping finds
+/// the value of any key, as a lookup matches a set on any one of its values), the records holding them, and the search filter
+/// finding them. Everything is read from the ledger, a page at a time; nothing is asked of OSDU, since the dimension flow's
 /// build already read it.
 /// </summary>
 internal static class DimensionCapture
@@ -34,7 +34,7 @@ internal static class DimensionCapture
         if (dimension.Members > LookupKeys.MaxRows || dimension.Originals > MaxOriginals)
         {
             throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
-                $"Cached type '{type.Name}' holds dimension {dimension.Name} of {dimension.FlowName}, whose {dimension.Members} member(s) and {dimension.Originals} original(s) are more than a lookup table holds ({LookupKeys.MaxRows} rows, {MaxOriginals} originals): every row is loaded with each render. Narrow the dimension with its query, or filter by its members instead."));
+                $"Cached type '{type.Name}' holds dimension {dimension.Name} of {dimension.FlowName}, whose {dimension.Members} value(s) and {dimension.Originals} key(s) are more than a lookup table holds ({LookupKeys.MaxRows} rows, {MaxOriginals} keys): every row is loaded with each render. Narrow the dimension with its query, or filter by its values instead."));
         }
 
         var members = new List<DimensionMemberState>((int)Math.Min(dimension.Members, LookupKeys.MaxRows));
@@ -76,7 +76,12 @@ internal static class DimensionCapture
             };
             if (gathered.Count > 0)
             {
-                fields[DimensionColumns.Originals] = ReferenceValue.OfMany(gathered.Order(StringComparer.Ordinal).Select(o => (JsonNode)JsonValue.Create(o)).ToList());
+                fields[DimensionColumns.Keys] = ReferenceValue.OfMany(gathered.Order(StringComparer.Ordinal).Select(o => (JsonNode)JsonValue.Create(o)).ToList());
+            }
+
+            if (member.Filter is { } filter)
+            {
+                fields[DimensionColumns.Filter] = ReferenceValue.Of(filter);
             }
 
             return new ReferenceItem(member.Value, fields);
@@ -84,7 +89,7 @@ internal static class DimensionCapture
 
         var captured = new ReferenceType(type.Name, ReferenceType.LookupEntityType(type.Name), rows.OrderBy(r => r.Id, StringComparer.Ordinal), DimensionColumns.Value);
         log.LogInformation(
-            "Captured {Count} {Type} row(s) from dimension {Dimension} of {Flow} as its build {Build} left it, with {Originals} original(s).",
+            "Captured {Count} {Type} row(s) from dimension {Dimension} of {Flow} as its build {Build} left it, with {Keys} key(s).",
             members.Count, type.Name, dimension.Name, dimension.FlowName, dimension.LastRunId, originals.Values.Sum(l => l.Count));
         return captured;
     }

@@ -30,9 +30,9 @@ function SearchBlock({ index, count, query, kind }: { index: number; count: numb
 
 /**
  * A filter as a reader uses it: the kind it searches and the field it compares, each search to send (a query, or the whole
- * request body the search service takes), and what it leaves out: originals no query can carry, members no build finds any
- * more, and names that are no member. A filter over more originals than one query holds is several searches, whose
- * records together are the members'.
+ * request body the search service takes), and what it leaves out: keys no query can carry, values no build finds any more,
+ * and names that are no value. A filter over more keys than one query holds is several searches, whose records together
+ * are the values'.
  */
 export function DimensionFilterView({ filter }: { filter: DeliveryDimensionFilter }) {
   return (
@@ -41,7 +41,7 @@ export function DimensionFilterView({ filter }: { filter: DeliveryDimensionFilte
         <DetailPair label="Kind"><KindText kind={filter.kind} /></DetailPair>
         <DetailPair label="Compares"><span className="break-all font-mono text-[12px]">{filter.aggregateBy}</span></DetailPair>
         <DetailPair label="Finds">
-          <span className="font-mono text-[12px] tabular-nums">{counted(filter.originals, "original")}</span>
+          <span className="font-mono text-[12px] tabular-nums">{counted(filter.keys, "key")}</span>
         </DetailPair>
       </div>
 
@@ -49,7 +49,7 @@ export function DimensionFilterView({ filter }: { filter: DeliveryDimensionFilte
         ? (
           <p className="flex items-center gap-2 text-[13px] text-muted-foreground" data-testid="dimension-filter-none">
             <Info className="size-4 shrink-0" />
-            No original of these members can be carried in a search query, so there is no search to send.
+            No key of these values can be carried in a search query, so there is no search to send.
           </p>
         )
         : (
@@ -59,7 +59,7 @@ export function DimensionFilterView({ filter }: { filter: DeliveryDimensionFilte
             </h3>
             {filter.searches.length > 1 && (
               <p className="text-[12px] text-muted-foreground">
-                One query holds at most 500 originals, so the members' records are those the searches find together.
+                One query holds at most 500 keys, so the values' records are those the searches find together.
               </p>
             )}
             {filter.searches.map((query, index) => (
@@ -82,9 +82,9 @@ export function DimensionFilterView({ filter }: { filter: DeliveryDimensionFilte
             <p className="flex items-start gap-2">
               <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
               <span>
-                {counted(filter.unfilterable, "original")} cannot be carried in a query:{" "}
-                {filter.unfilterableNamed.map((original, index) => (
-                  <span key={original}>{index > 0 && ", "}<DimensionValueText value={original} maxWidth={200} /></span>
+                {counted(filter.unfilterable, "key")} cannot be carried in a query:{" "}
+                {filter.unfilterableNamed.map((key, index) => (
+                  <span key={key}>{index > 0 && ", "}<DimensionValueText value={key} maxWidth={200} /></span>
                 ))}
                 {filter.unfilterable > filter.unfilterableNamed.length && " and more"}.
               </span>
@@ -94,7 +94,7 @@ export function DimensionFilterView({ filter }: { filter: DeliveryDimensionFilte
             <p className="text-muted-foreground">No build finds these any more: {filter.removed.join(", ")}.</p>
           )}
           {filter.missing.length > 0 && (
-            <p className="text-muted-foreground">No member of the dimension: {filter.missing.join(", ")}.</p>
+            <p className="text-muted-foreground">No value of the dimension: {filter.missing.join(", ")}.</p>
           )}
         </section>
       )}
@@ -102,26 +102,26 @@ export function DimensionFilterView({ filter }: { filter: DeliveryDimensionFilte
   );
 }
 
-/** The search that finds the records of the members picked, in a sheet beside the list they were picked from. */
-export function DimensionFilterSheet({ dimensionId, memberIds, onClose }: {
+/** The search that finds the records of the values picked, in a sheet beside the list they were picked from. */
+export function DimensionFilterSheet({ dimensionId, valueIds, onClose }: {
   dimensionId: number;
-  /** The members to write the search for; null closes the sheet. */
-  memberIds: number[] | null;
+  /** The values to write the search for; null closes the sheet. */
+  valueIds: number[] | null;
   onClose: () => void;
 }) {
   const filter = useQuery({
-    queryKey: ["delivery", "dimensions", "filter", dimensionId, memberIds],
-    queryFn: () => deliveryApi.dimensionFilter(dimensionId, { memberIds: memberIds ?? [] }),
-    enabled: memberIds !== null && memberIds.length > 0,
+    queryKey: ["delivery", "dimensions", "filter", dimensionId, valueIds],
+    queryFn: () => deliveryApi.dimensionFilter(dimensionId, { valueIds: valueIds ?? [] }),
+    enabled: valueIds !== null && valueIds.length > 0,
   });
 
   return (
-    <Sheet open={memberIds !== null} onOpenChange={(open) => { if (!open) { onClose(); } }}>
+    <Sheet open={valueIds !== null} onOpenChange={(open) => { if (!open) { onClose(); } }}>
       <SheetContent className="w-full gap-0 sm:max-w-2xl" data-testid="dimension-filter-sheet">
         <SheetHeader className="border-b border-border">
-          <SheetTitle>Search for {counted(memberIds?.length ?? 0, "member")}</SheetTitle>
+          <SheetTitle>Search for {counted(valueIds?.length ?? 0, "value")}</SheetTitle>
           <SheetDescription>
-            The OSDU search that finds every record holding one of their originals, joined with the dimension's own query.
+            The OSDU search that finds every record holding one of their keys, joined with the dimension's own query.
           </SheetDescription>
         </SheetHeader>
         <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
@@ -133,13 +133,13 @@ export function DimensionFilterSheet({ dimensionId, memberIds, onClose }: {
                 <>
                   <DimensionFilterView filter={filter.data} />
                   <section className="flex flex-col gap-1.5">
-                    <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Members</h3>
-                    <div className="flex flex-wrap gap-1.5" data-testid="dimension-filter-members">
-                      {filter.data.members.map((member) => (
-                        <span key={member.memberId} className="inline-flex items-baseline gap-1 rounded-sm bg-secondary/70 px-1.5 py-px dark:bg-input/40">
-                          <DimensionValueText value={member.value} maxWidth={220} />
+                    <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Values</h3>
+                    <div className="flex flex-wrap gap-1.5" data-testid="dimension-filter-values">
+                      {filter.data.values.map((value) => (
+                        <span key={value.valueId} className="inline-flex items-baseline gap-1 rounded-sm bg-secondary/70 px-1.5 py-px dark:bg-input/40">
+                          <DimensionValueText value={value.value} maxWidth={220} />
                           <span className="font-mono text-[10.5px] tabular-nums text-muted-foreground">
-                            {member.recordsExact ? "" : "~"}{member.records.toLocaleString("en-US")}
+                            {value.recordsExact ? "" : "~"}{value.records.toLocaleString("en-US")}
                           </span>
                         </span>
                       ))}

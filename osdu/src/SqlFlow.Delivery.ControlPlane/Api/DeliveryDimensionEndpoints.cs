@@ -1,6 +1,7 @@
 using System.Buffers.Text;
 using System.Globalization;
 using System.Text;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.HttpResults;
@@ -19,36 +20,38 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 /// <summary>How the index stores a dimension's field, as its builds settled it.</summary>
 public sealed record DeliveryDimensionFieldDto(string Index, string? NestedPath, string AggregateBy, bool Repeats);
 
-/// <summary>What one build changed of a dimension.</summary>
+/// <summary>What one build changed of a dimension: its values that arrived, left or came back, and its keys that arrived, left, moved or came back.</summary>
 public sealed record DeliveryDimensionChangesDto(
-    long MembersAdded, long MembersRemoved, long MembersRestored, long OriginalsAdded, long OriginalsRemoved, long OriginalsMoved, long OriginalsRestored);
+    long ValuesAdded, long ValuesRemoved, long ValuesRestored, long KeysAdded, long KeysRemoved, long KeysMoved, long KeysRestored);
 
 /// <summary>A kind a build read, with its records and the template it was read against.</summary>
 public sealed record DeliveryDimensionKindDto(string Kind, long Records, string? Template);
 
 /// <summary>
 /// One build of a dimension: who ran it and what came of it, how it read (aggregations, ranges split, ranges scanned, count
-/// queries), how complete the values are (records, records with a value, nulls, values too long for the index's exact field,
-/// values not of the field's type), what it found, and what it changed.
+/// queries, label searches), how complete the keys are (records, records with a key, nulls, keys too long for the index's
+/// exact field, keys not of the field's type), how many keys it labelled, what it found, and what it changed.
 /// </summary>
 public sealed record DeliveryDimensionBuildDto(
-    long DimensionRunId, int DimensionId, Guid? RunId, string Actor, string Status, DateTime StartedUtc, DateTime? CompletedUtc, string? Error,
-    string DefinitionHash, string? Query, string? AggregateBy, long Members, long Originals, long LeftOut, long Unfilterable,
+    long BuildId, int DimensionId, Guid? RunId, string Actor, string Status, DateTime StartedUtc, DateTime? CompletedUtc, string? Error,
+    string DefinitionHash, string? Query, string? AggregateBy, long Values, long Keys, long LeftOut, long Unfilterable,
     long? Records, long? WithValue, long Nulls, long? TooLong, long Unreadable,
     int Aggregations, int Slices, int Splits, int ScannedSlices, int ScanPages, long ScannedUnits, int CountQueries,
+    long Labelled, long Unlabelled, int LabelQueries,
     IReadOnlyList<DeliveryDimensionKindDto> Kinds, IReadOnlyList<string> Notes, DeliveryDimensionChangesDto Changes);
 
 /// <summary>
 /// One dimension of a dimension flow in a partition: what the flow declares of it (or, for one it no longer declares, what
-/// its last build read with), how the index stores its field, what it holds now, the build that wrote that
-/// (<c>Current</c>), and the newest build when that is another one (<c>Latest</c>: one that failed, was cancelled or is
-/// running). <c>DimensionId</c> is null for a dimension no build has registered yet. <c>Changed</c> is true when the
-/// declaration differs from the one the values it holds were built with.
+/// its last build read with), where a key's label is read (<c>Label</c>: the paths through the records a key names), how
+/// the index stores its field, how many values and keys it holds now, the build that wrote that (<c>Current</c>), and the
+/// newest build when that is another one (<c>Latest</c>: one that failed, was cancelled or is running). <c>DimensionId</c> is
+/// null for a dimension no build has registered yet. <c>Changed</c> is true when the declaration differs from the one its
+/// values were built with.
 /// </summary>
 public sealed record DeliveryDimensionDto(
-    int? DimensionId, string Name, string? Description, string Kind, string? Query, string? BuiltQuery, string Path, IReadOnlyList<string> Clean,
-    bool CountRecords, long MaxValues, bool Declared, bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field, long Members, long Originals,
-    DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current, DeliveryDimensionBuildDto? Latest);
+    int? DimensionId, string Name, string? Description, string Kind, string? Query, string? BuiltQuery, string Path, IReadOnlyList<string> Label,
+    IReadOnlyList<string> Clean, bool CountRecords, long MaxValues, bool Declared, bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field,
+    long Values, long Keys, DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current, DeliveryDimensionBuildDto? Latest);
 
 /// <summary>
 /// One dimension flow in the partition a board is read in: its dimensions, the partitions it builds in and whether the
@@ -61,7 +64,7 @@ public sealed record DeliveryDimensionFlowDto(
 
 /// <summary>What a board adds up to, over the dimensions of the flows that build in its partition.</summary>
 public sealed record DeliveryDimensionTotalsDto(
-    int Flows, int Dimensions, int Built, int NotBuilt, int Failing, int Running, int Changed, long Members, long Originals);
+    int Flows, int Dimensions, int Built, int NotBuilt, int Failing, int Running, int Changed, long Values, long Keys);
 
 /// <summary>The dimensions of every dimension flow, or of one, in a partition.</summary>
 public sealed record DeliveryDimensionBoardDto(string? Partition, DeliveryDimensionTotalsDto Totals, IReadOnlyList<DeliveryDimensionFlowDto> Flows);
@@ -70,73 +73,102 @@ public sealed record DeliveryDimensionBoardDto(string? Partition, DeliveryDimens
 public sealed record DeliveryDimensionDetailDto(
     Guid? PipelineId, Guid? RepoId, string FlowName, Guid LedgerId, string? Partition, IReadOnlyList<DeliveryParameterDto> Parameters, DeliveryDimensionDto Dimension);
 
-/// <summary>An original as a list of members shows it beside its member: its text and its count.</summary>
-public sealed record DeliveryDimensionOriginalBriefDto(string Original, long Count);
+/// <summary>A key as a list of values shows it beside its value: the key, its label, and its count.</summary>
+public sealed record DeliveryDimensionKeyBriefDto(string Key, string? Label, long Count);
 
 /// <summary>
-/// A member of a dimension: its clean value, the records holding any of its originals (exact, or the sum of its originals'
-/// counts), its originals and those no query can carry, its search filter when one query holds it, when it arrived and when
-/// a build stopped finding it, and the originals most records hold (<c>Top</c>).
+/// A value of a dimension: the human-friendly value a person picks, the records holding any of its keys (exact, or the sum of
+/// its keys' counts), how many keys it stands for and how many of them no query can carry, the search filter finding its
+/// records when one query holds it (<c>FilterParts</c> queries otherwise), when it arrived and when a build stopped finding
+/// it, and the keys most records hold (<c>Top</c>).
 /// </summary>
-public sealed record DeliveryDimensionMemberDto(
-    long MemberId, string Value, long Records, bool RecordsExact, int Originals, int Unfilterable, string? Filter, int FilterParts,
-    long FirstSeenRunId, DateTime FirstSeenUtc, long? RemovedRunId, DateTime? RemovedUtc, IReadOnlyList<DeliveryDimensionOriginalBriefDto> Top);
-
-/// <summary>A page of members, with the cursor of the next page; null when this is the last.</summary>
-public sealed record DeliveryDimensionMemberPageDto(IReadOnlyList<DeliveryDimensionMemberDto> Items, string? Next);
-
-/// <summary>An original of a dimension: its text exactly as the index holds it, its member or why it has none, and its count.</summary>
 public sealed record DeliveryDimensionValueDto(
-    long ValueId, string Original, long? MemberId, string? Member, string? LeftOut, string? Note, long Count, bool Filterable,
-    long FirstSeenRunId, DateTime FirstSeenUtc, long MemberSinceRunId, long? RemovedRunId, DateTime? RemovedUtc);
+    long ValueId, string Value, long Records, bool RecordsExact, int Keys, int Unfilterable, string? Filter, int FilterParts,
+    long FirstSeenBuildId, DateTime FirstSeenUtc, long? RemovedBuildId, DateTime? RemovedUtc, IReadOnlyList<DeliveryDimensionKeyBriefDto> Top);
 
-/// <summary>A page of originals, with the cursor of the next page; null when this is the last.</summary>
+/// <summary>A page of values, with the cursor of the next page; null when this is the last.</summary>
 public sealed record DeliveryDimensionValuePageDto(IReadOnlyList<DeliveryDimensionValueDto> Items, string? Next);
 
-/// <summary>A change a build made to one original.</summary>
+/// <summary>
+/// A key of a dimension: exactly what the OSDU index holds (an id for a reference), what a search compares; the label read
+/// for it from the record it names and that record's id; the value it belongs to, or why it belongs to none; its count; and
+/// the search filter finding exactly the records holding it.
+/// </summary>
+public sealed record DeliveryDimensionKeyDto(
+    long KeyId, string Key, string? Label, string? LabelFrom, long? ValueId, string? Value, string? LeftOut, string? Note, long Count, bool Filterable,
+    string? Filter, long FirstSeenBuildId, DateTime FirstSeenUtc, long ValueSinceBuildId, long? RemovedBuildId, DateTime? RemovedUtc);
+
+/// <summary>A page of keys, with the cursor of the next page; null when this is the last.</summary>
+public sealed record DeliveryDimensionKeyPageDto(IReadOnlyList<DeliveryDimensionKeyDto> Items, string? Next);
+
+/// <summary>A change a build made to one key: it arrived, left, came back, or moved from one value to another.</summary>
 public sealed record DeliveryDimensionChangeDto(
-    long ChangeId, long DimensionRunId, long ValueId, string Original, string Change, long? FromMemberId, string? FromValue, long? ToMemberId, string? ToValue,
+    long ChangeId, long BuildId, long KeyId, string Key, string Change, long? FromValueId, string? FromValue, long? ToValueId, string? ToValue,
     DateTime ChangedUtc);
 
 /// <summary>A page of the change log, newest first, with the change the next page starts before; null when this is the last.</summary>
 public sealed record DeliveryDimensionChangePageDto(IReadOnlyList<DeliveryDimensionChangeDto> Items, long? Next);
 
-/// <summary>The members a filter is asked for by: by id, by clean value, or both.</summary>
-public sealed record DeliveryDimensionFilterRequest(IReadOnlyList<long>? MemberIds, IReadOnlyList<string>? Values);
+/// <summary>The values a filter is asked for by: by id, by value, or both.</summary>
+public sealed record DeliveryDimensionFilterRequest(IReadOnlyList<long>? ValueIds, IReadOnlyList<string>? Values);
 
-/// <summary>A member a filter covers.</summary>
-public sealed record DeliveryDimensionFilterMemberDto(long MemberId, string Value, long Records, bool RecordsExact, int Originals);
+/// <summary>A value a filter covers.</summary>
+public sealed record DeliveryDimensionFilterValueDto(long ValueId, string Value, long Records, bool RecordsExact, int Keys);
 
 /// <summary>
-/// The search filter of a set of members: the kind to search, the filter queries alone and each joined with the dimension's
-/// own query (the searches to send), the members it covers, and what it leaves out: originals no query can carry, members
-/// no build finds any more, and names that are no member.
+/// The search filter of a set of values: the kind to search, the filter queries alone and each joined with the dimension's
+/// own query (the searches to send), the values it covers and the keys it compares, and what it leaves out: keys no query
+/// can carry, values no build finds any more, and names that are no value.
 /// </summary>
 public sealed record DeliveryDimensionFilterDto(
-    string Kind, string? Query, string AggregateBy, IReadOnlyList<string> Filters, IReadOnlyList<string> Searches, IReadOnlyList<DeliveryDimensionFilterMemberDto> Members,
-    int Originals, int Unfilterable, IReadOnlyList<string> UnfilterableNamed, IReadOnlyList<string> Removed, IReadOnlyList<string> Missing);
+    string Kind, string? Query, string AggregateBy, IReadOnlyList<string> Filters, IReadOnlyList<string> Searches, IReadOnlyList<DeliveryDimensionFilterValueDto> Values,
+    int Keys, int Unfilterable, IReadOnlyList<string> UnfilterableNamed, IReadOnlyList<string> Removed, IReadOnlyList<string> Missing);
 
 /// <summary>
-/// A member with the whole of what the ledger holds of it: its originals, most records first; its filter, or why none can be
-/// written; and the changes that brought originals to it or took them away, newest first.
+/// A value with the whole of what the ledger holds of it: its keys, most records first, each with its label and filter; the
+/// value's filter, or why none can be written; and the changes that brought keys to it or took them away, newest first.
 /// </summary>
-public sealed record DeliveryDimensionMemberDetailDto(
-    DeliveryDimensionMemberDto Member, IReadOnlyList<DeliveryDimensionValueDto> Originals, bool MoreOriginals, DeliveryDimensionFilterDto? Filter,
+public sealed record DeliveryDimensionValueDetailDto(
+    DeliveryDimensionValueDto Value, IReadOnlyList<DeliveryDimensionKeyDto> Keys, bool MoreKeys, DeliveryDimensionFilterDto? Filter,
     string? FilterProblem, IReadOnlyList<DeliveryDimensionChangeDto> History);
 
 /// <summary>A build a platform run made, with the name of the dimension it built.</summary>
 public sealed record DeliveryDimensionRunBuildDto(string Dimension, DeliveryDimensionBuildDto Build);
 
+/// <summary>The values picked in one dimension: by id, by value, or both.</summary>
+public sealed record DeliveryDimensionPickRequest(int DimensionId, IReadOnlyList<long>? ValueIds, IReadOnlyList<string>? Values);
+
+/// <summary>
+/// A search to compose: the values picked in each dimension, the kind to search (left out, the one kind every dimension
+/// reads), and a query narrowing it further.
+/// </summary>
+public sealed record DeliveryDimensionSearchRequest(IReadOnlyList<DeliveryDimensionPickRequest>? Picks, string? Kind, string? Within);
+
+/// <summary>One dimension's part of a composed search: the values picked it holds now, the keys they compare, and its filter.</summary>
+public sealed record DeliveryDimensionSearchPartDto(
+    int DimensionId, string Dimension, string AggregateBy, IReadOnlyList<DeliveryDimensionFilterValueDto> Values, int Keys, int Unfilterable, string Filter,
+    string? Query);
+
+/// <summary>
+/// A composed search: the kind and the query to send, the request body the search service takes, each dimension's part, how
+/// many clauses the query holds, and what the picks left out.
+/// </summary>
+public sealed record DeliveryDimensionSearchDto(
+    string Kind, string Query, string Request, IReadOnlyList<DeliveryDimensionSearchPartDto> Parts, int Clauses, IReadOnlyList<string> Removed,
+    IReadOnlyList<string> Missing, IReadOnlyList<string> Notes);
+
 /// <summary>
 /// The dimensions of dimension flows (docs/dimension-plan.md, Stage 5): boards across every dimension flow and for one, a
-/// dimension with its declaration and builds, its members and originals a page at a time (searched, in value order or with
-/// the most records first), a member with its originals, filter and history, the change log, the filter of any set of
-/// members, an export of the whole, and the builds of a platform run. Every read answers from the ledger; nothing here talks
-/// to OSDU, and building a dimension is a run like any other, queued through the platform's trigger.
+/// dimension with its declaration and builds, its values and keys a page at a time (searched, in value order or with the most
+/// records first), a value with its keys, filter and history, the change log, the filter of any set of values, the search
+/// composed from values picked across a kind's dimensions, an export of the whole, and the builds of a platform run. A key is
+/// exactly what the OSDU index holds, what a search compares; a value is the human-friendly form a person picks, read from
+/// the record a key names or cleaned from the key; every key and value carries the filter that finds its records. Every read
+/// answers from the ledger; nothing here talks to OSDU, and building a dimension is a run like any other.
 /// </summary>
 public static class DeliveryDimensionEndpoints
 {
-    /// <summary>The members or originals a page holds when the request names no limit.</summary>
+    /// <summary>The values or keys a page holds when the request names no limit.</summary>
     public const int DefaultPage = 100;
 
     /// <summary>The builds a dimension's history lists when the request names no limit.</summary>
@@ -145,17 +177,17 @@ public static class DeliveryDimensionEndpoints
     /// <summary>The most dimension flows one board shows.</summary>
     private const int MaxFlows = 500;
 
-    /// <summary>The longest search text: an original is at most this long.</summary>
+    /// <summary>The longest search text: a key is at most this long.</summary>
     private const int MaxSearchLength = 1024;
 
-    /// <summary>The originals a page of members shows beside each member.</summary>
-    private const int TopOriginals = 5;
+    /// <summary>The keys a page of values shows beside each value.</summary>
+    private const int TopKeys = 5;
 
-    /// <summary>The originals a member's page lists; a member with more pages through the originals list.</summary>
-    private const int MemberOriginals = 500;
+    /// <summary>The keys a value's page lists; a value with more pages through the keys list.</summary>
+    private const int ValueKeys = 500;
 
-    /// <summary>The changes a member's page lists.</summary>
-    private const int MemberHistory = 200;
+    /// <summary>The changes a value's page lists.</summary>
+    private const int ValueHistory = 200;
 
     private static readonly string[] ChangeKinds =
         [DimensionChangeKinds.Added, DimensionChangeKinds.Removed, DimensionChangeKinds.Moved, DimensionChangeKinds.Restored];
@@ -166,16 +198,18 @@ public static class DeliveryDimensionEndpoints
         delivery.MapGet("/dimensions", GetBoardAsync).WithName("GetDeliveryDimensionBoard");
         delivery.MapGet("/flows/{pipelineId:guid}/dimensions", GetFlowBoardAsync).WithName("GetDeliveryDimensionFlowBoard");
         delivery.MapGet("/dimensions/{dimensionId:int}", GetDimensionAsync).WithName("GetDeliveryDimension");
-        delivery.MapGet("/dimensions/{dimensionId:int}/members", ListMembersAsync).WithName("ListDeliveryDimensionMembers");
-        delivery.MapGet("/dimensions/{dimensionId:int}/members/{memberId:long}", GetMemberAsync).WithName("GetDeliveryDimensionMember");
         delivery.MapGet("/dimensions/{dimensionId:int}/values", ListValuesAsync).WithName("ListDeliveryDimensionValues");
+        delivery.MapGet("/dimensions/{dimensionId:int}/values/{valueId:long}", GetValueAsync).WithName("GetDeliveryDimensionValue");
+        delivery.MapGet("/dimensions/{dimensionId:int}/keys", ListKeysAsync).WithName("ListDeliveryDimensionKeys");
         delivery.MapGet("/dimensions/{dimensionId:int}/builds", ListBuildsAsync).WithName("ListDeliveryDimensionBuilds");
         delivery.MapGet("/dimensions/{dimensionId:int}/changes", ListChangesAsync).WithName("ListDeliveryDimensionChanges");
         delivery.MapGet("/dimensions/{dimensionId:int}/export", ExportAsync).WithName("ExportDeliveryDimension");
         delivery.MapGet("/runs/{runId:guid}/dimension-builds", ListRunBuildsAsync).WithName("ListDeliveryRunDimensionBuilds");
 
-        // Writing a filter reads the ledger and changes nothing; the members ride in the body, since a set of them can be long.
+        // Writing a filter or composing a search reads the ledger and changes nothing; the picks ride in the body, since a
+        // set of them can be long.
         delivery.MapPost("/dimensions/{dimensionId:int}/filter", FilterAsync).WithName("GetDeliveryDimensionFilter");
+        delivery.MapPost("/dimensions/search", SearchAsync).WithName("ComposeDeliveryDimensionSearch");
     }
 
     /// <summary>Every active dimension flow of the catalog, each in the partition the request reads.</summary>
@@ -230,7 +264,7 @@ public static class DeliveryDimensionEndpoints
             ToDto(spec, dimension.Partition, dimension, builds)));
     }
 
-    private static async Task<Results<Ok<DeliveryDimensionMemberPageDto>, ProblemHttpResult>> ListMembersAsync(
+    private static async Task<Results<Ok<DeliveryDimensionValuePageDto>, ProblemHttpResult>> ListValuesAsync(
         int dimensionId, string? search, string? order, bool? removed, string? after, int? limit, ILedger ledger, CancellationToken ct)
     {
         if (SearchProblem(search) is { } badSearch)
@@ -254,7 +288,7 @@ public static class DeliveryDimensionEndpoints
         DimensionMemberCursor? cursor = null;
         if (!string.IsNullOrWhiteSpace(after))
         {
-            cursor = MemberCursorOf(after);
+            cursor = ValueCursorOf(after);
             if (cursor is null)
             {
                 return BadCursor(after);
@@ -268,17 +302,17 @@ public static class DeliveryDimensionEndpoints
 
         var take = PageSize(limit);
         var members = await ledger.ListDimensionMembersAsync(dimensionId, new DimensionMemberQuery(search, removed ?? false, cursor, take, sorted), ct).ConfigureAwait(false);
-        var top = (await ledger.TopMemberOriginalsAsync(dimensionId, members.Select(m => m.MemberId).ToList(), TopOriginals, ct).ConfigureAwait(false))
+        var top = (await ledger.TopMemberOriginalsAsync(dimensionId, members.Select(m => m.MemberId).ToList(), TopKeys, ct).ConfigureAwait(false))
             .GroupBy(v => v.MemberId ?? 0)
-            .ToDictionary(g => g.Key, g => (IReadOnlyList<DeliveryDimensionOriginalBriefDto>)g
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<DeliveryDimensionKeyBriefDto>)g
                 .OrderByDescending(v => v.Count).ThenBy(v => v.ValueId)
-                .Select(v => new DeliveryDimensionOriginalBriefDto(v.Original, v.Count)).ToList());
+                .Select(v => new DeliveryDimensionKeyBriefDto(v.Original, v.Label, v.Count)).ToList());
         var items = members.Select(m => ToDto(m, top.GetValueOrDefault(m.MemberId) ?? [])).ToList();
-        return TypedResults.Ok(new DeliveryDimensionMemberPageDto(items, members.Count == take ? MemberCursor(members[^1]) : null));
+        return TypedResults.Ok(new DeliveryDimensionValuePageDto(items, members.Count == take ? ValueCursor(members[^1]) : null));
     }
 
-    private static async Task<Results<Ok<DeliveryDimensionMemberDetailDto>, ProblemHttpResult>> GetMemberAsync(
-        int dimensionId, long memberId, ILedger ledger, CancellationToken ct)
+    private static async Task<Results<Ok<DeliveryDimensionValueDetailDto>, ProblemHttpResult>> GetValueAsync(
+        int dimensionId, long valueId, ILedger ledger, CancellationToken ct)
     {
         var dimension = await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false);
         if (dimension is null)
@@ -286,27 +320,27 @@ public static class DeliveryDimensionEndpoints
             return NoDimension(dimensionId);
         }
 
-        var named = await ledger.GetDimensionMembersAsync(dimensionId, [memberId], [], ct).ConfigureAwait(false);
+        var named = await ledger.GetDimensionMembersAsync(dimensionId, [valueId], [], ct).ConfigureAwait(false);
         var member = named.Count > 0 ? named[0] : null;
         if (member is null)
         {
-            return Problem(StatusCodes.Status404NotFound, "Not found", $"Dimension {dimension.Name} has no member {memberId}.");
+            return Problem(StatusCodes.Status404NotFound, "Not found", $"Dimension {dimension.Name} has no value {valueId}.");
         }
 
-        var originals = await ledger.ListDimensionValuesAsync(
-            dimensionId, new DimensionValueQuery(null, memberId, false, false, null, MemberOriginals + 1, DimensionValueOrder.Count), ct).ConfigureAwait(false);
-        var history = await ledger.ListDimensionChangesAsync(dimensionId, new DimensionChangeQuery(null, null, memberId, null, null, MemberHistory), ct).ConfigureAwait(false);
+        var keys = await ledger.ListDimensionValuesAsync(
+            dimensionId, new DimensionValueQuery(null, valueId, false, false, null, ValueKeys + 1, DimensionValueOrder.Count), ct).ConfigureAwait(false);
+        var history = await ledger.ListDimensionChangesAsync(dimensionId, new DimensionChangeQuery(null, null, valueId, null, null, ValueHistory), ct).ConfigureAwait(false);
         DeliveryDimensionFilterDto? filter = null;
         string? filterProblem = null;
         if (member.RemovedRunId is not null)
         {
-            filterProblem = "No build finds this member any more, so it holds no original a filter could find.";
+            filterProblem = "No build finds this value any more, so it stands for no key a filter could find.";
         }
         else
         {
             try
             {
-                filter = ToDto(await DimensionFilters.ForMembersAsync(ledger, dimension, [memberId], [], ct).ConfigureAwait(false));
+                filter = ToDto(await DimensionFilters.ForMembersAsync(ledger, dimension, [valueId], [], ct).ConfigureAwait(false));
             }
             catch (Exception ex) when (ex is DeliveryException or OsduQueryException)
             {
@@ -314,14 +348,13 @@ public static class DeliveryDimensionEndpoints
             }
         }
 
-        var top = originals.Take(TopOriginals).Select(v => new DeliveryDimensionOriginalBriefDto(v.Original, v.Count)).ToList();
-        return TypedResults.Ok(new DeliveryDimensionMemberDetailDto(
-            ToDto(member, top), originals.Take(MemberOriginals).Select(ToDto).ToList(), originals.Count > MemberOriginals, filter, filterProblem,
-            history.Select(ToDto).ToList()));
+        var top = keys.Take(TopKeys).Select(v => new DeliveryDimensionKeyBriefDto(v.Original, v.Label, v.Count)).ToList();
+        return TypedResults.Ok(new DeliveryDimensionValueDetailDto(
+            ToDto(member, top), keys.Take(ValueKeys).Select(ToDto).ToList(), keys.Count > ValueKeys, filter, filterProblem, history.Select(ToDto).ToList()));
     }
 
-    private static async Task<Results<Ok<DeliveryDimensionValuePageDto>, ProblemHttpResult>> ListValuesAsync(
-        int dimensionId, string? search, long? member, bool? leftOut, bool? removed, string? order, string? after, int? limit, ILedger ledger, CancellationToken ct)
+    private static async Task<Results<Ok<DeliveryDimensionKeyPageDto>, ProblemHttpResult>> ListKeysAsync(
+        int dimensionId, string? search, long? value, bool? leftOut, bool? removed, string? order, string? after, int? limit, ILedger ledger, CancellationToken ct)
     {
         if (SearchProblem(search) is { } badSearch)
         {
@@ -341,15 +374,15 @@ public static class DeliveryDimensionEndpoints
                 return Problem(StatusCodes.Status400BadRequest, "Unknown order", $"order '{order}' is not one of arrival, count.");
         }
 
-        if (member is not null && leftOut == true)
+        if (value is not null && leftOut == true)
         {
-            return Problem(StatusCodes.Status400BadRequest, "Conflicting filters", "An original under a member is not left out: ask for a member's originals or for those under none, not both.");
+            return Problem(StatusCodes.Status400BadRequest, "Conflicting filters", "A key of a value is not left out: ask for a value's keys or for those of no value, not both.");
         }
 
         DimensionValueCursor? cursor = null;
         if (!string.IsNullOrWhiteSpace(after))
         {
-            cursor = ValueCursorOf(after);
+            cursor = KeyCursorOf(after);
             if (cursor is null)
             {
                 return BadCursor(after);
@@ -362,9 +395,9 @@ public static class DeliveryDimensionEndpoints
         }
 
         var take = PageSize(limit);
-        var values = await ledger.ListDimensionValuesAsync(
-            dimensionId, new DimensionValueQuery(search, member, leftOut ?? false, removed ?? false, cursor, take, sorted), ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryDimensionValuePageDto(values.Select(ToDto).ToList(), values.Count == take ? ValueCursor(values[^1]) : null));
+        var keys = await ledger.ListDimensionValuesAsync(
+            dimensionId, new DimensionValueQuery(search, value, leftOut ?? false, removed ?? false, cursor, take, sorted), ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliveryDimensionKeyPageDto(keys.Select(ToDto).ToList(), keys.Count == take ? KeyCursor(keys[^1]) : null));
     }
 
     private static async Task<Results<Ok<IReadOnlyList<DeliveryDimensionBuildDto>>, ProblemHttpResult>> ListBuildsAsync(
@@ -380,7 +413,7 @@ public static class DeliveryDimensionEndpoints
     }
 
     private static async Task<Results<Ok<DeliveryDimensionChangePageDto>, ProblemHttpResult>> ListChangesAsync(
-        int dimensionId, long? build, long? value, long? member, string? change, long? before, int? limit, ILedger ledger, CancellationToken ct)
+        int dimensionId, long? build, long? key, long? value, string? change, long? before, int? limit, ILedger ledger, CancellationToken ct)
     {
         var kind = string.IsNullOrWhiteSpace(change) ? null : change.Trim().ToLowerInvariant();
         if (kind is not null && !ChangeKinds.Contains(kind, StringComparer.Ordinal))
@@ -394,7 +427,7 @@ public static class DeliveryDimensionEndpoints
         }
 
         var take = PageSize(limit);
-        var changes = await ledger.ListDimensionChangesAsync(dimensionId, new DimensionChangeQuery(build, value, member, kind, before, take), ct).ConfigureAwait(false);
+        var changes = await ledger.ListDimensionChangesAsync(dimensionId, new DimensionChangeQuery(build, key, value, kind, before, take), ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryDimensionChangePageDto(changes.Select(ToDto).ToList(), changes.Count == take ? changes[^1].ChangeId : null));
     }
 
@@ -407,11 +440,11 @@ public static class DeliveryDimensionEndpoints
             return NoDimension(dimensionId);
         }
 
-        var ids = body?.MemberIds ?? [];
+        var ids = body?.ValueIds ?? [];
         var values = (body?.Values ?? []).Where(v => v is not null).ToList();
         if (values.Any(v => v.Length > DimensionSpec.MaxCleanLength))
         {
-            return Problem(StatusCodes.Status400BadRequest, "Invalid member", $"A clean value is at most {DimensionSpec.MaxCleanLength} characters.");
+            return Problem(StatusCodes.Status400BadRequest, "Invalid value", $"A value is at most {DimensionSpec.MaxCleanLength} characters.");
         }
 
         try
@@ -424,12 +457,71 @@ public static class DeliveryDimensionEndpoints
         }
     }
 
+    /// <summary>
+    /// The OSDU search finding the records that hold one of the values picked in each dimension: OR within a dimension, AND
+    /// across dimensions, within each dimension's own query, in the kind every dimension reads (or the one the request names).
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryDimensionSearchDto>, ProblemHttpResult>> SearchAsync(
+        DeliveryDimensionSearchRequest? body, ILedger ledger, CancellationToken ct)
+    {
+        var requested = body?.Picks ?? [];
+        if (requested.Count == 0)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Nothing picked", "A search is composed from at least one value picked in a dimension.");
+        }
+
+        if (requested.Count > DimensionSearch.MaxDimensions)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Too many dimensions", string.Create(CultureInfo.InvariantCulture, $"A search combines at most {DimensionSearch.MaxDimensions} dimensions."));
+        }
+
+        if (body?.Within is { Length: > 4000 })
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Query too long", "The query narrowing a search is at most 4000 characters.");
+        }
+
+        var picks = new List<DimensionPick>(requested.Count);
+        foreach (var pick in requested)
+        {
+            var dimension = await ledger.GetDimensionAsync(pick.DimensionId, ct).ConfigureAwait(false);
+            if (dimension is null)
+            {
+                return NoDimension(pick.DimensionId);
+            }
+
+            var values = (pick.Values ?? []).Where(v => v is not null).ToList();
+            if (values.Any(v => v.Length > DimensionSpec.MaxCleanLength))
+            {
+                return Problem(StatusCodes.Status400BadRequest, "Invalid value", $"A value is at most {DimensionSpec.MaxCleanLength} characters.");
+            }
+
+            picks.Add(new DimensionPick(dimension, pick.ValueIds ?? [], values));
+        }
+
+        try
+        {
+            var set = await DimensionSearch.ComposeAsync(ledger, picks, body?.Kind, body?.Within, ct).ConfigureAwait(false);
+            var request = new JsonObject { ["kind"] = set.Kind, ["query"] = set.Query, ["limit"] = 1000 }.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+            return TypedResults.Ok(new DeliveryDimensionSearchDto(
+                set.Kind, set.Query, request,
+                set.Parts.Select(p => new DeliveryDimensionSearchPartDto(
+                    p.DimensionId, p.Dimension, p.AggregateBy,
+                    p.Values.Select(v => new DeliveryDimensionFilterValueDto(v.MemberId, v.Value, v.Records, v.RecordsExact, v.Originals)).ToList(),
+                    p.Keys, p.Unfilterable, p.Filter, p.Query)).ToList(),
+                set.Clauses, set.Removed, set.Missing, set.Notes));
+        }
+        catch (Exception ex) when (ex is DeliveryException or OsduQueryException)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "No search", ex.Message);
+        }
+    }
+
     private static async Task<Results<PushStreamHttpResult, ProblemHttpResult>> ExportAsync(
         int dimensionId, string? set, string? format, ILedger ledger, CancellationToken ct)
     {
         if (DimensionExport.SetOf(set) is not { } chosenSet)
         {
-            return Problem(StatusCodes.Status400BadRequest, "Unknown set", $"set '{set}' is not one of members, originals.");
+            return Problem(StatusCodes.Status400BadRequest, "Unknown set", $"set '{set}' is not one of values, keys.");
         }
 
         if (DimensionExport.FormatOf(format) is not { } chosenFormat)
@@ -443,8 +535,8 @@ public static class DeliveryDimensionEndpoints
             return NoDimension(dimensionId);
         }
 
-        // The export is written as it is read, a ledger page at a time, so a dimension of millions of originals is never held
-        // whole; the request's own cancellation stops it when the caller goes away.
+        // The export is written as it is read, a ledger page at a time, so a dimension of millions of keys is never held whole;
+        // the request's own cancellation stops it when the caller goes away.
         return TypedResults.Stream(
             stream => DimensionExport.WriteAsync(ledger, dimension, chosenSet, chosenFormat, stream, ct),
             DimensionExport.MediaType(chosenFormat),
@@ -626,8 +718,8 @@ public static class DeliveryDimensionEndpoints
             dimensions.Count(d => d.Latest is { Status: DimensionRunStatus.Failed }),
             dimensions.Count(d => d.Latest is { Status: DimensionRunStatus.Running }),
             dimensions.Count(d => d.Changed),
-            dimensions.Sum(d => d.Members),
-            dimensions.Sum(d => d.Originals));
+            dimensions.Sum(d => d.Values),
+            dimensions.Sum(d => d.Keys));
     }
 
     private static DeliveryDimensionDto ToDto(DimensionSpec? spec, string? partition, DimensionState? state, BuildIndex builds)
@@ -643,6 +735,7 @@ public static class DeliveryDimensionEndpoints
             spec?.Query ?? state?.Query,
             current?.Query ?? state?.Query,
             spec?.Path ?? state!.Path,
+            spec?.Label ?? DimensionRunner.LabelOf(state?.LabelJson),
             steps.Select(s => s.Describe()).ToList(),
             spec?.CountRecords ?? false,
             spec?.MaxValues ?? DimensionSpec.DefaultMaxValues,
@@ -661,26 +754,27 @@ public static class DeliveryDimensionEndpoints
         r.DimensionRunId, r.DimensionId, r.RunId, r.Actor, r.Status, r.StartedUtc, r.CompletedUtc, r.Error, r.DefinitionHash, r.Query, r.AggregateBy,
         r.Members, r.Originals, r.LeftOut, r.Unfilterable, r.Read.Records, r.Read.WithValue, r.Read.Nulls, r.Read.TooLong, r.Read.Unreadable,
         r.Read.Aggregations, r.Read.Slices, r.Read.Splits, r.Read.ScannedSlices, r.Read.ScanPages, r.Read.ScannedUnits, r.Read.CountQueries,
+        r.Read.Labelled, r.Read.Unlabelled, r.Read.LabelQueries,
         DimensionRunner.KindsOf(r.Read.Templates).Select(k => new DeliveryDimensionKindDto(k.Kind, k.Records, k.Template)).ToList(),
         r.Read.Notes,
         new DeliveryDimensionChangesDto(
             r.Changes.MembersAdded, r.Changes.MembersRemoved, r.Changes.MembersRestored, r.Changes.OriginalsAdded, r.Changes.OriginalsRemoved,
             r.Changes.OriginalsMoved, r.Changes.OriginalsRestored));
 
-    private static DeliveryDimensionMemberDto ToDto(DimensionMemberState m, IReadOnlyList<DeliveryDimensionOriginalBriefDto> top) => new(
+    private static DeliveryDimensionValueDto ToDto(DimensionMemberState m, IReadOnlyList<DeliveryDimensionKeyBriefDto> top) => new(
         m.MemberId, m.Value, m.Records, m.RecordsExact, m.Originals, m.Unfilterable, m.Filter, m.FilterParts, m.FirstSeenRunId, m.FirstSeenUtc, m.RemovedRunId,
         m.RemovedUtc, top);
 
-    private static DeliveryDimensionValueDto ToDto(DimensionValueState v) => new(
-        v.ValueId, v.Original, v.MemberId, v.MemberValue, v.LeftOut, v.Note, v.Count, v.Filterable, v.FirstSeenRunId, v.FirstSeenUtc, v.MemberSinceRunId,
-        v.RemovedRunId, v.RemovedUtc);
+    private static DeliveryDimensionKeyDto ToDto(DimensionValueState v) => new(
+        v.ValueId, v.Original, v.Label, v.LabelFrom, v.MemberId, v.MemberValue, v.LeftOut, v.Note, v.Count, v.Filterable, v.Filter, v.FirstSeenRunId,
+        v.FirstSeenUtc, v.MemberSinceRunId, v.RemovedRunId, v.RemovedUtc);
 
     private static DeliveryDimensionChangeDto ToDto(DimensionChangeState c) => new(
         c.ChangeId, c.DimensionRunId, c.ValueId, c.Original, c.Change, c.FromMemberId, c.FromValue, c.ToMemberId, c.ToValue, c.ChangedUtc);
 
     private static DeliveryDimensionFilterDto ToDto(DimensionFilterSet f) => new(
         f.Kind, f.Query, f.AggregateBy, f.Filters, f.Searches,
-        f.Members.Select(m => new DeliveryDimensionFilterMemberDto(m.MemberId, m.Value, m.Records, m.RecordsExact, m.Originals)).ToList(),
+        f.Members.Select(m => new DeliveryDimensionFilterValueDto(m.MemberId, m.Value, m.Records, m.RecordsExact, m.Originals)).ToList(),
         f.Originals, f.Unfilterable, f.UnfilterableNamed, f.Removed, f.Missing);
 
     /// <summary>The parameters a run of the flow takes, in the order the document declares them.</summary>
@@ -691,25 +785,25 @@ public static class DeliveryDimensionEndpoints
 
     private static ProblemHttpResult? SearchProblem(string? search)
         => search is { Length: > MaxSearchLength }
-            ? Problem(StatusCodes.Status400BadRequest, "Search too long", $"A search is at most {MaxSearchLength} characters, the longest original a dimension keeps.")
+            ? Problem(StatusCodes.Status400BadRequest, "Search too long", $"A search is at most {MaxSearchLength} characters, the longest key a dimension keeps.")
             : null;
 
     /// <summary>
-    /// The cursor a page of members ends at: the last member's records and clean value, carried opaquely so the next request
-    /// hands it back as it was given.
+    /// The cursor a page of values ends at: the last value's records and text, carried opaquely so the next request hands it
+    /// back as it was given.
     /// </summary>
-    internal static string MemberCursor(DimensionMemberState last)
+    internal static string ValueCursor(DimensionMemberState last)
         => Base64Url.EncodeToString(Encoding.UTF8.GetBytes(string.Create(CultureInfo.InvariantCulture, $"{last.Records}:{last.Value}")));
 
-    /// <summary>The member cursor a request handed back, or null when it is not one this API gave.</summary>
-    internal static DimensionMemberCursor? MemberCursorOf(string text)
+    /// <summary>The value cursor a request handed back, or null when it is not one this API gave.</summary>
+    internal static DimensionMemberCursor? ValueCursorOf(string text)
     {
         if (Decoded(text) is not { } decoded)
         {
             return null;
         }
 
-        // The records come first and hold no colon; the clean value is everything after the first one, colons included.
+        // The records come first and hold no colon; the value is everything after the first one, colons included.
         var at = decoded.IndexOf(':', StringComparison.Ordinal);
         var value = at > 0 ? decoded[(at + 1)..] : string.Empty;
         return value.Length is > 0 and <= DimensionSpec.MaxCleanLength
@@ -718,12 +812,12 @@ public static class DeliveryDimensionEndpoints
                 : null;
     }
 
-    /// <summary>The cursor a page of originals ends at: the last original's count and id.</summary>
-    internal static string ValueCursor(DimensionValueState last)
+    /// <summary>The cursor a page of keys ends at: the last key's count and id.</summary>
+    internal static string KeyCursor(DimensionValueState last)
         => Base64Url.EncodeToString(Encoding.UTF8.GetBytes(string.Create(CultureInfo.InvariantCulture, $"{last.Count}:{last.ValueId}")));
 
-    /// <summary>The original cursor a request handed back, or null when it is not one this API gave.</summary>
-    internal static DimensionValueCursor? ValueCursorOf(string text)
+    /// <summary>The key cursor a request handed back, or null when it is not one this API gave.</summary>
+    internal static DimensionValueCursor? KeyCursorOf(string text)
     {
         if (Decoded(text) is not { } decoded || decoded.Split(':') is not [var count, var id])
         {
@@ -731,8 +825,8 @@ public static class DeliveryDimensionEndpoints
         }
 
         return long.TryParse(count, NumberStyles.Integer, CultureInfo.InvariantCulture, out var counted)
-            && long.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var valueId)
-                ? new DimensionValueCursor(valueId, counted)
+            && long.TryParse(id, NumberStyles.Integer, CultureInfo.InvariantCulture, out var keyId)
+                ? new DimensionValueCursor(keyId, counted)
                 : null;
     }
 

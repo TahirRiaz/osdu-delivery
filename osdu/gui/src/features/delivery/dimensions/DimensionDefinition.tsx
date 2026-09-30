@@ -7,17 +7,21 @@ import { KindText } from "../KindText";
 import { fieldText, type DimensionEntry } from "./dimensionFormat";
 
 /**
- * The steps that clean each original, as a pipeline a value runs through left to right; an original the steps leave as it
- * is its own member.
+ * The steps that clean each key (or its label) into its value, as a pipeline a value runs through left to right; with no
+ * step, the label, or the key itself, is the value.
  */
-function CleanSteps({ steps }: { steps: string[] }) {
+function CleanSteps({ steps, labelled }: { steps: string[]; labelled: boolean }) {
   if (steps.length === 0) {
-    return <p className="text-[13px] text-muted-foreground">None: every original is its own member, exactly as the index holds it.</p>;
+    return (
+      <p className="text-[13px] text-muted-foreground">
+        {labelled ? "None: each key's label is its value, trimmed." : "None: each key is its own value, trimmed."}
+      </p>
+    );
   }
 
   return (
     <ol className="flex flex-wrap items-center gap-1.5" data-testid="dimension-clean-steps">
-      <li className="font-mono text-[12px] text-muted-foreground">original</li>
+      <li className="font-mono text-[12px] text-muted-foreground">{labelled ? "label" : "key"}</li>
       {steps.map((step, index) => (
         <Fragment key={`${index}:${step}`}>
           <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden />
@@ -27,15 +31,42 @@ function CleanSteps({ steps }: { steps: string[] }) {
         </Fragment>
       ))}
       <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden />
-      <li className="font-mono text-[12px] text-muted-foreground">member</li>
+      <li className="font-mono text-[12px] text-muted-foreground">value</li>
+    </ol>
+  );
+}
+
+/**
+ * Where a key's label is read: from the record the key names, through each step's reference to the next record, to the
+ * text the last step holds; or that each key is its own value.
+ */
+function LabelSteps({ steps }: { steps: string[] }) {
+  if (steps.length === 0) {
+    return <p className="text-[13px] text-muted-foreground">None: each key is cleaned into its value itself.</p>;
+  }
+
+  return (
+    <ol className="flex flex-wrap items-center gap-1.5" data-testid="dimension-label-steps">
+      <li className="font-mono text-[12px] text-muted-foreground">the record the key names</li>
+      {steps.map((step, index) => (
+        <Fragment key={`${index}:${step}`}>
+          <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden />
+          <li className="rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[12px] dark:bg-input/40" data-testid="dimension-label-step">
+            {step}
+          </li>
+        </Fragment>
+      ))}
+      <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden />
+      <li className="font-mono text-[12px] text-muted-foreground">label</li>
     </ol>
   );
 }
 
 /**
  * How the flow declares a dimension, and how its builds settled it: the kind, query and path it reads, how the index
- * stores the field and the aggregation that reads it, the steps that clean each original, whether members' records are
- * counted exactly, the most values it reads, and the kinds its last build read with the template of each.
+ * stores the field and the aggregation that reads it, where a key's label is read, the steps that clean each into its
+ * value, whether values' records are counted exactly, the most keys it reads, and the kinds its last build read with the
+ * template of each.
  */
 export function DimensionDefinition({ entry }: { entry: DimensionEntry }) {
   const { dimension, flow } = entry;
@@ -60,16 +91,20 @@ export function DimensionDefinition({ entry }: { entry: DimensionEntry }) {
           {dimension.field !== null && (
             <DetailPair label="Aggregated as"><span className="break-all font-mono text-[12px]">{dimension.field.aggregateBy}</span></DetailPair>
           )}
-          <DetailPair label="Records per member">
-            {dimension.countRecords ? "counted exactly, a search per member" : "exact where a record holds one value, else summed"}
+          <DetailPair label="Records per value">
+            {dimension.countRecords ? "counted exactly, a search per value" : "exact where a record holds one key, else summed"}
           </DetailPair>
-          <DetailPair label="Most values read"><span className="font-mono tabular-nums">{dimension.maxValues.toLocaleString("en-US")}</span></DetailPair>
+          <DetailPair label="Most keys read"><span className="font-mono tabular-nums">{dimension.maxValues.toLocaleString("en-US")}</span></DetailPair>
           <DetailPair label="Flow"><span className="font-mono text-[12px]">{flow.name}</span></DetailPair>
           <DetailPair label="Partition"><span className="font-mono text-[12px]">{flow.partition ?? "the one its data-partition-id header names"}</span></DetailPair>
         </div>
         <div className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Label</span>
+          <LabelSteps steps={dimension.label} />
+        </div>
+        <div className="flex flex-col gap-1.5">
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Clean</span>
-          <CleanSteps steps={dimension.clean} />
+          <CleanSteps steps={dimension.clean} labelled={dimension.label.length > 0} />
         </div>
       </Card>
 

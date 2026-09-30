@@ -1370,6 +1370,9 @@ internal sealed class DimensionYaml
 
     public string? Path { get; set; }
 
+    // A path of the record each key names, or a list of them, each but the last reading a reference; read by the mapper.
+    public object? Label { get; set; }
+
     // Each step a name ("trim") or a one-key map ({ replace: { pattern, with } }, { map: CurveAliases }), read by the mapper.
     public List<object>? Clean { get; set; }
 

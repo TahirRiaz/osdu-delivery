@@ -32,6 +32,9 @@ public sealed class SqlServerLedgerMigrationTests
 
     private const string BeforeDimensions = "20260929220041_ActivityIdle";
 
+    /// <summary>The migration before dimensions kept each key's label and filter.</summary>
+    private const string BeforeDimensionLabels = "20260930103543_DimensionFlows";
+
     /// <summary>The tables of dimension flows, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] DimensionTables = ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange"];
 
@@ -585,6 +588,35 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(0L, await database.ScalarAsync(Tables));
         await database.MigrateAsync(null);
         Assert.Equal(5L, await database.ScalarAsync(Tables));
+    }
+
+    [Fact]
+    public async Task A_dimension_written_before_labels_keeps_its_keys_and_takes_the_label_and_filter_columns_empty()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeDimensionLabels);
+        await database.ExecuteAsync("""
+            INSERT INTO [osdu].[LedgerPartition] ([Name], [CreatedUtc]) VALUES (N'dev', SYSUTCDATETIME());
+            DECLARE @p smallint = (SELECT [PartitionId] FROM [osdu].[LedgerPartition] WHERE [Name] = N'dev');
+            INSERT INTO [osdu].[Dimension] ([PartitionId], [FlowId], [FlowName], [Name], [Kind], [Path], [Repeats], [CleanJson], [DefinitionHash], [Members], [Originals], [CreatedUtc])
+            VALUES (@p, NEWID(), N'wells', N'Wellbore', N'osdu:wks:work-product-component--WellLog:1.4.0', N'data.WellboreID', 0, N'[]', N'0123456789abcdef', 1, 1, SYSUTCDATETIME());
+            DECLARE @d int = SCOPE_IDENTITY();
+            INSERT INTO [osdu].[DimensionValue] ([PartitionId], [DimensionId], [Original], [OriginalHash], [Count], [Filterable], [FirstSeenRunId], [FirstSeenUtc], [MemberSinceRunId])
+            VALUES (@p, @d, N'dev:master-data--Wellbore:1:', HASHBYTES('SHA2_256', CAST(N'x' AS varbinary(max))), 4, 1, 1, SYSUTCDATETIME(), 1);
+            """);
+
+        await database.MigrateAsync(null);
+
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionValue] WHERE [Label] IS NULL AND [LabelFrom] IS NULL AND [Filter] IS NULL AND [Count] = 4;"));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Dimension] WHERE [LabelJson] IS NULL;"));
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, DimensionTables), await database.IndexesAsync(DimensionTables));
+        }
+
+        await database.MigrateAsync(BeforeDimensionLabels);
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[DimensionValue]') AND [name] IN (N'Label', N'LabelFrom', N'Filter');"));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionValue];"));
     }
 
     /// <summary>

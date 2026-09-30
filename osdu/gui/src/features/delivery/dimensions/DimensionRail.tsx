@@ -1,9 +1,9 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { LayoutGrid } from "lucide-react";
+import { LayoutGrid, Search } from "lucide-react";
 import { SearchInput } from "@/components/SearchInput";
 import { cn } from "@/lib/utils";
 import { StandingGlyph } from "./DimensionBadges";
-import type { DimensionEntry } from "./dimensionFormat";
+import { SEARCH_REF, type DimensionEntry } from "./dimensionFormat";
 
 /** How a count reads in the rail: whole below ten thousand, then in thousands or millions, so a column of them stays narrow. */
 function compact(count: number): string {
@@ -12,7 +12,7 @@ function compact(count: number): string {
     : new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(count);
 }
 
-/** One entry of the rail: every dimension at once, or one dimension with where it stands and how many members it holds. */
+/** One entry of the rail: every dimension at once, the search builder, or one dimension with where it stands and how many values it holds. */
 function RailItem({ label, count, selected, dim, lead, onClick, testId, dimension }: {
   label: string;
   count: number | null;
@@ -50,12 +50,13 @@ function RailItem({ label, count, selected, dim, lead, onClick, testId, dimensio
 
 /**
  * The dimensions of the partition as a list beside the page, grouped by the flow that declares them, each with where it
- * stands (a glyph in its status colour) and how many members it holds. A filter over the names narrows it when a partition
- * holds many. Picking a dimension opens it; Every dimension opens the overview of them all.
+ * stands (a glyph in its status colour) and how many values it holds. A filter over the names narrows it when a partition
+ * holds many. Picking a dimension opens it; Every dimension opens the overview of them all, and Build a search the search
+ * builder, which picks values across a kind's dimensions.
  */
 export function DimensionRail({ entries, selected, onSelect, className }: {
   entries: DimensionEntry[];
-  /** The dimension in view, by its link name; null for the overview. */
+  /** The dimension in view, by its link name; null for the overview, and SEARCH_REF for the search builder. */
   selected: string | null;
   onSelect: (ref: string | null) => void;
   className?: string;
@@ -80,7 +81,7 @@ export function DimensionRail({ entries, selected, onSelect, className }: {
 
     return byFlow;
   }, [entries, lowered]);
-  const members = entries.reduce((sum, entry) => sum + entry.dimension.members, 0);
+  const values = entries.reduce((sum, entry) => sum + entry.dimension.values, 0);
 
   return (
     <nav
@@ -90,7 +91,7 @@ export function DimensionRail({ entries, selected, onSelect, className }: {
     >
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-border px-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         <span>Dimensions</span>
-        <span className="normal-case tracking-normal">members</span>
+        <span className="normal-case tracking-normal">values</span>
       </div>
       {entries.length > 8 && (
         <div className="shrink-0 border-b border-border p-2">
@@ -100,12 +101,21 @@ export function DimensionRail({ entries, selected, onSelect, className }: {
       <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
         <RailItem
           label="Every dimension"
-          count={members}
+          count={values}
           selected={selected === null}
           dim={false}
           lead={<LayoutGrid className="size-4 shrink-0 opacity-75" />}
           onClick={() => onSelect(null)}
           testId="dimension-rail-all"
+        />
+        <RailItem
+          label="Build a search"
+          count={null}
+          selected={selected === SEARCH_REF}
+          dim={false}
+          lead={<Search className="size-4 shrink-0 opacity-75" />}
+          onClick={() => onSelect(SEARCH_REF)}
+          testId="dimension-rail-search-builder"
         />
         {groups.map((group) => (
           <section key={group.flow} className="mt-2">
@@ -116,7 +126,7 @@ export function DimensionRail({ entries, selected, onSelect, className }: {
               <RailItem
                 key={entry.ref}
                 label={entry.dimension.name}
-                count={entry.dimension.dimensionId === null ? null : entry.dimension.members}
+                count={entry.dimension.dimensionId === null ? null : entry.dimension.values}
                 selected={selected === entry.ref}
                 dim={entry.standing === "notBuilt" || entry.standing === "undeclared"}
                 lead={<StandingGlyph standing={entry.standing} />}

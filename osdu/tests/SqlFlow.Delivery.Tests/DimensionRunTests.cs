@@ -110,8 +110,8 @@ public sealed class DimensionRunTests : IDisposable
         var built = Assert.Single(outcome.Dimensions);
         Assert.Equal(DimensionRunStatus.Completed, built.Status);
         Assert.Equal("nested(data.Curves, Mnemonic.keyword)", built.AggregateBy);
-        Assert.Equal(1_500, built.Members);
-        Assert.Equal(spellings.Count, built.Originals);
+        Assert.Equal(1_500, built.Values);
+        Assert.Equal(spellings.Count, built.Keys);
         Assert.True(spellings.Count > 1_500, "some mnemonics are spelled more than one way");
         Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
 
@@ -151,10 +151,97 @@ public sealed class DimensionRunTests : IDisposable
         var second = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
 
         var changes = Assert.Single(second.Dimensions).Changes;
-        Assert.Equal(1, changes.OriginalsAdded);
-        Assert.True(changes.OriginalsRemoved >= 1);
+        Assert.Equal(1, changes.KeysAdded);
+        Assert.True(changes.KeysRemoved >= 1);
         var dimension = (await ledger.FindDimensionAsync(flow.LedgerId, "CurveMnemonic"))!;
         Assert.Contains(await ledger.ListDimensionChangesAsync(dimension.DimensionId, new DimensionChangeQuery(null, null, null, null, null, 100)), c => c.Original == "NEW" && c.Change == DimensionChangeKinds.Added);
+    }
+
+    [Fact]
+    public async Task A_key_naming_a_record_is_valued_by_the_label_read_there_and_every_key_and_value_carries_the_search_finding_it()
+    {
+        // Two wellbores in Norway, one of them in Statfjord, and one with no name; logs of each, and a log of a wellbore the
+        // partition does not hold.
+        const string Norway = "dev:master-data--GeoPoliticalEntity:Norway";
+        _platform.Add(Norway, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Norway" });
+        _platform.Add("dev:master-data--Wellbore:A", Wellbore, new JsonObject
+        {
+            ["FacilityName"] = "15/9-A",
+            ["GeoContexts"] = new JsonArray(
+                new JsonObject { ["FieldID"] = "dev:master-data--Field:STATFJORD:" },
+                new JsonObject { ["GeoPoliticalEntityID"] = Norway + ":" }),
+        });
+        _platform.Add("dev:master-data--Wellbore:B", Wellbore, new JsonObject
+        {
+            ["FacilityName"] = "15/9-B",
+            ["GeoContexts"] = new JsonArray(new JsonObject { ["GeoPoliticalEntityID"] = Norway + ":" }),
+        });
+        _platform.Add("dev:master-data--Wellbore:C", Wellbore, new JsonObject { ["FacilityName"] = "  " });
+        foreach (var (log, wellbore) in new[] { ("1", "A"), ("2", "A"), ("3", "B"), ("4", "C"), ("5", "Z") })
+        {
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:{wellbore}:" });
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+              - name: Country
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((2, 0), (outcome.Built, outcome.Failed));
+        Assert.Equal([2L, 2L], outcome.Dimensions.Select(d => d.Labelled));
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var keys = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
+            .ToDictionary(k => k.Original, StringComparer.Ordinal);
+
+        // A key is the reference exactly as the index holds it; its value the name the wellbore holds.
+        var a = keys["dev:master-data--Wellbore:A:"];
+        Assert.Equal(("15/9-A", "dev:master-data--Wellbore:A", "15/9-A"), (a.Label, a.LabelFrom, a.MemberValue));
+
+        // A key whose record the search does not hold, or whose record holds no name, is its own value, and the build says why.
+        Assert.Equal((null, "dev:master-data--Wellbore:Z:"), (keys["dev:master-data--Wellbore:Z:"].Label, keys["dev:master-data--Wellbore:Z:"].MemberValue));
+        Assert.Equal((null, "dev:master-data--Wellbore:C"), (keys["dev:master-data--Wellbore:C:"].Label, keys["dev:master-data--Wellbore:C:"].LabelFrom));
+        var run = (await ledger.ListDimensionRunsAsync(wellbores.DimensionId, 1)).Single();
+        Assert.Equal((2L, 2L, 1), (run.Read.Labelled, run.Read.Unlabelled, run.Read.LabelQueries));
+        Assert.Contains(run.Read.Notes, n => n.Contains("the search holds no record they name", StringComparison.Ordinal));
+        Assert.Contains(run.Read.Notes, n => n.Contains("holds nothing at the label's path", StringComparison.Ordinal));
+
+        // Each key's filter finds exactly the records holding it, and so does its value's.
+        Assert.Equal(["dev:work-product-component--WellLog:1", "dev:work-product-component--WellLog:2"], _platform.Find(WellLog, a.Filter!));
+        var named = (await MembersAsync(ledger, wellbores.DimensionId)).Single(m => m.Value == "15/9-A");
+        Assert.Equal(["dev:work-product-component--WellLog:1", "dev:work-product-component--WellLog:2"], _platform.Find(WellLog, named.Filter!));
+
+        // A label read through two records: the wellbore's country reference, then the country's name.
+        var countries = (await ledger.FindDimensionAsync(flow.LedgerId, "Country"))!;
+        var norway = (await MembersAsync(ledger, countries.DimensionId)).Single(m => m.Value == "Norway");
+        Assert.Equal((2, 3L), (norway.Originals, norway.Records));
+        var country = (await ledger.ListDimensionRunsAsync(countries.DimensionId, 1)).Single();
+        Assert.Equal((2L, 2L, 2), (country.Read.Labelled, country.Read.Unlabelled, country.Read.LabelQueries));
+        var ofNorway = await ledger.ListDimensionValuesAsync(countries.DimensionId, new DimensionValueQuery(null, norway.MemberId, false, false, null, 10));
+        Assert.All(ofNorway, k => Assert.Equal(Norway, k.LabelFrom));
+
+        // The search across both: logs of a Norwegian wellbore named 15/9-A; across one, every log of Norway.
+        var picked = await DimensionSearch.ComposeAsync(
+            ledger, [new DimensionPick(countries, [], ["Norway"]), new DimensionPick(wellbores, [], ["15/9-A"])], null, null, CancellationToken.None);
+        Assert.Equal(WellLog.Replace("1.4.0", "*", StringComparison.Ordinal), picked.Kind);
+        Assert.Equal(["dev:work-product-component--WellLog:1", "dev:work-product-component--WellLog:2"], _platform.Find(WellLog, picked.Query));
+        Assert.Equal(3, picked.Clauses);
+        var all = await DimensionSearch.ComposeAsync(ledger, [new DimensionPick(countries, [], ["Norway"])], null, null, CancellationToken.None);
+        Assert.Equal(3, _platform.Find(WellLog, all.Query).Count);
+
+        // Narrowed by a query of its own, the search still finds only what every part allows.
+        var within = await DimensionSearch.ComposeAsync(
+            ledger, [new DimensionPick(countries, [], ["Norway"])], null, "id:\"dev:work-product-component--WellLog:3\"", CancellationToken.None);
+        Assert.Equal(["dev:work-product-component--WellLog:3"], _platform.Find(WellLog, within.Query));
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
     }
 
     [Fact]
@@ -226,7 +313,7 @@ public sealed class DimensionRunTests : IDisposable
         var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
 
         var built = Assert.Single(outcome.Dimensions);
-        Assert.Equal((DimensionRunStatus.Completed, 0L), (built.Status, built.Members));
+        Assert.Equal((DimensionRunStatus.Completed, 0L), (built.Status, built.Values));
         Assert.Contains(built.Notes, n => n.Contains("No record of kind", StringComparison.Ordinal));
         Assert.Null((await ledger.FindDimensionAsync(flow.LedgerId, "WellboreName"))!.Field);
     }

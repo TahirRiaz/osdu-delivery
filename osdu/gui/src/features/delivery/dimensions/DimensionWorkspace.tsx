@@ -15,23 +15,23 @@ import { DimensionExportMenu, StandingGlyph } from "./DimensionBadges";
 import type { DimensionLaunch } from "./DimensionBuildDialog";
 import { DimensionDefinition } from "./DimensionDefinition";
 import { DimensionBuilds, DimensionChanges } from "./DimensionHistory";
-import { DimensionMemberSheet } from "./DimensionMemberSheet";
-import { DimensionMembers } from "./DimensionMembers";
-import { DimensionOriginals } from "./DimensionOriginals";
+import { DimensionKeys } from "./DimensionKeys";
+import { DimensionValueSheet } from "./DimensionValueSheet";
+import { DimensionValues } from "./DimensionValues";
 import { DIMENSION_VIEWS, STANDING_VISUALS, coverage, fieldText, percent, type DimensionEntry, type DimensionView } from "./dimensionFormat";
 
 /** What each tab is for, as hovering its name says it. */
 const VIEW_PURPOSE: Record<DimensionView, string> = {
-  members: "The clean values, each with the records holding it and the originals it gathers. Pick members to write the search that finds their records.",
-  originals: "Every value exactly as the index holds it, with the member it was cleaned into, or why it belongs to none.",
-  changes: "What each build changed: the originals that arrived, left, came back, or moved to another member.",
-  builds: "Every build: what it found, how it read the index, how complete the values are, and what it changed.",
-  definition: "How the flow declares the dimension: the kind, query and path it reads, how the index stores the field, and the steps that clean each original.",
+  values: "The human-friendly values a person picks, each with the records holding it, the keys it stands for and the search filter finding its records. Pick values to write the search that finds their records.",
+  keys: "Every key exactly as the index holds it (an id, for a reference), with the label read for it, the value it belongs to, and the search filter finding exactly its records.",
+  changes: "What each build changed: the keys that arrived, left, came back, or moved to another value.",
+  builds: "Every build: what it found, how it read the index and the labels, how complete the keys are, and what it changed.",
+  definition: "How the flow declares the dimension: the kind, query and path it reads, where a key's label is read, how the index stores the field, and the steps that clean each value.",
 };
 
 const VIEW_LABEL: Record<DimensionView, string> = {
-  members: "Members",
-  originals: "Originals",
+  values: "Values",
+  keys: "Keys",
   changes: "Changes",
   builds: "Builds",
   definition: "Definition",
@@ -85,7 +85,7 @@ function Attention({ entry, onBuild }: { entry: DimensionEntry; onBuild: () => v
         <PencilLine className="text-warning" />
         <AlertTitle>The declaration changed since these values were read</AlertTitle>
         <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span>The kind, query, path or clean steps are not the ones the last build read with. Build it again to read with them.</span>
+          <span>The kind, query, path, label or clean steps are not the ones the last build read with. Build it again to read with them.</span>
           <Button size="xs" variant="outline" onClick={onBuild} data-testid="dimension-rebuild">
             <Play />
             Build again
@@ -109,32 +109,34 @@ function Attention({ entry, onBuild }: { entry: DimensionEntry; onBuild: () => v
 }
 
 /**
- * One dimension of the partition: its name, what it reads and how the index stores it, with Build and Export; what its
- * newest build or its declaration asks of the reader; the facts it is read against (members, how complete the values are,
- * what cleaning left out, when it was built); and its five tabs. The tab and the member open in a sheet live in the URL, so
- * a link lands on the same view.
+ * One dimension of the partition: its name, what it reads (and where a key's label is read) and how the index stores it,
+ * with Build and Export; what its newest build or its declaration asks of the reader; the facts it is read against (values,
+ * how complete the keys are, what cleaning left out, when it was built); and its five tabs. The tab and the value open in a
+ * sheet live in the URL, so a link lands on the same view.
  */
-export function DimensionWorkspace({ entry, view, onView, member, onMember, onLaunch }: {
+export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaunch }: {
   entry: DimensionEntry;
   view: DimensionView;
   onView: (view: DimensionView) => void;
-  /** The member open in its sheet, by id; null for none. */
-  member: number | null;
-  onMember: (memberId: number | null) => void;
+  /** The value open in its sheet, by id; null for none. */
+  value: number | null;
+  onValue: (valueId: number | null) => void;
   onLaunch: (launch: DimensionLaunch) => void;
 }) {
   const { dimension, flow } = entry;
   const current = dimension.current;
   const covered = current === null ? null : coverage(current);
+  const labelled = dimension.label.length > 0;
   const build = () => onLaunch({ pipelineId: flow.pipelineId, repoId: flow.repoId, flowName: flow.name, dimensions: [dimension.name] });
 
   const cells: SummaryCell[] = [
     {
-      label: "Members",
-      value: dimension.members.toLocaleString("en-US"),
-      caption: `from ${counted(dimension.originals, "original")}`,
-      onClick: () => onView("members"),
-      testId: "dimension-summary-members",
+      label: "Values",
+      value: dimension.values.toLocaleString("en-US"),
+      caption: `from ${counted(dimension.keys, "key")}${labelled && current !== null && current.unlabelled > 0 ? `, ${current.unlabelled.toLocaleString("en-US")} unlabelled` : ""}`,
+      tone: labelled && current !== null && current.unlabelled > 0 && current.unlabelled >= current.labelled ? "warning" : undefined,
+      onClick: () => onView("values"),
+      testId: "dimension-summary-values",
     },
     {
       label: "Coverage",
@@ -145,10 +147,10 @@ export function DimensionWorkspace({ entry, view, onView, member, onMember, onLa
       testId: "dimension-summary-coverage",
     },
     {
-      label: "Under no member",
+      label: "Of no value",
       value: (current?.leftOut ?? 0).toLocaleString("en-US"),
-      caption: current === null || current.leftOut === 0 ? "every original has a member" : "originals cleaning left out",
-      onClick: () => onView("originals"),
+      caption: current === null || current.leftOut === 0 ? "every key has a value" : "keys cleaning left out",
+      onClick: () => onView("keys"),
       testId: "dimension-summary-left-out",
     },
     {
@@ -156,7 +158,7 @@ export function DimensionWorkspace({ entry, view, onView, member, onMember, onLa
       value: dimension.lastBuiltUtc === null ? "never" : <RelativeTime value={dimension.lastBuiltUtc} absolute={false} />,
       caption: current === null
         ? "build it to read its values"
-        : `by ${current.actor}, ${counted(current.changes.originalsAdded + current.changes.originalsRemoved + current.changes.originalsMoved + current.changes.originalsRestored, "change")}`,
+        : `by ${current.actor}, ${counted(current.changes.keysAdded + current.changes.keysRemoved + current.changes.keysMoved + current.changes.keysRestored, "change")}`,
       onClick: () => onView("builds"),
       testId: "dimension-summary-built",
     },
@@ -176,6 +178,19 @@ export function DimensionWorkspace({ entry, view, onView, member, onMember, onLa
             <span className="min-w-0 max-w-[26rem] text-foreground"><KindText kind={dimension.kind} /></span>
             <span className="text-muted-foreground/60">·</span>
             <span className="font-mono text-foreground">{dimension.path}</span>
+            {labelled && (
+              <>
+                <span className="text-muted-foreground/60">·</span>
+                <RichTooltip
+                  title="Labelled by"
+                  body={`Each key names a record; its value is read there, through ${dimension.label.join(", then ")}. The key stays the id, so every filter still compares it.`}
+                >
+                  <span className="underline decoration-dotted underline-offset-2" data-testid="dimension-label">
+                    labelled by <span className="font-mono text-foreground">{dimension.label.at(-1)}</span>
+                  </span>
+                </RichTooltip>
+              </>
+            )}
             {dimension.field !== null && (
               <>
                 <span className="text-muted-foreground/60">·</span>
@@ -210,7 +225,7 @@ export function DimensionWorkspace({ entry, view, onView, member, onMember, onLa
             <EmptyState
               icon={<Shapes />}
               title={`${dimension.name} has not been built in this partition`}
-              description="A build reads every distinct value of the path from the OSDU search, pages past the search's limit on distinct values, cleans each into its member, and keeps the originals beside them. Build it to see its members."
+              description="A build reads every distinct key of the path from the OSDU search, paging past the search's limit on distinct values, reads each key's label from the record it names when the dimension asks for one, and cleans it into its value, keeping every key beside its value. Build it to see its values."
               action={dimension.declared
                 ? <Button size="sm" onClick={build} data-testid="dimension-build-first"><Play />Build now</Button>
                 : undefined}
@@ -231,14 +246,14 @@ export function DimensionWorkspace({ entry, view, onView, member, onMember, onLa
                   ))}
                 </TabsList>
               </div>
-              <TabsContent value="members">
-                <DimensionMembers entry={entry} dimensionId={dimension.dimensionId} onMember={onMember} />
+              <TabsContent value="values">
+                <DimensionValues entry={entry} dimensionId={dimension.dimensionId} onValue={onValue} />
               </TabsContent>
-              <TabsContent value="originals">
-                <DimensionOriginals dimensionId={dimension.dimensionId} onMember={onMember} />
+              <TabsContent value="keys">
+                <DimensionKeys dimensionId={dimension.dimensionId} labelled={labelled} onValue={onValue} />
               </TabsContent>
               <TabsContent value="changes">
-                <DimensionChanges dimensionId={dimension.dimensionId} onMember={onMember} />
+                <DimensionChanges dimensionId={dimension.dimensionId} onValue={onValue} />
               </TabsContent>
               <TabsContent value="builds">
                 <DimensionBuilds dimensionId={dimension.dimensionId} />
@@ -247,7 +262,7 @@ export function DimensionWorkspace({ entry, view, onView, member, onMember, onLa
                 <DimensionDefinition entry={entry} />
               </TabsContent>
             </Tabs>
-            <DimensionMemberSheet dimensionId={dimension.dimensionId} memberId={member} onClose={() => onMember(null)} />
+            <DimensionValueSheet dimensionId={dimension.dimensionId} labelled={labelled} valueId={value} onClose={() => onValue(null)} />
           </>
         )}
     </div>

@@ -13,7 +13,7 @@ namespace SqlFlow.Delivery.Tests;
 /// <see cref="AggregationSize"/> groups, by count and then by key, over the records a query matches (every value of a
 /// matched record counted, each object of a nested array counted as one); a keyword sub-field that keeps no text longer than
 /// 256 characters and keeps a null as the text null; a plain number's groups without keys when <see cref="NumberKeysMissing"/>
-/// says so; cursor paging; and exact counts. Its query parser reads exactly the forms a dimension writes: clauses joined by
+/// says so; the first records a query matches, up to its limit, holding the fields it returns; cursor paging; and exact counts. Its query parser reads exactly the forms a dimension writes: clauses joined by
 /// AND, NOT, a group of ORs, the nested form, _exists_, a range, a value and a list of values. Every request is recorded as
 /// <see cref="FakeHttpHandler"/> records them, so the contract harness checks them.
 /// </summary>
@@ -104,16 +104,65 @@ internal sealed class FakeDimensionPlatform : HttpMessageHandler
         return Records.Where(r => KindMatches(kind, r["kind"]!.GetValue<string>()) && Holds(r, query)).ToList();
     }
 
+    /// <summary>The ids of the records <paramref name="query"/> matches in <paramref name="kind"/>, as the service would find them.</summary>
+    public IReadOnlyList<string> Find(string kind, string query)
+    {
+        lock (_gate)
+        {
+            return Matching(new JsonObject { ["kind"] = kind, ["query"] = query }).Select(r => r["id"]!.GetValue<string>()).Order(StringComparer.Ordinal).ToList();
+        }
+    }
+
     private JsonObject Query(JsonObject body)
     {
         var matched = Matching(body);
-        var result = new JsonObject { ["results"] = new JsonArray(), ["totalCount"] = matched.Count };
+        var limit = body["limit"]?.GetValue<int>() ?? 10;
+        var fields = body["returnedFields"] is JsonArray returned ? returned.Select(f => f!.GetValue<string>()).ToList() : null;
+        var hits = matched.Take(limit).Select(r => (JsonNode?)(fields is null ? r.DeepClone() : Project(r, fields))).ToArray();
+        var result = new JsonObject { ["results"] = new JsonArray(hits), ["totalCount"] = matched.Count };
         if (body["aggregateBy"]?.GetValue<string>() is { } aggregateBy)
         {
             result["aggregations"] = Aggregate(matched, aggregateBy);
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// A record holding only <paramref name="fields"/>, as the service returns it: each path's objects kept down to the value
+    /// it names, and an array met on the way kept whole.
+    /// </summary>
+    private static JsonObject Project(JsonObject record, IReadOnlyList<string> fields)
+    {
+        var projected = new JsonObject();
+        foreach (var field in fields)
+        {
+            Copy(record, projected, field.Split('.'), 0);
+        }
+
+        return projected;
+    }
+
+    private static void Copy(JsonObject source, JsonObject target, string[] path, int at)
+    {
+        if (!source.TryGetPropertyValue(path[at], out var child))
+        {
+            return;
+        }
+
+        if (at == path.Length - 1 || child is not JsonObject inner)
+        {
+            target[path[at]] = child?.DeepClone();
+            return;
+        }
+
+        if (target[path[at]] is not JsonObject into)
+        {
+            into = new JsonObject();
+            target[path[at]] = into;
+        }
+
+        Copy(inner, into, path, at + 1);
     }
 
     private JsonObject Cursor(JsonObject body)

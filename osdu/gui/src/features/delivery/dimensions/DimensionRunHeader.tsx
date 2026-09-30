@@ -17,15 +17,21 @@ function numberOf(result: Record<string, unknown> | null, field: string): number
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** The members or originals a build run's dimensions hold together, summed from its result; null for a run that reported no build. */
-function sumOf(result: Record<string, unknown> | null, field: "members" | "originals"): number | null {
+/**
+ * The values or keys a build run's dimensions hold together, summed from its result; null for a run that reported no
+ * build. A run that finished before values and keys were named so reported them as members and originals, which are read
+ * in their place.
+ */
+function sumOf(result: Record<string, unknown> | null, field: "values" | "keys"): number | null {
   const dimensions = result?.dimensions;
   if (!Array.isArray(dimensions) || result?.operation !== "build") {
     return null;
   }
 
+  const earlier = field === "values" ? "members" : "originals";
   return dimensions.reduce<number>((sum, entry) => {
-    const value = entry !== null && typeof entry === "object" ? (entry as Record<string, unknown>)[field] : null;
+    const built = entry !== null && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    const value = built?.[field] ?? built?.[earlier];
     return sum + (typeof value === "number" && Number.isFinite(value) ? value : 0);
   }, 0);
 }
@@ -49,8 +55,8 @@ export function DimensionRunCounts({ run }: { run: RunDetail }) {
       <DetailPair label="Built"><Count value={numberOf(result, "built")} testId="run-dimensions-built" /></DetailPair>
       <DetailPair label="Failed"><Count value={numberOf(result, "failed")} testId="run-dimensions-failed" /></DetailPair>
       <DetailPair label="Skipped"><Count value={numberOf(result, "skipped")} testId="run-dimensions-skipped" /></DetailPair>
-      <DetailPair label="Members"><Count value={sumOf(result, "members")} testId="run-dimensions-members" /></DetailPair>
-      <DetailPair label="Originals"><Count value={sumOf(result, "originals")} testId="run-dimensions-originals" /></DetailPair>
+      <DetailPair label="Values"><Count value={sumOf(result, "values")} testId="run-dimensions-values" /></DetailPair>
+      <DetailPair label="Keys"><Count value={sumOf(result, "keys")} testId="run-dimensions-keys" /></DetailPair>
     </>
   );
 }

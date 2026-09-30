@@ -238,7 +238,7 @@ export function DimensionTriggerFields({ pipelineId, initialValues, initialPaylo
                     </span>
                   </span>
                   <span className="hidden font-mono text-[10.5px] tabular-nums text-muted-foreground sm:inline">
-                    {dimension.lastBuiltUtc === null ? "not built" : counted(dimension.members, "member")}
+                    {dimension.lastBuiltUtc === null ? "not built" : counted(dimension.values, "value")}
                   </span>
                 </label>
               );

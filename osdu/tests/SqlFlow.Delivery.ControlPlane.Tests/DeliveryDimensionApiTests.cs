@@ -20,10 +20,11 @@ namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
 /// The dimensions of dimension flows as the control plane serves them (docs/dimension-plan.md, Stage 5): the board of every
-/// flow and of one, a dimension with its declaration and builds, its members and originals a page at a time in both orders,
-/// a member with its originals, filter and history, the change log, the filter of a set of members, the exports, and the
-/// builds of a platform run. The builds are written to the ledger as a run writes them, so what these tests hold the API to
-/// is what a real build leaves; the tests never reach an OSDU.
+/// flow and of one, a dimension with its declaration and builds, its values and keys a page at a time in both orders, a
+/// value with its keys, filter and history, each key with its label and its own filter, the change log, the filter of a set
+/// of values, the search composed from values picked across dimensions, the exports, and the builds of a platform run. The
+/// builds are written to the ledger as a run writes them, so what these tests hold the API to is what a real build leaves;
+/// the tests never reach an OSDU.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]
@@ -33,8 +34,10 @@ public sealed class DeliveryDimensionApiTests
 
     private static readonly DimensionFieldState Field = new("text", "data.Curves", "nested(data.Curves, Mnemonic.keyword)", Repeats: true);
 
+    private static readonly DimensionFieldState WellboreField = new("text", null, "data.WellboreID.keyword", Repeats: false);
+
     [Fact]
-    public async Task A_dimension_flow_s_dimensions_members_originals_builds_and_filters_are_served_in_its_partition()
+    public async Task A_dimension_flow_s_dimensions_values_keys_builds_filters_and_searches_are_served_in_its_partition()
     {
         var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -48,7 +51,7 @@ public sealed class DeliveryDimensionApiTests
         var yaml = $$"""
             flowType: dimension
             name: {{flowName}}
-            description: The curve mnemonics the well logs hold.
+            description: The curve mnemonics and wellbores the well logs hold.
             partitions: [{{partition}}]
             parameters:
               logSource: { default: STAT_COMP, description: The log source read. }
@@ -60,6 +63,11 @@ public sealed class DeliveryDimensionApiTests
                 kind: "{{WellLog}}"
                 path: data.Curves.Mnemonic
                 clean: [trim, upper]
+              - name: Wellbore
+                description: The wellbore each log belongs to, by its name.
+                kind: "{{WellLog}}"
+                path: data.WellboreID
+                label: data.FacilityName
             """;
         var flow = new DeliveryDocumentLoader().ParseDimension(yaml, "flows/" + flowName + ".yaml").ForRun(partition, RegisteredPartitions.None);
         var spec = flow.Dimensions[0];
@@ -86,7 +94,7 @@ public sealed class DeliveryDimensionApiTests
                 FlowId = flow.LedgerId, Partition = partition, Kind = LedgerKinds.Dimension, FlowName = flow.Name, LedgerName = flow.LedgerName,
             });
 
-            // The first build found three spellings of GR, DT, and a value cleaning left nothing of.
+            // The first build found three spellings of GR, DT, and a key cleaning left nothing of.
             var firstRunId = Guid.NewGuid();
             var first = await BuildAsync(ledger, flow, firstRunId, now.AddHours(-3),
                 ("GR", "GR", 5), ("gr", "GR", 3), ("Gamma Ray", "GR", 2), ("DT", "DT", 4), ("   ", null, 1));
@@ -101,6 +109,12 @@ public sealed class DeliveryDimensionApiTests
             var (_, failed) = await ledger.StartDimensionRunAsync(Declaration(flow, spec), Guid.NewGuid(), "dimension api tests", now.AddHours(-1));
             await ledger.CloseDimensionRunAsync(failed.DimensionRunId, DimensionRunStatus.Failed, DimensionReadCounts.None, "search answered 503", now.AddHours(-1).AddMinutes(1));
 
+            // The wellbores are keyed by the id each log refers to, and valued by the name read from the wellbore; one wellbore
+            // the label search did not find is valued by its id.
+            var wellbores = await WellboresAsync(ledger, flow, now.AddMinutes(-30),
+                ("dev:master-data--Wellbore:1001:", "15/9-F-1", 7), ("dev:master-data--Wellbore:1002:", "15/9-F-4", 3), ("dev:master-data--Wellbore:9999:", null, 1));
+            var wellboreId = wellbores.DimensionId;
+
             await using var factory = new ControlPlaneAppFactory()
                 .WithCatalog(cs)
                 .WithModules(new DeliveryControlPlaneModule())
@@ -109,7 +123,7 @@ public sealed class DeliveryDimensionApiTests
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
-            // The board names the flow in the partition asked for, with its dimension as the second build left it and the
+            // The board names the flow in the partition asked for, with its dimensions as their builds left them and the
             // failed build beside that; the totals count it failing.
             var board = await JsonAsync(client, token, $"/api/v1/delivery/dimensions?partition={partition}");
             Assert.Equal(partition, board.GetProperty("partition").GetString());
@@ -117,19 +131,24 @@ public sealed class DeliveryDimensionApiTests
             Assert.True(listed.GetProperty("buildsPartition").GetBoolean());
             Assert.Equal(flow.LedgerId, listed.GetProperty("ledgerId").GetGuid());
             Assert.Equal("logSource", listed.GetProperty("parameters")[0].GetProperty("name").GetString());
-            var dimension = Assert.Single(listed.GetProperty("dimensions").EnumerateArray());
+            var dimensions = listed.GetProperty("dimensions").EnumerateArray().ToList();
+            Assert.Equal(["CurveMnemonic", "Wellbore"], dimensions.Select(d => d.GetProperty("name").GetString()));
+            var dimension = dimensions[0];
             Assert.Equal(dimensionId, dimension.GetProperty("dimensionId").GetInt32());
             Assert.Equal(["trim", "upper"], dimension.GetProperty("clean").EnumerateArray().Select(s => s.GetString()));
+            Assert.Empty(dimension.GetProperty("label").EnumerateArray());
             Assert.True(dimension.GetProperty("declared").GetBoolean());
             Assert.False(dimension.GetProperty("changed").GetBoolean());
-            Assert.Equal((3L, 5L), (dimension.GetProperty("members").GetInt64(), dimension.GetProperty("originals").GetInt64()));
-            Assert.Equal(second.DimensionRunId, dimension.GetProperty("current").GetProperty("dimensionRunId").GetInt64());
+            Assert.Equal((3L, 5L), (dimension.GetProperty("values").GetInt64(), dimension.GetProperty("keys").GetInt64()));
+            Assert.Equal(second.DimensionRunId, dimension.GetProperty("current").GetProperty("buildId").GetInt64());
             Assert.Equal(DimensionRunStatus.Failed, dimension.GetProperty("latest").GetProperty("status").GetString());
             Assert.Equal("search answered 503", dimension.GetProperty("latest").GetProperty("error").GetString());
             Assert.Equal("nested(data.Curves, Mnemonic.keyword)", dimension.GetProperty("field").GetProperty("aggregateBy").GetString());
+            Assert.Equal(["data.FacilityName"], dimensions[1].GetProperty("label").EnumerateArray().Select(l => l.GetString()));
+            Assert.Equal((2L, 1L), (dimensions[1].GetProperty("current").GetProperty("labelled").GetInt64(), dimensions[1].GetProperty("current").GetProperty("unlabelled").GetInt64()));
             var own = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId}/dimensions?partition={partition}");
             var totals = own.GetProperty("totals");
-            Assert.Equal((1, 1, 1, 0), (totals.GetProperty("dimensions").GetInt32(), totals.GetProperty("built").GetInt32(), totals.GetProperty("failing").GetInt32(), totals.GetProperty("notBuilt").GetInt32()));
+            Assert.Equal((2, 2, 1, 0), (totals.GetProperty("dimensions").GetInt32(), totals.GetProperty("built").GetInt32(), totals.GetProperty("failing").GetInt32(), totals.GetProperty("notBuilt").GetInt32()));
 
             // A dimension read alone names the pipeline that builds it, for the page's Build button.
             var detail = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}");
@@ -137,81 +156,139 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(partition, detail.GetProperty("partition").GetString());
             Assert.Equal("CurveMnemonic", detail.GetProperty("dimension").GetProperty("name").GetString());
 
-            // Members in value order, each with its most common originals beside it.
-            var members = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members");
-            var items = members.GetProperty("items").EnumerateArray().ToList();
+            // Values in value order, each with the keys most records hold beside it.
+            var values = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values");
+            var items = values.GetProperty("items").EnumerateArray().ToList();
             Assert.Equal(["DT", "GR", "RHOB"], items.Select(m => m.GetProperty("value").GetString()));
             var gr = items[1];
             Assert.Equal(9, gr.GetProperty("records").GetInt64());
-            Assert.Equal([("GR", 6L), ("gr", 3L)], gr.GetProperty("top").EnumerateArray().Select(t => (t.GetProperty("original").GetString(), t.GetProperty("count").GetInt64())));
-            Assert.Equal(JsonValueKind.Null, members.GetProperty("next").ValueKind);
+            Assert.Equal([("GR", 6L), ("gr", 3L)], gr.GetProperty("top").EnumerateArray().Select(t => (t.GetProperty("key").GetString(), t.GetProperty("count").GetInt64())));
+            Assert.Equal(JsonValueKind.Null, values.GetProperty("next").ValueKind);
 
             // With the most records first, a page at a time: the cursor of one page starts the next.
-            var top = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members?order=records&limit=2");
+            var top = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?order=records&limit=2");
             Assert.Equal(["GR", "RHOB"], top.GetProperty("items").EnumerateArray().Select(m => m.GetProperty("value").GetString()));
-            var rest = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members?order=records&limit=2&after={Uri.EscapeDataString(top.GetProperty("next").GetString()!)}");
+            var rest = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?order=records&limit=2&after={Uri.EscapeDataString(top.GetProperty("next").GetString()!)}");
             Assert.Equal(["DT"], rest.GetProperty("items").EnumerateArray().Select(m => m.GetProperty("value").GetString()));
 
-            // A search finds a member by an original it holds now; one no build finds any more only when removed ones are asked.
-            Assert.Equal(["GR"], (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members?search=g")).GetProperty("items").EnumerateArray().Select(m => m.GetProperty("value").GetString()));
-            Assert.Empty((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members?search=gamma")).GetProperty("items").EnumerateArray());
-            Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members?search=gamma&removed=true")).GetProperty("items").EnumerateArray());
+            // A search finds a value by a key it holds now; one no build finds any more only when removed ones are asked.
+            Assert.Equal(["GR"], (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?search=g")).GetProperty("items").EnumerateArray().Select(m => m.GetProperty("value").GetString()));
+            Assert.Empty((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?search=gamma")).GetProperty("items").EnumerateArray());
+            Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?search=gamma&removed=true")).GetProperty("items").EnumerateArray());
 
-            // A member's page: its originals, its filter, and the changes that took an original from it.
-            var grId = gr.GetProperty("memberId").GetInt64();
-            var member = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members/{grId}");
-            Assert.Equal(["GR", "gr"], member.GetProperty("originals").EnumerateArray().Select(o => o.GetProperty("original").GetString()));
-            var memberFilter = member.GetProperty("filter");
-            var expected = DimensionFilters.Of(OsduField.Text("data.Curves.Mnemonic", "data.Curves"), ["GR", "gr"]);
-            Assert.Equal(expected, memberFilter.GetProperty("filters").EnumerateArray().Select(f => f.GetString()));
-            var history = Assert.Single(member.GetProperty("history").EnumerateArray());
-            Assert.Equal(("Gamma Ray", DimensionChangeKinds.Removed), (history.GetProperty("original").GetString(), history.GetProperty("change").GetString()));
+            // A value's page: its keys, its filter, and the changes that took a key from it.
+            var grId = gr.GetProperty("valueId").GetInt64();
+            var value = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values/{grId}");
+            Assert.Equal(["GR", "gr"], value.GetProperty("keys").EnumerateArray().Select(o => o.GetProperty("key").GetString()));
+            var valueFilter = value.GetProperty("filter");
+            var field = OsduField.Text("data.Curves.Mnemonic", "data.Curves");
+            var expected = DimensionFilters.Of(field, ["GR", "gr"]);
+            Assert.Equal(expected, valueFilter.GetProperty("filters").EnumerateArray().Select(f => f.GetString()));
+            Assert.Equal(expected[0], gr.GetProperty("filter").GetString());
+            var history = Assert.Single(value.GetProperty("history").EnumerateArray());
+            Assert.Equal(("Gamma Ray", DimensionChangeKinds.Removed), (history.GetProperty("key").GetString(), history.GetProperty("change").GetString()));
 
-            // Originals: those under no member, a member's with the most records first, and every one a page at a time.
-            var left = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?leftOut=true");
+            // Keys: those of no value, a value's with the most records first, and every one a page at a time, each with the
+            // filter finding exactly its records.
+            var left = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/keys?leftOut=true");
             Assert.Equal(DimensionLeftOut.Empty, Assert.Single(left.GetProperty("items").EnumerateArray()).GetProperty("leftOut").GetString());
-            var ofGr = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?member={grId}&order=count");
-            Assert.Equal(["GR", "gr"], ofGr.GetProperty("items").EnumerateArray().Select(o => o.GetProperty("original").GetString()));
-            var page = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?limit=3");
-            var next = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?limit=3&after={Uri.EscapeDataString(page.GetProperty("next").GetString()!)}");
+            var ofGr = (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/keys?value={grId}&order=count")).GetProperty("items").EnumerateArray().ToList();
+            Assert.Equal(["GR", "gr"], ofGr.Select(o => o.GetProperty("key").GetString()));
+            Assert.Equal(DimensionFilters.Of(field, ["gr"])[0], ofGr[1].GetProperty("filter").GetString());
+            Assert.Equal(JsonValueKind.Null, ofGr[1].GetProperty("label").ValueKind);
+            var page = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/keys?limit=3");
+            var next = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/keys?limit=3&after={Uri.EscapeDataString(page.GetProperty("next").GetString()!)}");
             Assert.Equal(5, page.GetProperty("items").GetArrayLength() + next.GetProperty("items").GetArrayLength());
+
+            // A key of a reference is the id the index holds, its value the name read from the record it names; a search finds
+            // it by either.
+            var wellboreField = OsduField.Text("data.WellboreID");
+            var named = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?search=F-4")).GetProperty("items").EnumerateArray());
+            Assert.Equal(("dev:master-data--Wellbore:1002:", "15/9-F-4", "dev:master-data--Wellbore:1002", "15/9-F-4"),
+                (named.GetProperty("key").GetString(), named.GetProperty("label").GetString(), named.GetProperty("labelFrom").GetString(), named.GetProperty("value").GetString()));
+            Assert.Equal(DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1002:"])[0], named.GetProperty("filter").GetString());
+            var unnamed = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?search=9999")).GetProperty("items").EnumerateArray());
+            Assert.Equal(("dev:master-data--Wellbore:9999:", JsonValueKind.Null), (unnamed.GetProperty("value").GetString(), unnamed.GetProperty("label").ValueKind));
 
             // The builds, newest first, and the change log, newest first, narrowed by build and by kind.
             var builds = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/builds");
-            Assert.Equal([failed.DimensionRunId, second.DimensionRunId, first.DimensionRunId], builds.EnumerateArray().Select(b => b.GetProperty("dimensionRunId").GetInt64()));
-            Assert.Equal(1, builds[1].GetProperty("changes").GetProperty("originalsAdded").GetInt64());
+            Assert.Equal([failed.DimensionRunId, second.DimensionRunId, first.DimensionRunId], builds.EnumerateArray().Select(b => b.GetProperty("buildId").GetInt64()));
+            Assert.Equal(1, builds[1].GetProperty("changes").GetProperty("keysAdded").GetInt64());
             var changes = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/changes?build={second.DimensionRunId}");
-            Assert.Equal(["Gamma Ray", "RHOB"], changes.GetProperty("items").EnumerateArray().Select(c => c.GetProperty("original").GetString()).Order(StringComparer.Ordinal));
+            Assert.Equal(["Gamma Ray", "RHOB"], changes.GetProperty("items").EnumerateArray().Select(c => c.GetProperty("key").GetString()).Order(StringComparer.Ordinal));
             var added = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/changes?change=added");
-            Assert.Equal(("RHOB", "RHOB"), (Assert.Single(added.GetProperty("items").EnumerateArray()).GetProperty("original").GetString(), added.GetProperty("items")[0].GetProperty("toValue").GetString()));
+            Assert.Equal(("RHOB", "RHOB"), (Assert.Single(added.GetProperty("items").EnumerateArray()).GetProperty("key").GetString(), added.GetProperty("items")[0].GetProperty("toValue").GetString()));
 
-            // The filter of a set of members, named by clean value; a name that is no member is said to be missing.
+            // The filter of a set of values, named as the dimension holds them; a name that is no value is said to be missing.
             var filter = await PostJsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/filter", new { values = new[] { "GR", "DT", "NOPE" } });
             Assert.Equal(WellLog, filter.GetProperty("kind").GetString());
-            Assert.Equal(["DT", "GR"], filter.GetProperty("members").EnumerateArray().Select(m => m.GetProperty("value").GetString()));
-            Assert.Equal(3, filter.GetProperty("originals").GetInt32());
+            Assert.Equal(["DT", "GR"], filter.GetProperty("values").EnumerateArray().Select(m => m.GetProperty("value").GetString()));
+            Assert.Equal(3, filter.GetProperty("keys").GetInt32());
             Assert.Equal(["NOPE"], filter.GetProperty("missing").EnumerateArray().Select(m => m.GetString()));
             var searched = Assert.Single(filter.GetProperty("searches").EnumerateArray()).GetString()!;
             Assert.Contains("\"gr\"", searched, StringComparison.Ordinal);
             Assert.Contains("\"DT\"", searched, StringComparison.Ordinal);
 
-            // The exports: the members as CSV with a header row, and every original as JSON Lines.
-            using (var csv = await SendAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/export?set=members&format=csv"))
+            // The search across dimensions: a record holding a key of GR, of a log of wellbore 15/9-F-1, in the kind both read.
+            var search = await PostJsonAsync(client, token, "/api/v1/delivery/dimensions/search", new
+            {
+                picks = new object[]
+                {
+                    new { dimensionId, values = new[] { "GR" } },
+                    new { dimensionId = wellboreId, values = new[] { "15/9-F-1", "15/9-F-9" } },
+                },
+            });
+            var curveFilter = DimensionFilters.Of(field, ["GR", "gr"])[0];
+            var wellboreFilter = DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:"])[0];
+            Assert.Equal(WellLog, search.GetProperty("kind").GetString());
+            Assert.Equal($"({curveFilter}) AND ({wellboreFilter})", search.GetProperty("query").GetString());
+            Assert.Equal(3, search.GetProperty("clauses").GetInt32());
+            Assert.Equal(["Wellbore: 15/9-F-9"], search.GetProperty("missing").EnumerateArray().Select(m => m.GetString()));
+            var request = JsonDocument.Parse(search.GetProperty("request").GetString()!).RootElement;
+            Assert.Equal((WellLog, search.GetProperty("query").GetString()), (request.GetProperty("kind").GetString(), request.GetProperty("query").GetString()));
+            Assert.Equal(["CurveMnemonic", "Wellbore"], search.GetProperty("parts").EnumerateArray().Select(p => p.GetProperty("dimension").GetString()));
+            var picked = Assert.Single(search.GetProperty("parts")[1].GetProperty("values").EnumerateArray());
+            Assert.Equal(("15/9-F-1", 7L), (picked.GetProperty("value").GetString(), picked.GetProperty("records").GetInt64()));
+
+            // A search reads one kind: one the dimensions' kind does not cover is refused, and so is a dimension picked twice.
+            using (var outside = await PostAsync(client, token, "/api/v1/delivery/dimensions/search", new
+            {
+                kind = "osdu:wks:master-data--Wellbore:1.0.0",
+                picks = new[] { new { dimensionId, values = new[] { "GR" } } },
+            }))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, outside.StatusCode);
+                Assert.Contains("other records", await outside.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            using (var twice = await PostAsync(client, token, "/api/v1/delivery/dimensions/search", new
+            {
+                picks = new[] { new { dimensionId, values = new[] { "GR" } }, new { dimensionId, values = new[] { "DT" } } },
+            }))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, twice.StatusCode);
+                Assert.Contains("picked in once", await twice.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            // The exports: the values as CSV with a header row, and every key as JSON Lines.
+            using (var csv = await SendAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/export?set=values&format=csv"))
             {
                 var body = await csv.Content.ReadAsStringAsync();
                 Assert.True(csv.StatusCode == HttpStatusCode.OK, body);
                 Assert.Equal("text/csv", csv.Content.Headers.ContentType?.MediaType);
                 var lines = body.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                Assert.StartsWith("member_id,value,records", lines[0], StringComparison.Ordinal);
+                Assert.StartsWith("value_id,value,records", lines[0], StringComparison.Ordinal);
                 Assert.Equal(4, lines.Length);
                 Assert.Contains("CurveMnemonic", csv.Content.Headers.ContentDisposition?.FileNameStar ?? csv.Content.Headers.ContentDisposition?.FileName ?? string.Empty, StringComparison.Ordinal);
             }
 
-            using (var jsonl = await SendAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/export?set=originals&format=jsonl"))
+            using (var jsonl = await SendAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/export?set=keys&format=jsonl"))
             {
                 var lines = (await jsonl.Content.ReadAsStringAsync()).Split('\n', StringSplitOptions.RemoveEmptyEntries);
-                Assert.Equal(5, lines.Length);
-                Assert.Contains(lines, l => JsonDocument.Parse(l).RootElement.GetProperty("original").GetString() == "   ");
+                Assert.Equal(3, lines.Length);
+                var row = lines.Select(l => JsonDocument.Parse(l).RootElement).Single(r => r.GetProperty("key").GetString() == "dev:master-data--Wellbore:1001:");
+                Assert.Equal(("15/9-F-1", "15/9-F-1"), (row.GetProperty("label").GetString(), row.GetProperty("value").GetString()));
+                Assert.Equal(DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:"])[0], row.GetProperty("filter").GetString());
             }
 
             // The builds a platform run made, named by the dimension each built.
@@ -220,25 +297,38 @@ public sealed class DeliveryDimensionApiTests
 
             // What the API cannot answer, it says why.
             await ProblemAsync(client, token, "/api/v1/delivery/dimensions/2147483000", HttpStatusCode.NotFound, "No dimension");
-            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members?order=size", HttpStatusCode.BadRequest, "not one of value, records");
-            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/members?after=not-a-cursor", HttpStatusCode.BadRequest, "is not a cursor");
-            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?member={grId}&leftOut=true", HttpStatusCode.BadRequest, "not both");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?order=size", HttpStatusCode.BadRequest, "not one of value, records");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/values?after=not-a-cursor", HttpStatusCode.BadRequest, "is not a cursor");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/keys?value={grId}&leftOut=true", HttpStatusCode.BadRequest, "not both");
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/changes?change=renamed", HttpStatusCode.BadRequest, "not one of added");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/export?set=members", HttpStatusCode.BadRequest, "not one of values, keys");
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/export?format=pdf", HttpStatusCode.BadRequest, "not one of csv, jsonl");
             await ProblemAsync(client, token, $"/api/v1/delivery/flows/{otherPipelineId}/dimensions", HttpStatusCode.Conflict, "not a dimension flow");
             using (var none = await PostAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}/filter", new { values = Array.Empty<string>() }))
             {
                 Assert.Equal(HttpStatusCode.BadRequest, none.StatusCode);
-                Assert.Contains("at least one member", await none.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+                Assert.Contains("at least one value", await none.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            using (var nothing = await PostAsync(client, token, "/api/v1/delivery/dimensions/search", new { picks = Array.Empty<object>() }))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, nothing.StatusCode);
+                Assert.Contains("at least one value", await nothing.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            using (var unknown = await PostAsync(client, token, "/api/v1/delivery/dimensions/search", new { picks = new[] { new { dimensionId = 2147483000, values = new[] { "GR" } } } }))
+            {
+                Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
             }
         }
         finally
         {
             await using (var osdu = SampleEstate.Context(cs))
             {
-                await osdu.DeliveryDimensionChanges.Where(c => c.DimensionId == dimensionId).ExecuteDeleteAsync();
-                await osdu.DeliveryDimensionValues.Where(v => v.DimensionId == dimensionId).ExecuteDeleteAsync();
-                await osdu.DeliveryDimensionMembers.Where(m => m.DimensionId == dimensionId).ExecuteDeleteAsync();
+                var ids = await osdu.DeliveryDimensions.Where(d => d.FlowId == flow.LedgerId).Select(d => d.DimensionId).ToListAsync();
+                await osdu.DeliveryDimensionChanges.Where(c => ids.Contains(c.DimensionId)).ExecuteDeleteAsync();
+                await osdu.DeliveryDimensionValues.Where(v => ids.Contains(v.DimensionId)).ExecuteDeleteAsync();
+                await osdu.DeliveryDimensionMembers.Where(m => ids.Contains(m.DimensionId)).ExecuteDeleteAsync();
                 await osdu.DeliveryDimensionRuns.Where(r => r.FlowId == flow.LedgerId).ExecuteDeleteAsync();
                 await osdu.DeliveryDimensions.Where(d => d.FlowId == flow.LedgerId).ExecuteDeleteAsync();
                 await osdu.DeliveryLedgers.Where(l => l.FlowId == flow.LedgerId).ExecuteDeleteAsync();
@@ -261,23 +351,52 @@ public sealed class DeliveryDimensionApiTests
         Description = spec.Description,
         Kind = spec.Kind,
         Path = spec.Path,
-        CleanJson = """[{"kind":"trim"},{"kind":"upper"}]""",
+        CleanJson = spec.Clean.Count == 0 ? "[]" : """[{"kind":"trim"},{"kind":"upper"}]""",
+        LabelJson = spec.Label.Count == 0 ? null : JsonSerializer.Serialize(spec.Label),
         DefinitionHash = spec.DefinitionHash,
     };
 
     /// <summary>
-    /// Writes a completed build as the runner does: registered, then its originals (original, clean value or none, count) and
-    /// the members they add up to, each member's filter written by the filters the API writes too.
+    /// Writes a completed build as the runner does: registered, then its keys (key, value or none, count), each with its own
+    /// filter, and the values they add up to, each value's filter written by the filters the API writes too.
     /// </summary>
     private static async Task<DimensionRunState> BuildAsync(
-        OsduLedger ledger, DimensionFlowDefinition flow, Guid runId, DateTime startedUtc, params (string Original, string? Clean, long Count)[] found)
+        OsduLedger ledger, DimensionFlowDefinition flow, Guid runId, DateTime startedUtc, params (string Key, string? Value, long Count)[] found)
     {
         var (dimension, run) = await ledger.StartDimensionRunAsync(Declaration(flow, flow.Dimensions[0]), runId, "dimension api tests", startedUtc);
         var field = OsduField.Text("data.Curves.Mnemonic", "data.Curves");
-        var originals = found
-            .Select(f => new DimensionOriginalWrite(f.Original, f.Clean, f.Clean is null ? DimensionLeftOut.Empty : null, null, f.Count, Filterable: true))
+        var keys = found
+            .Select(f => new DimensionOriginalWrite(f.Key, f.Value, f.Value is null ? DimensionLeftOut.Empty : null, null, f.Count, Filterable: true,
+                Filter: DimensionFilters.Of(field, [f.Key])[0]))
             .ToList();
-        var members = originals.Where(o => o.CleanValue is not null)
+        return await WriteAsync(ledger, flow, dimension, run, Field, field, keys, new DimensionReadCounts { Records = 20, WithValue = 19, Aggregations = 1, Slices = 1 }, startedUtc);
+    }
+
+    /// <summary>
+    /// Writes a completed build of the Wellbore dimension: each key a wellbore's id, valued by the name read for it, or by the id
+    /// itself when the label search found none.
+    /// </summary>
+    private static async Task<DimensionRunState> WellboresAsync(
+        OsduLedger ledger, DimensionFlowDefinition flow, DateTime startedUtc, params (string Key, string? Label, long Count)[] found)
+    {
+        var (dimension, run) = await ledger.StartDimensionRunAsync(Declaration(flow, flow.Dimensions[1]), Guid.NewGuid(), "dimension api tests", startedUtc);
+        var field = OsduField.Text("data.WellboreID");
+        var keys = found
+            .Select(f => new DimensionOriginalWrite(f.Key, f.Label ?? f.Key, null, null, f.Count, Filterable: true,
+                Label: f.Label, LabelFrom: f.Label is null ? null : f.Key.TrimEnd(':'), Filter: DimensionFilters.Of(field, [f.Key])[0]))
+            .ToList();
+        var read = new DimensionReadCounts
+        {
+            Records = 11, WithValue = 11, Aggregations = 1, Slices = 1, Labelled = found.Count(f => f.Label is not null), Unlabelled = found.Count(f => f.Label is null), LabelQueries = 1,
+        };
+        return await WriteAsync(ledger, flow, dimension, run, WellboreField, field, keys, read, startedUtc);
+    }
+
+    private static async Task<DimensionRunState> WriteAsync(
+        OsduLedger ledger, DimensionFlowDefinition flow, DimensionState dimension, DimensionRunState run, DimensionFieldState state, OsduField field,
+        IReadOnlyList<DimensionOriginalWrite> keys, DimensionReadCounts read, DateTime startedUtc)
+    {
+        var values = keys.Where(o => o.CleanValue is not null)
             .GroupBy(o => o.CleanValue!, StringComparer.Ordinal)
             .Select(g => new DimensionMemberWrite(g.Key, g.Sum(o => o.Count), RecordsExact: false, g.Count(), 0, DimensionFilters.Of(field, g.Select(o => o.Original).ToList())[0], 1))
             .ToList();
@@ -286,10 +405,10 @@ public sealed class DeliveryDimensionApiTests
             DimensionRunId = run.DimensionRunId,
             DimensionId = dimension.DimensionId,
             FlowId = flow.LedgerId,
-            Field = Field,
-            Originals = originals,
-            Members = members,
-            Read = new DimensionReadCounts { Records = 20, WithValue = 19, Aggregations = 1, Slices = 1 },
+            Field = state,
+            Originals = keys,
+            Members = values,
+            Read = read,
             CompletedUtc = startedUtc.AddMinutes(1),
         });
     }

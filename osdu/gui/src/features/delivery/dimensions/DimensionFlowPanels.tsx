@@ -58,8 +58,8 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
     },
     { id: "kind", header: "Kind", fill: true, floor: 200, render: (row) => <KindText kind={row.dimension.kind} /> },
     { id: "path", header: "Path", render: (row) => <span className="font-mono text-[12px]">{row.dimension.path}</span> },
-    { id: "members", header: "Members", align: "right", render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.dimension.members.toLocaleString("en-US")}</span> },
-    { id: "originals", header: "Originals", align: "right", render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.dimension.originals.toLocaleString("en-US")}</span> },
+    { id: "values", header: "Values", align: "right", render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.dimension.values.toLocaleString("en-US")}</span> },
+    { id: "keys", header: "Keys", align: "right", render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.dimension.keys.toLocaleString("en-US")}</span> },
     {
       id: "built",
       header: "Built",

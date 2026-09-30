@@ -61,9 +61,12 @@ export function standingOf(dimension: DeliveryDimension): DimensionStanding {
 }
 
 /** The five questions a dimension's page answers, a tab each. */
-export type DimensionView = "members" | "originals" | "changes" | "builds" | "definition";
+export type DimensionView = "values" | "keys" | "changes" | "builds" | "definition";
 
-export const DIMENSION_VIEWS: readonly DimensionView[] = ["members", "originals", "changes", "builds", "definition"];
+export const DIMENSION_VIEWS: readonly DimensionView[] = ["values", "keys", "changes", "builds", "definition"];
+
+/** How the page's link names the search builder in place of a dimension. */
+export const SEARCH_REF = "search";
 
 /** One dimension on a board, with the flow that declares it, how a link names it, and where it stands. */
 export interface DimensionEntry {
@@ -95,8 +98,8 @@ export function fieldText(field: DeliveryDimensionField): string {
 }
 
 /**
- * How complete a build's values are: the share of the records its query matched that hold a value the index can read,
- * with the words for it. Null when the build could not count them.
+ * How complete a build's keys are: the share of the records its query matched that hold a key the index can read, with
+ * the words for it. Null when the build could not count them.
  */
 export function coverage(build: DeliveryDimensionBuild): { share: number; text: string } | null {
   if (build.records === null || build.withValue === null || build.records === 0) {
@@ -106,7 +109,7 @@ export function coverage(build: DeliveryDimensionBuild): { share: number; text: 
   const share = Math.min(1, build.withValue / build.records);
   return {
     share,
-    text: `${build.withValue.toLocaleString("en-US")} of ${build.records.toLocaleString("en-US")} records hold a value`,
+    text: `${build.withValue.toLocaleString("en-US")} of ${build.records.toLocaleString("en-US")} records hold a key`,
   };
 }
 
@@ -128,15 +131,15 @@ export function buildDuration(build: DeliveryDimensionBuild, now = Date.now()): 
   return formatDurationSeconds(Math.max(0, (ended - started) / 1000));
 }
 
-/** Why an original belongs to no member, in words. */
+/** Why a key belongs to no value, in words. */
 export const LEFT_OUT_TEXT: Record<DimensionLeftOut, string> = {
   empty: "cleaning left nothing",
-  tooLong: "its clean value is longer than a member's may be",
+  tooLong: "its value would be longer than a value may be",
   dropped: "a map step left it out",
   failed: "a clean step could not run on it",
 };
 
-/** What a change did to an original, as a filter chip and a row name it. */
+/** What a change did to a key, as a filter chip and a row name it. */
 export const CHANGE_TEXT: Record<DimensionChangeKind, { label: string; verb: string }> = {
   added: { label: "Arrived", verb: "arrived" },
   removed: { label: "Left", verb: "left" },
@@ -144,7 +147,7 @@ export const CHANGE_TEXT: Record<DimensionChangeKind, { label: string; verb: str
   restored: { label: "Came back", verb: "came back" },
 };
 
-/** The request body of an OSDU search for a filter: the kind and the query, as the search service takes them. */
+/** The request body of an OSDU search for a filter: the kind and the query, as the search service takes them (POST /api/search/v2/query). */
 export function osduSearchRequest(kind: string, query: string): string {
   return JSON.stringify({ kind, query, limit: 1000 }, null, 2);
 }
@@ -165,7 +168,7 @@ function safe(part: string): string {
   return cleaned === "" ? "dimension" : cleaned;
 }
 
-/** Downloads the whole of a dimension's members or originals, named as the control plane names the file. */
+/** Downloads the whole of a dimension's values or keys, named as the control plane names the file. */
 export async function downloadDimension(
   dimensionId: number, flowName: string, partition: string | null, name: string, set: DimensionExportSet, format: DimensionExportFormat,
 ): Promise<void> {
@@ -178,4 +181,30 @@ export async function downloadDimension(
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
+}
+
+/** A search's picks as a link carries them: each value as `<dimensionId>:<valueId>`, comma separated. */
+export function picksText(picks: ReadonlyMap<number, ReadonlySet<number>>): string {
+  return [...picks.entries()]
+    .flatMap(([dimensionId, values]) => [...values].sort((a, b) => a - b).map((valueId) => `${dimensionId}:${valueId}`))
+    .join(",");
+}
+
+/** The picks a link carries; what is not a pick is passed over. */
+export function picksOf(text: string | null): Map<number, Set<number>> {
+  const picks = new Map<number, Set<number>>();
+  for (const part of (text ?? "").split(",")) {
+    const match = /^(\d{1,10}):(\d{1,19})$/.exec(part.trim());
+    if (match === null) {
+      continue;
+    }
+
+    const dimensionId = Number(match[1]);
+    const valueId = Number(match[2]);
+    if (Number.isSafeInteger(dimensionId) && Number.isSafeInteger(valueId)) {
+      (picks.get(dimensionId) ?? picks.set(dimensionId, new Set()).get(dimensionId)!).add(valueId);
+    }
+  }
+
+  return picks;
 }

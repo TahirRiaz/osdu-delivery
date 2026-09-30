@@ -100,7 +100,7 @@ public sealed partial class DimensionCleaner
         }
     }
 
-    /// <summary>Cleans <paramref name="original"/> by every step in order, stopping at the first that leaves it out of every member.</summary>
+    /// <summary>Cleans <paramref name="original"/> (a key, or its label) by every step in order, stopping at the first that leaves it out of every value.</summary>
     public CleanResult Clean(string original)
     {
         ArgumentNullException.ThrowIfNull(original);
@@ -125,7 +125,7 @@ public sealed partial class DimensionCleaner
         }
 
         return value.Length > DimensionSpec.MaxCleanLength
-            ? CleanResult.None(CleanOutcome.TooLong, string.Create(CultureInfo.InvariantCulture, $"the clean value is {value.Length} characters, and a member's is at most {DimensionSpec.MaxCleanLength}"))
+            ? CleanResult.None(CleanOutcome.TooLong, string.Create(CultureInfo.InvariantCulture, $"the value is {value.Length} characters, and a value is at most {DimensionSpec.MaxCleanLength}"))
             : CleanResult.Member(value, note);
     }
 

@@ -37,10 +37,9 @@ public class DimensionExportTests
         => Assert.Equal("1,,x", DimensionExport.Csv("1", null, "x"));
 
     [Theory]
-    [InlineData(null, DimensionExportSet.Members)]
-    [InlineData("members", DimensionExportSet.Members)]
-    [InlineData("Originals", DimensionExportSet.Originals)]
-    [InlineData("values", DimensionExportSet.Originals)]
+    [InlineData(null, DimensionExportSet.Values)]
+    [InlineData("values", DimensionExportSet.Values)]
+    [InlineData("Keys", DimensionExportSet.Keys)]
     public void The_set_is_read_from_its_name(string? name, DimensionExportSet set) => Assert.Equal(set, DimensionExport.SetOf(name));
 
     [Theory]
@@ -54,6 +53,7 @@ public class DimensionExportTests
     public void An_unknown_set_or_format_is_refused_rather_than_guessed()
     {
         Assert.Null(DimensionExport.SetOf("everything"));
+        Assert.Null(DimensionExport.SetOf("members"));
         Assert.Null(DimensionExport.FormatOf("xlsx"));
     }
 
@@ -66,7 +66,7 @@ public class DimensionExportTests
             CleanJson = "[]", DefinitionHash = "0123456789abcdef",
         };
 
-        Assert.Equal("wells-dims-dev-Curve-Mnemonic-originals.jsonl", DimensionExport.FileName(dimension, DimensionExportSet.Originals, DimensionExportFormat.JsonLines));
-        Assert.Equal("wells-dims-dev-Curve-Mnemonic-members.csv", DimensionExport.FileName(dimension, DimensionExportSet.Members, DimensionExportFormat.Csv));
+        Assert.Equal("wells-dims-dev-Curve-Mnemonic-keys.jsonl", DimensionExport.FileName(dimension, DimensionExportSet.Keys, DimensionExportFormat.JsonLines));
+        Assert.Equal("wells-dims-dev-Curve-Mnemonic-values.csv", DimensionExport.FileName(dimension, DimensionExportSet.Values, DimensionExportFormat.Csv));
     }
 }

@@ -42,6 +42,7 @@ public sealed partial class OsduLedger
             dimension.Query = declaration.Query;
             dimension.Path = declaration.Path;
             dimension.CleanJson = declaration.CleanJson;
+            dimension.LabelJson = declaration.LabelJson;
             dimension.DefinitionHash = declaration.DefinitionHash;
             try
             {
@@ -80,7 +81,7 @@ public sealed partial class OsduLedger
             if (original.Original.Length > DeliveryDimensionValue.MaxOriginalLength)
             {
                 throw new DeliveryException(
-                    string.Create(CultureInfo.InvariantCulture, $"An original of dimension {write.DimensionId} is {original.Original.Length} characters, more than the {DeliveryDimensionValue.MaxOriginalLength} a dimension keeps; the build leaves such values out before it writes."));
+                    string.Create(CultureInfo.InvariantCulture, $"A key of dimension {write.DimensionId} is {original.Original.Length} characters, more than the {DeliveryDimensionValue.MaxOriginalLength} a dimension keeps; the build leaves such values out before it writes."));
             }
         }
 
@@ -399,7 +400,10 @@ public sealed partial class OsduLedger
 
                 if (search is not null)
                 {
-                    values = values.Where(v => EF.Functions.Collate(v.Original, DeliveryModel.SearchCollation).Contains(search));
+                    // A key is found by itself or by the label read for it, ignoring case: an id is searched by the name it
+                    // stands for as often as by the id.
+                    values = values.Where(v => EF.Functions.Collate(v.Original, DeliveryModel.SearchCollation).Contains(search)
+                        || (v.Label != null && EF.Functions.Collate(v.Label, DeliveryModel.SearchCollation).Contains(search)));
                 }
 
                 IOrderedQueryable<DeliveryDimensionValue> ordered;
@@ -433,6 +437,9 @@ public sealed partial class OsduLedger
                             .Where(m => m.PartitionId == v.PartitionId && m.MemberId == v.MemberId).Select(m => m.Value).FirstOrDefault(),
                         LeftOut = v.LeftOut,
                         Note = v.Note,
+                        Label = v.Label,
+                        LabelFrom = v.LabelFrom,
+                        Filter = v.Filter,
                         Count = v.Count,
                         Filterable = v.Filterable,
                         FirstSeenRunId = v.FirstSeenRunId,
@@ -608,6 +615,9 @@ public sealed partial class OsduLedger
         run.ScanPages = read.ScanPages;
         run.ScannedUnits = read.ScannedUnits;
         run.CountQueries = read.CountQueries;
+        run.Labelled = read.Labelled;
+        run.Unlabelled = read.Unlabelled;
+        run.LabelQueries = read.LabelQueries;
         run.Templates = read.Templates;
         run.Notes = read.Notes.Count == 0 ? null : JsonSerializer.Serialize(read.Notes.Take(MaxDimensionNotes).Select(n => Truncate(n, 2000)).ToList());
     }
@@ -624,6 +634,7 @@ public sealed partial class OsduLedger
         Path = d.Path,
         Field = d.FieldIndex is { } index && d.AggregateBy is { } aggregateBy ? new DimensionFieldState(index, d.NestedPath, aggregateBy, d.Repeats) : null,
         CleanJson = d.CleanJson,
+        LabelJson = d.LabelJson,
         DefinitionHash = d.DefinitionHash,
         Members = d.Members,
         Originals = d.Originals,
@@ -657,6 +668,9 @@ public sealed partial class OsduLedger
             ScanPages = r.ScanPages,
             ScannedUnits = r.ScannedUnits,
             CountQueries = r.CountQueries,
+            Labelled = r.Labelled,
+            Unlabelled = r.Unlabelled,
+            LabelQueries = r.LabelQueries,
             Templates = r.Templates,
             Notes = r.Notes is null ? [] : JsonSerializer.Deserialize<List<string>>(r.Notes) ?? [],
         },
@@ -678,6 +692,9 @@ public sealed partial class OsduLedger
         MemberId = v.MemberId,
         LeftOut = v.LeftOut,
         Note = v.Note,
+        Label = v.Label,
+        LabelFrom = v.LabelFrom,
+        Filter = v.Filter,
         Count = v.Count,
         Filterable = v.Filterable,
         FirstSeenRunId = v.FirstSeenRunId,

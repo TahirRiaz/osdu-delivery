@@ -68,6 +68,9 @@ public sealed record DimensionDeclaration
     /// <summary>The clean steps, as JSON.</summary>
     public required string CleanJson { get; init; }
 
+    /// <summary>Where each key's label is read, as a JSON array of paths; null when keys are their own values.</summary>
+    public string? LabelJson { get; init; }
+
     public required string DefinitionHash { get; init; }
 }
 
@@ -104,6 +107,9 @@ public sealed record DimensionState
     public DimensionFieldState? Field { get; init; }
 
     public required string CleanJson { get; init; }
+
+    /// <summary>Where each key's label is read, as a JSON array of paths; null when keys are their own values.</summary>
+    public string? LabelJson { get; init; }
 
     public required string DefinitionHash { get; init; }
 
@@ -147,6 +153,15 @@ public sealed record DimensionReadCounts
     public long ScannedUnits { get; init; }
 
     public int CountQueries { get; init; }
+
+    /// <summary>Keys whose label the build read from the record they name.</summary>
+    public long Labelled { get; init; }
+
+    /// <summary>Keys the build could not label: a key naming no record, a record the search does not hold, or one without the path.</summary>
+    public long Unlabelled { get; init; }
+
+    /// <summary>Searches the build asked to read labels.</summary>
+    public int LabelQueries { get; init; }
 
     /// <summary>The kinds the pattern matched and the template each was read against, as JSON; null when none was needed.</summary>
     public string? Templates { get; init; }
@@ -205,8 +220,13 @@ public sealed record DimensionChangeCounts(
     public bool IsNone => this == None;
 }
 
-/// <summary>One original as a build found it: its member's clean value or why it has none, and its count.</summary>
-public sealed record DimensionOriginalWrite(string Original, string? CleanValue, string? LeftOut, string? Note, long Count, bool Filterable);
+/// <summary>
+/// One original (a key) as a build found it: its member's clean value (the key's value) or why it has none, its count, the
+/// label read for it and the record it was read from, and the search filter finding its records.
+/// </summary>
+public sealed record DimensionOriginalWrite(
+    string Original, string? CleanValue, string? LeftOut, string? Note, long Count, bool Filterable,
+    string? Label = null, string? LabelFrom = null, string? Filter = null);
 
 /// <summary>One member as a build made it: its clean value, its count, and its filter.</summary>
 public sealed record DimensionMemberWrite(string Value, long Records, bool RecordsExact, int Originals, int Unfilterable, string? Filter, int FilterParts);
@@ -282,6 +302,15 @@ public sealed record DimensionValueState
     public string? LeftOut { get; init; }
 
     public string? Note { get; init; }
+
+    /// <summary>The label read for it from the record it names, before cleaning; null when none was read.</summary>
+    public string? Label { get; init; }
+
+    /// <summary>The id of the record the label was read from.</summary>
+    public string? LabelFrom { get; init; }
+
+    /// <summary>The search filter finding the records holding it; null when no query can carry it.</summary>
+    public string? Filter { get; init; }
 
     public long Count { get; init; }
 

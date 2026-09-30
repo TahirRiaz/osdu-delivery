@@ -19,16 +19,36 @@ namespace SqlFlow.Delivery.Engine.Dimensions;
 /// <summary>One kind a dimension's pattern matched in the partition, with its records and the template it was read against.</summary>
 public sealed record DimensionKind(string Kind, long Records, string? Template);
 
-/// <summary>One dimension as a build left it: what it holds and changed, how it read, and why it failed when it did.</summary>
+/// <summary>What a build changed of a dimension: its values that arrived, left or came back, and its keys that arrived, left, moved or came back.</summary>
+public sealed record DimensionBuildChanges(
+    long ValuesAdded, long ValuesRemoved, long ValuesRestored, long KeysAdded, long KeysRemoved, long KeysMoved, long KeysRestored)
+{
+    public static DimensionBuildChanges None { get; } = new(0, 0, 0, 0, 0, 0, 0);
+
+    /// <summary>The changes as the ledger counts them, where a value is a member and a key an original.</summary>
+    public static DimensionBuildChanges Of(DimensionChangeCounts counts)
+    {
+        ArgumentNullException.ThrowIfNull(counts);
+        return new(
+            counts.MembersAdded, counts.MembersRemoved, counts.MembersRestored, counts.OriginalsAdded, counts.OriginalsRemoved, counts.OriginalsMoved,
+            counts.OriginalsRestored);
+    }
+}
+
+/// <summary>
+/// One dimension as a build left it: the values and keys it holds, the keys of no value and those no query can carry, the
+/// keys a label was read for, what it changed, how many requests it made, and why it failed when it did.
+/// </summary>
 public sealed record DimensionBuildSummary(
     string Dimension,
     string Status,
-    long? DimensionRunId,
-    long Members,
-    long Originals,
+    long? BuildId,
+    long Values,
+    long Keys,
     long LeftOut,
     long Unfilterable,
-    DimensionChangeCounts Changes,
+    long Labelled,
+    DimensionBuildChanges Changes,
     int Requests,
     string? AggregateBy,
     string? Error,
@@ -43,8 +63,8 @@ public sealed record DimensionBuildOutcome(string Operation, string Flow, string
     /// <summary>The most notes a dimension's summary carries in the run's result; every note is on its build in the ledger.</summary>
     public const int MaxNotes = 5;
 
-    /// <summary>The originals the run's builds hold, which the run list shows beside the run as the work it did.</summary>
-    public long RowsLoaded => Dimensions.Sum(d => d.Originals);
+    /// <summary>The keys the run's builds hold, which the run list shows beside the run as the work it did.</summary>
+    public long RowsLoaded => Dimensions.Sum(d => d.Keys);
 
     /// <summary>What the run came to, as a run's error states it when a build failed it.</summary>
     public string Describe()
@@ -177,7 +197,7 @@ public sealed class DimensionRunner
         foreach (var dimension in skipped)
         {
             summaries.Add(new DimensionBuildSummary(
-                dimension.Name, "skipped", null, 0, 0, 0, 0, DimensionChangeCounts.None, 0, null,
+                dimension.Name, "skipped", null, 0, 0, 0, 0, 0, DimensionBuildChanges.None, 0, null,
                 $"The dimension is built in {PartitionNames.Listed(dimension.Partitions)}, not in '{partition}'.", []));
         }
 
@@ -256,6 +276,7 @@ public sealed class DimensionRunner
                 Query = query,
                 Path = dimension.Path,
                 CleanJson = JsonSerializer.Serialize(dimension.Clean, StepJson),
+                LabelJson = dimension.Label.Count == 0 ? null : JsonSerializer.Serialize(dimension.Label),
                 DefinitionHash = dimension.DefinitionHash,
             },
             runId, actor, Now, ct).ConfigureAwait(false);
@@ -278,16 +299,22 @@ public sealed class DimensionRunner
                 new SearchDistinctSource(search, dimension.Kind, query, field),
                 new DistinctReadOptions(_flow.Source.AggregationSize, dimension.MaxValues, resolved.Repeats),
                 _log, ct).ConfigureAwait(false);
-            read = Counts(values, templatesJson, 0, []);
+            read = Counts(values, templatesJson, 0, [], KeyLabels.None);
+
+            // A key naming a record is followed to it for its label, which is what the key's value is cleaned from.
+            var labels = dimension.Label.Count == 0
+                ? KeyLabels.None
+                : await new DimensionLabeler(search, _log).LabelAsync(values.Values.Keys.ToList(), dimension.Label, ct).ConfigureAwait(false);
+            read = Counts(values, templatesJson, 0, [], labels);
 
             var cleaner = Cleaner(dimension);
-            var (originals, members, notes, countQueries) = await GroupAsync(search, dimension, query, field, resolved.Repeats, cleaner, values, ct).ConfigureAwait(false);
-            read = Counts(values, templatesJson, countQueries, notes);
+            var (originals, members, notes, countQueries) = await GroupAsync(search, dimension, query, field, resolved.Repeats, cleaner, values, labels, ct).ConfigureAwait(false);
+            read = Counts(values, templatesJson, countQueries, notes, labels);
             var written = await ledger.WriteDimensionAsync(
                 Write(run, dimension, new DimensionFieldState(Index(field.Index), field.NestedPath, field.AggregateBy, resolved.Repeats), originals, members, read),
                 ct).ConfigureAwait(false);
             _log.LogInformation(
-                "dimension {Dimension}: {Members} member(s) from {Originals} original(s), {LeftOut} under none; {Added} arrived, {Removed} left, {Moved} moved, {Restored} came back",
+                "dimension {Dimension}: {Values} value(s) from {Keys} key(s), {LeftOut} of none; {Added} arrived, {Removed} left, {Moved} moved, {Restored} came back",
                 dimension.Name, written.Members, written.Originals, written.LeftOut, written.Changes.OriginalsAdded, written.Changes.OriginalsRemoved,
                 written.Changes.OriginalsMoved, written.Changes.OriginalsRestored);
             return Summary(dimension, written, read, field.AggregateBy);
@@ -302,7 +329,7 @@ public sealed class DimensionRunner
             var error = SecretHygiene.RedactedMessage(ex);
             _log.LogError(RunFailure.IsExpected(ex) ? null : ex, "dimension {Dimension} failed: {Error}", dimension.Name, error);
             await CloseAsync(ledger, run.DimensionRunId, DimensionRunStatus.Failed, read, error).ConfigureAwait(false);
-            return new DimensionBuildSummary(dimension.Name, DimensionRunStatus.Failed, run.DimensionRunId, 0, 0, 0, 0, DimensionChangeCounts.None, read.Aggregations + read.ScanPages,
+            return new DimensionBuildSummary(dimension.Name, DimensionRunStatus.Failed, run.DimensionRunId, 0, 0, 0, 0, 0, DimensionBuildChanges.None, read.Aggregations + read.ScanPages,
                 null, error, read.Notes.Take(DimensionBuildOutcome.MaxNotes).ToList());
         }
     }
@@ -312,11 +339,13 @@ public sealed class DimensionRunner
     /// had to say, a line each.
     /// </summary>
     private async Task<(List<DimensionOriginalWrite> Originals, List<DimensionMemberWrite> Members, List<string> Notes, int CountQueries)> GroupAsync(
-        OsduSearch search, DimensionSpec dimension, string? query, OsduField field, bool repeats, DimensionCleaner cleaner, DistinctRead read, CancellationToken ct)
+        OsduSearch search, DimensionSpec dimension, string? query, OsduField field, bool repeats, DimensionCleaner cleaner, DistinctRead read, KeyLabels labels,
+        CancellationToken ct)
     {
         var originals = new List<DimensionOriginalWrite>(read.Values.Count);
         var groups = new Dictionary<string, List<DimensionOriginalWrite>>(StringComparer.Ordinal);
         var notes = new List<string>(read.Notes);
+        notes.AddRange(labels.Notes);
         var tooLong = 0;
         var leftOut = new Dictionary<string, int>(StringComparer.Ordinal);
         var unfilterable = new List<string>();
@@ -329,11 +358,15 @@ public sealed class DimensionRunner
                 continue;
             }
 
-            var cleaned = cleaner.Clean(original);
+            // The key's value is its label, cleaned, when it has one, and the key itself, cleaned, when it has none; the key
+            // keeps its own filter, the search that finds exactly the records holding it.
+            var labelled = labels.Labels.TryGetValue(original, out var found) ? found : null;
+            var cleaned = cleaner.Clean(labelled?.Label ?? original);
             var filterable = DimensionFilters.Filterable(field, original);
+            var filter = filterable ? DimensionFilters.Of(field, [original])[0] : null;
             if (cleaned.Outcome == CleanOutcome.Member)
             {
-                var kept = new DimensionOriginalWrite(original, cleaned.Value, null, cleaned.Note, count, filterable);
+                var kept = new DimensionOriginalWrite(original, cleaned.Value, null, cleaned.Note, count, filterable, labelled?.Label, labelled?.From, filter);
                 originals.Add(kept);
                 (groups.TryGetValue(cleaned.Value!, out var group) ? group : groups[cleaned.Value!] = []).Add(kept);
                 if (!filterable)
@@ -344,7 +377,7 @@ public sealed class DimensionRunner
             else
             {
                 var reason = LeftOut(cleaned.Outcome);
-                originals.Add(new DimensionOriginalWrite(original, null, reason, cleaned.Note, count, filterable));
+                originals.Add(new DimensionOriginalWrite(original, null, reason, cleaned.Note, count, filterable, labelled?.Label, labelled?.From, filter));
                 leftOut[reason] = leftOut.GetValueOrDefault(reason) + 1;
             }
         }
@@ -352,18 +385,18 @@ public sealed class DimensionRunner
         if (tooLong > 0)
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
-                $"{tooLong} original(s) are longer than the {DimensionSpec.MaxOriginalLength} characters a dimension keeps, and are left out."));
+                $"{tooLong} key(s) are longer than the {DimensionSpec.MaxOriginalLength} characters a dimension keeps, and are left out."));
         }
 
         foreach (var (reason, count) in leftOut.OrderBy(r => r.Key, StringComparer.Ordinal))
         {
-            notes.Add(string.Create(CultureInfo.InvariantCulture, $"{count} original(s) belong to no member: {Describe(reason)}."));
+            notes.Add(string.Create(CultureInfo.InvariantCulture, $"{count} key(s) belong to no value: {Describe(reason)}."));
         }
 
         if (unfilterable.Count > 0)
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
-                $"{unfilterable.Count} original(s) cannot be carried in a search query, so their members' filters leave them out: {string.Join(", ", unfilterable.Take(5).Select(o => $"'{Shown(o)}'"))}{(unfilterable.Count > 5 ? ", ..." : string.Empty)}."));
+                $"{unfilterable.Count} key(s) cannot be carried in a search query, so no filter finds their records: {string.Join(", ", unfilterable.Take(5).Select(o => $"'{Shown(o)}'"))}{(unfilterable.Count > 5 ? ", ..." : string.Empty)}."));
         }
 
         // A member's count is exact where its originals' counts are counts of records that no two of them share: a field a
@@ -396,7 +429,7 @@ public sealed class DimensionRunner
         if (splitFilters > 0)
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
-                $"{splitFilters} member(s) hold originals no one query covers (more than {DimensionFilters.MaxOriginalsPerQuery}, or one no query can carry), so their records are counted as the sum of their originals'."));
+                $"{splitFilters} value(s) hold keys no one query covers (more than {DimensionFilters.MaxOriginalsPerQuery}, or one no query can carry), so their records are counted as the sum of their keys'."));
         }
 
         var countQueries = 0;
@@ -432,7 +465,7 @@ public sealed class DimensionRunner
         if (failedCounts > 0)
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
-                $"The records of {failedCounts} member(s) could not be counted, so they are the sum of their originals': {firstFailure}"));
+                $"The records of {failedCounts} value(s) could not be counted, so they are the sum of their keys': {firstFailure}"));
         }
 
         return (originals, members, notes, countQueries);
@@ -545,11 +578,15 @@ public sealed class DimensionRunner
         };
 
     private static DimensionBuildSummary Summary(DimensionSpec dimension, DimensionRunState written, DimensionReadCounts read, string? aggregateBy)
-        => new(dimension.Name, written.Status, written.DimensionRunId, written.Members, written.Originals, written.LeftOut, written.Unfilterable, written.Changes,
-            read.Aggregations + read.ScanPages + read.CountQueries, aggregateBy, null, read.Notes.Take(DimensionBuildOutcome.MaxNotes).ToList());
+        => new(dimension.Name, written.Status, written.DimensionRunId, written.Members, written.Originals, written.LeftOut, written.Unfilterable, read.Labelled,
+            DimensionBuildChanges.Of(written.Changes), read.Aggregations + read.ScanPages + read.CountQueries + read.LabelQueries, aggregateBy, null,
+            read.Notes.Take(DimensionBuildOutcome.MaxNotes).ToList());
 
-    private static DimensionReadCounts Counts(DistinctRead read, string? templates, int countQueries, IReadOnlyList<string> notes) => new()
+    private static DimensionReadCounts Counts(DistinctRead read, string? templates, int countQueries, IReadOnlyList<string> notes, KeyLabels labels) => new()
     {
+        Labelled = labels.Labelled,
+        Unlabelled = labels.Unlabelled,
+        LabelQueries = labels.Queries,
         Records = read.Records,
         WithValue = read.WithValue,
         Nulls = read.Nulls,
@@ -620,7 +657,7 @@ public sealed class DimensionRunner
     private static string Describe(string leftOut) => leftOut switch
     {
         DimensionLeftOut.Empty => "cleaning left nothing",
-        DimensionLeftOut.TooLong => $"their clean value is longer than the {DimensionSpec.MaxCleanLength} characters a member's may be",
+        DimensionLeftOut.TooLong => $"their value would be longer than the {DimensionSpec.MaxCleanLength} characters a value may be",
         DimensionLeftOut.Dropped => "a map step left them out",
         _ => "a clean step could not run on them",
     };
@@ -639,6 +676,27 @@ public sealed class DimensionRunner
         try
         {
             return JsonSerializer.Deserialize<List<CleanStep>>(cleanJson, StepJson) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// The label paths a build kept of its dimension (<see cref="DimensionState.LabelJson"/>), as it wrote them; none when the
+    /// dimension reads no label or the text is not the list a build writes.
+    /// </summary>
+    public static IReadOnlyList<string> LabelOf(string? labelJson)
+    {
+        if (string.IsNullOrWhiteSpace(labelJson))
+        {
+            return [];
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(labelJson) ?? [];
         }
         catch (JsonException)
         {

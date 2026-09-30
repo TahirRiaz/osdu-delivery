@@ -54,11 +54,11 @@ public sealed class DimensionFlowKind : IFlowDocumentKind
 
     public string FlowType => DimensionFlowDefinition.FlowTypeName;
 
-    public string Description => "read every distinct value of attributes of OSDU records, clean them into members, and keep both with the search filter each member stands for";
+    public string Description => "read every distinct key of attributes of OSDU records, label and clean each into the value a person picks, and keep both with the search filter each stands for";
 
     public IReadOnlyList<FlowKindOperation> Operations { get; } =
     [
-        new(DeliveryOperations.Build, "Build", "Read every distinct value of each dimension (all of them, or those the payload names) from the search index, clean them into members, and keep what changed.", WritesTarget: true),
+        new(DeliveryOperations.Build, "Build", "Read every distinct key of each dimension (all of them, or those the payload names) from the search index, read each key's label where the dimension names one, clean them into values, and keep what changed.", WritesTarget: true),
         new(DeliveryOperations.Plan, "Plan", "Check every dimension against the templates of the kinds it reads and count the records each would read, reading no value and keeping nothing.", WritesTarget: false),
     ];
 

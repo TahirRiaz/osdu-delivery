@@ -113,6 +113,42 @@ public class DimensionDocumentTests
         Assert.NotEqual(first, cleaned);
     }
 
+    [Fact]
+    public void A_label_is_read_through_one_path_or_a_list_of_paths_and_changes_what_the_dimension_declares()
+    {
+        var flow = Parse(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+              - name: Country
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: [data.GeoContexts.GeoPoliticalEntityID, ' data.GeoPoliticalEntityName ']
+            """);
+
+        Assert.Equal(["data.FacilityName"], flow.Dimensions[0].Label);
+        Assert.Equal(["data.GeoContexts.GeoPoliticalEntityID", "data.GeoPoliticalEntityName"], flow.Dimensions[1].Label);
+        Assert.Empty(Parse(Head + Curves).Dimensions[0].Label);
+
+        // Keys labelled another way are another dimension's values, so the label is part of what the hash says changed.
+        Assert.NotEqual(Parse(Head + Curves).Dimensions[0].DefinitionHash, Parse(Head + Curves + "\n    label: data.Name").Dimensions[0].DefinitionHash);
+    }
+
+    [Theory]
+    [InlineData("label: 'data.Facility Name'", "label 'data.Facility Name' is not a property path")]
+    [InlineData("label: [data.A, 'x y']", "label[1] 'x y' is not a property path")]
+    [InlineData("label: [data.A, [data.B]]", "label[1] is not a path")]
+    [InlineData("label: [data.A, data.B, data.C, data.D]", "at most 3")]
+    [InlineData("label: { path: data.A }", "it is neither")]
+    public void A_label_that_breaks_a_rule_is_refused_naming_the_rule(string label, string reason)
+    {
+        var refused = Refused(Head + Curves + "\n    " + label);
+        Assert.Contains("dimensions[0] 'CurveMnemonic'", refused.Message, StringComparison.Ordinal);
+        Assert.Contains(reason, refused.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("kind", "osdu:wks:master-data--Wellbore:*")]
     [InlineData("id", "osdu:wks:*:*")]

@@ -17,8 +17,11 @@ import { counted } from "../assertions/assertionFormat";
 import { DimensionBuildDialog, type DimensionLaunch } from "./DimensionBuildDialog";
 import { DimensionOverview } from "./DimensionOverview";
 import { DimensionRail } from "./DimensionRail";
+import { DimensionSearchBuilder } from "./DimensionSearchBuilder";
 import { DimensionWorkspace } from "./DimensionWorkspace";
-import { DIMENSION_VIEWS, STANDING_VISUALS, dimensionEntries, type DimensionEntry, type DimensionView } from "./dimensionFormat";
+import {
+  DIMENSION_VIEWS, SEARCH_REF, STANDING_VISUALS, dimensionEntries, picksOf, picksText, type DimensionEntry, type DimensionView,
+} from "./dimensionFormat";
 
 /** How often the board is read again, so a build under way shows its outcome as it lands. */
 const REFRESH_MS = 15000;
@@ -49,10 +52,10 @@ function summaryCells(board: DeliveryDimensionBoard, entries: DimensionEntry[], 
       testId: "dimensions-summary-built",
     },
     {
-      label: "Members",
-      value: totals.members.toLocaleString("en-US"),
-      caption: `from ${counted(totals.originals, "original")}`,
-      testId: "dimensions-summary-members",
+      label: "Values",
+      value: totals.values.toLocaleString("en-US"),
+      caption: `from ${counted(totals.keys, "key")}`,
+      testId: "dimensions-summary-values",
     },
     {
       label: "Needs a look",
@@ -73,18 +76,20 @@ function summaryCells(board: DeliveryDimensionBoard, entries: DimensionEntry[], 
   ];
 }
 
-/** The tab a link names, the members tab when it names none or one that is not a tab. */
+/** The tab a link names, the values tab when it names none or one that is not a tab. */
 function viewOf(value: string | null): DimensionView {
-  return DIMENSION_VIEWS.find((view) => view === value) ?? "members";
+  return DIMENSION_VIEWS.find((view) => view === value) ?? "values";
 }
 
 /**
- * The dimensions of the partition picked in the title bar (docs/dimension-plan.md): the distinct values of any part of an
- * OSDU document, read past the search's limit on distinct values, each original kept beside the clean member it belongs
- * to, and each member able to write the search that finds its records. The dimensions are listed beside the page by the
- * flow that declares them; with none picked, every dimension shows as a card with its commonest members; a dimension opens
- * with its members, originals, change log, builds and definition. The dimension, the tab and the member open in a sheet
- * live in the URL, so a link lands on the same view.
+ * The dimensions of the partition picked in the title bar (docs/dimension-plan.md): the distinct keys of any part of an
+ * OSDU document, exactly as the index holds them (an id, for a reference), read past the search's limit on distinct
+ * values, each with the human-friendly value it stands for (the label read from the record it names, cleaned), and every
+ * key and value with the search filter that finds its records. The dimensions are listed beside the page by the flow that
+ * declares them; with none picked, every dimension shows as a card with its commonest values; a dimension opens with its
+ * values, keys, change log, builds and definition; and the search builder picks values across a kind's dimensions to
+ * compose the OSDU search that finds their records. The dimension, the tab, the value open in a sheet, and the builder's
+ * kind and picks live in the URL, so a link lands on the same view.
  */
 export default function DeliveryDimensionsPage() {
   const [params, setParams] = useSearchParams();
@@ -97,9 +102,11 @@ export default function DeliveryDimensionsPage() {
   });
   const entries = useMemo(() => dimensionEntries(board.data), [board.data]);
   const selectedRef = params.get("d");
-  const selected = selectedRef === null ? null : entries.find((entry) => entry.ref === selectedRef) ?? null;
-  const memberParam = Number.parseInt(params.get("member") ?? "", 10);
-  const member = Number.isSafeInteger(memberParam) && memberParam > 0 ? memberParam : null;
+  const building = selectedRef === SEARCH_REF;
+  const selected = selectedRef === null || building ? null : entries.find((entry) => entry.ref === selectedRef) ?? null;
+  const valueParam = Number.parseInt(params.get("value") ?? "", 10);
+  const value = Number.isSafeInteger(valueParam) && valueParam > 0 ? valueParam : null;
+  const picks = useMemo(() => picksOf(params.get("p")), [params]);
 
   const update = (changes: Record<string, string | null>) => setParams((current) => {
     const next = new URLSearchParams(current);
@@ -114,20 +121,23 @@ export default function DeliveryDimensionsPage() {
     return next;
   }, { replace: true });
 
-  const open = (ref: string | null) => update({ d: ref, view: null, member: null });
+  const open = (ref: string | null) => update({ d: ref, view: null, value: null, kind: null, p: null });
   const firstNeedingLook = entries.find((entry) => entry.standing === "failed" || entry.standing === "changed") ?? null;
-  const options: FilterOption[] = entries.map((entry) => ({
-    value: entry.ref,
-    label: entry.dimension.name,
-    hint: `${entry.flow.name} · ${STANDING_VISUALS[entry.standing].label.toLowerCase()} · ${counted(entry.dimension.members, "member")}`,
-  }));
+  const options: FilterOption[] = [
+    { value: SEARCH_REF, label: "Build a search", hint: "pick values across a kind's dimensions" },
+    ...entries.map((entry) => ({
+      value: entry.ref,
+      label: entry.dimension.name,
+      hint: `${entry.flow.name} · ${STANDING_VISUALS[entry.standing].label.toLowerCase()} · ${counted(entry.dimension.values, "value")}`,
+    })),
+  ];
 
   return (
     <Page data-testid="page-delivery-dimensions">
       <PageHeader
         title="Dimensions"
         subtitle={board.data === undefined
-          ? "The distinct values of any part of an OSDU document, cleaned into members, each able to filter the OSDU search."
+          ? "The distinct keys of any part of an OSDU document, each with a human-friendly value and the OSDU search that finds its records."
           : `${counted(board.data.totals.dimensions, "dimension")} from ${counted(board.data.totals.flows, "dimension flow")}${board.data.partition === null ? "" : ` in ${board.data.partition}`}.`}
       />
 
@@ -146,7 +156,7 @@ export default function DeliveryDimensionsPage() {
                 <EmptyState
                   icon={<Shapes />}
                   title="No dimension flow is synced yet"
-                  description="A dimension flow is a YAML file in a repository with flowType: dimension. Each dimension names a kind, the path of the value to gather (any property of the record or of its data), and the steps that clean each original into its member. Sync the repository and build the flow; its dimensions appear here."
+                  description="A dimension flow is a YAML file in a repository with flowType: dimension. Each dimension names a kind, the path of the key to gather (any property of the record or of its data), where a key's label is read when it names a record, and the steps that clean it into its value. Sync the repository and build the flow; its dimensions appear here."
                   data-testid="dimensions-none"
                 />
               </Card>
@@ -160,14 +170,14 @@ export default function DeliveryDimensionsPage() {
                 <div className="grid items-start gap-4 lg:grid-cols-[16rem_minmax(0,1fr)]">
                   <DimensionRail
                     entries={entries}
-                    selected={selected?.ref ?? null}
+                    selected={building ? SEARCH_REF : selected?.ref ?? null}
                     onSelect={open}
                     className="hidden lg:sticky lg:top-0 lg:flex lg:max-h-[calc(100dvh-14rem)]"
                   />
                   <div className="flex min-w-0 flex-col gap-3">
                     <FilterCombobox
                       options={options}
-                      value={selected?.ref ?? ""}
+                      value={building ? SEARCH_REF : selected?.ref ?? ""}
                       onChange={(value) => open(value === "" ? null : value)}
                       placeholder="Every dimension"
                       searchPlaceholder="Dimension, flow or standing"
@@ -176,12 +186,22 @@ export default function DeliveryDimensionsPage() {
                       testId="dimensions-picker"
                       className="w-full sm:w-72 lg:hidden"
                     />
-                    {selectedRef !== null && selected === null && (
+                    {selectedRef !== null && !building && selected === null && (
                       <p className="text-[13px] text-muted-foreground" data-testid="dimensions-not-here">
                         The dimension the link names is not one of this partition's; pick one from the list.
                       </p>
                     )}
-                    {selected === null
+                    {building
+                      ? (
+                        <DimensionSearchBuilder
+                          entries={entries}
+                          kind={params.get("kind")}
+                          onKind={(kind) => update({ kind, p: null })}
+                          picks={picks}
+                          onPicks={(next) => update({ p: picksText(next) === "" ? null : picksText(next) })}
+                        />
+                      )
+                      : selected === null
                       ? entries.length === 0 && board.data.flows.every((flow) => !flow.buildsPartition)
                         ? (
                           <Card className="gap-0 rounded-lg p-0">
@@ -199,9 +219,9 @@ export default function DeliveryDimensionsPage() {
                           key={selected.ref}
                           entry={selected}
                           view={viewOf(params.get("view"))}
-                          onView={(view) => update({ view: view === "members" ? null : view })}
-                          member={member}
-                          onMember={(memberId) => update({ member: memberId === null ? null : String(memberId) })}
+                          onView={(view) => update({ view: view === "values" ? null : view })}
+                          value={value}
+                          onValue={(valueId) => update({ value: valueId === null ? null : String(valueId) })}
                           onLaunch={setLaunch}
                         />
                       )}

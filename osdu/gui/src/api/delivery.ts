@@ -2228,10 +2228,10 @@ export interface DeliveryAssertionMatrix {
 /** What a dimension build came to: running while it reads, then completed, failed or cancelled. */
 export type DimensionBuildStatus = "running" | "completed" | "failed" | "cancelled";
 
-/** Why an original belongs to no member. */
+/** Why a key belongs to no value. */
 export type DimensionLeftOut = "empty" | "tooLong" | "dropped" | "failed";
 
-/** What a build changed of one original. */
+/** What a build changed of one key. */
 export type DimensionChangeKind = "added" | "removed" | "moved" | "restored";
 
 /** How the index stores a dimension's field, as its builds settled it. */
@@ -2240,19 +2240,19 @@ export interface DeliveryDimensionField {
   index: string;
   nestedPath: string | null;
   aggregateBy: string;
-  /** Whether one record can hold the field more than once, so a member's records can be counted as the sum of its originals'. */
+  /** Whether one record can hold the field more than once, so a value's records can be counted as the sum of its keys'. */
   repeats: boolean;
 }
 
-/** What one build changed of a dimension. */
+/** What one build changed of a dimension: its values that arrived, left or came back, and its keys that arrived, left, moved or came back. */
 export interface DeliveryDimensionChanges {
-  membersAdded: number;
-  membersRemoved: number;
-  membersRestored: number;
-  originalsAdded: number;
-  originalsRemoved: number;
-  originalsMoved: number;
-  originalsRestored: number;
+  valuesAdded: number;
+  valuesRemoved: number;
+  valuesRestored: number;
+  keysAdded: number;
+  keysRemoved: number;
+  keysMoved: number;
+  keysRestored: number;
 }
 
 /** A kind a build read, with its records and the template it was read against. */
@@ -2262,9 +2262,9 @@ export interface DeliveryDimensionKind {
   template: string | null;
 }
 
-/** One build of a dimension: who ran it, what came of it, how it read, how complete the values are, and what it changed. */
+/** One build of a dimension: who ran it, what came of it, how it read, how complete the keys are, and what it changed. */
 export interface DeliveryDimensionBuild {
-  dimensionRunId: number;
+  buildId: number;
   dimensionId: number;
   runId: string | null;
   actor: string;
@@ -2275,13 +2275,13 @@ export interface DeliveryDimensionBuild {
   definitionHash: string;
   query: string | null;
   aggregateBy: string | null;
-  members: number;
-  originals: number;
+  values: number;
+  keys: number;
   leftOut: number;
   unfilterable: number;
   /** The records the query matched; null when they could not be counted. */
   records: number | null;
-  /** The records holding a value the index can aggregate; null when not counted. */
+  /** The records holding a key the index can aggregate; null when not counted. */
   withValue: number | null;
   nulls: number;
   /** The records holding only text longer than the index's exact field keeps; null when not counted. */
@@ -2294,6 +2294,12 @@ export interface DeliveryDimensionBuild {
   scanPages: number;
   scannedUnits: number;
   countQueries: number;
+  /** Keys a label was read for. */
+  labelled: number;
+  /** Keys of a labelled dimension that have no label, each its own value. */
+  unlabelled: number;
+  /** Searches the labels were read with. */
+  labelQueries: number;
   kinds: DeliveryDimensionKind[];
   notes: string[];
   changes: DeliveryDimensionChanges;
@@ -2314,6 +2320,8 @@ export interface DeliveryDimension {
   /** The query as the build that wrote the values ran it. */
   builtQuery: string | null;
   path: string;
+  /** Where a key's label is read: the paths through the records a key names; empty when keys are their own values. */
+  label: string[];
   /** The clean steps, as the document writes them. */
   clean: string[];
   countRecords: boolean;
@@ -2325,8 +2333,8 @@ export interface DeliveryDimension {
   /** The declaration differs from the one its values were built with. */
   changed: boolean;
   field: DeliveryDimensionField | null;
-  members: number;
-  originals: number;
+  values: number;
+  keys: number;
   lastBuiltUtc: string | null;
   current: DeliveryDimensionBuild | null;
   latest: DeliveryDimensionBuild | null;
@@ -2357,8 +2365,8 @@ export interface DeliveryDimensionTotals {
   failing: number;
   running: number;
   changed: number;
-  members: number;
-  originals: number;
+  values: number;
+  keys: number;
 }
 
 export interface DeliveryDimensionBoard {
@@ -2378,52 +2386,31 @@ export interface DeliveryDimensionDetail {
   dimension: DeliveryDimension;
 }
 
-/** An original as a list of members shows it beside its member. */
-export interface DeliveryDimensionOriginalBrief {
-  original: string;
+/** A key as a list of values shows it beside its value. */
+export interface DeliveryDimensionKeyBrief {
+  key: string;
+  label: string | null;
   count: number;
 }
 
-/** A member of a dimension: a clean value, its records, its originals and its search filter. */
-export interface DeliveryDimensionMember {
-  memberId: number;
-  value: string;
-  records: number;
-  /** Whether `records` counts records; otherwise it is the sum of its originals' counts. */
-  recordsExact: boolean;
-  originals: number;
-  unfilterable: number;
-  /** The search filter, when one query holds it. */
-  filter: string | null;
-  filterParts: number;
-  firstSeenRunId: number;
-  firstSeenUtc: string;
-  removedRunId: number | null;
-  removedUtc: string | null;
-  /** The originals most records hold. */
-  top: DeliveryDimensionOriginalBrief[];
-}
-
-export interface DeliveryDimensionMemberPage {
-  items: DeliveryDimensionMember[];
-  next: string | null;
-}
-
-/** An original of a dimension, exactly as the index holds it, with its member or why it has none. */
+/** A value of a dimension: the human-friendly value a person picks, its records, the keys it stands for and its search filter. */
 export interface DeliveryDimensionValue {
   valueId: number;
-  original: string;
-  memberId: number | null;
-  member: string | null;
-  leftOut: DimensionLeftOut | null;
-  note: string | null;
-  count: number;
-  filterable: boolean;
-  firstSeenRunId: number;
+  value: string;
+  records: number;
+  /** Whether `records` counts records; otherwise it is the sum of its keys' counts. */
+  recordsExact: boolean;
+  keys: number;
+  unfilterable: number;
+  /** The search filter finding the value's records, when one query holds it. */
+  filter: string | null;
+  filterParts: number;
+  firstSeenBuildId: number;
   firstSeenUtc: string;
-  memberSinceRunId: number;
-  removedRunId: number | null;
+  removedBuildId: number | null;
   removedUtc: string | null;
+  /** The keys most records hold. */
+  top: DeliveryDimensionKeyBrief[];
 }
 
 export interface DeliveryDimensionValuePage {
@@ -2431,16 +2418,44 @@ export interface DeliveryDimensionValuePage {
   next: string | null;
 }
 
-/** A change a build made to one original. */
+/**
+ * A key of a dimension, exactly as the index holds it (an id for a reference): the label read for it and the record it was
+ * read from, its value or why it has none, and the search filter finding exactly its records.
+ */
+export interface DeliveryDimensionKey {
+  keyId: number;
+  key: string;
+  label: string | null;
+  labelFrom: string | null;
+  valueId: number | null;
+  value: string | null;
+  leftOut: DimensionLeftOut | null;
+  note: string | null;
+  count: number;
+  filterable: boolean;
+  filter: string | null;
+  firstSeenBuildId: number;
+  firstSeenUtc: string;
+  valueSinceBuildId: number;
+  removedBuildId: number | null;
+  removedUtc: string | null;
+}
+
+export interface DeliveryDimensionKeyPage {
+  items: DeliveryDimensionKey[];
+  next: string | null;
+}
+
+/** A change a build made to one key. */
 export interface DeliveryDimensionChange {
   changeId: number;
-  dimensionRunId: number;
-  valueId: number;
-  original: string;
+  buildId: number;
+  keyId: number;
+  key: string;
   change: DimensionChangeKind;
-  fromMemberId: number | null;
+  fromValueId: number | null;
   fromValue: string | null;
-  toMemberId: number | null;
+  toValueId: number | null;
   toValue: string | null;
   changedUtc: string;
 }
@@ -2451,7 +2466,7 @@ export interface DeliveryDimensionChangePage {
   next: number | null;
 }
 
-/** The search filter of a set of members, with what it covers and what it leaves out. */
+/** The search filter of a set of values, with what it covers and what it leaves out. */
 export interface DeliveryDimensionFilter {
   kind: string;
   query: string | null;
@@ -2459,19 +2474,19 @@ export interface DeliveryDimensionFilter {
   filters: string[];
   /** Each filter joined with the dimension's own query: the searches to send. */
   searches: string[];
-  members: { memberId: number; value: string; records: number; recordsExact: boolean; originals: number }[];
-  originals: number;
+  values: DeliveryDimensionFilterValue[];
+  keys: number;
   unfilterable: number;
   unfilterableNamed: string[];
   removed: string[];
   missing: string[];
 }
 
-/** A member with its originals, its filter (or why none can be written) and its history. */
-export interface DeliveryDimensionMemberDetail {
-  member: DeliveryDimensionMember;
-  originals: DeliveryDimensionValue[];
-  moreOriginals: boolean;
+/** A value with its keys, its filter (or why none can be written) and its history. */
+export interface DeliveryDimensionValueDetail {
+  value: DeliveryDimensionValue;
+  keys: DeliveryDimensionKey[];
+  moreKeys: boolean;
   filter: DeliveryDimensionFilter | null;
   filterProblem: string | null;
   history: DeliveryDimensionChange[];
@@ -2483,7 +2498,57 @@ export interface DeliveryDimensionRunBuild {
   build: DeliveryDimensionBuild;
 }
 
-export interface DeliveryDimensionMemberQuery {
+/** The values picked in one dimension, by id or as the dimension holds them. */
+export interface DeliveryDimensionPick {
+  dimensionId: number;
+  valueIds?: number[];
+  values?: string[];
+}
+
+/** A search to compose from the values picked across dimensions. */
+export interface DeliveryDimensionSearchRequest {
+  picks: DeliveryDimensionPick[];
+  /** The kind to search; left out, the one kind every dimension picked in reads. */
+  kind?: string | null;
+  /** A query narrowing the search further. */
+  within?: string | null;
+}
+
+/** A value a filter or a search covers. */
+export interface DeliveryDimensionFilterValue {
+  valueId: number;
+  value: string;
+  records: number;
+  recordsExact: boolean;
+  keys: number;
+}
+
+/** One dimension's part of a composed search: the values picked it holds now, the keys they compare, and its filter. */
+export interface DeliveryDimensionSearchPart {
+  dimensionId: number;
+  dimension: string;
+  aggregateBy: string;
+  values: DeliveryDimensionFilterValue[];
+  keys: number;
+  unfilterable: number;
+  filter: string;
+  query: string | null;
+}
+
+/** A composed search: the kind and query to send, the request body the search service takes, and what the picks left out. */
+export interface DeliveryDimensionSearch {
+  kind: string;
+  query: string;
+  /** The body of POST /api/search/v2/query, as JSON text. */
+  request: string;
+  parts: DeliveryDimensionSearchPart[];
+  clauses: number;
+  removed: string[];
+  missing: string[];
+  notes: string[];
+}
+
+export interface DeliveryDimensionValueQuery {
   search?: string;
   order?: "value" | "records";
   removed?: boolean;
@@ -2491,9 +2556,9 @@ export interface DeliveryDimensionMemberQuery {
   limit?: number;
 }
 
-export interface DeliveryDimensionValueQuery {
+export interface DeliveryDimensionKeyQuery {
   search?: string;
-  member?: number;
+  value?: number;
   leftOut?: boolean;
   removed?: boolean;
   order?: "arrival" | "count";
@@ -2503,14 +2568,14 @@ export interface DeliveryDimensionValueQuery {
 
 export interface DeliveryDimensionChangeQuery {
   build?: number;
+  key?: number;
   value?: number;
-  member?: number;
   change?: DimensionChangeKind;
   before?: number | null;
   limit?: number;
 }
 
-export type DimensionExportSet = "members" | "originals";
+export type DimensionExportSet = "values" | "keys";
 export type DimensionExportFormat = "csv" | "jsonl";
 
 /** A query without the parameters it leaves unset, so the request carries only what was asked. */
@@ -2590,25 +2655,31 @@ export const deliveryApi = {
   dimensionFlowBoard: (pipelineId: string) => get<DeliveryDimensionBoard>(`/api/v1/delivery/flows/${pipelineId}/dimensions`),
   /** A dimension with its declaration, the build that wrote what it holds and its newest build. */
   dimension: (dimensionId: number) => get<DeliveryDimensionDetail>(`/api/v1/delivery/dimensions/${dimensionId}`),
-  /** A page of a dimension's members, in value order or with the most records first. */
-  dimensionMembers: (dimensionId: number, query: DeliveryDimensionMemberQuery = {}) =>
-    get<DeliveryDimensionMemberPage>(`/api/v1/delivery/dimensions/${dimensionId}/members`, defined(query)),
-  /** A member with its originals, filter and history. */
-  dimensionMember: (dimensionId: number, memberId: number) =>
-    get<DeliveryDimensionMemberDetail>(`/api/v1/delivery/dimensions/${dimensionId}/members/${memberId}`),
-  /** A page of a dimension's originals. */
+  /** A page of a dimension's values, in value order or with the most records first. */
   dimensionValues: (dimensionId: number, query: DeliveryDimensionValueQuery = {}) =>
     get<DeliveryDimensionValuePage>(`/api/v1/delivery/dimensions/${dimensionId}/values`, defined(query)),
+  /** A value with its keys, filter and history. */
+  dimensionValue: (dimensionId: number, valueId: number) =>
+    get<DeliveryDimensionValueDetail>(`/api/v1/delivery/dimensions/${dimensionId}/values/${valueId}`),
+  /** A page of a dimension's keys, each with its label and filter. */
+  dimensionKeys: (dimensionId: number, query: DeliveryDimensionKeyQuery = {}) =>
+    get<DeliveryDimensionKeyPage>(`/api/v1/delivery/dimensions/${dimensionId}/keys`, defined(query)),
   /** A dimension's builds, newest first. */
   dimensionBuilds: (dimensionId: number, max?: number) =>
     get<DeliveryDimensionBuild[]>(`/api/v1/delivery/dimensions/${dimensionId}/builds`, max ? { max } : {}),
   /** A page of a dimension's change log, newest first. */
   dimensionChanges: (dimensionId: number, query: DeliveryDimensionChangeQuery = {}) =>
     get<DeliveryDimensionChangePage>(`/api/v1/delivery/dimensions/${dimensionId}/changes`, defined(query)),
-  /** The search filter of the members named by id or by clean value. */
-  dimensionFilter: (dimensionId: number, request: { memberIds?: number[]; values?: string[] }) =>
+  /** The search filter of the values named by id or as the dimension holds them. */
+  dimensionFilter: (dimensionId: number, request: { valueIds?: number[]; values?: string[] }) =>
     post<DeliveryDimensionFilter>(`/api/v1/delivery/dimensions/${dimensionId}/filter`, request),
-  /** The whole of a dimension's members or originals, as the text of the format asked for. */
+  /**
+   * The OSDU search finding the records that hold a value picked in each dimension: OR within a dimension, AND across them,
+   * in the kind every dimension reads. Reads the ledger only; nothing is sent to OSDU.
+   */
+  dimensionSearch: (request: DeliveryDimensionSearchRequest) =>
+    post<DeliveryDimensionSearch>("/api/v1/delivery/dimensions/search", request),
+  /** The whole of a dimension's values or keys, as the text of the format asked for. */
   dimensionExport: (dimensionId: number, set: DimensionExportSet, format: DimensionExportFormat) =>
     getText(`/api/v1/delivery/dimensions/${dimensionId}/export?set=${set}&format=${format}`),
   /** The builds a platform run made, one per dimension it built. */

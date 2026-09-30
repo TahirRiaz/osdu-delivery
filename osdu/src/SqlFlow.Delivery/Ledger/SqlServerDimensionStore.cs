@@ -36,6 +36,9 @@ internal static class SqlServerDimensionStore
             [CleanValue] nvarchar(256) COLLATE Latin1_General_100_BIN2 NULL,
             [LeftOut] nvarchar(16) NULL,
             [Note] nvarchar(400) NULL,
+            [Label] nvarchar(1024) NULL,
+            [LabelFrom] nvarchar(1024) NULL,
+            [Filter] nvarchar(4000) NULL,
             [Count] bigint NOT NULL,
             [Filterable] bit NOT NULL,
             [MemberId] bigint NULL);
@@ -111,17 +114,24 @@ internal static class SqlServerDimensionStore
         UPDATE v SET v.[MemberSinceRunId] = CASE WHEN v.[RemovedRunId] IS NOT NULL OR ISNULL(v.[MemberId], -1) <> ISNULL(s.[MemberId], -1)
                 THEN @run ELSE v.[MemberSinceRunId] END,
             v.[MemberId] = s.[MemberId], v.[LeftOut] = s.[LeftOut], v.[Note] = s.[Note], v.[Count] = s.[Count], v.[Filterable] = s.[Filterable],
+            v.[Label] = s.[Label], v.[LabelFrom] = s.[LabelFrom], v.[Filter] = s.[Filter],
             v.[RemovedRunId] = NULL, v.[RemovedUtc] = NULL
         FROM [osdu].[DimensionValue] AS v INNER JOIN #DimValue AS s ON v.[OriginalHash] = s.[OriginalHash]
         WHERE v.[PartitionId] = @p AND v.[DimensionId] = @d
           AND (v.[RemovedRunId] IS NOT NULL OR ISNULL(v.[MemberId], -1) <> ISNULL(s.[MemberId], -1) OR v.[Count] <> s.[Count]
                OR v.[Filterable] <> s.[Filterable] OR ISNULL(v.[LeftOut], N'') <> ISNULL(s.[LeftOut], N'')
-               OR ISNULL(v.[Note], N'') <> ISNULL(s.[Note], N''));
+               OR ISNULL(v.[Note], N'') <> ISNULL(s.[Note], N'')
+               -- A label compares exactly: a record renamed only in case is a new label.
+               OR ISNULL(v.[Label], N'') COLLATE Latin1_General_100_BIN2 <> ISNULL(s.[Label], N'') COLLATE Latin1_General_100_BIN2
+               OR (v.[Label] IS NULL AND s.[Label] IS NOT NULL) OR (v.[Label] IS NOT NULL AND s.[Label] IS NULL)
+               OR ISNULL(v.[LabelFrom], N'') <> ISNULL(s.[LabelFrom], N'')
+               OR ISNULL(v.[Filter], N'') <> ISNULL(s.[Filter], N''));
 
         INSERT INTO [osdu].[DimensionValue] ([PartitionId], [DimensionId], [Original], [OriginalHash], [MemberId], [LeftOut], [Note], [Count],
-            [Filterable], [FirstSeenRunId], [FirstSeenUtc], [MemberSinceRunId])
+            [Filterable], [Label], [LabelFrom], [Filter], [FirstSeenRunId], [FirstSeenUtc], [MemberSinceRunId])
         OUTPUT inserted.[ValueId], N'added', NULL, inserted.[MemberId] INTO #DimChange ([ValueId], [Change], [FromMemberId], [ToMemberId])
-        SELECT @p, @d, s.[Original], s.[OriginalHash], s.[MemberId], s.[LeftOut], s.[Note], s.[Count], s.[Filterable], @run, @now, @run
+        SELECT @p, @d, s.[Original], s.[OriginalHash], s.[MemberId], s.[LeftOut], s.[Note], s.[Count], s.[Filterable], s.[Label], s.[LabelFrom],
+            s.[Filter], @run, @now, @run
         FROM #DimValue AS s
         WHERE NOT EXISTS (SELECT 1 FROM [osdu].[DimensionValue] AS v WHERE v.[PartitionId] = @p AND v.[DimensionId] = @d AND v.[OriginalHash] = s.[OriginalHash])
         -- The new originals take their ids in the order the build listed them, so arrival order within a build is the build's.
@@ -260,12 +270,19 @@ internal static class SqlServerDimensionStore
         }
     }
 
-    private static readonly string[] ValueColumns = ["Seq", "Original", "OriginalHash", "CleanValue", "LeftOut", "Note", "Count", "Filterable"];
+    private static readonly string[] ValueColumns =
+        ["Seq", "Original", "OriginalHash", "CleanValue", "LeftOut", "Note", "Label", "LabelFrom", "Filter", "Count", "Filterable"];
 
-    private static readonly Type[] ValueTypes = [typeof(int), typeof(string), typeof(byte[]), typeof(string), typeof(string), typeof(string), typeof(long), typeof(bool)];
+    private static readonly Type[] ValueTypes =
+        [typeof(int), typeof(string), typeof(byte[]), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(long), typeof(bool)];
 
     private static object?[] ValueRow(DimensionOriginalWrite value, int seq)
-        => [seq, value.Original, HashOf(value.Original), value.CleanValue, value.LeftOut, OsduLedger.Truncate(value.Note, 400), value.Count, value.Filterable];
+        =>
+        [
+            seq, value.Original, HashOf(value.Original), value.CleanValue, value.LeftOut, OsduLedger.Truncate(value.Note, 400),
+            OsduLedger.Truncate(value.Label, DeliveryDimensionValue.MaxLabelLength), OsduLedger.Truncate(value.LabelFrom, DeliveryDimensionValue.MaxOriginalLength),
+            value.Filter is { Length: > DeliveryDimensionValue.MaxFilterLength } ? null : value.Filter, value.Count, value.Filterable,
+        ];
 
     private static readonly string[] MemberColumns = ["Value", "Records", "RecordsExact", "Originals", "Unfilterable", "Filter", "FilterParts"];
 
