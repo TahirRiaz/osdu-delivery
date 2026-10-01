@@ -328,7 +328,7 @@ public sealed class DimensionRunner
             read = Counts(values, templatesJson, countQueries, notes, labels, collected);
             var written = await ledger.WriteDimensionAsync(
                 Write(run, dimension, FieldState(field, resolved.Repeats), originals, members, read,
-                    collected.States.Count == 0 ? null : JsonSerializer.Serialize(collected.States, StepJson)),
+                    collected.States.Count == 0 ? null : JsonSerializer.Serialize(collected.States, StepJson), collected.Texts),
                 ct).ConfigureAwait(false);
             _log.LogInformation(
                 "dimension {Dimension}: {Values} value(s) from {Keys} key(s), {LeftOut} of none; {Added} arrived, {Removed} left, {Moved} moved, {Restored} came back",
@@ -585,22 +585,18 @@ public sealed class DimensionRunner
 
     /// <summary>
     /// What a build read of its dimension's collected attributes: each key's values, with how many of its records hold each,
-    /// what each attribute's values stand for, the requests it asked, and what it has to say.
+    /// each attribute's field, the texts its values stand for, the requests it asked, and what it has to say.
     /// </summary>
     private sealed record CollectedRead(
-        IReadOnlyDictionary<string, List<DimensionAttributeState>> Attributes, IReadOnlyList<DimensionCollectedState> States, int Aggregations, int ScanPages,
-        IReadOnlyList<string> Notes)
+        IReadOnlyDictionary<string, List<DimensionAttributeState>> Attributes, IReadOnlyList<DimensionCollectedState> States,
+        IReadOnlyList<DimensionCollectedText> Texts, int Aggregations, int ScanPages, IReadOnlyList<string> Notes)
     {
-        public static CollectedRead None { get; } = new(new Dictionary<string, List<DimensionAttributeState>>(StringComparer.Ordinal), [], 0, 0, []);
+        public static CollectedRead None { get; } = new(new Dictionary<string, List<DimensionAttributeState>>(StringComparer.Ordinal), [], [], 0, 0, []);
     }
 
     /// <summary>
     /// The values each key collects from its own records, for each collected attribute (<see cref="DimensionAttributeSpec.Collect"/>):
-    /// the attribute's distinct values first, at most <see cref="DimensionAttributeSpec.MaxCollectedValues"/>, each shown as a
-    /// label is (a reference by the code its id ends with); then for each value the keys of the records holding it and how
-    /// many hold it, a read of the dimension's field each; then, when the dimension names a value for what is not read
-    /// (<see cref="DimensionSpec.Unlabelled"/>), the keys of the records holding none of them, under that value. A key the
-    /// dimension's own read did not find is passed over.
+    /// its field settled as the dimension's is, then collected (<see cref="DimensionCollector"/>).
     /// </summary>
     private async Task<CollectedRead> ReadCollectedAsync(
         OsduSearch search, TemplateCache templates, DimensionSpec dimension, string? query, OsduField keyField, ResolvedField resolved, DistinctRead keys,
@@ -612,136 +608,32 @@ public sealed class DimensionRunner
             return CollectedRead.None;
         }
 
+        var collector = new DimensionCollector(search, _log, _flow.Source.AggregationSize, Math.Max(1, _flow.Reliability.Concurrency));
         var byKey = new Dictionary<string, List<DimensionAttributeState>>(StringComparer.Ordinal);
         var states = new List<DimensionCollectedState>(collectedAttributes.Count);
+        var texts = new List<DimensionCollectedText>();
         var notes = new List<string>();
         var aggregations = 0;
         var pages = 0;
-        var gate = new Lock();
         foreach (var attribute in collectedAttributes)
         {
             var who = CollectedWho(dimension, attribute);
             var settled = await ResolvePathAsync(search, templates, dimension, attribute.Collect!, who, resolved.Kinds, query, ct).ConfigureAwait(false);
             var field = settled.Field ?? throw new DeliveryException($"{who} reads {attribute.Collect}, and {settled.Note ?? "its field could not be settled."}");
-            _log.LogInformation("dimension {Dimension}: collecting attribute {Attribute} from {Path} as {Field}", dimension.Name, attribute.Name, attribute.Collect, field.AggregateBy);
-
-            DistinctRead texts;
-            try
+            var read = await collector.CollectAsync(dimension, attribute, query, keyField, resolved.Repeats, field, settled.Repeats, keys, ct).ConfigureAwait(false);
+            foreach (var (key, values) in read.Keys)
             {
-                texts = await DistinctValues.ReadAsync(
-                    new SearchDistinctSource(search, dimension.Kind, query, field),
-                    new DistinctReadOptions(_flow.Source.AggregationSize, DimensionAttributeSpec.MaxCollectedValues, settled.Repeats, Checks: false),
-                    _log, ct).ConfigureAwait(false);
-            }
-            catch (DimensionTooLargeException)
-            {
-                throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
-                    $"{who} collects {attribute.Collect}, and the dimension's records hold more than {DimensionAttributeSpec.MaxCollectedValues} distinct values there. A collected attribute is a short list (a source, a status); read a longer one from the record the key names, or make it a dimension of its own."));
+                (byKey.TryGetValue(key, out var held) ? held : byKey[key] = []).AddRange(values);
             }
 
-            aggregations += texts.Aggregations;
-            pages += texts.ScanPages;
-
-            // Each text as it is shown, and the texts each shown value stands for; a text no query can carry is no value a
-            // pick could find, so it is left out with a note, and its records count as holding none.
-            var shown = new SortedDictionary<string, List<string>>(StringComparer.Ordinal);
-            var unfilterable = new List<string>();
-            foreach (var text in texts.Values.Keys.Order(StringComparer.Ordinal))
-            {
-                if (!DimensionFilters.Filterable(field, text))
-                {
-                    unfilterable.Add(text);
-                    continue;
-                }
-
-                var value = DimensionLabeler.DisplayOf(text).Trim();
-                if (value.Length > DimensionSpec.MaxAttributeValueLength)
-                {
-                    value = value[..DimensionSpec.MaxAttributeValueLength];
-                }
-
-                if (value.Length > 0)
-                {
-                    (shown.TryGetValue(value, out var list) ? list : shown[value] = []).Add(text);
-                }
-            }
-
-            if (unfilterable.Count > 0)
-            {
-                notes.Add(string.Create(CultureInfo.InvariantCulture,
-                    $"{attribute.Name}: {unfilterable.Count} value(s) the records hold cannot be carried in a query, so no pick finds them and their records hold none: {string.Join(", ", unfilterable.Take(5).Select(t => $"'{Shown(t)}'"))}{(unfilterable.Count > 5 ? ", ..." : string.Empty)}."));
-            }
-
-            void Add(string key, string value, string? from, long records)
-            {
-                if (!keys.Values.ContainsKey(key))
-                {
-                    return;
-                }
-
-                var list = byKey.TryGetValue(key, out var found) ? found : byKey[key] = [];
-                var at = list.FindIndex(a => a.Name == attribute.Name && a.Value == value);
-                if (at < 0)
-                {
-                    list.Add(new DimensionAttributeState(attribute.Name, value, from, records));
-                }
-                else
-                {
-                    list[at] = list[at] with { From = list[at].From ?? from, Records = (list[at].Records ?? 0) + records };
-                }
-            }
-
-            var keyOptions = new DistinctReadOptions(_flow.Source.AggregationSize, dimension.MaxValues, resolved.Repeats, Checks: false);
-            await Parallel.ForEachAsync(
-                shown,
-                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, _flow.Reliability.Concurrency), CancellationToken = ct },
-                async (pair, token) =>
-                {
-                    var filter = string.Join(" OR ", DimensionFilters.Of(field, pair.Value).Select(q => $"({q})"));
-                    var holding = await DistinctValues.ReadAsync(
-                        new SearchDistinctSource(search, dimension.Kind, DimensionFilters.Within(query, filter), keyField), keyOptions, _log, token).ConfigureAwait(false);
-                    lock (gate)
-                    {
-                        aggregations += holding.Aggregations;
-                        pages += holding.ScanPages;
-                        foreach (var (key, count) in holding.Values)
-                        {
-                            Add(key, pair.Key, pair.Value[0], count);
-                        }
-                    }
-                }).ConfigureAwait(false);
-
-            if (dimension.Unlabelled is { } none)
-            {
-                // The records holding none of the values are the key's records less those holding one; where the attribute
-                // holds no value at all, every record of every key.
-                if (shown.Count == 0)
-                {
-                    foreach (var (key, count) in keys.Values)
-                    {
-                        Add(key, none, null, count);
-                    }
-                }
-                else
-                {
-                    var lacking = await DistinctValues.ReadAsync(
-                        new SearchDistinctSource(search, dimension.Kind, DimensionFilters.Within(query, DimensionFilters.NoneOf(field, shown.Values.SelectMany(t => t).ToList())), keyField),
-                        keyOptions, _log, ct).ConfigureAwait(false);
-                    aggregations += lacking.Aggregations;
-                    pages += lacking.ScanPages;
-                    foreach (var (key, count) in lacking.Values)
-                    {
-                        Add(key, none, null, count);
-                    }
-                }
-            }
-
-            states.Add(new DimensionCollectedState(
-                attribute.Name, attribute.Collect!, FieldState(field, settled.Repeats), dimension.Unlabelled,
-                shown.Select(s => new DimensionCollectedValue(s.Key, s.Value, s.Value.Sum(t => texts.Values[t]))).ToList()));
+            states.Add(new DimensionCollectedState(attribute.Name, attribute.Collect!, FieldState(field, settled.Repeats), dimension.Unlabelled));
+            texts.AddRange(read.Texts);
+            notes.AddRange(read.Notes);
+            aggregations += read.Aggregations;
+            pages += read.ScanPages;
         }
 
-        return new CollectedRead(byKey, states, aggregations, pages, notes);
+        return new CollectedRead(byKey, states, texts, aggregations, pages, notes);
     }
 
     /// <summary>
@@ -807,7 +699,7 @@ public sealed class DimensionRunner
 
     private DimensionWrite Write(
         DimensionRunState run, DimensionSpec dimension, DimensionFieldState? field, List<DimensionOriginalWrite> originals, List<DimensionMemberWrite> members,
-        DimensionReadCounts read, string? collectedJson = null)
+        DimensionReadCounts read, string? collectedJson = null, IReadOnlyList<DimensionCollectedText>? collectedTexts = null)
         => new()
         {
             DimensionRunId = run.DimensionRunId,
@@ -815,6 +707,7 @@ public sealed class DimensionRunner
             FlowId = _flow.LedgerId,
             Field = field,
             CollectedJson = collectedJson,
+            CollectedTexts = collectedTexts ?? [],
             Originals = originals,
             Members = members,
             Read = read,
@@ -974,7 +867,7 @@ public sealed class DimensionRunner
         try
         {
             return (JsonSerializer.Deserialize<List<DimensionCollectedState>>(collectedJson, StepJson) ?? [])
-                .Where(h => DimensionAttributeSpec.IsName(h.Name) && h.Field is not null && h.Values is not null)
+                .Where(h => DimensionAttributeSpec.IsName(h.Name) && h.Field is not null && !string.IsNullOrWhiteSpace(h.Path))
                 .ToList();
         }
         catch (JsonException)

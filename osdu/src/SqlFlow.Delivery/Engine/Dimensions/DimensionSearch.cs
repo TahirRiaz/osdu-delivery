@@ -188,7 +188,7 @@ public static class DimensionSearch
         var termClauses = 0;
         foreach (var match in collected)
         {
-            var (term, count) = CollectedFilter(dimension, match, missing);
+            var (term, count) = await CollectedFilterAsync(ledger, dimension, match, missing, ct).ConfigureAwait(false);
             terms.Add(term);
             termClauses += count;
         }
@@ -269,18 +269,41 @@ public static class DimensionSearch
     /// values picked stand for, as the dimension's last build collected them; and for the value the dimension names for what
     /// is not read, the records holding none of the attribute's texts. A value the attribute does not hold is named as missing.
     /// </summary>
-    private static (string Filter, int Clauses) CollectedFilter(DimensionState dimension, DimensionAttributeMatch match, List<string> missing)
+    private static async Task<(string Filter, int Clauses)> CollectedFilterAsync(
+        ILedger ledger, DimensionState dimension, DimensionAttributeMatch match, List<string> missing, CancellationToken ct)
     {
         var state = DimensionRunner.CollectedOf(dimension.CollectedJson).FirstOrDefault(c => c.Name == match.Name)
             ?? throw new DeliveryException(
                 $"Dimension {dimension.Name} has not been built since it began collecting attribute {match.Name}, so no search can pick its values yet. Build it first.");
         var field = DimensionFilters.FieldOf(state.Path, state.Field)!;
-        var all = state.Values.SelectMany(v => v.Texts).ToList();
-        var texts = state.Values.Where(v => match.Values.Contains(v.Value, StringComparer.Ordinal)).SelectMany(v => v.Texts).ToList();
-        var none = state.Missing is { } unread && match.Values.Contains(unread, StringComparer.Ordinal);
-        missing.AddRange(match.Values
-            .Where(v => !string.Equals(v, state.Missing, StringComparison.Ordinal) && state.Values.All(s => !string.Equals(s.Value, v, StringComparison.Ordinal)))
+        var asked = match.Values.Distinct(StringComparer.Ordinal).ToList();
+        var picked = await ledger.ListDimensionCollectedTextsAsync(dimension.DimensionId, match.Name, asked, MaxClauses + 1, ct).ConfigureAwait(false);
+        if (picked.Count > MaxClauses)
+        {
+            throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
+                $"The values picked of attribute {match.Name} of dimension {dimension.Name} stand for more than {MaxClauses} texts, more than one search holds. Pick fewer values."));
+        }
+
+        var texts = picked.Select(t => t.Text).ToList();
+        var none = state.Missing is { } unread && asked.Contains(unread, StringComparer.Ordinal);
+        missing.AddRange(asked
+            .Where(v => !string.Equals(v, state.Missing, StringComparison.Ordinal) && picked.All(t => !string.Equals(t.Value, v, StringComparison.Ordinal)))
             .Select(v => $"{dimension.Name}.{match.Name}: {v}"));
+
+        IReadOnlyList<string> all = [];
+        if (none)
+        {
+            // The records holding none of the values are every record but those holding one of the attribute's texts: one
+            // search can exclude only so many.
+            var every = await ledger.ListDimensionCollectedTextsAsync(dimension.DimensionId, match.Name, null, MaxClauses + 1, ct).ConfigureAwait(false);
+            if (every.Count > MaxClauses)
+            {
+                throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
+                    $"{state.Missing} of attribute {match.Name} of dimension {dimension.Name} stands for the records holding none of its values, which are more than the {MaxClauses} one search can exclude. Pick its values instead."));
+            }
+
+            all = every.Select(t => t.Text).ToList();
+        }
 
         var alternatives = new List<string>();
         if (texts.Count > 0)

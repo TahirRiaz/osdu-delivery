@@ -1902,6 +1902,14 @@ public interface ILedger
     Task<IReadOnlyList<DimensionChangeState>> ListDimensionChangesAsync(int dimensionId, DimensionChangeQuery query, CancellationToken ct = default);
 
     /// <summary>
+    /// The texts a collected attribute's values stand for, as the dimension's last build that settled its field read them:
+    /// those shown as one of <paramref name="values"/>, or every one when null; at most <paramref name="limit"/>, by value
+    /// then text. The name compares exactly, as the dimension declares it.
+    /// </summary>
+    Task<IReadOnlyList<DimensionCollectedText>> ListDimensionCollectedTextsAsync(
+        int dimensionId, string name, IReadOnlyCollection<string>? values, int limit, CancellationToken ct = default);
+
+    /// <summary>
     /// The values an attribute holds among the dimension's originals a build finds now, as <paramref name="query"/> narrows
     /// them, the most records first: each with the originals holding it and their records (summed). The name compares
     /// exactly, as the dimension declares it.

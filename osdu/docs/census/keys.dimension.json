@@ -49,7 +49,7 @@
       "path": "dimensions[].attributes.<name>.collect",
       "type": "string",
       "required": false,
-      "description": "The path of the dimension's own records whose values the attribute collects: `Source: { collect: data.Source }` on a dimension keyed by the logs' `data.WellboreID` gives each wellbore every source its logs hold, with how many logs hold each, the logs holding none under the `unlabelled` value. A path search can match exactly, as `path` is. At most 200 distinct values across the dimension (a longer list is a dimension of its own), and one collected attribute per dimension, so each row of the dimension's table is a key and one collected value. A search picking a collected value finds the records holding it, not every record of the keys holding it."
+      "description": "The path of the dimension's own records whose values the attribute collects: `Source: { collect: data.Source }` on a dimension keyed by the logs' `data.WellboreID` gives each wellbore every source its logs hold, with how many logs hold each, the logs holding none under the `unlabelled` value. A path search can match exactly, as `path` is. As many distinct values as the dimension keeps keys (`maxValues`): a build reads few a read per value, many in one pass over the records. One collected attribute per dimension, so each row of the dimension's table is a key and one collected value. A search picking a collected value finds the records holding it, not every record of the keys holding it; a pick of the `unlabelled` value excludes every value, so it is refused past 1,000 values."
     },
     {
       "path": "dimensions[].clean",

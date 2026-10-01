@@ -62,6 +62,13 @@ internal static class SqlServerDimensionStore
             [ValueFrom] nvarchar(1024) NULL,
             [Records] bigint NULL,
             PRIMARY KEY ([OriginalHash], [Name], [Value]));
+        CREATE TABLE #DimText (
+            [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [TextHash] binary(32) NOT NULL,
+            [Text] nvarchar(1024) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Records] bigint NOT NULL,
+            PRIMARY KEY ([Name], [TextHash]));
         """;
 
     private const string LockSql = """
@@ -180,6 +187,14 @@ internal static class SqlServerDimensionStore
             WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND a.[ValueId] = v.[ValueId] AND a.[Name] = t.[Name] AND a.[Value] = t.[Value]);
         SET @attributesChanged += @@ROWCOUNT;
 
+        -- The texts a build collected replace those the dimension had, unless it could not settle the field (and so read none).
+        IF @fieldIndex IS NOT NULL
+        BEGIN
+            DELETE FROM [osdu].[DimensionCollectedText] WHERE [PartitionId] = @p AND [DimensionId] = @d;
+            INSERT INTO [osdu].[DimensionCollectedText] ([PartitionId], [DimensionId], [Name], [TextHash], [Text], [Value], [Records])
+            SELECT @p, @d, t.[Name], t.[TextHash], t.[Text], t.[Value], t.[Records] FROM #DimText AS t;
+        END;
+
         -- The first build's originals are its arrivals, told by the build that first found each; a later build logs its own.
         INSERT INTO [osdu].[DimensionChange] ([PartitionId], [DimensionId], [DimensionRunId], [ValueId], [Change], [FromMemberId], [ToMemberId], [ChangedUtc])
         SELECT @p, @d, @run, c.[ValueId], c.[Change], c.[FromMemberId], c.[ToMemberId], @now
@@ -255,6 +270,7 @@ internal static class SqlServerDimensionStore
             await CopyAsync(connection, transaction, "#DimValue", ValueColumns, ValueTypes, write.Originals, ValueRow, ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimMember", MemberColumns, MemberTypes, write.Members, (member, _) => MemberRow(member), ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimAttr", AttributeColumns, AttributeTypes, AttributesOf(write), (attribute, _) => attribute, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimText", TextColumns, TextTypes, TextsOf(write), (text, _) => text, ct).ConfigureAwait(false);
 
             Written written;
             await using (var command = Command(connection, transaction, MergeSql))
@@ -359,6 +375,32 @@ internal static class SqlServerDimensionStore
                     rows.Add([hash, attribute.Name, value, OsduLedger.Truncate(attribute.From, DeliveryDimensionValue.MaxOriginalLength), attribute.Records]);
                 }
             }
+        }
+
+        return rows;
+    }
+
+    private static readonly string[] TextColumns = ["Name", "TextHash", "Text", "Value", "Records"];
+
+    private static readonly Type[] TextTypes = [typeof(string), typeof(byte[]), typeof(string), typeof(string), typeof(long)];
+
+    /// <summary>
+    /// Every text the build collected, a row each, as the staging table takes them: a text longer than a row keeps, or named
+    /// twice under one attribute, kept once (its first).
+    /// </summary>
+    private static List<object?[]> TextsOf(DimensionWrite write)
+    {
+        var rows = new List<object?[]>(write.CollectedTexts.Count);
+        var seen = new HashSet<(string, string)>();
+        foreach (var text in write.CollectedTexts)
+        {
+            if (text.Text.Length > DeliveryDimensionValue.MaxOriginalLength || text.Name.Length > DeliveryDimensionAttributeValue.MaxNameLength
+                || string.IsNullOrEmpty(text.Value) || !seen.Add((text.Name, text.Text)))
+            {
+                continue;
+            }
+
+            rows.Add([text.Name, HashOf(text.Text), text.Text, OsduLedger.Truncate(text.Value, DeliveryDimensionAttributeValue.MaxValueLength), text.Records]);
         }
 
         return rows;

@@ -378,9 +378,6 @@ public sealed record DimensionSpec
 /// <param name="Collect">The path of the dimension's own records whose values the attribute collects; null for one read from a key's record.</param>
 public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps, string? Collect = null)
 {
-    /// <summary>The most distinct values a collected attribute holds across a dimension: each is read with its own pass over the keys.</summary>
-    public const int MaxCollectedValues = 200;
-
     /// <summary>Whether the attribute's values are collected from the dimension's own records rather than read from a key's record.</summary>
     public bool IsCollected => Collect is not null;
 

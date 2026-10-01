@@ -1240,10 +1240,9 @@ public sealed class DeliveryDimension
     public string? AttributesJson { get; set; }
 
     /// <summary>
-    /// What the last build that settled the field read of each collected attribute, as a JSON array: the attribute's name and path,
-    /// how the index stores its field, the value records holding none of its values were given, and each value with the
-    /// texts the records hold that it stands for. A search picking a collected value finds the records holding one of those
-    /// texts. Null when the dimension holds no collected attribute.
+    /// What the last build that settled the field read of each collected attribute, as a JSON array: the attribute's name and
+    /// path, how the index stores its field, and the value records holding none of its values were given. The texts its
+    /// values stand for are rows of <see cref="DeliveryDimensionCollectedText"/>. Null when the dimension collects nothing.
     /// </summary>
     public string? CollectedJson { get; set; }
 
@@ -1522,6 +1521,34 @@ public sealed class DeliveryDimensionAttributeValue
     /// key names, which is every record of the key's.
     /// </summary>
     public long? Records { get; set; }
+}
+
+/// <summary>
+/// One text a dimension's records hold at a collected attribute's path, as the last build that settled the field read it:
+/// the text exactly as the index holds it, the value it is shown as (several texts shown alike are one value), and the
+/// records holding it. A search picking a collected value asks for every text shown as it; a pick of the value for what is
+/// not read asks for the records holding none of them. A build replaces the dimension's rows with what it read.
+/// </summary>
+public sealed class DeliveryDimensionCollectedText
+{
+    public short PartitionId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The attribute's name, as the dimension declares it.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>SHA-256 of the text's UTF-8 bytes, which the row is unique by, since a text may be longer than a key holds.</summary>
+    public byte[] TextHash { get; set; } = [];
+
+    /// <summary>The text exactly as the index holds it, compared exactly.</summary>
+    public string Text { get; set; } = string.Empty;
+
+    /// <summary>The value it is shown as, compared exactly.</summary>
+    public string Value { get; set; } = string.Empty;
+
+    /// <summary>The records holding it.</summary>
+    public long Records { get; set; }
 }
 
 /// <summary>
@@ -2196,6 +2223,18 @@ public static class DeliveryModel
             e.Property(a => a.ValueFrom).HasMaxLength(DeliveryDimensionValue.MaxOriginalLength);
             // The keys an attribute value holds (Country is Norway), and an attribute's values: one seek either way.
             e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.Name, a.Value });
+        });
+
+        modelBuilder.Entity<DeliveryDimensionCollectedText>(e =>
+        {
+            e.ToTable("DimensionCollectedText", SchemaName);
+            e.HasKey(t => new { t.PartitionId, t.DimensionId, t.Name, t.TextHash });
+            ExactText(e.Property(t => t.Name)).HasMaxLength(DeliveryDimensionAttributeValue.MaxNameLength).IsRequired();
+            e.Property(t => t.TextHash).HasMaxLength(32).IsFixedLength().IsRequired();
+            ExactText(e.Property(t => t.Text)).HasMaxLength(DeliveryDimensionValue.MaxOriginalLength).IsRequired();
+            ExactText(e.Property(t => t.Value)).HasMaxLength(DeliveryDimensionAttributeValue.MaxValueLength).IsRequired();
+            // The texts of the values a search picks: one seek.
+            e.HasIndex(t => new { t.PartitionId, t.DimensionId, t.Name, t.Value });
         });
 
         modelBuilder.Entity<DeliveryDimensionChange>(e =>

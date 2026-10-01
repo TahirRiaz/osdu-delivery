@@ -244,16 +244,17 @@ public sealed record DimensionOriginalWrite(
 public sealed record DimensionAttributeState(string Name, string Value, string? From, long? Records = null);
 
 /// <summary>
-/// What a build read of one collected attribute: its name and path, how the index stores the path, the value records holding
-/// none of its values were given (null when the dimension gives them none), and its values.
+/// What a build read of one collected attribute: its name and path, how the index stores the path, and the value records
+/// holding none of its values were given (null when the dimension gives them none). The texts its values stand for are kept
+/// apart (<see cref="DimensionCollectedText"/>), however many there are.
 /// </summary>
-public sealed record DimensionCollectedState(string Name, string Path, DimensionFieldState Field, string? Missing, IReadOnlyList<DimensionCollectedValue> Values);
+public sealed record DimensionCollectedState(string Name, string Path, DimensionFieldState Field, string? Missing);
 
 /// <summary>
-/// One value of a collected attribute: the value as it is shown, the texts the records hold that it stands for (several when
-/// they are shown alike), and the records holding one of them.
+/// One text a dimension's records hold at a collected attribute's path, exactly as the index holds it: the value it is shown
+/// as (several texts shown alike are one value), and the records holding it. A search picking a value asks for its texts.
 /// </summary>
-public sealed record DimensionCollectedValue(string Value, IReadOnlyList<string> Texts, long Records);
+public sealed record DimensionCollectedText(string Name, string Text, string Value, long Records);
 
 /// <summary>
 /// A value one attribute holds among a member's keys, as a page of members shows it: the value, and how many of the member's
@@ -309,6 +310,9 @@ public sealed record DimensionWrite
 
     /// <summary>What the build read of each collected attribute, as JSON (<see cref="DimensionCollectedState"/>); null when the dimension holds none.</summary>
     public string? CollectedJson { get; init; }
+
+    /// <summary>Every text the build collected, with the value it is shown as; empty when the dimension collects nothing.</summary>
+    public IReadOnlyList<DimensionCollectedText> CollectedTexts { get; init; } = [];
 
     public required IReadOnlyList<DimensionOriginalWrite> Originals { get; init; }
 

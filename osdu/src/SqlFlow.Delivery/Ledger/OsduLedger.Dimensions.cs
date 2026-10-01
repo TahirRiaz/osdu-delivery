@@ -712,6 +712,48 @@ public sealed partial class OsduLedger
         return rows.Select(r => new DimensionAttributeValueState(r.Value, r.Keys, r.Records)).ToList();
     }
 
+    public async Task<IReadOnlyList<DimensionCollectedText>> ListDimensionCollectedTextsAsync(
+        int dimensionId, string name, IReadOnlyCollection<string>? values, int limit, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (values is { Count: 0 } || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        var take = Math.Max(1, limit);
+        var found = new List<DimensionCollectedText>();
+
+        // Every text when no value is named; else the texts of the values named, a chunk of them a read, from the index on name and value.
+        var chunks = values is null ? new string[]?[] { null } : values.Distinct(StringComparer.Ordinal).Chunk(LookupChunk).Cast<string[]?>();
+        foreach (var chunk in chunks)
+        {
+            var rows = await ReadAsync(
+                db =>
+                {
+                    var texts = db.DeliveryDimensionCollectedTexts.AsNoTracking()
+                        .Where(t => t.PartitionId == partition && t.DimensionId == dimensionId && t.Name == name);
+                    if (chunk is not null)
+                    {
+                        texts = texts.Where(t => chunk.Contains(t.Value));
+                    }
+
+                    return texts.OrderBy(t => t.Value).ThenBy(t => t.Text).Take(take - found.Count)
+                        .Select(t => new DimensionCollectedText(t.Name, t.Text, t.Value, t.Records))
+                        .ToListAsync(ct);
+                },
+                ct).ConfigureAwait(false);
+            found.AddRange(rows);
+            if (found.Count >= take)
+            {
+                break;
+            }
+        }
+
+        // SQL Server compares text padded with spaces, so two texts apart only by trailing spaces are ordered here, exactly.
+        return found.OrderBy(t => t.Value, StringComparer.Ordinal).ThenBy(t => t.Text, StringComparer.Ordinal).ToList();
+    }
+
     public async Task<IReadOnlyList<DimensionChangeState>> ListDimensionChangesAsync(int dimensionId, DimensionChangeQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);

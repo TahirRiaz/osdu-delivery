@@ -432,12 +432,14 @@ public sealed class DimensionRunTests : IDisposable
         Assert.Equal([("Country", "Not specified", null), ("Field", "Not specified", null), ("Source", "Not specified", 1L)], Of("D"));
         Assert.Equal("Not specified", keys["D"].MemberValue);
 
-        // The dimension keeps what each source value stands for, which a search picking it asks for.
+        // Few logs: the sources were read in one pass of the cursor. The dimension keeps what each source value stands for,
+        // which a search picking it asks for.
+        Assert.Contains(_platform.Calls, c => c.Uri.AbsolutePath.EndsWith("/query_with_cursor", StringComparison.Ordinal));
         var collected = Assert.Single(DimensionRunner.CollectedOf(wellbores.CollectedJson));
         Assert.Equal(("Source", "data.Source", "Not specified"), (collected.Name, collected.Path, collected.Missing));
         Assert.Equal(
-            [("PETREL", "PETREL", 2L), ("RECALL", "RECALL|RECALL ", 4L)],
-            collected.Values.Select(v => (v.Value, string.Join('|', v.Texts), v.Records)));
+            [("PETREL", "PETREL", 2L), ("RECALL", "RECALL", 3L), ("RECALL", "RECALL ", 1L)],
+            (await ledger.ListDimensionCollectedTextsAsync(wellbores.DimensionId, "Source", null, 10)).Select(v => (v.Value, v.Text, v.Records)));
 
         // Each list of a cascade lists what the other picks leave, its own pick aside.
         async Task<IEnumerable<(string, int, long)>> ListAsync(string name, IReadOnlyList<DimensionAttributeMatch>? picks = null, IReadOnlyCollection<long>? values = null)
@@ -493,6 +495,95 @@ public sealed class DimensionRunTests : IDisposable
         var again = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
             .Single(k => k.Original == "dev:master-data--Wellbore:A:");
         Assert.Equal([("Source", "RECALL", (long?)3L)], again.Attributes.Where(x => x.Name == "Source").Select(x => (x.Name, x.Value, x.Records)));
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task Few_values_over_many_logs_are_collected_a_read_per_value_and_count_as_one_pass_would()
+    {
+        // 3,600 logs of four wellbores, two sources and logs without one: three reads where one pass would take four pages.
+        for (var log = 0; log < 3600; log++)
+        {
+            var data = new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:W{log % 4}:" };
+            if (log % 3 != 0)
+            {
+                data["Source"] = log % 3 == 1 ? "RECALL" : "PETREL";
+            }
+
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, data);
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                unlabelled: Not specified
+                attributes:
+                  Source: { collect: data.Source }
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
+        Assert.DoesNotContain(_platform.Calls, c => c.Uri.AbsolutePath.EndsWith("/query_with_cursor", StringComparison.Ordinal));
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var keys = await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10));
+        Assert.Equal(4, keys.Count);
+        Assert.All(keys, k => Assert.Equal(
+            [("Not specified", (long?)300L), ("PETREL", 300L), ("RECALL", 300L)],
+            k.Attributes.Select(a => (a.Value, a.Records)).OrderBy(a => a.Value, StringComparer.Ordinal)));
+        Assert.Equal(
+            [("PETREL", 1200L), ("RECALL", 1200L)],
+            (await ledger.ListDimensionCollectedTextsAsync(wellbores.DimensionId, "Source", null, 10)).Select(v => (v.Value, v.Records)));
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task Many_values_are_collected_in_one_pass_and_a_search_says_when_none_of_them_is_more_than_it_can_exclude()
+    {
+        // 1,100 sources over three wellbores, one log each, and two logs without a source.
+        for (var log = 0; log < 1102; log++)
+        {
+            var data = new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:W{log % 3}:" };
+            if (log < 1100)
+            {
+                data["Source"] = $"S{log:D4}";
+            }
+
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, data);
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                unlabelled: Not specified
+                attributes:
+                  Source: { collect: data.Source }
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        Assert.Equal(1100, (await ledger.ListDimensionCollectedTextsAsync(wellbores.DimensionId, "Source", null, 2000)).Count);
+        // W2 holds every third source, and the log of 1,100 without one.
+        var w2 = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery("W2", null, false, false, null, 10))).Single();
+        Assert.Equal(366, w2.Attributes.Count(a => a is { Name: "Source", Records: 1 } && a.Value != "Not specified"));
+        Assert.Contains(w2.Attributes, a => a is { Name: "Source", Value: "Not specified", Records: 1 });
+        Assert.Equal(
+            [("S0001", 1, 1L)],
+            (await ledger.ListDimensionAttributeValuesAsync(wellbores.DimensionId, new DimensionAttributeValueQuery("Source", "S0001", 10))).Select(v => (v.Value, v.Keys, v.Records)));
+
+        // A source picks its log; Not specified would have to exclude every one of 1,100 sources, which no search holds.
+        var one = await DimensionSearch.ComposeAsync(
+            ledger, [new DimensionPick(wellbores, [], [], [new DimensionAttributeMatch("Source", ["S0001"])])], null, null, CancellationToken.None);
+        Assert.Equal(["dev:work-product-component--WellLog:1"], _platform.Find(WellLog, one.Query));
+        var none = await Assert.ThrowsAsync<DeliveryException>(() => DimensionSearch.ComposeAsync(
+            ledger, [new DimensionPick(wellbores, [], [], [new DimensionAttributeMatch("Source", ["Not specified"])])], null, null, CancellationToken.None));
+        Assert.Contains("more than the 1000 one search can exclude", none.Message, StringComparison.Ordinal);
         OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
     }
 
