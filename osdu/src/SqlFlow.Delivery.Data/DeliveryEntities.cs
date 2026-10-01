@@ -1233,10 +1233,19 @@ public sealed class DeliveryDimension
     public string? LabelJson { get; set; }
 
     /// <summary>
-    /// The attributes each key is read with, as a JSON array of <c>{ "name", "steps" }</c>: the paths each is read through,
-    /// from the record the key names. Null when the dimension reads none.
+    /// The attributes each key is read with, as a JSON array of <c>{ "name", "steps", "collect" }</c>: the paths each is read
+    /// from the record the key names, or the path of the dimension's own records whose values it collects. Null when
+    /// the dimension reads none.
     /// </summary>
     public string? AttributesJson { get; set; }
+
+    /// <summary>
+    /// What the last build that settled the field read of each collected attribute, as a JSON array: the attribute's name and path,
+    /// how the index stores its field, the value records holding none of its values were given, and each value with the
+    /// texts the records hold that it stands for. A search picking a collected value finds the records holding one of those
+    /// texts. Null when the dimension holds no collected attribute.
+    /// </summary>
+    public string? CollectedJson { get; set; }
 
     /// <summary>The hash of the dimension's declaration as the last build read it.</summary>
     public string DefinitionHash { get; set; } = string.Empty;
@@ -1475,9 +1484,10 @@ public sealed class DeliveryDimensionValue
 }
 
 /// <summary>
-/// One attribute of one original (a key): the value the build read under the attribute's name from the record the key
-/// names, and the record it was read from. A key has at most one row per attribute, rewritten when a build reads another
-/// value, and removed when a build finds the key without it; a key no build finds any more keeps what its last build read.
+/// One value of one attribute of one original (a key). An attribute read through the record the key names holds one value
+/// a key, with the record it was read from; a collected attribute holds every value the key's own records hold, each with how
+/// many of them hold it. A row is rewritten when a build reads it otherwise, and removed when a build finds the key
+/// without it; a key no build finds any more keeps what its last build read.
 /// </summary>
 public sealed class DeliveryDimensionAttributeValue
 {
@@ -1500,8 +1510,18 @@ public sealed class DeliveryDimensionAttributeValue
     /// <summary>The value read, trimmed, compared exactly.</summary>
     public string Value { get; set; } = string.Empty;
 
-    /// <summary>The id of the record it was read from: the record the original names, or the last one the attribute's steps reached.</summary>
+    /// <summary>
+    /// Where it was read: the id of the record the original names, or of the last one the attribute's steps reached; for a
+    /// collected attribute, the text the key's records hold, as the index holds it (the first, ordinally, when several are shown
+    /// as one value). Null for the value a key holding none is given.
+    /// </summary>
     public string? ValueFrom { get; set; }
+
+    /// <summary>
+    /// For a collected attribute, how many of the key's records hold the value; null for an attribute read through the record the
+    /// key names, which is every record of the key's.
+    /// </summary>
+    public long? Records { get; set; }
 }
 
 /// <summary>
@@ -2169,8 +2189,8 @@ public static class DeliveryModel
         modelBuilder.Entity<DeliveryDimensionAttributeValue>(e =>
         {
             e.ToTable("DimensionAttribute", SchemaName);
-            // A key's attributes, read with it a page at a time.
-            e.HasKey(a => new { a.PartitionId, a.DimensionId, a.ValueId, a.Name });
+            // A key's attributes, read with it a page at a time: one row per value, so a collected attribute holds several.
+            e.HasKey(a => new { a.PartitionId, a.DimensionId, a.ValueId, a.Name, a.Value });
             ExactText(e.Property(a => a.Name)).HasMaxLength(DeliveryDimensionAttributeValue.MaxNameLength).IsRequired();
             ExactText(e.Property(a => a.Value)).HasMaxLength(DeliveryDimensionAttributeValue.MaxValueLength).IsRequired();
             e.Property(a => a.ValueFrom).HasMaxLength(DeliveryDimensionValue.MaxOriginalLength);

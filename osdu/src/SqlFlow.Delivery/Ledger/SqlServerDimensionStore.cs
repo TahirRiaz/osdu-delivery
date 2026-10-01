@@ -60,7 +60,8 @@ internal static class SqlServerDimensionStore
             [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [ValueFrom] nvarchar(1024) NULL,
-            PRIMARY KEY ([OriginalHash], [Name]));
+            [Records] bigint NULL,
+            PRIMARY KEY ([OriginalHash], [Name], [Value]));
         """;
 
     private const string LockSql = """
@@ -149,32 +150,34 @@ internal static class SqlServerDimensionStore
         WHERE v.[PartitionId] = @p AND v.[DimensionId] = @d AND v.[RemovedRunId] IS NULL
           AND NOT EXISTS (SELECT 1 FROM #DimValue AS s WHERE s.[OriginalHash] = v.[OriginalHash]);
 
-        -- The attributes of every original the build found are what it read: one no longer read is dropped, one read again
-        -- rewritten only when its value or its record changed, and a new one added. An original the build did not find keeps
-        -- what its last build read.
+        -- The attribute values of every original the build found are what it read: one no longer read is dropped, one read
+        -- again rewritten only when where it was read or how many records hold it changed, and a new one added. An original
+        -- the build did not find keeps what its last build read.
         DELETE a
         FROM [osdu].[DimensionAttribute] AS a
         INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = a.[PartitionId] AND v.[ValueId] = a.[ValueId]
         INNER JOIN #DimValue AS s ON s.[OriginalHash] = v.[OriginalHash]
         WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d
-          AND NOT EXISTS (SELECT 1 FROM #DimAttr AS t WHERE t.[OriginalHash] = s.[OriginalHash] AND t.[Name] = a.[Name]);
+          AND NOT EXISTS (SELECT 1 FROM #DimAttr AS t WHERE t.[OriginalHash] = s.[OriginalHash] AND t.[Name] = a.[Name] AND t.[Value] = a.[Value]);
         DECLARE @attributesChanged bigint = @@ROWCOUNT;
 
-        UPDATE a SET a.[Value] = t.[Value], a.[ValueFrom] = t.[ValueFrom]
+        UPDATE a SET a.[ValueFrom] = t.[ValueFrom], a.[Records] = t.[Records]
         FROM [osdu].[DimensionAttribute] AS a
         INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = a.[PartitionId] AND v.[ValueId] = a.[ValueId]
-        INNER JOIN #DimAttr AS t ON t.[OriginalHash] = v.[OriginalHash] AND t.[Name] = a.[Name]
+        INNER JOIN #DimAttr AS t ON t.[OriginalHash] = v.[OriginalHash] AND t.[Name] = a.[Name] AND t.[Value] = a.[Value]
         WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d
-          AND (a.[Value] <> t.[Value] OR ISNULL(a.[ValueFrom], N'') <> ISNULL(t.[ValueFrom], N''));
+          AND (ISNULL(a.[ValueFrom], N'') <> ISNULL(t.[ValueFrom], N'') OR (a.[ValueFrom] IS NULL AND t.[ValueFrom] IS NOT NULL)
+               OR (a.[ValueFrom] IS NOT NULL AND t.[ValueFrom] IS NULL)
+               OR ISNULL(a.[Records], -1) <> ISNULL(t.[Records], -1));
         SET @attributesChanged += @@ROWCOUNT;
 
-        INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom])
-        SELECT @p, @d, v.[ValueId], t.[Name], t.[Value], t.[ValueFrom]
+        INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom], [Records])
+        SELECT @p, @d, v.[ValueId], t.[Name], t.[Value], t.[ValueFrom], t.[Records]
         FROM #DimAttr AS t
         INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = @p AND v.[DimensionId] = @d AND v.[OriginalHash] = t.[OriginalHash]
         WHERE NOT EXISTS (
             SELECT 1 FROM [osdu].[DimensionAttribute] AS a
-            WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND a.[ValueId] = v.[ValueId] AND a.[Name] = t.[Name]);
+            WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND a.[ValueId] = v.[ValueId] AND a.[Name] = t.[Name] AND a.[Value] = t.[Value]);
         SET @attributesChanged += @@ROWCOUNT;
 
         -- The first build's originals are its arrivals, told by the build that first found each; a later build logs its own.
@@ -192,6 +195,7 @@ internal static class SqlServerDimensionStore
             [NestedPath] = CASE WHEN @fieldIndex IS NULL THEN [NestedPath] ELSE @nestedPath END,
             [AggregateBy] = CASE WHEN @fieldIndex IS NULL THEN [AggregateBy] ELSE @aggregateBy END,
             [Repeats] = CASE WHEN @fieldIndex IS NULL THEN [Repeats] ELSE @repeats END,
+            [CollectedJson] = CASE WHEN @fieldIndex IS NULL THEN [CollectedJson] ELSE @collected END,
             [Members] = @members, [Originals] = @originals, [LastRunId] = @run, [LastBuiltUtc] = @now
         WHERE [PartitionId] = @p AND [DimensionId] = @d;
 
@@ -263,6 +267,7 @@ internal static class SqlServerDimensionStore
                 command.Parameters.Add(new SqlParameter("@nestedPath", SqlDbType.NVarChar, DeliveryDimension.MaxPathLength) { Value = (object?)write.Field?.NestedPath ?? DBNull.Value });
                 command.Parameters.Add(new SqlParameter("@aggregateBy", SqlDbType.NVarChar, DeliveryDimension.MaxAggregateByLength) { Value = (object?)write.Field?.AggregateBy ?? DBNull.Value });
                 command.Parameters.Add(new SqlParameter("@repeats", SqlDbType.Bit) { Value = write.Field?.Repeats ?? false });
+                command.Parameters.Add(new SqlParameter("@collected", SqlDbType.NVarChar, -1) { Value = (object?)write.CollectedJson ?? DBNull.Value });
                 await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
                 if (!await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
@@ -320,13 +325,14 @@ internal static class SqlServerDimensionStore
             value.Filter is { Length: > DeliveryDimensionValue.MaxFilterLength } ? null : value.Filter, value.Count, value.Filterable,
         ];
 
-    private static readonly string[] AttributeColumns = ["OriginalHash", "Name", "Value", "ValueFrom"];
+    private static readonly string[] AttributeColumns = ["OriginalHash", "Name", "Value", "ValueFrom", "Records"];
 
-    private static readonly Type[] AttributeTypes = [typeof(byte[]), typeof(string), typeof(string), typeof(string)];
+    private static readonly Type[] AttributeTypes = [typeof(byte[]), typeof(string), typeof(string), typeof(string), typeof(long)];
 
     /// <summary>
-    /// Every attribute of every original of <paramref name="write"/>, a row each, as the staging table takes them: the value
-    /// cut to what a row keeps, an attribute named twice for one original kept once (its first value), an empty one left out.
+    /// Every attribute value of every original of <paramref name="write"/>, a row each, as the staging table takes them: the
+    /// value cut to what a row keeps, a value named twice for one original under one attribute kept once (its first), an
+    /// empty one left out.
     /// </summary>
     private static List<object?[]> AttributesOf(DimensionWrite write)
     {
@@ -339,16 +345,19 @@ internal static class SqlServerDimensionStore
             }
 
             var hash = HashOf(original.Original);
-            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var seen = new HashSet<(string, string)>();
             foreach (var attribute in attributes)
             {
-                if (string.IsNullOrEmpty(attribute.Value) || attribute.Name.Length > DeliveryDimensionAttributeValue.MaxNameLength || !seen.Add(attribute.Name))
+                if (string.IsNullOrEmpty(attribute.Value) || attribute.Name.Length > DeliveryDimensionAttributeValue.MaxNameLength)
                 {
                     continue;
                 }
 
-                rows.Add([hash, attribute.Name, OsduLedger.Truncate(attribute.Value, DeliveryDimensionAttributeValue.MaxValueLength),
-                    OsduLedger.Truncate(attribute.From, DeliveryDimensionValue.MaxOriginalLength)]);
+                var value = OsduLedger.Truncate(attribute.Value, DeliveryDimensionAttributeValue.MaxValueLength)!;
+                if (seen.Add((attribute.Name, value)))
+                {
+                    rows.Add([hash, attribute.Name, value, OsduLedger.Truncate(attribute.From, DeliveryDimensionValue.MaxOriginalLength), attribute.Records]);
+                }
             }
         }
 

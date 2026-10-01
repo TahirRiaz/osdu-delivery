@@ -84,7 +84,11 @@ public interface IDistinctValueSource
 /// Whether a record can hold the field more than once (an array, a nested array): then the counts of values need not add
 /// up to the records holding a value, and the read does not say they disagree.
 /// </param>
-public sealed record DistinctReadOptions(int AggregationSize, long MaxValues, bool Repeats)
+/// <param name="Checks">
+/// Whether the read counts the records it covers and those holding a value, to say how complete it is; a read that is one of
+/// many over parts of the same records (a collected attribute's values, one read each) leaves them to the read of the whole.
+/// </param>
+public sealed record DistinctReadOptions(int AggregationSize, long MaxValues, bool Repeats, bool Checks = true)
 {
     /// <summary>The fewest groups an aggregation may be taken to return; a smaller setting could never page a real field.</summary>
     public const int MinAggregationSize = 10;
@@ -276,9 +280,9 @@ public static class DistinctValues
             await ScanAsync(source, slice, order, tally, ct).ConfigureAwait(false);
         }
 
-        var records = await CheckAsync(source, DistinctCheck.Records, notes, ct).ConfigureAwait(false);
-        var withValue = await CheckAsync(source, DistinctCheck.WithValue, notes, ct).ConfigureAwait(false);
-        var tooLong = field.Index == OsduFieldIndex.Text && field.NestedPath is null
+        var records = options.Checks ? await CheckAsync(source, DistinctCheck.Records, notes, ct).ConfigureAwait(false) : null;
+        var withValue = options.Checks ? await CheckAsync(source, DistinctCheck.WithValue, notes, ct).ConfigureAwait(false) : null;
+        var tooLong = options.Checks && field.Index == OsduFieldIndex.Text && field.NestedPath is null
             ? await CheckAsync(source, DistinctCheck.TooLong, notes, ct).ConfigureAwait(false)
             : null;
 

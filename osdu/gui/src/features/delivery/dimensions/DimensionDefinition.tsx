@@ -116,7 +116,13 @@ export function DimensionDefinition({ entry }: { entry: DimensionEntry }) {
             {dimension.attributes.map((attribute) => (
               <div key={attribute.name} className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="w-28 shrink-0 text-[13px] font-medium">{attribute.name}</span>
-                <LabelSteps steps={attribute.steps} end={attribute.name} />
+                {attribute.collect === null
+                  ? <LabelSteps steps={attribute.steps} end={attribute.name} />
+                  : (
+                    <span className="text-[12px] text-muted-foreground" data-testid="dimension-attribute-collect">
+                      collected from each key&apos;s records at <span className="font-mono text-foreground">{attribute.collect}</span>
+                    </span>
+                  )}
               </div>
             ))}
           </div>

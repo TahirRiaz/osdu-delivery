@@ -1902,12 +1902,12 @@ public interface ILedger
     Task<IReadOnlyList<DimensionChangeState>> ListDimensionChangesAsync(int dimensionId, DimensionChangeQuery query, CancellationToken ct = default);
 
     /// <summary>
-    /// The values the attribute <paramref name="name"/> holds among the dimension's originals a build finds now, the most
-    /// records first: each with the originals holding it and their records (summed); those containing
-    /// <paramref name="search"/> (ignoring case) when given. The name compares exactly, as the dimension declares it.
+    /// The values an attribute holds among the dimension's originals a build finds now, as <paramref name="query"/> narrows
+    /// them, the most records first: each with the originals holding it and their records (summed). The name compares
+    /// exactly, as the dimension declares it.
     /// </summary>
     Task<IReadOnlyList<DimensionAttributeValueState>> ListDimensionAttributeValuesAsync(
-        int dimensionId, string name, string? search, int limit, CancellationToken ct = default);
+        int dimensionId, DimensionAttributeValueQuery query, CancellationToken ct = default);
 
     /// <summary>
     /// The values each attribute holds among the keys a build finds now of each of <paramref name="memberIds"/>: the most keys

@@ -333,15 +333,22 @@ internal sealed class FakeDimensionPlatform : HttpMessageHandler
 
     private static bool Clause(JsonNode record, string clause)
     {
-        if (clause.StartsWith("NOT ", StringComparison.Ordinal))
-        {
-            return !Clause(record, Strip(clause[4..]));
-        }
-
+        // OR binds looser than AND, as the service parses a group: a OR (b AND NOT c).
         var alternatives = Split(clause, " OR ");
         if (alternatives.Count > 1)
         {
             return alternatives.Any(a => Clause(record, Strip(a)));
+        }
+
+        var all = Split(clause, " AND ");
+        if (all.Count > 1)
+        {
+            return all.All(a => Clause(record, Strip(a)));
+        }
+
+        if (clause.StartsWith("NOT ", StringComparison.Ordinal))
+        {
+            return !Clause(record, Strip(clause[4..]));
         }
 
         if (clause.StartsWith("nested(", StringComparison.Ordinal))

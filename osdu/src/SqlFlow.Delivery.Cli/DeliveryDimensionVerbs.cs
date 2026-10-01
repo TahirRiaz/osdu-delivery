@@ -18,8 +18,9 @@ namespace SqlFlow.Delivery.Cli;
 /// index holds them), <c>filter</c> writes the search that finds the records of the values named, <c>search</c> composes the
 /// search across the flow's dimensions from the values picked in each, <c>history</c> lists the builds and <c>changes</c> the
 /// change log, and <c>export</c> writes the whole as CSV or JSON Lines; the filter, the search and the export are written by
-/// the same code as the API's; <c>attributes</c> lists the values an attribute of a dimension's keys holds, and <c>--attr</c>
-/// narrows values and keys by them. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
+/// the same code as the API's; <c>attributes</c> lists the values an attribute of a dimension's keys holds (among the keys
+/// the other picks leave, for a cascade of selects), <c>--attr</c> narrows values and keys by them, and <c>export --set
+/// table</c> writes the table a cascade of selects is read from. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
 /// </summary>
 internal static class DeliveryDimensionVerbs
 {
@@ -97,11 +98,9 @@ internal static class DeliveryDimensionVerbs
                         ["kind"] = spec.Kind,
                         ["path"] = spec.Path,
                         ["label"] = spec.Label.Count == 0 ? null : new JsonArray(spec.Label.Select(l => (JsonNode)JsonValue.Create(l)!).ToArray()),
-                        ["attributes"] = new JsonArray(spec.Attributes.Select(a => (JsonNode)new JsonObject
-                        {
-                            ["name"] = a.Name,
-                            ["steps"] = new JsonArray(a.Steps.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()),
-                        }).ToArray()),
+                        ["attributes"] = new JsonArray(spec.Attributes.Select(a => (JsonNode)(a.IsCollected
+                            ? new JsonObject { ["name"] = a.Name, ["collect"] = a.Collect }
+                            : new JsonObject { ["name"] = a.Name, ["steps"] = new JsonArray(a.Steps.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()) })).ToArray()),
                         ["aggregateBy"] = dimension?.Field?.AggregateBy,
                         ["values"] = dimension?.Members,
                         ["keys"] = dimension?.Originals,
@@ -248,7 +247,7 @@ internal static class DeliveryDimensionVerbs
                     ["count"] = k.Count,
                     ["filterable"] = k.Filterable,
                     ["filter"] = k.Filter,
-                    ["attributes"] = new JsonObject(k.Attributes.Select(a => KeyValuePair.Create(a.Name, (JsonNode?)JsonValue.Create(a.Value)))),
+                    ["attributes"] = KeyAttributesJson(dimension, k.Attributes),
                     ["removedUtc"] = k.RemovedUtc,
                 }).ToArray()),
             }));
@@ -265,7 +264,7 @@ internal static class DeliveryDimensionVerbs
                 $"  {key.Count,12:N0}  {Quoted(key.Original)}  {of}{label}{unfilterable}{(key.Note is { Length: > 0 } note ? "  " + note : string.Empty)}"));
             if (key.Attributes.Count > 0)
             {
-                context.Out.WriteLine("                " + string.Join("; ", key.Attributes.Select(a => $"{a.Name}: {a.Value}")));
+                context.Out.WriteLine("                " + string.Join("; ", key.Attributes.GroupBy(a => a.Name).Select(g => $"{g.Key}: {string.Join(", ", g.Select(Collected))}")));
             }
 
             if (key.Filter is { } filter)
@@ -535,11 +534,33 @@ internal static class DeliveryDimensionVerbs
         return 0;
     }
 
-    /// <summary>The dimension's values or keys, whole, as CSV or JSON Lines, to --out or the console.</summary>
+    /// <summary>
+    /// A key's attributes as JSON: an attribute read from the record the key names is one value, a collected one a list of
+    /// its values, each with the records holding it.
+    /// </summary>
+    private static JsonObject KeyAttributesJson(DimensionState dimension, IReadOnlyList<DimensionAttributeState> attributes)
+    {
+        var collected = DimensionRunner.AttributesOf(dimension.AttributesJson).Where(a => a.IsCollected).Select(a => a.Name).ToHashSet(StringComparer.Ordinal);
+        var json = new JsonObject();
+        foreach (var group in attributes.GroupBy(a => a.Name))
+        {
+            json[group.Key] = collected.Contains(group.Key)
+                ? new JsonArray(group.Select(a => (JsonNode)new JsonObject { ["value"] = a.Value, ["records"] = a.Records }).ToArray())
+                : JsonValue.Create(group.First().Value);
+        }
+
+        return json;
+    }
+
+    /// <summary>An attribute value as a key's line shows it: a collected one with how many of the key's records hold it.</summary>
+    private static string Collected(DimensionAttributeState attribute)
+        => attribute.Records is { } records ? string.Create(CultureInfo.InvariantCulture, $"{attribute.Value} ({records:N0})") : attribute.Value;
+
+    /// <summary>The dimension's values, keys or table, whole, as CSV or JSON Lines, to --out or the console.</summary>
     private static async Task<int> ExportAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
     {
         var set = DimensionExport.SetOf(context.Arguments.GetOption("--set"))
-            ?? throw new FlowValidationException($"--set '{context.Arguments.GetOption("--set")}' is not one of values, keys.");
+            ?? throw new FlowValidationException($"--set '{context.Arguments.GetOption("--set")}' is not one of values, keys, table.");
         var format = DimensionExport.FormatOf(context.Arguments.GetOption("--format"))
             ?? throw new FlowValidationException($"--format '{context.Arguments.GetOption("--format")}' is not one of csv, jsonl.");
         if (context.Arguments.GetOption("--out") is not { } outPath)
@@ -574,13 +595,16 @@ internal static class DeliveryDimensionVerbs
             throw;
         }
 
-        context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote {rows} {(set == DimensionExportSet.Values ? "value(s)" : "key(s)")} of {dimension.Name} to {full}"));
+        var what = set switch { DimensionExportSet.Values => "value(s)", DimensionExportSet.Keys => "key(s)", _ => "row(s) of the table" };
+        context.Error.WriteLine(string.Create(CultureInfo.InvariantCulture, $"Wrote {rows} {what} of {dimension.Name} to {full}"));
         return 0;
     }
 
     /// <summary>
     /// The values the attribute --attribute names holds among the dimension's keys, the most records first, those containing
-    /// --search when given.
+    /// --search when given: among the keys holding every other attribute value --attr names and belonging to a value --value
+    /// names, so each select of a cascade lists what the other picks leave. An --attr of the attribute itself does not
+    /// narrow its own list.
     /// </summary>
     private static async Task<int> AttributesAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
     {
@@ -596,13 +620,18 @@ internal static class DeliveryDimensionVerbs
             ?? throw new FlowValidationException(
                 $"Dimension {dimension.Name} reads no attribute '{asked}'{(declared.Count == 0 ? "; it reads none" : $"; it reads {string.Join(", ", declared.Select(a => a.Name))}")}.");
         var max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max");
-        var values = await ledger.ListDimensionAttributeValuesAsync(dimension.DimensionId, attribute.Name, context.Arguments.GetOption("--search"), max, ct).ConfigureAwait(false);
+        var matches = AttributeMatches(context, dimension);
+        var named = context.Arguments.GetOptions("--value");
+        var memberIds = named.Count == 0 ? null : (await ValuesNamedAsync(ledger, dimension, named, ct).ConfigureAwait(false)).Select(m => m.MemberId).ToList();
+        var values = await ledger.ListDimensionAttributeValuesAsync(
+            dimension.DimensionId, new DimensionAttributeValueQuery(attribute.Name, context.Arguments.GetOption("--search"), max, matches, memberIds), ct).ConfigureAwait(false);
         if (context.Json)
         {
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
             {
                 ["dimension"] = dimension.Name,
                 ["attribute"] = attribute.Name,
+                ["collect"] = attribute.Collect,
                 ["values"] = new JsonArray(values.Select(v => (JsonNode)new JsonObject { ["value"] = v.Value, ["keys"] = v.Keys, ["records"] = v.Records }).ToArray()),
             }));
             return 0;

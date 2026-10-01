@@ -54,11 +54,17 @@ public sealed record DeliveryDimensionDto(
     bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field, long Values, long Keys, DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current,
     DeliveryDimensionBuildDto? Latest);
 
-/// <summary>An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names.</summary>
-public sealed record DeliveryDimensionAttributeSpecDto(string Name, IReadOnlyList<string> Steps);
+/// <summary>
+/// An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names, or
+/// the path of the dimension's own records whose values it collects (<c>collect</c>, with no steps).
+/// </summary>
+public sealed record DeliveryDimensionAttributeSpecDto(string Name, IReadOnlyList<string> Steps, string? Collect);
 
-/// <summary>An attribute of a key: the value read, and the id of the record it was read from.</summary>
-public sealed record DeliveryDimensionAttributeDto(string Name, string Value, string? From);
+/// <summary>
+/// A value of an attribute of a key: the value, where it was read (the id of the record it was read from, or the text the
+/// key's records hold for a collected attribute), and for a collected attribute how many of the key's records hold it.
+/// </summary>
+public sealed record DeliveryDimensionAttributeDto(string Name, string Value, string? From, long? Records);
 
 /// <summary>A value an attribute holds among a value's keys, with how many of them hold it.</summary>
 public sealed record DeliveryDimensionValueAttributeDto(string Name, string Value, int Keys);
@@ -444,13 +450,23 @@ public static class DeliveryDimensionEndpoints
         return TypedResults.Ok(new DeliveryDimensionKeyPageDto(keys.Select(ToDto).ToList(), keys.Count == take ? KeyCursor(keys[^1]) : null));
     }
 
-    /// <summary>The values an attribute of the dimension holds among its keys a build finds now, the most records first.</summary>
+    /// <summary>
+    /// The values an attribute of the dimension holds among its keys a build finds now, the most records first: among the
+    /// keys holding every other attribute value asked for (<c>attr=Name:value</c>) and belonging to one of the values asked
+    /// for (<c>value=</c> ids), so each select of a cascade lists what the other picks leave. A value asked for the attribute
+    /// itself does not narrow its own list.
+    /// </summary>
     private static async Task<Results<Ok<IReadOnlyList<DeliveryDimensionAttributeValueDto>>, ProblemHttpResult>> ListAttributeValuesAsync(
-        int dimensionId, string name, string? search, int? limit, ILedger ledger, CancellationToken ct)
+        int dimensionId, string name, string? search, int? limit, string[]? attr, long[]? value, ILedger ledger, CancellationToken ct)
     {
         if (SearchProblem(search) is { } badSearch)
         {
             return badSearch;
+        }
+
+        if (value is { Length: > DimensionFilters.MaxMembersPerFilter })
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Too many values", $"An attribute's values are narrowed by at most {DimensionFilters.MaxMembersPerFilter} values.");
         }
 
         if (await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension)
@@ -465,7 +481,14 @@ public static class DeliveryDimensionEndpoints
             return Problem(StatusCodes.Status404NotFound, "No such attribute", NoAttribute(dimension, name, declared));
         }
 
-        var values = await ledger.ListDimensionAttributeValuesAsync(dimensionId, attribute.Name, search, PageSize(limit), ct).ConfigureAwait(false);
+        var (matches, badAttribute) = AttributeMatches(dimension, attr);
+        if (badAttribute is not null)
+        {
+            return badAttribute;
+        }
+
+        var values = await ledger.ListDimensionAttributeValuesAsync(
+            dimensionId, new DimensionAttributeValueQuery(attribute.Name, search, PageSize(limit), matches, value), ct).ConfigureAwait(false);
         return TypedResults.Ok<IReadOnlyList<DeliveryDimensionAttributeValueDto>>(values.Select(v => new DeliveryDimensionAttributeValueDto(v.Value, v.Keys, v.Records)).ToList());
     }
 
@@ -599,7 +622,7 @@ public static class DeliveryDimensionEndpoints
     {
         if (DimensionExport.SetOf(set) is not { } chosenSet)
         {
-            return Problem(StatusCodes.Status400BadRequest, "Unknown set", $"set '{set}' is not one of values, keys.");
+            return Problem(StatusCodes.Status400BadRequest, "Unknown set", $"set '{set}' is not one of values, keys, table.");
         }
 
         if (DimensionExport.FormatOf(format) is not { } chosenFormat)
@@ -815,7 +838,7 @@ public static class DeliveryDimensionEndpoints
             spec?.Path ?? state!.Path,
             spec?.Label ?? DimensionRunner.LabelOf(state?.LabelJson),
             spec?.Unlabelled,
-            (spec?.Attributes ?? DimensionRunner.AttributesOf(state?.AttributesJson)).Select(a => new DeliveryDimensionAttributeSpecDto(a.Name, a.Steps)).ToList(),
+            (spec?.Attributes ?? DimensionRunner.AttributesOf(state?.AttributesJson)).Select(a => new DeliveryDimensionAttributeSpecDto(a.Name, a.Steps, a.Collect)).ToList(),
             steps.Select(s => s.Describe()).ToList(),
             spec?.CountRecords ?? false,
             spec?.MaxValues ?? DimensionSpec.DefaultMaxValues,
@@ -847,7 +870,7 @@ public static class DeliveryDimensionEndpoints
 
     private static DeliveryDimensionKeyDto ToDto(DimensionValueState v) => new(
         v.ValueId, v.Original, v.Label, v.LabelFrom, v.MemberId, v.MemberValue, v.LeftOut, v.Note, v.Count, v.Filterable, v.Filter, v.FirstSeenRunId,
-        v.FirstSeenUtc, v.MemberSinceRunId, v.RemovedRunId, v.RemovedUtc, v.Attributes.Select(a => new DeliveryDimensionAttributeDto(a.Name, a.Value, a.From)).ToList());
+        v.FirstSeenUtc, v.MemberSinceRunId, v.RemovedRunId, v.RemovedUtc, v.Attributes.Select(a => new DeliveryDimensionAttributeDto(a.Name, a.Value, a.From, a.Records)).ToList());
 
     /// <summary>
     /// The attribute matches the <c>attr</c> parameters ask for, each <c>Name:value</c> (the value everything after the first

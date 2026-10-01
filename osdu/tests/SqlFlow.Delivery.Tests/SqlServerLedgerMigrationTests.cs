@@ -38,6 +38,8 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before dimension attributes, the last one a dimension's keys had no attributes in.</summary>
     private const string BeforeDimensionAttributes = "20260930175349_DimensionLabels";
 
+    private const string BeforeCollectedAttributes = "20260930190046_DimensionAttributes";
+
     /// <summary>The tables of dimension flows, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] DimensionTables = ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange", "DimensionAttribute"];
 
@@ -656,6 +658,49 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name = N'DimensionAttribute';"));
         Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[Dimension]') AND [name] = N'AttributesJson';"));
         Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionValue];"));
+    }
+
+    [Fact]
+    public async Task An_attribute_written_before_collected_attributes_keeps_its_value_and_a_key_then_holds_several_values_of_one()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeCollectedAttributes);
+        await database.ExecuteAsync("""
+            INSERT INTO [osdu].[LedgerPartition] ([Name], [CreatedUtc]) VALUES (N'dev', SYSUTCDATETIME());
+            DECLARE @p smallint = (SELECT [PartitionId] FROM [osdu].[LedgerPartition] WHERE [Name] = N'dev');
+            INSERT INTO [osdu].[Dimension] ([PartitionId], [FlowId], [FlowName], [Name], [Kind], [Path], [Repeats], [CleanJson], [AttributesJson], [DefinitionHash], [Members], [Originals], [CreatedUtc])
+            VALUES (@p, NEWID(), N'wells', N'Wellbore', N'osdu:wks:work-product-component--WellLog:1.4.0', N'data.WellboreID', 0, N'[]', N'[{"name":"Country","steps":["data.Country"]}]', N'0123456789abcdef', 1, 1, SYSUTCDATETIME());
+            DECLARE @d int = SCOPE_IDENTITY();
+            INSERT INTO [osdu].[DimensionValue] ([PartitionId], [DimensionId], [Original], [OriginalHash], [Count], [Filterable], [FirstSeenRunId], [FirstSeenUtc], [MemberSinceRunId])
+            VALUES (@p, @d, N'dev:master-data--Wellbore:1:', HASHBYTES('SHA2_256', CAST(N'x' AS varbinary(max))), 4, 1, 1, SYSUTCDATETIME(), 1);
+            INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom])
+            VALUES (@p, @d, SCOPE_IDENTITY(), N'Country', N'Norway', N'dev:master-data--GeoPoliticalEntity:NO');
+            """);
+
+        await database.MigrateAsync(null);
+
+        // The value kept, read from a record rather than collected; the key now names the value as well.
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Value] = N'Norway' AND [Records] IS NULL;"));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Dimension] WHERE [CollectedJson] IS NULL;"));
+        Assert.Equal(["PartitionId", "DimensionId", "ValueId", "Name", "Value"], await database.PrimaryKeyAsync("DimensionAttribute"));
+        await database.ExecuteAsync("""
+            INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom], [Records])
+            SELECT [PartitionId], [DimensionId], [ValueId], N'Source', N'RECALL', N'RECALL', 3 FROM [osdu].[DimensionAttribute];
+            INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom], [Records])
+            SELECT [PartitionId], [DimensionId], [ValueId], N'Source', N'PETREL', N'PETREL', 1 FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Country';
+            """);
+        Assert.Equal(2L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Source';"));
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, DimensionTables), await database.IndexesAsync(DimensionTables));
+        }
+
+        // Back down, a key holds one value per attribute again: the collected values go, the value read stays.
+        await database.MigrateAsync(BeforeCollectedAttributes);
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Country' AND [Value] = N'Norway';"));
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Source';"));
+        Assert.Equal(["PartitionId", "DimensionId", "ValueId", "Name"], await database.PrimaryKeyAsync("DimensionAttribute"));
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[Dimension]') AND [name] = N'CollectedJson';"));
     }
 
     /// <summary>

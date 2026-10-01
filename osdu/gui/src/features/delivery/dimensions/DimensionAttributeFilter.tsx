@@ -104,7 +104,7 @@ export function DimensionAttributeFilter({ dimensionId, attributes, conditions, 
                   {attributes.map((spec) => (
                     <CommandItem key={spec.name} value={spec.name} onSelect={() => { setAttribute(spec.name); setTyped(""); }} data-testid={`${testId}-attribute`}>
                       <span className="text-[13px]">{spec.name}</span>
-                      <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground">{spec.steps.at(-1)}</span>
+                      <span className="ml-auto truncate font-mono text-[11px] text-muted-foreground">{spec.collect ?? spec.steps.at(-1)}</span>
                     </CommandItem>
                   ))}
                 </CommandList>
@@ -169,11 +169,30 @@ export function ValueAttributeCell({ values }: { values: string[] }) {
   );
 }
 
-/** A key's attribute: the value read, with the record it was read from on hover; a dash when the key has none. */
+/**
+ * A key's attribute: the value read, with the record it was read from on hover; for a collected attribute, every value the
+ * key's records hold, with how many hold each on hover; a dash when the key has none.
+ */
 export function KeyAttributeCell({ row, name }: { row: DeliveryDimensionKey; name: string }) {
-  const attribute = row.attributes.find((a) => a.name === name);
+  const values = row.attributes.filter((a) => a.name === name);
+  const attribute = values.at(0);
   if (attribute === undefined) {
     return <span className="text-muted-foreground/50">-</span>;
+  }
+
+  if (attribute.records !== null) {
+    return (
+      <RichTooltip title={`${name}, collected from the key's records`} body={values.map((a) => `${a.value}: ${(a.records ?? 0).toLocaleString()} record(s)`).join("; ")}>
+        <span className="flex min-w-0 items-baseline" data-testid="dimension-key-attribute">
+          {values.map((a, index) => (
+            <span key={a.value} className="inline-flex min-w-0 items-baseline">
+              <DimensionValueText value={a.value} maxWidth={150} />
+              {index < values.length - 1 && <span className="pr-1 text-muted-foreground">,</span>}
+            </span>
+          ))}
+        </span>
+      </RichTooltip>
+    );
   }
 
   return (

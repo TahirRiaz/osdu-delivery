@@ -317,7 +317,8 @@ public sealed record DimensionSpec
     /// <summary>
     /// The value of a key whose label is not read (it names no record, the search does not hold the record, or the record
     /// holds nothing where the label is read), cleaned like a label: <c>Not specified</c>, so a drop-down lists such keys
-    /// under one value a person picks, as an application does. Null values such a key by the code its id ends with.
+    /// under one value a person picks, as an application does. Null values such a key by the code its id ends with. It is
+    /// also the value of each attribute a key holds none of, so every cascading drop-down lists such keys too.
     /// </summary>
     public string? Unlabelled { get; init; }
 
@@ -365,15 +366,24 @@ public sealed record DimensionSpec
         => Partitions.Count == 0 || partition is null || Partitions.Contains(partition, StringComparer.OrdinalIgnoreCase);
 }
 
-/// <summary>What a clean step does.</summary>
 /// <summary>
-/// One attribute of a dimension's keys: its name, and the paths it is read through, from the record a key names, each but
-/// the last reading the reference to the next record.
+/// One attribute of a dimension's keys: its name, and where its values come from. Either it is read from the record a key
+/// names, as the label is (<see cref="Steps"/>: each path but the last reading the reference to the next record), one value
+/// a key; or it is collected from the dimension's own records (<see cref="Collect"/>: every value the records holding a key
+/// hold at that path, so a wellbore keyed by its logs' WellboreID collects the Source of each of its logs). Picking a
+/// collected value in a search finds the records holding it, not every record of the keys that collected it.
 /// </summary>
 /// <param name="Name">A letter, then letters, digits and underscores, at most 64; unique in its dimension ignoring case.</param>
-/// <param name="Steps">The paths, one to <see cref="DimensionSpec.MaxLabelSteps"/>.</param>
-public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps)
+/// <param name="Steps">The paths read from the record a key names, one to <see cref="DimensionSpec.MaxLabelSteps"/>; empty for a collected attribute.</param>
+/// <param name="Collect">The path of the dimension's own records whose values the attribute collects; null for one read from a key's record.</param>
+public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> Steps, string? Collect = null)
 {
+    /// <summary>The most distinct values a collected attribute holds across a dimension: each is read with its own pass over the keys.</summary>
+    public const int MaxCollectedValues = 200;
+
+    /// <summary>Whether the attribute's values are collected from the dimension's own records rather than read from a key's record.</summary>
+    public bool IsCollected => Collect is not null;
+
     /// <summary>The longest attribute name.</summary>
     public const int MaxNameLength = 64;
 
@@ -389,6 +399,7 @@ public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> S
         => name is { Length: > 0 and <= MaxNameLength } && char.IsAsciiLetter(name[0]) && name.All(c => char.IsAsciiLetterOrDigit(c) || c == '_');
 }
 
+/// <summary>What a clean step does.</summary>
 public enum CleanStepKind
 {
     /// <summary>Removes white space at both ends.</summary>

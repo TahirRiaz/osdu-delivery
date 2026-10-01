@@ -224,6 +224,13 @@ public sealed class DeliveryDimensionApiTests
             var norway = Assert.Single(countries.EnumerateArray());
             Assert.Equal(("Norway", 2, 10L), (norway.GetProperty("value").GetString(), norway.GetProperty("keys").GetInt32(), norway.GetProperty("records").GetInt64()));
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Basin", HttpStatusCode.NotFound, "reads no attribute 'Basin'; it reads Country");
+
+            // An attribute's values among the keys the other picks leave, as a cascade of selects reads them: the keys of the
+            // values picked; a pick of the attribute itself does not narrow its own list.
+            var ofOne = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country?value={norwegian[0].GetProperty("valueId").GetInt64()}")).EnumerateArray());
+            Assert.Equal(("Norway", 1, 7L), (ofOne.GetProperty("value").GetString(), ofOne.GetProperty("keys").GetInt32(), ofOne.GetProperty("records").GetInt64()));
+            Assert.Equal(countries.GetRawText(), (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country?attr=Country:Denmark")).GetRawText());
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/attributes/Country?attr=Basin:X", HttpStatusCode.BadRequest, "reads no attribute 'Basin'");
             await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/values?attr=Norway", HttpStatusCode.BadRequest, "is not Name:value");
             var unnamed = Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/keys?search=9999")).GetProperty("items").EnumerateArray());
             Assert.Equal(("dev:master-data--Wellbore:9999:", JsonValueKind.Null), (unnamed.GetProperty("value").GetString(), unnamed.GetProperty("label").ValueKind));
@@ -322,6 +329,20 @@ public sealed class DeliveryDimensionApiTests
                 var row = lines.Select(l => JsonDocument.Parse(l).RootElement).Single(r => r.GetProperty("key").GetString() == "dev:master-data--Wellbore:1001:");
                 Assert.Equal(("15/9-F-1", "15/9-F-1"), (row.GetProperty("label").GetString(), row.GetProperty("value").GetString()));
                 Assert.Equal(DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:"])[0], row.GetProperty("filter").GetString());
+            }
+
+            // The table cascading selects read: a row per key, its value and a column per attribute, named as declared.
+            using (var table = await SendAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/export?set=table&format=csv"))
+            {
+                Assert.Equal(
+                    [
+                        "key,value,Country,records",
+                        "dev:master-data--Wellbore:1001:,15/9-F-1,Norway,7",
+                        "dev:master-data--Wellbore:1002:,15/9-F-4,Norway,3",
+                        "dev:master-data--Wellbore:9999:,dev:master-data--Wellbore:9999:,,1",
+                    ],
+                    (await table.Content.ReadAsStringAsync()).Split("\r\n", StringSplitOptions.RemoveEmptyEntries));
+                Assert.EndsWith("-table.csv", table.Content.Headers.ContentDisposition?.FileNameStar ?? table.Content.Headers.ContentDisposition?.FileName ?? string.Empty, StringComparison.Ordinal);
             }
 
             // The builds a platform run made, named by the dimension each built.

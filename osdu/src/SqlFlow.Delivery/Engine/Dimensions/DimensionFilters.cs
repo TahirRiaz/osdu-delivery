@@ -109,6 +109,21 @@ public static class DimensionFilters
             .ToList();
     }
 
+    /// <summary>
+    /// The filter finding every record whose <paramref name="field"/> holds none of <paramref name="originals"/>: every record
+    /// (each holds an id) but those holding one of them. The service refuses a query that only excludes, so the filter
+    /// starts from every record. A key no query can carry is not given; ask <see cref="Filterable"/> first.
+    /// </summary>
+    /// <exception cref="OsduQueryException">A key cannot be carried in a query.</exception>
+    public static string NoneOf(OsduField field, IReadOnlyCollection<string> originals)
+    {
+        var any = Of(field, originals);
+        return any.Count == 0 ? EveryRecord : EveryRecord + " AND " + string.Join(" AND ", any.Select(q => $"NOT ({q})"));
+    }
+
+    /// <summary>The clause every record matches: each holds an id.</summary>
+    public const string EveryRecord = "_exists_:id";
+
     /// <summary>Whether a query can carry the key <paramref name="original"/> of <paramref name="field"/>, so a filter can find its records.</summary>
     public static bool Filterable(OsduField field, string original) => OsduQuery.EqualProblem(field, original) is null;
 

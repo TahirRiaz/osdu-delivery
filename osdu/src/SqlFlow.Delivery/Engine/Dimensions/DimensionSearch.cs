@@ -8,7 +8,7 @@ namespace SqlFlow.Delivery.Engine.Dimensions;
 /// <summary>
 /// What is picked in one dimension: values, by id or as the dimension holds them, and attribute values its keys hold
 /// (<c>Country</c> is <c>Norway</c>). With attributes alone, every key holding them; with both, the keys of the values picked
-/// that hold them.
+/// that hold them. A collected attribute's value picks records as well: those holding it, not every record of its keys.
 /// </summary>
 public sealed record DimensionPick(
     DimensionState Dimension, IReadOnlyCollection<long> ValueIds, IReadOnlyCollection<string> Values, IReadOnlyList<DimensionAttributeMatch>? Attributes = null)
@@ -24,12 +24,16 @@ public sealed record DimensionPick(
 /// <param name="Values">The values picked that the dimension holds now, each with its id, records and keys.</param>
 /// <param name="Keys">The keys the filter compares.</param>
 /// <param name="Unfilterable">Keys of the values picked that no query can carry, which the filter leaves out.</param>
-/// <param name="Filter">The part's filter: one query, or several joined with OR when the keys are more than one query holds.</param>
+/// <param name="Filter">
+/// The part's filter: the keys, in one query or several joined with OR when they are more than one query holds, and the
+/// values picked of each collected attribute, joined with AND.
+/// </param>
 /// <param name="Query">The dimension's own query, the records its values were read from; null for every record of its kind.</param>
 /// <param name="Attributes">The attribute values the keys were picked by, each under its declared name; empty for a pick of values alone.</param>
+/// <param name="Clauses">The clauses the filter holds.</param>
 public sealed record DimensionSearchPart(
     int DimensionId, string Dimension, string AggregateBy, IReadOnlyList<DimensionMemberState> Values, int Keys, int Unfilterable, string Filter, string? Query,
-    IReadOnlyList<DimensionAttributeMatch> Attributes);
+    IReadOnlyList<DimensionAttributeMatch> Attributes, int Clauses);
 
 /// <summary>
 /// A search composed from values picked across dimensions: the kind to search, the query (each dimension's own query once,
@@ -119,16 +123,16 @@ public static class DimensionSearch
             var filter = set.Filters.Count == 1 ? set.Filters[0] : "(" + string.Join(" OR ", set.Filters.Select(f => $"({f})")) + ")";
             parts.Add(new DimensionSearchPart(
                 pick.Dimension.DimensionId, pick.Dimension.Name, set.AggregateBy, set.Members, set.Originals, set.Unfilterable, filter,
-                pick.Dimension.Query, []));
+                pick.Dimension.Query, [], set.Originals));
         }
 
         // Each dimension's own query once, since dimensions of one flow often read the same records; then every filter.
         var scopes = parts.Select(p => p.Query).Where(q => !string.IsNullOrWhiteSpace(q) && q!.Trim() != "*").Select(q => q!.Trim()).Distinct(StringComparer.Ordinal).ToList();
-        var clauses = parts.Sum(p => p.Keys) + scopes.Count + (string.IsNullOrWhiteSpace(within) ? 0 : 1);
+        var clauses = parts.Sum(p => p.Clauses) + scopes.Count + (string.IsNullOrWhiteSpace(within) ? 0 : 1);
         if (clauses > MaxClauses)
         {
             throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
-                $"The values picked hold {parts.Sum(p => p.Keys)} keys, and one search holds at most {MaxClauses} clauses (the service allows 1024). Pick fewer values, or search each dimension's values on their own."));
+                $"The picks hold {parts.Sum(p => p.Keys)} keys and {clauses} clauses in all, and one search holds at most {MaxClauses} (the service allows 1024). Pick fewer values, or search each dimension's values on their own."));
         }
 
         var terms = scopes.Concat(parts.Select(p => p.Filter)).ToList();
@@ -144,7 +148,9 @@ public static class DimensionSearch
 
     /// <summary>
     /// The part of a pick by attributes: the keys holding every attribute value picked (and belonging to one of the values
-    /// picked, when there are some), at most <see cref="OsduLedger.MaxDimensionPage"/>, and the filter finding their records.
+    /// picked, when there are some), at most <see cref="OsduLedger.MaxDimensionPage"/>, and the filter finding their records;
+    /// a value picked of a collected attribute narrows those records to the ones holding it. Collected values picked alone
+    /// pick no keys: the filter finds every record holding one, among the records holding a key.
     /// </summary>
     private static async Task<DimensionSearchPart> ByAttributesAsync(
         ILedger ledger, DimensionPick pick, List<string> removed, List<string> missing, List<string> notes, CancellationToken ct)
@@ -173,6 +179,32 @@ public static class DimensionSearch
             {
                 matches.Add(new DimensionAttributeMatch(attribute.Name, values));
             }
+        }
+
+        var field = DimensionFilters.FieldOf(dimension.Path, dimension.Field)
+            ?? throw new DeliveryException($"Dimension {dimension.Name} has not been built with a field yet, so no filter can be written for it. Build it first.");
+        var collected = matches.Where(m => declared.First(a => a.Name == m.Name).IsCollected).ToList();
+        var terms = new List<string>();
+        var termClauses = 0;
+        foreach (var match in collected)
+        {
+            var (term, count) = CollectedFilter(dimension, match, missing);
+            terms.Add(term);
+            termClauses += count;
+        }
+
+        if (pick.ValueIds.Count + pick.Values.Count == 0 && collected.Count == matches.Count)
+        {
+            // Collected values alone: the records holding one, among those holding a key where the index can say so (the
+            // service's _exists_ does not reach inside a nested array).
+            if (field.NestedPath is null)
+            {
+                terms.Insert(0, $"_exists_:{field.ExactPath}");
+                termClauses++;
+            }
+
+            return new DimensionSearchPart(
+                dimension.DimensionId, dimension.Name, field.AggregateBy, [], 0, 0, Joined(terms), dimension.Query, matches, termClauses);
         }
 
         IReadOnlyCollection<long>? memberIds = null;
@@ -216,10 +248,8 @@ public static class DimensionSearch
                 $"{dimension.Name}: {keys.Count - filterable.Count} key(s) where {described} cannot be carried in a query, so the search does not find the records holding them."));
         }
 
-        var field = DimensionFilters.FieldOf(dimension.Path, dimension.Field)
-            ?? throw new DeliveryException($"Dimension {dimension.Name} has not been built with a field yet, so no filter can be written for it. Build it first.");
         var filters = DimensionFilters.Of(field, filterable);
-        var filter = filters.Count == 1 ? filters[0] : "(" + string.Join(" OR ", filters.Select(f => $"({f})")) + ")";
+        terms.Insert(0, filters.Count == 1 ? filters[0] : "(" + string.Join(" OR ", filters.Select(f => $"({f})")) + ")");
         if (picked.Count == 0)
         {
             var ids = keys.Where(k => k.MemberId is not null).Select(k => k.MemberId!.Value).Distinct().ToList();
@@ -227,7 +257,50 @@ public static class DimensionSearch
         }
 
         return new DimensionSearchPart(
-            dimension.DimensionId, dimension.Name, field.AggregateBy, picked, filterable.Count, keys.Count - filterable.Count, filter, dimension.Query, matches);
+            dimension.DimensionId, dimension.Name, field.AggregateBy, picked, filterable.Count, keys.Count - filterable.Count, Joined(terms), dimension.Query, matches,
+            filterable.Count + termClauses);
+    }
+
+    /// <summary>Terms that all have to hold, each grouped when there are several.</summary>
+    private static string Joined(IReadOnlyList<string> terms) => terms.Count == 1 ? terms[0] : string.Join(" AND ", terms.Select(t => $"({t})"));
+
+    /// <summary>
+    /// The filter a pick of a collected attribute adds, with the clauses it holds: the records holding one of the texts the
+    /// values picked stand for, as the dimension's last build collected them; and for the value the dimension names for what
+    /// is not read, the records holding none of the attribute's texts. A value the attribute does not hold is named as missing.
+    /// </summary>
+    private static (string Filter, int Clauses) CollectedFilter(DimensionState dimension, DimensionAttributeMatch match, List<string> missing)
+    {
+        var state = DimensionRunner.CollectedOf(dimension.CollectedJson).FirstOrDefault(c => c.Name == match.Name)
+            ?? throw new DeliveryException(
+                $"Dimension {dimension.Name} has not been built since it began collecting attribute {match.Name}, so no search can pick its values yet. Build it first.");
+        var field = DimensionFilters.FieldOf(state.Path, state.Field)!;
+        var all = state.Values.SelectMany(v => v.Texts).ToList();
+        var texts = state.Values.Where(v => match.Values.Contains(v.Value, StringComparer.Ordinal)).SelectMany(v => v.Texts).ToList();
+        var none = state.Missing is { } unread && match.Values.Contains(unread, StringComparer.Ordinal);
+        missing.AddRange(match.Values
+            .Where(v => !string.Equals(v, state.Missing, StringComparison.Ordinal) && state.Values.All(s => !string.Equals(s.Value, v, StringComparison.Ordinal)))
+            .Select(v => $"{dimension.Name}.{match.Name}: {v}"));
+
+        var alternatives = new List<string>();
+        if (texts.Count > 0)
+        {
+            alternatives.AddRange(DimensionFilters.Of(field, texts));
+        }
+
+        if (none)
+        {
+            alternatives.Add(DimensionFilters.NoneOf(field, all));
+        }
+
+        if (alternatives.Count == 0)
+        {
+            throw new DeliveryException(
+                $"No value picked of attribute {match.Name} of dimension {dimension.Name} is one it collects: {string.Join(", ", match.Values)}.");
+        }
+
+        var filter = alternatives.Count == 1 ? alternatives[0] : string.Join(" OR ", alternatives.Select(a => $"({a})"));
+        return (filter, texts.Count + (none ? all.Count + 1 : 0));
     }
 
     /// <summary>

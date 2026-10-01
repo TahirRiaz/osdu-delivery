@@ -2390,17 +2390,26 @@ export interface DeliveryDimensionDetail {
   dimension: DeliveryDimension;
 }
 
-/** An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names. */
+/**
+ * An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names, or
+ * the path of the dimension's own records whose values it collects (`collect`, with no steps).
+ */
 export interface DeliveryDimensionAttributeSpec {
   name: string;
   steps: string[];
+  collect: string | null;
 }
 
-/** An attribute of a key: the value read, and the id of the record it was read from. */
+/**
+ * A value of an attribute of a key: the value, where it was read (the id of the record it was read from, or the text the
+ * key's records hold for a collected attribute), and for a collected attribute how many of the key's records hold it. A key
+ * holds one value of an attribute read from the record it names, and any number of a collected one.
+ */
 export interface DeliveryDimensionAttribute {
   name: string;
   value: string;
   from: string | null;
+  records: number | null;
 }
 
 /** A value an attribute holds among a value's keys, with how many of them hold it. */

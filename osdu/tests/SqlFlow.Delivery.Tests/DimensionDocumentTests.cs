@@ -142,7 +142,8 @@ public class DimensionDocumentTests
         var flow = Parse(Head + Curves + "\n    label: data.Name\n    unlabelled: ' Not specified '");
         Assert.Equal("Not specified", flow.Dimensions[0].Unlabelled);
         Assert.Null(Parse(Head + Curves + "\n    label: data.Name").Dimensions[0].Unlabelled);
-        Assert.Contains("reads no label", Refused(Head + Curves + "\n    unlabelled: Not specified").Message, StringComparison.Ordinal);
+        Assert.Contains("reads neither", Refused(Head + Curves + "\n    unlabelled: Not specified").Message, StringComparison.Ordinal);
+        Assert.Equal("Not specified", Parse(Head + Curves + "\n    attributes: { Family: data.Name }\n    unlabelled: Not specified").Dimensions[0].Unlabelled);
         Assert.Contains("unlabelled is empty", Refused(Head + Curves + "\n    label: data.Name\n    unlabelled: ' '").Message, StringComparison.Ordinal);
     }
 
@@ -195,6 +196,44 @@ public class DimensionDocumentTests
     [InlineData("attributes: { Area: 'data..A' }", "is not a property name")]
     [InlineData("attributes: { Area: [data.A, data.B, data.C, data.D] }", "at most 3")]
     public void An_attribute_that_breaks_a_rule_is_refused_naming_the_rule(string attributes, string reason)
+    {
+        var refused = Refused(Head + Curves + "\n    " + attributes);
+        Assert.Contains("dimensions[0] 'CurveMnemonic'", refused.Message, StringComparison.Ordinal);
+        Assert.Contains(reason, refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_attribute_is_collected_from_the_dimensions_own_records_and_a_dimension_collects_one()
+    {
+        var flow = Parse(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                attributes:
+                  UUID: data.FacilityID
+                  Source: { collect: ' data.Source ' }
+            """);
+
+        var source = flow.Dimensions[0].Attribute("source")!;
+        Assert.Equal(("Source", "data.Source", true), (source.Name, source.Collect, source.IsCollected));
+        Assert.Empty(source.Steps);
+        Assert.False(flow.Dimensions[0].Attribute("UUID")!.IsCollected);
+
+        // Collecting is another declaration than reading the same path from the record a key names.
+        Assert.NotEqual(
+            Parse(Head + Curves + "\n    attributes: { Source: data.Source }").Dimensions[0].DefinitionHash,
+            Parse(Head + Curves + "\n    attributes: { Source: { collect: data.Source } }").Dimensions[0].DefinitionHash);
+    }
+
+    [Theory]
+    [InlineData("attributes: { Source: { collect: data.Source }, Type: { collect: data.LogType } }", "is a second collected attribute beside Source")]
+    [InlineData("attributes: { Source: { collected: data.Source } }", "or { collect: <path> }")]
+    [InlineData("attributes: { Source: { collect: data.Source, from: logs } }", "it names from")]
+    [InlineData("attributes: { Source: { collect: '' } }", "or { collect: <path> }")]
+    [InlineData("attributes: { Source: { collect: [data.Source] } }", "or { collect: <path> }")]
+    [InlineData("attributes: { Source: { collect: 'data.Log Source' } }", "is not a property path")]
+    public void A_collected_attribute_that_breaks_a_rule_is_refused_naming_the_rule(string attributes, string reason)
     {
         var refused = Refused(Head + Curves + "\n    " + attributes);
         Assert.Contains("dimensions[0] 'CurveMnemonic'", refused.Message, StringComparison.Ordinal);

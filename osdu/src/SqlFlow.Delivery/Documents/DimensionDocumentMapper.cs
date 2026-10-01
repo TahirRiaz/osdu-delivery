@@ -222,7 +222,7 @@ internal static class DimensionMapper
             Query = query,
             Path = path,
             Label = label,
-            Unlabelled = MapUnlabelled(d.Unlabelled, label.Count > 0, where, source),
+            Unlabelled = MapUnlabelled(d.Unlabelled, label.Count > 0 || d.Attributes is { Count: > 0 }, where, source),
             Attributes = MapAttributes(d.Attributes, where, source),
             Clean = MapClean(d.Clean, where, source),
             CountRecords = d.CountRecords ?? false,
@@ -290,7 +290,7 @@ internal static class DimensionMapper
 
         return labelled
             ? text
-            : throw new FlowValidationException($"{source}: {where}: unlabelled is the value of a key whose label is not read, and the dimension reads no label.");
+            : throw new FlowValidationException($"{source}: {where}: unlabelled is the value of a key whose label or attribute is not read, and the dimension reads neither.");
     }
 
     /// <summary>
@@ -332,6 +332,20 @@ internal static class DimensionMapper
                 throw new FlowValidationException($"{source}: {where}: attributes.{trimmed} is named twice, ignoring case.");
             }
 
+            if (steps is IDictionary<object, object?> settings)
+            {
+                // Two collected attributes would pair values no record holds together (one log's source with another's
+                // type), so a row of the dimension's table is a key and one collected value, counted exactly.
+                if (attributes.FirstOrDefault(a => a.IsCollected) is { } first)
+                {
+                    throw new FlowValidationException(
+                        $"{source}: {where}: attributes.{trimmed} is a second collected attribute beside {first.Name}; a dimension collects one, so each row of its table is a key and one value its records hold. Collect {trimmed} in a dimension of its own with the same path.");
+                }
+
+                attributes.Add(new DimensionAttributeSpec(trimmed, [], MapCollect(settings, $"attributes.{trimmed}", where, source)));
+                continue;
+            }
+
             var read = MapSteps(steps, $"attributes.{trimmed}", where, source);
             if (read.Count == 0)
             {
@@ -343,6 +357,24 @@ internal static class DimensionMapper
         }
 
         return attributes;
+    }
+
+    /// <summary>
+    /// A collected attribute, <c>{ collect: data.Source }</c>: the path of the dimension's own records whose values each key
+    /// collects, a path a search matches exactly, as the dimension's own path is.
+    /// </summary>
+    private static string MapCollect(IDictionary<object, object?> settings, string at, string where, string source)
+    {
+        var unknown = settings.Keys.Select(k => k?.ToString()).Where(k => k != "collect").ToList();
+        if (unknown.Count > 0 || !settings.TryGetValue("collect", out var declared) || declared is not string collect || string.IsNullOrWhiteSpace(collect))
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: {at} is a path or a list of paths read from the record the key names ({at.Split('.')[1]}: data.Name), or {{ collect: <path> }} to collect the values of the dimension's own records ({at.Split('.')[1]}: {{ collect: data.Source }}){(unknown.Count > 0 ? $"; it names {string.Join(", ", unknown)}" : string.Empty)}.");
+        }
+
+        var path = collect.Trim();
+        CheckPath(path, $"{where}: {at}.collect", source);
+        return path;
     }
 
     /// <summary>

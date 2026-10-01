@@ -71,7 +71,7 @@ public sealed record DimensionDeclaration
     /// <summary>Where each key's label is read, as a JSON array of paths; null when keys are their own values.</summary>
     public string? LabelJson { get; init; }
 
-    /// <summary>The attributes each key is read with, as a JSON array of <c>{ "name", "steps" }</c>; null when none.</summary>
+    /// <summary>The attributes each key is read with, as a JSON array of <c>{ "name", "steps", "collect" }</c>; null when none.</summary>
     public string? AttributesJson { get; init; }
 
     public required string DefinitionHash { get; init; }
@@ -114,8 +114,11 @@ public sealed record DimensionState
     /// <summary>Where each key's label is read, as a JSON array of paths; null when keys are their own values.</summary>
     public string? LabelJson { get; init; }
 
-    /// <summary>The attributes each key is read with, as a JSON array of <c>{ "name", "steps" }</c>; null when none.</summary>
+    /// <summary>The attributes each key is read with, as a JSON array of <c>{ "name", "steps", "collect" }</c>; null when none.</summary>
     public string? AttributesJson { get; init; }
+
+    /// <summary>What the last build read of each collected attribute, as JSON (<see cref="DimensionCollectedState"/>); null when none.</summary>
+    public string? CollectedJson { get; init; }
 
     public required string DefinitionHash { get; init; }
 
@@ -234,8 +237,23 @@ public sealed record DimensionOriginalWrite(
     string Original, string? CleanValue, string? LeftOut, string? Note, long Count, bool Filterable,
     string? Label = null, string? LabelFrom = null, string? Filter = null, IReadOnlyList<DimensionAttributeState>? Attributes = null);
 
-/// <summary>One attribute of a key: its name, the value read, and the id of the record it was read from.</summary>
-public sealed record DimensionAttributeState(string Name, string Value, string? From);
+/// <summary>
+/// One value of one attribute of a key: its name, the value, where it was read (the id of the record it was read from, or
+/// for a collected attribute the text the key's records hold), and for a collected attribute how many of the key's records hold it.
+/// </summary>
+public sealed record DimensionAttributeState(string Name, string Value, string? From, long? Records = null);
+
+/// <summary>
+/// What a build read of one collected attribute: its name and path, how the index stores the path, the value records holding
+/// none of its values were given (null when the dimension gives them none), and its values.
+/// </summary>
+public sealed record DimensionCollectedState(string Name, string Path, DimensionFieldState Field, string? Missing, IReadOnlyList<DimensionCollectedValue> Values);
+
+/// <summary>
+/// One value of a collected attribute: the value as it is shown, the texts the records hold that it stands for (several when
+/// they are shown alike), and the records holding one of them.
+/// </summary>
+public sealed record DimensionCollectedValue(string Value, IReadOnlyList<string> Texts, long Records);
 
 /// <summary>
 /// A value one attribute holds among a member's keys, as a page of members shows it: the value, and how many of the member's
@@ -246,8 +264,24 @@ public sealed record DimensionMemberAttributeValue(string Name, string Value, in
 /// <summary>The values each attribute holds among one member's keys.</summary>
 public sealed record DimensionMemberAttributes(long MemberId, IReadOnlyList<DimensionMemberAttributeValue> Attributes);
 
-/// <summary>A value an attribute holds among a dimension's keys: the value, the keys holding it, and their records (summed).</summary>
+/// <summary>
+/// A value an attribute holds among a dimension's keys: the value, the keys holding it, and their records (summed): every
+/// record of each key for an attribute read through the record a key names, the records holding the value for a collected one.
+/// </summary>
 public sealed record DimensionAttributeValueState(string Value, int Keys, long Records);
+
+/// <summary>
+/// Which values of one attribute a list reads: those among the keys a build finds now that hold every match of
+/// <paramref name="Attributes"/> but one of the attribute itself, and belong to one of <paramref name="MemberIds"/> when
+/// given. So each list of a cascade lists what the other picks leave, its own pick aside.
+/// </summary>
+/// <param name="Name">The attribute, as the dimension declares it.</param>
+/// <param name="Search">Text the value contains, ignoring case; null reads every value.</param>
+/// <param name="Limit">The most values the list holds.</param>
+/// <param name="Attributes">The picks of the dimension's attributes; a match of <paramref name="Name"/> itself is passed over.</param>
+/// <param name="MemberIds">Only the keys of these values of the dimension; null or empty reads the keys of every value.</param>
+public sealed record DimensionAttributeValueQuery(
+    string Name, string? Search, int Limit, IReadOnlyList<DimensionAttributeMatch>? Attributes = null, IReadOnlyCollection<long>? MemberIds = null);
 
 /// <summary>
 /// Keys an attribute has to hold: one of <paramref name="Values"/> under <paramref name="Name"/>, compared exactly. Several
@@ -272,6 +306,9 @@ public sealed record DimensionWrite
     /// to be read by), which leaves the field the dimension had.
     /// </summary>
     public required DimensionFieldState? Field { get; init; }
+
+    /// <summary>What the build read of each collected attribute, as JSON (<see cref="DimensionCollectedState"/>); null when the dimension holds none.</summary>
+    public string? CollectedJson { get; init; }
 
     public required IReadOnlyList<DimensionOriginalWrite> Originals { get; init; }
 

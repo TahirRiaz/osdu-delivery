@@ -339,7 +339,7 @@ public sealed class DimensionRunTests : IDisposable
         Assert.Equal(["dev:master-data--Wellbore:15%2F9-A:"], both.Select(k => k.Original));
         Assert.Equal(
             [("Norway", 2, 3L), ("Denmark", 1, 1L)],
-            (await ledger.ListDimensionAttributeValuesAsync(wellbores.DimensionId, "Country", null, 10)).Select(v => (v.Value, v.Keys, v.Records)));
+            (await ledger.ListDimensionAttributeValuesAsync(wellbores.DimensionId, new DimensionAttributeValueQuery("Country", null, 10))).Select(v => (v.Value, v.Keys, v.Records)));
 
         // A search picked by an attribute finds the logs of every wellbore holding it.
         var inNorway = await DimensionSearch.ComposeAsync(
@@ -362,6 +362,137 @@ public sealed class DimensionRunTests : IDisposable
         Assert.Equal([("Country", "Kingdom of Norway"), ("Region", "North Sea")], again.Attributes.Select(x => (x.Name, x.Value)));
         var second = (await ledger.ListDimensionRunsAsync(wellbores.DimensionId, 1)).Single();
         Assert.Contains(second.Read.Notes, n => n.Contains("attribute value(s) of keys were added, rewritten or dropped", StringComparison.Ordinal));
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task A_wellbore_collects_its_logs_sources_and_its_table_feeds_cascading_selects()
+    {
+        // Two countries, two fields, and logs from two sources, one spelled with a trailing space; a log without a source,
+        // and a wellbore no record describes.
+        _platform.Add("dev:master-data--GeoPoliticalEntity:NO", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Norway" });
+        _platform.Add("dev:master-data--GeoPoliticalEntity:DK", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Denmark" });
+        _platform.Add("dev:master-data--Field:STATFJORD", "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = "Statfjord" });
+        _platform.Add("dev:master-data--Field:TYRA", "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = "Tyra" });
+        JsonObject Described(string name, string country, string? field)
+        {
+            var contexts = new JsonArray(new JsonObject { ["GeoPoliticalEntityID"] = $"dev:master-data--GeoPoliticalEntity:{country}:" });
+            if (field is not null)
+            {
+                contexts.Add(new JsonObject { ["FieldID"] = $"dev:master-data--Field:{field}:" });
+            }
+
+            return new JsonObject { ["FacilityName"] = name, ["GeoContexts"] = contexts };
+        }
+
+        _platform.Add("dev:master-data--Wellbore:A", Wellbore, Described("NO A", "NO", "STATFJORD"));
+        _platform.Add("dev:master-data--Wellbore:B", Wellbore, Described("NO B", "NO", null));
+        _platform.Add("dev:master-data--Wellbore:C", Wellbore, Described("DK C", "DK", "TYRA"));
+        foreach (var (log, wellbore, source) in new[]
+        {
+            ("1", "A", "RECALL"), ("2", "A", "RECALL"), ("3", "A", "PETREL"), ("4", "B", "RECALL"), ("5", "B", null), ("6", "C", "PETREL"),
+            ("7", "D", null), ("8", "C", "RECALL "),
+        })
+        {
+            var data = new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:{wellbore}:" };
+            if (source is not null)
+            {
+                data["Source"] = source;
+            }
+
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, data);
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+                unlabelled: Not specified
+                attributes:
+                  Country: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]
+                  Field: [data.GeoContexts.FieldID, data.FieldName]
+                  Source: { collect: data.Source }
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var keys = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
+            .ToDictionary(k => k.Original[(k.Original.LastIndexOf(':', k.Original.Length - 2) + 1)..^1], StringComparer.Ordinal);
+
+        // Each wellbore collects the sources of its logs with how many hold each; a source spelled with a trailing space is
+        // the same value; the logs holding none are Not specified, as an attribute a wellbore does not hold is.
+        IEnumerable<(string, string, long?)> Of(string key) => keys[key].Attributes.Select(x => (x.Name, x.Value, x.Records));
+        Assert.Equal([("Country", "Norway", null), ("Field", "Statfjord", null), ("Source", "RECALL", 2L), ("Source", "PETREL", 1L)], Of("A"));
+        Assert.Equal([("Country", "Norway", null), ("Field", "Not specified", null), ("Source", "Not specified", 1L), ("Source", "RECALL", 1L)], Of("B"));
+        Assert.Equal([("Country", "Denmark", null), ("Field", "Tyra", null), ("Source", "PETREL", 1L), ("Source", "RECALL", 1L)], Of("C"));
+        Assert.Equal([("Country", "Not specified", null), ("Field", "Not specified", null), ("Source", "Not specified", 1L)], Of("D"));
+        Assert.Equal("Not specified", keys["D"].MemberValue);
+
+        // The dimension keeps what each source value stands for, which a search picking it asks for.
+        var collected = Assert.Single(DimensionRunner.CollectedOf(wellbores.CollectedJson));
+        Assert.Equal(("Source", "data.Source", "Not specified"), (collected.Name, collected.Path, collected.Missing));
+        Assert.Equal(
+            [("PETREL", "PETREL", 2L), ("RECALL", "RECALL|RECALL ", 4L)],
+            collected.Values.Select(v => (v.Value, string.Join('|', v.Texts), v.Records)));
+
+        // Each list of a cascade lists what the other picks leave, its own pick aside.
+        async Task<IEnumerable<(string, int, long)>> ListAsync(string name, IReadOnlyList<DimensionAttributeMatch>? picks = null, IReadOnlyCollection<long>? values = null)
+            => (await ledger.ListDimensionAttributeValuesAsync(wellbores.DimensionId, new DimensionAttributeValueQuery(name, null, 10, picks, values)))
+                .Select(v => (v.Value, v.Keys, v.Records));
+        DimensionAttributeMatch Pick(string name, params string[] values) => new(name, values);
+        Assert.Equal([("Statfjord", 1, 3L), ("Not specified", 1, 2L)], await ListAsync("Field", [Pick("Country", "Norway")]));
+        Assert.Equal([("RECALL", 2, 3L), ("Not specified", 1, 1L), ("PETREL", 1, 1L)], await ListAsync("Source", [Pick("Country", "Norway")]));
+        Assert.Equal([("Norway", 1, 3L), ("Denmark", 1, 2L)], await ListAsync("Country", [Pick("Source", "PETREL")]));
+        Assert.Equal(await ListAsync("Country", [Pick("Source", "PETREL")]), await ListAsync("Country", [Pick("Country", "Norway"), Pick("Source", "PETREL")]));
+        var a = (await ledger.GetDimensionMembersAsync(wellbores.DimensionId, [], ["NO A"])).Single();
+        Assert.Equal([("RECALL", 1, 2L), ("PETREL", 1, 1L)], await ListAsync("Source", null, [a.MemberId]));
+
+        // The table: a row per wellbore and source, each with its country, field and records, what cascading selects read.
+        var table = new StringWriter();
+        var rows = await DimensionExport.WriteAsync(ledger, wellbores, DimensionExportSet.Table, DimensionExportFormat.Csv, table, CancellationToken.None);
+        var lines = table.ToString().Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal("key,value,Country,Field,Source,records", lines[0]);
+        Assert.Equal(7, rows);
+        Assert.Equal(
+            [
+                "dev:master-data--Wellbore:A:,NO A,Norway,Statfjord,PETREL,1",
+                "dev:master-data--Wellbore:A:,NO A,Norway,Statfjord,RECALL,2",
+                "dev:master-data--Wellbore:B:,NO B,Norway,Not specified,Not specified,1",
+                "dev:master-data--Wellbore:B:,NO B,Norway,Not specified,RECALL,1",
+                "dev:master-data--Wellbore:C:,DK C,Denmark,Tyra,PETREL,1",
+                "dev:master-data--Wellbore:C:,DK C,Denmark,Tyra,RECALL,1",
+                "dev:master-data--Wellbore:D:,Not specified,Not specified,Not specified,Not specified,1",
+            ],
+            lines.Skip(1).Order(StringComparer.Ordinal));
+
+        // A search picking a source finds the logs holding it, however it is spelled, not every log of the wellbores holding
+        // it; Not specified finds the logs holding none; and a source picked with a country, the country's logs holding it.
+        async Task<IReadOnlyList<string>> FindAsync(params DimensionAttributeMatch[] picks)
+        {
+            var set = await DimensionSearch.ComposeAsync(ledger, [new DimensionPick(wellbores, [], [], picks)], null, null, CancellationToken.None);
+            return _platform.Find(WellLog, set.Query).Select(id => id[(id.LastIndexOf(':') + 1)..]).ToList();
+        }
+
+        Assert.Equal(["1", "2", "4", "8"], await FindAsync(Pick("Source", "RECALL")));
+        Assert.Equal(["5", "7"], await FindAsync(Pick("Source", "Not specified")));
+        Assert.Equal(["3", "5", "6", "7"], await FindAsync(Pick("Source", "PETREL", "Not specified")));
+        Assert.Equal(["1", "2", "4"], await FindAsync(Pick("Country", "Norway"), Pick("Source", "RECALL")));
+        var some = await DimensionSearch.ComposeAsync(
+            ledger, [new DimensionPick(wellbores, [], [], [Pick("Source", "RECALL", "NOPE")])], null, null, CancellationToken.None);
+        Assert.Equal(["Wellbore.Source: NOPE"], some.Missing);
+        var none = await Assert.ThrowsAsync<DeliveryException>(() => FindAsync(Pick("Source", "NOPE")));
+        Assert.Contains("No value picked of attribute Source of dimension Wellbore is one it collects", none.Message, StringComparison.Ordinal);
+
+        // A second build collects again: a wellbore whose last PETREL log became RECALL holds RECALL alone.
+        _platform.Records.Single(r => r["id"]!.GetValue<string>() == "dev:work-product-component--WellLog:3")["data"]!["Source"] = "RECALL";
+        await runner.BuildAsync(["Wellbore"], Guid.NewGuid(), "tests", CancellationToken.None);
+        var again = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
+            .Single(k => k.Original == "dev:master-data--Wellbore:A:");
+        Assert.Equal([("Source", "RECALL", (long?)3L)], again.Attributes.Where(x => x.Name == "Source").Select(x => (x.Name, x.Value, x.Records)));
         OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
     }
 

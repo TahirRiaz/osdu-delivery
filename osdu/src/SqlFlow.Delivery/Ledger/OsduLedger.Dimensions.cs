@@ -500,13 +500,14 @@ public sealed partial class OsduLedger
         var attributes = (await ReadAsync(
                 db => db.DeliveryDimensionAttributeValues.AsNoTracking()
                     .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId && ids.Contains(a.ValueId))
-                    .Select(a => new { a.ValueId, a.Name, a.Value, a.ValueFrom })
+                    .Select(a => new { a.ValueId, a.Name, a.Value, a.ValueFrom, a.Records })
                     .ToListAsync(ct),
                 ct).ConfigureAwait(false))
             .GroupBy(a => a.ValueId)
             .ToDictionary(g => g.Key, g => (IReadOnlyList<DimensionAttributeState>)g
                 .OrderBy(a => a.Name, StringComparer.Ordinal)
-                .Select(a => new DimensionAttributeState(a.Name, a.Value, a.ValueFrom))
+                .ThenByDescending(a => a.Records ?? 0).ThenBy(a => a.Value, StringComparer.Ordinal)
+                .Select(a => new DimensionAttributeState(a.Name, a.Value, a.ValueFrom, a.Records))
                 .ToList());
         return attributes.Count == 0
             ? page
@@ -659,16 +660,23 @@ public sealed partial class OsduLedger
     public const int MaxTopOriginals = 50;
 
     public async Task<IReadOnlyList<DimensionAttributeValueState>> ListDimensionAttributeValuesAsync(
-        int dimensionId, string name, string? search, int limit, CancellationToken ct = default)
+        int dimensionId, DimensionAttributeValueQuery query, CancellationToken ct = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentException.ThrowIfNullOrWhiteSpace(query.Name);
         if (await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
         {
             return [];
         }
 
-        var take = Math.Clamp(limit, 1, MaxDimensionPage);
-        var text = string.IsNullOrWhiteSpace(search) ? null : search.Trim();
+        var name = query.Name;
+        var take = Math.Clamp(query.Limit, 1, MaxDimensionPage);
+        var text = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim();
+
+        // The other picks narrow the keys; the attribute's own pick does not narrow its own list, so a cascade's list always
+        // offers every value the other picks leave, the one picked among them.
+        var others = (query.Attributes ?? []).Where(m => !string.Equals(m.Name, name, StringComparison.Ordinal)).ToList();
+        var memberIds = query.MemberIds is { Count: > 0 } ids ? ids.Distinct().ToList() : null;
         var rows = await ReadAsync(
             db =>
             {
@@ -679,13 +687,23 @@ public sealed partial class OsduLedger
                     attributes = attributes.Where(a => EF.Functions.Collate(a.Value, DeliveryModel.SearchCollation).Contains(text));
                 }
 
-                // An attribute's values over the keys a build finds now, from the index on name and value.
+                var keys = db.DeliveryDimensionValues.Where(v => v.PartitionId == partition && v.DimensionId == dimensionId && v.RemovedRunId == null);
+                if (memberIds is not null)
+                {
+                    keys = keys.Where(v => v.MemberId != null && memberIds.Contains(v.MemberId.Value));
+                }
+
+                if (others.Count > 0)
+                {
+                    keys = WithAttributes(db, keys, partition, dimensionId, others);
+                }
+
+                // An attribute's values over the keys a build finds now, from the index on name and value: a collected value counts
+                // the records holding it, any other every record of its keys.
                 return attributes
-                    .Join(
-                        db.DeliveryDimensionValues.Where(v => v.PartitionId == partition && v.DimensionId == dimensionId && v.RemovedRunId == null),
-                        a => a.ValueId, v => v.ValueId, (a, v) => new { a.Value, v.Count })
+                    .Join(keys, a => a.ValueId, v => v.ValueId, (a, v) => new { a.Value, Records = a.Records ?? v.Count })
                     .GroupBy(x => x.Value)
-                    .Select(g => new { Value = g.Key, Keys = g.Count(), Records = g.Sum(x => x.Count) })
+                    .Select(g => new { Value = g.Key, Keys = g.Count(), Records = g.Sum(x => x.Records) })
                     .OrderByDescending(x => x.Records).ThenBy(x => x.Value)
                     .Take(take)
                     .ToListAsync(ct);
@@ -821,6 +839,7 @@ public sealed partial class OsduLedger
         CleanJson = d.CleanJson,
         LabelJson = d.LabelJson,
         AttributesJson = d.AttributesJson,
+        CollectedJson = d.CollectedJson,
         DefinitionHash = d.DefinitionHash,
         Members = d.Members,
         Originals = d.Originals,
