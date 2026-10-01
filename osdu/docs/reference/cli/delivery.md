@@ -236,6 +236,7 @@ sqlflow dimensions search <flow.yaml> [--pick <dimension>=<value> ...] [--where 
 sqlflow dimensions history <flow.yaml> --dimension <name> [--max <n>] [--db <ref>] [--json]
 sqlflow dimensions changes <flow.yaml> --dimension <name> [--build <n>] [--value <value>] [--change added|removed|moved|restored] [--max <n>] [--db <ref>] [--json]
 sqlflow dimensions export <flow.yaml> --dimension <name> [--set values|keys|table] [--format csv|jsonl] [--out <file>] [--db <ref>]
+sqlflow dimensions remove <flow.yaml> --dimension <name> [--db <ref>] [--json]
 ```
 
 The dimensions a dimension flow's builds keep in the module database ([documents.md](../../documents.md#dimension-flow)),
@@ -256,6 +257,7 @@ attribute, every attribute, held by one key) narrows values and keys by attribut
 | `search` | The search across the flow's dimensions: every record holding one of the values picked in each dimension `--pick` names, and of the keys holding the attributes `--where` names (split at the first `=`, and before it at the last `.`, since an attribute's name holds no dot), OR within a dimension, AND across them, each dimension's own query once, `--within` added. The dimensions have to read one kind, or the one `--kind` names, which each dimension's kind has to cover; the query holds at most 1,000 clauses. The query goes to the console alone; what each dimension adds and what the picks left out goes to the error stream; `--json` gives the whole, with the request body to send. A pick is split at its first `=`, so a value may hold one. |
 | `history` | The dimension's builds, newest first: status, what each found and changed, how it read the index and the labels, and its notes. |
 | `changes` | The change log, newest first, narrowed to a build, a value or one kind of change. |
+| `remove` | Removes a dimension the flow file no longer declares, and everything kept of it in the flow's partition (its builds, values, keys, attribute values, collected texts and change log), for good, and nothing else; says what went. Refused for a dimension the file declares and for one a cache flow of the partition captures. Recorded as a `remove-dimension` activity of the flow under `cli:<user>`. The control plane offers the same to an admin alone; the CLI is for whoever holds the module database's credentials. |
 | `export` | The whole of a dimension's values (the default), keys, or table, as CSV (the default) or JSON Lines, to `--out` (written beside its name and moved into place, so a failure never leaves half a file) or the console. A value's and a key's row carries its search filter; a key its label too. The table has a row per key and value it collects, with `key`, `value`, a column per attribute and `records`: what a set of cascading selects reads. The same file the API's export gives. |
 
 Building is a run like any other: `sqlflow run <flow.yaml>` builds every dimension, and the payload picks some:

@@ -251,6 +251,9 @@ differently (the build's notes count them). The tables came with
 `20260930103543_DimensionFlows` (module version 1.17.0); `20260930175349_DimensionLabels` (module version 1.18.0) added
 the label and filter of a key, the declaration's label and a build's label counts; `20260930190046_DimensionAttributes`
 (module version 1.19.0) added `osdu.DimensionAttribute` and the declaration's attributes;
+A dimension its flow no longer declares keeps what its last build wrote until an admin removes it
+(`DELETE /dimensions/{dimensionId}`, `sqlflow dimensions remove`): every row of it in its partition goes, a table at a
+time and its own row last, and the removal is an activity of its flow.
 `20261001084750_DimensionCollectedAttributes` (module version 1.20.0) keyed an attribute by its value as well, with the
 records holding a collected value, and added `CollectedJson`; `20261001102750_DimensionCollectedTexts` (module version
 1.21.0) added `osdu.DimensionCollectedText`. A dimension built before any of them keeps its keys and values, with no
@@ -259,7 +262,8 @@ label, key filter or attribute until its next build.
 ### `osdu.Activity`: the audit trail of runs and interventions
 
 One row per operator or scheduler action. The runs are `deliver`, `intake` and `drain` (a fan-out member's share),
-`verify`, and the scheduled reachability `probe`; the interventions are `sync`, `release`, `redeliver` and `delete`.
+`verify`, and the scheduled reachability `probe`; the interventions are `sync`, `release`, `redeliver` and `delete`,
+and an admin's `remove-dimension` (a dimension its flow no longer declares, removed with everything kept of it).
 Each carries the actor (`schedule:<name>` for a run a schedule fired, the requesting user or `manual:<user>` for a run
 started by hand, `user:<name>` for an intervention from the GUI or the API, `cli:<user>` from a workstation,
 `service:<name>` for the control plane's own; `unknown` on runs recorded before the platform named who started them),

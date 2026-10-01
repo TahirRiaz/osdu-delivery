@@ -1382,7 +1382,8 @@ The operations are `build` (the default) and `plan` (settle each dimension's fie
 reading no value and keeping nothing). The payload takes `dimensions` (names); a run with none builds every one. A build
 writes each dimension in one transaction: new keys and values are added, what changed is changed (a key's label, value,
 filter or attributes), what the build no longer found is marked removed (and keeps its id, should a later build find it again), and
-every change to a key is logged. A dimension whose build fails keeps what the build before it wrote, and the run ends
+every change to a key is logged. A dimension taken out of the flow keeps what its last build wrote until an admin
+removes it ([operations.md](operations.md#the-gui)). A dimension whose build fails keeps what the build before it wrote, and the run ends
 failed with every other dimension built. A dimension flow's pipeline has a Dimensions tab; OSDU, **Dimensions** is the
 page of every dimension and of the search builder ([operations.md](operations.md#the-gui)). A cache flow can hold a
 dimension's values as a lookup table ([Cache flow](#cache-flow)).

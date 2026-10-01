@@ -18,7 +18,7 @@ names they were built with; everything a person reads (the API, the CLI, the GUI
 value and key.
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 10 are built; the recall estate
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 11 are built; the recall estate
 (`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose one dimension,
 Wellbore, carries the filters of PetroDB's Log Explorer (country, field, UUID, and the sources its logs collect) as its
 attributes, the table its cascading selects read. The live check listed under Close-out has not been run.
@@ -208,6 +208,25 @@ its column among the rows the other selects leave; the API and the CLI answer on
 every other attribute value picked and belonging to the values picked, a pick of the attribute itself aside. A list
 counts keys exactly; its records are those of the keys holding each value (for a collected value, of its records).
 
+## Removing a dimension
+
+A dimension its flow no longer declares is built no more, and keeps what its last build wrote, so taking it out of the
+YAML loses nothing and declaring it again brings back its ids and history. It stays out of the way: the flow's
+Dimensions tab lists it under **No longer declared**, and the Dimensions page only when asked to. When it is not wanted
+any more, an admin removes it for good (`DELETE /dimensions/{dimensionId}`, the GUI's **Remove**, or
+`sqlflow dimensions remove`, all through `DimensionRemoval`):
+
+- Only a dimension its flow no longer declares, read from the flow as the catalog (or the file, for the CLI) holds it
+  now; one whose flow cannot be read now is refused, since whether it still declares the dimension cannot be told.
+- Not one a cache flow of its partition captures (`dimension:` in a cache type): its refresh would read a dimension that
+  is gone. The refusal names the cache flow and the type.
+- Everything of it in its partition and nothing else: its collected texts, attribute values, change log, keys, values,
+  builds and then its own row, each table a batch of 20,000 at a time under the dimension's write lock, so a build
+  writing it finishes first; its own row goes last, so a removal that stops part way leaves it listed and removing it
+  again finishes the work.
+- Recorded as a `remove-dimension` activity of its flow, before anything is deleted, with the actor (`user:<name>` from
+  the API, `cli:<user>` from a workstation) and, as it ends, what went or why it failed.
+
 ## The filter
 
 A key's filter is the query that finds exactly the records holding it; a value's is the query that finds every record
@@ -381,6 +400,14 @@ integration brief's aggregation facts, and the samples README.
   with Not specified and with a country, run against the fake; a rebuild; the API's narrowed list and table; the
   migration up and back down; few values over 3,600 logs read per value with no cursor; 1,100 values read in one pass,
   one picked, and Not specified refused; the texts migration up and back down.
+
+### Stage 11: removing a dimension
+
+- `DimensionRemoval`, `ILedger.RemoveDimensionAsync` and `DimensionCapturesAsync`; `DELETE /dimensions/{dimensionId}`
+  (admin), `sqlflow dimensions remove`; the GUI listing dimensions no longer declared apart and an admin's **Remove**.
+- Tests: a removal taking every row of the dimension from all seven tables and nothing of the other dimension, refused
+  while a cache flow captures it, recorded as an activity, and failing when nothing is left; the API refusing an operator
+  (403) and a declared dimension (409), and removing a retired one for an admin.
 
 ## Close-out
 

@@ -175,6 +175,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
+| `DELETE /dimensions/{dimensionId}` | admin | Removes a dimension its flow no longer declares, and everything kept of it in its partition (its builds, values, keys, attribute values, collected texts and change log), for good, and nothing of any other dimension or partition. Refused with 409 for a dimension the flow declares, for one whose flow cannot be read now (whether it still declares it cannot be told), and for one a cache flow of its partition captures, naming it. Rows go a batch at a time under the dimension's write lock, its own row last, so a removal that stops part way is finished by asking again. Recorded as a `remove-dimension` activity of the flow under the admin who asked. Answers what went, table by table. |
 | `POST /ledger/prune` | admin | The ledger's retention pass at one cut-off (`olderThanDays`): ages out attempts older than it, keeping the latest of every record, clears the captured run log of the activities older than it that have finished, and removes whole the assertion runs older than it whose every result a later one superseded. No row of the audit trail is deleted. Answers what it took ([Retention and backup](#retention-and-backup)). |
 
 A route under `/flows/{pipelineId}` that acts on records (`records`, `target`, `submissions`, `release`, `probe`,
@@ -684,7 +685,10 @@ Pipelines like any other flow.
   the request body to copy. Nothing is sent to OSDU from the page. The dimension, tab and value open in a sheet, and the
   builder's kind and picks, are in the address, so a link lands on the same view. A dimension flow's page (Pipelines) has
   a **Dimensions** tab with **Build** per dimension and **Build all**; its trigger dialog picks the dimensions a run
-  builds, and a run's header counts the values and keys it built.
+  builds, and a run's header counts the values and keys it built. A dimension its flow no longer declares keeps what its
+  last build wrote, out of the way: the tab lists such dimensions under **No longer declared**, and the page's list only
+  when **Show n no longer declared** is clicked. An admin removes one for good with **Remove** (on that row, or on the
+  dimension's own page), after a confirmation saying what goes; one a cache flow still captures is refused.
 - **An assertion flow's page** (Pipelines): **Tests** is that flow's board. **History** and **Reports** hold the runs
   before the last, for whoever asks: History lays the tests against the last 30 runs with each test's pass rate and how
   often it flipped (three or more is marked), a column opening its run's report; Reports lists the runs with their
