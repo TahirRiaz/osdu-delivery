@@ -148,9 +148,11 @@ With a `label`, a build reads each key's label after it has read the keys:
    at the last path, has no label; the build counts them (`Unlabelled`) and says why in its notes, with examples.
 
 The key keeps the id, its label and the id of the record the label came from are kept beside it, and the label is what
-the clean steps turn into the key's value. A key naming a record with no label (none declared, or none read) starts
-cleaning from the code its id ends with, its escapes decoded (`dev:reference-data--UnitOfMeasure:us%2Fft:` is
-`us/ft`), and a label or attribute that is itself a record reference is kept the same way. Keys whose values are the same are one value (every wellbore of a country is
+the clean steps turn into the key's value. A key whose label is not read takes the dimension's `unlabelled` value when
+it names one (`Not specified`, the option an application lists for a missing name); otherwise a key naming a record
+with no label (none declared, or none read) starts cleaning from the code its id ends with, its escapes decoded
+(`dev:reference-data--UnitOfMeasure:us%2Fft:` is `us/ft`), and a label or attribute that is itself a record reference
+is kept the same way. Keys whose values are the same are one value (every wellbore of a country is
 one `Norway`). A key is left out of every value, with the reason kept on its row, when cleaning leaves nothing, when the
 value is longer than 256 characters, or when `map` leaves it out. A key a query cannot carry (a control character,
 `nested(`, or inside a nested array a value the service rewrites) stays under its value and is marked unfilterable; the
@@ -317,7 +319,8 @@ integration brief's aggregation facts, and the samples README.
   (migration `DimensionAttributes`, module version 1.19.0); values and keys narrowed by attributes, an attribute's
   values, a search picked by attributes, attributes in the exports and in a cached dimension's `fields`; the API, the
   CLI (`attributes`, `--attr`, `--where`) and the GUI (attribute columns, the attribute filter, the builder's "where").
-- A key naming a record with no label is valued by the code its id ends with, its escapes decoded.
+- A key naming a record with no label is valued by the code its id ends with, its escapes decoded, or by the dimension's
+  `unlabelled` value (`Not specified`).
 - Tests: the attribute and filter rules of the document; the path reader; the decoding; a build reading attributes
   through a filtered context and two records, looked up, listed, searched by (the query run against the fake), and read
   again after a rename; the cache carrying an attribute; the API; the migration from the previous version.
