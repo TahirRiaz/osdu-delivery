@@ -172,7 +172,8 @@ internal static class SqlServerDimensionStore
     // The dimension's table brought to what the write kept: the rows are laid out, then the statements made for this
     // table (DimensionTables.ApplySql, since its columns are the dimension's own) delete the rows that left, rewrite the
     // ones that changed and add the new ones, in the write's transaction. The table itself was made, or widened, before
-    // the transaction began.
+    // the transaction began. A table the dimension wrote under an earlier name is dropped once no dimension names it,
+    // so a rule that names tables otherwise leaves none behind.
     private static readonly string TableSql = """
         IF @tableName IS NOT NULL
         BEGIN
@@ -182,8 +183,15 @@ internal static class SqlServerDimensionStore
             EXEC sys.sp_executesql @applySql, N'@partition nvarchar(256), @rewrite bit', @partition = @partitionName, @rewrite = @rewrite;
             DROP TABLE #DimRow;
 
+            DECLARE @tableWas sysname = (SELECT [TableName] FROM [osdu].[Dimension] WHERE [PartitionId] = @p AND [DimensionId] = @d);
             UPDATE [osdu].[Dimension] SET [TableName] = @tableName
             WHERE [PartitionId] = @p AND [DimensionId] = @d AND ([TableName] IS NULL OR [TableName] <> @tableName);
+
+            IF @tableWas IS NOT NULL AND @tableWas <> @tableName AND NOT EXISTS (SELECT 1 FROM [osdu].[Dimension] WHERE [TableName] = @tableWas)
+            BEGIN
+                DECLARE @tableDrop nvarchar(400) = N'DROP TABLE IF EXISTS [osdu].' + QUOTENAME(@tableWas) + N';';
+                EXEC sys.sp_executesql @tableDrop;
+            END;
         END;
         """;
 

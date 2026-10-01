@@ -7,7 +7,7 @@ namespace SqlFlow.Delivery.Data.Migrations
     /// <summary>
     /// Dimensions as tables, joined by numbers (docs/dimension-plan.md, The table).
     /// <list type="bullet">
-    /// <item><c>Dimension.TableName</c> names the dimension's own table (<c>dim_&lt;flow&gt;_&lt;dimension&gt;</c>), which
+    /// <item><c>Dimension.TableName</c> names the dimension's own table (<c>dim_&lt;dimension&gt;</c>), which
     /// builds make and widen; it is no table of the model, so this migration creates none, and going back down drops the
     /// ones builds made.</item>
     /// <item><c>DimensionAttributeName</c> gives each attribute of a dimension a number, its place among the attributes the

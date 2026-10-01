@@ -801,11 +801,11 @@ public sealed class SqlServerLedgerMigrationTests
         // A table a build made is no table of the model: going back down drops it with the column that names it, and
         // every attribute row takes its name again.
         await database.ExecuteAsync("""
-            CREATE TABLE [osdu].[dim_wells_Wellbore] ([id] bigint IDENTITY(1, 1) NOT NULL PRIMARY KEY, [partition] nvarchar(256) NOT NULL, [key] nvarchar(1024) NOT NULL);
-            UPDATE [osdu].[Dimension] SET [TableName] = N'dim_wells_Wellbore';
+            CREATE TABLE [osdu].[dim_Wellbore] ([id] bigint IDENTITY(1, 1) NOT NULL PRIMARY KEY, [partition] nvarchar(256) NOT NULL, [key] nvarchar(1024) NOT NULL);
+            UPDATE [osdu].[Dimension] SET [TableName] = N'dim_Wellbore';
             """);
         await database.MigrateAsync(BeforeDimensionTables);
-        const string Made = "SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name IN (N'dim_wells_Wellbore', N'DimensionAttributeName');";
+        const string Made = "SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name IN (N'dim_Wellbore', N'DimensionAttributeName');";
         Assert.Equal(0L, await database.ScalarAsync(Made));
         Assert.Equal(3L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionAttribute] WHERE [Name] = N'Country' AND [Value] = N'Norway' OR [Name] = N'Source' AND [Value] IN (N'RECALL', N'PETREL');"));
         Assert.Equal(2L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[DimensionCollectedText] WHERE [Name] = N'Source';"));

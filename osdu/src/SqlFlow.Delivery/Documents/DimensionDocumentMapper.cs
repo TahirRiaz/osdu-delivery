@@ -168,7 +168,7 @@ internal static class DimensionMapper
             }
 
             // Each dimension has its own table, named with the letters, digits and underscores of its name.
-            if (dimensions.FirstOrDefault(d => string.Equals(DimensionTables.NameOf("f", d.Name), DimensionTables.NameOf("f", dimension.Name), StringComparison.OrdinalIgnoreCase)) is { } alike)
+            if (dimensions.FirstOrDefault(d => string.Equals(DimensionTables.NameOf(d.Name), DimensionTables.NameOf(dimension.Name), StringComparison.OrdinalIgnoreCase)) is { } alike)
             {
                 throw new FlowValidationException(
                     $"{source}: dimensions[{i}] '{dimension.Name}' would share its table with '{alike.Name}': a table's name keeps the letters, digits and underscores of a dimension's name, and theirs are the same. Rename one of them.");

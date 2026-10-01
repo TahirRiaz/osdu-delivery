@@ -2342,7 +2342,7 @@ export interface DeliveryDimension {
   lastBuiltUtc: string | null;
   current: DeliveryDimensionBuild | null;
   latest: DeliveryDimensionBuild | null;
-  /** The dimension's own table in the database (`osdu.dim_...`); null until a build has written it. */
+  /** The dimension's own table in the database (`osdu.dim_<dimension>`); null until a build has written it. */
   table: string | null;
 }
 

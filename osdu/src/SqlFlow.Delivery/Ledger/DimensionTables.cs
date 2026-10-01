@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Model;
@@ -19,7 +18,7 @@ public sealed record DimensionTableSpec(string Name, IReadOnlyList<DimensionTabl
 
 /// <summary>
 /// The table of a dimension (docs/dimension-plan.md, The table): the dimension as one table any SQL client reads and joins
-/// on, in the module's schema, named after its flow and its name. A row per key and value it collects (one row for a key
+/// on, in the module's schema, named after the dimension. A row per key and value it collects (one row for a key
 /// of a dimension collecting nothing, or collecting no value), with the row's number, the partition, the key's number, the
 /// key exactly as the index holds it, its value, the records of the row, the search filter finding the key's records, and
 /// a column per attribute named as the dimension declares it. A key under no value, and a key no build finds any more,
@@ -43,9 +42,6 @@ public static class DimensionTables
     /// <summary>What every dimension table's name begins with, so the dimensions of a schema are told from the ledger's tables at a glance.</summary>
     public const string Prefix = "dim_";
 
-    /// <summary>The longest name a table is given: what SQL Server allows an object, less the room its primary key's name needs.</summary>
-    private const int MaxNameLength = 120;
-
     /// <summary>The collation text is matched exactly by, whatever the database compares by.</summary>
     internal const string Exact = "Latin1_General_100_BIN2";
 
@@ -56,36 +52,29 @@ public static class DimensionTables
     internal static readonly IReadOnlySet<string> KeyColumns = new HashSet<string>(["id"], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The table's name: <c>dim_&lt;flow&gt;_&lt;dimension&gt;</c>, each with whatever is not a letter, a digit or an
-    /// underscore made an underscore, so it needs no quoting. A name longer than a table's may be is cut, and ends with
-    /// eight characters of its hash so two long names stay apart.
+    /// The table's name: <c>dim_&lt;dimension&gt;</c>, the dimension's name with whatever is not a letter, a digit or an
+    /// underscore made an underscore, so it needs no quoting (<c>dim_Wellbore</c>). The flow's name is no part of it, so
+    /// a dimension's name is unique among the flows of a database: two that declare one of the same name would write one
+    /// table, and the second to build is refused.
     /// </summary>
-    public static string NameOf(string flowName, string dimension)
+    public static string NameOf(string dimension)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
         ArgumentException.ThrowIfNullOrWhiteSpace(dimension);
-        var name = $"{Prefix}{Plain(Kept(flowName))}_{Plain(dimension)}";
-        if (name.Length <= MaxNameLength)
-        {
-            return name;
-        }
-
-        var tail = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8].ToLowerInvariant();
-        return $"{name[..(MaxNameLength - 9)]}_{tail}";
+        return Prefix + Plain(dimension);
     }
 
-    /// <summary>The table of dimension <paramref name="dimension"/> of flow <paramref name="flowName"/>, reading <paramref name="attributes"/>.</summary>
+    /// <summary>The table of dimension <paramref name="dimension"/>, reading <paramref name="attributes"/>.</summary>
     /// <exception cref="DeliveryException">The dimension declares more attributes than a build lays out.</exception>
-    public static DimensionTableSpec Of(string flowName, string dimension, IReadOnlyList<DimensionAttributeSpec> attributes)
+    public static DimensionTableSpec Of(string dimension, IReadOnlyList<DimensionAttributeSpec> attributes)
     {
         ArgumentNullException.ThrowIfNull(attributes);
         if (attributes.Count > DimensionSpec.MaxAttributes)
         {
             throw new DeliveryException(
-                string.Create(CultureInfo.InvariantCulture, $"Dimension {dimension} of {flowName} declares {attributes.Count} attributes, and a dimension's table holds {DimensionSpec.MaxAttributes}."));
+                string.Create(CultureInfo.InvariantCulture, $"Dimension {dimension} declares {attributes.Count} attributes, and a dimension's table holds {DimensionSpec.MaxAttributes}."));
         }
 
-        return new DimensionTableSpec(NameOf(flowName, dimension), attributes.Select(a => new DimensionTableColumn(a.Name, a.IsCollected)).ToList());
+        return new DimensionTableSpec(NameOf(dimension), attributes.Select(a => new DimensionTableColumn(a.Name, a.IsCollected)).ToList());
     }
 
     /// <summary>A table's name with its schema, as a statement names it: <c>[osdu].[dim_...]</c>.</summary>
@@ -222,10 +211,6 @@ public static class DimensionTables
     private static SqlDataType Type(string name) => new() { BaseType = name };
 
     private static SqlDataType Text(int length) => new() { BaseType = "nvarchar", Length = length };
-
-    /// <summary>A flow's name as the ledger keeps it, which is what a dimension is known by.</summary>
-    private static string Kept(string flowName)
-        => flowName.Length > DeliveryLedger.MaxFlowNameLength ? flowName[..DeliveryLedger.MaxFlowNameLength] : flowName;
 
     private static string Plain(string text)
     {

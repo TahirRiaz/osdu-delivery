@@ -45,6 +45,10 @@ public sealed class DeliveryDimensionApiTests
         var suffix = Guid.NewGuid().ToString("N")[..10];
         var flowName = "api-dimension-" + suffix;
         var partition = "dm" + suffix;
+
+        // A dimension's table is named after the dimension alone, so the one whose table these reads make has a name of
+        // this run's own, beside whatever the database holds of other tests.
+        var wellboreName = "Wellbore" + suffix;
         var repoId = FlowIdentity.FromName("repo/cp-dimensions-" + suffix);
         var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
         var otherPipelineId = CatalogIdentity.Pipeline(repoId, flowName + "-ingestion");
@@ -63,7 +67,7 @@ public sealed class DeliveryDimensionApiTests
                 kind: "{{WellLog}}"
                 path: data.Curves.Mnemonic
                 clean: [trim, upper]
-              - name: Wellbore
+              - name: {{wellboreName}}
                 description: The wellbore each log belongs to, by its name.
                 kind: "{{WellLog}}"
                 path: data.WellboreID
@@ -135,7 +139,7 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(flow.LedgerId, listed.GetProperty("ledgerId").GetGuid());
             Assert.Equal("logSource", listed.GetProperty("parameters")[0].GetProperty("name").GetString());
             var dimensions = listed.GetProperty("dimensions").EnumerateArray().ToList();
-            Assert.Equal(["CurveMnemonic", "Wellbore"], dimensions.Select(d => d.GetProperty("name").GetString()));
+            Assert.Equal(["CurveMnemonic", wellboreName], dimensions.Select(d => d.GetProperty("name").GetString()));
             var dimension = dimensions[0];
             Assert.Equal(dimensionId, dimension.GetProperty("dimensionId").GetInt32());
             Assert.Equal(["trim", "upper"], dimension.GetProperty("clean").EnumerateArray().Select(s => s.GetString()));
@@ -268,10 +272,10 @@ public sealed class DeliveryDimensionApiTests
             Assert.Equal(WellLog, search.GetProperty("kind").GetString());
             Assert.Equal($"({curveFilter}) AND ({wellboreFilter})", search.GetProperty("query").GetString());
             Assert.Equal(3, search.GetProperty("clauses").GetInt32());
-            Assert.Equal(["Wellbore: 15/9-F-9"], search.GetProperty("missing").EnumerateArray().Select(m => m.GetString()));
+            Assert.Equal([wellboreName + ": 15/9-F-9"], search.GetProperty("missing").EnumerateArray().Select(m => m.GetString()));
             var request = JsonDocument.Parse(search.GetProperty("request").GetString()!).RootElement;
             Assert.Equal((WellLog, search.GetProperty("query").GetString()), (request.GetProperty("kind").GetString(), request.GetProperty("query").GetString()));
-            Assert.Equal(["CurveMnemonic", "Wellbore"], search.GetProperty("parts").EnumerateArray().Select(p => p.GetProperty("dimension").GetString()));
+            Assert.Equal(["CurveMnemonic", wellboreName], search.GetProperty("parts").EnumerateArray().Select(p => p.GetProperty("dimension").GetString()));
             var picked = Assert.Single(search.GetProperty("parts")[1].GetProperty("values").EnumerateArray());
             Assert.Equal(("15/9-F-1", 7L), (picked.GetProperty("value").GetString(), picked.GetProperty("records").GetInt64()));
 
@@ -332,8 +336,8 @@ public sealed class DeliveryDimensionApiTests
             }
 
             // The dimension as one table: these builds wrote none (as a build before dimensions had tables), so the first
-            // read makes it, named after the flow and the dimension, with a column per attribute as declared.
-            var tableName = "osdu.dim_" + flowName.Replace('-', '_') + "_Wellbore";
+            // read makes it, named after the dimension, with a column per attribute as declared.
+            var tableName = "osdu.dim_" + wellboreName;
             Assert.Equal(JsonValueKind.Null, (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}")).GetProperty("dimension").GetProperty("table").ValueKind);
             var whole = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table");
             Assert.Equal((tableName, 3L, false), (whole.GetProperty("table").GetString(), whole.GetProperty("total").GetInt64(), whole.GetProperty("more").GetBoolean()));

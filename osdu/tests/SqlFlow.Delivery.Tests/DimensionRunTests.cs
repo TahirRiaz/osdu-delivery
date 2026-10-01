@@ -561,11 +561,11 @@ public sealed class DimensionRunTests : IDisposable
                   Country: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]
 
             """;
-        const string Table = "dim_wells_dimensions_Wellbore";
+        const string Table = "dim_Wellbore";
         var (runner, ledger, flow) = await RunnerAsync(Head + Declared);
 
-        // The first build makes the table: the dimension as one table, named after its flow and its name, keyed by an
-        // identity, with a column for each attribute it declares. Any SQL client reads it and joins on its numbers.
+        // The first build makes the table: the dimension as one table, named after the dimension, keyed by an identity,
+        // with a column for each attribute it declares. Any SQL client reads it and joins on its numbers.
         await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
         var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
         Assert.Equal(Table, wellbores.TableName);
@@ -663,6 +663,20 @@ public sealed class DimensionRunTests : IDisposable
         wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
         Assert.Equal(["Country", "Source"], (await DimensionTable.ShapeAsync(ledger, wellbores, CancellationToken.None)).Attributes);
 
+        // A table the dimension wrote under an earlier name is left behind by no build: the next one writes the table
+        // under its name and drops the other.
+        await SqlAsync($"""
+            EXEC sys.sp_rename N'osdu.{Table}', N'dim_wells_dimensions_Wellbore';
+            EXEC sys.sp_rename N'osdu.PK_{Table}', N'PK_dim_wells_dimensions_Wellbore', N'OBJECT';
+            UPDATE [osdu].[Dimension] SET [TableName] = N'dim_wells_dimensions_Wellbore';
+            """);
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Empty(await ColumnsAsync("dim_wells_dimensions_Wellbore"));
+        Assert.Equal(["id", "partition", "key_id", "key", "value", "records", "filter", "Country", "Source"], await ColumnsAsync(Table));
+        Assert.Equal(["DK C|PETREL", "NO A|RECALL", "NO B|RECALL"], await SqlAsync($"SELECT [value], [Source] FROM [osdu].[{Table}] ORDER BY [value];"));
+        wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        Assert.Equal(Table, wellbores.TableName);
+
         // A table dropped by hand is made again, with its rows, by whoever next reads it; so is the table of a dimension
         // built before dimensions had one, which names none.
         await SqlAsync($"DROP TABLE [osdu].[{Table}];");
@@ -690,7 +704,7 @@ public sealed class DimensionRunTests : IDisposable
     }
 
     [Fact]
-    public async Task A_table_name_another_flows_dimension_writes_is_refused_and_its_table_left_alone()
+    public async Task A_dimension_another_flow_declares_by_the_same_name_is_refused_and_the_first_ones_table_left_alone()
     {
         _platform.Add("dev:work-product-component--WellLog:1", WellLog, new JsonObject { ["Source"] = "RECALL" });
         const string Declared = """
@@ -701,38 +715,44 @@ public sealed class DimensionRunTests : IDisposable
             """;
         var (runner, ledger, flow) = await RunnerAsync(Head + Declared);
         await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
-        Assert.Equal(["id", "partition", "key_id", "key", "value", "records", "filter"], await ColumnsAsync("dim_wells_dimensions_Source"));
+        Assert.Equal(["id", "partition", "key_id", "key", "value", "records", "filter"], await ColumnsAsync("dim_Source"));
 
-        // Another flow whose name differs only in a character a table's name leaves out would write the same table.
-        var (other, _, _) = await RunnerAsync(Head.Replace("name: wells-dimensions", "name: wells.dimensions", StringComparison.Ordinal) + Declared, "flows/other.yaml");
+        // A table is named after its dimension alone, so a dimension's name is unique among flows: another flow declaring
+        // one of the same name would write the first one's table.
+        var (other, _, _) = await RunnerAsync(Head.Replace("name: wells-dimensions", "name: log-dimensions", StringComparison.Ordinal) + Declared, "flows/other.yaml");
         var refused = await Assert.ThrowsAsync<DimensionBuildsFailedException>(() => other.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None));
         Assert.Contains(
-            "would write the table osdu.dim_wells_dimensions_Source, which dimension Source of wells-dimensions writes", refused.Message, StringComparison.Ordinal);
-        var failed = (await ledger.ListDimensionsAsync(null, null)).Single(d => d.FlowName == "wells.dimensions");
+            "Dimension Source of log-dimensions would write the table osdu.dim_Source, which dimension Source of wells-dimensions writes: a dimension's table is named after the dimension alone, so a dimension's name is unique among the flows of a database. Rename one of them.",
+            refused.Message,
+            StringComparison.Ordinal);
+        var failed = (await ledger.ListDimensionsAsync(null, null)).Single(d => d.FlowName == "log-dimensions");
         Assert.Equal((DimensionRunStatus.Failed, (string?)null), ((await ledger.ListDimensionRunsAsync(failed.DimensionId, 1)).Single().Status, failed.TableName));
 
         // The first flow's table is untouched, and the refused dimension goes without taking it.
         var removed = await DimensionRemoval.RemoveAsync(ledger, failed, "admin@example.test", _clock, CancellationToken.None);
         Assert.Null(removed.TableDropped);
-        Assert.Equal(["dev|RECALL|RECALL|1"], await SqlAsync("SELECT [partition], [key], [value], [records] FROM [osdu].[dim_wells_dimensions_Source];"));
-        Assert.Equal("dim_wells_dimensions_Source", (await ledger.FindDimensionAsync(flow.LedgerId, "Source"))!.TableName);
+        Assert.Equal(["dev|RECALL|RECALL|1"], await SqlAsync("SELECT [partition], [key], [value], [records] FROM [osdu].[dim_Source];"));
+        Assert.Equal("dim_Source", (await ledger.FindDimensionAsync(flow.LedgerId, "Source"))!.TableName);
     }
 
     [Fact]
-    public void A_table_is_named_after_its_flow_and_dimension_and_stays_a_name_sql_server_takes()
+    public void A_table_is_named_after_its_dimension_alone_in_a_name_that_needs_no_quoting()
     {
-        Assert.Equal("dim_recall_welllog_05_dimensions_Wellbore", DimensionTables.NameOf("recall-welllog-05-dimensions", "Wellbore"));
-        Assert.Equal("dim_a_b_Well_Type", DimensionTables.NameOf("a.b", "Well-Type"));
-        var longest = DimensionTables.NameOf(new string('f', 190), new string('d', 60));
-        Assert.Equal(120, longest.Length);
-        Assert.NotEqual(longest, DimensionTables.NameOf(new string('f', 190), new string('d', 59) + "e"));
-        Assert.Equal("osdu.dim_x_y", DimensionTables.Shown(DimensionTables.NameOf("x", "y")));
+        Assert.Equal("dim_Wellbore", DimensionTables.NameOf("Wellbore"));
+        Assert.Equal("dim_Well_Type", DimensionTables.NameOf("Well-Type"));
+        Assert.Equal(DimensionTables.NameOf("Well.Type"), DimensionTables.NameOf("Well-Type"));
+        Assert.Equal("osdu.dim_Wellbore", DimensionTables.Shown(DimensionTables.NameOf("Wellbore")));
+        Assert.Equal("[osdu].[dim_Wellbore]", DimensionTables.Qualified(DimensionTables.NameOf("Wellbore")));
 
-        var table = DimensionTables.Of("f", "D", [new DimensionAttributeSpec("Country", ["data.A"]), new DimensionAttributeSpec("Source", [], "data.Source")]);
+        // The longest name a dimension may have still names a table SQL Server takes, with room for its key's name.
+        Assert.Equal(104, DimensionTables.NameOf(new string('d', 100)).Length);
+
+        var table = DimensionTables.Of("D", [new DimensionAttributeSpec("Country", ["data.A"]), new DimensionAttributeSpec("Source", [], "data.Source")]);
+        Assert.Equal("dim_D", table.Name);
         Assert.Equal([("Country", false), ("Source", true)], table.Columns.Select(c => (c.Name, c.Collected)));
         var tooMany = Assert.Throws<DeliveryException>(() => DimensionTables.Of(
-            "f", "D", Enumerable.Range(0, DimensionSpec.MaxAttributes + 1).Select(i => new DimensionAttributeSpec($"A{i}", ["data.A"])).ToList()));
-        Assert.Contains("declares 21 attributes, and a dimension's table holds 20", tooMany.Message, StringComparison.Ordinal);
+            "D", Enumerable.Range(0, DimensionSpec.MaxAttributes + 1).Select(i => new DimensionAttributeSpec($"A{i}", ["data.A"])).ToList()));
+        Assert.Contains("Dimension D declares 21 attributes, and a dimension's table holds 20", tooMany.Message, StringComparison.Ordinal);
     }
 
     [Fact]

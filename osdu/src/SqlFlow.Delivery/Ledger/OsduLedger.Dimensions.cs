@@ -843,10 +843,11 @@ public sealed partial class OsduLedger
                 $"Dimension {dimension.Name} of {dimension.FlowName} has no table yet: it was built before dimensions had one. Run the flow's pipeline to make it.");
 
     /// <summary>
-    /// Refuses a table whose name another dimension writes. A table's name keeps the letters, digits and underscores of
-    /// its flow's and its dimension's names, so two names apart only in what it leaves out would write one table; and a
-    /// table holds the rows of one dimension a partition, so a second dimension of the same names in the same partition
-    /// (kept under another ledger of a flow that changed how it names its partition) would write over this one's rows.
+    /// Refuses a table another dimension writes. A table is named after its dimension alone, so a dimension's name is
+    /// unique among the flows of a database: a second flow declaring one of the same name (or of a name apart only in
+    /// characters a table's name leaves out) would write the first one's table. And a table holds the rows of one
+    /// dimension a partition, so a second copy of the same dimension in the same partition (kept under another ledger of
+    /// a flow that changed how it names its partition) would write over this one's rows.
     /// </summary>
     private async Task GuardTableNameAsync(int dimensionId, DimensionTableSpec table, CancellationToken ct)
     {
@@ -867,7 +868,7 @@ public sealed partial class OsduLedger
             if (!string.Equals(other.FlowName, own.FlowName, StringComparison.OrdinalIgnoreCase) || !string.Equals(other.Name, own.Name, StringComparison.OrdinalIgnoreCase))
             {
                 throw new DeliveryException(
-                    $"Dimension {own.Name} of {own.FlowName} would write the table {DimensionTables.Shown(name)}, which dimension {other.Name} of {other.FlowName} writes: the two names differ only in characters a table's name leaves out. Rename one of them.");
+                    $"Dimension {own.Name} of {own.FlowName} would write the table {DimensionTables.Shown(name)}, which dimension {other.Name} of {other.FlowName} writes: a dimension's table is named after the dimension alone, so a dimension's name is unique among the flows of a database. Rename one of them.");
             }
 
             if (other.PartitionId == own.PartitionId)

@@ -16,7 +16,7 @@ public static class DimensionTable
     public static DimensionTableSpec SpecOf(DimensionState dimension)
     {
         ArgumentNullException.ThrowIfNull(dimension);
-        return DimensionTables.Of(dimension.FlowName, dimension.Name, DimensionRunner.AttributesOf(dimension.AttributesJson));
+        return DimensionTables.Of(dimension.Name, DimensionRunner.AttributesOf(dimension.AttributesJson));
     }
 
     /// <summary>Makes sure the dimension has its table with its rows, and answers whether the table had to be made or widened.</summary>

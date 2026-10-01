@@ -1250,7 +1250,7 @@ public sealed class DeliveryDimension
     public string DefinitionHash { get; set; } = string.Empty;
 
     /// <summary>
-    /// The dimension's table in this schema (<c>dim_&lt;flow&gt;_&lt;dimension&gt;</c>), as the last build wrote it: the
+    /// The dimension's table in this schema (<c>dim_&lt;dimension&gt;</c>), as the last build wrote it: the
     /// dimension as one table, a row per key and value it collects and a column per attribute. Builds make the table and
     /// widen it as the flow declares more; it is no table of the model, and no migration touches it. Null until a build
     /// has written it.
