@@ -119,7 +119,9 @@ For each dimension, in its partition:
    its own range, since a record holding several values brings buckets of other slices too. Every split leaves both
    halves with fewer distinct keys than the whole, so paging ends. A split point the service would misread (a key holding
    `nested(`, or inside a nested array one whose parentheses do not balance or that holds `AND x:`) is passed over for the
-   nearest key that is not.
+   nearest key that is not. The ranges still to read are asked several at a time, as many as the flow's
+   `reliability.concurrency` (8 unless it says otherwise), the widest first; what each answer leads to is settled one
+   answer at a time, so the counts are the same whatever was in flight.
 4. **Scanning.** A slice that cannot be split (one key left in range, or no usable split point), and a numeric attribute
    whose buckets carry no key, are read through the search cursor instead, returning only the attribute, and counted the
    way the aggregation counts.
@@ -186,9 +188,18 @@ exact:
 - With few values (at most 500, which one query can exclude) and fewer reads than a pass would take pages: a distinct
   read of the dimension's own field per value, narrowed to the records holding one of its texts, so a value held by many
   keys pages as any field does; with `unlabelled`, one more read narrowed to the records holding none of them.
-- Otherwise one pass of the search cursor over the dimension's records, each record's key and value read together: a
-  page per thousand records, however many values there are. This is the read for a long free-text list such as
-  `data.Source`, which every producer of a partition writes in its own way.
+- Otherwise one pass over the dimension's records through the search cursor, each record's key and value read together:
+  a page per thousand records, however many values there are. This is the read for a long free-text list such as
+  `data.Source`, which every producer of a partition writes in its own way. A cursor hands over its pages one after
+  another, so the pass is cut into ranges of the dimension's keys holding about as many records each (none under 4,000
+  records, four ranges a reader) and the ranges are read side by side, each through a cursor of its own. A record
+  holding keys of two ranges is read in both and counted in each under the keys of that range alone, so every record
+  and key is counted once.
+
+The labels and the attributes read through a key's record, and the values a key collects, need nothing of each other, so
+a build reads them side by side, the flow's concurrency shared between them; the records of a label's or an attribute's
+step are asked a thousand ids a search, several searches at a time. A flow whose `reliability.concurrency` is 1 asks
+one thing at a time throughout.
 
 A key holds a row per value (`DimensionAttribute` is keyed by value as well), each with its records. The dimension keeps
 the field the attribute is read from (`CollectedJson`) and every text with the value it is shown as and its records
@@ -339,7 +350,10 @@ is on numbers, never on a text.
 | `dim_<dimension>` | key and value it collects | The dimension as one table (The table, above): made and widened by builds, not by migrations. |
 
 A build writes in one transaction: its values are copied into temporary tables, and set-based statements add, update and
-mark removed, give each attribute its number, and bring the dimension's own table to what was kept; an application lock
+mark removed, give each attribute its number, and bring the dimension's own table to what was kept. The attribute values
+read are staged under their key's and their attribute's numbers and matched to the rows kept on those numbers and the
+value, one row to one row: matched by the value alone, every key sharing a value (a country) would meet every other.
+A build's duration counts its write; an application lock
 per dimension keeps two builds of it from interleaving. Only the table's schema is settled before the transaction: a
 table made or a column added stays when the write does not, empty, and the next write finds it there. A failed build writes nothing
 but its run row. Nothing is deleted: a value or key a build no longer finds is marked removed, and one that comes back

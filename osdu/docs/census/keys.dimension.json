@@ -236,7 +236,7 @@
       "path": "reliability",
       "type": "object",
       "required": false,
-      "description": "The HTTP settings (timeout, retry, rate limit, TLS, URL allowlist and response size), and `concurrency`: the tests evaluated at once, and the requests each has in flight. `reliability.parallelInterfaces` is refused."
+      "description": "The HTTP settings (timeout, retry, rate limit, TLS, URL allowlist and response size), and `concurrency`: how much a build asks of the search at once. `reliability.parallelInterfaces` is refused."
     },
     {
       "path": "reliability.batchRecords",
@@ -256,7 +256,7 @@
       "path": "reliability.concurrency",
       "type": "integer",
       "required": false,
-      "description": "The tests evaluated at once, and the requests (storage reads, reference lookups, bulk reads) one test has in flight. At least 1.",
+      "description": "How much a build asks of the search at once: the ranges of a field's values, the searches that read labels and attributes, and the cursors of a pass over the records a collected attribute is read from. At least 1; 1 asks one thing at a time.",
       "default": "8"
     },
     {

@@ -1304,7 +1304,7 @@ source:
   # queryPath: /api/search/v2/query               aggregations, counts and the label searches
   # searchPath: /api/search/v2/query_with_cursor  the scans of a range an aggregation cannot answer
   # aggregationSize: 1000                         the search service's AGGREGATION_SIZE, if the platform raised it
-reliability: { concurrency: 4 }
+reliability: { concurrency: 4 }                   # what a build asks of the search at once: ranges, label searches, cursors (default 8)
 
 dimensions:
   - name: Wellbore

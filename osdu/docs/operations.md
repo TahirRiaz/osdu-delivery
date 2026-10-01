@@ -688,7 +688,7 @@ Pipelines like any other flow.
   keys are both narrowed by **Attribute**: pick an attribute, then one of its values from the list the dimension holds
   (found by what is typed); a chip per attribute shows what narrows the grid. A value the dimension gives what it could
   not read (Not specified) is drawn faint. **Changes**: the change log by build, narrowed to what arrived, left, moved
-  or came back. **Builds**: every build with its outcome, duration, values, coverage, changes and how it read, each
+  or came back. **Builds**: every build with its outcome, duration (its reading and its write), values, coverage, changes and how it read, each
   opening whole (its notes, the kinds and templates it read, the keys labelled, every count). **Definition**, in four
   parts whose facts line up: **Table** (the table's name, its columns with what each holds on hover, what it is joined
   on, and the query that reads it, each to copy), **Reads** (the kind, path, query, how the index stores the field and
