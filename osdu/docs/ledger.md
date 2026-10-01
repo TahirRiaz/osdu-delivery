@@ -241,6 +241,7 @@ from its last partition drops it, and taking the `DimensionTables` migration bac
 | `FieldIndex`, `NestedPath`, `AggregateBy`, `Repeats` | How the index stores the field, as a build settled it from the templates: text, keyword, number, boolean or date, the nested array it sits in, the aggregation that reads it, and whether a record holds it more than once. |
 | `Members`, `Originals`, `LastRunId`, `LastBuiltUtc` | The values and keys it holds now, and the build that wrote them. |
 | `TableName` | The dimension's own table (`dim_<dimension>`), as the last build wrote it; null until one has. Indexed, since a build asks which dimensions write a table before it writes, and a removal before it drops one. |
+| `KeyColumn`, `ValueColumn` | What the dimension's table names the two columns that hold each key and its value, as the table has them now: after what the dimension reads (`WellboreID`, `FacilityName`) or as its document names them, and `key` and `value` in a table made before dimensions named their columns, until its next build renames them. Recorded in the transaction that renames a column, on every dimension writing the table, so a reader names the columns the table has. Null until the table has been made ready. |
 | `DimensionRun.DimensionRunId`, `RunId`, `Actor`, `Status` | One build: the platform run, who asked, and `running`, `completed`, `failed` or `cancelled`. |
 | `Records`, `WithValue`, `Nulls`, `TooLong`, `Unreadable` | How complete it read: the records its query matched, those holding a key the index aggregates, null values, records holding only text too long for the exact field, values not of the field's type. |
 | `Aggregations`, `Slices`, `Splits`, `ScannedSlices`, `ScanPages`, `ScannedUnits`, `CountQueries` | How it read: the aggregations asked, the ranges answered whole, the ranges split, those read by cursor and their pages, and the counts of values' records. |
@@ -268,7 +269,8 @@ time and its own row last, and the removal is an activity of its flow.
 `20261001084750_DimensionCollectedAttributes` (module version 1.20.0) keyed an attribute by its value as well, with the
 records holding a collected value, and added `CollectedJson`; `20261001102750_DimensionCollectedTexts` (module version
 1.21.0) added `osdu.DimensionCollectedText`; `20261001163440_DimensionTables` (module version 1.22.0) gave attributes
-their numbers and the two attribute tables keys of their own, and added `TableName`. A dimension built before any of
+their numbers and the two attribute tables keys of their own, and added `TableName`;
+`20261001200214_DimensionColumnNames` (module version 1.23.0) added `KeyColumn` and `ValueColumn`. A dimension built before any of
 them keeps its keys and values, with no label, key filter or attribute until its next build, and no table of its own
 until its next build or the first read of its table.
 
@@ -868,6 +870,14 @@ TextHash)`) and the indexes a lookup by attribute and value seeks; adds `Dimensi
 range of the dimension alone. The two tables are rebuilt, so it takes as long as they are large. It creates no
 `osdu.dim_...` table: builds do. Going back down drops every table a dimension names, gives each attribute row its name
 back, restores the earlier keys and indexes, and drops the new table and column.
+
+`DimensionColumnNames` (module version 1.23.0) lets a dimension's table name its key's and its value's columns after
+what the dimension reads ([dimension-plan.md](dimension-plan.md), The table). It adds `Dimension.KeyColumn` and
+`Dimension.ValueColumn`, and records `key` and `value` on every dimension whose table a build had made, which is what
+those tables hold. It changes no `osdu.dim_...` table: each dimension's next build renames the two columns where they
+are, keeping every row and its `id`, and until then the table is read under the names recorded. Going back down
+renames the columns of every table builds have renamed back to `key` and `value`, which is what the code before it
+reads them by, and drops the two columns.
 
 `LedgerPartitions` (module version 1.14.0) keys the ledger by partition (see [Partitions](#partitions)). It creates
 `osdu.LedgerPartition` and `osdu.Ledger` and fills them from what the ledger already says, before anything else changes:

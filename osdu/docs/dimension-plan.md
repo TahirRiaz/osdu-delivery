@@ -15,10 +15,12 @@ no label read is valued by the code its id ends with, its escapes decoded, never
 
 In code and in the tables, a value is a **member** (`DimensionMember`) and a key an **original** (`DimensionValue`), the
 names they were built with; everything a person reads (the API, the CLI, the GUI, the exports, the cache columns) says
-value and key.
+value and key. A dimension's own table goes one step further: its two columns are named after what the dimension reads
+(`WellboreID` and `FacilityName`, not `key` and `value`), and so are the grids and the table export that show it (The
+table).
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 12 are built; the recall estate
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 13 are built; the recall estate
 (`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose one dimension,
 Wellbore, carries the filters of PetroDB's Log Explorer (country, field, UUID, and the sources its logs collect) as its
 attributes, the table its cascading selects read. The live check listed under Close-out has not been run.
@@ -89,6 +91,7 @@ dimensions:
     kind: "osdu:wks:master-data--Wellbore:*"
     path: data.CurrentOperatorID     # keys: the organisation ids
     label: data.OrganisationName     # values: each organisation's name
+    columns: { key: OperatorID, value: Operator }   # optional: the table's two columns, else CurrentOperatorID and OrganisationName
   - name: Country
     kind: "osdu:wks:work-product-component--WellLog:*"
     path: data.WellboreID            # keys: the wellbore ids
@@ -102,6 +105,11 @@ Clean steps, applied in order to each key's label (or the key, when it has none)
 cache's own separator fold), `replace: { pattern, with }` (a regular expression run without backtracking), and `map: {
 dictionary, field, otherwise }` (a dictionary document of the repository; `otherwise` left out keeps an unlisted value,
 `~` leaves the key out of every value, and a text replaces it). No steps keep the label, or the key, as the value.
+
+`columns: { key, value }` names the two columns of the dimension's table that hold each key and its value, when the
+names the dimension reads by will not do (The table): left out, they are the property `path` ends with and the property
+`label` ends with, or the dimension's own name when it reads no label, the key's with `Key` at its end where the two
+would be the same.
 
 ## Reading every value
 
@@ -228,14 +236,53 @@ writes the table, until one of them is renamed.
 | `id` | The row's number: an identity, the table's clustered primary key, and what a table of facts joins on. It stays the same for as long as the dimension holds the row. |
 | `partition` | The data partition the row was read in. A flow that builds in several partitions writes them all to this one table. |
 | `key_id` | The key's number (`DimensionValue.ValueId`): the same in every row of the key. |
-| `key` | The key exactly as the index holds it. |
-| `value` | The key's value. |
+| the key's, named after the path (`WellboreID`) | The key exactly as the index holds it. |
+| the value's, named after the label (`FacilityName`) | The key's value. |
 | `records` | The records of the row: those holding the value the row collects, or every record of the key. |
 | `filter` | The search filter finding the key's records; null when no query can carry the key. |
 | one per attribute | The attribute's value for the row, under the name the dimension declares; null where the key has none. |
 
 A row is a key and the value it collects: a dimension that collects an attribute has a row for each value a key holds,
 any other a row a key. A key under no value (left out by cleaning), and a key no build finds any more, is no row.
+
+**The key's and the value's columns are named after what the dimension reads**, as its attributes' are, so the table
+reads as a table of wellbores and not as keys and values: `SELECT [FacilityName], [Country] FROM osdu.dim_Wellbore`.
+
+- The key's column is the property `path` ends with: `data.WellboreID` is `WellboreID`, `legal.legaltags` is
+  `legaltags`.
+- The value's column is the property the last `label` path ends with, its filter aside: `data.FacilityName` is
+  `FacilityName`. A dimension that reads no label values each key by the key itself, cleaned, so its value's column
+  takes the dimension's own name, whatever is not a letter, a digit or an underscore made an underscore: `CurveMnemonic`
+  beside `Mnemonic`.
+- Where the two would be the same, ignoring case (a dimension `Source` reading `data.Source` with no label, which is
+  how a dimension is most often named), the value's column keeps the name, being the one a person reads and picks by,
+  and the key's takes `Key` at its end: `Source` and `SourceKey`, `Version` and `versionKey`. So no document has to
+  name a column for that.
+- The document names either one itself, `columns: { key: <name>, value: <name> }`, and has to where a name the
+  dimension reads by cannot name a column: where it is a column every table has (`path: id`), an attribute's name, or
+  no column name at all (a dimension whose name starts with a digit, and no label), and it cannot give the key's
+  column the value's name. The document is refused where it is read, saying which name and how to give another. A name
+  the document gives also stays when the path or the label changes.
+- A name is a letter, then letters, digits and underscores, at most 64, as an attribute's is; none of `id`,
+  `partition`, `key_id`, `records` and `filter`; and unlike the other and every attribute, ignoring case. The key's
+  column cannot be named `value`, nor the value's `key`: those two words ask for the two columns whatever they are
+  named (`order=value`, `--order key`), so a reader written for every dimension needs no name.
+- `Dimension.KeyColumn` and `Dimension.ValueColumn` record what the two columns of the table are named now, which is
+  what a reader names them by, and what a query written for every dimension asks.
+
+**A column is renamed where it is.** When a build finds the table holding its key or its value under another name
+than the dimension gives (its path or its label changed, its document names the column otherwise, or the table was
+made before dimensions named their columns and holds `key` and `value`), it renames the column before it brings the
+schema to the declaration: the rows, their `id`s and the indexes stay, and only the name moves. The rename and the
+names recorded on every dimension writing the table (one a partition) are one transaction, under a lock of the table,
+so a reader never names a column the table does not have; a read that began just before it is asked again. A name
+another column of the table holds (an attribute the dimension declared before, a column somebody added) is not taken
+from it: the build fails, saying to drop that column or name the dimension's otherwise, and renames nothing. Two
+columns that take each other's names, and a name that changes only in case, pass through a name of their own on the
+way. A query that names the old column has to be changed with the flow; giving the column a name in the document
+(`columns`) keeps it through a change of path or label. A reader that makes a missing table ready knows no document,
+so it keeps the names the table had, and for a dimension that never had a table takes the names its path, its label
+and its name give.
 
 **The schema follows the declaration.** SQLFlow's schema evolution, the same that widens an ingestion table
 (`SchemaSyncService`: it reads the table as it is, plans the difference, and applies it), brings the table to the
@@ -253,8 +300,9 @@ the attribute that makes the rows changes (the collected one is added, taken out
 what it was, and the partition's rows are written again under new numbers.
 
 **It is read through two indexes** the build makes with it: `IX_key` (`partition`, `key_id`), which the build matches
-its rows by and a join on a key seeks; and `IX_value` (`partition`, `value`, `id`), which a page in value order is read
-from and a count counts. A page is found before it is read: the numbers of its rows are ordered first (a number and the
+its rows by and a join on a key seeks; and `IX_value` (`partition`, the value's column, `id`), which a page in value
+order is read from and a count counts. Each is named after what its column is for, so it keeps its name when the
+column is renamed. A page is found before it is read: the numbers of its rows are ordered first (a number and the
 column ordered by, never a key or a filter), then those rows are read by number. Text is found anywhere in the key, the
 value or an attribute, case-folded and compared exactly, and an attribute's value is matched exactly; either reads the
 partition's rows once, for the count and the page together. Measured on a dimension of 200,000 keys collecting two
@@ -264,7 +312,11 @@ ordered by another column 0.45 to 1 s. A build that found nothing new checks the
 build writes them in about 9 s.
 
 **Who reads it.** The page's **Table** tab, the API's `GET /dimensions/{id}/table`, `sqlflow dimensions table`, the
-`table` export, and any SQL client, all the same rows. A dimension built before dimensions had tables, or whose table
+`table` export, and any SQL client, all the same rows, the key and its value under the names their columns have: the
+grid's headings, the CSV's header, each property of a JSON Lines row and of the CLI's `--json` rows. The API's typed
+rows keep `key` and `value` and say beside them what the table names the two (`keyColumn`, `valueColumn`); the Values
+and Keys tabs and the change log head their columns the same way. The values and keys exports, which list the ledger
+and not the table, and a cached dimension's rows keep `value`, `key` and `keys`. A dimension built before dimensions had tables, or whose table
 was dropped by hand, has it made with its rows by whoever next reads it. The table is no table of the module's model:
 no migration creates or changes it, `Dimension.TableName` names it, and the migration that added that column drops the
 tables builds made when it is taken back.
@@ -339,7 +391,7 @@ is on numbers, never on a text.
 
 | Table | One row per | Holds |
 | --- | --- | --- |
-| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the attributes, the field asked, the field each collected attribute is read from, the clean steps, the definition hash, current value and key counts, the last build, and the name of its own table. |
+| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the attributes, the field asked, the field each collected attribute is read from, the clean steps, the definition hash, current value and key counts, the last build, the name of its own table, and what that table names the two columns holding its key and its value. |
 | `DimensionRun` | dimension and build | Status, counts (records, values, keys, added, removed, moved, left out, unfilterable, too long, null, labelled, unlabelled), requests (label searches among them), slices, scanned records, templates used, notes. |
 | `DimensionMember` | value | Stable id, the value, count and whether it is exact, keys, filter and parts, first and last seen, removed. |
 | `DimensionValue` | key | Stable id, the key, its label and the record it came from, its value or why it has none, count, filterable, its filter, first and last seen, removed, the build it joined its value. |
@@ -394,6 +446,12 @@ keeps its id. A key whose label, value or filter changed is rewritten, and a mov
 | A collected value a pick names that the attribute does not hold | Named as missing; a pick holding no value it does hold is refused. |
 | Dimensions of different kinds picked in one search | Refused unless a kind is named that each dimension's kind covers. |
 | A value that disappears and comes back | Keeps its id; the change log says when. |
+| A dimension named after the property it reads, with no label (`Source` reading `data.Source`) | Its key's and its value's columns would both be `Source`: the value's keeps the name and the key's is `SourceKey`. |
+| A path ending in a column every table has (`id`), or in an attribute's name; a key's column the document gives the value's name | Refused where the document is read, naming the column and how to name it otherwise. |
+| A label path changed (`data.FacilityName` to `data.WellboreName`) | The value's column is renamed where it is by the next build; a query naming the old column is changed with the flow, or the column is given a name that stays (`columns: { value: Wellbore }`). |
+| A table made before dimensions named their columns | Holds `key` and `value`, is read under those names, and has them renamed by its next build, every row keeping its `id`. |
+| A name another column of the table already holds | The build fails before it renames anything, saying which column to drop or how to name the dimension's otherwise. |
+| A build renames a column while a page of the table is being read | The read is asked again and finds the column under its name; an export that had begun says the table changed. |
 
 ## Stages
 
@@ -511,6 +569,26 @@ integration brief's aggregation facts, and the samples README.
   refused; the names; the document refusing two dimensions of one table name and an
   attribute named after a column; the API's table, its page, its refusals and its export; the migration up, down and up
   again with attribute rows kept.
+
+### Stage 13: the table's columns named after what the dimension reads
+
+- `DimensionColumnNames` (the names a path, a label and a dimension give, the key's with `Key` at its end where the
+  two would be the same, and what cannot name a column); the
+  document's `columns: { key, value }`; `DimensionSpec.KeyColumn` and `ValueColumn`, left out of the definition hash
+  where the document does not give them, so a dimension built before keeps its hash.
+- `Dimension.KeyColumn` and `ValueColumn` (migration `DimensionColumnNames`, module version 1.23.0, which records `key`
+  and `value` for every table a build had made, and going down renames the columns back); the store settling the two
+  columns before the schema (`SettleColumnsAsync`: renamed where they are, recorded with the rename, under a lock of the
+  table); the table read, ordered and searched by its own names, the words `value` and `key` asking for the two
+  whatever they are named.
+- The API's `keyColumn` and `valueColumn` on a dimension and on a page of its table; the table export, the CLI's table
+  and the GUI's grids under the names; the census.
+- Tests: the names a document gives and the ones its paths give, a dimension named after the property it reads taking
+  `Key` for its key's column, each refusal saying how to name the column, and the hash kept; a table built under its names; one holding `key` and `value` renamed by its next build with every row's
+  number kept and the index following; a rename by the document, one in case alone and two columns swapping names; a
+  name another column holds refused with nothing renamed; a reader making a dropped table under the names it had and a
+  first table under the names the dimension reads by; a page ordered by a column's name and by the two words; the
+  API's names and export; the migration up, down with a renamed table, and up again.
 
 ## Close-out
 
