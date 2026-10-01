@@ -1,17 +1,19 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { CircleX, Info, Loader2, PencilLine, Play, Shapes } from "lucide-react";
+import { ChevronsUpDown, CircleX, Info, Loader2, PencilLine, Play, Shapes } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/EmptyState";
+import { PageHeader } from "@/components/PageHeader";
 import { RelativeTime } from "@/components/RelativeTime";
 import { RichTooltip } from "@/components/RichTooltip";
-import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
+import { cn } from "@/lib/utils";
 import { KindText } from "../KindText";
 import { counted } from "../assertions/assertionFormat";
-import { DimensionExportMenu, StandingGlyph } from "./DimensionBadges";
+import { DimensionExportMenu, DimensionsCrumb, StandingGlyph } from "./DimensionBadges";
 import type { DimensionLaunch } from "./DimensionBuildDialog";
 import { DimensionDefinition } from "./DimensionDefinition";
 import { DimensionBuilds, DimensionChanges } from "./DimensionHistory";
@@ -19,12 +21,12 @@ import { DimensionKeys } from "./DimensionKeys";
 import { DimensionRemoveButton } from "./DimensionRemoveButton";
 import { DimensionValueSheet } from "./DimensionValueSheet";
 import { DimensionValues } from "./DimensionValues";
-import { DIMENSION_VIEWS, STANDING_VISUALS, coverage, fieldText, percent, type DimensionEntry, type DimensionView } from "./dimensionFormat";
+import { DIMENSION_VIEWS, STANDING_VISUALS, coverage, percent, type DimensionEntry, type DimensionView } from "./dimensionFormat";
 
 /** What each tab is for, as hovering its name says it. */
 const VIEW_PURPOSE: Record<DimensionView, string> = {
-  values: "The human-friendly values a person picks, each with the records holding it, the keys it stands for and the search filter finding its records. Pick values to write the search that finds their records.",
-  keys: "Every key exactly as the index holds it (an id, for a reference), with the label read for it, the value it belongs to, and the search filter finding exactly its records.",
+  values: "The human-friendly values a person picks, each with the records holding it, the keys it stands for, its attributes and the search finding its records. Pick values to write the search that finds their records.",
+  keys: "Every key exactly as the index holds it (an id, for a reference), with the value it belongs to, its attributes, and the search finding exactly its records.",
   changes: "What each build changed: the keys that arrived, left, came back, or moved to another value.",
   builds: "Every build: what it found, how it read the index and the labels, how complete the keys are, and what it changed.",
   definition: "How the flow declares the dimension: the kind, query and path it reads, where a key's label and attributes are read, how the index stores the field, and the steps that clean each value.",
@@ -112,20 +114,82 @@ function Attention({ entry, onBuild, onRemoved }: { entry: DimensionEntry; onBui
   return null;
 }
 
+/** One fact of the line under a dimension's name: a number and what it counts, which opens the tab that explains it. */
+function Fact({ children, hint, tone, onClick, testId }: {
+  children: ReactNode;
+  hint: string;
+  tone?: "warning";
+  onClick: () => void;
+  testId: string;
+}) {
+  return (
+    <RichTooltip body={hint}>
+      <button
+        type="button"
+        onClick={onClick}
+        className={cn(
+          "rounded-sm outline-none hover:text-foreground hover:underline focus-visible:underline",
+          tone === "warning" ? "text-warning" : undefined,
+        )}
+        data-testid={testId}
+      >
+        {children}
+      </button>
+    </RichTooltip>
+  );
+}
+
+/** The other dimensions of the partition, one click away from the one in view. */
+function Switcher({ entry, siblings, onOpen }: { entry: DimensionEntry; siblings: DimensionEntry[]; onOpen: (ref: string) => void }) {
+  if (siblings.filter((sibling) => sibling.ref !== entry.ref).length === 0) {
+    return null;
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="size-6 text-muted-foreground" aria-label="Open another dimension" data-testid="dimension-switcher">
+          <ChevronsUpDown />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-h-80 min-w-64 overflow-y-auto">
+        {siblings.map((sibling) => (
+          <DropdownMenuItem
+            key={sibling.ref}
+            onSelect={() => onOpen(sibling.ref)}
+            className={cn("gap-2", sibling.ref === entry.ref && "bg-accent/60")}
+            data-testid="dimension-switcher-item"
+          >
+            <StandingGlyph standing={sibling.standing} />
+            <span className="min-w-0 flex-1 truncate">{sibling.dimension.name}</span>
+            <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{sibling.dimension.values.toLocaleString("en-US")}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /**
- * One dimension of the partition: its name, what it reads (and where a key's label is read) and how the index stores it,
- * with Build and Export; what its newest build or its declaration asks of the reader; the facts it is read against (values,
- * how complete the keys are, what cleaning left out, when it was built); and its five tabs. The tab and the value open in a
- * sheet live in the URL, so a link lands on the same view.
+ * One dimension of the partition, on the whole width of the page. Its heading is one block: the way back to every
+ * dimension, its name and where it stands, the other dimensions a click away, Export and Build; under it, in a line, the
+ * facts it is read against (values and keys, keys without a label, keys of no value, how many records hold a key, when it
+ * was built), each opening the tab that explains it, and what it reads. Then what its newest build or its declaration
+ * asks of the reader, and its five tabs, whose grids scroll inside the page. The tab and the value open in a sheet live
+ * in the URL, so a link lands on the same view.
  */
-export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaunch, onRemoved }: {
+export function DimensionWorkspace({ entry, siblings, view, onView, value, onValue, onLaunch, onOpen, onRemoved }: {
   entry: DimensionEntry;
+  /** The dimensions the switcher lists, the one in view among them. */
+  siblings: DimensionEntry[];
   view: DimensionView;
   onView: (view: DimensionView) => void;
   /** The value open in its sheet, by id; null for none. */
   value: number | null;
   onValue: (valueId: number | null) => void;
   onLaunch: (launch: DimensionLaunch) => void;
+  /** Opens another dimension by its link name, or every dimension for null. */
+  onOpen: (ref: string | null) => void;
   /** Called once an admin removed the dimension, which its flow no longer declares. */
   onRemoved?: () => void;
 }) {
@@ -134,94 +198,102 @@ export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaun
   const covered = current === null ? null : coverage(current);
   const labelled = dimension.label.length > 0;
   const build = () => onLaunch({ pipelineId: flow.pipelineId, repoId: flow.repoId, flowName: flow.name, dimensions: [dimension.name] });
-
-  const cells: SummaryCell[] = [
-    {
-      label: "Values",
-      value: dimension.values.toLocaleString("en-US"),
-      caption: `from ${counted(dimension.keys, "key")}${labelled && current !== null && current.unlabelled > 0 ? `, ${current.unlabelled.toLocaleString("en-US")} unlabelled` : ""}`,
-      tone: labelled && current !== null && current.unlabelled > 0 && current.unlabelled >= current.labelled ? "warning" : undefined,
-      onClick: () => onView("values"),
-      testId: "dimension-summary-values",
-    },
-    {
-      label: "Coverage",
-      value: covered === null ? "not counted" : percent(covered.share),
-      caption: covered === null ? "the build could not count the records it read" : covered.text,
-      tone: covered !== null && covered.share < 0.5 ? "warning" : undefined,
-      onClick: () => onView("builds"),
-      testId: "dimension-summary-coverage",
-    },
-    {
-      label: "Of no value",
-      value: (current?.leftOut ?? 0).toLocaleString("en-US"),
-      caption: current === null || current.leftOut === 0 ? "every key has a value" : "keys cleaning left out",
-      onClick: () => onView("keys"),
-      testId: "dimension-summary-left-out",
-    },
-    {
-      label: "Last built",
-      value: dimension.lastBuiltUtc === null ? "never" : <RelativeTime value={dimension.lastBuiltUtc} absolute={false} />,
-      caption: current === null
-        ? "build it to read its values"
-        : `by ${current.actor}, ${counted(current.changes.keysAdded + current.changes.keysRemoved + current.changes.keysMoved + current.changes.keysRestored, "change")}`,
-      onClick: () => onView("builds"),
-      testId: "dimension-summary-built",
-    },
-  ];
+  const dot = <span className="text-muted-foreground/50" aria-hidden>·</span>;
+  const changes = current === null ? 0 : current.changes.keysAdded + current.changes.keysRemoved + current.changes.keysMoved + current.changes.keysRestored;
 
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="dimension-workspace" data-dimension={dimension.name}>
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <div className="flex min-w-0 items-center gap-2">
+      <PageHeader
+        title={(
+          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+            <DimensionsCrumb onBack={() => onOpen(null)} />
             <StandingGlyph standing={entry.standing} testId="dimension-standing" />
-            <h2 className="truncate text-base font-medium" data-testid="dimension-name">{dimension.name}</h2>
-            <span className="text-[12px] text-muted-foreground">{STANDING_VISUALS[entry.standing].label}</span>
-          </div>
-          {dimension.description !== null && <p className="text-[13px] text-muted-foreground">{dimension.description}</p>}
-          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] text-muted-foreground">
-            <span className="min-w-0 max-w-[26rem] text-foreground"><KindText kind={dimension.kind} /></span>
-            <span className="text-muted-foreground/60">·</span>
-            <span className="font-mono text-foreground">{dimension.path}</span>
-            {labelled && (
-              <>
-                <span className="text-muted-foreground/60">·</span>
-                <RichTooltip
-                  title="Labelled by"
-                  body={`Each key names a record; its value is read there, through ${dimension.label.join(", then ")}. The key stays the id, so every filter still compares it.`}
+            <span className="min-w-0 truncate" data-testid="dimension-name">{dimension.name}</span>
+            <Switcher entry={entry} siblings={siblings} onOpen={onOpen} />
+            {entry.standing !== "built" && <span className="text-[12px] font-normal text-muted-foreground">{STANDING_VISUALS[entry.standing].label}</span>}
+            {dimension.description !== null && (
+              <RichTooltip title="What it is for" body={dimension.description}>
+                <Info className="size-4 shrink-0 text-muted-foreground" aria-label="What the dimension is for" data-testid="dimension-description" />
+              </RichTooltip>
+            )}
+          </span>
+        )}
+        subtitle={(
+          <div className="flex flex-col gap-0.5">
+            {dimension.dimensionId !== null && (
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px]" data-testid="dimension-summary">
+                <Fact hint="The human-friendly values the dimension holds now." onClick={() => onView("values")} testId="dimension-summary-values">
+                  <span className="font-mono font-medium tabular-nums text-foreground">{dimension.values.toLocaleString("en-US")}</span> {dimension.values === 1 ? "value" : "values"}
+                </Fact>
+                <span>from</span>
+                <Fact hint="The keys the values stand for, each exactly as the index holds it." onClick={() => onView("keys")} testId="dimension-summary-keys">
+                  <span className="font-mono font-medium tabular-nums text-foreground">{dimension.keys.toLocaleString("en-US")}</span> {dimension.keys === 1 ? "key" : "keys"}
+                </Fact>
+                {labelled && current !== null && current.unlabelled > 0 && (
+                  <>
+                    {dot}
+                    <Fact
+                      hint={`No label was read for these keys: the record a key names is not in the search, or holds nothing where the label is read. ${dimension.unlabelled === null ? "Each is valued by the code its id ends with." : `They are valued ${dimension.unlabelled}.`} The build's notes say why.`}
+                      tone={current.unlabelled >= current.labelled ? "warning" : undefined}
+                      onClick={() => onView("builds")}
+                      testId="dimension-summary-unlabelled"
+                    >
+                      <span className="font-mono tabular-nums">{current.unlabelled.toLocaleString("en-US")}</span> without a label
+                    </Fact>
+                  </>
+                )}
+                {current !== null && current.leftOut > 0 && (
+                  <>
+                    {dot}
+                    <Fact hint="Keys cleaning left out of every value. The Keys tab lists them under Of no value." tone="warning" onClick={() => onView("keys")} testId="dimension-summary-left-out">
+                      <span className="font-mono tabular-nums">{current.leftOut.toLocaleString("en-US")}</span> of no value
+                    </Fact>
+                  </>
+                )}
+                {covered !== null && (
+                  <>
+                    {dot}
+                    <Fact hint={`${covered.text}.`} tone={covered.share < 0.5 ? "warning" : undefined} onClick={() => onView("builds")} testId="dimension-summary-coverage">
+                      <span className="font-mono tabular-nums">{percent(covered.share)}</span> of records hold a key
+                    </Fact>
+                  </>
+                )}
+                {dot}
+                <Fact
+                  hint={current === null ? "No build has completed yet." : `Built by ${current.actor}; it changed ${counted(changes, "key")}.`}
+                  onClick={() => onView("builds")}
+                  testId="dimension-summary-built"
                 >
-                  <span className="underline decoration-dotted underline-offset-2" data-testid="dimension-label">
-                    labelled by <span className="font-mono text-foreground">{dimension.label.at(-1)}</span>
-                  </span>
-                </RichTooltip>
-              </>
+                  {dimension.lastBuiltUtc === null ? "never built" : <>built <RelativeTime value={dimension.lastBuiltUtc} absolute={false} /></>}
+                </Fact>
+              </div>
             )}
-            {dimension.field !== null && (
-              <>
-                <span className="text-muted-foreground/60">·</span>
-                <RichTooltip title="Read as" body={`aggregateBy: ${dimension.field.aggregateBy}`} mono>
-                  <span className="underline decoration-dotted underline-offset-2" data-testid="dimension-field">{fieldText(dimension.field)}</span>
-                </RichTooltip>
-              </>
-            )}
-            <span className="text-muted-foreground/60">·</span>
-            <span>declared by</span>
-            <Link to={`/pipelines/${flow.pipelineId}?tab=dimensions`} className="font-mono text-foreground hover:underline">{flow.name}</Link>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px]">
+              <span className="min-w-0 max-w-[26rem]"><KindText kind={dimension.kind} /></span>
+              {dot}
+              <span className="font-mono text-foreground">{dimension.path}</span>
+              {dot}
+              <span>declared by</span>
+              <Link to={`/pipelines/${flow.pipelineId}?tab=dimensions`} className="font-mono text-foreground hover:underline">{flow.name}</Link>
+            </div>
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {dimension.dimensionId !== null && (
-            <DimensionExportMenu dimensionId={dimension.dimensionId} flowName={flow.name} partition={flow.partition} name={dimension.name} />
-          )}
-          {dimension.declared && (
-            <Button size="sm" onClick={build} disabled={dimension.latest?.status === "running"} data-testid="dimension-build">
-              <Play />
-              Build
-            </Button>
-          )}
-        </div>
-      </div>
+        )}
+        actions={(
+          <>
+            {dimension.dimensionId !== null && (
+              <DimensionExportMenu dimensionId={dimension.dimensionId} flowName={flow.name} partition={flow.partition} name={dimension.name} />
+            )}
+            {dimension.declared && (
+              <RichTooltip body="Runs the flow for this dimension alone: reads its keys, labels and attributes again and rewrites what changed.">
+                <Button size="sm" onClick={build} disabled={dimension.latest?.status === "running"} data-testid="dimension-build">
+                  <Play />
+                  Build
+                </Button>
+              </RichTooltip>
+            )}
+          </>
+        )}
+      />
 
       <Attention entry={entry} onBuild={build} onRemoved={onRemoved} />
 
@@ -241,8 +313,7 @@ export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaun
         )
         : (
           <>
-            <SummaryStrip cells={cells} data-testid="dimension-summary" />
-            <Tabs value={view} onValueChange={(value) => onView(value as DimensionView)} className="min-w-0 gap-3">
+            <Tabs value={view} onValueChange={(next) => onView(next as DimensionView)} className="min-w-0 gap-2">
               <div className="border-b border-border">
                 <TabsList variant="line" data-testid="dimension-tabs">
                   {DIMENSION_VIEWS.map((name) => (
@@ -256,7 +327,14 @@ export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaun
                 <DimensionValues entry={entry} dimensionId={dimension.dimensionId} onValue={onValue} />
               </TabsContent>
               <TabsContent value="keys">
-                <DimensionKeys dimensionId={dimension.dimensionId} labelled={labelled} attributes={dimension.attributes} onValue={onValue} />
+                <DimensionKeys
+                  dimensionId={dimension.dimensionId}
+                  labelled={labelled}
+                  unlabelled={dimension.unlabelled}
+                  attributes={dimension.attributes}
+                  total={dimension.keys}
+                  onValue={onValue}
+                />
               </TabsContent>
               <TabsContent value="changes">
                 <DimensionChanges dimensionId={dimension.dimensionId} onValue={onValue} />

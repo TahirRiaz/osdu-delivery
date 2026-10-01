@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DataTable, type Column } from "@/components/DataTable";
 import { RelativeTime } from "@/components/RelativeTime";
+import { RichTooltip } from "@/components/RichTooltip";
 import { deliveryApi } from "../../../api/delivery";
 import { KindText } from "../KindText";
 import { useActivePartition } from "../activePartition";
@@ -21,7 +22,8 @@ const REFRESH_MS = 15000;
 
 /**
  * A dimension flow's Dimensions tab: each dimension it declares in the workbench's partition, where it stands, what it
- * reads, what it holds and when it was built, with a way to build it and to open it on the Dimensions page. The dimensions
+ * reads, what it holds and when it was built, with a way to build it alone (the flow's Trigger run builds them all) and
+ * to open it on the Dimensions page. The dimensions
  * it no longer declares, which keep what their last build wrote, wait behind a toggle, where an admin can remove them.
  */
 export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
@@ -79,10 +81,12 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
       render: (row) => (
         <span className="flex items-center justify-end gap-1" onClick={(event) => event.stopPropagation()}>
           {row.dimension.declared && flow.buildsPartition && (
-            <Button variant="ghost" size="xs" onClick={() => setLaunch(buildOf([row.dimension.name]))} data-testid={`dimension-panel-build-${row.dimension.name}`}>
-              <Play />
-              Build
-            </Button>
+            <RichTooltip body="Runs the flow for this dimension alone. Trigger run, above, builds every dimension the flow declares.">
+              <Button variant="ghost" size="xs" onClick={() => setLaunch(buildOf([row.dimension.name]))} data-testid={`dimension-panel-build-${row.dimension.name}`}>
+                <Play />
+                Build
+              </Button>
+            </RichTooltip>
           )}
           <DimensionRemoveButton dimension={row.dimension} flowName={flow.name} />
           <Button asChild variant="ghost" size="xs" data-testid={`dimension-panel-open-${row.dimension.name}`}>
@@ -108,12 +112,6 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
         <span className="text-[13px] text-muted-foreground">
           {flow.partition === null ? "Built in the partition its data-partition-id header names." : <>In <span className="font-mono text-foreground">{flow.partition}</span>{flow.partitions.length > 1 ? `, one of ${flow.partitions.join(", ")}` : ""}.</>}
         </span>
-        {flow.buildsPartition && (
-          <Button size="sm" className="ml-auto" onClick={() => setLaunch(buildOf([]))} data-testid="dimension-panel-build-all">
-            <Play />
-            Build all
-          </Button>
-        )}
       </div>
       <DataTable
         columns={columns}

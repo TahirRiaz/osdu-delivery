@@ -6,40 +6,76 @@ import { CopyButton } from "@/components/CopyButton";
 import { DataTable, type Column } from "@/components/DataTable";
 import { DetailPair } from "@/components/DetailPair";
 import { RelativeTime } from "@/components/RelativeTime";
-import { deliveryApi, type DeliveryDimensionAttributeSpec, type DeliveryDimensionChange, type DeliveryDimensionKey } from "../../../api/delivery";
+import {
+  deliveryApi, type DeliveryDimensionAttributeSpec, type DeliveryDimensionChange, type DeliveryDimensionKey, type DeliveryDimensionValueDetail,
+} from "../../../api/delivery";
 import { ProblemView } from "../TemplateSheet";
 import { counted } from "../assertions/assertionFormat";
-import { KeyFilterCell, LabelCell } from "./DimensionKeys";
-import { keyAttributeColumns } from "./dimensionColumns";
+import { KeySearchCell } from "./DimensionKeys";
 import { DimensionFilterView } from "./DimensionFilterSheet";
 import { DimensionValueText } from "./DimensionValueText";
-import { CHANGE_TEXT } from "./dimensionFormat";
+import { CHANGE_TEXT, keyTail } from "./dimensionFormat";
 
-/** The columns of a value's keys: each key with its label when the dimension reads one, its count, its attributes, its filter and when it arrived. */
-function keyColumns(labelled: boolean, attributes: DeliveryDimensionAttributeSpec[]): Column<DeliveryDimensionKey>[] {
-  return [
-    {
-      id: "key",
-      header: "Key",
-      fill: true,
-      floor: 180,
-      render: (row) => <DimensionValueText value={row.key} maxWidth={240} testId="dimension-value-key" />,
-    },
-    ...(labelled ? [{ id: "label", header: "Label", render: (row: DeliveryDimensionKey) => <LabelCell label={row.label} from={row.labelFrom} /> }] : []),
-    {
-      id: "count",
-      header: "Count",
-      align: "right",
-      render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.count.toLocaleString("en-US")}</span>,
-    },
-    ...keyAttributeColumns(attributes),
-    { id: "filter", header: "Filter", render: (row) => <KeyFilterCell row={row} /> },
-    {
-      id: "since",
-      header: "Arrived",
-      render: (row) => <span className="text-[12px] text-muted-foreground"><RelativeTime value={row.firstSeenUtc} absolute={false} /></span>,
-    },
-  ];
+/**
+ * The columns of a value's keys: each key, cut short where it begins like its neighbours, with the records holding it, the
+ * search finding exactly them, and when it arrived. The attributes are the value's, listed above the keys.
+ */
+const KEY_COLUMNS: Column<DeliveryDimensionKey>[] = [
+  {
+    id: "key",
+    header: "Key",
+    fill: true,
+    floor: 220,
+    render: (row) => <DimensionValueText value={row.key} maxWidth="100%" tail={keyTail(row.key)} testId="dimension-value-key" />,
+  },
+  {
+    id: "count",
+    header: "Records",
+    align: "right",
+    render: (row) => <span className="font-mono text-[12px] tabular-nums">{row.count.toLocaleString("en-US")}</span>,
+  },
+  { id: "search", header: "Search", align: "right", render: (row) => <KeySearchCell row={row} /> },
+  {
+    id: "since",
+    header: "Arrived",
+    render: (row) => <span className="text-[12px] text-muted-foreground"><RelativeTime value={row.firstSeenUtc} absolute={false} /></span>,
+  },
+];
+
+/**
+ * The value's attributes, a line each in the order the dimension declares them: every value its keys hold, with how many
+ * of the key's records hold it for a collected attribute of a value that is one key, and how many keys hold it for a value
+ * of several.
+ */
+function ValueAttributes({ attributes, detail }: { attributes: DeliveryDimensionAttributeSpec[]; detail: DeliveryDimensionValueDetail }) {
+  const only = detail.value.keys === 1 && detail.keys.length === 1 ? detail.keys[0] : null;
+  return (
+    <dl className="grid grid-cols-[minmax(6rem,max-content)_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[13px]" data-testid="dimension-value-attributes">
+      {attributes.map((attribute) => {
+        const held = detail.value.attributes.filter((a) => a.name === attribute.name);
+        return (
+          <div key={attribute.name} className="contents">
+            <dt className="text-muted-foreground">{attribute.name}</dt>
+            <dd className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              {held.length === 0 && <span className="text-muted-foreground/60">-</span>}
+              {held.map((a) => {
+                const records = only?.attributes.find((k) => k.name === a.name && k.value === a.value)?.records ?? null;
+                return (
+                  <span key={a.value} className="inline-flex min-w-0 items-baseline gap-1">
+                    <DimensionValueText value={a.value} maxWidth={320} />
+                    {records !== null && <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{records.toLocaleString("en-US")}</span>}
+                    {records === null && detail.value.keys > 1 && (
+                      <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{counted(a.keys, "key")}</span>
+                    )}
+                  </span>
+                );
+              })}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
 }
 
 /** A change to one of the value's keys, on one line: when, which build, the key, and where it went. */
@@ -131,10 +167,17 @@ export function DimensionValueSheet({ dimensionId, labelled, attributes, valueId
                 </DetailPair>
               </div>
 
+              {attributes.length > 0 && (
+                <section className="flex flex-col gap-2">
+                  <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Attributes</h3>
+                  <ValueAttributes attributes={attributes} detail={data} />
+                </section>
+              )}
+
               <section className="flex flex-col gap-2">
                 <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Keys</h3>
                 <DataTable
-                  columns={keyColumns(labelled, attributes)}
+                  columns={KEY_COLUMNS}
                   rows={data.keys}
                   rowKey={(row) => row.keyId}
                   emptyMessage="No build finds a key of this value now."

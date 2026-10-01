@@ -79,19 +79,57 @@ function hasMarks(text: string): boolean {
   return pieces(text, "").some((piece) => piece.shown);
 }
 
+/** The pieces before and after the first `head` characters, a piece that straddles the cut split in two. */
+function cut(drawn: Piece[], head: number): [Piece[], Piece[]] {
+  const before: Piece[] = [];
+  const after: Piece[] = [];
+  let taken = 0;
+  for (const piece of drawn) {
+    const chars = Array.from(piece.text);
+    if (taken >= head) {
+      after.push(piece);
+    } else if (taken + chars.length <= head) {
+      before.push(piece);
+    } else {
+      before.push({ ...piece, text: chars.slice(0, head - taken).join("") });
+      after.push({ ...piece, text: chars.slice(head - taken).join("") });
+    }
+
+    taken += chars.length;
+  }
+
+  return [before, after];
+}
+
+/** The pieces of a value, drawn. */
+function Drawn({ drawn }: { drawn: Piece[] }) {
+  return drawn.map((piece, index) => (
+    <span
+      // The pieces of one value never reorder, so their place is their identity.
+      key={index}
+      className={cn(piece.shown && "text-muted-foreground/70", piece.match && "rounded-[2px] bg-warning/25 text-foreground")}
+    >
+      {piece.text}
+    </span>
+  ));
+}
+
 /**
  * A dimension's value exactly as the ledger keeps it: an original as the index holds it, or a member's clean value. What a
  * reader could not see is drawn as a mark in muted text (a middle dot for a space at either end, an arrow for a tab, a
  * return for a line break, the code point of a control character), since two originals that differ only there read as one
  * otherwise; an empty value says so. The search's matches are marked, the value clips at `maxWidth`, and it is whole on
- * hover when clipped or marked.
+ * hover when clipped or marked. With `tail`, the last characters never clip: the value gives way before them, so ids that
+ * begin alike (every wellbore of a partition) still tell each other apart.
  */
-export function DimensionValueText({ value, search = "", strong = false, maxWidth = 320, className, testId }: {
+export function DimensionValueText({ value, search = "", strong = false, maxWidth = 320, tail = 0, className, testId }: {
   value: string;
   search?: string;
   /** Draws the value as its row's identity. */
   strong?: boolean;
-  maxWidth?: number;
+  maxWidth?: number | string;
+  /** The characters at the end that stay in view however narrow the value is drawn. */
+  tail?: number;
   className?: string;
   testId?: string;
 }) {
@@ -101,27 +139,26 @@ export function DimensionValueText({ value, search = "", strong = false, maxWidt
   }
 
   const drawn = pieces(value, search);
-  const body = (
-    <span
-      ref={ref}
-      className={cn("inline-block truncate align-bottom font-mono text-[12px]", strong ? "font-medium text-foreground" : undefined, className)}
-      style={{ maxWidth }}
-      data-testid={testId}
-      data-value={value}
-    >
-      {drawn.map((piece, index) => (
-        <span
-          // The pieces of one value never reorder, so their place is their identity.
-          key={index}
-          className={cn(piece.shown && "text-muted-foreground/70", piece.match && "rounded-[2px] bg-warning/25 text-foreground")}
-        >
-          {piece.text}
-        </span>
-      ))}
-    </span>
-  );
-
   const marked = hasMarks(value);
+  const length = Array.from(value).length;
+  const tone = cn("font-mono text-[12px]", strong ? "font-medium text-foreground" : undefined, className);
+  let body;
+  if (tail > 0 && !marked && length > tail + 3) {
+    const [head, end] = cut(drawn, length - tail);
+    body = (
+      <span className={cn("inline-flex min-w-0 max-w-full align-bottom", tone)} style={{ maxWidth }} data-testid={testId} data-value={value}>
+        <span ref={ref} className="min-w-0 truncate"><Drawn drawn={head} /></span>
+        <span className="shrink-0 whitespace-pre"><Drawn drawn={end} /></span>
+      </span>
+    );
+  } else {
+    body = (
+      <span ref={ref} className={cn("inline-block truncate align-bottom", tone)} style={{ maxWidth }} data-testid={testId} data-value={value}>
+        <Drawn drawn={drawn} />
+      </span>
+    );
+  }
+
   if (!clipped && !marked) {
     return body;
   }

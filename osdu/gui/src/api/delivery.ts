@@ -2653,7 +2653,7 @@ export interface DeliveryDimensionChangeQuery {
   limit?: number;
 }
 
-export type DimensionExportSet = "values" | "keys";
+export type DimensionExportSet = "values" | "keys" | "table";
 export type DimensionExportFormat = "csv" | "jsonl";
 
 /** The attribute conditions of a page as the path's query carries them: `attr=Name:value`, once each. */

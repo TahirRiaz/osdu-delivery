@@ -151,55 +151,65 @@ export function DimensionAttributeFilter({ dimensionId, attributes, conditions, 
   );
 }
 
-/** A picked attribute value's column in a table of values: the values its keys hold, or a dash. */
-export function ValueAttributeCell({ values }: { values: string[] }) {
+/** The widest an attribute's value draws in a grid before it clips. */
+const CELL_WIDTH = 120;
+
+/**
+ * Several values of one attribute in one narrow cell: the first, and how many more beside it, with every one on hover. A
+ * value the dimension gives what it could not read (`faint`, such as Not specified) is drawn faint, so the cells that do
+ * hold something stand out.
+ */
+function AttributeValues({ values, faint, title, lines, testId }: {
+  values: string[];
+  faint: string | null;
+  title: string;
+  /** What hovering says, a line a value; null when the cell says everything already. */
+  lines: string[] | null;
+  testId: string;
+}) {
   if (values.length === 0) {
     return <span className="text-muted-foreground/50">-</span>;
   }
 
-  return (
-    <span className="flex min-w-0 items-baseline" data-testid="dimension-attribute-cell">
-      {values.map((value, index) => (
-        <span key={value} className="inline-flex min-w-0 items-baseline">
-          <DimensionValueText value={value} maxWidth={150} />
-          {index < values.length - 1 && <span className="pr-1 text-muted-foreground">,</span>}
+  const body = (
+    <span className="inline-flex min-w-0 items-baseline gap-1" data-testid={testId}>
+      <DimensionValueText value={values[0]} maxWidth={CELL_WIDTH} className={values[0] === faint ? "text-muted-foreground/70" : undefined} />
+      {values.length > 1 && (
+        <span className="shrink-0 rounded-sm bg-secondary/80 px-1 font-mono text-[10.5px] tabular-nums text-muted-foreground dark:bg-input/50">
+          +{values.length - 1}
         </span>
-      ))}
+      )}
     </span>
   );
+
+  return lines === null ? body : <RichTooltip title={title} body={lines.join("\n")}>{body}</RichTooltip>;
+}
+
+/** An attribute's column in a grid of values: the values the value's keys hold, the first shown and the rest counted. */
+export function ValueAttributeCell({ name, values, faint }: { name: string; values: string[]; faint: string | null }) {
+  return <AttributeValues values={values} faint={faint} title={name} lines={values.length > 1 ? values : null} testId="dimension-attribute-cell" />;
 }
 
 /**
- * A key's attribute: the value read, with the record it was read from on hover; for a collected attribute, every value the
- * key's records hold, with how many hold each on hover; a dash when the key has none.
+ * An attribute's column in a grid of keys: the value read for the key, with the record it was read from on hover; for a
+ * collected attribute, the value most of the key's records hold, the rest counted, and every one with its records on hover.
  */
-export function KeyAttributeCell({ row, name }: { row: DeliveryDimensionKey; name: string }) {
-  const values = row.attributes.filter((a) => a.name === name);
-  const attribute = values.at(0);
-  if (attribute === undefined) {
+export function KeyAttributeCell({ row, name, faint }: { row: DeliveryDimensionKey; name: string; faint: string | null }) {
+  const held = row.attributes.filter((a) => a.name === name);
+  if (held.length === 0) {
     return <span className="text-muted-foreground/50">-</span>;
   }
 
-  if (attribute.records !== null) {
-    return (
-      <RichTooltip title={`${name}, collected from the key's records`} body={values.map((a) => `${a.value}: ${(a.records ?? 0).toLocaleString()} record(s)`).join("; ")}>
-        <span className="flex min-w-0 items-baseline" data-testid="dimension-key-attribute">
-          {values.map((a, index) => (
-            <span key={a.value} className="inline-flex min-w-0 items-baseline">
-              <DimensionValueText value={a.value} maxWidth={150} />
-              {index < values.length - 1 && <span className="pr-1 text-muted-foreground">,</span>}
-            </span>
-          ))}
-        </span>
-      </RichTooltip>
-    );
-  }
-
+  const collected = held[0].records !== null;
   return (
-    <RichTooltip title={`${name}, read from`} body={attribute.from ?? "the record the key names"} mono>
-      <span className="inline-flex min-w-0" data-testid="dimension-key-attribute">
-        <DimensionValueText value={attribute.value} maxWidth={150} />
-      </span>
-    </RichTooltip>
+    <AttributeValues
+      values={held.map((a) => a.value)}
+      faint={faint}
+      title={collected ? `${name}, collected from the key's records` : `${name}, read from`}
+      lines={collected
+        ? held.map((a) => `${a.value}: ${(a.records ?? 0).toLocaleString("en-US")} record(s)`)
+        : [held[0].from ?? "nothing: the key holds none"]}
+      testId="dimension-key-attribute"
+    />
   );
 }

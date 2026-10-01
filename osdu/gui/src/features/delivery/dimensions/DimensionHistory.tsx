@@ -13,9 +13,10 @@ import { deliveryApi, type DeliveryDimensionBuild, type DeliveryDimensionChange,
 import { KindText } from "../KindText";
 import { ProblemView } from "../TemplateSheet";
 import { counted } from "../assertions/assertionFormat";
-import { BuildStatusPill, MoreFooter } from "./DimensionBadges";
+import { BuildStatusPill } from "./DimensionBadges";
+import { DimensionGrid, GridFooter } from "./DimensionGrid";
 import { DimensionValueText } from "./DimensionValueText";
-import { CHANGE_TEXT, buildDuration, coverage, percent } from "./dimensionFormat";
+import { CHANGE_TEXT, buildDuration, coverage, keyTail, percent } from "./dimensionFormat";
 
 /** The builds the Builds tab lists. */
 const BUILDS = 50;
@@ -193,8 +194,16 @@ export function DimensionBuilds({ dimensionId }: { dimensionId: number }) {
       },
     },
     { id: "changes", header: "Changes", render: (row) => <ChangeCounts build={row} /> },
-    { id: "read", header: "Read", fill: true, floor: 160, render: (row) => <TruncatedText text={row.error ?? readText(row)} maxWidth={360} /> },
-    { id: "by", header: "By", render: (row) => <TruncatedText text={row.actor} mono maxWidth={160} /> },
+    {
+      id: "read",
+      header: "How it read",
+      fill: true,
+      floor: 200,
+      render: (row) => (row.error !== null
+        ? <span className="block truncate text-[12.5px] text-destructive" title={row.error}>{row.error}</span>
+        : <span className="block truncate text-[12.5px] text-muted-foreground" title={readText(row)}>{readText(row)}</span>),
+    },
+    { id: "by", header: "By", render: (row) => <TruncatedText text={row.actor} mono maxWidth={120} /> },
   ];
 
   return (
@@ -202,14 +211,16 @@ export function DimensionBuilds({ dimensionId }: { dimensionId: number }) {
       {builds.isError
         ? <ProblemView error={builds.error} testId="dimension-builds-error" />
         : (
-          <DataTable
-            columns={columns}
-            rows={builds.data}
-            rowKey={(row) => row.buildId}
-            onRowClick={setOpen}
-            emptyMessage="No build yet."
-            data-testid="dimension-builds-table"
-          />
+          <DimensionGrid>
+            <DataTable
+              columns={columns}
+              rows={builds.data}
+              rowKey={(row) => row.buildId}
+              onRowClick={setOpen}
+              emptyMessage="No build yet."
+              data-testid="dimension-builds-table"
+            />
+          </DimensionGrid>
         )}
       <BuildSheet build={open} onClose={() => setOpen(null)} />
     </>
@@ -279,7 +290,7 @@ export function DimensionChanges({ dimensionId, onValue }: { dimensionId: number
       header: "Change",
       render: (row) => <span className={`text-[12.5px] font-medium ${CHANGE_TONE[row.change]}`}>{CHANGE_TEXT[row.change].label}</span>,
     },
-    { id: "key", header: "Key", render: (row) => <DimensionValueText value={row.key} strong maxWidth={260} testId="dimension-change-key" /> },
+    { id: "key", header: "Key", render: (row) => <DimensionValueText value={row.key} strong maxWidth={340} tail={keyTail(row.key)} testId="dimension-change-key" /> },
     { id: "movement", header: "Value", fill: true, floor: 200, render: (row) => <Movement change={row} onValue={onValue} /> },
     { id: "when", header: "When", render: (row) => <span className="text-[12px] text-muted-foreground"><RelativeTime value={row.changedUtc} absolute={false} /></span> },
   ];
@@ -305,6 +316,7 @@ export function DimensionChanges({ dimensionId, onValue }: { dimensionId: number
       {pages.isError
         ? <ProblemView error={pages.error} testId="dimension-changes-error" />
         : (
+          <DimensionGrid onNearEnd={() => { if (pages.hasNextPage && !pages.isFetchingNextPage) { void pages.fetchNextPage(); } }}>
           <DataTable
             columns={columns}
             rows={rows}
@@ -322,8 +334,9 @@ export function DimensionChanges({ dimensionId, onValue }: { dimensionId: number
               }],
             }}
             footer={(
-              <MoreFooter
+              <GridFooter
                 shown={rows?.length ?? 0}
+                total={null}
                 noun="change"
                 hasMore={pages.hasNextPage}
                 loading={pages.isFetchingNextPage}
@@ -336,6 +349,7 @@ export function DimensionChanges({ dimensionId, onValue }: { dimensionId: number
               : `No build has logged a change of this kind.`}
             data-testid="dimension-changes-table"
           />
+          </DimensionGrid>
         )}
     </div>
   );

@@ -131,6 +131,20 @@ export function buildDuration(build: DeliveryDimensionBuild, now = Date.now()): 
   return formatDurationSeconds(Math.max(0, (ended - started) / 1000));
 }
 
+/** The most characters of a key that stay in view when it is cut short: enough of an id to tell it from the next. */
+const KEY_TAIL = 24;
+
+/**
+ * How many characters at the end of a key tell it from its neighbours: for an OSDU record id, the code after its entity
+ * type (with the colon or version that ends it), which is all that differs between the wellbores of a partition, at most
+ * the last 24 of them; none for any other key. A grid keeps that much of a key in view when it has to cut it short, and
+ * shows more of it where there is room.
+ */
+export function keyTail(key: string): number {
+  const match = /^[^:\s]+:[^:\s]+--[^:\s]+:(.+)$/.exec(key);
+  return match === null ? 0 : Math.min(Array.from(match[1]).length, KEY_TAIL);
+}
+
 /** Why a key belongs to no value, in words. */
 export const LEFT_OUT_TEXT: Record<DimensionLeftOut, string> = {
   empty: "cleaning left nothing",

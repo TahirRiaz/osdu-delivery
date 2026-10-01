@@ -52,7 +52,9 @@ function TopValues({ entry }: { entry: DimensionEntry }) {
               </div>
               <span className="text-right font-mono text-[11px] tabular-nums text-muted-foreground">
                 {value.recordsExact ? "" : "~"}{value.records.toLocaleString("en-US")}
-                {total !== null && total > 0 && value.recordsExact && <span className="ml-1 text-muted-foreground/60">{percent(value.records / total)}</span>}
+                {total !== null && total > 0 && value.recordsExact && value.records / total >= 0.01 && (
+                  <span className="ml-1 text-muted-foreground/60">{percent(value.records / total)}</span>
+                )}
               </span>
             </div>
           ))}

@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { CodeView } from "@/components/CodeView";
+import { PageHeader } from "@/components/PageHeader";
 import { CopyButton } from "@/components/CopyButton";
 import { EmptyState } from "@/components/EmptyState";
 import { RichTooltip } from "@/components/RichTooltip";
@@ -18,7 +19,7 @@ import { KindText } from "../KindText";
 import { ProblemView } from "../TemplateSheet";
 import { counted } from "../assertions/assertionFormat";
 import { DimensionAttributeFilter } from "./DimensionAttributeFilter";
-import { StandingGlyph } from "./DimensionBadges";
+import { DimensionsCrumb, StandingGlyph } from "./DimensionBadges";
 import { DimensionValueText } from "./DimensionValueText";
 import type { DimensionEntry } from "./dimensionFormat";
 
@@ -259,7 +260,7 @@ function ComposedSearch({ search }: { search: DeliveryDimensionSearch }) {
  * picked within one), each value standing for the exact keys the index holds. The query and the request body are ready to
  * copy; nothing is sent to OSDU from here. The kind and the picks live in the URL, so a link carries the search.
  */
-export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks, attributes, onAttributes }: {
+export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks, attributes, onAttributes, onBack }: {
   entries: DimensionEntry[];
   /** The kind the link names; null or a kind no built dimension reads picks the kind most dimensions read. */
   kind: string | null;
@@ -268,6 +269,8 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks, 
   onPicks: (picks: SearchPicks) => void;
   attributes: SearchAttributePicks;
   onAttributes: (picks: SearchAttributePicks) => void;
+  /** Back to every dimension. */
+  onBack: () => void;
 }) {
   const [typedWithin, setTypedWithin] = useState("");
   const within = useDebouncedValue(typedWithin.trim(), TYPING_DELAY_MS);
@@ -342,35 +345,38 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks, 
   const pickCount = [...own.values()].reduce((sum, values) => sum + values.size, 0) + [...where.values()].reduce((sum, conditions) => sum + conditions.length, 0);
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="search-builder">
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <h2 className="flex items-center gap-2 text-base font-medium">
-            Build a search
+      <PageHeader
+        title={(
+          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+            <DimensionsCrumb onBack={onBack} />
+            <span>Build a search</span>
             <RichTooltip
               title="How a search is composed"
               body="A record is found when, for every dimension a value is picked in, it holds one of that dimension's picked values. A value stands for the keys the index holds (the ids, for a reference), so the query compares exactly those, within each dimension's own query."
             >
               <Info className="size-4 text-muted-foreground" aria-label="How a search is composed" />
             </RichTooltip>
-          </h2>
-          <p className="text-[13px] text-muted-foreground">Pick values in the dimensions of one kind; copy the OSDU search that finds their records.</p>
-        </div>
-        <Select value={chosen ?? undefined} onValueChange={onKind}>
-          <SelectTrigger size="sm" className="w-full max-w-[26rem] sm:w-auto" aria-label="Kind to search" data-testid="search-builder-kind">
-            <SelectValue placeholder="A kind" />
-          </SelectTrigger>
-          <SelectContent>
-            {kinds.map((option) => (
-              <SelectItem key={option.name} value={option.name}>
-                <span className="flex min-w-0 items-center gap-2">
-                  <KindText kind={option.name} />
-                  <span className="font-mono text-[11px] text-muted-foreground">{counted(option.count, "dimension")}</span>
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+          </span>
+        )}
+        subtitle="Pick values in the dimensions of one kind; copy the OSDU search that finds their records. Nothing is sent to OSDU from here."
+        actions={(
+          <Select value={chosen ?? undefined} onValueChange={onKind}>
+            <SelectTrigger size="sm" className="w-full max-w-[26rem] sm:w-auto" aria-label="Kind to search" data-testid="search-builder-kind">
+              <SelectValue placeholder="A kind" />
+            </SelectTrigger>
+            <SelectContent>
+              {kinds.map((option) => (
+                <SelectItem key={option.name} value={option.name}>
+                  <span className="flex min-w-0 items-center gap-2">
+                    <KindText kind={option.name} />
+                    <span className="font-mono text-[11px] text-muted-foreground">{counted(option.count, "dimension")}</span>
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      />
 
       <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
         <Card className="gap-0 overflow-hidden rounded-lg p-0">
