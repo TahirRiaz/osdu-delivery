@@ -50,7 +50,7 @@ public sealed record DeliveryDimensionBuildDto(
 /// </summary>
 public sealed record DeliveryDimensionDto(
     int? DimensionId, string Name, string? Description, string Kind, string? Query, string? BuiltQuery, string Path, IReadOnlyList<string> Label,
-    IReadOnlyList<DeliveryDimensionAttributeSpecDto> Attributes, IReadOnlyList<string> Clean, bool CountRecords, long MaxValues, bool Declared,
+    string? Unlabelled, IReadOnlyList<DeliveryDimensionAttributeSpecDto> Attributes, IReadOnlyList<string> Clean, bool CountRecords, long MaxValues, bool Declared,
     bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field, long Values, long Keys, DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current,
     DeliveryDimensionBuildDto? Latest);
 
@@ -814,6 +814,7 @@ public static class DeliveryDimensionEndpoints
             current?.Query ?? state?.Query,
             spec?.Path ?? state!.Path,
             spec?.Label ?? DimensionRunner.LabelOf(state?.LabelJson),
+            spec?.Unlabelled,
             (spec?.Attributes ?? DimensionRunner.AttributesOf(state?.AttributesJson)).Select(a => new DeliveryDimensionAttributeSpecDto(a.Name, a.Steps)).ToList(),
             steps.Select(s => s.Describe()).ToList(),
             spec?.CountRecords ?? false,

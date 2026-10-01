@@ -215,7 +215,7 @@ public sealed class DimensionLabeler
         foreach (var why in unlabelled.GroupBy(l => Reason(l.Value.Problem!)).OrderByDescending(g => g.Count()))
         {
             notes.Add(string.Create(CultureInfo.InvariantCulture,
-                $"{why.Count()} key(s) have no label, since {why.Key}, so each is its own value: {Named(why.Select(l => l.Key))}."));
+                $"{why.Count()} key(s) have no label, since {why.Key}: {Named(why.Select(l => l.Key))}."));
         }
 
         var attributeValues = new Dictionary<string, IReadOnlyList<DimensionAttributeState>>(keys.Count, StringComparer.Ordinal);

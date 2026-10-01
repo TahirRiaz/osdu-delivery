@@ -101,6 +101,14 @@ export function DimensionDefinition({ entry }: { entry: DimensionEntry }) {
         <div className="flex flex-col gap-1.5">
           <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Label</span>
           <LabelSteps steps={dimension.label} />
+          {dimension.label.length > 0 && (
+            <p className="text-[12px] text-muted-foreground" data-testid="dimension-unlabelled">
+              A key without a label is valued{" "}
+              {dimension.unlabelled === null
+                ? "by the code its id ends with."
+                : <span className="font-mono text-foreground">{dimension.unlabelled}</span>}
+            </p>
+          )}
         </div>
         {dimension.attributes.length > 0 && (
           <div className="flex flex-col gap-1.5" data-testid="dimension-attributes">

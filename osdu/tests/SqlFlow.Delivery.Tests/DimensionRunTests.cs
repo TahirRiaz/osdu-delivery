@@ -192,6 +192,7 @@ public sealed class DimensionRunTests : IDisposable
                 kind: "osdu:wks:work-product-component--WellLog:*"
                 path: data.WellboreID
                 label: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]
+                unlabelled: Not specified
             """);
 
         var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
@@ -228,6 +229,12 @@ public sealed class DimensionRunTests : IDisposable
         Assert.Equal((2L, 2L, 2), (country.Read.Labelled, country.Read.Unlabelled, country.Read.LabelQueries));
         var ofNorway = await ledger.ListDimensionValuesAsync(countries.DimensionId, new DimensionValueQuery(null, norway.MemberId, false, false, null, 10));
         Assert.All(ofNorway, k => Assert.Equal(Norway, k.LabelFrom));
+
+        // The keys whose country is not read are one value a drop-down lists, as the dimension names it, and its filter
+        // finds exactly their logs.
+        var unspecified = (await MembersAsync(ledger, countries.DimensionId)).Single(m => m.Value == "Not specified");
+        Assert.Equal(2, unspecified.Originals);
+        Assert.Equal(["dev:work-product-component--WellLog:4", "dev:work-product-component--WellLog:5"], _platform.Find(WellLog, unspecified.Filter!));
 
         // The search across both: logs of a Norwegian wellbore named 15/9-A; across one, every log of Norway.
         var picked = await DimensionSearch.ComposeAsync(

@@ -136,6 +136,16 @@ public class DimensionDocumentTests
         Assert.NotEqual(Parse(Head + Curves).Dimensions[0].DefinitionHash, Parse(Head + Curves + "\n    label: data.Name").Dimensions[0].DefinitionHash);
     }
 
+    [Fact]
+    public void A_labelled_dimension_names_the_value_of_keys_without_a_label()
+    {
+        var flow = Parse(Head + Curves + "\n    label: data.Name\n    unlabelled: ' Not specified '");
+        Assert.Equal("Not specified", flow.Dimensions[0].Unlabelled);
+        Assert.Null(Parse(Head + Curves + "\n    label: data.Name").Dimensions[0].Unlabelled);
+        Assert.Contains("reads no label", Refused(Head + Curves + "\n    unlabelled: Not specified").Message, StringComparison.Ordinal);
+        Assert.Contains("unlabelled is empty", Refused(Head + Curves + "\n    label: data.Name\n    unlabelled: ' '").Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("label: 'data.Facility Name'", "label 'data.Facility Name' is not a property path")]
     [InlineData("label: [data.A, 'x y']", "label[1] 'x y' is not a property path")]

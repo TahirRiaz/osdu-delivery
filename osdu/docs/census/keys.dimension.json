@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 81,
+  "keyCount": 82,
   "keys": [
     {
       "path": "batch",
@@ -161,6 +161,12 @@
       "type": "string",
       "required": false,
       "description": "Optional Lucene query narrowing the records read, with `{parameter}` and `{partition}` tokens. Left out, every record of the kind is read. The filters of keys and values select by key alone: combine them with this query where a search should read the same records (a composed search does)."
+    },
+    {
+      "path": "dimensions[].unlabelled",
+      "type": "string",
+      "required": false,
+      "description": "The value of a key whose label is not read (it names no record, the search does not hold the record, or the record holds nothing where the label is read), cleaned like a label: `unlabelled: Not specified`, so a drop-down lists such keys under one value, as an application does, and its filter finds exactly their records. At most 256 characters, for a dimension that reads a label. Left out, such a key is valued by the code its id ends with, its escapes decoded."
     },
     {
       "path": "flowType",

@@ -315,6 +315,13 @@ public sealed record DimensionSpec
     public const int MaxLabelSteps = 3;
 
     /// <summary>
+    /// The value of a key whose label is not read (it names no record, the search does not hold the record, or the record
+    /// holds nothing where the label is read), cleaned like a label: <c>Not specified</c>, so a drop-down lists such keys
+    /// under one value a person picks, as an application does. Null values such a key by the code its id ends with.
+    /// </summary>
+    public string? Unlabelled { get; init; }
+
+    /// <summary>
     /// Further facts of each key read the way its label is, each under a name: a path of the record the key names
     /// (<c>SpudDate: data.SpudDate</c>), or several read through its references (<c>Country:
     /// [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]</c>). A key keeps each attribute's value, so a

@@ -363,7 +363,8 @@ public sealed class DimensionRunner
             // key naming an OSDU record, the code its id ends with, its escapes decoded, so a value is ready to show. The key
             // keeps its own filter, the search that finds exactly the records holding it, and its attributes.
             var labelled = labels.Labels.TryGetValue(original, out var found) ? found : null;
-            var cleaned = cleaner.Clean(labelled?.Label ?? DimensionLabeler.DisplayOf(original));
+            var cleaned = cleaner.Clean(labelled?.Label
+                ?? (dimension.Label.Count > 0 && dimension.Unlabelled is { } unlabelled ? unlabelled : DimensionLabeler.DisplayOf(original)));
             var filterable = DimensionFilters.Filterable(field, original);
             var filter = filterable ? DimensionFilters.Of(field, [original])[0] : null;
             var attributes = labels.Attributes.GetValueOrDefault(original);

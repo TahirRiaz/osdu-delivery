@@ -2322,6 +2322,8 @@ export interface DeliveryDimension {
   path: string;
   /** Where a key's label is read: the paths through the records a key names; empty when keys are their own values. */
   label: string[];
+  /** The value of a key whose label is not read ("Not specified"); null values such a key by its id's code. */
+  unlabelled: string | null;
   /** The attributes each key is read with, each by its name and the paths it is read through. */
   attributes: DeliveryDimensionAttributeSpec[];
   /** The clean steps, as the document writes them. */

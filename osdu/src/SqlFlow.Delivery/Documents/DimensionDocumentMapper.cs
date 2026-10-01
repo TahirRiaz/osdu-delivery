@@ -213,6 +213,7 @@ internal static class DimensionMapper
                 $"{source}: {where}: maxValues is {maxValues}; it is between 1 and {DimensionSpec.MaxValuesCeiling.ToString("N0", CultureInfo.InvariantCulture)}, since a build holds a dimension's values in memory while it groups them.");
         }
 
+        var label = MapLabel(d.Label, where, source);
         var dimension = new DimensionSpec
         {
             Name = name,
@@ -220,7 +221,8 @@ internal static class DimensionMapper
             Kind = kind,
             Query = query,
             Path = path,
-            Label = MapLabel(d.Label, where, source),
+            Label = label,
+            Unlabelled = MapUnlabelled(d.Unlabelled, label.Count > 0, where, source),
             Attributes = MapAttributes(d.Attributes, where, source),
             Clean = MapClean(d.Clean, where, source),
             CountRecords = d.CountRecords ?? false,
@@ -261,6 +263,35 @@ internal static class DimensionMapper
     /// </summary>
     private static IReadOnlyList<string> MapLabel(object? declared, string where, string source)
         => MapSteps(declared, "label", where, source);
+
+    /// <summary>
+    /// The value of a key whose label is not read: a text, at most <see cref="DimensionSpec.MaxCleanLength"/> characters,
+    /// for a dimension that reads a label.
+    /// </summary>
+    private static string? MapUnlabelled(string? declared, bool labelled, string where, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        var text = declared.Trim();
+        if (text.Length == 0)
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: unlabelled is empty; give the value a key without a label takes (unlabelled: Not specified), or leave it out to value such a key by its id's code.");
+        }
+
+        if (text.Length > DimensionSpec.MaxCleanLength)
+        {
+            throw new FlowValidationException(
+                string.Create(CultureInfo.InvariantCulture, $"{source}: {where}: unlabelled is {text.Length} characters; a value is at most {DimensionSpec.MaxCleanLength}."));
+        }
+
+        return labelled
+            ? text
+            : throw new FlowValidationException($"{source}: {where}: unlabelled is the value of a key whose label is not read, and the dimension reads no label.");
+    }
 
     /// <summary>
     /// The attributes of a dimension's keys, each by its name and read as a label is (<see cref="MapLabel"/>): at most
@@ -576,15 +607,15 @@ internal static class DimensionMapper
     private static string Kind(string what) => what == "label" ? "label" : "attribute";
 
     /// <summary>
-    /// The hash of what a dimension declares. A label and attributes it does not declare are left out, so a dimension
-    /// declared before either existed keeps the hash it was built with.
+    /// The hash of what a dimension declares. A label, a value for unlabelled keys and attributes it does not declare are
+    /// left out, so a dimension declared before any of them existed keeps the hash it was built with.
     /// </summary>
     private static string Hash(DimensionSpec dimension)
     {
         var node = JsonSerializer.SerializeToNode(dimension with { DefinitionHash = string.Empty }, HashJson)!.AsObject();
-        foreach (var name in new[] { nameof(DimensionSpec.Label), nameof(DimensionSpec.Attributes) })
+        foreach (var name in new[] { nameof(DimensionSpec.Label), nameof(DimensionSpec.Attributes), nameof(DimensionSpec.Unlabelled) })
         {
-            if (node.TryGetPropertyValue(name, out var value) && value is JsonArray { Count: 0 })
+            if (node.TryGetPropertyValue(name, out var value) && (value is null || value is JsonArray { Count: 0 }))
             {
                 node.Remove(name);
             }
