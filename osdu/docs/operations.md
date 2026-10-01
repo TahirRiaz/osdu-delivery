@@ -654,41 +654,51 @@ Pipelines like any other flow.
 - **Dimensions** (OSDU): the dimensions of every dimension flow in the workbench's partition
   ([dimension-plan.md](dimension-plan.md)). A dimension keeps a **key** (exactly what the index holds, an id for a
   reference) apart from its **value** (the human-friendly form a person picks, read from the record a key names and
-  cleaned), and every key and value carries the search that finds its records. A strip heads the page: how many
-  dimensions are built, the values and keys they hold, what needs a look (a failed newest build, a declaration changed
-  since the values were read) and when anything was last built. Beside the page, the dimensions by flow, each with where
-  it stands (a glyph in its status colour, the words on hover) and how many values it holds; **Every dimension** shows
-  each as a card with the values most records hold as bars of their share, so a card says at a glance whether it is a
-  handful of values or a long tail. A dimension opens with its kind, path, where its label is read and how the index
-  stores it, **Export** (values or keys, CSV or JSON Lines) and **Build**; what its newest build or declaration asks of
-  the reader (the failure with **Build again**, a build running, a changed declaration); its facts (values and the keys
-  left without a label, coverage: the share of the records read that hold a key, the keys cleaning left out, when it was
-  built and how much changed); and five tabs. **Values**: each value with a bar of its records, the keys (ids) it stands
-  for with their counts, and its filter to copy; searched by the value or any key, with the most records first or by
-  value, removed ones on request, a page at a time. Values are picked with their boxes, and **Write their search** opens
-  the OSDU search that finds all their records: each query to copy, the whole search request, and what it leaves out. A
-  value opens in a sheet: its keys with their labels and filters, its search, and every change that moved a key to it or
-  away. **Keys**: every key exactly as the index holds it, what a reader could not see (a space at an end, a tab, a
-  control character) drawn as a mark, with the label read for it (the record it was read from on hover), the value it
-  went to or why it has none, its count, its attributes (a column each), the filter finding exactly its records, and
-  what cleaning said; **Of no value** narrows it to what cleaning left out. Values and keys are both narrowed by
-  **Attribute**: pick an attribute, then one of its values from the list the dimension holds (found by what is typed);
-  a chip per attribute shows what narrows the page, and a column per attribute shows the values held. **Changes**: the change log by build, narrowed to what arrived, left, moved or
-  came back. **Builds**: every build with its outcome, duration, values, coverage, changes and how it read, each opening
-  whole (its notes, the kinds and templates it read, the keys labelled, every count). **Definition**: the kind, query,
-  path, field and aggregation, the label as a path from the key's record to the text read, and the clean steps as a
-  pipeline from label (or key) to value, with each attribute's path beside it. **Build a search** (beside **Every dimension**) composes the OSDU search a
-  filter panel needs: pick the kind, then values in any of its dimensions through a picker that finds a value by itself
-  or any key, and **where** an attribute holds one of the values picked (every wellbore where Country is Norway); the
-  control plane composes the query (OR within a dimension, AND across them, within their own queries and
-  a query of one's own), shown with its clause count, each dimension's part, what the picks left out, and the query and
-  the request body to copy. Nothing is sent to OSDU from the page. The dimension, tab and value open in a sheet, and the
-  builder's kind and picks, are in the address, so a link lands on the same view. A dimension flow's page (Pipelines) has
-  a **Dimensions** tab with **Build** per dimension and **Build all**; its trigger dialog picks the dimensions a run
-  builds, and a run's header counts the values and keys it built. A dimension its flow no longer declares keeps what its
-  last build wrote, out of the way: the tab lists such dimensions under **No longer declared**, and the page's list only
-  when **Show n no longer declared** is clicked. An admin removes one for good with **Remove** (on that row, or on the
-  dimension's own page), after a confirmation saying what goes; one a cache flow still captures is refused.
+  cleaned), and every key and value carries the search that finds its records. The page is three views of one address.
+  **Every dimension**: a strip of facts (how many dimensions are built, the values and keys they hold, what needs a
+  look, when anything was last built), then each flow's dimensions as cards, a card naming where the dimension stands,
+  what it reads, the five values most records hold as bars, and when it was built; **Build all** runs the flow for every
+  dimension it declares, and **Build a search** opens the search builder. **One dimension**, on the page's whole width:
+  its heading is one block, the way back (**Dimensions**), its name and where it stands, a switcher to the other
+  dimensions, what it is for on hover, **Export** and **Build** (a run of the flow for that dimension alone); under the
+  name, in a line, its facts (values and keys, keys without a label, keys of no value, the share of the records read that
+  hold a key, when it was built), each opening the tab that explains it, and the kind, path and flow it reads. Under
+  that, what its newest build or declaration asks of the reader (the failure with **Build again**, a build running, a
+  changed declaration), and five tabs. Each tab's grid scrolls inside the page under column headers that stay in place,
+  as tall as the window leaves, and reads the next page as it is scrolled, its foot saying how many rows are in view of
+  how many; **View** leaves columns out (remembered per dimension in the browser) and lists what builds no longer find.
+  **Values**: each value with its records beside a bar, the keys it stands for (their count where keys are ids read for
+  a name, the ids on hover; the spellings themselves, with their counts, where keys are cleaned into a value), a column
+  per attribute (the first value, and how many more), and its search to copy; searched by the value or any key, with the
+  most records first or from A to Z. Values are picked with their boxes, and **Write their search** opens the OSDU
+  search that finds all their records: each query to copy, the whole search request, and what it leaves out. A value
+  opens in a sheet: its records, its attributes a line each (a collected attribute's values with the records holding
+  each), its keys, its search, and every change that moved a key to it or away. **Keys**: every key exactly as the index
+  holds it, cut short where ids begin alike so the end that tells them apart stays in view (whole on hover), what a
+  reader could not see (a space at an end, a tab, a control character) drawn as a mark, with the value it went to (the
+  label read for it and the record it was read from on hover) or why it has none, its records, a column per attribute,
+  and the search finding exactly its records to copy; **Of no value** narrows it to what cleaning left out. Values and
+  keys are both narrowed by **Attribute**: pick an attribute, then one of its values from the list the dimension holds
+  (found by what is typed); a chip per attribute shows what narrows the grid. A value the dimension gives what it could
+  not read (Not specified) is drawn faint. **Changes**: the change log by build, narrowed to what arrived, left, moved
+  or came back. **Builds**: every build with its outcome, duration, values, coverage, changes and how it read, each
+  opening whole (its notes, the kinds and templates it read, the keys labelled, every count). **Definition**: the kind,
+  query, path, field and aggregation, the label as a path from the key's record to the text read, each attribute's path
+  or the path it collects, and the clean steps as a pipeline from label (or key) to value. **Export** downloads the
+  whole dimension as CSV or JSON Lines: its **table** (a row per key and value it collects, a column per attribute:
+  what a set of cascading selects reads), its values, or its keys. **Build a search** composes the OSDU search a filter
+  panel needs: pick the kind, then values in any of its dimensions through a picker that finds a value by itself or any
+  key, and **where** an attribute holds one of the values picked (every wellbore where Country is Norway); the control
+  plane composes the query (OR within a dimension, AND across them, within their own queries and a query of one's own),
+  shown with its clause count, each dimension's part, what the picks left out, and the query and the request body to
+  copy. Nothing is sent to OSDU from the page. The dimension, tab and value open in a sheet, and the builder's kind and
+  picks, are in the address, so a link lands on the same view. A dimension flow's page (Pipelines) has a **Dimensions**
+  tab with **Build** per dimension (the flow's **Trigger run** builds them all, and its dialog picks the dimensions a
+  run builds); a run's header counts the values and keys it built. A dimension its flow no longer declares keeps what
+  its last build wrote, out of the way: the tab lists such dimensions under **No longer declared**, and the Dimensions
+  page only when **Show n dimensions no longer declared** is clicked. An admin removes one for good with **Remove** (on
+  that row, or on the dimension's own page), after a confirmation saying what goes; one a cache flow still captures is
+  refused.
 - **An assertion flow's page** (Pipelines): **Tests** is that flow's board. **History** and **Reports** hold the runs
   before the last, for whoever asks: History lays the tests against the last 30 runs with each test's pass rate and how
   often it flipped (three or more is marked), a column opening its run's report; Reports lists the runs with their
