@@ -121,7 +121,8 @@ public sealed partial class OsduLedger
                 run.Notes = JsonSerializer.Serialize(notes.Take(MaxDimensionNotes).ToList());
             }
 
-            run.CompletedUtc = write.CompletedUtc;
+            // The build ends when it has written, not when it began to: its duration counts the write.
+            run.CompletedUtc = Now < write.CompletedUtc ? write.CompletedUtc : Now;
             run.Error = null;
             closed = run;
             return Task.CompletedTask;

@@ -104,6 +104,30 @@ public sealed class DimensionStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task A_rebuild_over_keys_that_share_an_attribute_value_matches_each_key_to_itself_not_to_every_other()
+    {
+        // Twenty thousand wellbores of one country: matched by the value alone, a rebuild pairs each with every other
+        // (four hundred million pairs, minutes); matched by the key's and the attribute's numbers, each with itself.
+        var ledger = await LedgerAsync();
+        var originals = Enumerable.Range(0, 20_000)
+            .Select(i => new DimensionOriginalWrite(
+                $"dev:master-data--Wellbore:{i:D6}:", $"NO {i:D6}", null, null, 3, true,
+                Attributes: [new DimensionAttributeState("Country", "Norway", "dev:master-data--GeoPoliticalEntity:NO"), new DimensionAttributeState("Field", "Not specified", null)]))
+            .ToArray();
+        var (dimension, first) = await BuildAsync(ledger, originals);
+        Assert.Equal(20_000L, first.Originals);
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var (_, second) = await BuildAsync(ledger, originals);
+        watch.Stop();
+
+        Assert.Equal(new DimensionChangeCounts(0, 0, 0, 0, 0, 0, 0), second.Changes);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(30), $"A rebuild of 20,000 keys that changed nothing took {watch.Elapsed.TotalSeconds:N1} s.");
+        var keys = await ledger.ListDimensionValuesAsync(dimension.DimensionId, new DimensionValueQuery(null, null, false, false, null, 2));
+        Assert.All(keys, k => Assert.Equal([("Country", "Norway"), ("Field", "Not specified")], k.Attributes.Select(a => (a.Name, a.Value))));
+    }
+
+    [Fact]
     public async Task A_later_build_adds_removes_and_moves_and_every_member_keeps_its_id()
     {
         var ledger = await LedgerAsync();

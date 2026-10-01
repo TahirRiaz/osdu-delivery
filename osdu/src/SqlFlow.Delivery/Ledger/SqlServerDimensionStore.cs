@@ -67,16 +67,20 @@ internal static class SqlServerDimensionStore
             [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [ValueFrom] nvarchar(1024) NULL,
+            [Records] bigint NULL);
+        CREATE TABLE #DimAttrKeyed (
+            [ValueId] bigint NOT NULL,
+            [AttributeId] int NOT NULL,
+            [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [ValueFrom] nvarchar(1024) NULL,
             [Records] bigint NULL,
-            [AttributeId] int NULL,
-            PRIMARY KEY ([OriginalHash], [Name], [Value]));
+            PRIMARY KEY ([ValueId], [AttributeId], [Value]));
         CREATE TABLE #DimText (
             [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [TextHash] binary(32) NOT NULL,
             [Text] nvarchar(1024) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Records] bigint NOT NULL,
-            [AttributeId] int NULL,
             PRIMARY KEY ([Name], [TextHash]));
         """ + "\n" + NameStageSql;
 
@@ -86,7 +90,8 @@ internal static class SqlServerDimensionStore
         CREATE TABLE #DimName (
             [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
             [Ordinal] smallint NULL,
-            [Collected] bit NOT NULL);
+            [Collected] bit NOT NULL,
+            [AttributeId] int NULL);
         """;
 
     private const string LockSql = """
@@ -289,10 +294,21 @@ internal static class SqlServerDimensionStore
         WHERE NOT EXISTS (SELECT 1 FROM #DimName AS s WHERE s.[Name] = t.[Name]);
 
         """ + "\n" + NamesSql + "\n\n" + """
-        UPDATE t SET t.[AttributeId] = n.[AttributeId]
-        FROM #DimAttr AS t INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Name] = t.[Name];
-        UPDATE t SET t.[AttributeId] = n.[AttributeId]
-        FROM #DimText AS t INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Name] = t.[Name];
+        -- The numbers are looked up once, beside the few names, and every row below is joined to them: a row of the
+        -- build is never rewritten to carry one.
+        UPDATE s SET s.[AttributeId] = n.[AttributeId]
+        FROM #DimName AS s INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Name] = s.[Name];
+
+        -- Each attribute value the build read, under the numbers it is kept by: its key's and its attribute's. The rows
+        -- kept are then matched to them on those numbers and the value, which name one row on either side. Matched
+        -- through the key's hash and the attribute's name instead, the only thing the two sides share directly is the
+        -- value, and the server is free to pair them by it: every key holding a value (a country) with every other key
+        -- holding it, which is millions of pairs for a few thousand keys.
+        INSERT INTO #DimAttrKeyed ([ValueId], [AttributeId], [Value], [ValueFrom], [Records])
+        SELECT v.[ValueId], dn.[AttributeId], t.[Value], t.[ValueFrom], t.[Records]
+        FROM #DimAttr AS t
+        INNER JOIN #DimName AS dn ON dn.[Name] = t.[Name]
+        INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = @p AND v.[DimensionId] = @d AND v.[OriginalHash] = t.[OriginalHash];
 
         -- The attribute values of every original the build found are what it read: one no longer read is dropped, one read
         -- again rewritten only when where it was read or how many records hold it changed, and a new one added. An original
@@ -302,27 +318,29 @@ internal static class SqlServerDimensionStore
         INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = a.[PartitionId] AND v.[ValueId] = a.[ValueId]
         INNER JOIN #DimValue AS s ON s.[OriginalHash] = v.[OriginalHash]
         WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d
-          AND NOT EXISTS (SELECT 1 FROM #DimAttr AS t WHERE t.[OriginalHash] = s.[OriginalHash] AND t.[AttributeId] = a.[AttributeId] AND t.[Value] = a.[Value]);
+          AND NOT EXISTS (
+              SELECT 1 FROM #DimAttrKeyed AS t
+              WHERE t.[ValueId] = a.[ValueId] AND t.[AttributeId] = a.[AttributeId] AND t.[Value] = a.[Value]);
         DECLARE @attributesChanged bigint = @@ROWCOUNT;
 
+        -- Where a value was read is compared exactly, byte for byte, as an id is.
         UPDATE a SET a.[ValueFrom] = t.[ValueFrom], a.[Records] = t.[Records]
         FROM [osdu].[DimensionAttribute] AS a
-        INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = a.[PartitionId] AND v.[ValueId] = a.[ValueId]
-        INNER JOIN #DimAttr AS t ON t.[OriginalHash] = v.[OriginalHash] AND t.[AttributeId] = a.[AttributeId] AND t.[Value] = a.[Value]
+        INNER JOIN #DimAttrKeyed AS t ON t.[ValueId] = a.[ValueId] AND t.[AttributeId] = a.[AttributeId] AND t.[Value] = a.[Value]
         WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d
-          AND (ISNULL(a.[ValueFrom], N'') <> ISNULL(t.[ValueFrom], N'') OR (a.[ValueFrom] IS NULL AND t.[ValueFrom] IS NOT NULL)
+          AND (ISNULL(a.[ValueFrom], N'') COLLATE Latin1_General_100_BIN2 <> ISNULL(t.[ValueFrom], N'') COLLATE Latin1_General_100_BIN2
+               OR (a.[ValueFrom] IS NULL AND t.[ValueFrom] IS NOT NULL)
                OR (a.[ValueFrom] IS NOT NULL AND t.[ValueFrom] IS NULL)
                OR ISNULL(a.[Records], -1) <> ISNULL(t.[Records], -1));
         SET @attributesChanged += @@ROWCOUNT;
 
         INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [AttributeId], [Value], [ValueFrom], [Records])
-        SELECT @p, @d, v.[ValueId], t.[AttributeId], t.[Value], t.[ValueFrom], t.[Records]
-        FROM #DimAttr AS t
-        INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = @p AND v.[DimensionId] = @d AND v.[OriginalHash] = t.[OriginalHash]
+        SELECT @p, @d, t.[ValueId], t.[AttributeId], t.[Value], t.[ValueFrom], t.[Records]
+        FROM #DimAttrKeyed AS t
         WHERE NOT EXISTS (
             SELECT 1 FROM [osdu].[DimensionAttribute] AS a
-            WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND a.[ValueId] = v.[ValueId] AND a.[AttributeId] = t.[AttributeId] AND a.[Value] = t.[Value])
-        ORDER BY v.[ValueId], t.[AttributeId], t.[Value];
+            WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND a.[ValueId] = t.[ValueId] AND a.[AttributeId] = t.[AttributeId] AND a.[Value] = t.[Value])
+        ORDER BY t.[ValueId], t.[AttributeId], t.[Value];
         SET @attributesChanged += @@ROWCOUNT;
 
         -- The texts a build collected replace those the dimension had, unless it could not settle the field (and so read none).
@@ -330,8 +348,9 @@ internal static class SqlServerDimensionStore
         BEGIN
             DELETE FROM [osdu].[DimensionCollectedText] WHERE [PartitionId] = @p AND [DimensionId] = @d;
             INSERT INTO [osdu].[DimensionCollectedText] ([PartitionId], [DimensionId], [AttributeId], [TextHash], [Text], [Value], [Records])
-            SELECT @p, @d, t.[AttributeId], t.[TextHash], t.[Text], t.[Value], t.[Records] FROM #DimText AS t
-            ORDER BY t.[AttributeId], t.[Value], t.[Text];
+            SELECT @p, @d, dn.[AttributeId], t.[TextHash], t.[Text], t.[Value], t.[Records]
+            FROM #DimText AS t INNER JOIN #DimName AS dn ON dn.[Name] = t.[Name]
+            ORDER BY dn.[AttributeId], t.[Value], t.[Text];
         END;
 
         -- The first build's originals are its arrivals, told by the build that first found each; a later build logs its own.
@@ -900,7 +919,7 @@ internal static class SqlServerDimensionStore
             var transaction = (SqlTransaction)tx.GetDbTransaction();
             await LockAsync(connection, transaction, partitionId, write.DimensionId, ct).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, StageSql, ct).ConfigureAwait(false);
-            await CopyAsync(connection, transaction, "#DimValue", ValueColumns, ValueTypes, write.Originals, ValueRow, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimValue", ValueColumns, ValueTypes, ValuesOf(write), (value, _) => value, ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimMember", MemberColumns, MemberTypes, write.Members, (member, _) => MemberRow(member), ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimAttr", AttributeColumns, AttributeTypes, AttributesOf(write), (attribute, _) => attribute, ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimText", TextColumns, TextTypes, TextsOf(write), (text, _) => text, ct).ConfigureAwait(false);
@@ -968,13 +987,31 @@ internal static class SqlServerDimensionStore
     private static readonly Type[] ValueTypes =
         [typeof(int), typeof(string), typeof(byte[]), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(string), typeof(long), typeof(bool)];
 
-    private static object?[] ValueRow(DimensionOriginalWrite value, int seq)
-        =>
-        [
-            seq, value.Original, HashOf(value.Original), value.CleanValue, value.LeftOut, OsduLedger.Truncate(value.Note, 400),
-            OsduLedger.Truncate(value.Label, DeliveryDimensionValue.MaxLabelLength), OsduLedger.Truncate(value.LabelFrom, DeliveryDimensionValue.MaxOriginalLength),
-            value.Filter is { Length: > DeliveryDimensionValue.MaxFilterLength } ? null : value.Filter, value.Count, value.Filterable,
-        ];
+    /// <summary>
+    /// The build's originals as staging rows, in the order of their hashes, which is the order the staging table keeps
+    /// them in: rows copied in a table's own order are appended, not placed one by one. Each carries its place in the
+    /// build's own order, which is the order new originals take their ids in.
+    /// </summary>
+    private static List<object?[]> ValuesOf(DimensionWrite write)
+    {
+        var rows = new List<object?[]>(write.Originals.Count);
+        for (var seq = 0; seq < write.Originals.Count; seq++)
+        {
+            var value = write.Originals[seq];
+            rows.Add(
+            [
+                seq, value.Original, HashOf(value.Original), value.CleanValue, value.LeftOut, OsduLedger.Truncate(value.Note, 400),
+                OsduLedger.Truncate(value.Label, DeliveryDimensionValue.MaxLabelLength), OsduLedger.Truncate(value.LabelFrom, DeliveryDimensionValue.MaxOriginalLength),
+                value.Filter is { Length: > DeliveryDimensionValue.MaxFilterLength } ? null : value.Filter, value.Count, value.Filterable,
+            ]);
+        }
+
+        rows.Sort((left, right) => ByBytes((byte[])left[2]!, (byte[])right[2]!));
+        return rows;
+    }
+
+    /// <summary>Two hashes in the order SQL Server keeps binary values: byte by byte.</summary>
+    private static int ByBytes(byte[] left, byte[] right) => left.AsSpan().SequenceCompareTo(right);
 
     private static readonly string[] AttributeColumns = ["OriginalHash", "Name", "Value", "ValueFrom", "Records"];
 
@@ -1068,7 +1105,8 @@ internal static class SqlServerDimensionStore
             return;
         }
 
-        using var bulk = new SqlBulkCopy(connection, SqlBulkCopyOptions.Default, transaction)
+        // Under a table lock a copy into a staging table is logged by the page, not by the row.
+        using var bulk = new SqlBulkCopy(connection, SqlBulkCopyOptions.TableLock, transaction)
         {
             DestinationTableName = table,
             BatchSize = 10_000,
