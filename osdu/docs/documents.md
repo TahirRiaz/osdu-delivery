@@ -1340,7 +1340,7 @@ A dimension:
 
 | Key | Meaning |
 | --- | --- |
-| `name` | Unique in the flow: a letter or digit, then letters, digits, `.`, `_` and `-`, at most 100. A run, a search and a cache flow name the dimension by it. At most 100 dimensions per flow. |
+| `name` | Unique among the dimensions of every flow, not only this one: a letter or digit, then letters, digits, `.`, `_` and `-`, at most 100. A run, a search and a cache flow name the dimension by it, and so does its table in the database, `osdu.dim_<name>`, which is why no two flows declare a dimension of the same name (the second to build is refused, naming the first). At most 100 dimensions per flow. |
 | `description` | What the dimension is for. |
 | `kind` | The kind whose records are read, `authority:source:entityType:version` with wildcards per segment. Every kind the pattern matches in the partition must store the path the same way. |
 | `query` | Lucene narrowing the records, with `{parameter}` tokens. Without it, every record of the kind. Every filter of the dimension selects by key alone; a composed search joins it with this query. Dimensions meant to compose into one search usually share it. |
@@ -1370,16 +1370,16 @@ read, or one their kind patterns cover), and the query holds at most 1,000 claus
 service allows 1,024). A key no query can carry (a text over 256 characters, a value the query language cannot state
 exactly) is left out and said to be.
 
-A dimension is one table in the module's database, `osdu.dim_<flow>_<dimension>`
-(`osdu.dim_recall_welllog_05_dimensions_Wellbore`), which a build makes and keeps with no line of the document asking
-for it ([dimension-plan.md](dimension-plan.md), The table). It has a row per key and value it collects (one row for a
+A dimension is one table in the module's database, `osdu.dim_<dimension>` (`osdu.dim_Wellbore`, named after the
+dimension alone, so a dimension's name must be unique among the flows of a database), which a build makes and keeps
+with no line of the document asking for it ([dimension-plan.md](dimension-plan.md), The table). It has a row per key and value it collects (one row for a
 key of a dimension collecting nothing): `id`, an identity and the number a table of facts joins on; `partition`;
 `key_id`, the key's number; `key`; `value`; `records` (those holding the collected value, or every record of the key);
 `filter`; and a column per attribute, named as declared. Its schema follows the document: an attribute added to
 `attributes` gets its column on the next run, through SQLFlow's schema evolution, with no migration; nothing is dropped,
 and an attribute taken out keeps its column, emptied. So an attribute cannot be named after one of the table's own
-columns (`id`, `partition`, `key_id`, `key`, `value`, `records`, `filter`), nor `keys` or `label`, and two dimensions of
-a flow cannot have names that differ only in characters a table's name leaves out (`Well.Type` and `Well-Type`). A
+columns (`id`, `partition`, `key_id`, `key`, `value`, `records`, `filter`), nor `keys` or `label`, and two dimensions
+cannot have names that differ only in characters a table's name leaves out (`Well.Type` and `Well-Type`). A
 select of a cascade lists the distinct values of its column among the rows the other selects leave.
 `sqlflow dimensions table` and the API's `table` read a page of it, searched, narrowed and ordered;
 `sqlflow dimensions export --set table` and the API's `export?set=table` write it whole as CSV or JSON Lines; the API's

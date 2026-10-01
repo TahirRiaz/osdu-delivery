@@ -203,10 +203,14 @@ naming the first.
 
 ## The table
 
-A dimension is one table in the database: `osdu.dim_<flow>_<dimension>`, the flow's and the dimension's names with
-whatever is not a letter, a digit or an underscore made an underscore (`osdu.dim_recall_welllog_05_dimensions_Wellbore`).
-It is the dimension as a report, a query or a cascade of selects reads it, and what a table of facts joins on. A build
-makes it and keeps it; nothing has to be declared for it.
+A dimension is one table in the database: `osdu.dim_<dimension>`, the dimension's name with whatever is not a letter,
+a digit or an underscore made an underscore (`osdu.dim_Wellbore`). It is the dimension as a report, a query or a
+cascade of selects reads it, and what a table of facts joins on. A build makes it and keeps it; nothing has to be
+declared for it.
+
+**A dimension's name must be unique.** The table is named after the dimension alone, with no flow in its name, so no
+two flows of a database declare a dimension of the same name: the second to build is refused, naming the flow that
+writes the table, until one of them is renamed.
 
 | Column | Holds |
 | --- | --- |
@@ -255,8 +259,10 @@ no migration creates or changes it, `Dimension.TableName` names it, and the migr
 tables builds made when it is taken back.
 
 Two dimensions cannot write one table. A flow whose two dimensions' names differ only in characters a table's name
-leaves out (`Well.Type` and `Well-Type`) is refused where it is read; a dimension of another flow whose table has the
-same name, or a second ledger's copy of the same dimension in the same partition, fails its build, naming the other.
+leaves out (`Well.Type` and `Well-Type`) is refused where it is read; a dimension another flow declares by the same
+name (or one apart only in such characters), or a second ledger's copy of the same dimension in the same partition,
+fails its build, naming the other. A table a dimension wrote under an earlier name is dropped by its next build, once
+no dimension names it.
 
 Each select of a cascade lists the distinct values of its column among the rows the other selects leave. The API and the
 CLI also answer one select's list from the ledger (`attributes/<name>?attr=...&value=...`,
@@ -330,7 +336,7 @@ is on numbers, never on a text.
 | `DimensionAttribute` | key, attribute and value | The attribute by its number, the value, where it was read (the record, or a collected attribute's text), and for a collected value how many of the key's records hold it. |
 | `DimensionCollectedText` | collected attribute and text | The attribute by its number, the text exactly as the index holds it, the value it is shown as, and the records holding it. |
 | `DimensionChange` | key that moved, left, came back or arrived after the first build | The build, the key, from and to value. |
-| `dim_<flow>_<dimension>` | key and value it collects | The dimension as one table (The table, above): made and widened by builds, not by migrations. |
+| `dim_<dimension>` | key and value it collects | The dimension as one table (The table, above): made and widened by builds, not by migrations. |
 
 A build writes in one transaction: its values are copied into temporary tables, and set-based statements add, update and
 mark removed, give each attribute its number, and bring the dimension's own table to what was kept; an application lock
@@ -486,8 +492,9 @@ integration brief's aggregation facts, and the samples README.
 - Tests: a first build making the table with its identity key and indexes; a page searched, narrowed, ordered and paged;
   a build of the same thing writing no row; an attribute added gaining its column and a collected one rewriting the
   rows; a changed row rewritten under its number; a retired attribute's column emptied and somebody's own column left;
-  a dropped table, and one never made, made on reading; a key no longer found leaving; removal dropping the table; a
-  table name another flow writes refused; the names; the document refusing two dimensions of one table name and an
+  a table under an earlier name dropped by the next build; a dropped table, and one never made, made on reading; a
+  key no longer found leaving; removal dropping the table; a dimension another flow declares by the same name
+  refused; the names; the document refusing two dimensions of one table name and an
   attribute named after a column; the API's table, its page, its refusals and its export; the migration up, down and up
   again with attribute rows kept.
 
