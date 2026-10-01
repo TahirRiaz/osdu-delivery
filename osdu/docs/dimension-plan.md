@@ -136,11 +136,14 @@ With a `label`, a build reads each key's label after it has read the keys:
    has no label.
 2. The ids (without their version) are grouped by the entity type they name and searched in that type's kind
    (`*:*:master-data--Wellbore:*`), 500 ids a search, `id:("a" OR "b" ...)`, returning only `id` and the step's path.
-3. For every step but the last, the first record reference the path holds is the next record; the last step's first
-   non-empty text is the label, cut at 1,024 characters. A segment holding objects can filter them: `[Property=text]`
-   keeps those whose property equals the text, `[Property*=text]` those whose property contains it ignoring case, so
-   `data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID` reads the country among a wellbore's political
-   contexts; the search is asked to return the filter's property with the path.
+3. For every step but the last, every record reference the path holds in every record reached is followed (in order,
+   each once, at most 20 a key); at the last step, the first record reached whose path holds a non-empty text gives the
+   label, cut at 1,024 characters. A segment holding objects can filter them: `[Property=text]` keeps those whose
+   property equals the text, `[Property*=text]` those whose property contains it ignoring case, `[Property$=text]` those
+   whose property ends with it ignoring case; the search is asked to return the filter's property with the path. So
+   `[data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName']`
+   reads, of every political entity a wellbore names, the one whose own type is Country, as petrodb-api does, whether
+   or not the wellbore's context says its type.
 4. A key whose record the search does not hold, whose record holds no reference where a step reads one, or holds nothing
    at the last path, has no label; the build counts them (`Unlabelled`) and says why in its notes, with examples.
 
@@ -233,7 +236,7 @@ keeps its id. A key whose label, value or filter changed is rewritten, and a mov
 | A key that names no record, or one the search does not hold | No label: the key is its own value, and the build's notes count them with examples. |
 | A label path holding several values (an array) | The first non-empty one is read; for a step before the last, the first record reference. |
 | A label that changes (a wellbore renamed) | Read again by the next build; the key moves to the new value and the change log says so. |
-| A wellbore in a region and a country | A filtered segment (`[GeoTypeID*=Country]`) reads the country; without it the first entity is read. |
+| A wellbore in a region and a country | Every entity is followed, and a filter on the entity's own type (`data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:]`) keeps the country. |
 | An attribute a key's record does not hold | The key holds no row for it; the build's notes count such keys, by reason. |
 | An id escaping what it cannot hold (`%2F`) | The key keeps it; the value decodes it. |
 | A regular expression that would backtrack | Run with the non-backtracking engine; a pattern it cannot run is refused at load. |
