@@ -171,7 +171,7 @@ export function DimensionValues({ entry, dimensionId, onValue }: {
   const all: Column<DeliveryDimensionValue>[] = [
     {
       id: "value",
-      header: "Value",
+      header: dimension.valueColumn,
       // Where the keys are spellings, they take the room that is left; where they are ids, the value does.
       fill: labelled,
       floor: 180,

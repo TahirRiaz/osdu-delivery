@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.Engine.Dimensions;
 
@@ -12,11 +13,20 @@ namespace SqlFlow.Delivery.Engine.Dimensions;
 /// </summary>
 public static class DimensionTable
 {
-    /// <summary>The table of <paramref name="dimension"/>, from the declaration its last build kept.</summary>
+    /// <summary>
+    /// The table of <paramref name="dimension"/>, from the declaration its last build kept. Its key's and its value's
+    /// columns are the ones its table was last made ready with; for a dimension whose table never was (one built before
+    /// dimensions had tables), the ones its path, its label and its name give, which the store sets aside for the names
+    /// a table already there has, and its next build for the ones its document gives.
+    /// </summary>
     public static DimensionTableSpec SpecOf(DimensionState dimension)
     {
         ArgumentNullException.ThrowIfNull(dimension);
-        return DimensionTables.Of(dimension.Name, DimensionRunner.AttributesOf(dimension.AttributesJson));
+        var attributes = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        var (key, value) = dimension is { KeyColumn: { } keyColumn, ValueColumn: { } valueColumn }
+            ? (keyColumn, valueColumn)
+            : DimensionColumnNames.Settled(dimension.Path, DimensionRunner.LabelOf(dimension.LabelJson), dimension.Name, attributes.Select(a => a.Name));
+        return DimensionTables.Of(dimension.Name, key, value, attributes);
     }
 
     /// <summary>Makes sure the dimension has its table with its rows, and answers whether the table had to be made or widened.</summary>
@@ -26,7 +36,7 @@ public static class DimensionTable
         return ledger.EnsureDimensionTableAsync(dimension.DimensionId, SpecOf(dimension), ct);
     }
 
-    /// <summary>The table's name and attribute columns.</summary>
+    /// <summary>The table's name, the names of the columns that hold its key and its value, and its attribute columns.</summary>
     public static async Task<DimensionTableShape> ShapeAsync(ILedger ledger, DimensionState dimension, CancellationToken ct)
         => await WithTableAsync(ledger, dimension, () => ledger.DimensionTableShapeAsync(dimension.DimensionId, ct), ct).ConfigureAwait(false)
             ?? throw Gone(dimension);
@@ -48,7 +58,10 @@ public static class DimensionTable
         }
     }
 
-    /// <summary>Reads the table, making it first when the database does not hold it, and reading once more.</summary>
+    /// <summary>
+    /// Reads the table, making it first when the database does not hold it, and reading once more; and once more when a
+    /// build renamed a column of it between the read's two steps, which finds the column under its name.
+    /// </summary>
     private static async Task<T> WithTableAsync<T>(ILedger ledger, DimensionState dimension, Func<Task<T>> read, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(ledger);
@@ -60,6 +73,10 @@ public static class DimensionTable
         catch (DimensionTableMissingException)
         {
             await EnsureAsync(ledger, dimension, ct).ConfigureAwait(false);
+            return await read().ConfigureAwait(false);
+        }
+        catch (DimensionTableRenamedException)
+        {
             return await read().ConfigureAwait(false);
         }
     }

@@ -50,13 +50,16 @@ public sealed record DeliveryDimensionBuildDto(
 /// newest build when that is another one (<c>Latest</c>: one that failed, was cancelled or is running). <c>DimensionId</c> is
 /// null for a dimension no build has registered yet. <c>Changed</c> is true when the declaration differs from the one its
 /// values were built with. <c>Table</c> is the dimension's own table (<c>osdu.dim_...</c>): the dimension as one table, a
-/// row per key and value it collects; null until a build has written it.
+/// row per key and value it collects; null until a build has written it. <c>KeyColumn</c> and <c>ValueColumn</c> are what
+/// the dimension calls its key and its value, and what the two columns of its table are named after its next build: the
+/// property its path ends with (with <c>Key</c> at its end where the value's has that name), and the property its
+/// label ends with (or its own name, when it reads no label), unless the flow names them.
 /// </summary>
 public sealed record DeliveryDimensionDto(
     int? DimensionId, string Name, string? Description, string Kind, string? Query, string? BuiltQuery, string Path, IReadOnlyList<string> Label,
     string? Unlabelled, IReadOnlyList<DeliveryDimensionAttributeSpecDto> Attributes, IReadOnlyList<string> Clean, bool CountRecords, long MaxValues, bool Declared,
     bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field, long Values, long Keys, DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current,
-    DeliveryDimensionBuildDto? Latest, string? Table);
+    DeliveryDimensionBuildDto? Latest, string? Table, string KeyColumn, string ValueColumn);
 
 /// <summary>
 /// One row of a dimension's table: the row's number (what a table of facts joins on), the key's number, the key, its
@@ -66,11 +69,13 @@ public sealed record DeliveryDimensionDto(
 public sealed record DeliveryDimensionTableRowDto(long Id, long KeyId, string Key, string Value, IReadOnlyList<string?> Attributes, long Records, string? Filter);
 
 /// <summary>
-/// A page of a dimension's table: the table's name, its attribute columns, the rows, whether more follow, and on a first
-/// page how many rows the query matches in all.
+/// A page of a dimension's table: the table's name, the names of the columns that hold each row's <c>Key</c> and its
+/// <c>Value</c> as the table has them now, its attribute columns, the rows, whether more follow, and on a first page how
+/// many rows the query matches in all.
 /// </summary>
 public sealed record DeliveryDimensionTableDto(
-    string Table, IReadOnlyList<string> Attributes, IReadOnlyList<DeliveryDimensionTableRowDto> Rows, bool More, long? Total);
+    string Table, string KeyColumn, string ValueColumn, IReadOnlyList<string> Attributes, IReadOnlyList<DeliveryDimensionTableRowDto> Rows, bool More,
+    long? Total);
 
 /// <summary>
 /// An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names, or
@@ -367,9 +372,10 @@ public static class DeliveryDimensionEndpoints
 
     /// <summary>
     /// A page of the dimension's table (docs/dimension-plan.md, The table): the rows holding <c>search</c> in the key, the
-    /// value or an attribute, and every attribute value asked for (<c>attr=Name:value</c>), ordered by <c>order</c>
-    /// (<c>value</c>, <c>key</c>, <c>records</c>, <c>id</c> or an attribute's name) ascending or, with <c>dir=desc</c>,
-    /// descending, from row <c>offset</c>. A dimension built before dimensions had a table has its table made here.
+    /// value or an attribute, and every attribute value asked for (<c>attr=Name:value</c>), ordered by <c>order</c> (a
+    /// column of the table by its name, or <c>value</c> and <c>key</c> for those two columns whatever the dimension names
+    /// them) ascending or, with <c>dir=desc</c>, descending, from row <c>offset</c>. A dimension built before dimensions
+    /// had a table has its table made here.
     /// </summary>
     private static async Task<Results<Ok<DeliveryDimensionTableDto>, ProblemHttpResult>> ReadTableAsync(
         int dimensionId, string? search, string[]? attr, string? order, string? dir, int? offset, int? limit, ILedger ledger, CancellationToken ct)
@@ -420,6 +426,8 @@ public static class DeliveryDimensionEndpoints
                 ledger, dimension, new DimensionTableQuery(search, matches, order, descending, offset ?? 0, PageSize(limit)), ct).ConfigureAwait(false);
             return TypedResults.Ok(new DeliveryDimensionTableDto(
                 page.Table,
+                page.KeyColumn,
+                page.ValueColumn,
                 page.Attributes,
                 page.Rows.Select(r => new DeliveryDimensionTableRowDto(r.Id, r.KeyId, r.Key, r.Value, r.Attributes, r.Records, r.Filter)).ToList(),
                 page.More,
@@ -989,7 +997,9 @@ public static class DeliveryDimensionEndpoints
             state?.LastBuiltUtc,
             current is null ? null : ToDto(current),
             latest is null ? null : ToDto(latest),
-            state?.TableName is { } table ? DimensionTables.Shown(table) : null);
+            state?.TableName is { } table ? DimensionTables.Shown(table) : null,
+            spec?.KeyColumn ?? state?.KeyColumn ?? DimensionColumnNames.KeyRole,
+            spec?.ValueColumn ?? state?.ValueColumn ?? DimensionColumnNames.ValueRole);
     }
 
     private static DeliveryDimensionBuildDto ToDto(DimensionRunState r) => new(

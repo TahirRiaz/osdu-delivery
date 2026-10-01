@@ -10,19 +10,32 @@ namespace SqlFlow.Delivery.Ledger;
 public sealed record DimensionTableColumn(string Name, bool Collected);
 
 /// <summary>
-/// A dimension's table as a build keeps it: its name, and its attribute columns in the order the dimension declares them.
+/// A dimension's table as a build keeps it: its name, the names of the columns that hold its key and its value, and its
+/// attribute columns in the order the dimension declares them.
 /// </summary>
 /// <param name="Name">The table's name in the module's schema, without the schema.</param>
+/// <param name="KeyColumn">The column that holds each key, named as the dimension names it (<see cref="DimensionColumnNames"/>).</param>
+/// <param name="ValueColumn">The column that holds each key's value, named as the dimension names it.</param>
 /// <param name="Columns">The attribute columns, in the order the dimension declares them.</param>
-public sealed record DimensionTableSpec(string Name, IReadOnlyList<DimensionTableColumn> Columns);
+public sealed record DimensionTableSpec(string Name, string KeyColumn, string ValueColumn, IReadOnlyList<DimensionTableColumn> Columns);
+
+/// <summary>
+/// A dimension's table as a reader names it: the table, and the two columns whose names are the dimension's own, as the
+/// table has them now.
+/// </summary>
+/// <param name="Name">The table's name in the module's schema, without the schema.</param>
+/// <param name="KeyColumn">The column that holds each key.</param>
+/// <param name="ValueColumn">The column that holds each key's value.</param>
+public sealed record DimensionTableRef(string Name, string KeyColumn, string ValueColumn);
 
 /// <summary>
 /// The table of a dimension (docs/dimension-plan.md, The table): the dimension as one table any SQL client reads and joins
 /// on, in the module's schema, named after the dimension. A row per key and value it collects (one row for a key
 /// of a dimension collecting nothing, or collecting no value), with the row's number, the partition, the key's number, the
 /// key exactly as the index holds it, its value, the records of the row, the search filter finding the key's records, and
-/// a column per attribute named as the dimension declares it. A key under no value, and a key no build finds any more,
-/// is no row.
+/// a column per attribute named as the dimension declares it. The key's column and the value's are named after what the
+/// dimension reads (<see cref="DimensionColumnNames"/>: <c>WellboreID</c> and <c>FacilityName</c>), as the attributes'
+/// are. A key under no value, and a key no build finds any more, is no row.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -36,6 +49,12 @@ public sealed record DimensionTableSpec(string Name, IReadOnlyList<DimensionTabl
 /// column on the next build, and nothing is ever dropped or narrowed. An attribute the flow stops declaring keeps its
 /// column, emptied, so a query that names it still runs.
 /// </para>
+/// <para>
+/// The key's column and the value's are renamed where they are when the dimension names them otherwise (its path or
+/// its label changed, or the document gives another name), before the schema is brought to the declaration: the rows,
+/// their numbers and the indexes stay, and only the name moves. A table made before dimensions named their columns
+/// holds them as <c>key</c> and <c>value</c>, and its next build renames them the same way.
+/// </para>
 /// </remarks>
 public static class DimensionTables
 {
@@ -44,9 +63,6 @@ public static class DimensionTables
 
     /// <summary>The collation text is matched exactly by, whatever the database compares by.</summary>
     internal const string Exact = "Latin1_General_100_BIN2";
-
-    /// <summary>The columns a table has whatever its dimension declares, which an attribute cannot be named after.</summary>
-    public static readonly IReadOnlyList<string> FixedColumns = ["id", "partition", "key_id", "key", "value", "records", "filter"];
 
     /// <summary>The key SQLFlow's schema evolution holds a table to: a change to it is refused, never applied.</summary>
     internal static readonly IReadOnlySet<string> KeyColumns = new HashSet<string>(["id"], StringComparer.OrdinalIgnoreCase);
@@ -63,10 +79,15 @@ public static class DimensionTables
         return Prefix + Plain(dimension);
     }
 
-    /// <summary>The table of dimension <paramref name="dimension"/>, reading <paramref name="attributes"/>.</summary>
+    /// <summary>
+    /// The table of dimension <paramref name="dimension"/>, its key in <paramref name="keyColumn"/> and its value in
+    /// <paramref name="valueColumn"/>, reading <paramref name="attributes"/>.
+    /// </summary>
     /// <exception cref="DeliveryException">The dimension declares more attributes than a build lays out.</exception>
-    public static DimensionTableSpec Of(string dimension, IReadOnlyList<DimensionAttributeSpec> attributes)
+    public static DimensionTableSpec Of(string dimension, string keyColumn, string valueColumn, IReadOnlyList<DimensionAttributeSpec> attributes)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyColumn);
+        ArgumentException.ThrowIfNullOrWhiteSpace(valueColumn);
         ArgumentNullException.ThrowIfNull(attributes);
         if (attributes.Count > DimensionSpec.MaxAttributes)
         {
@@ -74,7 +95,7 @@ public static class DimensionTables
                 string.Create(CultureInfo.InvariantCulture, $"Dimension {dimension} declares {attributes.Count} attributes, and a dimension's table holds {DimensionSpec.MaxAttributes}."));
         }
 
-        return new DimensionTableSpec(NameOf(dimension), attributes.Select(a => new DimensionTableColumn(a.Name, a.IsCollected)).ToList());
+        return new DimensionTableSpec(NameOf(dimension), keyColumn, valueColumn, attributes.Select(a => new DimensionTableColumn(a.Name, a.IsCollected)).ToList());
     }
 
     /// <summary>A table's name with its schema, as a statement names it: <c>[osdu].[dim_...]</c>.</summary>
@@ -95,8 +116,8 @@ public static class DimensionTables
             new() { Name = "id", DataType = Type("bigint"), IsNullable = false, IsIdentity = true, IsPrimaryKey = true, Role = ColumnRole.Identity, Origin = ColumnOrigin.Computed },
             new() { Name = "partition", DataType = Text(256), IsNullable = false },
             new() { Name = "key_id", DataType = Type("bigint"), IsNullable = false },
-            new() { Name = "key", DataType = Text(DeliveryDimensionValue.MaxOriginalLength), IsNullable = false },
-            new() { Name = "value", DataType = Text(256), IsNullable = false },
+            new() { Name = table.KeyColumn, DataType = Text(DeliveryDimensionValue.MaxOriginalLength), IsNullable = false },
+            new() { Name = table.ValueColumn, DataType = Text(256), IsNullable = false },
             new() { Name = "records", DataType = Type("bigint"), IsNullable = false },
             new() { Name = "filter", DataType = Text(DeliveryDimensionValue.MaxFilterLength), IsNullable = true },
         };
@@ -107,17 +128,19 @@ public static class DimensionTables
     /// <summary>
     /// The indexes a table is read through, made when it has none of the name: a key's rows, which a build matches the
     /// rows it writes by and a join on the key's number seeks; and the rows of a partition in value order, which a page
-    /// reads and a count counts.
+    /// reads and a count counts. An index follows a column that is renamed, so each is named after what its column is
+    /// for, not after the column.
     /// </summary>
-    internal static string IndexSql(string name)
+    internal static string IndexSql(DimensionTableSpec spec)
     {
-        var table = Qualified(name);
+        ArgumentNullException.ThrowIfNull(spec);
+        var table = Qualified(spec.Name);
         var literal = table.Replace("'", "''", StringComparison.Ordinal);
         return $"""
             IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [object_id] = OBJECT_ID(N'{literal}', N'U') AND [name] = N'IX_key')
                 CREATE INDEX [IX_key] ON {table} ([partition], [key_id]);
             IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE [object_id] = OBJECT_ID(N'{literal}', N'U') AND [name] = N'IX_value')
-                CREATE INDEX [IX_value] ON {table} ([partition], [value], [id]);
+                CREATE INDEX [IX_value] ON {table} ([partition], {Quoted(spec.ValueColumn)}, [id]);
             """;
     }
 
@@ -134,6 +157,8 @@ public static class DimensionTables
         ArgumentNullException.ThrowIfNull(table);
         ArgumentNullException.ThrowIfNull(retired);
         var target = Qualified(table.Name);
+        var key = Quoted(table.KeyColumn);
+        var value = Quoted(table.ValueColumn);
         var attributes = table.Columns.Select((column, index) => (Column: Quoted(column.Name), Slot: $"[{Slot(index + 1)}]", column.Collected)).ToList();
         var collected = attributes.FirstOrDefault(a => a.Collected).Column;
 
@@ -145,7 +170,7 @@ public static class DimensionTables
         sql.Append(CultureInfo.InvariantCulture, $"IF @rewrite = 1\n    DELETE FROM {target} WHERE [partition] = @partition;\n\n");
         sql.Append(CultureInfo.InvariantCulture, $"DELETE t\nFROM {target} AS t\nWHERE t.[partition] = @partition\n  AND NOT EXISTS (SELECT 1 FROM #DimRow AS s WHERE {same});\n\n");
 
-        sql.Append("UPDATE t SET t.[key] = s.[Key], t.[value] = s.[Value], t.[records] = s.[Records], t.[filter] = s.[Filter]");
+        sql.Append(CultureInfo.InvariantCulture, $"UPDATE t SET t.{key} = s.[Key], t.{value} = s.[Value], t.[records] = s.[Records], t.[filter] = s.[Filter]");
         foreach (var attribute in attributes)
         {
             sql.Append(CultureInfo.InvariantCulture, $", t.{attribute.Column} = s.{attribute.Slot}");
@@ -163,7 +188,7 @@ public static class DimensionTables
             sql.Append(CultureInfo.InvariantCulture, $", s.{attribute.Slot}");
         }
 
-        sql.Append(CultureInfo.InvariantCulture, $"\n        EXCEPT\n        SELECT t.[key] COLLATE {Exact}, t.[value] COLLATE {Exact}, t.[records], t.[filter] COLLATE {Exact}");
+        sql.Append(CultureInfo.InvariantCulture, $"\n        EXCEPT\n        SELECT t.{key} COLLATE {Exact}, t.{value} COLLATE {Exact}, t.[records], t.[filter] COLLATE {Exact}");
         foreach (var attribute in attributes)
         {
             sql.Append(CultureInfo.InvariantCulture, $", t.{attribute.Column} COLLATE {Exact}");
@@ -178,7 +203,7 @@ public static class DimensionTables
         sql.Append(");\n\n");
 
         // New rows take their numbers in the table's own order: by value, then key, then the value collected.
-        sql.Append(CultureInfo.InvariantCulture, $"INSERT INTO {target} ([partition], [key_id], [key], [value], [records], [filter]");
+        sql.Append(CultureInfo.InvariantCulture, $"INSERT INTO {target} ([partition], [key_id], {key}, {value}, [records], [filter]");
         foreach (var attribute in attributes)
         {
             sql.Append(CultureInfo.InvariantCulture, $", {attribute.Column}");

@@ -1257,6 +1257,21 @@ public sealed class DeliveryDimension
     /// </summary>
     public string? TableName { get; set; }
 
+    /// <summary>
+    /// The column of the dimension's table that holds each key, as the table has it now: named after the property the
+    /// dimension's path ends with (with <c>Key</c> at its end where the value's column has that name) unless its document
+    /// names it, and <c>key</c> in a table made before dimensions named their columns, which the next build renames. Null
+    /// until the table has been made ready.
+    /// </summary>
+    public string? KeyColumn { get; set; }
+
+    /// <summary>
+    /// The column of the dimension's table that holds each key's value, as the table has it now: named after the property
+    /// the dimension's label ends with (or after the dimension, when it reads no label) unless its document names it, and
+    /// <c>value</c> in a table made before dimensions named their columns. Null until the table has been made ready.
+    /// </summary>
+    public string? ValueColumn { get; set; }
+
     /// <summary>The members the dimension holds now.</summary>
     public long Members { get; set; }
 
@@ -2192,6 +2207,8 @@ public static class DeliveryModel
             e.Property(d => d.CleanJson).IsRequired();
             e.Property(d => d.DefinitionHash).HasMaxLength(16).IsRequired();
             e.Property(d => d.TableName).HasMaxLength(128);
+            e.Property(d => d.KeyColumn).HasMaxLength(128);
+            e.Property(d => d.ValueColumn).HasMaxLength(128);
             // A dimension named by its id: every member, original, build and change of it names it so.
             e.HasIndex(d => d.DimensionId).IsUnique();
             // A flow's dimension in a partition, by its name: what a build registers and a page finds.

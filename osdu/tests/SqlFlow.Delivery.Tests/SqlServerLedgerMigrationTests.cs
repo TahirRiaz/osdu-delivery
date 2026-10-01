@@ -45,6 +45,9 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before dimensions had tables of their own and attributes had numbers.</summary>
     private const string BeforeDimensionTables = "20261001102750_DimensionCollectedTexts";
 
+    /// <summary>The migration before a dimension's table named its key's and its value's columns after what the dimension reads.</summary>
+    private const string BeforeDimensionColumnNames = "20261001163440_DimensionTables";
+
     /// <summary>The tables of dimension flows, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] DimensionTables =
         ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange", "DimensionAttribute", "DimensionCollectedText", "DimensionAttributeName"];
@@ -817,6 +820,47 @@ public sealed class SqlServerLedgerMigrationTests
         await database.MigrateAsync(null);
         Assert.Equal(3L, await database.ScalarAsync(Kept));
         Assert.Equal(2L, await database.ScalarAsync(Texts));
+    }
+
+    [Fact]
+    public async Task A_table_made_before_dimensions_named_their_columns_is_recorded_under_key_and_value_and_takes_them_back_going_down()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeDimensionColumnNames);
+        await database.ExecuteAsync("""
+            INSERT INTO [osdu].[LedgerPartition] ([Name], [CreatedUtc]) VALUES (N'dev', SYSUTCDATETIME());
+            DECLARE @p smallint = (SELECT [PartitionId] FROM [osdu].[LedgerPartition] WHERE [Name] = N'dev');
+            INSERT INTO [osdu].[Dimension] ([PartitionId], [FlowId], [FlowName], [Name], [Kind], [Path], [Repeats], [CleanJson], [DefinitionHash], [Members], [Originals], [CreatedUtc], [TableName])
+            VALUES (@p, NEWID(), N'wells', N'Wellbore', N'osdu:wks:work-product-component--WellLog:1.4.0', N'data.WellboreID', 0, N'[]', N'0123456789abcdef', 1, 1, SYSUTCDATETIME(), N'dim_Wellbore'),
+                   (@p, NEWID(), N'wells', N'Source', N'osdu:wks:work-product-component--WellLog:1.4.0', N'data.Source', 0, N'[]', N'0123456789abcdef', 0, 0, SYSUTCDATETIME(), NULL);
+            CREATE TABLE [osdu].[dim_Wellbore] (
+                [id] bigint IDENTITY(1, 1) NOT NULL PRIMARY KEY, [partition] nvarchar(256) NOT NULL, [key_id] bigint NOT NULL, [key] nvarchar(1024) NOT NULL,
+                [value] nvarchar(256) NOT NULL, [records] bigint NOT NULL, [filter] nvarchar(4000) NULL);
+            """);
+        await database.ExecuteAsync("INSERT INTO [osdu].[dim_Wellbore] ([partition], [key_id], [key], [value], [records]) VALUES (N'dev', 1, N'dev:master-data--Wellbore:1:', N'15/9-F-1', 4);");
+
+        // A table a build has made holds its key and its value under those two names, which is what its row records; a
+        // dimension with no table records none until one is made.
+        await database.MigrateAsync(null);
+        const string Recorded = "SELECT COUNT_BIG(*) FROM [osdu].[Dimension] WHERE [TableName] = N'dim_Wellbore' AND [KeyColumn] = N'key' AND [ValueColumn] = N'value';";
+        Assert.Equal(1L, await database.ScalarAsync(Recorded));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[Dimension] WHERE [TableName] IS NULL AND [KeyColumn] IS NULL AND [ValueColumn] IS NULL;"));
+
+        // A build then renames the two columns, and going back down gives them the names the code before reads them by.
+        await database.ExecuteAsync("""
+            EXEC sys.sp_rename N'[osdu].[dim_Wellbore].[key]', N'WellboreID', N'COLUMN';
+            EXEC sys.sp_rename N'[osdu].[dim_Wellbore].[value]', N'FacilityName', N'COLUMN';
+            UPDATE [osdu].[Dimension] SET [KeyColumn] = N'WellboreID', [ValueColumn] = N'FacilityName' WHERE [TableName] = N'dim_Wellbore';
+            """);
+        await database.MigrateAsync(BeforeDimensionColumnNames);
+        const string Row = "SELECT COUNT_BIG(*) FROM [osdu].[dim_Wellbore] WHERE [id] = 1 AND [key] = N'dev:master-data--Wellbore:1:' AND [value] = N'15/9-F-1';";
+        Assert.Equal(1L, await database.ScalarAsync(Row));
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[Dimension]') AND [name] IN (N'KeyColumn', N'ValueColumn');"));
+
+        // And up again: the table as it is, recorded as it is.
+        await database.MigrateAsync(null);
+        Assert.Equal(1L, await database.ScalarAsync(Recorded));
+        Assert.Equal(1L, await database.ScalarAsync(Row));
     }
 
     /// <summary>

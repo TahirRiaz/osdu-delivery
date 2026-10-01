@@ -10,6 +10,7 @@ using SqlFlow.Core.Data;
 using SqlFlow.Core.Ingestion;
 using SqlFlow.Core.Model;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Model;
 using SqlFlow.SqlServer;
 using SqlFlow.SqlServer.Catalog;
 using SqlFlow.SqlServer.Schema;
@@ -488,29 +489,44 @@ internal static class SqlServerDimensionStore
         return columns;
     }
 
-    /// <summary>A column of the table by the name a caller gave it, ignoring case; null when the table has none of that name.</summary>
-    private static string? TableColumn(IReadOnlyList<string> attributes, string name)
-        => name.Trim().ToLowerInvariant() switch
-        {
-            "key" => "key",
-            "value" => "value",
-            "records" => "records",
-            "id" => "id",
-            _ => attributes.FirstOrDefault(a => string.Equals(a, name.Trim(), StringComparison.OrdinalIgnoreCase)),
-        };
+    /// <summary>The columns of every table a page can be ordered by, beside the key's, the value's and the attributes'.</summary>
+    private const string RecordsColumn = "records";
+
+    private const string IdColumn = "id";
+
+    /// <summary>
+    /// A column of the table by the name a caller gave it, ignoring case: a column named so in the table first, then the
+    /// two words the value's and the key's columns are asked for by whatever the dimension names them; null when the
+    /// table has no such column.
+    /// </summary>
+    private static string? TableColumn(DimensionTableRef table, IReadOnlyList<string> attributes, string name)
+    {
+        var wanted = name.Trim();
+        string[] named = [table.ValueColumn, table.KeyColumn, RecordsColumn, IdColumn, .. attributes];
+        return named.FirstOrDefault(c => string.Equals(c, wanted, StringComparison.OrdinalIgnoreCase))
+            ?? (string.Equals(wanted, DimensionColumnNames.ValueRole, StringComparison.OrdinalIgnoreCase) ? table.ValueColumn
+                : string.Equals(wanted, DimensionColumnNames.KeyRole, StringComparison.OrdinalIgnoreCase) ? table.KeyColumn
+                : null);
+    }
 
     private static string Bracketed(string identifier) => DimensionTables.Quoted(identifier);
 
-    /// <summary>The columns a row begins with, the ones it ends with, and the ones text is searched in beside the attributes.</summary>
-    private static readonly string[] LeadColumns = ["[id]", "[key_id]", "[key]", "[value]"];
-
+    /// <summary>The columns a row ends with.</summary>
     private static readonly string[] EndColumns = ["[records]", "[filter]"];
 
-    private static readonly string[] SearchedColumns = ["[value]", "[key]"];
-
     /// <summary>The rows a statement over a table reads: the row's number, the key's, the key, the value, each attribute, the records and the filter.</summary>
-    private static string TableColumns(IReadOnlyList<string> attributes, string alias = "")
-        => string.Join(", ", LeadColumns.Concat(attributes.Select(Bracketed)).Concat(EndColumns).Select(c => alias + c));
+    private static string TableColumns(DimensionTableRef table, IReadOnlyList<string> attributes, string alias = "")
+        => string.Join(", ", new[] { "[id]", "[key_id]", Bracketed(table.KeyColumn), Bracketed(table.ValueColumn) }
+            .Concat(attributes.Select(Bracketed)).Concat(EndColumns).Select(c => alias + c));
+
+    /// <summary>What SQL Server answers a statement naming a column the table does not have.</summary>
+    private const int InvalidColumnName = 207;
+
+    /// <summary>A read that named a column the table no longer has: a build renamed it between the read's two steps.</summary>
+    private static DimensionTableRenamedException Renamed(DimensionTableRef table, SqlException ex)
+        => new(
+            $"The table {DimensionTables.Shown(table.Name)} was changed while it was read (a build renamed a column of it, or one was dropped by hand): {ex.Message.Trim()} Read it again.",
+            ex);
 
     /// <summary>A row of a table, its columns read in the order the statement names them, as a reader streaming them needs.</summary>
     private static DimensionTableRow TableRow(SqlDataReader reader, int attributes)
@@ -530,7 +546,7 @@ internal static class SqlServerDimensionStore
     }
 
     /// <summary>
-    /// A page of the rows of <paramref name="table"/> in partition <paramref name="partition"/>, narrowed and ordered as
+    /// A page of the rows of the table <paramref name="named"/> in partition <paramref name="partition"/>, narrowed and ordered as
     /// <paramref name="query"/> asks, with how many rows it matches in all on a first page.
     /// </summary>
     /// <remarks>
@@ -542,12 +558,15 @@ internal static class SqlServerDimensionStore
     /// for the count and the page together.
     /// </remarks>
     /// <exception cref="DimensionTableMissingException">The database holds no such table.</exception>
+    /// <exception cref="DimensionTableRenamedException">A build renamed a column of the table while it was read.</exception>
     /// <exception cref="DeliveryException">The query orders or narrows by a column the table does not have.</exception>
     public static async Task<DimensionTablePage> ReadTableAsync(
-        OsduDbContext db, short partitionId, int dimensionId, string table, string partition, DimensionTableQuery query, int maxPage, CancellationToken ct)
+        OsduDbContext db, short partitionId, int dimensionId, DimensionTableRef named, string partition, DimensionTableQuery query, int maxPage, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(named);
         ArgumentNullException.ThrowIfNull(query);
+        var table = named.Name;
         await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
         try
         {
@@ -561,7 +580,7 @@ internal static class SqlServerDimensionStore
                 var like = "%" + query.Search.Trim().Replace("\\", "\\\\", StringComparison.Ordinal).Replace("%", "\\%", StringComparison.Ordinal)
                     .Replace("_", "\\_", StringComparison.Ordinal).Replace("[", "\\[", StringComparison.Ordinal) + "%";
                 parameters.Add(new SqlParameter("@like", SqlDbType.NVarChar, 600) { Value = like });
-                where.Add("(" + string.Join(" OR ", SearchedColumns.Concat(attributes.Select(Bracketed))
+                where.Add("(" + string.Join(" OR ", new[] { named.ValueColumn, named.KeyColumn }.Concat(attributes).Select(Bracketed)
                     .Select(c => $"UPPER({c}) COLLATE {DimensionTables.Exact} LIKE UPPER(@like) ESCAPE N'\\'")) + ")");
             }
 
@@ -585,13 +604,14 @@ internal static class SqlServerDimensionStore
                 }
             }
 
-            var ordered = string.IsNullOrWhiteSpace(query.OrderBy) ? "value" : TableColumn(attributes, query.OrderBy)
+            var ordered = string.IsNullOrWhiteSpace(query.OrderBy) ? named.ValueColumn : TableColumn(named, attributes, query.OrderBy)
                 ?? throw new DeliveryException(
-                    $"The table {DimensionTables.Shown(table)} has no column '{query.OrderBy}' to order by; it has value, key, records, id{(attributes.Count == 0 ? string.Empty : ", " + string.Join(", ", attributes))}.");
+                    $"The table {DimensionTables.Shown(table)} has no column '{query.OrderBy}' to order by; it has {named.ValueColumn}, {named.KeyColumn}, {RecordsColumn}, {IdColumn}{(attributes.Count == 0 ? string.Empty : ", " + string.Join(", ", attributes))}.");
 
             // A row's number tells it from every other, so the order ends with it: every page then holds its own rows.
             var direction = query.Descending ? "DESC" : "ASC";
-            var order = ordered == "id" ? $"[id] {direction}" : $"{Bracketed(ordered)} {direction}, [id]";
+            var byId = string.Equals(ordered, IdColumn, StringComparison.Ordinal);
+            var order = byId ? $"[id] {direction}" : $"{Bracketed(ordered)} {direction}, [id]";
             var take = Math.Clamp(query.Limit, 1, maxPage);
             var offset = Math.Max(0, query.Offset);
             var filter = string.Join(" AND ", where);
@@ -604,8 +624,8 @@ internal static class SqlServerDimensionStore
                 // A search or an attribute's value is found by reading the partition's rows, so they are read once: the
                 // numbers of the rows that match are kept with the column they are ordered by, counted, and the page
                 // taken from them.
-                var by = ordered == "id" ? string.Empty : $", {Bracketed(ordered)} AS [o]";
-                var matchOrder = ordered == "id" ? $"[id] {direction}" : $"[o] {direction}, [id]";
+                var by = byId ? string.Empty : $", {Bracketed(ordered)} AS [o]";
+                var matchOrder = byId ? $"[id] {direction}" : $"[o] {direction}, [id]";
                 await using var command = new SqlCommand(
                     $"""
                     SET NOCOUNT ON;
@@ -616,7 +636,7 @@ internal static class SqlServerDimensionStore
                     SELECT [id] FROM #match ORDER BY {matchOrder} OFFSET @offset ROWS FETCH NEXT @take ROWS ONLY;
                     DROP TABLE #match;
                     SELECT @total;
-                    SELECT {TableColumns(attributes, "t.")}
+                    SELECT {TableColumns(named, attributes, "t.")}
                     FROM @page AS g INNER JOIN {from} AS t ON t.[id] = g.[id]
                     ORDER BY g.[n];
                     """,
@@ -658,7 +678,7 @@ internal static class SqlServerDimensionStore
                         DECLARE @page TABLE ([n] int IDENTITY(1, 1) NOT NULL PRIMARY KEY, [id] bigint NOT NULL);
                         INSERT INTO @page ([id])
                         SELECT [id] FROM {from} WHERE {filter} ORDER BY {order} OFFSET @offset ROWS FETCH NEXT @take ROWS ONLY;
-                        SELECT {TableColumns(attributes, "t.")}
+                        SELECT {TableColumns(named, attributes, "t.")}
                         FROM @page AS g INNER JOIN {from} AS t ON t.[id] = g.[id]
                         ORDER BY g.[n];
                         """,
@@ -679,7 +699,11 @@ internal static class SqlServerDimensionStore
 
             // A first page knows how many rows there are; a later one says more may follow while it comes back full.
             var more = total is { } all ? offset + rows.Count < all : rows.Count == take;
-            return new DimensionTablePage(DimensionTables.Shown(table), attributes, rows, more, total);
+            return new DimensionTablePage(DimensionTables.Shown(table), named.KeyColumn, named.ValueColumn, attributes, rows, more, total);
+        }
+        catch (SqlException ex) when (ex.Number == InvalidColumnName)
+        {
+            throw Renamed(named, ex);
         }
         finally
         {
@@ -687,13 +711,16 @@ internal static class SqlServerDimensionStore
         }
     }
 
-    /// <summary>Every row of <paramref name="table"/> in partition <paramref name="partition"/>, by value then row number, one at a time.</summary>
+    /// <summary>Every row of the table <paramref name="named"/> in partition <paramref name="partition"/>, by value then row number, one at a time.</summary>
     /// <exception cref="DimensionTableMissingException">The database holds no such table.</exception>
+    /// <exception cref="DimensionTableRenamedException">A build renamed a column of the table as the read began.</exception>
     public static async IAsyncEnumerable<DimensionTableRow> StreamTableAsync(
-        OsduDbContext db, short partitionId, int dimensionId, string table, string partition,
+        OsduDbContext db, short partitionId, int dimensionId, DimensionTableRef named, string partition,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(named);
+        var table = named.Name;
         await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
         try
         {
@@ -704,13 +731,23 @@ internal static class SqlServerDimensionStore
             // would reserve memory for the widest table it can imagine: a tenth of what it may give one query sorts any
             // dimension, past it the sort uses tempdb, and other queries keep their memory.
             await using var command = new SqlCommand(
-                $"SELECT {TableColumns(attributes)} FROM {DimensionTables.Qualified(table)} WHERE [partition] = @partition ORDER BY [value], [id] OPTION (MAX_GRANT_PERCENT = 10);",
+                $"SELECT {TableColumns(named, attributes)} FROM {DimensionTables.Qualified(table)} WHERE [partition] = @partition ORDER BY {Bracketed(named.ValueColumn)}, [id] OPTION (MAX_GRANT_PERCENT = 10);",
                 connection)
             {
                 CommandTimeout = CommandTimeoutSeconds,
             };
             command.Parameters.Add(new SqlParameter("@partition", SqlDbType.NVarChar, 256) { Value = partition });
-            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
+            SqlDataReader opened;
+            try
+            {
+                opened = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
+            }
+            catch (SqlException ex) when (ex.Number == InvalidColumnName)
+            {
+                throw Renamed(named, ex);
+            }
+
+            await using var reader = opened;
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
             {
                 yield return TableRow(reader, attributes.Count);
@@ -722,18 +759,181 @@ internal static class SqlServerDimensionStore
         }
     }
 
-    /// <summary>What preparing a dimension's table came to: the statements that write its rows, and whether its schema had to change.</summary>
-    private sealed record PreparedTable(string ApplySql, bool Changed);
+    /// <summary>
+    /// What preparing a dimension's table came to: the table as it is now (its key's and its value's columns under the
+    /// names they were settled at), the statements that write its rows, and whether its schema had to change.
+    /// </summary>
+    private sealed record PreparedTable(DimensionTableSpec Table, string ApplySql, bool Changed);
+
+    // What the table's key and value columns are named now: what the dimensions writing the table recorded (the rows
+    // that name the table first, then this dimension's own, which a build that never wrote may hold alone), and the
+    // columns the table has.
+    private const string ColumnsSql = """
+        SELECT TOP (1) d.[KeyColumn], d.[ValueColumn]
+        FROM [osdu].[Dimension] AS d
+        WHERE (d.[TableName] = @name OR (d.[PartitionId] = @p AND d.[DimensionId] = @d))
+          AND d.[KeyColumn] IS NOT NULL AND d.[ValueColumn] IS NOT NULL
+        ORDER BY CASE WHEN d.[TableName] = @name THEN 0 ELSE 1 END;
+
+        SELECT c.[name] FROM sys.columns AS c WHERE c.[object_id] = OBJECT_ID(@table, N'U');
+        """;
+
+    // The names recorded on every dimension writing the table (one a partition) and on this one, compared exactly, so
+    // a name that changed only in case is recorded too.
+    private const string RecordColumnsSql = """
+        UPDATE [osdu].[Dimension] SET [KeyColumn] = @key, [ValueColumn] = @value
+        WHERE ([TableName] = @name OR ([PartitionId] = @p AND [DimensionId] = @d))
+          AND (ISNULL([KeyColumn], N'') COLLATE Latin1_General_100_BIN2 <> @key OR ISNULL([ValueColumn], N'') COLLATE Latin1_General_100_BIN2 <> @value);
+        """;
+
+    /// <summary>The names a column passes through when two renames would cross (the key's and the value's swapped, or a name changed only in case).</summary>
+    private static string Passing(string role) => "osdu_renaming_" + role;
 
     /// <summary>
-    /// Makes sure the dimension's table is there with a column for every attribute it declares, before the write's
-    /// transaction begins: SQLFlow's schema evolution reads the table as it is, creates it when it is missing and adds the
-    /// column of an attribute it does not have, and never drops or narrows one (docs/dimension-plan.md, The table). Then
-    /// the two indexes it is read through, and the statements that write its rows.
+    /// Settles what the table's key and value columns are named, before its schema is brought to the declaration
+    /// (docs/dimension-plan.md, The table). A build (<paramref name="rename"/>) names them as its dimension declares: where
+    /// the table holds them under other names (the dimension's path or label changed, its document names them otherwise,
+    /// or the table was made before dimensions named their columns and holds <c>key</c> and <c>value</c>), each is renamed
+    /// where it is, so the rows, their numbers and the indexes stay. A reader that makes a missing table ready does not
+    /// know the declaration, so it keeps the names the table has. The names are recorded on every dimension writing the
+    /// table, in the transaction that renames, so a reader never names a column the table does not have.
+    /// </summary>
+    /// <returns>The table with its columns as they are named now, and whether a column was renamed.</returns>
+    /// <exception cref="DeliveryException">A name is taken by another column of the table, a rename failed, or another build held the table too long.</exception>
+    private static async Task<(DimensionTableSpec Table, bool Renamed)> SettleColumnsAsync(
+        SqlConnection connection, short partitionId, int dimensionId, DimensionTableSpec declared, bool rename, CancellationToken ct)
+    {
+        var shown = DimensionTables.Shown(declared.Name);
+        var transaction = (SqlTransaction)await connection.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false);
+        await using (transaction.ConfigureAwait(false))
+        {
+            try
+            {
+                // One table is written by a dimension in each partition it is built in, so its columns are settled by one at a time.
+                await using (var held = Command(connection, transaction, LockSql))
+                {
+                    held.Parameters.Add(new SqlParameter("@resource", SqlDbType.NVarChar, 255) { Value = "osdu-dimension-table:" + declared.Name });
+                    held.Parameters.Add(new SqlParameter("@timeout", SqlDbType.Int) { Value = LockTimeoutMs });
+                    var granted = Convert.ToInt32(await held.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture);
+                    if (granted < 0)
+                    {
+                        throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
+                            $"Another build held the dimension's table {shown} for more than {LockTimeoutMs / 1000} seconds while it settled its columns (sp_getapplock answered {granted}), so nothing was written. Build it again when the other has finished."));
+                    }
+                }
+
+                (string Key, string Value)? recorded = null;
+                var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                await using (var read = Command(connection, transaction, ColumnsSql))
+                {
+                    AddColumnParameters(read, partitionId, dimensionId, declared.Name);
+                    read.Parameters.Add(new SqlParameter("@table", SqlDbType.NVarChar, 300) { Value = DimensionTables.Qualified(declared.Name) });
+                    await using var reader = await read.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                    if (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    {
+                        recorded = (reader.GetString(0), reader.GetString(1));
+                    }
+
+                    await reader.NextResultAsync(ct).ConfigureAwait(false);
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    {
+                        columns.Add(reader.GetString(0));
+                    }
+                }
+
+                // A table made before dimensions named their columns, which no row says so of, holds them under the two words.
+                var was = recorded
+                    ?? (columns.Contains(DimensionColumnNames.KeyRole) && columns.Contains(DimensionColumnNames.ValueRole)
+                        ? (DimensionColumnNames.KeyRole, DimensionColumnNames.ValueRole)
+                        : ((string Key, string Value)?)null);
+                var table = !rename && was is { } kept ? declared with { KeyColumn = kept.Key, ValueColumn = kept.Value } : declared;
+
+                var moves = new List<(string Role, string From, string To)>();
+                if (rename && was is { } named)
+                {
+                    foreach (var (role, from, to) in new[] { (DimensionColumnNames.KeyRole, named.Key, table.KeyColumn), (DimensionColumnNames.ValueRole, named.Value, table.ValueColumn) })
+                    {
+                        if (!string.Equals(from, to, StringComparison.Ordinal) && columns.Contains(from))
+                        {
+                            moves.Add((role, from, to));
+                        }
+                    }
+                }
+
+                // A name is free when no column holds it, or when the column holding it is itself being renamed away.
+                foreach (var (role, from, to) in moves)
+                {
+                    if (columns.Contains(to) && !moves.Any(m => string.Equals(m.From, to, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        throw new DeliveryException(
+                            $"The dimension's table {shown} has a column {to} already (an attribute the dimension declared before, or a column added by hand), so its {role} column {from} cannot be renamed to it, and nothing was written. Drop that column, or name the {role}'s column otherwise in the flow: columns: {{ {role}: <name> }}.");
+                    }
+                }
+
+                var crossing = moves.Any(m => moves.Any(o => string.Equals(o.From, m.To, StringComparison.OrdinalIgnoreCase)));
+                if (crossing)
+                {
+                    foreach (var (role, from, _) in moves)
+                    {
+                        await RenameColumnAsync(connection, transaction, declared.Name, from, Passing(role), ct).ConfigureAwait(false);
+                    }
+                }
+
+                foreach (var (role, from, to) in moves)
+                {
+                    await RenameColumnAsync(connection, transaction, declared.Name, crossing ? Passing(role) : from, to, ct).ConfigureAwait(false);
+                }
+
+                await using (var record = Command(connection, transaction, RecordColumnsSql))
+                {
+                    AddColumnParameters(record, partitionId, dimensionId, declared.Name);
+                    record.Parameters.Add(new SqlParameter("@key", SqlDbType.NVarChar, 128) { Value = table.KeyColumn });
+                    record.Parameters.Add(new SqlParameter("@value", SqlDbType.NVarChar, 128) { Value = table.ValueColumn });
+                    await record.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                }
+
+                await transaction.CommitAsync(ct).ConfigureAwait(false);
+                return (table, moves.Count > 0);
+            }
+            catch (SqlException ex)
+            {
+                throw new DeliveryException(
+                    $"The columns of the dimension's table {shown} could not be settled, so nothing was written: {ex.Message.Trim()} The database user the module connects as needs ALTER on the osdu schema to rename a column; a table changed by hand into something a build cannot write is put right, or dropped so the next run makes it again.",
+                    ex);
+            }
+        }
+    }
+
+    private static void AddColumnParameters(SqlCommand command, short partitionId, int dimensionId, string table)
+    {
+        command.Parameters.Add(new SqlParameter("@name", SqlDbType.NVarChar, 128) { Value = table });
+        command.Parameters.Add(new SqlParameter("@p", SqlDbType.SmallInt) { Value = partitionId });
+        command.Parameters.Add(new SqlParameter("@d", SqlDbType.Int) { Value = dimensionId });
+    }
+
+    /// <summary>Renames one column of a table where it is: its rows and the indexes over it stay, and only its name moves.</summary>
+    private static async Task RenameColumnAsync(SqlConnection connection, SqlTransaction transaction, string table, string from, string to, CancellationToken ct)
+    {
+        await using var command = Command(connection, transaction, "EXEC sys.sp_rename @objname = @column, @newname = @to, @objtype = N'COLUMN';");
+        command.Parameters.Add(new SqlParameter("@column", SqlDbType.NVarChar, 776) { Value = DimensionTables.Qualified(table) + "." + Bracketed(from) });
+        command.Parameters.Add(new SqlParameter("@to", SqlDbType.NVarChar, 128) { Value = to });
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Makes sure the dimension's table is there with its key's and its value's columns under their names and a column
+    /// for every attribute it declares, before the write's transaction begins: the two columns are settled first
+    /// (<see cref="SettleColumnsAsync"/>), then SQLFlow's schema evolution reads the table as it is, creates it when it is
+    /// missing and adds the column of an attribute it does not have, and never drops or narrows one
+    /// (docs/dimension-plan.md, The table). Then the two indexes it is read through, and the statements that write its rows.
+    /// <paramref name="rename"/> is true for a build, which names the two columns as its dimension declares, and false
+    /// for a reader, which keeps the names the table has.
     /// </summary>
     /// <exception cref="DeliveryException">The table cannot be made or widened: the database user may not, or the table was changed by hand into something a build cannot write.</exception>
-    private static async Task<PreparedTable> PrepareTableAsync(SqlConnection connection, short partitionId, int dimensionId, DimensionTableSpec table, CancellationToken ct)
+    private static async Task<PreparedTable> PrepareTableAsync(
+        SqlConnection connection, short partitionId, int dimensionId, DimensionTableSpec declared, bool rename, CancellationToken ct)
     {
+        var (table, renamed) = await SettleColumnsAsync(connection, partitionId, dimensionId, declared, rename, ct).ConfigureAwait(false);
         var target = new RelationalObject { Database = connection.Database, Schema = DeliveryModel.SchemaName, Name = table.Name };
         try
         {
@@ -741,7 +941,7 @@ internal static class SqlServerDimensionStore
                 .PlanAsync(connection, target, DimensionTables.Desired(table), DimensionTables.KeyColumns, ct).ConfigureAwait(false);
             var batch = EvolutionDdlGenerator.Generate(target, plan, allowTableRewrite: false);
             await SqlServerSchemaProvider.ApplyDdlAsync(connection, batch, new SchemaApplyOptions(), ct).ConfigureAwait(false);
-            await using (var indexes = new SqlCommand(DimensionTables.IndexSql(table.Name), connection) { CommandTimeout = CommandTimeoutSeconds })
+            await using (var indexes = new SqlCommand(DimensionTables.IndexSql(table), connection) { CommandTimeout = CommandTimeoutSeconds })
             {
                 await indexes.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
@@ -771,7 +971,7 @@ internal static class SqlServerDimensionStore
                 retired.AddRange(extra.Where(names.Contains));
             }
 
-            return new PreparedTable(DimensionTables.ApplySql(table, retired), batch.HasChanges);
+            return new PreparedTable(table, DimensionTables.ApplySql(table, retired), batch.HasChanges || renamed);
         }
         catch (Exception ex) when (ex is SqlException or SqlFlowException)
         {
@@ -792,7 +992,8 @@ internal static class SqlServerDimensionStore
     /// <summary>
     /// Makes sure dimension <paramref name="dimensionId"/> has <paramref name="table"/> with the rows the ledger holds of
     /// it, as a build's write does, without a build: for a dimension built before dimensions had a table, or one whose
-    /// table was dropped. Says whether the table had to be made or widened.
+    /// table was dropped. The table's key and value columns keep the names it has; where it has none yet, they take
+    /// <paramref name="table"/>'s. Says whether the table had to be made or widened.
     /// </summary>
     public static async Task<bool> EnsureTableAsync(
         OsduDbContext db, short partitionId, int dimensionId, string partition, DimensionTableSpec table, CancellationToken ct)
@@ -803,7 +1004,7 @@ internal static class SqlServerDimensionStore
         try
         {
             var connection = (SqlConnection)db.Database.GetDbConnection();
-            var prepared = await PrepareTableAsync(connection, partitionId, dimensionId, table, ct).ConfigureAwait(false);
+            var prepared = await PrepareTableAsync(connection, partitionId, dimensionId, table, rename: false, ct).ConfigureAwait(false);
             await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false);
             var transaction = (SqlTransaction)tx.GetDbTransaction();
             await LockAsync(connection, transaction, partitionId, dimensionId, ct).ConfigureAwait(false);
@@ -912,9 +1113,9 @@ internal static class SqlServerDimensionStore
         {
             var connection = (SqlConnection)db.Database.GetDbConnection();
 
-            // The table's schema is settled before the transaction: a table made or a column added stays when the write
-            // does not, empty, and the next write finds it there.
-            var prepared = write.Table is null ? null : await PrepareTableAsync(connection, partitionId, write.DimensionId, write.Table, ct).ConfigureAwait(false);
+            // The table's schema is settled before the transaction: a table made, a column added or a column renamed
+            // stays when the write does not, and the next write finds it there.
+            var prepared = write.Table is null ? null : await PrepareTableAsync(connection, partitionId, write.DimensionId, write.Table, rename: true, ct).ConfigureAwait(false);
             await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false);
             var transaction = (SqlTransaction)tx.GetDbTransaction();
             await LockAsync(connection, transaction, partitionId, write.DimensionId, ct).ConfigureAwait(false);

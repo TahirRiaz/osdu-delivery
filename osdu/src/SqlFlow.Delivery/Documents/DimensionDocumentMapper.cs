@@ -222,6 +222,8 @@ internal static class DimensionMapper
         }
 
         var label = MapLabel(d.Label, where, source);
+        var attributes = MapAttributes(d.Attributes, where, source);
+        var (keyColumn, valueColumn) = MapColumns(d.Columns, name, path, label, attributes, where, source);
         var dimension = new DimensionSpec
         {
             Name = name,
@@ -231,7 +233,9 @@ internal static class DimensionMapper
             Path = path,
             Label = label,
             Unlabelled = MapUnlabelled(d.Unlabelled, label.Count > 0 || d.Attributes is { Count: > 0 }, where, source),
-            Attributes = MapAttributes(d.Attributes, where, source),
+            Attributes = attributes,
+            KeyColumn = keyColumn,
+            ValueColumn = valueColumn,
             Clean = MapClean(d.Clean, where, source),
             CountRecords = d.CountRecords ?? false,
             MaxValues = maxValues,
@@ -365,6 +369,77 @@ internal static class DimensionMapper
         }
 
         return attributes;
+    }
+
+    /// <summary>
+    /// The names of the two columns of the dimension's table that hold its key and its value
+    /// (<see cref="DimensionColumnNames"/>): the ones the document gives (<c>columns: { key, value }</c>), else the property
+    /// the path ends with and the property the label ends with, or the dimension's name when it reads no label; a key's
+    /// column the document does not name takes <c>Key</c> at its end where the value's has its name. Each is a column
+    /// name, none of the columns every table has, and unlike the other and every attribute, ignoring case; a name the
+    /// path, the label or the dimension gives that is not is refused, saying how to name it.
+    /// </summary>
+    private static (string Key, string Value) MapColumns(
+        DimensionColumnsYaml? declared, string dimension, string path, IReadOnlyList<string> label, IReadOnlyList<DimensionAttributeSpec> attributes, string where,
+        string source)
+    {
+        var keyNamed = ColumnName(declared?.Key, "key", where, source);
+        var valueNamed = ColumnName(declared?.Value, "value", where, source);
+        var value = valueNamed ?? DimensionColumnNames.ValueOf(label, dimension);
+        var key = keyNamed ?? DimensionColumnNames.KeyOf(path, value);
+        var valueFrom = label.Count > 0 ? "the property its label ends with" : "the dimension (it reads no label)";
+        var keyFrom = keyNamed is null && !string.Equals(key, DimensionColumnNames.PropertyOf(path), StringComparison.Ordinal)
+            ? $"the property its path ends with and the {DimensionColumnNames.KeySuffix} it takes beside a value's column of that name"
+            : "the property its path ends with";
+
+        // What a column is named after, for a name the document did not give: so a refusal says where the name came from.
+        string Described(string name, bool isValue) => (isValue ? valueNamed : keyNamed) is not null
+            ? $"columns.{(isValue ? "value" : "key")} '{name}'"
+            : $"the {(isValue ? "value" : "key")}'s column would be named '{name}', after {(isValue ? valueFrom : keyFrom)}, which";
+        string NameIt(bool isValue) => (isValue ? valueNamed : keyNamed) is not null
+            ? "Give it another name."
+            : $"Name it in the document: columns: {{ {(isValue ? "value" : "key")}: <name> }}.";
+
+        foreach (var (name, isValue) in new[] { (key, false), (value, true) })
+        {
+            if (DimensionColumnNames.Problem(name, isValue) is { } problem)
+            {
+                throw new FlowValidationException($"{source}: {where}: {Described(name, isValue)} {problem}. {NameIt(isValue)}");
+            }
+        }
+
+        // Only a name the document gives the key's column can be the value's: one it does not give steps aside.
+        if (string.Equals(key, value, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException(
+                $"{source}: {where}: columns.key '{key}' is the name of the value's column ({(valueNamed is null ? "named after " + valueFrom : "columns.value")}), and a table has one column of a name. Give the key's column another name, or leave it out for the name the path gives.");
+        }
+
+        foreach (var (name, isValue) in new[] { (key, false), (value, true) })
+        {
+            if (attributes.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase)) is { } attribute)
+            {
+                throw new FlowValidationException(
+                    $"{source}: {where}: {Described(name, isValue)} is the name of its attribute {attribute.Name}, and a table has one column of a name. {NameIt(isValue).TrimEnd('.')}, or rename the attribute.");
+            }
+        }
+
+        return (key, value);
+    }
+
+    /// <summary>A column name the document gives under <c>columns</c>, trimmed; null when it gives none.</summary>
+    private static string? ColumnName(string? declared, string which, string where, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        var name = declared.Trim();
+        return name.Length > 0
+            ? name
+            : throw new FlowValidationException(
+                $"{source}: {where}: columns.{which} is empty; give the name of the column that holds each {(which == "key" ? "key" : "key's value")}, or leave it out for the name the {(which == "key" ? "path" : "label or the dimension")} gives.");
     }
 
     /// <summary>
@@ -648,7 +723,8 @@ internal static class DimensionMapper
 
     /// <summary>
     /// The hash of what a dimension declares. A label, a value for unlabelled keys and attributes it does not declare are
-    /// left out, so a dimension declared before any of them existed keeps the hash it was built with.
+    /// left out, and so is the name of a column the document does not give (the one its path, its label or its name
+    /// gives), so a dimension declared before any of them existed keeps the hash it was built with.
     /// </summary>
     private static string Hash(DimensionSpec dimension)
     {
@@ -659,6 +735,16 @@ internal static class DimensionMapper
             {
                 node.Remove(name);
             }
+        }
+
+        if (string.Equals(dimension.KeyColumn, DimensionColumnNames.KeyOf(dimension.Path, dimension.ValueColumn), StringComparison.Ordinal))
+        {
+            node.Remove(nameof(DimensionSpec.KeyColumn));
+        }
+
+        if (string.Equals(dimension.ValueColumn, DimensionColumnNames.ValueOf(dimension.Label, dimension.Name), StringComparison.Ordinal))
+        {
+            node.Remove(nameof(DimensionSpec.ValueColumn));
         }
 
         return Hashing.ContentHash.Of(CanonicalJson.ToBytes(node))[..16];

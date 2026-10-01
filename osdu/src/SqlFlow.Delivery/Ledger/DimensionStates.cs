@@ -127,6 +127,15 @@ public sealed record DimensionState
     /// <summary>The dimension's table in the module's schema (<see cref="DimensionTables"/>); null until a build has written it.</summary>
     public string? TableName { get; init; }
 
+    /// <summary>
+    /// The column of the dimension's table that holds each key, as the table has it now
+    /// (<see cref="Model.DimensionColumnNames"/>); null until the table has been made ready.
+    /// </summary>
+    public string? KeyColumn { get; init; }
+
+    /// <summary>The column of the dimension's table that holds each key's value, as the table has it now; null until the table has been made ready.</summary>
+    public string? ValueColumn { get; init; }
+
     public long Members { get; init; }
 
     public long Originals { get; init; }
@@ -319,7 +328,11 @@ public sealed record DimensionRemoved(
 /// </summary>
 /// <param name="Search">Text the key, the value or any attribute contains, ignoring case; null reads every row.</param>
 /// <param name="Attributes">Only the rows whose attribute holds one of the values, every attribute named; null or empty reads every row.</param>
-/// <param name="OrderBy">The column the rows are ordered by: <c>value</c> (the default), <c>key</c>, <c>records</c>, <c>id</c> or an attribute's name.</param>
+/// <param name="OrderBy">
+/// The column the rows are ordered by, by its name in the table (the key's, the value's, <c>records</c>, <c>id</c> or an
+/// attribute's), or by the word <c>value</c> (the default) or <c>key</c>, which name those two columns whatever the
+/// dimension calls them.
+/// </param>
 /// <param name="Descending">Largest first.</param>
 /// <param name="Offset">The rows before the page.</param>
 /// <param name="Limit">The most rows the page holds.</param>
@@ -334,14 +347,18 @@ public sealed record DimensionTableQuery(
 /// </summary>
 public sealed record DimensionTableRow(long Id, long KeyId, string Key, string Value, IReadOnlyList<string?> Attributes, long Records, string? Filter);
 
-/// <summary>A dimension's table as a reader finds it: its name in the module's schema, and its attribute columns in order.</summary>
-public sealed record DimensionTableShape(string Table, IReadOnlyList<string> Attributes);
+/// <summary>
+/// A dimension's table as a reader finds it: its name in the module's schema, the names of the columns that hold its key
+/// and its value, and its attribute columns in order.
+/// </summary>
+public sealed record DimensionTableShape(string Table, string KeyColumn, string ValueColumn, IReadOnlyList<string> Attributes);
 
 /// <summary>
-/// A page of a dimension's table: the table it was read from, the attribute columns, the rows, whether more follow, and on
-/// a first page how many rows the query matches in all.
+/// A page of a dimension's table: the table it was read from, the names of the columns that hold its key and its value,
+/// the attribute columns, the rows, whether more follow, and on a first page how many rows the query matches in all.
 /// </summary>
-public sealed record DimensionTablePage(string Table, IReadOnlyList<string> Attributes, IReadOnlyList<DimensionTableRow> Rows, bool More, long? Total);
+public sealed record DimensionTablePage(
+    string Table, string KeyColumn, string ValueColumn, IReadOnlyList<string> Attributes, IReadOnlyList<DimensionTableRow> Rows, bool More, long? Total);
 
 /// <summary>A dimension whose table the database does not hold: no build has written it yet, or it was dropped by hand.</summary>
 public sealed class DimensionTableMissingException : DeliveryException
@@ -352,6 +369,23 @@ public sealed class DimensionTableMissingException : DeliveryException
     }
 
     public DimensionTableMissingException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
+}
+
+/// <summary>
+/// A dimension's table whose key or value column a build renamed while the table was being read: the read named the
+/// column as it was. Reading it again finds it under its name.
+/// </summary>
+public sealed class DimensionTableRenamedException : DeliveryException
+{
+    public DimensionTableRenamedException(string message)
+        : base(message)
+    {
+    }
+
+    public DimensionTableRenamedException(string message, Exception inner)
         : base(message, inner)
     {
     }

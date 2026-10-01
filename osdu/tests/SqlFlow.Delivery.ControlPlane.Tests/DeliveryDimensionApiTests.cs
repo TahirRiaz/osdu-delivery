@@ -336,11 +336,17 @@ public sealed class DeliveryDimensionApiTests
             }
 
             // The dimension as one table: these builds wrote none (as a build before dimensions had tables), so the first
-            // read makes it, named after the dimension, with a column per attribute as declared.
+            // read makes it, named after the dimension, with a column per attribute as declared. Its key's and its
+            // value's columns are named after what the dimension reads, which the dimension and each page say.
             var tableName = "osdu.dim_" + wellboreName;
-            Assert.Equal(JsonValueKind.Null, (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}")).GetProperty("dimension").GetProperty("table").ValueKind);
+            var wellbore = (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}")).GetProperty("dimension");
+            Assert.Equal(JsonValueKind.Null, wellbore.GetProperty("table").ValueKind);
+            Assert.Equal(("WellboreID", "FacilityName"), (wellbore.GetProperty("keyColumn").GetString(), wellbore.GetProperty("valueColumn").GetString()));
+            var curves = (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{dimensionId}")).GetProperty("dimension");
+            Assert.Equal(("Mnemonic", "CurveMnemonic"), (curves.GetProperty("keyColumn").GetString(), curves.GetProperty("valueColumn").GetString()));
             var whole = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table");
             Assert.Equal((tableName, 3L, false), (whole.GetProperty("table").GetString(), whole.GetProperty("total").GetInt64(), whole.GetProperty("more").GetBoolean()));
+            Assert.Equal(("WellboreID", "FacilityName"), (whole.GetProperty("keyColumn").GetString(), whole.GetProperty("valueColumn").GetString()));
             Assert.Equal(["Country"], whole.GetProperty("attributes").EnumerateArray().Select(a => a.GetString()));
             Assert.Equal(
                 [("15/9-F-1", "Norway", 7L), ("15/9-F-4", "Norway", 3L), ("dev:master-data--Wellbore:9999:", null, 1L)],
@@ -356,6 +362,12 @@ public sealed class DeliveryDimensionApiTests
             var norwegianRows = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=country:Norway&order=records&dir=desc");
             Assert.Equal(2L, norwegianRows.GetProperty("total").GetInt64());
             Assert.Equal(["15/9-F-1", "15/9-F-4"], norwegianRows.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("value").GetString()));
+
+            // The value's column is ordered by under its own name, or under the word value whatever it is named.
+            List<string> Values(JsonElement page) => page.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("value").GetString()!).ToList();
+            var byName = Values(await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?order=facilityname&dir=desc"));
+            Assert.Equal(["dev:master-data--Wellbore:9999:", "15/9-F-4", "15/9-F-1"], byName);
+            Assert.Equal(byName, Values(await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?order=value&dir=desc")));
             Assert.Equal("15/9-F-4", Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?search=f-4")).GetProperty("rows").EnumerateArray()).GetProperty("value").GetString());
             var secondPage = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?offset=1&limit=1");
             Assert.Equal(("15/9-F-4", true, JsonValueKind.Null), (
@@ -372,7 +384,7 @@ public sealed class DeliveryDimensionApiTests
             using (var table = await SendAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/export?set=table&format=csv"))
             {
                 var lines = (await table.Content.ReadAsStringAsync()).Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
-                Assert.Equal("id,partition,key_id,key,value,Country,records,filter", lines[0]);
+                Assert.Equal("id,partition,key_id,WellboreID,FacilityName,Country,records,filter", lines[0]);
                 Assert.Equal(
                     [
                         $"{partition},dev:master-data--Wellbore:1001:,15/9-F-1,Norway,7",

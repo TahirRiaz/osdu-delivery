@@ -17,13 +17,14 @@ import { DimensionValueText } from "./DimensionValueText";
 import { CHANGE_TEXT, keyTail } from "./dimensionFormat";
 
 /**
- * The columns of a value's keys: each key, cut short where it begins like its neighbours, with the records holding it, the
- * search finding exactly them, and when it arrived. The attributes are the value's, listed above the keys.
+ * The columns of a value's keys: each key under the name the dimension calls it by, cut short where it begins like its
+ * neighbours, with the records holding it, the search finding exactly them, and when it arrived. The attributes are the
+ * value's, listed above the keys.
  */
-const KEY_COLUMNS: Column<DeliveryDimensionKey>[] = [
+const keyColumns = (keyColumn: string): Column<DeliveryDimensionKey>[] => [
   {
     id: "key",
-    header: "Key",
+    header: keyColumn,
     fill: true,
     floor: 220,
     render: (row) => <DimensionValueText value={row.key} maxWidth="100%" tail={keyTail(row.key)} testId="dimension-value-key" />,
@@ -106,8 +107,10 @@ function HistoryRow({ change, valueId }: { change: DeliveryDimensionChange; valu
  * the most records first; the search that finds the value's records; and the changes that brought keys to it or took them
  * away.
  */
-export function DimensionValueSheet({ dimensionId, labelled, attributes, valueId, onClose }: {
+export function DimensionValueSheet({ dimensionId, keyColumn, labelled, attributes, valueId, onClose }: {
   dimensionId: number;
+  /** What the dimension calls its key: the heading of the keys' column. */
+  keyColumn: string;
   /** The dimension reads a label for its keys. */
   labelled: boolean;
   /** The attributes the dimension reads of its keys. */
@@ -177,7 +180,7 @@ export function DimensionValueSheet({ dimensionId, labelled, attributes, valueId
               <section className="flex flex-col gap-2">
                 <h3 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Keys</h3>
                 <DataTable
-                  columns={KEY_COLUMNS}
+                  columns={keyColumns(keyColumn)}
                   rows={data.keys}
                   rowKey={(row) => row.keyId}
                   emptyMessage="No build finds a key of this value now."

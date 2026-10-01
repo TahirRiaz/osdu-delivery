@@ -97,10 +97,14 @@ export function KeySearchCell({ row }: { row: DeliveryDimensionKey }) {
  * to (which opens it; the label read for the key is on hover) or why it belongs to none, how many records hold it, a
  * column per attribute, and the search that finds exactly its records, to copy. Read with the most records first or in the
  * order the builds found them, more as the grid is scrolled, found by the key or its label and narrowed by attributes or to
- * those of no value, which is where a clean step that needs a look shows. Columns are left out under View.
+ * those of no value, which is where a clean step that needs a look shows. The key and its value are headed as the
+ * dimension calls them. Columns are left out under View.
  */
-export function DimensionKeys({ dimensionId, labelled, unlabelled, attributes, total, onValue }: {
+export function DimensionKeys({ dimensionId, keyColumn, valueColumn, labelled, unlabelled, attributes, total, onValue }: {
   dimensionId: number;
+  /** What the dimension calls its key and its value: the two columns' headings. */
+  keyColumn: string;
+  valueColumn: string;
   /** The dimension reads a label for its keys, so a key is found by its label too. */
   labelled: boolean;
   /** The value the dimension gives what it could not read, drawn faint; null when it gives none. */
@@ -136,13 +140,13 @@ export function DimensionKeys({ dimensionId, labelled, unlabelled, attributes, t
   };
 
   const choices: GridColumnChoice[] = [
-    { id: "value", label: "Value" },
+    { id: "value", label: valueColumn },
     ...attributes.map((attribute) => ({ id: attributeColumnId(attribute.name), label: attribute.name })),
     { id: "search", label: "Search" },
   ];
   const all: Column<DeliveryDimensionKey>[] = [
-    { id: "key", header: "Key", fill: true, floor: 200, render: (row) => <KeyCell row={row} search={search} /> },
-    { id: "value", header: "Value", render: (row) => <KeyValueCell row={row} faint={unlabelled} onValue={onValue} /> },
+    { id: "key", header: keyColumn, fill: true, floor: 200, render: (row) => <KeyCell row={row} search={search} /> },
+    { id: "value", header: valueColumn, render: (row) => <KeyValueCell row={row} faint={unlabelled} onValue={onValue} /> },
     {
       id: "count",
       header: "Records",

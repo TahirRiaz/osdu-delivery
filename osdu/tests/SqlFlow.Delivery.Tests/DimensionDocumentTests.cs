@@ -249,9 +249,112 @@ public class DimensionDocumentTests
         Assert.Contains("at most 20", Refused(Head + Curves + "\n    attributes: { " + many + " }").Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void The_tables_key_and_value_columns_are_named_after_what_the_dimension_reads_unless_the_document_names_them()
+    {
+        var flow = Parse(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+              - name: Country
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=Country].GeoPoliticalEntityName']
+              - name: Curve.Mnemonic
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.Curves.Mnemonic
+              - name: LegalTag
+                kind: "*:*:*:*"
+                path: legal.legaltags
+                columns: { key: Tag, value: ' TagName ' }
+              - name: Record
+                kind: "*:*:*:*"
+                path: id
+                columns: { key: RecordId }
+              - name: Source
+                kind: "*:*:*:*"
+                path: data.Source
+              - name: Version
+                kind: "*:*:*:*"
+                path: version
+              - name: Name
+                kind: "*:*:*:*"
+                path: data.Parent.Name
+                label: data.Name
+              - name: Unit
+                kind: "*:*:*:*"
+                path: data.Symbol
+                columns: { value: symbol }
+            """);
+
+        // The key's column is the property the path ends with; the value's the property the label ends with, its filter
+        // aside, or with no label the dimension's own name, made a column name.
+        Assert.Equal(("WellboreID", "FacilityName"), (flow.Dimensions[0].KeyColumn, flow.Dimensions[0].ValueColumn));
+        Assert.Equal(("WellboreID", "GeoPoliticalEntityName"), (flow.Dimensions[1].KeyColumn, flow.Dimensions[1].ValueColumn));
+        Assert.Equal(("Mnemonic", "Curve_Mnemonic"), (flow.Dimensions[2].KeyColumn, flow.Dimensions[2].ValueColumn));
+        Assert.Equal(("Tag", "TagName"), (flow.Dimensions[3].KeyColumn, flow.Dimensions[3].ValueColumn));
+        Assert.Equal(("RecordId", "Record"), (flow.Dimensions[4].KeyColumn, flow.Dimensions[4].ValueColumn));
+
+        // Where the value's column has the name the path gives the key's, the value keeps it, being the one a person
+        // reads, and the key's takes Key at its end: a dimension named after the property it reads needs no name given.
+        Assert.Equal(("SourceKey", "Source"), (flow.Dimensions[5].KeyColumn, flow.Dimensions[5].ValueColumn));
+        Assert.Equal(("versionKey", "Version"), (flow.Dimensions[6].KeyColumn, flow.Dimensions[6].ValueColumn));
+        Assert.Equal(("NameKey", "Name"), (flow.Dimensions[7].KeyColumn, flow.Dimensions[7].ValueColumn));
+        Assert.Equal(("SymbolKey", "symbol"), (flow.Dimensions[8].KeyColumn, flow.Dimensions[8].ValueColumn));
+
+        // A name the document does not give, or gives as the path and the label would, is no part of what it declares,
+        // so a dimension declared before columns had names keeps its hash; another name is another declaration.
+        var plain = Parse(Head + Curves).Dimensions[0].DefinitionHash;
+        Assert.Equal(plain, Parse(Head + Curves + "\n    columns: { key: Mnemonic, value: CurveMnemonic }").Dimensions[0].DefinitionHash);
+        Assert.Equal(plain, Parse(Head + Curves + "\n    columns: {}").Dimensions[0].DefinitionHash);
+        Assert.NotEqual(plain, Parse(Head + Curves + "\n    columns: { value: Curve }").Dimensions[0].DefinitionHash);
+        Assert.NotEqual(plain, Parse(Head + Curves + "\n    columns: { key: Spelling }").Dimensions[0].DefinitionHash);
+        const string Source = "dimensions:\n  - name: Source\n    kind: '*:*:*:*'\n    path: data.Source";
+        Assert.Equal(Parse(Head + Source).Dimensions[0].DefinitionHash, Parse(Head + Source + "\n    columns: { key: SourceKey, value: Source }").Dimensions[0].DefinitionHash);
+    }
+
+    [Theory]
+    [InlineData("name: Source\n    kind: '*:*:*:*'\n    path: kind\n    columns: { key: source }", "columns.key 'source' is the name of the value's column (named after the dimension (it reads no label)), and a table has one column of a name. Give the key's column another name, or leave it out for the name the path gives.")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: kind\n    columns: { key: Same, value: same }", "columns.key 'Same' is the name of the value's column (columns.value)")]
+    [InlineData("name: Source\n    kind: '*:*:*:*'\n    path: data.Source\n    attributes: { SourceKey: data.Other }", "the key's column would be named 'SourceKey', after the property its path ends with and the Key it takes beside a value's column of that name, which is the name of its attribute SourceKey")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: id", "the key's column would be named 'id', after the property its path ends with, which is a column every dimension's table has already (id, partition, key_id, records, filter). Name it in the document: columns: { key: <name> }.")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: kind\n    columns: { key: Records }", "columns.key 'Records' is a column every dimension's table has already")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: kind\n    columns: { value: 'not a name' }", "columns.value 'not a name' is not a column name (a letter, then letters, digits and underscores, at most 64). Give it another name.")]
+    [InlineData("name: 3D\n    kind: '*:*:*:*'\n    path: kind", "the value's column would be named '3D', after the dimension (it reads no label), which is not a column name")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: kind\n    columns: { key: Value }", "columns.key 'Value' is the word the value's column is asked for by, whatever it is named")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: kind\n    columns: { value: key }", "columns.value 'key' is the word the key's column is asked for by, whatever it is named")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: kind\n    columns: { key: '  ' }", "columns.key is empty")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: data.WellboreID\n    label: data.Name\n    attributes: { name: data.Other }", "the value's column would be named 'Name', after the property its label ends with, which is the name of its attribute name, and a table has one column of a name. Name it in the document: columns: { value: <name> }, or rename the attribute.")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: kind\n    columns: { key: Family }\n    attributes: { family: data.Other }", "columns.key 'Family' is the name of its attribute family, and a table has one column of a name. Give it another name, or rename the attribute.")]
+    [InlineData("name: D\n    kind: '*:*:*:*'\n    path: kind\n    columns: { key: Kind, colour: red }", "colour")]
+    public void A_column_name_that_cannot_name_a_column_is_refused_saying_how_to_name_it(string dimension, string reason)
+    {
+        var refused = Refused(Head + "dimensions:\n  - " + dimension);
+        Assert.Contains(reason, refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_key_and_value_columns_may_keep_the_names_tables_had_before_dimensions_named_them()
+    {
+        var kept = Parse(Head + Curves + "\n    columns: { key: key, value: value }").Dimensions[0];
+        Assert.Equal((DimensionColumnNames.KeyRole, DimensionColumnNames.ValueRole), (kept.KeyColumn, kept.ValueColumn));
+    }
+
+    [Theory]
+    [InlineData("data.WellboreID", "data.FacilityName", "Wellbore", "Country", "WellboreID", "FacilityName")]
+    [InlineData("data.WellboreID", null, "Wellbore", "Country", "WellboreID", "Wellbore")]
+    [InlineData("data.Source", null, "Source", "Country", "SourceKey", "Source")]
+    [InlineData("data.Source", null, "Source", "sourcekey", "key", "value")]
+    [InlineData("data.WellboreID", "data.Country", "Wellbore", "Country", "key", "value")]
+    [InlineData("id", null, "Record", "Country", "key", "value")]
+    public void A_dimension_no_document_named_the_columns_of_takes_the_names_it_reads_by_when_they_can_name_columns(
+        string path, string? label, string dimension, string attribute, string key, string value)
+        => Assert.Equal((key, value), DimensionColumnNames.Settled(path, label is null ? [] : [label], dimension, [attribute]));
+
     [Theory]
     [InlineData("kind", "osdu:wks:master-data--Wellbore:*")]
-    [InlineData("id", "osdu:wks:*:*")]
     [InlineData("acl.viewers", "*:*:*:*")]
     [InlineData("legal.status", "*:*:*:*")]
     [InlineData("tags.Source", "*:*:*:*")]
@@ -289,8 +392,8 @@ public class DimensionDocumentTests
     [InlineData("dimensions:\n  - name: D\n    kind: 'not-a-kind'\n    path: kind", "is not authority:source:entityType:version")]
     [InlineData("dimensions:\n  - name: D\n    kind: 'a:b:c:1.0.0'", "path")]
     [InlineData("dimensions:\n  - name: D\n    kind: 'a:b:c:1.0.0'\n    path: kind\n    query: 'data.X:\"{undeclared}\"'", "'{undeclared}'")]
-    [InlineData("dimensions:\n  - name: D\n    kind: 'a:b:c:1.0.0'\n    path: kind\n  - name: d\n    kind: 'a:b:c:1.0.0'\n    path: id", "as an earlier dimension is")]
-    [InlineData("dimensions:\n  - name: Well.Type\n    kind: 'a:b:c:1.0.0'\n    path: kind\n  - name: Well-Type\n    kind: 'a:b:c:1.0.0'\n    path: id", "would share its table with 'Well.Type'")]
+    [InlineData("dimensions:\n  - name: D\n    kind: 'a:b:c:1.0.0'\n    path: kind\n  - name: d\n    kind: 'a:b:c:1.0.0'\n    path: type", "as an earlier dimension is")]
+    [InlineData("dimensions:\n  - name: Well.Type\n    kind: 'a:b:c:1.0.0'\n    path: kind\n  - name: Well-Type\n    kind: 'a:b:c:1.0.0'\n    path: type", "would share its table with 'Well.Type'")]
     [InlineData("dimensions:\n  - name: D\n    kind: 'a:b:c:1.0.0'\n    path: kind\n    maxValues: 0", "maxValues is 0")]
     [InlineData("dimensions:\n  - name: D\n    kind: 'a:b:c:1.0.0'\n    path: kind\n    maxValues: 5000001", "maxValues is 5000001")]
     [InlineData("dimensions:\n  - name: D\n    kind: 'a:b:c:1.0.0'\n    path: kind\n    partitions: [prod]", "'prod' is not a partition of the flow")]

@@ -328,7 +328,14 @@ export function DimensionWorkspace({ entry, siblings, view, onView, value, onVal
                 </TabsList>
               </div>
               <TabsContent value="table">
-                <DimensionTableGrid dimensionId={dimension.dimensionId} table={dimension.table} attributes={dimension.attributes} unlabelled={dimension.unlabelled} />
+                <DimensionTableGrid
+                  dimensionId={dimension.dimensionId}
+                  table={dimension.table}
+                  keyColumn={dimension.keyColumn}
+                  valueColumn={dimension.valueColumn}
+                  attributes={dimension.attributes}
+                  unlabelled={dimension.unlabelled}
+                />
               </TabsContent>
               <TabsContent value="values">
                 <DimensionValues entry={entry} dimensionId={dimension.dimensionId} onValue={onValue} />
@@ -336,6 +343,8 @@ export function DimensionWorkspace({ entry, siblings, view, onView, value, onVal
               <TabsContent value="keys">
                 <DimensionKeys
                   dimensionId={dimension.dimensionId}
+                  keyColumn={dimension.keyColumn}
+                  valueColumn={dimension.valueColumn}
                   labelled={labelled}
                   unlabelled={dimension.unlabelled}
                   attributes={dimension.attributes}
@@ -344,7 +353,7 @@ export function DimensionWorkspace({ entry, siblings, view, onView, value, onVal
                 />
               </TabsContent>
               <TabsContent value="changes">
-                <DimensionChanges dimensionId={dimension.dimensionId} onValue={onValue} />
+                <DimensionChanges dimensionId={dimension.dimensionId} keyColumn={dimension.keyColumn} valueColumn={dimension.valueColumn} onValue={onValue} />
               </TabsContent>
               <TabsContent value="builds">
                 <DimensionBuilds dimensionId={dimension.dimensionId} />
@@ -353,7 +362,14 @@ export function DimensionWorkspace({ entry, siblings, view, onView, value, onVal
                 <DimensionDefinition entry={entry} />
               </TabsContent>
             </Tabs>
-            <DimensionValueSheet dimensionId={dimension.dimensionId} labelled={labelled} attributes={dimension.attributes} valueId={value} onClose={() => onValue(null)} />
+            <DimensionValueSheet
+              dimensionId={dimension.dimensionId}
+              keyColumn={dimension.keyColumn}
+              labelled={labelled}
+              attributes={dimension.attributes}
+              valueId={value}
+              onClose={() => onValue(null)}
+            />
           </>
         )}
     </div>

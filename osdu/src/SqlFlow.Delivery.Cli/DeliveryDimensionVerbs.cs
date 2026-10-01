@@ -157,6 +157,8 @@ internal static class DeliveryDimensionVerbs
                             : new JsonObject { ["name"] = a.Name, ["steps"] = new JsonArray(a.Steps.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()) })).ToArray()),
                         ["aggregateBy"] = dimension?.Field?.AggregateBy,
                         ["table"] = dimension?.TableName is { } table ? DimensionTables.Shown(table) : null,
+                        ["keyColumn"] = spec.KeyColumn,
+                        ["valueColumn"] = spec.ValueColumn,
                         ["values"] = dimension?.Members,
                         ["keys"] = dimension?.Originals,
                         ["lastBuiltUtc"] = dimension?.LastBuiltUtc,
@@ -172,6 +174,7 @@ internal static class DeliveryDimensionVerbs
         {
             var dimension = held.GetValueOrDefault(spec.Name);
             var label = (spec.Label.Count == 0 ? string.Empty : " labelled by " + string.Join(" > ", spec.Label))
+                + $"; key {spec.KeyColumn}, value {spec.ValueColumn}"
                 + (spec.Attributes.Count == 0 ? string.Empty : "; attributes " + string.Join(", ", spec.Attributes.Select(a => a.Name)));
             if (dimension is null)
             {
@@ -202,8 +205,10 @@ internal static class DeliveryDimensionVerbs
 
     /// <summary>
     /// A page of the dimension's table (docs/dimension-plan.md, The table): a row per key and value it collects, with a
-    /// column per attribute; the rows containing --search, holding the attribute values --attr names, ordered by --order.
-    /// A dimension built before dimensions had a table has its table made here.
+    /// column per attribute; the rows containing --search, holding the attribute values --attr names, ordered by --order
+    /// (a column by its name, or the words value and key for those two columns whatever the dimension names them). The
+    /// key and its value are written under the names their columns have in the table. A dimension built before
+    /// dimensions had a table has its table made here.
     /// </summary>
     private static async Task<int> TableAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
     {
@@ -229,11 +234,17 @@ internal static class DeliveryDimensionVerbs
             {
                 ["dimension"] = dimension.Name,
                 ["table"] = page.Table,
+                ["keyColumn"] = page.KeyColumn,
+                ["valueColumn"] = page.ValueColumn,
                 ["total"] = page.Total,
                 ["more"] = page.More,
                 ["rows"] = new JsonArray(page.Rows.Select(row =>
                 {
-                    var json = new JsonObject { ["id"] = row.Id, ["partition"] = dimension.Partition, ["key_id"] = row.KeyId, ["key"] = row.Key, ["value"] = row.Value };
+                    // A row as the table holds it: each column under its own name, the key's and the value's among them.
+                    var json = new JsonObject
+                    {
+                        ["id"] = row.Id, ["partition"] = dimension.Partition, ["key_id"] = row.KeyId, [page.KeyColumn] = row.Key, [page.ValueColumn] = row.Value,
+                    };
                     for (var i = 0; i < page.Attributes.Count; i++)
                     {
                         json[page.Attributes[i]] = i < row.Attributes.Count ? row.Attributes[i] : null;
@@ -249,6 +260,7 @@ internal static class DeliveryDimensionVerbs
 
         context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
             $"{dimension.Name}: {page.Rows.Count} of {page.Total ?? page.Rows.Count} row(s) of {page.Table}"));
+        context.Out.WriteLine($"  {"id",10}  {"records",12}  {page.ValueColumn}  {page.KeyColumn}{(page.Attributes.Count == 0 ? string.Empty : "  " + string.Join("  ", page.Attributes))}");
         foreach (var row in page.Rows)
         {
             var attributes = string.Join("  ", page.Attributes.Select((name, i) => $"{name}={(i < row.Attributes.Count && row.Attributes[i] is { } value ? Quoted(value) : "-")}"));

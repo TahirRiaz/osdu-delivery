@@ -85,14 +85,18 @@ function OrderMenu({ order, columns, onChange }: {
 
 /**
  * The dimension as one table, as its own table in the database holds it: a row per key and value it collects, with the
- * key's value, a column per attribute, the records of the row and the search finding the key's records. Read a page at a
- * time, more as the grid is scrolled; found by text anywhere in a row, narrowed by attribute values, ordered by any
- * column. Columns are left out under View.
+ * key's value, a column per attribute, the records of the row and the search finding the key's records. Its columns are
+ * headed as the table names them: the key's and the value's after what the dimension reads, as the attributes' are. Read
+ * a page at a time, more as the grid is scrolled; found by text anywhere in a row, narrowed by attribute values, ordered
+ * by any column. Columns are left out under View.
  */
-export function DimensionTableGrid({ dimensionId, table, attributes, unlabelled }: {
+export function DimensionTableGrid({ dimensionId, table, keyColumn, valueColumn, attributes, unlabelled }: {
   dimensionId: number;
   /** The table's name in the database, as the dimension names it; null until a run has written it. */
   table: string | null;
+  /** What the dimension calls its key and its value: the two columns' headings until a page says what the table names them. */
+  keyColumn: string;
+  valueColumn: string;
   /** The attributes the dimension declares, which the attribute filter offers. */
   attributes: DeliveryDimensionAttributeSpec[];
   /** The value the dimension gives what it could not read, drawn faint; null when it gives none. */
@@ -114,6 +118,9 @@ export function DimensionTableGrid({ dimensionId, table, attributes, unlabelled 
   });
   const first = pages.data?.pages[0];
   const names = useMemo(() => first?.attributes ?? [], [first]);
+  // The table's own names: a table its next run has yet to rename still holds the two columns under their old ones.
+  const keyName = first?.keyColumn ?? keyColumn;
+  const valueName = first?.valueColumn ?? valueColumn;
   const rows = useMemo(() => pages.data?.pages.flatMap((page) => page.rows), [pages.data]);
   const more = () => {
     if (pages.hasNextPage && !pages.isFetchingNextPage) {
@@ -124,14 +131,15 @@ export function DimensionTableGrid({ dimensionId, table, attributes, unlabelled 
   const choices: GridColumnChoice[] = [
     { id: "id", label: "Id" },
     { id: "records", label: "Records" },
-    { id: "key", label: "Key" },
+    { id: "key", label: keyName },
     ...names.map((name) => ({ id: attributeColumnId(name), label: name })),
     { id: "search", label: "Search" },
   ];
+  // The two columns are asked for by the words value and key, which name them whatever the table calls them.
   const sortable = [
-    { id: "value", label: "Value" },
+    { id: "value", label: valueName },
     { id: "records", label: "Records" },
-    { id: "key", label: "Key" },
+    { id: "key", label: keyName },
     ...names.map((name) => ({ id: name, label: name })),
     { id: "id", label: "Id" },
   ];
@@ -144,7 +152,7 @@ export function DimensionTableGrid({ dimensionId, table, attributes, unlabelled 
     },
     {
       id: "value",
-      header: "Value",
+      header: valueName,
       fill: true,
       floor: 150,
       render: (row) => (
@@ -166,7 +174,7 @@ export function DimensionTableGrid({ dimensionId, table, attributes, unlabelled 
     },
     {
       id: "key",
-      header: "Key",
+      header: keyName,
       render: (row) => (
         <DimensionValueText
           value={row.key}

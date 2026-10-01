@@ -2344,6 +2344,14 @@ export interface DeliveryDimension {
   latest: DeliveryDimensionBuild | null;
   /** The dimension's own table in the database (`osdu.dim_<dimension>`); null until a build has written it. */
   table: string | null;
+  /**
+   * What the dimension calls its key: the property its path ends with (`WellboreID`), with `Key` at its end where its value
+   * has that name (`SourceKey`), unless the flow names it. The column of its table that holds each key is named so after
+   * its next build.
+   */
+  keyColumn: string;
+  /** What the dimension calls its value: the property its label ends with (`FacilityName`), or its own name with no label, unless the flow names it. */
+  valueColumn: string;
 }
 
 /** One dimension flow in the partition a board is read in. */
@@ -2670,9 +2678,14 @@ export interface DeliveryDimensionTableRow {
   filter: string | null;
 }
 
-/** A page of a dimension's table; `total` is how many rows the query matches, when the page says. */
+/**
+ * A page of a dimension's table; `total` is how many rows the query matches, when the page says. `keyColumn` and
+ * `valueColumn` are what the table names the columns holding each row's `key` and `value`, as it has them now.
+ */
 export interface DeliveryDimensionTable {
   table: string;
+  keyColumn: string;
+  valueColumn: string;
   attributes: string[];
   rows: DeliveryDimensionTableRow[];
   more: boolean;
@@ -2681,7 +2694,7 @@ export interface DeliveryDimensionTable {
 
 export interface DeliveryDimensionTableQuery {
   search?: string;
-  /** The column the rows are ordered by: value, key, records, id or an attribute's name. */
+  /** The column the rows are ordered by: one of the table by its name, or `value` and `key` for those two whatever the table names them. */
   order?: string;
   dir?: "asc" | "desc";
   offset?: number;

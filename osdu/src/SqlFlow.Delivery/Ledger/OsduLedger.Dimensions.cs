@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Ledger;
@@ -803,7 +804,8 @@ public sealed partial class OsduLedger
         var table = TableOf(dimension);
         await using var db = Open();
         return new DimensionTableShape(
-            DimensionTables.Shown(table), await SqlServerDimensionStore.TableAttributesAsync(db, partition, dimensionId, table, ct).ConfigureAwait(false));
+            DimensionTables.Shown(table.Name), table.KeyColumn, table.ValueColumn,
+            await SqlServerDimensionStore.TableAttributesAsync(db, partition, dimensionId, table.Name, ct).ConfigureAwait(false));
     }
 
     public async Task<DimensionTablePage?> ReadDimensionTableAsync(int dimensionId, DimensionTableQuery query, CancellationToken ct = default)
@@ -837,11 +839,17 @@ public sealed partial class OsduLedger
         }
     }
 
-    /// <summary>The table a build wrote of the dimension.</summary>
-    private static string TableOf(DimensionState dimension)
-        => dimension.TableName
-            ?? throw new DimensionTableMissingException(
-                $"Dimension {dimension.Name} of {dimension.FlowName} has no table yet: it was built before dimensions had one. Run the flow's pipeline to make it.");
+    /// <summary>
+    /// The table a build wrote of the dimension, with its key's and its value's columns as the table has them: the names
+    /// recorded when the table was last made ready, which are <c>key</c> and <c>value</c> for one no build has named yet.
+    /// </summary>
+    private static DimensionTableRef TableOf(DimensionState dimension)
+        => new(
+            dimension.TableName
+                ?? throw new DimensionTableMissingException(
+                    $"Dimension {dimension.Name} of {dimension.FlowName} has no table yet: it was built before dimensions had one. Run the flow's pipeline to make it."),
+            dimension.KeyColumn ?? DimensionColumnNames.KeyRole,
+            dimension.ValueColumn ?? DimensionColumnNames.ValueRole);
 
     /// <summary>
     /// Refuses a table another dimension writes. A table is named after its dimension alone, so a dimension's name is
@@ -1072,6 +1080,8 @@ public sealed partial class OsduLedger
         CollectedJson = d.CollectedJson,
         DefinitionHash = d.DefinitionHash,
         TableName = d.TableName,
+        KeyColumn = d.KeyColumn,
+        ValueColumn = d.ValueColumn,
         Members = d.Members,
         Originals = d.Originals,
         LastRunId = d.LastRunId,

@@ -1904,14 +1904,16 @@ public interface ILedger
     /// <summary>
     /// Makes sure the dimension has its table (<see cref="DimensionTables"/>) with the rows the ledger holds of it, as a
     /// build's write does, without a build: for a dimension built before dimensions had a table, or one whose table was
-    /// dropped. Answers whether the table had to be made or widened. False when the ledger holds no such dimension.
+    /// dropped. A table already there keeps the names its key's and its value's columns have: only a build, which reads
+    /// the declaration, renames them. Answers whether the table had to be made or widened. False when the ledger holds
+    /// no such dimension.
     /// </summary>
     /// <exception cref="DeliveryException">Another dimension writes a table of that name, or the table cannot be made.</exception>
     Task<bool> EnsureDimensionTableAsync(int dimensionId, DimensionTableSpec table, CancellationToken ct = default);
 
     /// <summary>
-    /// The dimension's table as the database holds it: its name and its attribute columns, in order. Null when the ledger
-    /// holds no such dimension.
+    /// The dimension's table as the database holds it: its name, the names of the columns that hold its key and its
+    /// value, and its attribute columns, in order. Null when the ledger holds no such dimension.
     /// </summary>
     /// <exception cref="DimensionTableMissingException">The database holds no table of the dimension.</exception>
     Task<DimensionTableShape?> DimensionTableShapeAsync(int dimensionId, CancellationToken ct = default);
@@ -1921,6 +1923,7 @@ public interface ILedger
     /// when the ledger holds no such dimension.
     /// </summary>
     /// <exception cref="DimensionTableMissingException">The database holds no table of the dimension.</exception>
+    /// <exception cref="DimensionTableRenamedException">A build renamed a column of the table while it was read; reading it again finds it.</exception>
     /// <exception cref="DeliveryException">The query names a column the table does not have.</exception>
     Task<DimensionTablePage?> ReadDimensionTableAsync(int dimensionId, DimensionTableQuery query, CancellationToken ct = default);
 
@@ -1929,6 +1932,7 @@ public interface ILedger
     /// of millions of rows is never held whole. Nothing when the ledger holds no such dimension.
     /// </summary>
     /// <exception cref="DimensionTableMissingException">The database holds no table of the dimension.</exception>
+    /// <exception cref="DimensionTableRenamedException">A build renamed a column of the table as the read began; reading it again finds it.</exception>
     IAsyncEnumerable<DimensionTableRow> StreamDimensionTableAsync(int dimensionId, CancellationToken ct = default);
 
     /// <summary>

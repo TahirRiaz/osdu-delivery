@@ -340,6 +340,20 @@ public sealed record DimensionSpec
     public DimensionAttributeSpec? Attribute(string name)
         => Attributes.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// The column of the dimension's table that holds each key, exactly as the index holds it: named after the property
+    /// the path ends with (<c>data.WellboreID</c> is <c>WellboreID</c>), with <c>Key</c> at its end where the value's
+    /// column has that name (<c>SourceKey</c> beside <c>Source</c>), unless the document names it (<c>columns.key</c>).
+    /// </summary>
+    public string KeyColumn { get; init; } = DimensionColumnNames.KeyRole;
+
+    /// <summary>
+    /// The column of the dimension's table that holds each key's value: named after the property the label ends with
+    /// (<c>data.FacilityName</c> is <c>FacilityName</c>), or after the dimension when it reads no label, unless the
+    /// document names it (<c>columns.value</c>).
+    /// </summary>
+    public string ValueColumn { get; init; } = DimensionColumnNames.ValueRole;
+
     /// <summary>The steps each value is cleaned by, in order (a key's label when it has one, else the key); none keeps it as it is.</summary>
     public IReadOnlyList<CleanStep> Clean { get; init; } = [];
 
@@ -386,7 +400,8 @@ public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> S
 
     /// <summary>
     /// Names an attribute cannot take: the columns a cached dimension's rows and a dimension's table hold already, and the
-    /// words a key's own facts are known by.
+    /// words a key's own facts are known by. The columns of a dimension's key and value take names of their own
+    /// (<see cref="DimensionColumnNames"/>), which an attribute of the dimension cannot share either.
     /// </summary>
     public static readonly IReadOnlySet<string> Reserved =
         new HashSet<string>(["value", "keys", "key", "key_id", "records", "filter", "label", "id", "partition"], StringComparer.OrdinalIgnoreCase);

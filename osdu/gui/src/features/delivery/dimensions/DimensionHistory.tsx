@@ -269,9 +269,14 @@ const CHANGE_TONE: Record<DimensionChangeKind, string> = {
 /**
  * A dimension's change log, newest first and grouped by the build that made each change: every key that arrived, left,
  * came back or moved to another value, narrowed to one kind of change when asked. A dimension's first build logs no
- * arrivals: everything it found arrived with it.
+ * arrivals: everything it found arrived with it. The key and its value are headed as the dimension calls them.
  */
-export function DimensionChanges({ dimensionId, onValue }: { dimensionId: number; onValue: (valueId: number) => void }) {
+export function DimensionChanges({ dimensionId, keyColumn, valueColumn, onValue }: {
+  dimensionId: number;
+  keyColumn: string;
+  valueColumn: string;
+  onValue: (valueId: number) => void;
+}) {
   const [kind, setKind] = useState<DimensionChangeKind | "all">("all");
   const pages = useInfiniteQuery({
     queryKey: ["delivery", "dimensions", "changes", dimensionId, kind],
@@ -290,8 +295,8 @@ export function DimensionChanges({ dimensionId, onValue }: { dimensionId: number
       header: "Change",
       render: (row) => <span className={`text-[12.5px] font-medium ${CHANGE_TONE[row.change]}`}>{CHANGE_TEXT[row.change].label}</span>,
     },
-    { id: "key", header: "Key", render: (row) => <DimensionValueText value={row.key} strong maxWidth={340} tail={keyTail(row.key)} testId="dimension-change-key" /> },
-    { id: "movement", header: "Value", fill: true, floor: 200, render: (row) => <Movement change={row} onValue={onValue} /> },
+    { id: "key", header: keyColumn, render: (row) => <DimensionValueText value={row.key} strong maxWidth={340} tail={keyTail(row.key)} testId="dimension-change-key" /> },
+    { id: "movement", header: valueColumn, fill: true, floor: 200, render: (row) => <Movement change={row} onValue={onValue} /> },
     { id: "when", header: "When", render: (row) => <span className="text-[12px] text-muted-foreground"><RelativeTime value={row.changedUtc} absolute={false} /></span> },
   ];
 

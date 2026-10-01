@@ -1379,6 +1379,9 @@ internal sealed class DimensionYaml
     // Each attribute by its name, read as a label is: a path, or a list of paths; read by the mapper.
     public Dictionary<string, object?>? Attributes { get; set; }
 
+    // The names of the table's key and value columns, when not the ones the path and the label give.
+    public DimensionColumnsYaml? Columns { get; set; }
+
     // Each step a name ("trim") or a one-key map ({ replace: { pattern, with } }, { map: CurveAliases }), read by the mapper.
     public List<object>? Clean { get; set; }
 
@@ -1388,4 +1391,13 @@ internal sealed class DimensionYaml
 
     /// <summary>The partitions of the flow this dimension is built in; every partition of the flow when left out.</summary>
     public List<string>? Partitions { get; set; }
+}
+
+internal sealed class DimensionColumnsYaml
+{
+    /// <summary>The name of the column that holds each key; the property the path ends with when left out, with Key at its end beside a value's column of that name.</summary>
+    public string? Key { get; set; }
+
+    /// <summary>The name of the column that holds each key's value; the property the label ends with, or the dimension's name, when left out.</summary>
+    public string? Value { get; set; }
 }

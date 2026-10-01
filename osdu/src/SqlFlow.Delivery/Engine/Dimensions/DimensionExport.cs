@@ -42,8 +42,10 @@ public enum DimensionExportFormat
 /// key and value it collects (one row for a key of a dimension collecting nothing, or a key collecting no value), with the
 /// row's number, the partition, the key's number, the key, its value, one column per attribute named as the dimension
 /// declares it, the records of the row (those holding the collected value, or every record of the key) and the search
-/// filter finding the key's records. A select lists the distinct values of its column among the rows the other selects
-/// leave. A key under no value (left out by cleaning) is no row.
+/// filter finding the key's records. The key and its value are written under the names their columns have in the
+/// table (<c>WellboreID</c>, <c>FacilityName</c>), in both formats; in JSON Lines every column is a property of the
+/// row, as it is a column of the table. A select lists the distinct values of its column among the rows the other
+/// selects leave. A key under no value (left out by cleaning) is no row.
 /// </para>
 /// </remarks>
 /// <remarks>
@@ -299,7 +301,7 @@ public static class DimensionExport
         var partition = dimension.Partition ?? string.Empty;
         if (format == DimensionExportFormat.Csv)
         {
-            await writer.WriteAsync(Csv(["id", "partition", "key_id", "key", "value", .. names, "records", "filter"]) + ending).ConfigureAwait(false);
+            await writer.WriteAsync(Csv(["id", "partition", "key_id", shape.KeyColumn, shape.ValueColumn, .. names, "records", "filter"]) + ending).ConfigureAwait(false);
         }
 
         long rows = 0;
@@ -312,17 +314,13 @@ public static class DimensionExport
                     w.WriteNumber("id", row.Id);
                     w.WriteString("partition", partition);
                     w.WriteNumber("key_id", row.KeyId);
-                    w.WriteString("key", row.Key);
-                    w.WriteString("value", row.Value);
-                    if (names.Count > 0)
-                    {
-                        w.WriteStartObject("attributes");
-                        for (var i = 0; i < names.Count; i++)
-                        {
-                            w.WriteString(names[i], i < row.Attributes.Count ? row.Attributes[i] : null);
-                        }
+                    w.WriteString(shape.KeyColumn, row.Key);
+                    w.WriteString(shape.ValueColumn, row.Value);
 
-                        w.WriteEndObject();
+                    // Every column of the table is a property of its row: the names are the table's, and no two are alike.
+                    for (var i = 0; i < names.Count; i++)
+                    {
+                        w.WriteString(names[i], i < row.Attributes.Count ? row.Attributes[i] : null);
                     }
 
                     w.WriteNumber("records", row.Records);

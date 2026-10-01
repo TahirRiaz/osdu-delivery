@@ -730,7 +730,7 @@ public sealed class DimensionRunner
             Field = field,
             CollectedJson = collectedJson,
             CollectedTexts = collectedTexts ?? [],
-            Table = DimensionTables.Of(dimension.Name, dimension.Attributes),
+            Table = DimensionTables.Of(dimension.Name, dimension.KeyColumn, dimension.ValueColumn, dimension.Attributes),
             Originals = originals,
             Members = members,
             Read = read,

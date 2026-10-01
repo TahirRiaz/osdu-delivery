@@ -5,18 +5,30 @@ import { DataTable } from "@/components/DataTable";
 import { RichTooltip } from "@/components/RichTooltip";
 import { cn } from "@/lib/utils";
 import { KindText } from "../KindText";
+import type { DeliveryDimension } from "../../../api/delivery";
 import { fieldText, type DimensionEntry } from "./dimensionFormat";
 
-/** The columns every dimension's table has, in the order the table holds them, with what each is. */
-const FIXED_COLUMNS: { name: string; hint: string }[] = [
-  { name: "id", hint: "The row's number, the table's key: what a table of facts joins on. It stays the same for as long as the dimension holds the row." },
-  { name: "partition", hint: "The data partition the row was read in. A flow that builds in several partitions writes them all to this table." },
-  { name: "key_id", hint: "The key's number: the same in every row of the key, for a dimension that collects several values a key." },
-  { name: "key", hint: "The key exactly as the index holds it (an id, for a reference)." },
-  { name: "value", hint: "The key's human-friendly value: its label, cleaned." },
-  { name: "records", hint: "The records of the row: those holding the value the row collects, or every record of the key." },
-  { name: "filter", hint: "The search that finds the key's records." },
-];
+/**
+ * The columns every dimension's table has, in the order the table holds them, with what each is. The key's and the
+ * value's are named as the dimension calls them, after what it reads; the others are the same in every table.
+ */
+function fixedColumns(dimension: DeliveryDimension): { name: string; hint: string }[] {
+  const label = dimension.label.at(-1);
+  return [
+    { name: "id", hint: "The row's number, the table's key: what a table of facts joins on. It stays the same for as long as the dimension holds the row." },
+    { name: "partition", hint: "The data partition the row was read in. A flow that builds in several partitions writes them all to this table." },
+    { name: "key_id", hint: "The key's number: the same in every row of the key, for a dimension that collects several values a key." },
+    { name: dimension.keyColumn, hint: `The key: ${dimension.path} exactly as the index holds it (an id, for a reference).` },
+    {
+      name: dimension.valueColumn,
+      hint: label === undefined
+        ? "The key's human-friendly value: the key itself, cleaned."
+        : `The key's human-friendly value: its label, read at ${label} and cleaned.`,
+    },
+    { name: "records", hint: "The records of the row: those holding the value the row collects, or every record of the key." },
+    { name: "filter", hint: "The search that finds the key's records." },
+  ];
+}
 
 /** One part of the definition: what it is about, in a line, and its facts in rows that line up. */
 function Section({ title, hint, children, className, testId }: {
@@ -124,7 +136,7 @@ export function DimensionDefinition({ entry }: { entry: DimensionEntry }) {
         </Row>
         <Row label="Columns">
           <span className="flex flex-wrap gap-1">
-            {FIXED_COLUMNS.map((column) => <ColumnChip key={column.name} name={column.name} hint={column.hint} />)}
+            {fixedColumns(dimension).map((column) => <ColumnChip key={column.name} name={column.name} hint={column.hint} />)}
             {dimension.attributes.map((attribute) => (
               <ColumnChip
                 key={attribute.name}
@@ -138,7 +150,10 @@ export function DimensionDefinition({ entry }: { entry: DimensionEntry }) {
           </span>
         </Row>
         <Row label="Joined on">
-          <span><Code>id</Code> for a row, <Code>key_id</Code> for a key. An attribute the flow starts to declare gets its column on the next run.</span>
+          <span>
+            <Code>id</Code> for a row, <Code>key_id</Code> for a key. An attribute the flow starts to declare gets its column on the next run, and a
+            column the flow names otherwise takes its name then, its rows kept.
+          </span>
         </Row>
         {query !== null && (
           <Row label="Read it">
