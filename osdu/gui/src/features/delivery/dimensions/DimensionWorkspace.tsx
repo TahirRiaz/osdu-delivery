@@ -64,7 +64,7 @@ function Attention({ entry, onBuild, onRemoved }: { entry: DimensionEntry; onBui
           {dimension.declared && (
             <Button size="xs" variant="outline" className="self-start" onClick={onBuild} data-testid="dimension-rebuild">
               <Play />
-              Build again
+              Run pipeline
             </Button>
           )}
         </AlertDescription>
@@ -88,10 +88,10 @@ function Attention({ entry, onBuild, onRemoved }: { entry: DimensionEntry; onBui
         <PencilLine className="text-warning" />
         <AlertTitle>The declaration changed since these values were read</AlertTitle>
         <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span>The kind, query, path, label or clean steps are not the ones the last build read with. Build it again to read with them.</span>
+          <span>The kind, query, path, label or clean steps are not the ones the last build read with. Run the pipeline to read with them.</span>
           <Button size="xs" variant="outline" onClick={onBuild} data-testid="dimension-rebuild">
             <Play />
-            Build again
+            Run pipeline
           </Button>
         </AlertDescription>
       </Alert>
@@ -284,10 +284,10 @@ export function DimensionWorkspace({ entry, siblings, view, onView, value, onVal
               <DimensionExportMenu dimensionId={dimension.dimensionId} flowName={flow.name} partition={flow.partition} name={dimension.name} />
             )}
             {dimension.declared && (
-              <RichTooltip body="Runs the flow for this dimension alone: reads its keys, labels and attributes again and rewrites what changed.">
+              <RichTooltip body={`Runs ${flow.name} with this dimension picked: it reads the dimension's keys, labels and attributes again and rewrites what changed. The dialog can pick the flow's other dimensions too.`}>
                 <Button size="sm" onClick={build} disabled={dimension.latest?.status === "running"} data-testid="dimension-build">
                   <Play />
-                  Build
+                  Run pipeline
                 </Button>
               </RichTooltip>
             )}
@@ -303,9 +303,9 @@ export function DimensionWorkspace({ entry, siblings, view, onView, value, onVal
             <EmptyState
               icon={<Shapes />}
               title={`${dimension.name} has not been built in this partition`}
-              description="A build reads every distinct key of the path from the OSDU search, paging past the search's limit on distinct values, reads each key's label from the record it names when the dimension asks for one, and cleans it into its value, keeping every key beside its value. Build it to see its values."
+              description="A build reads every distinct key of the path from the OSDU search, paging past the search's limit on distinct values, reads each key's label from the record it names when the dimension asks for one, and cleans it into its value, keeping every key beside its value. Run the flow's pipeline to see its values."
               action={dimension.declared
-                ? <Button size="sm" onClick={build} data-testid="dimension-build-first"><Play />Build now</Button>
+                ? <Button size="sm" onClick={build} data-testid="dimension-build-first"><Play />Run pipeline</Button>
                 : undefined}
               data-testid="dimension-not-built"
             />

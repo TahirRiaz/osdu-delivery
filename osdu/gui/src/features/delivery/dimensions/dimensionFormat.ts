@@ -29,7 +29,7 @@ export const STANDING_VISUALS: Record<DimensionStanding, StandingVisual> = {
   running: { icon: Loader2, label: "Building", tone: "text-info", hint: "A build is reading its values now.", spin: true },
   changed: {
     icon: PencilLine, label: "Changed", tone: "text-warning",
-    hint: "The flow's declaration of it changed since its values were read: build it again to read them with the new one.",
+    hint: "The flow's declaration of it changed since its values were read: run the pipeline to read them with the new one.",
   },
   built: { icon: CircleCheck, label: "Built", tone: "text-success", hint: "It holds the values its last build read." },
   notBuilt: { icon: CircleDashed, label: "Not built", tone: "text-muted-foreground", hint: "No build has read it in this partition yet." },

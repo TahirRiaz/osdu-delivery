@@ -111,7 +111,7 @@ function DimensionCard({ entry, onOpen }: { entry: DimensionEntry; onOpen: () =>
   );
 }
 
-/** A flow's heading over its cards: its name (to its pipeline), what it is for, and a build of every dimension it declares. */
+/** A flow's heading over its cards: its name (to its pipeline), what it is for, and a run of its pipeline, which builds every dimension it declares. */
 function FlowHeading({ flow, onBuild }: { flow: DeliveryDimensionFlow; onBuild: () => void }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -121,10 +121,12 @@ function FlowHeading({ flow, onBuild }: { flow: DeliveryDimensionFlow; onBuild: 
         </Link>
       </RichTooltip>
       {flow.description !== null && <span className="min-w-0 truncate text-[12px] text-muted-foreground">{flow.description}</span>}
-      <Button variant="outline" size="xs" className="ml-auto" onClick={onBuild} data-testid="dimension-flow-build">
-        <Play />
-        Build all
-      </Button>
+      <RichTooltip body="Runs the flow's pipeline, which builds every dimension it declares; the dialog can pick some of them.">
+        <Button variant="outline" size="xs" className="ml-auto" onClick={onBuild} data-testid="dimension-flow-build">
+          <Play />
+          Run pipeline
+        </Button>
+      </RichTooltip>
     </div>
   );
 }

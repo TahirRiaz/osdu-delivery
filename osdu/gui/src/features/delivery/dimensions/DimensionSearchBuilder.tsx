@@ -335,7 +335,7 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks, 
         <EmptyState
           icon={<Search />}
           title="No dimension is built in this partition yet"
-          description="A search is composed from the values of built dimensions. Build a dimension flow, then pick values here."
+          description="A search is composed from the values of built dimensions. Run a dimension flow's pipeline, then pick values here."
           data-testid="search-builder-nothing-built"
         />
       </Card>

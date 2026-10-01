@@ -1,19 +1,17 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, ChevronDown, ChevronRight, CircleAlert, Play } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronRight, CircleAlert } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DataTable, type Column } from "@/components/DataTable";
 import { RelativeTime } from "@/components/RelativeTime";
-import { RichTooltip } from "@/components/RichTooltip";
 import { deliveryApi } from "../../../api/delivery";
 import { KindText } from "../KindText";
 import { useActivePartition } from "../activePartition";
 import { ProblemView } from "../TemplateSheet";
 import { StandingGlyph } from "./DimensionBadges";
-import { DimensionBuildDialog, type DimensionLaunch } from "./DimensionBuildDialog";
 import { DimensionRemoveButton } from "./DimensionRemoveButton";
 import { STANDING_VISUALS, dimensionRef, standingOf, type DimensionEntry } from "./dimensionFormat";
 
@@ -22,13 +20,13 @@ const REFRESH_MS = 15000;
 
 /**
  * A dimension flow's Dimensions tab: each dimension it declares in the workbench's partition, where it stands, what it
- * reads, what it holds and when it was built, with a way to build it alone (the flow's Trigger run builds them all) and
- * to open it on the Dimensions page. The dimensions
- * it no longer declares, which keep what their last build wrote, wait behind a toggle, where an admin can remove them.
+ * reads, what it holds and when it was built, with a way to open it on the Dimensions page. The page's own Trigger run
+ * runs the pipeline, and its dialog picks the dimensions a run builds, so the tab adds no button of its own for that.
+ * The dimensions the flow no longer declares, which keep what their last build wrote, wait behind a toggle, where an
+ * admin can remove them.
  */
 export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
   const [active] = useActivePartition();
-  const [launch, setLaunch] = useState<DimensionLaunch | null>(null);
   const [showRetired, setShowRetired] = useState(false);
   const board = useQuery({
     queryKey: ["delivery", "dimensions", "flow", pipelineId, active],
@@ -51,7 +49,6 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
     return <Skeleton className="h-48 w-full rounded-lg" />;
   }
 
-  const buildOf = (names: string[]): DimensionLaunch => ({ pipelineId: flow.pipelineId, repoId: flow.repoId, flowName: flow.name, dimensions: names });
   const columns: Column<DimensionEntry>[] = [
     {
       id: "dimension",
@@ -80,14 +77,6 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
       align: "right",
       render: (row) => (
         <span className="flex items-center justify-end gap-1" onClick={(event) => event.stopPropagation()}>
-          {row.dimension.declared && flow.buildsPartition && (
-            <RichTooltip body="Runs the flow for this dimension alone. Trigger run, above, builds every dimension the flow declares.">
-              <Button variant="ghost" size="xs" onClick={() => setLaunch(buildOf([row.dimension.name]))} data-testid={`dimension-panel-build-${row.dimension.name}`}>
-                <Play />
-                Build
-              </Button>
-            </RichTooltip>
-          )}
           <DimensionRemoveButton dimension={row.dimension} flowName={flow.name} />
           <Button asChild variant="ghost" size="xs" data-testid={`dimension-panel-open-${row.dimension.name}`}>
             <Link to={`/delivery/dimensions?d=${encodeURIComponent(row.ref)}`}>
@@ -144,7 +133,6 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
           )}
         </div>
       )}
-      <DimensionBuildDialog launch={launch} onClose={() => setLaunch(null)} />
     </div>
   );
 }
