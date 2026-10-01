@@ -178,14 +178,24 @@ finds a key's attribute from the cache. With `unlabelled`, a key with no value o
 
 An attribute can be collected from the dimension's own records rather than read from the record a key names:
 `Source: { collect: data.Source }` on a dimension keyed by the logs' `data.WellboreID` gives each wellbore the source of
-each of its logs. A build reads the path's distinct values (at most 200; a longer list fails the build, naming the
-limit), shows each as a label is (a reference by its decoded code, trimmed), and for each value reads the keys of the
-records holding one of its texts, with how many hold it: a distinct read of the dimension's own field narrowed to those
-records, so a value held by many keys pages as any field does. With `unlabelled`, one more read finds the keys of the
-records holding none of the texts. A key holds a row per value (`DimensionAttribute` is keyed by value as well), each with
-its records, and the dimension keeps each value's texts and the field they are read from (`CollectedJson`), which a
-search picking the value asks for: the records holding one of them, or, for the `unlabelled` value, every record holding
-none (`_exists_:id AND NOT (...)`, since the service refuses a query that only excludes).
+each of its logs. A build reads the path's distinct values as it reads any field's (as many as the dimension's
+`maxValues`), and shows each as a label is (a reference by its decoded code, trimmed); a text no query can carry, or one
+shown as nothing, is no value and counts as none. It then reads which keys hold each value the cheaper of two ways, both
+exact:
+
+- With few values (at most 500, which one query can exclude) and fewer reads than a pass would take pages: a distinct
+  read of the dimension's own field per value, narrowed to the records holding one of its texts, so a value held by many
+  keys pages as any field does; with `unlabelled`, one more read narrowed to the records holding none of them.
+- Otherwise one pass of the search cursor over the dimension's records, each record's key and value read together: a
+  page per thousand records, however many values there are. This is the read for a long free-text list such as
+  `data.Source`, which every producer of a partition writes in its own way.
+
+A key holds a row per value (`DimensionAttribute` is keyed by value as well), each with its records. The dimension keeps
+the field the attribute is read from (`CollectedJson`) and every text with the value it is shown as and its records
+(`DimensionCollectedText`, indexed by value), which a search picking a value asks for: the records holding one of its
+texts, or, for the `unlabelled` value, every record holding none (`_exists_:id AND NOT (...)`, since the service refuses
+a query that only excludes). That exclusion holds at most 1,000 texts, so an attribute of more values refuses a pick of
+its `unlabelled` value, saying why; its values can always be picked.
 
 A dimension collects one attribute: two would pair values no record holds together (one log's source with another's
 type), and its table would offer combinations a search then finds nothing for. The document refuses a second one,
@@ -234,11 +244,12 @@ All in the `osdu` schema, keyed by the ledger partition first, under a ledger of
 
 | Table | One row per | Holds |
 | --- | --- | --- |
-| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the attributes, the field asked, what each collected attribute's values stand for and the field they are read from, the clean steps, the definition hash, current value and key counts, the last build. |
+| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the attributes, the field asked, the field each collected attribute is read from, the clean steps, the definition hash, current value and key counts, the last build. |
 | `DimensionRun` | dimension and build | Status, counts (records, values, keys, added, removed, moved, left out, unfilterable, too long, null, labelled, unlabelled), requests (label searches among them), slices, scanned records, templates used, notes. |
 | `DimensionMember` | value | Stable id, the value, count and whether it is exact, keys, filter and parts, first and last seen, removed. |
 | `DimensionValue` | key | Stable id, the key, its label and the record it came from, its value or why it has none, count, filterable, its filter, first and last seen, removed, the build it joined its value. |
 | `DimensionAttribute` | key, attribute and value | The value, where it was read (the record, or a collected attribute's text), and for a collected value how many of the key's records hold it. |
+| `DimensionCollectedText` | collected attribute and text | The text exactly as the index holds it, the value it is shown as, and the records holding it. |
 | `DimensionChange` | key that moved, left, came back or arrived after the first build | The build, the key, from and to value. |
 
 A build writes in one transaction: its values are copied into temporary tables, and set-based statements add, update and
@@ -275,7 +286,7 @@ keeps its id. A key whose label, value or filter changed is rewritten, and a mov
 | A search failure part way | Retried by the flow's reliability settings; a dimension that still fails writes nothing and the others build. |
 | A value whose filter would pass the clause limit | Its filter is in parts; the API and the CLI hand every part. |
 | Values picked across dimensions holding more than 1,000 keys | The search is refused, saying how many keys they hold. |
-| A collected attribute whose records hold more than 200 values | That dimension fails, naming the limit: such a list is a dimension of its own. |
+| A collected attribute with many values (a free-text source every producer writes its own way) | Read in one pass over the records; a pick of its `unlabelled` value is refused past 1,000 values, since one search cannot exclude more. |
 | A second collected attribute | Refused at load, naming the first. |
 | Two texts of a collected path shown alike (`RECALL` and `RECALL `) | One value, standing for both; a search picking it asks for both. |
 | A collected value a pick names that the attribute does not hold | Named as missing; a pick holding no value it does hold is refused. |
@@ -362,10 +373,14 @@ integration brief's aggregation facts, and the samples README.
   `DimensionAttribute` keyed by value with `Records`, and the dimension's `CollectedJson` (migration
   `DimensionCollectedAttributes`, module version 1.20.0); a collected value picking records in a search; an attribute's
   values narrowed by the other picks (ledger, API, CLI); the export set `table`.
+- Collecting reads per value or in one pass, whichever is cheaper, with no limit but `maxValues`, and the texts a value
+  stands for move to `DimensionCollectedText` (migration `DimensionCollectedTexts`, module version 1.21.0), after the dev
+  partition's `data.Source` proved to hold more than the 200 values the first version allowed.
 - Tests: the collect rules of the document; a build collecting sources from logs, with a text spelled two ways and records
   holding none; the lists of a cascade, each narrowed by the others; the table; searches picking a collected value alone,
   with Not specified and with a country, run against the fake; a rebuild; the API's narrowed list and table; the
-  migration up and back down.
+  migration up and back down; few values over 3,600 logs read per value with no cursor; 1,100 values read in one pass,
+  one picked, and Not specified refused; the texts migration up and back down.
 
 ## Close-out
 

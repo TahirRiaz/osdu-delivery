@@ -215,7 +215,7 @@ one `AssertionRun` row per run of its tests in a partition, and one `AssertionRe
 A result is written the moment its test is evaluated, so a report shows a long run's progress and keeps what a stopped run
 found. The run registers its ledger in the partition first, with the directory's kind `assertion`, like any ledger.
 
-### `osdu.Dimension`, `osdu.DimensionRun`, `osdu.DimensionMember`, `osdu.DimensionValue`, `osdu.DimensionAttribute` and `osdu.DimensionChange`: dimensions
+### `osdu.Dimension`, `osdu.DimensionRun`, `osdu.DimensionMember`, `osdu.DimensionValue`, `osdu.DimensionAttribute`, `osdu.DimensionCollectedText` and `osdu.DimensionChange`: dimensions
 
 A dimension flow's builds keep here what they found ([dimension-plan.md](dimension-plan.md), Tables): one `Dimension`
 row per dimension of a flow in a partition, one `DimensionRun` row per build, its values (`DimensionMember`) and its keys
@@ -228,7 +228,7 @@ the binary collation, exactly, as OSDU ids do; a search of them folds case.
 | --- | --- |
 | `Dimension.DimensionId`, `FlowId`, `FlowName`, `Name` | The dimension, unique by its flow's ledger identity in the partition and its name. |
 | `Kind`, `Query`, `Path`, `LabelJson`, `AttributesJson`, `CleanJson`, `DefinitionHash` | The declaration its last build read with: the query with its tokens filled, the label's paths (null when keys are their own values), and the attributes it reads (`[{ "name", "steps" }]`, or `{ "name", "collect" }` for a collected one; null for none). |
-| `CollectedJson` | What the last build that settled the field collected: for each collected attribute its name and path, how the index stores the path, the value records holding none were given, and each value with the texts it stands for and their records. A search picking a collected value reads it. Null when the dimension collects nothing. |
+| `CollectedJson` | What the last build that settled the field collected: for each collected attribute its name and path, how the index stores the path, and the value records holding none were given. Null when the dimension collects nothing. |
 | `FieldIndex`, `NestedPath`, `AggregateBy`, `Repeats` | How the index stores the field, as a build settled it from the templates: text, keyword, number, boolean or date, the nested array it sits in, the aggregation that reads it, and whether a record holds it more than once. |
 | `Members`, `Originals`, `LastRunId`, `LastBuiltUtc` | The values and keys it holds now, and the build that wrote them. |
 | `DimensionRun.DimensionRunId`, `RunId`, `Actor`, `Status` | One build: the platform run, who asked, and `running`, `completed`, `failed` or `cancelled`. |
@@ -239,6 +239,7 @@ the binary collation, exactly, as OSDU ids do; a search of them folds case.
 | `DimensionMember.MemberId`, `Value`, `Records`, `RecordsExact`, `Originals`, `Unfilterable`, `Filter`, `FilterParts` | A value, unique in its dimension, with the records holding any of its keys (exact, or the sum of its keys' counts), its keys and those no query can carry, and its search filter when one query holds it. |
 | `DimensionValue.ValueId`, `Original`, `OriginalHash`, `MemberId`, `LeftOut`, `Note`, `Count`, `Filterable` | A key exactly as the index holds it, unique by its SHA-256, with its value or why it has none (`empty`, `tooLong`, `dropped`, `failed`), what cleaning said, and its count. |
 | `Label`, `LabelFrom`, `Filter` | The label read for the key (at most 1,024 characters) and the id of the record it was read from, null when none was; and the search filter finding exactly the records holding the key, null when no query can carry it. |
+| `DimensionCollectedText.Name`, `TextHash`, `Text`, `Value`, `Records` | One text a collected attribute's records hold, keyed by the attribute and the text's SHA-256: the text exactly as the index holds it, the value it is shown as (several texts shown alike are one value), and the records holding it. Indexed by name and value, so a search finds the texts of the values it picks in one seek. A build that settles its field replaces the dimension's rows. |
 | `DimensionAttribute.ValueId`, `Name`, `Value`, `ValueFrom`, `Records` | One value of one attribute of one key, keyed by the key, the attribute's name and the value (at most 256 characters, compared exactly): one row for an attribute read from the record the key names, with that record in `ValueFrom`; a row per value for a collected attribute, with the text the key's records hold in `ValueFrom` and how many hold it in `Records` (null for an attribute read from the record). Indexed by name and value, so the keys an attribute value holds, and an attribute's values, are one seek. A build rewrites the attributes of the keys it found; a key no build finds any more keeps what its last build read. |
 | `FirstSeenRunId`, `FirstSeenUtc`, `RemovedRunId`, `RemovedUtc`, `MemberSinceRunId` | When a value or key arrived, and when a build no longer found it: it is kept, and keeps its id if a later build finds it again. |
 | `DimensionChange.ChangeId`, `DimensionRunId`, `ValueId`, `Change`, `FromMemberId`, `ToMemberId` | What a build did to one key: `added`, `removed`, `moved` (to another value) or `restored`. A dimension's first build logs no arrivals. |
@@ -251,8 +252,9 @@ differently (the build's notes count them). The tables came with
 the label and filter of a key, the declaration's label and a build's label counts; `20260930190046_DimensionAttributes`
 (module version 1.19.0) added `osdu.DimensionAttribute` and the declaration's attributes;
 `20261001084750_DimensionCollectedAttributes` (module version 1.20.0) keyed an attribute by its value as well, with the
-records holding a collected value, and added `CollectedJson`. A dimension built before any of them keeps its keys and
-values, with no label, key filter or attribute until its next build.
+records holding a collected value, and added `CollectedJson`; `20261001102750_DimensionCollectedTexts` (module version
+1.21.0) added `osdu.DimensionCollectedText`. A dimension built before any of them keeps its keys and values, with no
+label, key filter or attribute until its next build.
 
 ### `osdu.Activity`: the audit trail of runs and interventions
 
@@ -832,6 +834,12 @@ holds several values of a collected attribute; adds `Records` to it, how many of
 and adds `CollectedJson` to `osdu.Dimension`. Every row it finds keeps its value, with no records, and needs no rebuild.
 Going back down first removes the collected values (and any second value of one attribute of a key), then restores the
 earlier key and drops both columns.
+
+`DimensionCollectedTexts` (module version 1.21.0) creates `osdu.DimensionCollectedText`, one row per collected attribute
+and text keyed by the partition, the dimension, the attribute's name and the text's SHA-256, with the index
+`(PartitionId, DimensionId, Name, Value)` a search seeks. A build before it kept the texts in `CollectedJson`, which it
+clears, so a search picking a collected value asks for the dimension to be built again rather than finding no text; every
+key keeps its values. Going back down drops the table.
 
 `LedgerPartitions` (module version 1.14.0) keys the ledger by partition (see [Partitions](#partitions)). It creates
 `osdu.LedgerPartition` and `osdu.Ledger` and fills them from what the ledger already says, before anything else changes:
