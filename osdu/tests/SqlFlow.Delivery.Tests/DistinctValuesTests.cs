@@ -69,6 +69,94 @@ public class DistinctValuesTests
     }
 
     [Fact]
+    public async Task Ranges_asked_several_at_a_time_read_what_one_at_a_time_reads_in_as_many_aggregations()
+    {
+        var names = Enumerable.Range(0, 20_000).SelectMany(i => Enumerable.Repeat($"WB-{i:D5}", 1 + (i % 3))).ToList();
+        var inTurn = await Read(FakeIndex.Single(Name, names), Options(size: 100));
+
+        var index = FakeIndex.Single(Name, names);
+        index.Cap = 100;
+        var slow = new AtOnce(index);
+        var together = await DistinctValues.ReadAsync(slow, Options(size: 100) with { Concurrency = 8 }, NullLogger.Instance, CancellationToken.None);
+
+        Assert.Equal(
+            inTurn.Values.OrderBy(v => v.Key, StringComparer.Ordinal).ToList(), together.Values.OrderBy(v => v.Key, StringComparer.Ordinal).ToList());
+        Assert.Equal((inTurn.Aggregations, inTurn.Slices, inTurn.Splits), (together.Aggregations, together.Slices, together.Splits));
+        Assert.Equal((inTurn.Records, inTurn.WithValue), (together.Records, together.WithValue));
+        Assert.InRange(slow.Most, 2, 8);
+        Assert.Equal(0, slow.Now);
+    }
+
+    [Fact]
+    public async Task A_range_that_fails_ends_the_read_with_its_failure_and_leaves_no_range_asked()
+    {
+        var names = Enumerable.Range(0, 20_000).Select(i => $"WB-{i:D5}").ToList();
+        var index = FakeIndex.Single(Name, names);
+        index.Cap = 100;
+        var slow = new AtOnce(index) { FailAt = 40 };
+
+        var failed = await Assert.ThrowsAsync<DeliveryException>(
+            () => DistinctValues.ReadAsync(slow, Options(size: 100) with { Concurrency = 8 }, NullLogger.Instance, CancellationToken.None));
+
+        Assert.Equal("the service refused aggregation 40", failed.Message);
+        Assert.Equal(0, slow.Now);
+    }
+
+    /// <summary>
+    /// A source that answers each aggregation a moment after it is asked, as a service does, and counts how many are asked
+    /// at once; the index behind it is asked one at a time, since it is no service.
+    /// </summary>
+    private sealed class AtOnce(FakeIndex inner) : IDistinctValueSource
+    {
+        private readonly Lock _gate = new();
+        private int _now;
+        private int _asked;
+
+        public OsduField Field => inner.Field;
+
+        /// <summary>The most aggregations in flight at one time.</summary>
+        public int Most { get; private set; }
+
+        /// <summary>The aggregations in flight now.</summary>
+        public int Now => Volatile.Read(ref _now);
+
+        /// <summary>The aggregation, counted from 1, that fails; none when zero.</summary>
+        public int FailAt { get; init; }
+
+        public async Task<(long Total, IReadOnlyList<OsduSearchBucket> Buckets)> AggregateAsync(DistinctSlice slice, CancellationToken ct)
+        {
+            int asked;
+            lock (_gate)
+            {
+                asked = ++_asked;
+                Most = Math.Max(Most, ++_now);
+            }
+
+            try
+            {
+                await Task.Delay(2, ct);
+                if (asked == FailAt)
+                {
+                    throw new DeliveryException($"the service refused aggregation {asked}");
+                }
+
+                lock (_gate)
+                {
+                    return inner.AggregateAsync(slice, ct).GetAwaiter().GetResult();
+                }
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _now);
+            }
+        }
+
+        public IAsyncEnumerable<IReadOnlyList<DistinctUnit>> ScanAsync(DistinctSlice slice, CancellationToken ct) => inner.ScanAsync(slice, ct);
+
+        public Task<long?> CountAsync(DistinctCheck check, CancellationToken ct) => inner.CountAsync(check, ct);
+    }
+
+    [Fact]
     public async Task Values_a_record_holds_several_of_are_each_counted_once_per_record()
     {
         var random = new Random(7);

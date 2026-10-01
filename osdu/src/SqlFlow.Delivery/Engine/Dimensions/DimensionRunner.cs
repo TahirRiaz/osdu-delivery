@@ -305,20 +305,42 @@ public sealed class DimensionRunner
             _log.LogInformation("dimension {Dimension}: reading {Kind} {Path} as {Field}", dimension.Name, dimension.Kind, dimension.Path, field.AggregateBy);
             var values = await DistinctValues.ReadAsync(
                 new SearchDistinctSource(search, dimension.Kind, query, field),
-                new DistinctReadOptions(_flow.Source.AggregationSize, dimension.MaxValues, resolved.Repeats),
+                new DistinctReadOptions(_flow.Source.AggregationSize, dimension.MaxValues, resolved.Repeats, Concurrency: Math.Max(1, _flow.Reliability.Concurrency)),
                 _log, ct).ConfigureAwait(false);
             read = Counts(values, templatesJson, 0, [], KeyLabels.None);
 
             // A key naming a record is followed to it for its label, which is what the key's value is cleaned from, and for
-            // the attributes read through it.
+            // the attributes read through it; and the values each key collects from its own records are read for each
+            // collected attribute. Neither read needs the other, so a flow that may ask several things at once has them made
+            // side by side, its concurrency shared between them; one that asks a thing at a time has them made in turn.
             var throughKeys = dimension.Attributes.Where(a => !a.IsCollected).ToList();
-            var labels = dimension.Label.Count == 0 && throughKeys.Count == 0
-                ? KeyLabels.None
-                : await new DimensionLabeler(search, _log).ReadAsync(values.Values.Keys.ToList(), dimension.Label, throughKeys, ct).ConfigureAwait(false);
-            read = Counts(values, templatesJson, 0, [], labels);
+            var labelled = dimension.Label.Count > 0 || throughKeys.Count > 0;
+            var collects = dimension.Attributes.Any(a => a.IsCollected);
+            var concurrency = Math.Max(1, _flow.Reliability.Concurrency);
+            var together = labelled && collects && concurrency > 1;
+            var forLabels = together ? concurrency / 2 : concurrency;
+            var forCollected = together ? concurrency - forLabels : concurrency;
+            Task<KeyLabels> Labelling() => labelled
+                ? new DimensionLabeler(search, _log, forLabels).ReadAsync(values.Values.Keys.ToList(), dimension.Label, throughKeys, ct)
+                : Task.FromResult(KeyLabels.None);
+            Task<CollectedRead> Collecting() => ReadCollectedAsync(search, templates, dimension, query, field, resolved, values, forCollected, ct);
+            KeyLabels labels;
+            CollectedRead collected;
+            if (together)
+            {
+                var labelling = Labelling();
+                var collecting = Collecting();
+                await Task.WhenAll(labelling, collecting).ConfigureAwait(false);
+                labels = await labelling.ConfigureAwait(false);
+                collected = await collecting.ConfigureAwait(false);
+            }
+            else
+            {
+                labels = await Labelling().ConfigureAwait(false);
+                read = Counts(values, templatesJson, 0, [], labels);
+                collected = await Collecting().ConfigureAwait(false);
+            }
 
-            // The values each key collects from its own records, for each collected attribute.
-            var collected = await ReadCollectedAsync(search, templates, dimension, query, field, resolved, values, ct).ConfigureAwait(false);
             read = Counts(values, templatesJson, 0, [], labels, collected);
 
             var cleaner = Cleaner(dimension);
@@ -600,7 +622,7 @@ public sealed class DimensionRunner
     /// </summary>
     private async Task<CollectedRead> ReadCollectedAsync(
         OsduSearch search, TemplateCache templates, DimensionSpec dimension, string? query, OsduField keyField, ResolvedField resolved, DistinctRead keys,
-        CancellationToken ct)
+        int concurrency, CancellationToken ct)
     {
         var collectedAttributes = dimension.Attributes.Where(a => a.IsCollected).ToList();
         if (collectedAttributes.Count == 0)
@@ -608,7 +630,7 @@ public sealed class DimensionRunner
             return CollectedRead.None;
         }
 
-        var collector = new DimensionCollector(search, _log, _flow.Source.AggregationSize, Math.Max(1, _flow.Reliability.Concurrency));
+        var collector = new DimensionCollector(search, _log, _flow.Source.AggregationSize, Math.Max(1, concurrency));
         var byKey = new Dictionary<string, List<DimensionAttributeState>>(StringComparer.Ordinal);
         var states = new List<DimensionCollectedState>(collectedAttributes.Count);
         var texts = new List<DimensionCollectedText>();

@@ -26,8 +26,16 @@ internal sealed class FakeDimensionPlatform : HttpMessageHandler
     private readonly Lock _gate = new();
     private readonly Dictionary<string, (List<JsonObject> Hits, int Next)> _cursors = new(StringComparer.Ordinal);
     private int _cursorCount;
+    private int _answering;
+    private int _mostAtOnce;
 
     public List<FakeHttpHandler.Request> Calls { get; } = [];
+
+    /// <summary>How long the platform takes to answer a request, as a service across a network does; no time by default.</summary>
+    public TimeSpan Latency { get; set; }
+
+    /// <summary>The most requests the platform was answering at one time.</summary>
+    public int MostAtOnce => Volatile.Read(ref _mostAtOnce);
 
     public List<JsonObject> Records { get; } = [];
 
@@ -65,6 +73,29 @@ internal sealed class FakeDimensionPlatform : HttpMessageHandler
         ArgumentNullException.ThrowIfNull(request);
         var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
         var headers = request.Headers.ToDictionary(h => h.Key, h => string.Join(",", h.Value), StringComparer.OrdinalIgnoreCase);
+        var answering = Interlocked.Increment(ref _answering);
+        try
+        {
+            int most;
+            while (answering > (most = Volatile.Read(ref _mostAtOnce)) && Interlocked.CompareExchange(ref _mostAtOnce, answering, most) != most)
+            {
+            }
+
+            if (Latency > TimeSpan.Zero)
+            {
+                await Task.Delay(Latency, cancellationToken);
+            }
+
+            return Answer(request, body, headers);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _answering);
+        }
+    }
+
+    private HttpResponseMessage Answer(HttpRequestMessage request, string? body, Dictionary<string, string> headers)
+    {
         lock (_gate)
         {
             Calls.Add(new FakeHttpHandler.Request(request.Method, request.RequestUri!, body, request.Content?.Headers.ContentType?.MediaType, headers));

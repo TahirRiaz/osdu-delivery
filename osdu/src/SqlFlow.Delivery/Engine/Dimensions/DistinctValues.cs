@@ -88,7 +88,11 @@ public interface IDistinctValueSource
 /// Whether the read counts the records it covers and those holding a value, to say how complete it is; a read that is one of
 /// many over parts of the same records (a collected attribute's values, one read each) leaves them to the read of the whole.
 /// </param>
-public sealed record DistinctReadOptions(int AggregationSize, long MaxValues, bool Repeats, bool Checks = true)
+/// <param name="Concurrency">
+/// The most ranges asked of the service at once. A field of many values is read in many ranges, each an aggregation the
+/// service computes on its own, so asking several at a time reads it that many times sooner; one reads them in turn.
+/// </param>
+public sealed record DistinctReadOptions(int AggregationSize, long MaxValues, bool Repeats, bool Checks = true, int Concurrency = 1)
 {
     /// <summary>The fewest groups an aggregation may be taken to return; a smaller setting could never page a real field.</summary>
     public const int MinAggregationSize = 10;
@@ -203,8 +207,10 @@ public static class DistinctValues
         var order = DimensionValueText.Order(field.Index);
         var tally = new Tally(field, options.MaxValues);
         var notes = new List<string>();
-        var pending = new Stack<DistinctSlice>();
-        pending.Push(DistinctSlice.Whole);
+        // The ranges still to read, the widest first: the halves of a split wait behind the ranges asked before them, so the
+        // read fans out to as many ranges as it may ask at once as soon as there are that many.
+        var pending = new Queue<DistinctSlice>();
+        pending.Enqueue(DistinctSlice.Whole);
 
         // Every split leaves fewer distinct values on each side, so paging ends by itself; this bound only stops an index
         // that keeps gaining values while it is read from keeping a build going without end.
@@ -214,70 +220,95 @@ public static class DistinctValues
         var splits = 0;
         var scannedSlices = 0;
         var scannedWhole = false;
-        while (pending.Count > 0)
+
+        // The ranges still to read are asked several at a time. What a range's answer leads to (its keys counted, a split,
+        // a scan) is settled here, one answer at a time, so the counts are kept by one thread whatever is in flight.
+        var readers = Math.Max(1, options.Concurrency);
+        var asked = new List<Task<(DistinctSlice Slice, long Matched, IReadOnlyList<OsduSearchBucket> Buckets)>>(readers);
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            if (aggregations >= ceiling)
+            while (pending.Count > 0 || asked.Count > 0)
             {
-                throw new DeliveryException(
-                    string.Create(CultureInfo.InvariantCulture, $"Reading the values of {field.Path} asked {aggregations} aggregations without covering every range; the index is changing faster than it can be read. Build the dimension again when it is quieter."));
-            }
-
-            var slice = pending.Pop();
-            var (matched, buckets) = await source.AggregateAsync(slice, ct).ConfigureAwait(false);
-            aggregations++;
-            if (aggregations % ProgressEvery == 0)
-            {
-                log.LogInformation(
-                    "values of {Path}: {Aggregations} aggregation(s), {Values} value(s) so far, {Pending} range(s) still to read",
-                    field.Path, aggregations, tally.Count, pending.Count);
-            }
-
-            if (buckets.Any(b => b.Key is null))
-            {
-                // The service renders a number's key from key_as_string, which a plain number has none of: the groups
-                // cannot say which value they are, so every value is read from the records themselves.
-                notes.Add("The search named no key for the groups of this field, which it does for a plain number, so every value was read by scanning the records.");
-                tally = new Tally(field, options.MaxValues);
-                pending.Clear();
-                await ScanAsync(source, DistinctSlice.Whole, order, tally, ct).ConfigureAwait(false);
-                scannedWhole = true;
-                break;
-            }
-
-            var inside = buckets.Where(b => slice.Contains(Canonical(field, b.Key!), order)).ToList();
-            if (buckets.Count < options.AggregationSize)
-            {
-                foreach (var bucket in inside)
+                ct.ThrowIfCancellationRequested();
+                while (pending.Count > 0 && asked.Count < readers)
                 {
-                    tally.AddKey(bucket.Key!, bucket.Count);
+                    if (aggregations >= ceiling)
+                    {
+                        throw new DeliveryException(
+                            string.Create(CultureInfo.InvariantCulture, $"Reading the values of {field.Path} asked {aggregations} aggregations without covering every range; the index is changing faster than it can be read. Build the dimension again when it is quieter."));
+                    }
+
+                    asked.Add(AskAsync(source, pending.Dequeue(), stop.Token));
+                    aggregations++;
+                    if (aggregations % ProgressEvery == 0)
+                    {
+                        log.LogInformation(
+                            "values of {Path}: {Aggregations} aggregation(s), {Values} value(s) so far, {Pending} range(s) still to read",
+                            field.Path, aggregations, tally.Count, pending.Count);
+                    }
                 }
 
-                slices++;
-                continue;
-            }
+                var answered = await Task.WhenAny(asked).ConfigureAwait(false);
+                asked.Remove(answered);
+                var (slice, matched, buckets) = await answered.ConfigureAwait(false);
+                if (buckets.Any(b => b.Key is null))
+                {
+                    // The service renders a number's key from key_as_string, which a plain number has none of: the groups
+                    // cannot say which value they are, so every value is read from the records themselves. The ranges
+                    // already asked are let finish, and what they answer goes with what was counted so far.
+                    notes.Add("The search named no key for the groups of this field, which it does for a plain number, so every value was read by scanning the records.");
+                    pending.Clear();
+                    await Task.WhenAll(asked).ConfigureAwait(false);
+                    asked.Clear();
+                    tally = new Tally(field, options.MaxValues);
+                    await ScanAsync(source, DistinctSlice.Whole, order, tally, ct).ConfigureAwait(false);
+                    scannedWhole = true;
+                    break;
+                }
 
-            // A cut-off slice is scanned rather than split when its records fit one cursor page, which one request reads where
-            // a split asks two aggregations at least; and when most of its groups belong to other slices, its records hold
-            // many values each, so no split would bring it under the limit before it narrowed to single values, and a scan of
-            // a few pages reads what that would have read one value at a time.
-            if (matched <= OsduSearch.MaxPage || (inside.Count * 2 < buckets.Count && matched <= PollutedScanPages * OsduSearch.MaxPage))
-            {
+                var inside = buckets.Where(b => slice.Contains(Canonical(field, b.Key!), order)).ToList();
+                if (buckets.Count < options.AggregationSize)
+                {
+                    foreach (var bucket in inside)
+                    {
+                        tally.AddKey(bucket.Key!, bucket.Count);
+                    }
+
+                    slices++;
+                    continue;
+                }
+
+                // A cut-off slice is scanned rather than split when its records fit one cursor page, which one request reads
+                // where a split asks two aggregations at least; and when most of its groups belong to other slices, its
+                // records hold many values each, so no split would bring it under the limit before it narrowed to single
+                // values, and a scan of a few pages reads what that would have read one value at a time.
+                if (matched <= OsduSearch.MaxPage || (inside.Count * 2 < buckets.Count && matched <= PollutedScanPages * OsduSearch.MaxPage))
+                {
+                    scannedSlices++;
+                    await ScanAsync(source, slice, order, tally, ct).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (SplitPoint(field, inside, order) is { } split)
+                {
+                    splits++;
+                    pending.Enqueue(new DistinctSlice(slice.From, split));
+                    pending.Enqueue(new DistinctSlice(split, slice.To));
+                    continue;
+                }
+
                 scannedSlices++;
                 await ScanAsync(source, slice, order, tally, ct).ConfigureAwait(false);
-                continue;
             }
-
-            if (SplitPoint(field, inside, order) is { } split)
-            {
-                splits++;
-                pending.Push(new DistinctSlice(split, slice.To));
-                pending.Push(new DistinctSlice(slice.From, split));
-                continue;
-            }
-
-            scannedSlices++;
-            await ScanAsync(source, slice, order, tally, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // The read failed: the ranges still asked are told to stop and waited for, so none outlives the read. What
+            // they come to is not reported; the failure that ended the read is.
+            await stop.CancelAsync().ConfigureAwait(false);
+            await ((Task)Task.WhenAll(asked)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            throw;
         }
 
         var records = options.Checks ? await CheckAsync(source, DistinctCheck.Records, notes, ct).ConfigureAwait(false) : null;
@@ -325,6 +356,14 @@ public static class DistinctValues
             "values of {Path}: {Values} distinct value(s) from {Aggregations} aggregation(s) over {Slices} range(s), {Splits} split(s), {Scanned} range(s) scanned in {Pages} page(s)",
             field.Path, read.Values.Count, aggregations, slices, splits, scannedWhole ? "every" : scannedSlices.ToString(CultureInfo.InvariantCulture), read.ScanPages);
         return read;
+    }
+
+    /// <summary>One range asked of the service, answered with the range it was asked of.</summary>
+    private static async Task<(DistinctSlice Slice, long Matched, IReadOnlyList<OsduSearchBucket> Buckets)> AskAsync(
+        IDistinctValueSource source, DistinctSlice slice, CancellationToken ct)
+    {
+        var (matched, buckets) = await source.AggregateAsync(slice, ct).ConfigureAwait(false);
+        return (slice, matched, buckets);
     }
 
     /// <summary>

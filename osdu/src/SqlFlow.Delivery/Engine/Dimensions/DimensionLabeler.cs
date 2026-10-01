@@ -67,13 +67,18 @@ public sealed class DimensionLabeler
 
     private readonly OsduSearch _search;
     private readonly ILogger _log;
+    private readonly int _concurrency;
 
-    public DimensionLabeler(OsduSearch search, ILogger log)
+    /// <param name="search">The search the records are read from.</param>
+    /// <param name="log">The run's log.</param>
+    /// <param name="concurrency">The most searches asked at once: the records of a step are read a thousand ids a search, each on its own.</param>
+    public DimensionLabeler(OsduSearch search, ILogger log, int concurrency = 1)
     {
         ArgumentNullException.ThrowIfNull(search);
         ArgumentNullException.ThrowIfNull(log);
         _search = search;
         _log = log;
+        _concurrency = Math.Max(1, concurrency);
     }
 
     /// <summary>The label of each of <paramref name="keys"/>, read through <paramref name="steps"/>.</summary>
@@ -259,34 +264,42 @@ public sealed class DimensionLabeler
     private async Task<(Dictionary<string, JsonObject> Records, int Queries)> ReadAsync(
         Dictionary<string, (HashSet<string> Ids, HashSet<string> Paths)> wanted, CancellationToken ct)
     {
-        var records = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
-        var queries = 0;
+        var asks = new List<(string Kind, List<string> Fields, string[] Ids)>();
         foreach (var (type, need) in wanted)
         {
             var fields = new List<string>(need.Paths.Count + 1) { "id" };
             fields.AddRange(need.Paths.Order(StringComparer.Ordinal));
-            foreach (var chunk in need.Ids.Order(StringComparer.Ordinal).Chunk(IdsPerQuery))
-            {
-                ct.ThrowIfCancellationRequested();
-                var query = new OsduSearchQuery
-                {
-                    Kind = $"*:*:{type}:*",
-                    Query = OsduQuery.AnyOf(Id, chunk).Text,
-                    ReturnedFields = fields,
-                };
-                var (_, hits) = await _search.FirstAsync(query, OsduSearch.MaxPage, ct).ConfigureAwait(false);
-                queries++;
-                foreach (var hit in hits)
-                {
-                    if (hit["id"] is JsonValue idValue && idValue.TryGetValue<string>(out var id) && !string.IsNullOrEmpty(id))
-                    {
-                        records[id] = hit;
-                    }
-                }
-            }
+            asks.AddRange(need.Ids.Order(StringComparer.Ordinal).Chunk(IdsPerQuery).Select(chunk => ($"*:*:{type}:*", fields, chunk)));
         }
 
-        return (records, queries);
+        // Each search asks for records of its own, so they are asked several at a time and gathered as they answer.
+        var records = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        var gate = new Lock();
+        await Parallel.ForEachAsync(
+            asks,
+            new ParallelOptions { MaxDegreeOfParallelism = _concurrency, CancellationToken = ct },
+            async (ask, token) =>
+            {
+                var query = new OsduSearchQuery
+                {
+                    Kind = ask.Kind,
+                    Query = OsduQuery.AnyOf(Id, ask.Ids).Text,
+                    ReturnedFields = ask.Fields,
+                };
+                var (_, hits) = await _search.FirstAsync(query, OsduSearch.MaxPage, token).ConfigureAwait(false);
+                lock (gate)
+                {
+                    foreach (var hit in hits)
+                    {
+                        if (hit["id"] is JsonValue idValue && idValue.TryGetValue<string>(out var id) && !string.IsNullOrEmpty(id))
+                        {
+                            records[id] = hit;
+                        }
+                    }
+                }
+            }).ConfigureAwait(false);
+
+        return (records, asks.Count);
     }
 
     /// <summary>

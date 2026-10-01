@@ -5,6 +5,7 @@ using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Search;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -842,6 +843,132 @@ public sealed class DimensionRunTests : IDisposable
             ledger, [new DimensionPick(wellbores, [], [], [new DimensionAttributeMatch("Source", ["Not specified"])])], null, null, CancellationToken.None));
         Assert.Contains("more than the 1000 one search can exclude", none.Message, StringComparison.Ordinal);
         OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task A_pass_over_many_records_is_read_in_ranges_of_keys_side_by_side_and_counts_every_record_once()
+    {
+        // 9,000 logs over 300 wellbores and 600 sources: more sources than a read per value is made for, so the logs are
+        // passed over, and enough of them for two ranges of keys, each read through a cursor of its own.
+        var expected = new Dictionary<(string Key, string Source), long>();
+        for (var log = 0; log < 9_000; log++)
+        {
+            var wellbore = $"dev:master-data--Wellbore:W{log % 300:D3}:";
+            var source = $"S{(log * 7) % 600:D3}";
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, new JsonObject { ["WellboreID"] = wellbore, ["Source"] = source });
+            expected[(wellbore, source)] = expected.GetValueOrDefault((wellbore, source)) + 1;
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                attributes:
+                  Source: { collect: data.Source }
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var keys = await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 1000));
+        Assert.Equal(300, keys.Count);
+        Assert.Equal(
+            expected.OrderBy(e => e.Key.Key, StringComparer.Ordinal).ThenBy(e => e.Key.Source, StringComparer.Ordinal).Select(e => (e.Key.Key, e.Key.Source, (long?)e.Value)).ToList(),
+            keys.SelectMany(k => k.Attributes.Select(a => (k.Original, a.Value, a.Records)))
+                .OrderBy(e => e.Original, StringComparer.Ordinal).ThenBy(e => e.Value, StringComparer.Ordinal).ToList());
+        Assert.Equal(9_000L, keys.Sum(k => k.Attributes.Sum(a => a.Records ?? 0)));
+
+        // The pass opened two cursors, each over a range of the wellbores' ids and each returning the key and the source,
+        // and between them they read every log once.
+        var opened = _platform.Calls
+            .Where(c => c.Uri.AbsolutePath.EndsWith("/query_with_cursor", StringComparison.Ordinal) && c.Body is not null)
+            .Select(c => JsonNode.Parse(c.Body!)!.AsObject())
+            .Where(body => body["cursor"] is null
+                && body["returnedFields"]!.AsArray().Select(f => f!.GetValue<string>()).Intersect(["data.WellboreID", "data.Source"]).Count() == 2)
+            .Select(body => body["query"]!.GetValue<string>())
+            .ToList();
+        Assert.Equal(2, opened.Count);
+        Assert.All(opened, query => Assert.Contains("data.WellboreID.keyword:[", query, StringComparison.Ordinal));
+        Assert.NotEqual(opened[0], opened[1]);
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task A_build_asks_the_platform_several_things_at_a_time_and_never_more_than_the_flow_allows()
+    {
+        // Wellbores with a name and a country, and logs of many sources: keys read in ranges, labels a thousand ids a
+        // search, and a pass over the logs, each of which the build asks side by side.
+        _platform.Add("dev:master-data--GeoPoliticalEntity:NO", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Norway" });
+        for (var wellbore = 0; wellbore < 1_200; wellbore++)
+        {
+            _platform.Add($"dev:master-data--Wellbore:W{wellbore:D4}", Wellbore, new JsonObject
+            {
+                ["FacilityName"] = $"NO {wellbore:D4}",
+                ["GeoContexts"] = new JsonArray(new JsonObject { ["GeoPoliticalEntityID"] = "dev:master-data--GeoPoliticalEntity:NO:" }),
+            });
+        }
+
+        for (var log = 0; log < 2_400; log++)
+        {
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, new JsonObject
+            {
+                ["WellboreID"] = $"dev:master-data--Wellbore:W{log % 1_200:D4}:", ["Source"] = $"S{log % 600:D3}",
+            });
+        }
+
+        _platform.Latency = TimeSpan.FromMilliseconds(3);
+        var (runner, ledger, flow) = await RunnerAsync(Head.Replace("concurrency: 2", "concurrency: 6", StringComparison.Ordinal) + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+                attributes:
+                  Country: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]
+                  Source: { collect: data.Source }
+            """);
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
+        Assert.InRange(_platform.MostAtOnce, 3, 6);
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        Assert.Equal((1_200L, 1_200L), (wellbores.Members, wellbores.Originals));
+        var first = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery("W0000", null, false, false, null, 1))).Single();
+        Assert.Equal("NO 0000", first.MemberValue);
+        Assert.Equal([("Country", "Norway", null), ("Source", "S000", 2L)], first.Attributes.Select(a => (a.Name, a.Value, a.Records)));
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public void A_pass_is_cut_into_ranges_of_keys_holding_about_as_many_records_each()
+    {
+        var field = OsduField.Text("data.WellboreID");
+        var order = DimensionValueText.Order(field.Index);
+
+        // Few records are one range, the whole of them, whatever the readers.
+        Assert.Equal([DistinctSlice.Whole], DimensionCollector.Ranges(field, new Dictionary<string, long> { ["a"] = 1_000, ["b"] = 2_000 }, order, 8));
+
+        // 100 keys of 1,000 records and 8 readers: 25 ranges (no range under 4,000 records), meeting end to end, open at both ends.
+        var keys = Enumerable.Range(0, 100).ToDictionary(i => $"K{i:D3}", _ => 1_000L);
+        var ranges = DimensionCollector.Ranges(field, keys, order, 8);
+        Assert.Equal(25, ranges.Count);
+        Assert.Null(ranges[0].From);
+        Assert.Null(ranges[^1].To);
+        Assert.All(Enumerable.Range(1, ranges.Count - 1), i => Assert.Equal(ranges[i - 1].To, ranges[i].From));
+        Assert.All(keys.Keys, key => Assert.Single(ranges, r => r.Contains(key, order)));
+        Assert.All(ranges, r => Assert.Equal(4_000L, keys.Where(k => r.Contains(k.Key, order)).Sum(k => k.Value)));
+
+        // One key holding most of the records takes a range of its own; the rest still fall in exactly one.
+        var skewed = Enumerable.Range(0, 20).ToDictionary(i => $"K{i:D3}", i => i == 10 ? 50_000L : 500L);
+        var uneven = DimensionCollector.Ranges(field, skewed, order, 2);
+        Assert.InRange(uneven.Count, 2, 8);
+        Assert.All(skewed.Keys, key => Assert.Single(uneven, r => r.Contains(key, order)));
+
+        // One reader still reads in ranges, in turn; fewer readers ask for fewer ranges.
+        Assert.Equal(4, DimensionCollector.Ranges(field, keys, order, 1).Count);
     }
 
     [Fact]

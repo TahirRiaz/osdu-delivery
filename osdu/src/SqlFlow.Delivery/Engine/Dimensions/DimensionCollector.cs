@@ -33,9 +33,11 @@ internal sealed record CollectedAttribute(
 /// <remarks>
 /// The keys are then read the cheaper of two ways, both exact. With few values (one query can exclude them all) and fewer
 /// reads than one pass would take pages, a distinct read of the dimension's own field per value, narrowed to the records
-/// holding it, and one more narrowed to those holding none. Otherwise one pass of the search cursor over the dimension's
-/// records, each record's key and value read together, which costs a page per thousand records however many values there
-/// are. A key the dimension's own read did not find is passed over.
+/// holding it, and one more narrowed to those holding none. Otherwise one pass over the dimension's records through the
+/// search cursor, each record's key and value read together, which costs a page per thousand records however many values
+/// there are. A cursor reads its pages one after another, so the pass is cut into ranges of the dimension's keys holding
+/// about as many records each, read side by side: several cursors, each over records of its own. A key the dimension's
+/// own read did not find is passed over.
 /// </remarks>
 internal sealed class DimensionCollector(OsduSearch search, ILogger log, int aggregationSize, int concurrency)
 {
@@ -55,7 +57,7 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
         {
             texts = await DistinctValues.ReadAsync(
                 new SearchDistinctSource(search, dimension.Kind, query, field),
-                new DistinctReadOptions(aggregationSize, dimension.MaxValues, repeats, Checks: false),
+                new DistinctReadOptions(aggregationSize, dimension.MaxValues, repeats, Checks: false, Concurrency: Math.Max(1, concurrency)),
                 log, ct).ConfigureAwait(false);
         }
         catch (DimensionTooLargeException ex)
@@ -100,15 +102,25 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
         var passPages = (records + OsduSearch.MaxPage - 1) / OsduSearch.MaxPage;
         var reads = values + (dimension.Unlabelled is null ? 0 : 1);
         var byValue = shown.Count <= DimensionFilters.MaxOriginalsPerQuery && reads < passPages;
-        var (aggregations, pages) = byValue
-            ? await ByValueAsync(dimension, query, keyField, keyRepeats, field, shown, tally, ct).ConfigureAwait(false)
-            : await InOnePassAsync(dimension, query, keyField, field, shown, tally, ct).ConfigureAwait(false);
+        var passRanges = 0;
+        int aggregations;
+        int pages;
+        if (byValue)
+        {
+            (aggregations, pages) = await ByValueAsync(dimension, query, keyField, keyRepeats, field, shown, tally, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            (pages, passRanges) = await InOnePassAsync(dimension, query, keyField, field, shown, tally, ct).ConfigureAwait(false);
+            aggregations = 0;
+        }
+
         log.LogInformation(
             "dimension {Dimension}: attribute {Attribute} collected {Values} value(s) from {Path} for {Keys} key(s), {How}",
             dimension.Name, attribute.Name, values, attribute.Collect, tally.Count,
             byValue
                 ? string.Create(CultureInfo.InvariantCulture, $"read per value in {aggregations} aggregation(s)")
-                : string.Create(CultureInfo.InvariantCulture, $"read in one pass of {pages} page(s)"));
+                : string.Create(CultureInfo.InvariantCulture, $"read in one pass of {pages} page(s) over {passRanges} range(s) of keys"));
 
         var collected = shown
             .Select(s => new DimensionCollectedText(attribute.Name, s.Key, s.Value, texts.Values[s.Key]))
@@ -165,7 +177,7 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
             {
                 var lacking = await DistinctValues.ReadAsync(
                     new SearchDistinctSource(search, dimension.Kind, DimensionFilters.Within(query, DimensionFilters.NoneOf(field, shown.Keys.ToList())), keyField),
-                    options, log, ct).ConfigureAwait(false);
+                    options with { Concurrency = Math.Max(1, concurrency) }, log, ct).ConfigureAwait(false);
                 aggregations += lacking.Aggregations;
                 pages += lacking.ScanPages;
                 foreach (var (key, count) in lacking.Values)
@@ -178,64 +190,143 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
         return (aggregations, pages);
     }
 
+    /// <summary>The fewest records a range of the pass holds: a few pages, so no cursor is opened for a handful of records.</summary>
+    internal const int MinRangeRecords = 4_000;
+
+    /// <summary>The ranges the pass is cut into for each reader, so the readers stay busy to the end though ranges differ in how fast they answer.</summary>
+    private const int RangesPerReader = 4;
+
     /// <summary>
     /// Every record of the dimension read once through the search cursor, its key and its value together: each value it holds
-    /// counted once under each key it holds, or, holding none, under the value for what is not read when the dimension names one.
+    /// counted once under each key it holds, or, holding none, under the value for what is not read when the dimension names
+    /// one. The records are read in ranges of the dimension's keys, side by side; a record holding keys of two ranges is
+    /// read in both and counted in each under the keys of that range alone, so every record and key is counted once.
     /// </summary>
-    private async Task<(int Aggregations, int Pages)> InOnePassAsync(
+    private async Task<(int Pages, int Ranges)> InOnePassAsync(
         DimensionSpec dimension, string? query, OsduField keyField, OsduField field, IReadOnlyDictionary<string, string> shown, KeyTally tally, CancellationToken ct)
     {
-        var request = new OsduSearchQuery
-        {
-            Kind = dimension.Kind,
-            Query = string.IsNullOrWhiteSpace(query) || query.Trim() == "*" ? null : query.Trim(),
-            ReturnedFields = new[] { "id", keyField.Path, field.Path }.Distinct(StringComparer.Ordinal).ToList(),
-        };
+        var order = DimensionValueText.Order(keyField.Index);
+        var ranges = Ranges(keyField, tally.Found, order, Math.Max(1, concurrency));
+        var fields = new[] { "id", keyField.Path, field.Path }.Distinct(StringComparer.Ordinal).ToList();
+        var own = string.IsNullOrWhiteSpace(query) || query.Trim() == "*" ? null : query.Trim();
         var pages = 0;
-
-        // A record the cursor hands back twice is the same record: counted once, as an aggregation counts it.
-        await foreach (var page in search.PagesAsync(request, OsduSearch.MaxPage, deduplicate: true, ct).ConfigureAwait(false))
-        {
-            pages++;
-            foreach (var hit in page.Hits)
+        var gate = new Lock();
+        await Parallel.ForEachAsync(
+            ranges,
+            new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, concurrency), CancellationToken = ct },
+            async (range, token) =>
             {
-                var held = TextsOf(hit, keyField).Where(tally.Holds).ToList();
-                if (held.Count == 0)
+                var request = new OsduSearchQuery
                 {
-                    continue;
-                }
+                    Kind = dimension.Kind,
+                    Query = range.IsWhole ? own : DimensionFilters.Within(own, OsduQuery.Range(keyField, range.From, range.To).Text),
+                    ReturnedFields = fields,
+                };
 
-                // A value counted once a record however many of its texts the record holds.
-                var values = new Dictionary<string, string>(StringComparer.Ordinal);
-                foreach (var text in TextsOf(hit, field).Order(StringComparer.Ordinal))
+                // A record the cursor hands back twice is the same record: counted once, as an aggregation counts it.
+                await foreach (var page in search.PagesAsync(request, OsduSearch.MaxPage, deduplicate: true, token).ConfigureAwait(false))
                 {
-                    if (shown.TryGetValue(text, out var value))
+                    var counted = new List<(string Key, string Value, string? Text)>(page.Hits.Count);
+                    foreach (var hit in page.Hits)
                     {
-                        values.TryAdd(value, text);
-                    }
-                }
-
-                foreach (var key in held)
-                {
-                    if (values.Count == 0)
-                    {
-                        if (dimension.Unlabelled is { } none)
+                        var held = TextsOf(hit, keyField).Where(key => tally.Holds(key) && range.Contains(key, order)).ToList();
+                        if (held.Count == 0)
                         {
-                            tally.Add(key, none, null, 1);
+                            continue;
                         }
 
-                        continue;
+                        // A value counted once a record however many of its texts the record holds.
+                        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+                        foreach (var text in TextsOf(hit, field).Order(StringComparer.Ordinal))
+                        {
+                            if (shown.TryGetValue(text, out var value))
+                            {
+                                values.TryAdd(value, text);
+                            }
+                        }
+
+                        foreach (var key in held)
+                        {
+                            if (values.Count == 0)
+                            {
+                                if (dimension.Unlabelled is { } none)
+                                {
+                                    counted.Add((key, none, null));
+                                }
+
+                                continue;
+                            }
+
+                            counted.AddRange(values.Select(v => (key, v.Key, (string?)v.Value)));
+                        }
                     }
 
-                    foreach (var (value, text) in values)
+                    // A page is counted in one go, under the lock the ranges share.
+                    lock (gate)
                     {
-                        tally.Add(key, value, text, 1);
+                        pages++;
+                        foreach (var (key, value, text) in counted)
+                        {
+                            tally.Add(key, value, text, 1);
+                        }
                     }
                 }
-            }
+            }).ConfigureAwait(false);
+
+        return (pages, ranges.Count);
+    }
+
+    /// <summary>
+    /// The dimension's keys, in the order the index keeps them, cut into ranges holding about as many records each: enough
+    /// of them to keep <paramref name="readers"/> readers busy, none of fewer than <see cref="MinRangeRecords"/> records.
+    /// The first range is open below and the last above, so every record holding a key is in one; a dimension of few
+    /// records is one range, the whole of it.
+    /// </summary>
+    internal static IReadOnlyList<DistinctSlice> Ranges(OsduField keyField, IReadOnlyDictionary<string, long> found, IComparer<string> order, int readers)
+    {
+        ArgumentNullException.ThrowIfNull(keyField);
+        ArgumentNullException.ThrowIfNull(found);
+        ArgumentNullException.ThrowIfNull(order);
+        var total = found.Values.Sum();
+        var wanted = (int)Math.Min((long)Math.Max(1, readers) * RangesPerReader, total / MinRangeRecords);
+        if (wanted < 2 || found.Count < 2)
+        {
+            return [DistinctSlice.Whole];
         }
 
-        return (0, pages);
+        var keys = found.OrderBy(k => k.Key, order).ToList();
+        var share = (double)total / wanted;
+        var ranges = new List<DistinctSlice>(wanted);
+        string? from = null;
+        long before = 0;
+        for (var i = 0; i < keys.Count && ranges.Count < wanted - 1; i++)
+        {
+            // A range ends before the first key that takes the records read so far past its share, when that key can bound a range.
+            if (i > 0 && before >= share * (ranges.Count + 1) && Bounds(keyField, keys[i].Key))
+            {
+                ranges.Add(new DistinctSlice(from, keys[i].Key));
+                from = keys[i].Key;
+            }
+
+            before += keys[i].Value;
+        }
+
+        ranges.Add(new DistinctSlice(from, null));
+        return ranges.Count == 1 ? [DistinctSlice.Whole] : ranges;
+    }
+
+    /// <summary>Whether a key can be the end of a range: the query language can carry it as a bound of the field.</summary>
+    private static bool Bounds(OsduField keyField, string key)
+    {
+        try
+        {
+            _ = OsduQuery.Range(keyField, key, null);
+            return true;
+        }
+        catch (OsduQueryException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
