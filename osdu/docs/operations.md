@@ -657,13 +657,14 @@ Pipelines like any other flow.
   cleaned), and every key and value carries the search that finds its records. The page is three views of one address.
   **Every dimension**: a strip of facts (how many dimensions are built, the values and keys they hold, what needs a
   look, when anything was last built), then each flow's dimensions as cards, a card naming where the dimension stands,
-  what it reads, the five values most records hold as bars, and when it was built; **Build all** runs the flow for every
-  dimension it declares, and **Build a search** opens the search builder. **One dimension**, on the page's whole width:
+  what it reads, the five values most records hold as bars, and when it was built; **Run pipeline** on a flow's heading
+  runs the flow, which builds every dimension it declares, and **Build a search** opens the search builder. **One dimension**, on the page's whole width:
   its heading is one block, the way back (**Dimensions**), its name and where it stands, a switcher to the other
-  dimensions, what it is for on hover, **Export** and **Build** (a run of the flow for that dimension alone); under the
+  dimensions, what it is for on hover, **Export** and **Run pipeline** (the flow's run dialog, opened with that
+  dimension picked); under the
   name, in a line, its facts (values and keys, keys without a label, keys of no value, the share of the records read that
   hold a key, when it was built), each opening the tab that explains it, and the kind, path and flow it reads. Under
-  that, what its newest build or declaration asks of the reader (the failure with **Build again**, a build running, a
+  that, what its newest build or declaration asks of the reader (the failure with **Run pipeline**, a build running, a
   changed declaration), and five tabs. Each tab's grid scrolls inside the page under column headers that stay in place,
   as tall as the window leaves, and reads the next page as it is scrolled, its foot saying how many rows are in view of
   how many; **View** leaves columns out (remembered per dimension in the browser) and lists what builds no longer find.
@@ -693,8 +694,9 @@ Pipelines like any other flow.
   shown with its clause count, each dimension's part, what the picks left out, and the query and the request body to
   copy. Nothing is sent to OSDU from the page. The dimension, tab and value open in a sheet, and the builder's kind and
   picks, are in the address, so a link lands on the same view. A dimension flow's page (Pipelines) has a **Dimensions**
-  tab with **Build** per dimension (the flow's **Trigger run** builds them all, and its dialog picks the dimensions a
-  run builds); a run's header counts the values and keys it built. A dimension its flow no longer declares keeps what
+  tab listing its dimensions, each opening on the Dimensions page; the page's own **Trigger run** runs the pipeline, and
+  its dialog picks the dimensions a run builds, so the tab adds no button for that. A run's header counts the values and
+  keys it built. A dimension its flow no longer declares keeps what
   its last build wrote, out of the way: the tab lists such dimensions under **No longer declared**, and the Dimensions
   page only when **Show n dimensions no longer declared** is clicked. An admin removes one for good with **Remove** (on
   that row, or on the dimension's own page), after a confirmation saying what goes; one a cache flow still captures is
