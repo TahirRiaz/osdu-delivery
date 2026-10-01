@@ -13,7 +13,9 @@ namespace SqlFlow.Delivery.Documents;
 /// partition as the namespace, the entity type's group (<c>master-data</c>, <c>reference-data</c>, ...) as the group, and
 /// the kind as the name, whose segments are separated by <see cref="KindSeparator"/> so a wildcard kind binds segment by
 /// segment. A partition cache type is a node per cache type name in a partition: system <see cref="CacheSystem"/>, no
-/// instance, because a partition has one cache whichever platform filled it. Every declaration is checked here against the
+/// instance, because a partition has one cache whichever platform filled it. A mapping is a node per mapping document in a
+/// partition of a platform: system <see cref="MappingSystem"/>, the directory it is filed in as the group and its
+/// reference as the name. Every declaration is checked here against the
 /// widths SQLFlow keeps, so a flow with an unusual value loses that one node with a warning instead of all its lineage.
 /// </summary>
 public static class OsduLineage
@@ -32,6 +34,16 @@ public static class OsduLineage
     /// the module database per partition, under the dimension flow that builds it, whichever platform it was read from.
     /// </summary>
     public const string DimensionSystem = "osdu-dimension";
+
+    /// <summary>
+    /// The system mappings belong to; the graph captions their nodes "osdu mapping". A mapping is a node per mapping
+    /// document as one platform's partition renders it: what it reads of the cache is that partition's, and what it
+    /// searches is that platform's, so the same document rendered for two partitions is two nodes, as its cache types are.
+    /// </summary>
+    public const string MappingSystem = "osdu-mapping";
+
+    /// <summary>The group of a mapping whose mappings directory is the checkout's own root.</summary>
+    public const string RootGroup = ".";
 
     /// <summary>What separates the segments of a kind: a wildcard never matches across it.</summary>
     public const char KindSeparator = ':';
@@ -141,6 +153,45 @@ public static class OsduLineage
             Namespace = partition,
             Group = group,
             Name = trimmed,
+        };
+        return Fits(dataset, flow, what, warnings) ? dataset : null;
+    }
+
+    /// <summary>
+    /// The mapping a delivery flow renders with, as the node the flow reads: grouped under the directory it is filed in,
+    /// relative to the checkout (<paramref name="directory"/>, with forward slashes; <see cref="RootGroup"/> for the
+    /// checkout's root), and named by its reference (<c>WellLog@1.5.0</c>). Null with a warning when the platform, the
+    /// directory or the reference cannot identify a node; the flow then reads what the mapping reads itself, so nothing
+    /// of its order is lost.
+    /// </summary>
+    public static DeclaredDataset? Mapping(string endpoint, string partition, string directory, string reference, string flow, ICollection<string> warnings)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(flow);
+        ArgumentNullException.ThrowIfNull(warnings);
+        var group = directory?.Trim() ?? string.Empty;
+        var name = reference?.Trim() ?? string.Empty;
+        var what = $"mapping '{Shown(name)}'";
+        if (new[] { group, name }.Any(part => part.Length == 0 || part.Contains('|', StringComparison.Ordinal) || part.Any(char.IsControl))
+            || name.Contains('*', StringComparison.Ordinal))
+        {
+            warnings.Add($"{flow} shows no node for {what}: a mapping and the directory it is filed in are named without '|' or control characters, and a mapping without wildcards.");
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(endpoint) || endpoint.Trim().Length > DeclaredDataset.MaxInstanceLength)
+        {
+            warnings.Add($"{flow} shows no node for {what}: its endpoint is blank or longer than {DeclaredDataset.MaxInstanceLength} characters.");
+            return null;
+        }
+
+        var dataset = new DeclaredDataset
+        {
+            Relation = LineageRelation.Reads,
+            System = MappingSystem,
+            Instance = endpoint.Trim(),
+            Namespace = partition,
+            Group = group,
+            Name = name,
         };
         return Fits(dataset, flow, what, warnings) ? dataset : null;
     }

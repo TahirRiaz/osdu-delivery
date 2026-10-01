@@ -13,6 +13,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A mapping is a node in the lineage graph, and everything it reads feeds it.** Each mapping a delivery flow pins is
+  an `osdu mapping` node (the reference, captioned by its partition and the folder it is filed in), sitting between what
+  it reads and the flow that renders with it: cache type, mapping, delivery flow, OSDU type. A mapping reads the cache
+  two ways and lineage now follows both: the types it names (`$cache`, a lookup, a replace's table, a token of an id),
+  and the types holding what its ids are checked against, since a render looks every id a `ref` or an `id` builds up
+  among the cached records of the entity type it names. The second kind was missing, so cache types a mapping never
+  names (LogType, LogCurveType, LogCurveFamily, TechnicalAssuranceType and the like) had a writer and no reader and
+  showed as leaf nodes; on the Recall estate that was 8 of the 14 types its reference flow fills. They now feed the
+  mapping, the delivery flow is ordered after the cache flow filling them, and the cache page lists the flow among
+  their readers. The kinds a mapping searches are its reads as well. The entity type of a `ref` written without one is
+  read off the template the mapping pins, from the module database; a host without it (the offline `sqlflow lineage`),
+  a template version that is not saved and a database that does not answer each leave those types out with a warning
+  naming the mapping, the properties and the template, and a template saved later is picked up by the next sync. A
+  mapping rendered for two partitions is a node in each. Design and limits: `docs/lineage-design.md` section 3.1.
+
 - **Send a whole flow's records again.** A deliver run's `redeliver` no longer needs `recordKeys`: without them it sends
   again, changed or not, every record the flow has delivered in the partition (the metadata and payload, the record, or
   the payload or one of its parts), marked a slice at a time and sent at most 5,000 a run, the flow's next runs sending

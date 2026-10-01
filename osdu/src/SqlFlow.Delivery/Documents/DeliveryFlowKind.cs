@@ -9,8 +9,9 @@ namespace SqlFlow.Delivery.Documents;
 /// A delivery flow as the platform sees it: the parsed <see cref="SourceDefinition"/> behind the headers every catalog
 /// consumer reads (name, batch, the record tables as the source reference, the source connection reference, the OSDU
 /// endpoint as the target reference, the credential references the hygiene check inspects), and its lineage: the
-/// ingestion tables, payload files and cache types each interface reads and the OSDU types it writes
-/// (<see cref="DeliveryLineage"/>). A delivery flow always needs its repository tree: its mappings live next to it.
+/// ingestion tables, payload files and mapping each interface reads, what the mapping reads in turn, and the OSDU types
+/// the interface writes (<see cref="DeliveryLineage"/>). A delivery flow always needs its repository tree: its mappings
+/// live next to it.
 /// </summary>
 public sealed record DeliveryFlowDocument : RegisteredFlowDocument
 {
@@ -18,6 +19,13 @@ public sealed record DeliveryFlowDocument : RegisteredFlowDocument
     private static readonly DeliveryDocumentLoader MappingDocuments = new();
 
     public required SourceDefinition Source { get; init; }
+
+    /// <summary>
+    /// What lineage reads the templates the flows' mappings pin with, on a host that has the module database; null on one
+    /// that reads none. Not public: the catalog keeps a document's public properties as the pipeline's definition, and
+    /// this is how the document is described, not part of what it says.
+    /// </summary>
+    internal MappingTemplateSource? Templates { get; init; }
 
     public override string Name => Source.Name;
 
@@ -40,7 +48,7 @@ public sealed record DeliveryFlowDocument : RegisteredFlowDocument
         => Source.Interfaces.SelectMany(DeliveryLineage.DeclaredObjects).Distinct().ToList();
 
     public override RegisteredFlowLineage DescribeLineage(RegisteredLineageContext context)
-        => DeliveryLineage.Describe(Source, context, MappingDocuments);
+        => DeliveryLineage.Describe(Source, context, MappingDocuments, Templates);
 }
 
 /// <summary>The <c>flowType: delivery</c> document kind, registered in every host next to its executor; it also owns
@@ -48,11 +56,18 @@ public sealed record DeliveryFlowDocument : RegisteredFlowDocument
 public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
 {
     private readonly DeliveryDocumentLoader _loader;
+    private readonly MappingTemplateSource? _templates;
 
-    public DeliveryFlowKind(DeliveryDocumentLoader loader)
+    /// <summary>
+    /// The kind over <paramref name="loader"/>. <paramref name="templates"/> reads the templates mappings pin, so the
+    /// lineage of a flow shows what a <c>ref</c> written without its entity type is checked against; a host without the
+    /// module database passes none, and that part of a flow's lineage is then left out with a warning saying so.
+    /// </summary>
+    public DeliveryFlowKind(DeliveryDocumentLoader loader, MappingTemplateSource? templates = null)
     {
         ArgumentNullException.ThrowIfNull(loader);
         _loader = loader;
+        _templates = templates;
     }
 
     /// <summary>The operations of a delivery run, the default first.</summary>
@@ -86,7 +101,7 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
     public RegisteredFlowDocument Parse(string yaml, string source)
     {
         ArgumentNullException.ThrowIfNull(yaml);
-        return new DeliveryFlowDocument { Source = _loader.ParseSource(yaml, source) };
+        return new DeliveryFlowDocument { Source = _loader.ParseSource(yaml, source), Templates = _templates };
     }
 
     public void ValidateParameters(RunParameters parameters)

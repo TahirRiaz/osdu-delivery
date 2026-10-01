@@ -2315,7 +2315,8 @@ it ([docs/lineage-design.md](../../docs/lineage-design.md)). What each kind cont
 
 | Flow | Reads | Writes |
 | --- | --- | --- |
-| Delivery | The record table and every `source.datasets` table, on the server `source.connection` names; the files under the `root` of the payload set its protocol streams; every cache type its mapping reads (`cache.<Type>` sources and `findBy` lines) | The OSDU type its mapping fills (`template.kind`); for `file` and `manifest`, also `protocolOptions.datasetKind` |
+| Delivery | The record table and every `source.datasets` table, on the server `source.connection` names; the files under the `root` of the payload set its protocol streams; the mapping it pins (`render.mapping`), which is a node of its own | The OSDU type its mapping fills (`template.kind`); for `file` and `manifest`, also `protocolOptions.datasetKind` |
+| Mapping (a node, not a flow) | Every cache type it names (a `$cache` source, a lookup, a replace's table, a `{$cache.Type.field}` token of an id); every cache type of the partition holding records of an entity type an `id` or a `ref` of it builds, since each id is looked up there; every kind its searches look in | Nothing: the delivery flow reading it writes the OSDU type |
 | Cache | Each type's `kind`, wildcards included | Each type's `name` in its partition's cache |
 | Retrieval | Each of `source.kinds`, wildcards included | The record files (`part-*.jsonl`, `.gz` when compressed) and the manifest under `target.location` |
 | Assertion | Each test's `kind`, one type in one version, in each partition the flow tests: the type node the delivery flow whose mapping names it writes | Nothing: its reports are kept in the module's database, not as data |
@@ -2326,10 +2327,28 @@ or each partition a flow names under `partitions` (such a flow has nodes in ever
 under the entity type's group (`master-data`, `reference-data`, `work-product-component`, `dataset`). A
 kind read with wildcards has a node of its own, and also reads every exact kind the estate writes on the same platform
 and partition that it matches segment by segment. A **cache type** node is a cache type name in a partition, whichever
-platform filled it, because a partition has one cache. The catalog explorer lists both under Datasets, and an object's
-Pipelines tab shows which flows write and read it.
+platform filled it, because a partition has one cache. A **mapping** node is a mapping document as one partition of one
+platform renders it, named by its reference (`WellLog@1.5.0`) and listed under the folder it is filed in
+(`recall/mappings`): the same document pinned for two partitions is a node in each, reading that partition's cache, and
+two flows pinning it for one partition read the one node. The catalog explorer lists all three under Datasets, and an
+object's Pipelines tab shows which flows write and read it.
 
-So a cache flow capturing wellbores runs after the delivery flow that delivers them, a delivery flow rendering against
+The graph draws what a mapping reads into the mapping, and the mapping into the flow rendering with it:
+
+```text
+recall-reference-00-cache ──► LogType (osdu cache) ──► WellLog@1.5.0 (osdu mapping) ──► recall-welllog-03-header-delivery ──► WellLog:1.5.0 (osdu type)
+```
+
+A mapping does not have to name a cache type to read it. Every id a `ref` or an `id` builds is looked up among the
+cached records of the entity type it names, so a mapping writing `SamplingDomainTypeID` with `ref` reads whichever cache
+type holds `reference-data--WellLogSamplingDomainType`, and lineage shows that read. Which entity type a bare `ref`
+names is told by the template the mapping pins, which lineage reads from the module's database. Where it cannot (the
+offline `sqlflow lineage`, a template version that is not saved, a database that does not answer), the flow keeps the
+reads the documents alone tell and the sync warns, naming the mapping, the properties and the template; a template
+saved afterwards is picked up by the next sync. Which cache types hold an entity type is read from the cache flows of
+the same repository.
+
+So a cache flow capturing wellbores runs after the delivery flow that delivers them, a delivery flow whose mapping reads
 the cache runs after the cache flow, a file flow reading a retrieval's folder runs after the retrieval, and an assertion
 flow testing well logs runs after the flow that delivers them. Two flows
 that each read what the other writes are not ordered against each other.

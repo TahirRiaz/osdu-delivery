@@ -429,9 +429,11 @@ public sealed class MappingRenderer
     /// <summary>
     /// Which entity type a ref modifier references. Written in full, it is the one written. Written bare, it is the one
     /// entity type the variable's relationship names. Written by the entity's name alone, it is the one of the variable's
-    /// relationships with that name, or the name in the group a relationship names without an entity.
+    /// relationships with that name, or the name in the group a relationship names without an entity. Lineage asks the same
+    /// question of the same template, so the cache types it shows a mapping checking its references against are the ones a
+    /// render checks them against.
     /// </summary>
-    private static (IdTemplate? Template, string? Problem) ResolveReference(MappingEntry entry, Modifier modifier, SchemaSnapshot schema)
+    internal static (IdTemplate? Template, string? Problem) ResolveReference(MappingEntry entry, Modifier modifier, SchemaSnapshot schema)
     {
         if (modifier.Id is { } written)
         {

@@ -497,6 +497,10 @@ public static class DeliveryCacheStreams
     {
         private const string CacheNodePrefix = "dataset:osdu-cache|";
 
+        private const string DatasetNodePrefix = "dataset:";
+
+        private const string TypeNodePrefix = "dataset:osdu-type";
+
         private readonly ILookup<string, EdgeRow> _writers = edges.Where(e => e.Relation == "Writes").ToLookup(e => e.ObjectKey, StringComparer.Ordinal);
         private readonly ILookup<string, EdgeRow> _readers = edges.Where(e => e.Relation == "Reads").ToLookup(e => e.ObjectKey, StringComparer.Ordinal);
         private readonly ILookup<(Guid, string), EdgeRow> _byFlow = edges.ToLookup(e => (e.RepoId, e.Flow.ToLowerInvariant()));
@@ -588,7 +592,7 @@ public static class DeliveryCacheStreams
                     }
 
                     var inputs = _byFlow[(definition.RepoId, writer.ToLowerInvariant())].Where(e => e.Relation == "Reads").Select(e => e.ObjectKey).Distinct(StringComparer.Ordinal).ToList();
-                    yield return new Stage(definition.RepoId, writer, depth, inputs.Where(key => !_writers[key].Any()).Select(Input).ToList());
+                    yield return new Stage(definition.RepoId, writer, depth, inputs.Where(key => !_writers[key].Any() && IsOrigin(key)).Select(Input).ToList());
                     next.AddRange(inputs.Where(key => _writers[key].Any()));
                 }
 
@@ -611,7 +615,15 @@ public static class DeliveryCacheStreams
 
         /// <summary>Whether a lineage key is the OSDU type node of <paramref name="kind"/>, in whichever partition it is keyed by.</summary>
         private static bool IsKind(string key, string kind)
-            => key.StartsWith("dataset:osdu-type", StringComparison.Ordinal) && Segments(key) is [_, _, _, var named] && named.Equals(kind, StringComparison.OrdinalIgnoreCase);
+            => key.StartsWith(TypeNodePrefix, StringComparison.Ordinal) && Segments(key) is [_, _, _, var named] && named.Equals(kind, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Whether a node no flow writes is somewhere content starts: a file folder, a table, or an OSDU kind. The other
+        /// nodes of the module are not: the mapping a delivery flow renders with is how it reads, a cache type nothing
+        /// fills is reported as unfilled, and neither holds data a stream could begin at.
+        /// </summary>
+        private static bool IsOrigin(string key)
+            => !key.StartsWith(DatasetNodePrefix, StringComparison.Ordinal) || key.StartsWith(TypeNodePrefix, StringComparison.Ordinal);
 
         /// <summary>An object no flow writes, as a stream's start: a file folder, an OSDU kind, or a table.</summary>
         private static DeliveryStreamInputDto Input(string key)

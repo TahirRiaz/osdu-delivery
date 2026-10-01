@@ -409,8 +409,8 @@ the flow's identity may view in the partition it delivers to.
   row, its mapping or the partition's `keywordLower` setting changes, not when the platform's wellbores do. A mapping
   that only searches renders against no version of the cache, so a capture that changes reference data it never reads
   renders none of its records again.
-- In lineage the flow reads the searched kind, so the flow that delivers wellbores to the partition is ordered before a
-  flow that searches for them.
+- In lineage the mapping reads the searched kind and the flow reads the mapping, so the flow that delivers wellbores to
+  the partition is ordered before a flow whose mapping searches for them.
 
 A fixture declares the answers it assumes, and renders against them without asking the platform, so it checks the
 mapping rather than the platform's data of the day. An answer without `id` says the platform holds no such record. A

@@ -77,6 +77,15 @@ public sealed class DeliveryCacheStreamsTests
                 // and a delivery flow written the same way reads it.
                 (header, "Writes", "dataset:osdu-cache|${env:osdu_data_partition}|cache|curvedictionary"),
                 (delivery, "Reads", "dataset:osdu-cache|${env:osdu_data_partition}|cache|curvedictionary"),
+
+                // The reference flow also captures the wellbores the delivery flow delivers, at the one version it writes, so
+                // that type's content passes through the delivery flow. The delivery flow reads its table and the mapping it
+                // renders with, which is a node of its own.
+                (reference, "Reads", $"dataset:osdu-type:${{env:osdu_url}}|{partition}|master-data|osdu:wks:master-data--wellbore:1.3.0"),
+                (reference, "Writes", $"dataset:osdu-cache|{partition}|cache|wellbore"),
+                (delivery, "Writes", $"dataset:osdu-type:${{env:osdu_url}}|{partition}|master-data|osdu:wks:master-data--wellbore:1.3.0"),
+                (delivery, "Reads", $"{Server}|osdudata|arc|wellbore_{s}"),
+                (delivery, "Reads", $"dataset:osdu-mapping:${{env:osdu_url}}|{partition}|stream/mappings|wellbore@1.0.0"),
             })
             {
                 db.LineageEdges.Add(new CatalogLineageEdge
@@ -125,6 +134,12 @@ public sealed class DeliveryCacheStreamsTests
                     Id = Guid.NewGuid(), RepoId = repoId, FlowName = reference, Scope = partition, DeclaresPartitions = true, Origin = "osdu",
                     Endpoint = "${env:OSDU_URL}", Kind = "osdu:wks:reference-data--UnitOfMeasure:*", RelativePath = "shared/cache/reference.yaml",
                     Name = "UnitOfMeasure", EntityType = "reference-data--UnitOfMeasure", FieldsJson = "[]", FirstSeenUtc = now, LastSeenUtc = now,
+                },
+                new DeliveryCacheDefinition
+                {
+                    Id = Guid.NewGuid(), RepoId = repoId, FlowName = reference, Scope = partition, DeclaresPartitions = true, Origin = "osdu",
+                    Endpoint = "${env:OSDU_URL}", Kind = "osdu:wks:master-data--Wellbore:1.3.0", RelativePath = "shared/cache/reference.yaml",
+                    Name = "Wellbore", EntityType = "master-data--Wellbore", FieldsJson = "[]", FirstSeenUtc = now, LastSeenUtc = now,
                 });
 
             // The version before held a type the current one dropped, and four times the units it holds now.
@@ -157,7 +172,7 @@ public sealed class DeliveryCacheStreamsTests
             }
 
             Assert.Equal((partition, $"v2-{s}", $"v1-{s}"), (streams.Partition, streams.CurrentVersion, streams.PreviousVersion));
-            Assert.Equal(["CurveDictionary", "UnitOfMeasure", "Units"], streams.Types.Select(t => t.Type));
+            Assert.Equal(["CurveDictionary", "UnitOfMeasure", "Units", "Wellbore"], streams.Types.Select(t => t.Type));
 
             // The header flow's type is found through the node it writes, however it spells the partition, and starts at its
             // dictionary; the version does not hold it yet.
@@ -187,6 +202,18 @@ public sealed class DeliveryCacheStreamsTests
             Assert.Equal([new DeliveryStreamInputDto("osdu", "osdu:wks:reference-data--unitofmeasure:*")], measures.Origins);
             Assert.Equal(["shared"], measures.Projects);
             Assert.Equal("fresh", measures.State);
+
+            // The wellbores pass through the delivery flow that delivers them, and through everything that flow reads. Their
+            // content starts at the table the delivery flow reads and at the file behind a lookup table it translates through.
+            // The mapping it renders with and the cache type nothing fills are nodes it reads, not places content starts: the
+            // one is how it reads, the other is the unfilled notice below.
+            var wellbores = streams.Types.Single(t => t.Type == "Wellbore");
+            Assert.Equal(
+                [(pre, 4), (ing, 3), (header, 2), (lookups, 2), (delivery, 1), (reference, 0)],
+                wellbores.Stages.Select(st => (st.Flow, st.Depth)));
+            Assert.Equal(
+                [new DeliveryStreamInputDto("file", "stream/cache/data/units"), new DeliveryStreamInputDto("table", $"osdudata.arc.wellbore_{s}")],
+                wellbores.Origins);
 
             // Each cache flow's last refresh of this partition, from its runs: a later run that reached another partition only
             // is passed over; the partition was last checked by the refresh that found nothing to change.

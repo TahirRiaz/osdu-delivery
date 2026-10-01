@@ -111,14 +111,36 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     /// stays the same. Compared by path and content hash against the rows the last sync wrote, through the same discovery
     /// the reconciliation uses. A document that is a second declaration of a reference already on record (which the
     /// reconciliation leaves out) is not a change. Cache flows need no check here: they are flows, which the sync compares
-    /// itself.
+    /// itself. A template one of the repository's mappings pins, saved since the mappings were last reconciled, is a change
+    /// too: what a <c>ref</c> is checked against is read off that template, so the lineage computed without it left those
+    /// cache types out (<see cref="PinnedTemplateSavedSinceAsync"/>).
     /// </summary>
     public async Task<bool> LineageInputsChangedAsync(CatalogDbContext context, Guid repoId, string root, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
         await using var work = await OpenAsync(context, write: false, ct).ConfigureAwait(false);
-        return await MappingsChangedAsync(work.Context, repoId, root, ct).ConfigureAwait(false);
+        return await MappingsChangedAsync(work.Context, repoId, root, ct).ConfigureAwait(false)
+            || await PinnedTemplateSavedSinceAsync(work.Context, repoId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether a template a mapping of the repository pins was saved after the sync that last saw the mapping. A saved
+    /// template version never changes, so the only thing that can move is whether it is there: a mapping synced before its
+    /// template was saved had its lineage computed without it, and the first sync after the save computes it again. Every
+    /// reconciliation stamps the mappings it sees, so this holds for exactly one sync.
+    /// </summary>
+    public static Task<bool> PinnedTemplateSavedSinceAsync(OsduDbContext context, Guid repoId, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return context.DeliveryMappings.AsNoTracking()
+            .Where(m => m.RepoId == repoId && m.TemplateVersion != string.Empty)
+            .Join(
+                context.DeliveryTemplates.AsNoTracking(),
+                m => new { m.Kind, Version = m.TemplateVersion },
+                t => new { t.Kind, t.Version },
+                (m, t) => new { m.LastSeenUtc, t.CapturedUtc })
+            .AnyAsync(pin => pin.CapturedUtc > pin.LastSeenUtc, ct);
     }
 
     /// <summary>

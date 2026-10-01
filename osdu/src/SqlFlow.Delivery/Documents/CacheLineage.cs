@@ -15,6 +15,50 @@ namespace SqlFlow.Delivery.Documents;
 public static class CacheLineage
 {
     /// <summary>
+    /// A type a cache flow holds in a partition's cache, as lineage names its node: the partition as lineage keys it, the
+    /// name mappings read the type by, and the entity type of the records it holds (<c>lookup--&lt;Name&gt;</c> for a
+    /// lookup table).
+    /// </summary>
+    public sealed record HeldType(string Partition, string Name, string EntityType);
+
+    /// <summary>
+    /// The types <paramref name="flow"/> writes into the cache of each partition it serves, exactly the cache type nodes
+    /// <see cref="Describe"/> writes: a mapping that checks an id against the cached records of an entity type reads every
+    /// one of these holding it (<see cref="DeliveryLineage"/>). A flow whose partition cannot name a node, and a type
+    /// whose name cannot, hold nothing here, as they write no node there.
+    /// </summary>
+    public static IReadOnlyList<HeldType> Held(CacheDefinition flow)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        if (flow.DeclaresPartitions && flow.Partition is null)
+        {
+            return flow.Partitions.SelectMany(p => Held(flow.ForPartition(p))).Distinct().ToList();
+        }
+
+        var who = Who(flow);
+        var unused = new List<string>();
+        return PartitionOf(flow, who, unused) is { } partition
+            ? flow.Types
+                .Where(type => OsduLineage.CacheType(LineageRelation.Writes, partition, type.Name, who, unused) is not null)
+                .Select(type => new HeldType(partition, type.Name.Trim(), type.EntityType))
+                .Distinct()
+                .ToList()
+            : [];
+    }
+
+    private static string Who(CacheDefinition flow) => $"cache flow '{flow.Name}'";
+
+    /// <summary>
+    /// The partition a flow's nodes are keyed by. A flow that leaves its partitions to the registry is described once,
+    /// under the partition that stands for every registered one: lineage is computed from the documents, and the registry
+    /// is the catalog's.
+    /// </summary>
+    private static string? PartitionOf(CacheDefinition flow, string who, List<string> warnings)
+        => flow.FollowsRegistry && flow.Partition is null
+            ? PartitionNames.Every
+            : OsduLineage.Partition(flow.Source.Headers, who, "source.headers", warnings);
+
+    /// <summary>
     /// Everything the flow contributes, in declaration order. A dictionary's file is found as a refresh finds it, inside
     /// the estate <paramref name="context"/> scans; without a context no file is read and none is declared. A flow that names
     /// its partitions contributes for every one of them, bound to it, so each partition's cache types are nodes of their own
@@ -34,7 +78,7 @@ public static class CacheLineage
                 Warnings = described.SelectMany(d => d.Warnings).Distinct(StringComparer.Ordinal).ToList(),
             };
         }
-        var who = $"cache flow '{flow.Name}'";
+        var who = Who(flow);
         var warnings = new List<string>();
         var datasets = new List<DeclaredDataset>();
         var files = new List<DeclaredFileLocation>();
@@ -53,11 +97,7 @@ public static class CacheLineage
             }
         }
 
-        // A flow that leaves its partitions to the registry is described once, under the partition that stands for every
-        // registered one: lineage is computed from the documents, and the registry is the catalog's.
-        var partition = flow.FollowsRegistry && flow.Partition is null
-            ? PartitionNames.Every
-            : OsduLineage.Partition(flow.Source.Headers, who, "source.headers", warnings);
+        var partition = PartitionOf(flow, who, warnings);
         if (partition is not null)
         {
             foreach (var type in flow.Types)

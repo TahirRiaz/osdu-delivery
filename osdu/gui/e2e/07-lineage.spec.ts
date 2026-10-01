@@ -1,11 +1,12 @@
 import { E2E } from "../playwright.config";
-import { DELIVERY_FLOW } from "./global-setup";
+import { DELIVERY_FLOW, SOURCE } from "./global-setup";
 import { adminSession, expect, test } from "./helpers";
 
 // Lineage over the synced estate: every OSDU flow shows with its data on both sides. The delivery flows write the OSDU
-// types their mappings fill and read the partition cache types their mappings resolve against; the cache flow reads
-// OSDU types and writes those cache types. The catalog explorer lists them as datasets, a dataset's page names the
-// pipelines on either side of it, and the lineage graph draws it captioned by its system.
+// types their mappings fill and read their mappings, each a node of its own that reads the partition cache types and the
+// kinds it resolves against; the cache flow reads OSDU types and writes those cache types. The catalog explorer lists
+// them as datasets, a dataset's page names the pipelines on either side of it, and the lineage graph draws it captioned
+// by its system.
 
 interface DatasetNode {
   key: string;
@@ -26,6 +27,12 @@ const WELLBORE = "osdu:wks:master-data--Wellbore:1.3.0";
  * the flow: a partition has one cache whichever flow fills it, so the system never carries a flow's name.
  */
 const CACHE_SYSTEM = "osdu-cache";
+
+/** The system a mapping's node belongs to (`OsduLineage.MappingSystem`). */
+const MAPPING_SYSTEM = "osdu-mapping";
+
+/** The mapping the sample's delivery flow and the fixture source's welllogs interface both pin. */
+const WELL_LOG_MAPPING = "WellLog@1.4.0";
 
 /** The partition the estate's flows name, as lineage keeps it: the name they write under partitions, lower-cased as every namespace is. */
 const PARTITION = "dev";
@@ -70,6 +77,20 @@ test.describe.serial("lineage", () => {
     expect([recallUnits?.namespace, recallUnits?.group, recallUnits?.writers]).toEqual([PARTITION, "cache", 1]);
     expect(recallUnits!.readers).toBeGreaterThanOrEqual(1);
     expect(units!.readers).toBeGreaterThanOrEqual(1);
+
+    // A mapping is a node of its own, under the folder it is filed in. The sample's delivery flow and the welllogs
+    // interface of the fixture source render with the same mapping for the same partition, so both read the one node;
+    // no flow writes it.
+    const mapping = named(MAPPING_SYSTEM, WELL_LOG_MAPPING);
+    expect(mapping, `no ${WELL_LOG_MAPPING} among ${datasets.map((d) => d.name).join(", ")}`).toBeDefined();
+    expect([mapping!.namespace, mapping!.group, mapping!.readers, mapping!.writers]).toEqual([PARTITION, `${SOURCE}/mappings`, 2, 0]);
+
+    // The mapping never names these two types: the ids it builds are checked against them, LogCurveFamily's through an
+    // id whose entity type the mapping writes, LogType's through a ref whose entity type its template tells. Both are
+    // read through the mapping by the flows that render with it, so neither is a cache type nothing reads.
+    expect(families!.readers).toBe(2);
+    const logTypes = named(CACHE_SYSTEM, "LogType");
+    expect([logTypes?.namespace, logTypes?.writers, logTypes?.readers]).toEqual([PARTITION, 1, 2]);
   });
 
   test("an OSDU type opens with the pipeline that writes it, and jumps to the graph", async ({ adminPage }) => {
@@ -92,6 +113,12 @@ test.describe.serial("lineage", () => {
     await expect(graph.getByText(WELL_LOG, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
     await expect(graph.getByText(`osdu type · ${PARTITION}.work-product-component`).first()).toBeVisible();
     await expect(graph.getByText(DELIVERY_FLOW, { exact: true }).first()).toBeVisible();
+
+    // The flow's mapping is drawn between what it reads and the flow, captioned by its system and where it is filed, with
+    // a cache type it only checks its ids against feeding it.
+    await expect(graph.getByText(WELL_LOG_MAPPING, { exact: true }).first()).toBeVisible();
+    await expect(graph.getByText(`osdu mapping · ${PARTITION}.${SOURCE}/mappings`).first()).toBeVisible();
+    await expect(graph.getByText("LogType", { exact: true }).first()).toBeVisible();
   });
 
   test("the catalog tree groups datasets by system, partition and group", async ({ adminPage }) => {
