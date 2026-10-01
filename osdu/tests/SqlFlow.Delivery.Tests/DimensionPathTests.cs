@@ -45,6 +45,9 @@ public class DimensionPathTests
         Assert.Equal(["dev:master-data--GeoPoliticalEntity:Norway:"], country.Read(Wellbore));
         Assert.Equal(["data.GeoContexts.GeoPoliticalEntityID", "data.GeoContexts.GeoTypeID"], country.ReturnedFields);
 
+        // An ends-with filter compares the end of the text, ignoring case.
+        Assert.Equal(["dev:master-data--GeoPoliticalEntity:Norway:"], Path("data.GeoContexts[GeoTypeID$=type:COUNTRY:].GeoPoliticalEntityID").Read(Wellbore));
+
         // An exact filter compares the whole text, case included.
         Assert.Empty(Path("data.GeoContexts[GeoTypeID=Country].GeoPoliticalEntityID").Read(Wellbore));
         Assert.Equal(

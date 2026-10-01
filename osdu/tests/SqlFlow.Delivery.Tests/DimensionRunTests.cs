@@ -248,14 +248,18 @@ public sealed class DimensionRunTests : IDisposable
     [Fact]
     public async Task A_key_s_attributes_are_read_through_the_records_it_names_kept_and_looked_up_and_a_search_is_picked_by_them()
     {
-        // Wellbores whose ids escape a slash, each in a region and a country (the country told by the context's type), one of
-        // them in a field; logs of each.
+        // Wellbores whose ids escape a slash, each in a region and a country, one of them in a field; logs of each. A country
+        // is the political entity whose own type is Country, as PetroDB tells it, whatever order a wellbore lists them in.
         const string Norway = "dev:master-data--GeoPoliticalEntity:NO";
         const string Denmark = "dev:master-data--GeoPoliticalEntity:DK";
         const string NorthSea = "dev:master-data--GeoPoliticalEntity:NorthSea";
-        _platform.Add(Norway, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Norway" });
-        _platform.Add(Denmark, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Denmark" });
-        _platform.Add(NorthSea, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "North Sea" });
+        JsonObject Entity(string name, string type) => new()
+        {
+            ["GeoPoliticalEntityName"] = name, ["GeoPoliticalEntityTypeID"] = $"dev:reference-data--GeoPoliticalEntityType:{type}:",
+        };
+        _platform.Add(Norway, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", Entity("Norway", "Country"));
+        _platform.Add(Denmark, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", Entity("Denmark", "Country"));
+        _platform.Add(NorthSea, "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", Entity("North Sea", "Region"));
         _platform.Add("dev:master-data--Field:STATFJORD", "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = "Statfjord" });
         JsonObject Context(string entity, string type) => new() { ["GeoPoliticalEntityID"] = entity + ":", ["GeoTypeID"] = $"dev:reference-data--GeoPoliticalEntityType:{type}:" };
         _platform.Add("dev:master-data--Wellbore:15%2F9-A", Wellbore, new JsonObject
@@ -266,7 +270,8 @@ public sealed class DimensionRunTests : IDisposable
         _platform.Add("dev:master-data--Wellbore:15%2F9-B", Wellbore, new JsonObject
         {
             ["FacilityName"] = "NO 15/9-B",
-            ["GeoContexts"] = new JsonArray(Context(NorthSea, "Region"), Context(Norway, "Country")),
+            // Contexts that do not say their type: the entities' own types tell the country.
+            ["GeoContexts"] = new JsonArray(new JsonObject { ["GeoPoliticalEntityID"] = NorthSea + ":" }, new JsonObject { ["GeoPoliticalEntityID"] = Norway + ":" }),
         });
         _platform.Add("dev:master-data--Wellbore:5504%2F7-1", Wellbore, new JsonObject
         {
@@ -285,8 +290,9 @@ public sealed class DimensionRunTests : IDisposable
                 path: data.WellboreID
                 label: data.FacilityName
                 attributes:
-                  Country: ['data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID', data.GeoPoliticalEntityName]
+                  Country: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName']
                   Field: [data.GeoContexts.FieldID, data.FieldName]
+                  Region: ['data.GeoContexts[GeoTypeID$=:Region:].GeoPoliticalEntityID', data.GeoPoliticalEntityName]
               - name: WellboreCode
                 kind: "osdu:wks:work-product-component--WellLog:*"
                 path: data.WellboreID
@@ -299,12 +305,14 @@ public sealed class DimensionRunTests : IDisposable
         var keys = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
             .ToDictionary(k => k.Original, StringComparer.Ordinal);
 
-        // Each key keeps its attributes: the country read through the context whose type is Country, not the region before it.
+        // Each key keeps its attributes: the country the entity whose own type is Country, not the region before it; the
+        // region read through the context whose type ends so.
         var a = keys["dev:master-data--Wellbore:15%2F9-A:"];
         Assert.Equal(
-            [("Country", "Norway", (string?)Norway), ("Field", "Statfjord", "dev:master-data--Field:STATFJORD")],
+            [("Country", "Norway", (string?)Norway), ("Field", "Statfjord", "dev:master-data--Field:STATFJORD"), ("Region", "North Sea", NorthSea)],
             a.Attributes.Select(x => (x.Name, x.Value, x.From)));
-        Assert.Equal(["Country"], keys["dev:master-data--Wellbore:15%2F9-B:"].Attributes.Select(x => x.Name));
+        Assert.Equal([("Country", "Norway")], keys["dev:master-data--Wellbore:15%2F9-B:"].Attributes.Select(x => (x.Name, x.Value)));
+        Assert.Equal([("Country", "Denmark")], keys["dev:master-data--Wellbore:5504%2F7-1:"].Attributes.Select(x => (x.Name, x.Value)));
         var run = (await ledger.ListDimensionRunsAsync(wellbores.DimensionId, 1)).Single();
         Assert.Contains(run.Read.Notes, n => n.Contains("key(s) have no Field", StringComparison.Ordinal));
 
@@ -335,7 +343,7 @@ public sealed class DimensionRunTests : IDisposable
         Assert.Equal(["NO 15/9-A", "NO 15/9-B"], Assert.Single(inNorway.Parts).Values.Select(v => v.Value).Order(StringComparer.Ordinal));
         var unknown = await Assert.ThrowsAsync<DeliveryException>(() => DimensionSearch.ComposeAsync(
             ledger, [new DimensionPick(wellbores, [], [], [new DimensionAttributeMatch("Basin", ["X"])])], null, null, CancellationToken.None));
-        Assert.Contains("reads no attribute 'Basin'; it reads Country, Field", unknown.Message, StringComparison.Ordinal);
+        Assert.Contains("reads no attribute 'Basin'; it reads Country, Field, Region", unknown.Message, StringComparison.Ordinal);
 
         // A second build reads the attributes again: a country renamed is rewritten, a field no longer named is dropped.
         _platform.Records.Single(r => r["id"]!.GetValue<string>() == Norway)["data"]!["GeoPoliticalEntityName"] = "Kingdom of Norway";
@@ -344,7 +352,7 @@ public sealed class DimensionRunTests : IDisposable
         await runner.BuildAsync(["Wellbore"], Guid.NewGuid(), "tests", CancellationToken.None);
         var again = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
             .Single(k => k.Original == "dev:master-data--Wellbore:15%2F9-A:");
-        Assert.Equal([("Country", "Kingdom of Norway")], again.Attributes.Select(x => (x.Name, x.Value)));
+        Assert.Equal([("Country", "Kingdom of Norway"), ("Region", "North Sea")], again.Attributes.Select(x => (x.Name, x.Value)));
         var second = (await ledger.ListDimensionRunsAsync(wellbores.DimensionId, 1)).Single();
         Assert.Contains(second.Read.Notes, n => n.Contains("attribute value(s) of keys were added, rewritten or dropped", StringComparison.Ordinal));
         OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);

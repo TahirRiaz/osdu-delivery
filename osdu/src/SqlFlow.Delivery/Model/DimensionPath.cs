@@ -9,8 +9,8 @@ namespace SqlFlow.Delivery.Model;
 /// <param name="Name">The property.</param>
 /// <param name="FilterProperty">The property of each object the filter compares; null for no filter.</param>
 /// <param name="FilterValue">The text the property is compared with.</param>
-/// <param name="Contains">True when the property has to contain the text, ignoring case (<c>*=</c>); false when it has to equal it exactly (<c>=</c>).</param>
-public sealed record DimensionPathSegment(string Name, string? FilterProperty, string? FilterValue, bool Contains)
+/// <param name="Compare">How the property is compared with the text.</param>
+public sealed record DimensionPathSegment(string Name, string? FilterProperty, string? FilterValue, DimensionPathCompare Compare)
 {
     /// <summary>Whether <paramref name="item"/> is one the filter keeps: any value its filter property holds matches.</summary>
     public bool Keeps(JsonNode? item)
@@ -26,17 +26,35 @@ public sealed record DimensionPathSegment(string Name, string? FilterProperty, s
         }
 
         var values = held is JsonArray array ? array.Select(n => n) : [held];
-        return values.Any(v => v is JsonValue value && value.TryGetValue<string>(out var text)
-            && (Contains ? text.Contains(FilterValue!, StringComparison.OrdinalIgnoreCase) : string.Equals(text, FilterValue, StringComparison.Ordinal)));
+        return values.Any(v => v is JsonValue value && value.TryGetValue<string>(out var text) && Compare switch
+        {
+            DimensionPathCompare.Contains => text.Contains(FilterValue!, StringComparison.OrdinalIgnoreCase),
+            DimensionPathCompare.EndsWith => text.EndsWith(FilterValue!, StringComparison.OrdinalIgnoreCase),
+            _ => string.Equals(text, FilterValue, StringComparison.Ordinal),
+        });
     }
+}
+
+/// <summary>How a path filter compares an object's property with its text.</summary>
+public enum DimensionPathCompare
+{
+    /// <summary><c>[Property=text]</c>: equal, exactly.</summary>
+    Equals,
+
+    /// <summary><c>[Property*=text]</c>: containing it, ignoring case.</summary>
+    Contains,
+
+    /// <summary><c>[Property$=text]</c>: ending with it, ignoring case (<c>[GeoPoliticalEntityTypeID$=:Country:]</c>).</summary>
+    EndsWith,
 }
 
 /// <summary>
 /// A path a label or an attribute is read through, from a record's root (<c>data.FacilityName</c>), with a filter on any
 /// segment holding objects (<c>data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID</c>: of the wellbore's geographic
 /// contexts, the one whose type contains <c>Country</c>). A filter is <c>[Property=text]</c>, the property equal to the text
-/// exactly, or <c>[Property*=text]</c>, the property containing it ignoring case; the text holds no <c>]</c>. An array met
-/// on the way is stepped into, and a filter keeps the objects that match.
+/// exactly, <c>[Property*=text]</c>, the property containing it ignoring case, or <c>[Property$=text]</c>, the property
+/// ending with it ignoring case; the text holds no <c>]</c>. An array met on the way is stepped into, and a filter keeps the
+/// objects that match.
 /// </summary>
 public sealed class DimensionPath
 {
@@ -100,7 +118,7 @@ public sealed class DimensionPath
             var name = trimmed[start..at];
             string? property = null;
             string? value = null;
-            var contains = false;
+            var compare = DimensionPathCompare.Equals;
             if (at < trimmed.Length && trimmed[at] == '[')
             {
                 var close = trimmed.IndexOf(']', at);
@@ -113,11 +131,16 @@ public sealed class DimensionPath
                 var equals = filter.IndexOf('=', StringComparison.Ordinal);
                 if (equals <= 0)
                 {
-                    return (null, $"the filter [{filter}] is not [Property=text] or [Property*=text]");
+                    return (null, $"the filter [{filter}] is not [Property=text], [Property*=text] or [Property$=text]");
                 }
 
-                contains = filter[equals - 1] == '*';
-                property = filter[..(contains ? equals - 1 : equals)].Trim();
+                compare = filter[equals - 1] switch
+                {
+                    '*' => DimensionPathCompare.Contains,
+                    '$' => DimensionPathCompare.EndsWith,
+                    _ => DimensionPathCompare.Equals,
+                };
+                property = filter[..(compare == DimensionPathCompare.Equals ? equals : equals - 1)].Trim();
                 value = filter[(equals + 1)..].Trim();
                 if (property.Length == 0 || !property.All(c => char.IsAsciiLetterOrDigit(c) || c == '_'))
                 {
@@ -132,7 +155,7 @@ public sealed class DimensionPath
                 at = close + 1;
             }
 
-            segments.Add(new DimensionPathSegment(name, property, value, contains));
+            segments.Add(new DimensionPathSegment(name, property, value, compare));
             if (at == trimmed.Length)
             {
                 break;

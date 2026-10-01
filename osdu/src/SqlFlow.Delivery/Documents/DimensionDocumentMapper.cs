@@ -344,7 +344,7 @@ internal static class DimensionMapper
             if (path is null || !OsduPath.IsPath(string.Join('.', path.Segments.Select(s => s.Name))))
             {
                 throw new FlowValidationException(
-                    $"{source}: {where}: {what}{(steps.Count > 1 ? string.Create(CultureInfo.InvariantCulture, $"[{i}]") : string.Empty)} '{step}' is not a property path{(problem is null ? string.Empty : $" ({problem})")}: segments of letters, digits and underscores separated by dots, such as data.FacilityName, a segment holding objects filtered by [Property=text] or [Property*=text], such as data.GeoContexts[GeoTypeID*=Country].GeoPoliticalEntityID.");
+                    $"{source}: {where}: {what}{(steps.Count > 1 ? string.Create(CultureInfo.InvariantCulture, $"[{i}]") : string.Empty)} '{step}' is not a property path{(problem is null ? string.Empty : $" ({problem})")}: segments of letters, digits and underscores separated by dots, such as data.FacilityName, a segment holding objects filtered by [Property=text], [Property*=text] or [Property$=text], such as data[GeoPoliticalEntityTypeID$=:Country:].GeoPoliticalEntityName.");
             }
 
             trimmed.Add(step);

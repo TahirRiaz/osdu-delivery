@@ -34,8 +34,10 @@ public sealed record KeyLabels(
 /// <summary>
 /// Reads the human-friendly label and the attributes of each key of a dimension (docs/dimension-plan.md, Keys and values,
 /// Attributes): a key naming an OSDU record (<c>dev:master-data--Wellbore:NO-15-9-19-A:</c>) is followed to the record it
-/// names, and each path is read there (<c>data.FacilityName</c>); a label or an attribute of several steps follows each
-/// step's reference to the next record (<c>data.GeoContexts.GeoPoliticalEntityID</c>, then <c>data.GeoPoliticalEntityName</c>).
+/// names, and each path is read there (<c>data.FacilityName</c>); a label or an attribute of several steps follows every
+/// reference a step reads to the next records (<c>data.GeoContexts.GeoPoliticalEntityID</c>, then
+/// <c>data[GeoPoliticalEntityTypeID$=:Country:].GeoPoliticalEntityName</c>), and the first record reached that holds a value
+/// at the last path gives it, so a filter on the last records picks the one that matters among several.
 /// Records are found by id through the search service, <see cref="IdsPerQuery"/> ids a search, in the kind of their entity
 /// type; every step reads all it needs of one entity type in the same searches, so a dimension's label and attributes that
 /// start at the same records read them once. A key that names no record, a record the search does not hold, and one whose
@@ -51,6 +53,12 @@ public sealed class DimensionLabeler
 
     /// <summary>The keys a note names as examples.</summary>
     private const int Examples = 3;
+
+    /// <summary>
+    /// The most records one step follows for one key: a wellbore names a handful of fields and political entities, and a
+    /// path reading more is bounded rather than read whole.
+    /// </summary>
+    private const int MaxReferencesPerStep = 20;
 
     /// <summary>The name the label's chain goes by among the attributes', which no attribute can take.</summary>
     private const string LabelChain = "label";
@@ -94,14 +102,15 @@ public sealed class DimensionLabeler
             return KeyLabels.None;
         }
 
-        // Where each key has got to in each chain: the reference the next step reads, or why it stopped.
-        var start = new Dictionary<string, (string? Reference, string? Problem)>(keys.Count, StringComparer.Ordinal);
+        // Where each key has got to in each chain: the records the next step reads (every one a step before reached, in the
+        // order it reached them), or why it stopped.
+        var start = new Dictionary<string, (IReadOnlyList<string> References, string? Problem)>(keys.Count, StringComparer.Ordinal);
         foreach (var key in keys)
         {
-            start[key] = TargetId.IsRecordReference(key.Trim()) ? (key.Trim(), null) : (null, "it names no OSDU record");
+            start[key] = TargetId.IsRecordReference(key.Trim()) ? ([TargetId.WithoutVersion(key.Trim())], null) : ([], "it names no OSDU record");
         }
 
-        var reached = chains.ToDictionary(c => c, _ => new Dictionary<string, (string? Reference, string? Problem)>(start, StringComparer.Ordinal));
+        var reached = chains.ToDictionary(c => c, _ => new Dictionary<string, (IReadOnlyList<string> References, string? Problem)>(start, StringComparer.Ordinal));
         var found = chains.ToDictionary(c => c, _ => new Dictionary<string, KeyLabel>(keys.Count, StringComparer.Ordinal));
         var cut = 0;
         var queries = 0;
@@ -115,23 +124,20 @@ public sealed class DimensionLabeler
             var wanted = new Dictionary<string, (HashSet<string> Ids, HashSet<string> Paths)>(StringComparer.Ordinal);
             foreach (var chain in active)
             {
-                foreach (var (reference, _) in reached[chain].Values)
+                foreach (var (references, _) in reached[chain].Values)
                 {
-                    if (reference is null)
+                    foreach (var id in references)
                     {
-                        continue;
-                    }
+                        var type = EntityTypeOf(id);
+                        if (!wanted.TryGetValue(type, out var need))
+                        {
+                            need = (new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal));
+                            wanted[type] = need;
+                        }
 
-                    var id = TargetId.WithoutVersion(reference);
-                    var type = EntityTypeOf(id);
-                    if (!wanted.TryGetValue(type, out var need))
-                    {
-                        need = (new HashSet<string>(StringComparer.Ordinal), new HashSet<string>(StringComparer.Ordinal));
-                        wanted[type] = need;
+                        need.Ids.Add(id);
+                        need.Paths.UnionWith(chain.Paths[at].ReturnedFields);
                     }
-
-                    need.Ids.Add(id);
-                    need.Paths.UnionWith(chain.Paths[at].ReturnedFields);
                 }
             }
 
@@ -144,43 +150,61 @@ public sealed class DimensionLabeler
                 var where = reached[chain];
                 foreach (var key in where.Keys.ToList())
                 {
-                    var (reference, problem) = where[key];
-                    if (reference is null)
+                    var (references, problem) = where[key];
+                    if (references.Count == 0)
                     {
                         found[chain][key] = new KeyLabel(null, null, problem);
                         where.Remove(key);
                         continue;
                     }
 
-                    var id = TargetId.WithoutVersion(reference);
-                    if (!records.TryGetValue(id, out var record))
+                    var held = references.Where(records.ContainsKey).ToList();
+                    if (held.Count == 0)
                     {
-                        found[chain][key] = new KeyLabel(null, null, $"the search holds no record {id}");
+                        found[chain][key] = new KeyLabel(null, null, $"the search holds no record {references[0]}");
                         where.Remove(key);
                         continue;
                     }
 
-                    var values = path.Read(record);
                     if (last)
                     {
-                        var text = values.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v))?.Trim() is { } read ? DisplayOf(read).Trim() : null;
-                        text = string.IsNullOrEmpty(text) ? null : text;
+                        // The first record reached that holds a value at the path gives it.
+                        string? text = null;
+                        string? from = null;
+                        foreach (var id in held)
+                        {
+                            var read = path.Read(records[id]).FirstOrDefault(v => !string.IsNullOrWhiteSpace(v))?.Trim();
+                            if (read is not null && DisplayOf(read).Trim() is { Length: > 0 } shown)
+                            {
+                                (text, from) = (shown, id);
+                                break;
+                            }
+                        }
+
                         var longest = chain.IsLabel ? MaxLabelLength : DimensionSpec.MaxAttributeValueLength;
-                        if (text is { Length: > 0 } && text.Length > longest)
+                        if (text is not null && text.Length > longest)
                         {
                             text = text[..longest];
                             cut++;
                         }
 
                         found[chain][key] = text is null
-                            ? new KeyLabel(null, id, $"record {id} holds nothing at {path.Text}")
-                            : new KeyLabel(text, id, null);
+                            ? new KeyLabel(null, held[0], $"record {held[0]} holds nothing at {path.Text}")
+                            : new KeyLabel(text, from, null);
                         where.Remove(key);
                         continue;
                     }
 
-                    var next = values.Select(v => v.Trim()).FirstOrDefault(TargetId.IsRecordReference);
-                    where[key] = next is null ? (null, $"record {id} holds no record reference at {path.Text}") : (next, null);
+                    // Every reference the records reached hold at the path, in order, each once: the next step reads them all.
+                    var next = held
+                        .SelectMany(id => path.Read(records[id]))
+                        .Select(v => v.Trim())
+                        .Where(TargetId.IsRecordReference)
+                        .Select(TargetId.WithoutVersion)
+                        .Distinct(StringComparer.Ordinal)
+                        .Take(MaxReferencesPerStep)
+                        .ToList();
+                    where[key] = next.Count == 0 ? ([], $"record {held[0]} holds no record reference at {path.Text}") : (next, null);
                 }
             }
         }
