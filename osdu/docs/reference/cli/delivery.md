@@ -230,12 +230,12 @@ sqlflow assertions report flows/recall-welllog-04-header-assertion.yaml --partit
 sqlflow dimensions list <flow.yaml> [--partition <name>] [--db <ref>] [--json]
 sqlflow dimensions values <flow.yaml> --dimension <name> [--search <text>] [--attr <attribute>=<value> ...] [--order value|records] [--removed] [--max <n>] [--db <ref>] [--json]
 sqlflow dimensions keys <flow.yaml> --dimension <name> [--value <value> | --left-out] [--search <text>] [--attr <attribute>=<value> ...] [--order arrival|count] [--removed] [--max <n>] [--db <ref>] [--json]
-sqlflow dimensions attributes <flow.yaml> --dimension <name> --attribute <name> [--search <text>] [--max <n>] [--db <ref>] [--json]
+sqlflow dimensions attributes <flow.yaml> --dimension <name> --attribute <name> [--attr <attribute>=<value> ...] [--value <value> ...] [--search <text>] [--max <n>] [--db <ref>] [--json]
 sqlflow dimensions filter <flow.yaml> --dimension <name> --value <value> [--value <value> ...] [--db <ref>] [--json]
 sqlflow dimensions search <flow.yaml> [--pick <dimension>=<value> ...] [--where <dimension>.<attribute>=<value> ...] [--kind <kind>] [--within <query>] [--db <ref>] [--json]
 sqlflow dimensions history <flow.yaml> --dimension <name> [--max <n>] [--db <ref>] [--json]
 sqlflow dimensions changes <flow.yaml> --dimension <name> [--build <n>] [--value <value>] [--change added|removed|moved|restored] [--max <n>] [--db <ref>] [--json]
-sqlflow dimensions export <flow.yaml> --dimension <name> [--set values|keys] [--format csv|jsonl] [--out <file>] [--db <ref>]
+sqlflow dimensions export <flow.yaml> --dimension <name> [--set values|keys|table] [--format csv|jsonl] [--out <file>] [--db <ref>]
 ```
 
 The dimensions a dimension flow's builds keep in the module database ([documents.md](../../documents.md#dimension-flow)),
@@ -251,21 +251,21 @@ attribute, every attribute, held by one key) narrows values and keys by attribut
 | `list` | Each dimension the flow declares: what it reads, where its label is read and the attributes it reads, its values and keys, when it was built, and a newer build that failed or is running. |
 | `values` | A page of a dimension's values (50 unless `--max` says otherwise, at most 1,000) in value order or with the most records first, each with its records (`~` when summed from its keys), its search filter and its commonest keys; `--search` finds a value by itself or any key, ignoring case. |
 | `keys` | A page of a dimension's keys, each with its label and the record it was read from, its value or why it has none, its count, the search filter finding exactly its records (or that no query can carry it) and what cleaning said: every one, one value's (`--value`), or those of no value (`--left-out`); `--search` finds a key by itself or its label. |
-| `attributes` | The values the attribute `--attribute` names holds among the dimension's keys, the most records first, each with its keys; `--search` finds a value by what it contains. |
+| `attributes` | The values the attribute `--attribute` names holds among the dimension's keys, the most records first, each with its keys; `--search` finds a value by what it contains. `--attr` and `--value` narrow it to the keys holding the other attribute values and belonging to the values named, as one select of a cascade lists what the other picks leave; an `--attr` of the attribute itself does not narrow its own list. |
 | `filter` | The search that finds every record holding one of the values' keys: each query on its own line on the console, joined with the dimension's own query, ready for a search request; what it covers and leaves out goes to the error stream. Exits 1 when no query can be written. |
 | `search` | The search across the flow's dimensions: every record holding one of the values picked in each dimension `--pick` names, and of the keys holding the attributes `--where` names (split at the first `=`, and before it at the last `.`, since an attribute's name holds no dot), OR within a dimension, AND across them, each dimension's own query once, `--within` added. The dimensions have to read one kind, or the one `--kind` names, which each dimension's kind has to cover; the query holds at most 1,000 clauses. The query goes to the console alone; what each dimension adds and what the picks left out goes to the error stream; `--json` gives the whole, with the request body to send. A pick is split at its first `=`, so a value may hold one. |
 | `history` | The dimension's builds, newest first: status, what each found and changed, how it read the index and the labels, and its notes. |
 | `changes` | The change log, newest first, narrowed to a build, a value or one kind of change. |
-| `export` | The whole of a dimension's values (the default) or keys, as CSV (the default) or JSON Lines, to `--out` (written beside its name and moved into place, so a failure never leaves half a file) or the console. Every row carries its search filter; a key its label too. The same file the API's export gives. |
+| `export` | The whole of a dimension's values (the default), keys, or table, as CSV (the default) or JSON Lines, to `--out` (written beside its name and moved into place, so a failure never leaves half a file) or the console. A value's and a key's row carries its search filter; a key its label too. The table has a row per key and value it collects, with `key`, `value`, a column per attribute and `records`: what a set of cascading selects reads. The same file the API's export gives. |
 
 Building is a run like any other: `sqlflow run <flow.yaml>` builds every dimension, and the payload picks some:
 
 ```bash
-sqlflow run flows/recall-welllog-05-dimensions.yaml --set partition=dev --payload '{"dimensions":["Wellbore","Country"]}' --db osdu
-sqlflow dimensions filter flows/recall-welllog-05-dimensions.yaml --dimension Log --value GR --value RHOB --db osdu
-sqlflow dimensions search flows/recall-welllog-05-dimensions.yaml --pick Country=Norway --pick Set=STAT_COMP --pick Log=GR --db osdu
+sqlflow run flows/recall-welllog-05-dimensions.yaml --set partition=dev --payload '{"dimensions":["Wellbore"]}' --db osdu
+sqlflow dimensions export flows/recall-welllog-05-dimensions.yaml --dimension Wellbore --set table --out wellbores.csv --db osdu
+sqlflow dimensions attributes flows/recall-welllog-05-dimensions.yaml --dimension Wellbore --attribute Field --attr Country=Norway --db osdu
 sqlflow dimensions keys flows/recall-welllog-05-dimensions.yaml --dimension Wellbore --attr Field=STATFJORD --db osdu
-sqlflow dimensions search flows/recall-welllog-05-dimensions.yaml --where Wellbore.Field=STATFJORD --pick Log=GR --db osdu
+sqlflow dimensions search flows/recall-welllog-05-dimensions.yaml --where Wellbore.Country=Norway --where Wellbore.Source=RECALL --db osdu
 ```
 
 ## The run options

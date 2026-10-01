@@ -1312,15 +1312,11 @@ dimensions:
     query: 'tags.DeliveredBy:"osdu-delivery"'
     path: data.WellboreID                          # keys: the wellbore ids
     label: data.FacilityName                       # values: each wellbore's name
+    unlabelled: Not specified                      # the value of whatever is not found
     attributes:                                    # facts of each wellbore, looked up and searched by
       Country: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName']
-      Field: [data.GeoContexts.FieldID, data.FieldName]
-
-  - name: Country
-    kind: osdu:wks:work-product-component--WellLog:1.4.0
-    query: 'tags.DeliveredBy:"osdu-delivery"'
-    path: data.WellboreID
-    label: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName']   # the entity of type Country
+      Field: [data.GeoContexts.FieldID, data.FieldName]      # read from the wellbore record
+      Source: { collect: data.Source }                       # collected from the logs themselves
 
   - name: CurveMnemonic
     kind: osdu:wks:work-product-component--WellLog:1.4.0
@@ -1350,8 +1346,8 @@ A dimension:
 | `query` | Lucene narrowing the records, with `{parameter}` tokens. Without it, every record of the kind. Every filter of the dimension selects by key alone; a composed search joins it with this query. Dimensions meant to compose into one search usually share it. |
 | `path` | The key read: a property of the record, or `data.` and a path of the schema. How the index stores it (text, keyword, number, boolean or date, inside a nested array or not) is read from the saved template of each kind the pattern matches, so every such kind needs its template saved (the Templates page, `sqlflow template capture`). An object, an array of objects and a property the index keeps no exact value of are refused, naming a leaf to read instead. |
 | `label` | Where a key's label is read, for a key that names an OSDU record: one path of that record (`label: data.FacilityName`), or a list of paths, each but the last reading the references the next records are found by (`label: [data.GeoContexts.FieldID, data.FieldName]`), at most 3. Every reference a step reads is followed (at most 20 a key), and the first record reached that holds a value at the last path gives it. A segment holding objects can filter them: `[Property=text]` keeps those whose property equals the text, `[Property*=text]` those whose property contains it ignoring case, `[Property$=text]` those whose property ends with it ignoring case; so `[data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName']` reads, of the political entities a wellbore names, the one whose own type is Country. A build finds the records by id through the search service, 500 ids a search, in the kind of the entity type the id names, and reads the path in the record as the search returns it. A key that names no record, a record the search does not hold, and one holding nothing at the path, have no label, and the build's notes say how many and why. The label is cleaned into the key's value; the key stays the id. |
-| `unlabelled` | The value of a key whose label is not read, cleaned like a label: `unlabelled: Not specified`, so a drop-down lists such keys under one value, as an application lists a missing country or name, and that value's filter finds exactly their records. At most 256 characters, for a dimension that reads a label. Left out, such a key is valued by the code its id ends with, its escapes decoded. |
-| `attributes` | Further facts of each key, read as a label is, each under a name: `attributes: { Country: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName'], SpudDate: data.SpudDate }`. At most 20; a name is a letter, then letters, digits and underscores, at most 64, unique ignoring case, and none of `value`, `keys`, `key`, `records`, `filter`, `label`, `id`. A build reads them with the label, in the same searches where they start at the same records, and keeps each key's value of each (at most 256 characters; a value that is itself a record reference kept as its decoded code) with the record it came from. Values and keys are looked up by them (`attr=Country:Norway`), an attribute lists its values with their keys and records, a search picks keys by them, and a cached dimension carries the ones its `fields` name. |
+| `unlabelled` | The value of whatever is not read, cleaned like a label: `unlabelled: Not specified`, so a drop-down lists it under one value, as an application lists a missing country or name. It values a key whose label is not read (and that value's filter finds exactly their records), an attribute a key has none of, and a collected attribute's records holding none of its values. At most 256 characters, for a dimension that reads a label or attributes. Left out, a key without a label is valued by the code its id ends with, its escapes decoded, and a key holds no value of an attribute it has none of. |
+| `attributes` | Further facts of each key, each under a name. A path, or a list of paths, is read from the record the key names, as a label is: `attributes: { Country: [data.GeoContexts.GeoPoliticalEntityID, 'data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName'], SpudDate: data.SpudDate }`; a build reads them with the label, in the same searches where they start at the same records, and keeps each key's value of each (at most 256 characters; a value that is itself a record reference kept as its decoded code) with the record it came from. `{ collect: <path> }` collects the values of the dimension's own records instead: `Source: { collect: data.Source }` on a dimension keyed by the logs' `data.WellboreID` gives each wellbore every source its logs hold, with how many logs hold each, the records holding none under the `unlabelled` value. A collected attribute holds at most 200 distinct values across the dimension (a source, a status: a longer list is a dimension of its own), and a dimension collects one, so each row of its table is a key and one collected value. At most 20 attributes; a name is a letter, then letters, digits and underscores, at most 64, unique ignoring case, and none of `value`, `keys`, `key`, `records`, `filter`, `label`, `id`. Values and keys are looked up by them (`attr=Country:Norway`), an attribute lists its values with their keys and records, narrowed by the other picks of a cascade, a search picks keys (and for a collected attribute, records) by them, the table lists them a column each, and a cached dimension carries the ones its `fields` name. |
 | `clean` | The steps each key (or its label, or for a key naming a record and no label read, the decoded code its id ends with) runs through, in order, at most 20: `trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`, `foldSeparators` (dashes, underscores and dots to one space), `replace: { pattern, with }` (a regular expression, run without backtracking, one second at most per value; `$1` names a group), and `map` (a dictionary, [Dictionary](#dictionary): the value it gives replaces the one looked up; `map: { dictionary, field, otherwise }` names the field of a dictionary with several, and what an unlisted value comes to: kept when left out, the key left out of every value with `~`, or the text given). The value is trimmed; one that is empty, or longer than 256 characters, leaves the key of no value, and the key keeps why. |
 | `countRecords` | `true` counts each value's records exactly, with one search per value. Without it a value's records are exact where a record holds the path once, and otherwise the sum of its keys' counts. |
 | `maxValues` | The most distinct keys a build reads, 1,000,000 by default and 5,000,000 at most: a field with more fails the build rather than filling the database. |
@@ -1367,10 +1363,20 @@ A search composed from values picked across dimensions finds a record holding on
 the values of one dimension are joined with OR, the dimensions with AND, each dimension's own query is added once, and a
 query of one's own narrows it further. A dimension can be picked by the attribute values its keys hold as well as by
 value (every wellbore where `Country` is `Norway`, or the wellbores picked that are in `Statfjord`): its part then
-compares exactly the keys holding them, at most 1,000. Every dimension picked in has to read the kind searched (the one kind they all
+compares exactly the keys holding them, at most 1,000. A collected value picks records: `Source` is `RECALL` finds the
+logs whose `data.Source` is one of the texts the value stands for, not every log of the wellbores holding it, and its
+`unlabelled` value finds the logs holding none of the attribute's texts. Every dimension picked in has to read the kind searched (the one kind they all
 read, or one their kind patterns cover), and the query holds at most 1,000 clauses, each key compared being one (the
 service allows 1,024). A key no query can carry (a text over 256 characters, a value the query language cannot state
 exactly) is left out and said to be.
+
+A dimension's table is what a set of cascading selects reads: a row per key and value it collects (one row for a key of
+a dimension collecting nothing), with the key, its value, a column per attribute named as declared, and the records of
+the row (those holding the collected value, or every record of the key). A select lists the distinct values of its
+column among the rows the other selects leave. `sqlflow dimensions export --set table` and the API's
+`export?set=table` write it as CSV or JSON Lines; the API's `attributes/<name>?attr=Country:Norway&value=<id>` and
+`sqlflow dimensions attributes --attr Country=Norway --value <value>` answer one select's list from the ledger, among the
+keys the other picks leave, a pick of the attribute itself aside.
 
 The operations are `build` (the default) and `plan` (settle each dimension's field and count the records it would read,
 reading no value and keeping nothing). The payload takes `dimensions` (names); a run with none builds every one. A build

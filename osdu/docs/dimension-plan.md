@@ -18,10 +18,10 @@ names they were built with; everything a person reads (the API, the CLI, the GUI
 value and key.
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 9 are built; the recall estate
-(`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose dimensions are the
-filters of the PetroDB log browser (project, wellbore, field, country, set, log). The live check listed under Close-out
-has not been run.
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 10 are built; the recall estate
+(`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose one dimension,
+Wellbore, carries the filters of PetroDB's Log Explorer (country, field, UUID, and the sources its logs collect) as its
+attributes, the table its cascading selects read. The live check listed under Close-out has not been run.
 
 ## Decisions
 
@@ -172,7 +172,31 @@ The attributes are read, never searched in OSDU: they answer from the ledger. A 
 them (`attr=Country:Norway`: any value of one attribute, every attribute named, held by one key), an attribute lists the
 values its keys hold with their keys and records (a drop-down's list), a search picks a dimension's keys by them (the
 part compares exactly those keys, at most 1,000), and a cached dimension carries those its `fields` name, so a mapping
-finds a key's attribute from the cache.
+finds a key's attribute from the cache. With `unlabelled`, a key with no value of an attribute holds that value instead.
+
+## Collected attributes and the table
+
+An attribute can be collected from the dimension's own records rather than read from the record a key names:
+`Source: { collect: data.Source }` on a dimension keyed by the logs' `data.WellboreID` gives each wellbore the source of
+each of its logs. A build reads the path's distinct values (at most 200; a longer list fails the build, naming the
+limit), shows each as a label is (a reference by its decoded code, trimmed), and for each value reads the keys of the
+records holding one of its texts, with how many hold it: a distinct read of the dimension's own field narrowed to those
+records, so a value held by many keys pages as any field does. With `unlabelled`, one more read finds the keys of the
+records holding none of the texts. A key holds a row per value (`DimensionAttribute` is keyed by value as well), each with
+its records, and the dimension keeps each value's texts and the field they are read from (`CollectedJson`), which a
+search picking the value asks for: the records holding one of them, or, for the `unlabelled` value, every record holding
+none (`_exists_:id AND NOT (...)`, since the service refuses a query that only excludes).
+
+A dimension collects one attribute: two would pair values no record holds together (one log's source with another's
+type), and its table would offer combinations a search then finds nothing for. The document refuses a second one,
+naming the first.
+
+The table is the dimension as cascading selects read it: a row per key and collected value, with the key, its value, a
+column per attribute and the records of the row, keys under no value left out. Each select lists the distinct values of
+its column among the rows the other selects leave; the API and the CLI answer one select's list from the ledger
+(`attributes/<name>?attr=...&value=...`, `sqlflow dimensions attributes --attr ... --value ...`), among the keys holding
+every other attribute value picked and belonging to the values picked, a pick of the attribute itself aside. A list
+counts keys exactly; its records are those of the keys holding each value (for a collected value, of its records).
 
 ## The filter
 
@@ -194,8 +218,10 @@ builder of the Dimensions page):
 - Every term is parenthesised when there are several, so an OR inside one never reaches across the AND between them.
 - The dimensions have to read one kind, or the kind named, which each dimension's kind has to cover segment by segment:
   a dimension's keys filter only the kind they were read from.
-- At most 20 dimensions and 1,000 clauses (each key compared is one; the service allows 1,024). A pick past that is
-  refused, saying how many keys the values hold, rather than cut short.
+- At most 20 dimensions and 1,000 clauses (each key compared is one, and each text of a collected value; the service
+  allows 1,024). A pick past that is refused, saying how many keys and clauses the picks hold, rather than cut short.
+- A collected value picks records, not keys: the part adds the records holding one of its texts to the keys compared,
+  and collected values picked alone add them to the records holding a key.
 - A value no build finds any more, and a name that is no value, are said to be left out; a key no query can carry is
   counted in the notes.
 
@@ -208,10 +234,11 @@ All in the `osdu` schema, keyed by the ledger partition first, under a ledger of
 
 | Table | One row per | Holds |
 | --- | --- | --- |
-| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the field asked, the clean steps, the definition hash, current value and key counts, the last build. |
+| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the attributes, the field asked, what each collected attribute's values stand for and the field they are read from, the clean steps, the definition hash, current value and key counts, the last build. |
 | `DimensionRun` | dimension and build | Status, counts (records, values, keys, added, removed, moved, left out, unfilterable, too long, null, labelled, unlabelled), requests (label searches among them), slices, scanned records, templates used, notes. |
 | `DimensionMember` | value | Stable id, the value, count and whether it is exact, keys, filter and parts, first and last seen, removed. |
 | `DimensionValue` | key | Stable id, the key, its label and the record it came from, its value or why it has none, count, filterable, its filter, first and last seen, removed, the build it joined its value. |
+| `DimensionAttribute` | key, attribute and value | The value, where it was read (the record, or a collected attribute's text), and for a collected value how many of the key's records hold it. |
 | `DimensionChange` | key that moved, left, came back or arrived after the first build | The build, the key, from and to value. |
 
 A build writes in one transaction: its values are copied into temporary tables, and set-based statements add, update and
@@ -248,6 +275,10 @@ keeps its id. A key whose label, value or filter changed is rewritten, and a mov
 | A search failure part way | Retried by the flow's reliability settings; a dimension that still fails writes nothing and the others build. |
 | A value whose filter would pass the clause limit | Its filter is in parts; the API and the CLI hand every part. |
 | Values picked across dimensions holding more than 1,000 keys | The search is refused, saying how many keys they hold. |
+| A collected attribute whose records hold more than 200 values | That dimension fails, naming the limit: such a list is a dimension of its own. |
+| A second collected attribute | Refused at load, naming the first. |
+| Two texts of a collected path shown alike (`RECALL` and `RECALL `) | One value, standing for both; a search picking it asks for both. |
+| A collected value a pick names that the attribute does not hold | Named as missing; a pick holding no value it does hold is refused. |
 | Dimensions of different kinds picked in one search | Refused unless a kind is named that each dimension's kind covers. |
 | A value that disappears and comes back | Keeps its id; the change log says when. |
 
@@ -324,6 +355,17 @@ integration brief's aggregation facts, and the samples README.
 - Tests: the attribute and filter rules of the document; the path reader; the decoding; a build reading attributes
   through a filtered context and two records, looked up, listed, searched by (the query run against the fake), and read
   again after a rename; the cache carrying an attribute; the API; the migration from the previous version.
+
+### Stage 10: collected attributes and the table
+
+- The document's `{ collect: <path> }` (one per dimension) and `unlabelled` for attributes; the build's collected reads;
+  `DimensionAttribute` keyed by value with `Records`, and the dimension's `CollectedJson` (migration
+  `DimensionCollectedAttributes`, module version 1.20.0); a collected value picking records in a search; an attribute's
+  values narrowed by the other picks (ledger, API, CLI); the export set `table`.
+- Tests: the collect rules of the document; a build collecting sources from logs, with a text spelled two ways and records
+  holding none; the lists of a cascade, each narrowed by the others; the table; searches picking a collected value alone,
+  with Not specified and with a country, run against the fake; a rebuild; the API's narrowed list and table; the
+  migration up and back down.
 
 ## Close-out
 
