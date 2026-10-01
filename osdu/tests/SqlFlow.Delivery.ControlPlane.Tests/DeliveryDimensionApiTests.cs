@@ -345,6 +345,41 @@ public sealed class DeliveryDimensionApiTests
                 Assert.EndsWith("-table.csv", table.Content.Headers.ContentDisposition?.FileNameStar ?? table.Content.Headers.ContentDisposition?.FileName ?? string.Empty, StringComparison.Ordinal);
             }
 
+            // A dimension the flow no longer declares is removed for good, by an admin alone; one it declares is not.
+            var retiredFlow = new DeliveryDocumentLoader().ParseDimension(
+                yaml + "\n  - name: Retired\n    kind: \"" + WellLog + "\"\n    path: data.Name\n", "flows/" + flowName + ".yaml").ForRun(partition, RegisteredPartitions.None);
+            var (_, retiredRun) = await ledger.StartDimensionRunAsync(Declaration(retiredFlow, retiredFlow.Dimension("Retired")!), Guid.NewGuid(), "dimension api tests", now.AddMinutes(-5));
+            var retiredField = OsduField.Keyword("data.Name");
+            var retired = await WriteAsync(ledger, retiredFlow, (await ledger.GetDimensionAsync(retiredRun.DimensionId))!, retiredRun,
+                new DimensionFieldState("keyword", null, "data.Name", Repeats: false), retiredField,
+                [new DimensionOriginalWrite("Log A", "Log A", null, null, 2, Filterable: true, Filter: DimensionFilters.Of(retiredField, ["Log A"])[0])],
+                new DimensionReadCounts { Records = 2, WithValue = 2, Aggregations = 1, Slices = 1 }, now.AddMinutes(-5));
+            var admin = await TokenAsync(client, ["read", "operate", "admin"]);
+            var operate = await TokenAsync(client, ["read", "operate"]);
+            using (var refused = await SendAsync(client, operate, HttpMethod.Delete, $"/api/v1/delivery/dimensions/{retired.DimensionId}"))
+            {
+                Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+            }
+
+            using (var declared = await SendAsync(client, admin, HttpMethod.Delete, $"/api/v1/delivery/dimensions/{dimensionId}"))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, declared.StatusCode);
+                Assert.Contains("declares dimension CurveMnemonic, so it is not removed", await declared.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            using (var gone = await SendAsync(client, admin, HttpMethod.Delete, $"/api/v1/delivery/dimensions/{retired.DimensionId}"))
+            {
+                var body = await gone.Content.ReadAsStringAsync();
+                Assert.True(gone.StatusCode == HttpStatusCode.OK, body);
+                var removed = JsonDocument.Parse(body).RootElement;
+                Assert.Equal(("Retired", 1L, 1L, 1L), (removed.GetProperty("dimension").GetString(), removed.GetProperty("values").GetInt64(), removed.GetProperty("keys").GetInt64(), removed.GetProperty("builds").GetInt64()));
+            }
+
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{retired.DimensionId}", HttpStatusCode.NotFound, "No dimension");
+            var removal = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = flow.LedgerId, Kind = DimensionRemoval.ActivityKind }));
+            Assert.Equal("completed", removal.Outcome);
+            Assert.StartsWith("user:", removal.Actor, StringComparison.Ordinal);
+
             // The builds a platform run made, named by the dimension each built.
             var ofRun = await JsonAsync(client, token, $"/api/v1/delivery/runs/{secondRunId}/dimension-builds");
             Assert.Equal("CurveMnemonic", Assert.Single(ofRun.EnumerateArray()).GetProperty("dimension").GetString());
@@ -518,18 +553,20 @@ public sealed class DeliveryDimensionApiTests
         return await client.SendAsync(request);
     }
 
-    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string token, string path)
+    private static Task<HttpResponseMessage> SendAsync(HttpClient client, string token, string path) => SendAsync(client, token, HttpMethod.Get, path);
+
+    private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string token, HttpMethod method, string path)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(path, UriKind.Relative));
+        using var request = new HttpRequestMessage(method, new Uri(path, UriKind.Relative));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return await client.SendAsync(request);
     }
 
-    private static async Task<string> TokenAsync(HttpClient client)
+    private static async Task<string> TokenAsync(HttpClient client, string[]? scopes = null)
     {
         using var response = await client.PostAsJsonAsync(
             new Uri("/api/v1/auth/token", UriKind.Relative),
-            new TokenRequest(ControlPlaneAppFactory.BootstrapSecret, null, ["read"]));
+            new TokenRequest(ControlPlaneAppFactory.BootstrapSecret, null, scopes ?? ["read"]));
         response.EnsureSuccessStatusCode();
         var token = await response.Content.ReadFromJsonAsync<TokenResponse>();
         Assert.NotNull(token);

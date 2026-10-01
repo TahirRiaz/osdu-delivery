@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Ledger;
 
@@ -710,6 +711,43 @@ public sealed partial class OsduLedger
             },
             ct).ConfigureAwait(false);
         return rows.Select(r => new DimensionAttributeValueState(r.Value, r.Keys, r.Records)).ToList();
+    }
+
+    public async Task<IReadOnlyList<DimensionCaptureState>> DimensionCapturesAsync(int dimensionId, CancellationToken ct = default)
+    {
+        if (await GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { Partition: { } partition } dimension)
+        {
+            return [];
+        }
+
+        // The sync keeps a row per type a cache flow declares now, the dimension it captures as "<flow>/<dimension>".
+        var captured = $"{dimension.FlowName}/{dimension.Name}";
+        var rows = await ReadAsync(
+            db => db.DeliveryCacheDefinitions.AsNoTracking()
+                .Where(c => c.Origin == CacheOrigins.DimensionText && c.Scope == partition)
+                .Select(c => new { c.FlowName, c.Name, c.SourceObject })
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+        return rows
+            .Where(r => string.Equals(r.SourceObject, captured, StringComparison.OrdinalIgnoreCase))
+            .Select(r => new DimensionCaptureState(r.FlowName, r.Name, partition))
+            .OrderBy(r => r.CacheFlow, StringComparer.Ordinal).ThenBy(r => r.Type, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    public async Task<DimensionRemoved?> RemoveDimensionAsync(int dimensionId, CancellationToken ct = default)
+    {
+        if (await GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension
+            || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
+        await using var db = Open();
+        var counts = await SqlServerDimensionStore.RemoveAsync(db, partition, dimensionId, ct).ConfigureAwait(false);
+        return new DimensionRemoved(
+            dimensionId, dimension.Name, dimension.FlowName, dimension.Partition,
+            counts.Values, counts.Keys, counts.Builds, counts.Changes, counts.Attributes, counts.Texts);
     }
 
     public async Task<IReadOnlyList<DimensionCollectedText>> ListDimensionCollectedTextsAsync(

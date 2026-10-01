@@ -2419,6 +2419,21 @@ export interface DeliveryDimensionValueAttribute {
   keys: number;
 }
 
+/** What removing a dimension took out of the ledger: the dimension, the rows kept of it in each table, and one line saying so. */
+export interface DeliveryDimensionRemoved {
+  dimensionId: number;
+  dimension: string;
+  flow: string;
+  partition: string | null;
+  values: number;
+  keys: number;
+  builds: number;
+  changes: number;
+  attributes: number;
+  texts: number;
+  summary: string;
+}
+
 /** A value an attribute holds among a dimension's keys: the keys holding it and their records (summed). */
 export interface DeliveryDimensionAttributeValue {
   value: string;
@@ -2730,6 +2745,8 @@ export const deliveryApi = {
   dimensionBoard: () => get<DeliveryDimensionBoard>("/api/v1/delivery/dimensions"),
   /** One dimension flow's dimensions in the workbench's partition. */
   dimensionFlowBoard: (pipelineId: string) => get<DeliveryDimensionBoard>(`/api/v1/delivery/flows/${pipelineId}/dimensions`),
+  /** Removes a dimension its flow no longer declares, for good: an admin's alone. */
+  removeDimension: (dimensionId: number) => del<DeliveryDimensionRemoved>(`/api/v1/delivery/dimensions/${dimensionId}`),
   /** A dimension with its declaration, the build that wrote what it holds and its newest build. */
   dimension: (dimensionId: number) => get<DeliveryDimensionDetail>(`/api/v1/delivery/dimensions/${dimensionId}`),
   /** A page of a dimension's values, in value order or with the most records first. */

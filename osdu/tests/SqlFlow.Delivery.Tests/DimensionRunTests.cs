@@ -1,4 +1,6 @@
 using System.Text.Json.Nodes;
+using Microsoft.Data.SqlClient;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Ledger;
@@ -585,6 +587,92 @@ public sealed class DimensionRunTests : IDisposable
             ledger, [new DimensionPick(wellbores, [], [], [new DimensionAttributeMatch("Source", ["Not specified"])])], null, null, CancellationToken.None));
         Assert.Contains("more than the 1000 one search can exclude", none.Message, StringComparison.Ordinal);
         OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task A_dimension_no_longer_declared_is_removed_with_everything_kept_of_it_and_nothing_else()
+    {
+        foreach (var (log, wellbore, source) in new[] { ("1", "A", "RECALL"), ("2", "A", "PETREL"), ("3", "B", "RECALL") })
+        {
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:{wellbore}:", ["Source"] = source });
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                unlabelled: Not specified
+                attributes:
+                  Source: { collect: data.Source }
+              - name: Source
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.Source
+            """);
+
+        // Two builds, the second finding a new wellbore, so the dimension has builds, keys, values, attributes, collected
+        // texts and a change log to lose.
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        _platform.Add("dev:work-product-component--WellLog:4", WellLog, new JsonObject { ["WellboreID"] = "dev:master-data--Wellbore:C:", ["Source"] = "RECALL" });
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var sources = (await ledger.FindDimensionAsync(flow.LedgerId, "Source"))!;
+        string[] tables = ["DimensionRun", "DimensionMember", "DimensionValue", "DimensionAttribute", "DimensionCollectedText", "DimensionChange", "Dimension"];
+        async Task<long[]> RowsAsync(int dimensionId)
+        {
+            await using var connection = new SqlConnection(_db.ConnectionString);
+            await connection.OpenAsync();
+            var counts = new long[tables.Length];
+            for (var i = 0; i < tables.Length; i++)
+            {
+                await using var command = new SqlCommand($"SELECT COUNT_BIG(*) FROM [osdu].[{tables[i]}] WHERE [DimensionId] = @d", connection);
+                command.Parameters.AddWithValue("@d", dimensionId);
+                counts[i] = (long)(await command.ExecuteScalarAsync())!;
+            }
+
+            return counts;
+        }
+
+        var before = await RowsAsync(wellbores.DimensionId);
+        var others = await RowsAsync(sources.DimensionId);
+        Assert.Equal([2L, 3L, 3L, 4L, 2L, 1L, 1L], before);
+
+        // A cache flow capturing the dimension keeps it: its refresh would read a dimension that is gone.
+        await using (var db = _db.CreateDbContext())
+        {
+            db.DeliveryCacheDefinitions.Add(new DeliveryCacheDefinition
+            {
+                Id = Guid.NewGuid(), RepoId = Guid.NewGuid(), FlowName = "wells-cache", Scope = "dev", Origin = "dimension", SourceObject = $"{flow.Name}/Wellbore",
+                RelativePath = "cache/wells-cache.yaml", Name = "Wellbores", EntityType = "lookup--Wellbores", FirstSeenUtc = DateTime.UtcNow, LastSeenUtc = DateTime.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var captured = await Assert.ThrowsAsync<DeliveryException>(() => DimensionRemoval.RemoveAsync(ledger, wellbores, "user:admin", _clock, CancellationToken.None));
+        Assert.Contains("captured by type Wellbores of cache flow wells-cache in partition dev", captured.Message, StringComparison.Ordinal);
+        Assert.Equal(before, await RowsAsync(wellbores.DimensionId));
+        await using (var db = _db.CreateDbContext())
+        {
+            db.DeliveryCacheDefinitions.RemoveRange(db.DeliveryCacheDefinitions.Where(c => c.FlowName == "wells-cache"));
+            await db.SaveChangesAsync();
+        }
+
+        // Removed: every row of it, and nothing of the other dimension.
+        var removed = await DimensionRemoval.RemoveAsync(ledger, wellbores, "user:admin", _clock, CancellationToken.None);
+        Assert.Equal(
+            (wellbores.DimensionId, "Wellbore", before[1], before[2], before[0], before[5], before[3], before[4]),
+            (removed.DimensionId, removed.Name, removed.Values, removed.Keys, removed.Builds, removed.Changes, removed.Attributes, removed.Texts));
+        Assert.All(await RowsAsync(wellbores.DimensionId), count => Assert.Equal(0L, count));
+        Assert.Equal(others, await RowsAsync(sources.DimensionId));
+        Assert.Null(await ledger.GetDimensionAsync(wellbores.DimensionId));
+
+        // The removal is an activity of the flow, with who removed it and what went; one that finds nothing to remove fails.
+        var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = flow.LedgerId, Kind = DimensionRemoval.ActivityKind }));
+        Assert.Equal(("user:admin", "completed"), (activity.Actor, activity.Outcome));
+        Assert.StartsWith("Removed dimension Wellbore of wells-dimensions in dev: 3 value(s), 3 key(s)", activity.Summary, StringComparison.Ordinal);
+        var twice = await Assert.ThrowsAsync<DeliveryException>(() => DimensionRemoval.RemoveAsync(ledger, wellbores, "user:admin", _clock, CancellationToken.None));
+        Assert.Contains("no longer in the ledger", twice.Message, StringComparison.Ordinal);
+        Assert.Contains(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = flow.LedgerId, Kind = DimensionRemoval.ActivityKind }), a => a.Outcome == "failed");
     }
 
     [Fact]

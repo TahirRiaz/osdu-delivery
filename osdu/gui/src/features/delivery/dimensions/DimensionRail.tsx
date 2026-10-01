@@ -54,11 +54,15 @@ function RailItem({ label, count, selected, dim, lead, onClick, testId, dimensio
  * holds many. Picking a dimension opens it; Every dimension opens the overview of them all, and Build a search the search
  * builder, which picks values across a kind's dimensions.
  */
-export function DimensionRail({ entries, selected, onSelect, className }: {
+export function DimensionRail({ entries, selected, onSelect, retired = 0, showRetired = false, onShowRetired, className }: {
   entries: DimensionEntry[];
   /** The dimension in view, by its link name; null for the overview, and SEARCH_REF for the search builder. */
   selected: string | null;
   onSelect: (ref: string | null) => void;
+  /** How many dimensions their flows no longer declare, which the rail lists only when asked to. */
+  retired?: number;
+  showRetired?: boolean;
+  onShowRetired?: (shown: boolean) => void;
   className?: string;
 }) {
   const [term, setTerm] = useState("");
@@ -138,6 +142,16 @@ export function DimensionRail({ entries, selected, onSelect, className }: {
           </section>
         ))}
         {groups.length === 0 && <p className="px-2 py-3 text-xs text-muted-foreground">No dimension matches the filter.</p>}
+        {retired > 0 && onShowRetired !== undefined && (
+          <button
+            type="button"
+            onClick={() => onShowRetired(!showRetired)}
+            className="mt-2 w-full rounded-md px-2 py-1 text-left text-[12px] text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+            data-testid="dimension-rail-retired"
+          >
+            {showRetired ? "Hide those no longer declared" : `Show ${retired} no longer declared`}
+          </button>
+        )}
       </div>
     </nav>
   );

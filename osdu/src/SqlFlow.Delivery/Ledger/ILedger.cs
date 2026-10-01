@@ -1902,6 +1902,23 @@ public interface ILedger
     Task<IReadOnlyList<DimensionChangeState>> ListDimensionChangesAsync(int dimensionId, DimensionChangeQuery query, CancellationToken ct = default);
 
     /// <summary>
+    /// The types of the cache flows of the dimension's partition that capture it (<c>dimension: &lt;name&gt;,
+    /// dimensionFlow: &lt;flow&gt;</c>), as the last repository sync recorded them; none when no cache flow does, or the
+    /// ledger holds no such dimension.
+    /// </summary>
+    Task<IReadOnlyList<DimensionCaptureState>> DimensionCapturesAsync(int dimensionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes the dimension from its partition for good: every row kept of it (its collected texts, attribute values, change
+    /// log, keys, values and builds) and then the dimension itself, and nothing of any other dimension or partition. Rows go
+    /// a batch at a time under the dimension's write lock, so a build writing it finishes first; the dimension's own row goes
+    /// last, so a removal that stops part way leaves it listed and is finished by removing it again. Null when the ledger
+    /// holds no such dimension. Whether the dimension may go (its flow no longer declares it, no cache flow captures it) is
+    /// the caller's to settle (<see cref="Engine.Dimensions.DimensionRemoval"/>).
+    /// </summary>
+    Task<DimensionRemoved?> RemoveDimensionAsync(int dimensionId, CancellationToken ct = default);
+
+    /// <summary>
     /// The texts a collected attribute's values stand for, as the dimension's last build that settled its field read them:
     /// those shown as one of <paramref name="values"/>, or every one when null; at most <paramref name="limit"/>, by value
     /// then text. The name compares exactly, as the dimension declares it.

@@ -1,5 +1,6 @@
 using System.Buffers.Text;
 using System.Globalization;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
@@ -8,6 +9,8 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.ControlPlane.Api;
+using SqlFlow.ControlPlane.Hosting;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Dimensions;
@@ -71,6 +74,10 @@ public sealed record DeliveryDimensionValueAttributeDto(string Name, string Valu
 
 /// <summary>A value an attribute holds among a dimension's keys: the keys holding it and their records (summed).</summary>
 public sealed record DeliveryDimensionAttributeValueDto(string Value, int Keys, long Records);
+
+/// <summary>What removing a dimension took out of the ledger: the dimension, the rows kept of it in each table, and one line saying so.</summary>
+public sealed record DeliveryDimensionRemovedDto(
+    int DimensionId, string Dimension, string Flow, string? Partition, long Values, long Keys, long Builds, long Changes, long Attributes, long Texts, string Summary);
 
 /// <summary>
 /// One dimension flow in the partition a board is read in: its dimensions, the partitions it builds in and whether the
@@ -244,6 +251,52 @@ public static class DeliveryDimensionEndpoints
         delivery.MapPost("/dimensions/search", SearchAsync).WithName("ComposeDeliveryDimensionSearch");
     }
 
+    /// <summary>The routes that change what the ledger keeps of a dimension: removing one, an admin's alone.</summary>
+    public static void MapWrites(RouteGroupBuilder delivery)
+    {
+        ArgumentNullException.ThrowIfNull(delivery);
+        delivery.MapDelete("/dimensions/{dimensionId:int}", RemoveAsync).WithName("RemoveDeliveryDimension").RequireAuthorization(ControlPlanePolicies.Admin);
+    }
+
+    /// <summary>
+    /// Removes a dimension its flow no longer declares, and everything kept of it in its partition, for good
+    /// (<see cref="DimensionRemoval"/>). A dimension the flow declares is refused, and so is one whose flow cannot be read
+    /// now (whether it still declares the dimension cannot be told), or that a cache flow captures.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryDimensionRemovedDto>, ProblemHttpResult>> RemoveAsync(
+        int dimensionId, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
+    {
+        if (await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension)
+        {
+            return NoDimension(dimensionId);
+        }
+
+        var declaration = await DeclarationAsync(db, documents, dimension, ct).ConfigureAwait(false);
+        if (declaration.Spec is not null)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Still declared",
+                $"Flow {dimension.FlowName} declares dimension {dimension.Name}, so it is not removed. Take it out of the flow's YAML and sync the repository first.");
+        }
+
+        if (declaration.Unreadable is { } unreadable)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Flow not readable",
+                $"Flow {dimension.FlowName} ({unreadable}) cannot be read now, so whether it still declares dimension {dimension.Name} cannot be told; nothing is removed. Fix the flow and sync the repository first.");
+        }
+
+        try
+        {
+            var removed = await DimensionRemoval.RemoveAsync(ledger, dimension, RequestActor.Label(user), clock, ct).ConfigureAwait(false);
+            return TypedResults.Ok(new DeliveryDimensionRemovedDto(
+                removed.DimensionId, removed.Name, removed.FlowName, removed.Partition, removed.Values, removed.Keys, removed.Builds, removed.Changes,
+                removed.Attributes, removed.Texts, removed.Describe()));
+        }
+        catch (DeliveryException ex)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Not removed", ex.Message);
+        }
+    }
+
     /// <summary>Every active dimension flow of the catalog, each in the partition the request reads.</summary>
     private static async Task<Ok<DeliveryDimensionBoardDto>> GetBoardAsync(
         string? partition, HttpRequest request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger, IPartitionRegistry registry,
@@ -289,7 +342,7 @@ public static class DeliveryDimensionEndpoints
             return NoDimension(dimensionId);
         }
 
-        var (pipeline, flow, spec) = await DeclarationAsync(db, documents, dimension, ct).ConfigureAwait(false);
+        var (pipeline, flow, spec, _) = await DeclarationAsync(db, documents, dimension, ct).ConfigureAwait(false);
         var builds = await BuildsAsync(ledger, [dimension], ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliveryDimensionDetailDto(
             pipeline?.Id, pipeline?.RepoId, dimension.FlowName, dimension.FlowId, dimension.Partition, flow is null ? [] : Parameters(flow),
@@ -741,9 +794,10 @@ public static class DeliveryDimensionEndpoints
 
     /// <summary>
     /// The pipeline declaring <paramref name="dimension"/> (the active one first), the flow bound to the dimension's partition,
-    /// and its declaration of the dimension; nulls for what the catalog no longer holds.
+    /// and its declaration of the dimension; nulls for what the catalog no longer holds. When none of the flow's pipelines
+    /// declares it, <c>Unreadable</c> names the file of one whose YAML could not be read, which may yet declare it.
     /// </summary>
-    private static async Task<(CatalogPipeline? Pipeline, DimensionFlowDefinition? Flow, DimensionSpec? Spec)> DeclarationAsync(
+    private static async Task<(CatalogPipeline? Pipeline, DimensionFlowDefinition? Flow, DimensionSpec? Spec, string? Unreadable)> DeclarationAsync(
         CatalogDbContext db, DeliveryDocumentLoader documents, DimensionState dimension, CancellationToken ct)
     {
         var pipelines = await db.Pipelines.AsNoTracking()
@@ -751,6 +805,7 @@ public static class DeliveryDimensionEndpoints
             .OrderByDescending(p => p.Active)
             .Take(20)
             .ToListAsync(ct).ConfigureAwait(false);
+        string? unreadable = null;
         foreach (var pipeline in pipelines)
         {
             DimensionFlowDefinition flow;
@@ -764,6 +819,7 @@ public static class DeliveryDimensionEndpoints
             }
             catch (Exception ex) when (ex is FlowValidationException or DeliveryException)
             {
+                unreadable ??= pipeline.RelativePath;
                 continue;
             }
 
@@ -773,10 +829,10 @@ public static class DeliveryDimensionEndpoints
                 continue;
             }
 
-            return (pipeline, flow, flow.Dimension(dimension.Name));
+            return (pipeline, flow, flow.Dimension(dimension.Name), null);
         }
 
-        return (pipelines.FirstOrDefault(p => p.Active), null, null);
+        return (pipelines.FirstOrDefault(p => p.Active), null, null, unreadable);
     }
 
     private static List<DeliveryDimensionDto> Dimensions(DimensionFlowDefinition flow, string? partition, IReadOnlyList<DimensionState> held, BuildIndex builds)

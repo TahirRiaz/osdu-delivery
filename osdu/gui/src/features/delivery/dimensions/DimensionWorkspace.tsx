@@ -16,6 +16,7 @@ import type { DimensionLaunch } from "./DimensionBuildDialog";
 import { DimensionDefinition } from "./DimensionDefinition";
 import { DimensionBuilds, DimensionChanges } from "./DimensionHistory";
 import { DimensionKeys } from "./DimensionKeys";
+import { DimensionRemoveButton } from "./DimensionRemoveButton";
 import { DimensionValueSheet } from "./DimensionValueSheet";
 import { DimensionValues } from "./DimensionValues";
 import { DIMENSION_VIEWS, STANDING_VISUALS, coverage, fieldText, percent, type DimensionEntry, type DimensionView } from "./dimensionFormat";
@@ -47,7 +48,7 @@ function ViewName({ view, children }: { view: DimensionView; children: ReactNode
 }
 
 /** What the dimension's newest build or its declaration asks of the reader, when anything does. */
-function Attention({ entry, onBuild }: { entry: DimensionEntry; onBuild: () => void }) {
+function Attention({ entry, onBuild, onRemoved }: { entry: DimensionEntry; onBuild: () => void; onRemoved?: () => void }) {
   const { dimension } = entry;
   const latest = dimension.latest;
   if (latest?.status === "failed") {
@@ -100,7 +101,10 @@ function Attention({ entry, onBuild }: { entry: DimensionEntry; onBuild: () => v
       <Alert data-testid="dimension-undeclared">
         <Info />
         <AlertTitle>{STANDING_VISUALS.undeclared.label}</AlertTitle>
-        <AlertDescription>{STANDING_VISUALS.undeclared.hint}</AlertDescription>
+        <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>{STANDING_VISUALS.undeclared.hint}</span>
+          <DimensionRemoveButton dimension={dimension} flowName={entry.flow.name} onRemoved={onRemoved} />
+        </AlertDescription>
       </Alert>
     );
   }
@@ -114,7 +118,7 @@ function Attention({ entry, onBuild }: { entry: DimensionEntry; onBuild: () => v
  * how complete the keys are, what cleaning left out, when it was built); and its five tabs. The tab and the value open in a
  * sheet live in the URL, so a link lands on the same view.
  */
-export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaunch }: {
+export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaunch, onRemoved }: {
   entry: DimensionEntry;
   view: DimensionView;
   onView: (view: DimensionView) => void;
@@ -122,6 +126,8 @@ export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaun
   value: number | null;
   onValue: (valueId: number | null) => void;
   onLaunch: (launch: DimensionLaunch) => void;
+  /** Called once an admin removed the dimension, which its flow no longer declares. */
+  onRemoved?: () => void;
 }) {
   const { dimension, flow } = entry;
   const current = dimension.current;
@@ -217,7 +223,7 @@ export function DimensionWorkspace({ entry, view, onView, value, onValue, onLaun
         </div>
       </div>
 
-      <Attention entry={entry} onBuild={build} />
+      <Attention entry={entry} onBuild={build} onRemoved={onRemoved} />
 
       {dimension.dimensionId === null
         ? (

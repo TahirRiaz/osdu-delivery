@@ -102,6 +102,9 @@ export default function DeliveryDimensionsPage() {
     refetchInterval: REFRESH_MS,
   });
   const entries = useMemo(() => dimensionEntries(board.data), [board.data]);
+  const [showRetired, setShowRetired] = useState(false);
+  const retired = entries.filter((entry) => entry.standing === "undeclared").length;
+  const shown = showRetired ? entries : entries.filter((entry) => entry.standing !== "undeclared");
   const selectedRef = params.get("d");
   const building = selectedRef === SEARCH_REF;
   const selected = selectedRef === null || building ? null : entries.find((entry) => entry.ref === selectedRef) ?? null;
@@ -127,7 +130,7 @@ export default function DeliveryDimensionsPage() {
   const firstNeedingLook = entries.find((entry) => entry.standing === "failed" || entry.standing === "changed") ?? null;
   const options: FilterOption[] = [
     { value: SEARCH_REF, label: "Build a search", hint: "pick values across a kind's dimensions" },
-    ...entries.map((entry) => ({
+    ...shown.map((entry) => ({
       value: entry.ref,
       label: entry.dimension.name,
       hint: `${entry.flow.name} · ${STANDING_VISUALS[entry.standing].label.toLowerCase()} · ${counted(entry.dimension.values, "value")}`,
@@ -171,9 +174,12 @@ export default function DeliveryDimensionsPage() {
                 />
                 <div className="grid items-start gap-4 lg:grid-cols-[16rem_minmax(0,1fr)]">
                   <DimensionRail
-                    entries={entries}
+                    entries={shown}
                     selected={building ? SEARCH_REF : selected?.ref ?? null}
                     onSelect={open}
+                    retired={retired}
+                    showRetired={showRetired}
+                    onShowRetired={setShowRetired}
                     className="hidden lg:sticky lg:top-0 lg:flex lg:max-h-[calc(100dvh-14rem)]"
                   />
                   <div className="flex min-w-0 flex-col gap-3">
@@ -217,7 +223,7 @@ export default function DeliveryDimensionsPage() {
                             />
                           </Card>
                         )
-                        : <DimensionOverview entries={entries} flows={board.data.flows} onOpen={open} onLaunch={setLaunch} />
+                        : <DimensionOverview entries={shown} flows={board.data.flows} onOpen={open} onLaunch={setLaunch} />
                       : (
                         <DimensionWorkspace
                           key={selected.ref}
@@ -227,6 +233,7 @@ export default function DeliveryDimensionsPage() {
                           value={value}
                           onValue={(valueId) => update({ value: valueId === null ? null : String(valueId) })}
                           onLaunch={setLaunch}
+                          onRemoved={() => open(null)}
                         />
                       )}
                   </div>

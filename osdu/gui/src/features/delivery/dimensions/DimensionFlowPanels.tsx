@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, CircleAlert, Play } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronRight, CircleAlert, Play } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,6 +13,7 @@ import { useActivePartition } from "../activePartition";
 import { ProblemView } from "../TemplateSheet";
 import { StandingGlyph } from "./DimensionBadges";
 import { DimensionBuildDialog, type DimensionLaunch } from "./DimensionBuildDialog";
+import { DimensionRemoveButton } from "./DimensionRemoveButton";
 import { STANDING_VISUALS, dimensionRef, standingOf, type DimensionEntry } from "./dimensionFormat";
 
 /** How often the tab reads the ledger again, so a build under way shows its outcome as it lands. */
@@ -20,11 +21,13 @@ const REFRESH_MS = 15000;
 
 /**
  * A dimension flow's Dimensions tab: each dimension it declares in the workbench's partition, where it stands, what it
- * reads, what it holds and when it was built, with a way to build it and to open it on the Dimensions page.
+ * reads, what it holds and when it was built, with a way to build it and to open it on the Dimensions page. The dimensions
+ * it no longer declares, which keep what their last build wrote, wait behind a toggle, where an admin can remove them.
  */
 export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
   const [active] = useActivePartition();
   const [launch, setLaunch] = useState<DimensionLaunch | null>(null);
+  const [showRetired, setShowRetired] = useState(false);
   const board = useQuery({
     queryKey: ["delivery", "dimensions", "flow", pipelineId, active],
     queryFn: () => deliveryApi.dimensionFlowBoard(pipelineId),
@@ -35,6 +38,8 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
     () => (flow === undefined ? [] : flow.dimensions.map((dimension) => ({ flow, dimension, ref: dimensionRef(flow, dimension), standing: standingOf(dimension) }))),
     [flow],
   );
+  const declared = entries.filter((entry) => entry.standing !== "undeclared");
+  const retired = entries.filter((entry) => entry.standing === "undeclared");
 
   if (board.isError) {
     return <ProblemView error={board.error} testId="dimension-panel-error" />;
@@ -79,6 +84,7 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
               Build
             </Button>
           )}
+          <DimensionRemoveButton dimension={row.dimension} flowName={flow.name} />
           <Button asChild variant="ghost" size="xs" data-testid={`dimension-panel-open-${row.dimension.name}`}>
             <Link to={`/delivery/dimensions?d=${encodeURIComponent(row.ref)}`}>
               Open
@@ -111,11 +117,35 @@ export function DimensionsPanel({ pipelineId }: { pipelineId: string }) {
       </div>
       <DataTable
         columns={columns}
-        rows={entries}
+        rows={declared}
         rowKey={(row) => row.ref}
         emptyMessage="The flow declares no dimension."
         data-testid="dimension-panel-table"
       />
+      {retired.length > 0 && (
+        <div className="flex flex-col gap-2" data-testid="dimension-panel-retired">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="self-start text-muted-foreground"
+            onClick={() => setShowRetired((shown) => !shown)}
+            aria-expanded={showRetired}
+            data-testid="dimension-panel-retired-toggle"
+          >
+            {showRetired ? <ChevronDown /> : <ChevronRight />}
+            No longer declared ({retired.length})
+          </Button>
+          {showRetired && (
+            <DataTable
+              columns={columns}
+              rows={retired}
+              rowKey={(row) => row.ref}
+              emptyMessage="Every dimension built here is declared."
+              data-testid="dimension-panel-retired-table"
+            />
+          )}
+        </div>
+      )}
       <DimensionBuildDialog launch={launch} onClose={() => setLaunch(null)} />
     </div>
   );

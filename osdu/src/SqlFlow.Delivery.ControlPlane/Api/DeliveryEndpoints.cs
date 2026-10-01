@@ -491,6 +491,7 @@ public static class DeliveryEndpoints
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove/preview", PreviewRemovalAsync).WithName("PreviewDeliveryRemoval");
         delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization(ControlPlanePolicies.Admin);
+        DeliveryDimensionEndpoints.MapWrites(delivery);
         return group;
     }
 

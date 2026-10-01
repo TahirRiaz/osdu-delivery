@@ -222,6 +222,82 @@ internal static class SqlServerDimensionStore
             @membersAdded, @membersRemoved, @membersRestored, @members, @originals, @attributesChanged;
         """;
 
+    // A dimension's rows, table by table, a batch at a time, each batch its own statement so no one transaction holds millions
+    // of rows; under the dimension's write lock, held by the session, so a build's write waits or comes first. The dimension's
+    // own row goes last: a removal that stops part way leaves it listed, and removing it again finishes the work.
+    private const string RemoveSql = """
+        SET NOCOUNT ON;
+        DECLARE @granted int;
+        EXEC @granted = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Session', @LockTimeout = @timeout;
+        IF @granted < 0
+        BEGIN
+            SELECT CAST(@granted AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint);
+            RETURN;
+        END;
+
+        BEGIN TRY
+            DECLARE @n bigint, @texts bigint = 0, @attributes bigint = 0, @changes bigint = 0, @keys bigint = 0, @values bigint = 0, @builds bigint = 0;
+            WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionCollectedText] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @texts += @n; IF @n < @batch BREAK; END;
+            WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionAttribute] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @attributes += @n; IF @n < @batch BREAK; END;
+            WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionChange] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @changes += @n; IF @n < @batch BREAK; END;
+            WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionValue] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @keys += @n; IF @n < @batch BREAK; END;
+            WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionMember] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @values += @n; IF @n < @batch BREAK; END;
+            WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionRun] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @builds += @n; IF @n < @batch BREAK; END;
+            DELETE FROM [osdu].[Dimension] WHERE [PartitionId] = @p AND [DimensionId] = @d;
+            SET @n = @@ROWCOUNT;
+            EXEC sys.sp_releaseapplock @Resource = @resource, @LockOwner = N'Session';
+            SELECT @n, @values, @keys, @builds, @changes, @attributes, @texts;
+        END TRY
+        BEGIN CATCH
+            EXEC sys.sp_releaseapplock @Resource = @resource, @LockOwner = N'Session';
+            THROW;
+        END CATCH;
+        """;
+
+    /// <summary>The rows a removal took from each table.</summary>
+    public sealed record Removed(long Values, long Keys, long Builds, long Changes, long Attributes, long Texts);
+
+    /// <summary>The most rows one statement of a removal deletes.</summary>
+    private const int RemoveBatch = 20_000;
+
+    /// <summary>
+    /// Removes every row of dimension <paramref name="dimensionId"/> in partition <paramref name="partitionId"/> and then the
+    /// dimension (<see cref="ILedger.RemoveDimensionAsync"/>).
+    /// </summary>
+    /// <exception cref="DeliveryException">Another write of the dimension held its lock past the timeout.</exception>
+    public static async Task<Removed> RemoveAsync(OsduDbContext db, short partitionId, int dimensionId, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            await using var command = new SqlCommand(RemoveSql, connection) { CommandTimeout = CommandTimeoutSeconds };
+            command.Parameters.Add(new SqlParameter("@p", SqlDbType.SmallInt) { Value = partitionId });
+            command.Parameters.Add(new SqlParameter("@d", SqlDbType.Int) { Value = dimensionId });
+            command.Parameters.Add(new SqlParameter("@batch", SqlDbType.Int) { Value = RemoveBatch });
+            command.Parameters.Add(new SqlParameter("@resource", SqlDbType.NVarChar, 255) { Value = string.Create(CultureInfo.InvariantCulture, $"osdu-dimension:{partitionId}:{dimensionId}") });
+            command.Parameters.Add(new SqlParameter("@timeout", SqlDbType.Int) { Value = LockTimeoutMs });
+            await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            if (!await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                throw new DeliveryException(string.Create(CultureInfo.InvariantCulture, $"Removing dimension {dimensionId} returned no counts."));
+            }
+
+            if (reader.GetInt64(0) < 0)
+            {
+                throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
+                    $"A build of dimension {dimensionId} held its write lock for more than {LockTimeoutMs / 1000} seconds (sp_getapplock answered {reader.GetInt64(0)}), so nothing was removed. Remove it again when the build has finished."));
+            }
+
+            return new Removed(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6));
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
     /// <summary>What a write changed, and what the dimension holds after it: the attributes it added, rewrote or dropped among them.</summary>
     public sealed record Written(DimensionChangeCounts Changes, long Members, long Originals, long AttributesChanged);
 

@@ -20,7 +20,8 @@ namespace SqlFlow.Delivery.Cli;
 /// change log, and <c>export</c> writes the whole as CSV or JSON Lines; the filter, the search and the export are written by
 /// the same code as the API's; <c>attributes</c> lists the values an attribute of a dimension's keys holds (among the keys
 /// the other picks leave, for a cascade of selects), <c>--attr</c> narrows values and keys by them, and <c>export --set
-/// table</c> writes the table a cascade of selects is read from. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
+/// table</c> writes the table a cascade of selects is read from; <c>remove</c> removes a dimension the flow no longer
+/// declares, and everything kept of it, for good. Building is a run like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"dimensions":["name"]}'</c>.
 /// </summary>
 internal static class DeliveryDimensionVerbs
 {
@@ -55,9 +56,14 @@ internal static class DeliveryDimensionVerbs
             return await SearchAsync(context, ledger, flow, ct).ConfigureAwait(false);
         }
 
+        if (verb == "remove")
+        {
+            return await RemoveAsync(context, ledger, flow, engine.Time, ct).ConfigureAwait(false);
+        }
+
         if (verb is not ("values" or "keys" or "attributes" or "filter" or "history" or "changes" or "export"))
         {
-            return context.UsageError("say what to show: list, values, keys, attributes, filter, search, history, changes or export.");
+            return context.UsageError("say what to do: list, values, keys, attributes, filter, search, history, changes, export or remove.");
         }
 
         var dimension = await DimensionAsync(context, ledger, flow, ct).ConfigureAwait(false);
@@ -71,6 +77,52 @@ internal static class DeliveryDimensionVerbs
             "changes" => await ChangesAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             _ => await ExportAsync(context, ledger, dimension, ct).ConfigureAwait(false),
         };
+    }
+
+    /// <summary>
+    /// Removes the dimension --dimension names, which the flow file no longer declares, and everything kept of it in the
+    /// flow's partition, for good (<see cref="DimensionRemoval"/>): one the file declares is refused, and so is one a cache
+    /// flow captures. The removal is an activity of the flow, recorded under the operating system user who ran it.
+    /// </summary>
+    private static async Task<int> RemoveAsync(CliVerbContext context, ILedger ledger, DimensionFlowDefinition flow, TimeProvider clock, CancellationToken ct)
+    {
+        if (context.Arguments.GetOption("--dimension") is not { } asked || string.IsNullOrWhiteSpace(asked))
+        {
+            return context.UsageError("name the dimension to remove with --dimension <name>: one the flow no longer declares.");
+        }
+
+        var name = asked.Trim();
+        if (flow.Dimension(name) is { } declared)
+        {
+            throw new FlowValidationException(
+                $"{flow.Name} declares dimension {declared.Name}, so it is not removed. Take it out of the flow's file first: only a dimension the flow no longer declares is removed.");
+        }
+
+        var held = await ledger.ListDimensionsAsync(null, flow.LedgerId, ct).ConfigureAwait(false);
+        var dimension = held.FirstOrDefault(d => string.Equals(d.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new FlowValidationException(
+                $"{flow.LedgerName} holds no dimension named '{name}'{(held.Count == 0 ? string.Empty : $"; it holds {string.Join(", ", held.Select(d => d.Name).Order(StringComparer.Ordinal))}")}.");
+        var removed = await DimensionRemoval.RemoveAsync(ledger, dimension, $"cli:{Environment.UserName}", clock, ct).ConfigureAwait(false);
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["dimensionId"] = removed.DimensionId,
+                ["dimension"] = removed.Name,
+                ["flow"] = removed.FlowName,
+                ["partition"] = removed.Partition,
+                ["values"] = removed.Values,
+                ["keys"] = removed.Keys,
+                ["builds"] = removed.Builds,
+                ["changes"] = removed.Changes,
+                ["attributes"] = removed.Attributes,
+                ["texts"] = removed.Texts,
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine(removed.Describe());
+        return 0;
     }
 
     /// <summary>Each dimension the flow declares in its partition, with what it holds and its newest build.</summary>

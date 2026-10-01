@@ -239,6 +239,10 @@ public sealed class DeliveryCliModule : ICliModule
                 "sqlflow dimensions changes <flow.yaml> --dimension <name> [--build <n>] [--value <value>] [--change added|removed|moved|restored] [--max <n>]",
                 "                                   The change log, newest first: keys that arrived, left, came back or",
                 "                                   moved to another value (needs --db)",
+                "sqlflow dimensions remove <flow.yaml> --dimension <name>",
+                "                                   Removes a dimension the flow no longer declares, and everything kept of",
+                "                                   it in the partition, for good: refused for one the flow declares or a",
+                "                                   cache flow captures; recorded as an activity of the flow (needs --db)",
                 "sqlflow dimensions export <flow.yaml> --dimension <name> [--set values|keys|table] [--format csv|jsonl] [--out <file>]",
                 "                                   The whole of a dimension's values or keys, each with its search filter,",
                 "                                   or its table: a row per key and value it collects, a column per",
@@ -247,7 +251,7 @@ public sealed class DeliveryCliModule : ICliModule
             ],
             DeliveryDimensionVerbs.DimensionsAsync)
         {
-            Subcommands = ["list", "values", "keys", "attributes", "filter", "search", "history", "changes", "export"],
+            Subcommands = ["list", "values", "keys", "attributes", "filter", "search", "history", "changes", "export", "remove"],
             ValueOptions = ["--partition", "--dimension", "--search", "--order", "--value", "--pick", "--where", "--attr", "--attribute", "--kind", "--within", "--max", "--build", "--change", "--set", "--format", "--out"],
             Flags = ["--removed", "--left-out"],
         },

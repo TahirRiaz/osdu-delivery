@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>What a dimension build comes to.</summary>
@@ -289,6 +291,21 @@ public sealed record DimensionAttributeValueQuery(
 /// matches are all to hold, by the same key.
 /// </summary>
 public sealed record DimensionAttributeMatch(string Name, IReadOnlyList<string> Values);
+
+/// <summary>
+/// A type of a cache flow that captures a dimension (<c>dimension: &lt;name&gt;, dimensionFlow: &lt;flow&gt;</c>) in the
+/// dimension's partition, as the last repository sync recorded it.
+/// </summary>
+public sealed record DimensionCaptureState(string CacheFlow, string Type, string Partition);
+
+/// <summary>What removing a dimension took out of the ledger: the dimension, and the rows kept of it in each table.</summary>
+public sealed record DimensionRemoved(
+    int DimensionId, string Name, string FlowName, string? Partition, long Values, long Keys, long Builds, long Changes, long Attributes, long Texts)
+{
+    /// <summary>One line saying what went, for the audit trail and a terminal.</summary>
+    public string Describe() => string.Create(CultureInfo.InvariantCulture,
+        $"Removed dimension {Name} of {FlowName}{(Partition is null ? string.Empty : $" in {Partition}")}: {Values} value(s), {Keys} key(s), {Attributes} attribute value(s), {Texts} collected text(s), {Changes} change(s) and {Builds} build(s).");
+}
 
 /// <summary>One member as a build made it: its clean value, its count, and its filter.</summary>
 public sealed record DimensionMemberWrite(string Value, long Records, bool RecordsExact, int Originals, int Unfilterable, string? Filter, int FilterParts);
