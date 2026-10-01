@@ -1370,13 +1370,21 @@ read, or one their kind patterns cover), and the query holds at most 1,000 claus
 service allows 1,024). A key no query can carry (a text over 256 characters, a value the query language cannot state
 exactly) is left out and said to be.
 
-A dimension's table is what a set of cascading selects reads: a row per key and value it collects (one row for a key of
-a dimension collecting nothing), with the key, its value, a column per attribute named as declared, and the records of
-the row (those holding the collected value, or every record of the key). A select lists the distinct values of its
-column among the rows the other selects leave. `sqlflow dimensions export --set table` and the API's
-`export?set=table` write it as CSV or JSON Lines; the API's `attributes/<name>?attr=Country:Norway&value=<id>` and
-`sqlflow dimensions attributes --attr Country=Norway --value <value>` answer one select's list from the ledger, among the
-keys the other picks leave, a pick of the attribute itself aside.
+A dimension is one table in the module's database, `osdu.dim_<flow>_<dimension>`
+(`osdu.dim_recall_welllog_05_dimensions_Wellbore`), which a build makes and keeps with no line of the document asking
+for it ([dimension-plan.md](dimension-plan.md), The table). It has a row per key and value it collects (one row for a
+key of a dimension collecting nothing): `id`, an identity and the number a table of facts joins on; `partition`;
+`key_id`, the key's number; `key`; `value`; `records` (those holding the collected value, or every record of the key);
+`filter`; and a column per attribute, named as declared. Its schema follows the document: an attribute added to
+`attributes` gets its column on the next run, through SQLFlow's schema evolution, with no migration; nothing is dropped,
+and an attribute taken out keeps its column, emptied. So an attribute cannot be named after one of the table's own
+columns (`id`, `partition`, `key_id`, `key`, `value`, `records`, `filter`), nor `keys` or `label`, and two dimensions of
+a flow cannot have names that differ only in characters a table's name leaves out (`Well.Type` and `Well-Type`). A
+select of a cascade lists the distinct values of its column among the rows the other selects leave.
+`sqlflow dimensions table` and the API's `table` read a page of it, searched, narrowed and ordered;
+`sqlflow dimensions export --set table` and the API's `export?set=table` write it whole as CSV or JSON Lines; the API's
+`attributes/<name>?attr=Country:Norway&value=<id>` and `sqlflow dimensions attributes --attr Country=Norway --value <value>`
+answer one select's list from the ledger, among the keys the other picks leave, a pick of the attribute itself aside.
 
 The operations are `build` (the default) and `plan` (settle each dimension's field and count the records it would read,
 reading no value and keeping nothing). The payload takes `dimensions` (names); a run with none builds every one. A build

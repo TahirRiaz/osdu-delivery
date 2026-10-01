@@ -18,7 +18,7 @@ names they were built with; everything a person reads (the API, the CLI, the GUI
 value and key.
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 11 are built; the recall estate
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 12 are built; the recall estate
 (`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose one dimension,
 Wellbore, carries the filters of PetroDB's Log Explorer (country, field, UUID, and the sources its logs collect) as its
 attributes, the table its cascading selects read. The live check listed under Close-out has not been run.
@@ -174,7 +174,7 @@ values its keys hold with their keys and records (a drop-down's list), a search 
 part compares exactly those keys, at most 1,000), and a cached dimension carries those its `fields` name, so a mapping
 finds a key's attribute from the cache. With `unlabelled`, a key with no value of an attribute holds that value instead.
 
-## Collected attributes and the table
+## Collected attributes
 
 An attribute can be collected from the dimension's own records rather than read from the record a key names:
 `Source: { collect: data.Source }` on a dimension keyed by the logs' `data.WellboreID` gives each wellbore the source of
@@ -201,12 +201,68 @@ A dimension collects one attribute: two would pair values no record holds togeth
 type), and its table would offer combinations a search then finds nothing for. The document refuses a second one,
 naming the first.
 
-The table is the dimension as cascading selects read it: a row per key and collected value, with the key, its value, a
-column per attribute and the records of the row, keys under no value left out. Each select lists the distinct values of
-its column among the rows the other selects leave; the API and the CLI answer one select's list from the ledger
-(`attributes/<name>?attr=...&value=...`, `sqlflow dimensions attributes --attr ... --value ...`), among the keys holding
-every other attribute value picked and belonging to the values picked, a pick of the attribute itself aside. A list
-counts keys exactly; its records are those of the keys holding each value (for a collected value, of its records).
+## The table
+
+A dimension is one table in the database: `osdu.dim_<flow>_<dimension>`, the flow's and the dimension's names with
+whatever is not a letter, a digit or an underscore made an underscore (`osdu.dim_recall_welllog_05_dimensions_Wellbore`).
+It is the dimension as a report, a query or a cascade of selects reads it, and what a table of facts joins on. A build
+makes it and keeps it; nothing has to be declared for it.
+
+| Column | Holds |
+| --- | --- |
+| `id` | The row's number: an identity, the table's clustered primary key, and what a table of facts joins on. It stays the same for as long as the dimension holds the row. |
+| `partition` | The data partition the row was read in. A flow that builds in several partitions writes them all to this one table. |
+| `key_id` | The key's number (`DimensionValue.ValueId`): the same in every row of the key. |
+| `key` | The key exactly as the index holds it. |
+| `value` | The key's value. |
+| `records` | The records of the row: those holding the value the row collects, or every record of the key. |
+| `filter` | The search filter finding the key's records; null when no query can carry the key. |
+| one per attribute | The attribute's value for the row, under the name the dimension declares; null where the key has none. |
+
+A row is a key and the value it collects: a dimension that collects an attribute has a row for each value a key holds,
+any other a row a key. A key under no value (left out by cleaning), and a key no build finds any more, is no row.
+
+**The schema follows the declaration.** SQLFlow's schema evolution, the same that widens an ingestion table
+(`SchemaSyncService`: it reads the table as it is, plans the difference, and applies it), brings the table to the
+columns the declaration asks for before each write: a first build creates the table with its identity key, and an
+attribute the flow starts to declare gets its column on the next build, with no migration and nothing done by hand.
+Nothing is ever dropped or narrowed. An attribute the flow stops declaring keeps its column, emptied by the next
+build, so a query that names it still runs; a column somebody added to the table is theirs, and is left as it is. A
+table changed by hand into something a build cannot write (its `id` no longer a number, say) fails the build, saying so.
+
+**The rows are written with the dimension.** The build lays the dimension out from what it has just kept (each
+attribute read from a key's record once a key, the collected attribute once a value) and writes what differs from the
+rows the table holds, in the transaction that writes everything else: a row that left is deleted, one that changed
+rewritten where it is, a new one added. A build that found the same thing writes no row, and a row keeps its `id`. When
+the attribute that makes the rows changes (the collected one is added, taken out or replaced), no row can be matched to
+what it was, and the partition's rows are written again under new numbers.
+
+**It is read through two indexes** the build makes with it: `IX_key` (`partition`, `key_id`), which the build matches
+its rows by and a join on a key seeks; and `IX_value` (`partition`, `value`, `id`), which a page in value order is read
+from and a count counts. A page is found before it is read: the numbers of its rows are ordered first (a number and the
+column ordered by, never a key or a filter), then those rows are read by number. Text is found anywhere in the key, the
+value or an attribute, case-folded and compared exactly, and an attribute's value is matched exactly; either reads the
+partition's rows once, for the count and the page together. Measured on a dimension of 200,000 keys collecting two
+values a key (400,000 rows, beside two other dimensions of the same size) on a developer's SQL Server: a first page in
+value order 49 ms, a page 100,000 rows in 70 ms, an attribute's value 44 to 114 ms, text found anywhere 0.4 s, a page
+ordered by another column 0.45 to 1 s. A build that found nothing new checks the 400,000 rows in about 3 s; the first
+build writes them in about 9 s.
+
+**Who reads it.** The page's **Table** tab, the API's `GET /dimensions/{id}/table`, `sqlflow dimensions table`, the
+`table` export, and any SQL client, all the same rows. A dimension built before dimensions had tables, or whose table
+was dropped by hand, has it made with its rows by whoever next reads it. The table is no table of the module's model:
+no migration creates or changes it, `Dimension.TableName` names it, and the migration that added that column drops the
+tables builds made when it is taken back.
+
+Two dimensions cannot write one table. A flow whose two dimensions' names differ only in characters a table's name
+leaves out (`Well.Type` and `Well-Type`) is refused where it is read; a dimension of another flow whose table has the
+same name, or a second ledger's copy of the same dimension in the same partition, fails its build, naming the other.
+
+Each select of a cascade lists the distinct values of its column among the rows the other selects leave. The API and the
+CLI also answer one select's list from the ledger (`attributes/<name>?attr=...&value=...`,
+`sqlflow dimensions attributes --attr ... --value ...`), among the keys holding every other attribute value picked and
+belonging to the values picked, a pick of the attribute itself aside. A list counts keys exactly; its records are those
+of the keys holding each value (for a collected value, of its records).
 
 ## Removing a dimension
 
@@ -220,10 +276,11 @@ any more, an admin removes it for good (`DELETE /dimensions/{dimensionId}`, the 
   now; one whose flow cannot be read now is refused, since whether it still declares the dimension cannot be told.
 - Not one a cache flow of its partition captures (`dimension:` in a cache type): its refresh would read a dimension that
   is gone. The refusal names the cache flow and the type.
-- Everything of it in its partition and nothing else: its collected texts, attribute values, change log, keys, values,
-  builds and then its own row, each table a batch of 20,000 at a time under the dimension's write lock, so a build
-  writing it finishes first; its own row goes last, so a removal that stops part way leaves it listed and removing it
-  again finishes the work.
+- Everything of it in its partition and nothing else: its rows in its own table, its collected texts, attribute values,
+  change log, keys, values, builds, the numbers of its attributes and then its own row, each a batch of 20,000 at a
+  time under the dimension's write lock, so a build writing it finishes first; its own row goes last, so a removal that
+  stops part way leaves it listed and removing it again finishes the work. Its table is dropped when no partition is
+  left writing it.
 - Recorded as a `remove-dimension` activity of its flow, before anything is deleted, with the actor (`user:<name>` from
   the API, `cli:<user>` from a workstation) and, as it ends, what went or why it failed.
 
@@ -259,20 +316,26 @@ takes, each dimension's part (the values it holds now, the keys compared, its fi
 
 ## Tables
 
-All in the `osdu` schema, keyed by the ledger partition first, under a ledger of kind `dimension` per flow and partition.
+All in the `osdu` schema, under a ledger of kind `dimension` per flow and partition. Each is keyed by the ledger
+partition's number and an identity of its own, which is what the other tables name its rows by: every join between them
+is on numbers, never on a text.
 
 | Table | One row per | Holds |
 | --- | --- | --- |
-| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the attributes, the field asked, the field each collected attribute is read from, the clean steps, the definition hash, current value and key counts, the last build. |
+| `Dimension` | flow, partition and dimension name | The declaration as last built: kind, query, path, the label's paths, the attributes, the field asked, the field each collected attribute is read from, the clean steps, the definition hash, current value and key counts, the last build, and the name of its own table. |
 | `DimensionRun` | dimension and build | Status, counts (records, values, keys, added, removed, moved, left out, unfilterable, too long, null, labelled, unlabelled), requests (label searches among them), slices, scanned records, templates used, notes. |
 | `DimensionMember` | value | Stable id, the value, count and whether it is exact, keys, filter and parts, first and last seen, removed. |
 | `DimensionValue` | key | Stable id, the key, its label and the record it came from, its value or why it has none, count, filterable, its filter, first and last seen, removed, the build it joined its value. |
-| `DimensionAttribute` | key, attribute and value | The value, where it was read (the record, or a collected attribute's text), and for a collected value how many of the key's records hold it. |
-| `DimensionCollectedText` | collected attribute and text | The text exactly as the index holds it, the value it is shown as, and the records holding it. |
+| `DimensionAttributeName` | attribute of a dimension | The attribute's number, its name as declared, whether it is collected, and its place among the attributes the dimension declares now (none once it is no longer declared). |
+| `DimensionAttribute` | key, attribute and value | The attribute by its number, the value, where it was read (the record, or a collected attribute's text), and for a collected value how many of the key's records hold it. |
+| `DimensionCollectedText` | collected attribute and text | The attribute by its number, the text exactly as the index holds it, the value it is shown as, and the records holding it. |
 | `DimensionChange` | key that moved, left, came back or arrived after the first build | The build, the key, from and to value. |
+| `dim_<flow>_<dimension>` | key and value it collects | The dimension as one table (The table, above): made and widened by builds, not by migrations. |
 
 A build writes in one transaction: its values are copied into temporary tables, and set-based statements add, update and
-mark removed; an application lock per dimension keeps two builds of it from interleaving. A failed build writes nothing
+mark removed, give each attribute its number, and bring the dimension's own table to what was kept; an application lock
+per dimension keeps two builds of it from interleaving. Only the table's schema is settled before the transaction: a
+table made or a column added stays when the write does not, empty, and the next write finds it there. A failed build writes nothing
 but its run row. Nothing is deleted: a value or key a build no longer finds is marked removed, and one that comes back
 keeps its id. A key whose label, value or filter changed is rewritten, and a move to another value is logged.
 
@@ -408,6 +471,25 @@ integration brief's aggregation facts, and the samples README.
 - Tests: a removal taking every row of the dimension from all seven tables and nothing of the other dimension, refused
   while a cache flow captures it, recorded as an activity, and failing when nothing is left; the API refusing an operator
   (403) and a declared dimension (409), and removing a retired one for an admin.
+
+### Stage 12: the dimension as a table, joined by numbers
+
+- `DimensionTables` (the table's name, its columns, its indexes, the statements that write its rows) on SQLFlow's
+  schema evolution; the build's write laying the dimension out and writing what differs; `DimensionTable`, which reads
+  it and makes it when it is missing; `ILedger.EnsureDimensionTableAsync`, `DimensionTableShapeAsync`,
+  `ReadDimensionTableAsync` and `StreamDimensionTableAsync`.
+- `DimensionAttributeName`: attributes by number; `DimensionAttribute` and `DimensionCollectedText` keyed by an identity
+  and naming their attribute by number; `Dimension.TableName`; `IX_DimensionValue_PartitionId_DimensionId_ValueId`
+  (migration `DimensionTables`, module version 1.22.0, which keeps every attribute row).
+- `GET /dimensions/{dimensionId}/table`; `sqlflow dimensions table`; the `table` export written from the table; the
+  page's **Table** tab, a dimension's first, and its **Definition** tab in four parts.
+- Tests: a first build making the table with its identity key and indexes; a page searched, narrowed, ordered and paged;
+  a build of the same thing writing no row; an attribute added gaining its column and a collected one rewriting the
+  rows; a changed row rewritten under its number; a retired attribute's column emptied and somebody's own column left;
+  a dropped table, and one never made, made on reading; a key no longer found leaving; removal dropping the table; a
+  table name another flow writes refused; the names; the document refusing two dimensions of one table name and an
+  attribute named after a column; the API's table, its page, its refusals and its export; the migration up, down and up
+  again with attribute rows kept.
 
 ## Close-out
 
