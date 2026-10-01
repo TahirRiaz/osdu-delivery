@@ -124,6 +124,9 @@ public sealed record DimensionState
 
     public required string DefinitionHash { get; init; }
 
+    /// <summary>The dimension's table in the module's schema (<see cref="DimensionTables"/>); null until a build has written it.</summary>
+    public string? TableName { get; init; }
+
     public long Members { get; init; }
 
     public long Originals { get; init; }
@@ -298,13 +301,60 @@ public sealed record DimensionAttributeMatch(string Name, IReadOnlyList<string> 
 /// </summary>
 public sealed record DimensionCaptureState(string CacheFlow, string Type, string Partition);
 
-/// <summary>What removing a dimension took out of the ledger: the dimension, and the rows kept of it in each table.</summary>
+/// <summary>
+/// What removing a dimension took out of the ledger: the dimension, the rows kept of it in each table, and its own table
+/// when no other partition keeps the dimension.
+/// </summary>
 public sealed record DimensionRemoved(
-    int DimensionId, string Name, string FlowName, string? Partition, long Values, long Keys, long Builds, long Changes, long Attributes, long Texts)
+    int DimensionId, string Name, string FlowName, string? Partition, long Values, long Keys, long Builds, long Changes, long Attributes, long Texts,
+    string? TableDropped = null)
 {
     /// <summary>One line saying what went, for the audit trail and a terminal.</summary>
     public string Describe() => string.Create(CultureInfo.InvariantCulture,
-        $"Removed dimension {Name} of {FlowName}{(Partition is null ? string.Empty : $" in {Partition}")}: {Values} value(s), {Keys} key(s), {Attributes} attribute value(s), {Texts} collected text(s), {Changes} change(s) and {Builds} build(s).");
+        $"Removed dimension {Name} of {FlowName}{(Partition is null ? string.Empty : $" in {Partition}")}: {Values} value(s), {Keys} key(s), {Attributes} attribute value(s), {Texts} collected text(s), {Changes} change(s) and {Builds} build(s){(TableDropped is null ? string.Empty : $"; dropped the table {DimensionTables.Shown(TableDropped)}")}.");
+}
+
+/// <summary>
+/// Which rows of a dimension's table (<see cref="DimensionTables"/>) a page reads, and in what order.
+/// </summary>
+/// <param name="Search">Text the key, the value or any attribute contains, ignoring case; null reads every row.</param>
+/// <param name="Attributes">Only the rows whose attribute holds one of the values, every attribute named; null or empty reads every row.</param>
+/// <param name="OrderBy">The column the rows are ordered by: <c>value</c> (the default), <c>key</c>, <c>records</c>, <c>id</c> or an attribute's name.</param>
+/// <param name="Descending">Largest first.</param>
+/// <param name="Offset">The rows before the page.</param>
+/// <param name="Limit">The most rows the page holds.</param>
+public sealed record DimensionTableQuery(
+    string? Search = null, IReadOnlyList<DimensionAttributeMatch>? Attributes = null, string? OrderBy = null, bool Descending = false, int Offset = 0, int Limit = 100);
+
+/// <summary>
+/// One row of a dimension's table: the row's number (what a table of facts joins on, the same for as long as the dimension
+/// holds the row), the key's number (the same in every row of the key), the key, its value, its attributes in the order
+/// of the table's attribute columns (null where the key has none), the records of the row, and the search filter finding
+/// the key's records.
+/// </summary>
+public sealed record DimensionTableRow(long Id, long KeyId, string Key, string Value, IReadOnlyList<string?> Attributes, long Records, string? Filter);
+
+/// <summary>A dimension's table as a reader finds it: its name in the module's schema, and its attribute columns in order.</summary>
+public sealed record DimensionTableShape(string Table, IReadOnlyList<string> Attributes);
+
+/// <summary>
+/// A page of a dimension's table: the table it was read from, the attribute columns, the rows, whether more follow, and on
+/// a first page how many rows the query matches in all.
+/// </summary>
+public sealed record DimensionTablePage(string Table, IReadOnlyList<string> Attributes, IReadOnlyList<DimensionTableRow> Rows, bool More, long? Total);
+
+/// <summary>A dimension whose table the database does not hold: no build has written it yet, or it was dropped by hand.</summary>
+public sealed class DimensionTableMissingException : DeliveryException
+{
+    public DimensionTableMissingException(string message)
+        : base(message)
+    {
+    }
+
+    public DimensionTableMissingException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
 }
 
 /// <summary>One member as a build made it: its clean value, its count, and its filter.</summary>
@@ -330,6 +380,12 @@ public sealed record DimensionWrite
 
     /// <summary>Every text the build collected, with the value it is shown as; empty when the dimension collects nothing.</summary>
     public IReadOnlyList<DimensionCollectedText> CollectedTexts { get; init; } = [];
+
+    /// <summary>
+    /// The dimension's table, from the declaration the build read with: made when it is missing, given the column of an
+    /// attribute it does not have, and brought to the rows the build found, in the write's transaction. Null writes no table.
+    /// </summary>
+    public DimensionTableSpec? Table { get; init; }
 
     public required IReadOnlyList<DimensionOriginalWrite> Originals { get; init; }
 

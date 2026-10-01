@@ -1249,6 +1249,14 @@ public sealed class DeliveryDimension
     /// <summary>The hash of the dimension's declaration as the last build read it.</summary>
     public string DefinitionHash { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The dimension's table in this schema (<c>dim_&lt;flow&gt;_&lt;dimension&gt;</c>), as the last build wrote it: the
+    /// dimension as one table, a row per key and value it collects and a column per attribute. Builds make the table and
+    /// widen it as the flow declares more; it is no table of the model, and no migration touches it. Null until a build
+    /// has written it.
+    /// </summary>
+    public string? TableName { get; set; }
+
     /// <summary>The members the dimension holds now.</summary>
     public long Members { get; set; }
 
@@ -1498,13 +1506,16 @@ public sealed class DeliveryDimensionAttributeValue
 
     public short PartitionId { get; set; }
 
+    /// <summary>The row's own number, which the table is stored in the order of.</summary>
+    public long AttributeValueId { get; set; }
+
     public int DimensionId { get; set; }
 
     /// <summary>The original the attribute is of (<see cref="DeliveryDimensionValue.ValueId"/>).</summary>
     public long ValueId { get; set; }
 
-    /// <summary>The attribute's name, as the dimension declares it.</summary>
-    public string Name { get; set; } = string.Empty;
+    /// <summary>The attribute, by its number (<see cref="DeliveryDimensionAttributeName.AttributeId"/>).</summary>
+    public int AttributeId { get; set; }
 
     /// <summary>The value read, trimmed, compared exactly.</summary>
     public string Value { get; set; } = string.Empty;
@@ -1533,10 +1544,13 @@ public sealed class DeliveryDimensionCollectedText
 {
     public short PartitionId { get; set; }
 
+    /// <summary>The row's own number, which the table is stored in the order of.</summary>
+    public long TextId { get; set; }
+
     public int DimensionId { get; set; }
 
-    /// <summary>The attribute's name, as the dimension declares it.</summary>
-    public string Name { get; set; } = string.Empty;
+    /// <summary>The collected attribute, by its number (<see cref="DeliveryDimensionAttributeName.AttributeId"/>).</summary>
+    public int AttributeId { get; set; }
 
     /// <summary>SHA-256 of the text's UTF-8 bytes, which the row is unique by, since a text may be longer than a key holds.</summary>
     public byte[] TextHash { get; set; } = [];
@@ -1549,6 +1563,30 @@ public sealed class DeliveryDimensionCollectedText
 
     /// <summary>The records holding it.</summary>
     public long Records { get; set; }
+}
+
+/// <summary>
+/// An attribute of a dimension, under the number its values are kept and joined by: its name as the dimension declares
+/// it, whether it is collected from the dimension's own records, and its place among the attributes the dimension declares
+/// now, which is the order of its columns as the dimension's table is read. An attribute the dimension no longer
+/// declares keeps its number and has no place.
+/// </summary>
+public sealed class DeliveryDimensionAttributeName
+{
+    public short PartitionId { get; set; }
+
+    public int AttributeId { get; set; }
+
+    public int DimensionId { get; set; }
+
+    /// <summary>The attribute's name, as the dimension declares it, compared exactly.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>Its place among the attributes the dimension declares now, from 1. Null for an attribute the dimension no longer declares.</summary>
+    public short? Ordinal { get; set; }
+
+    /// <summary>Whether its values are collected from the dimension's own records, so a key holds several.</summary>
+    public bool Collected { get; set; }
 }
 
 /// <summary>
@@ -2153,10 +2191,13 @@ public static class DeliveryModel
             e.Property(d => d.AggregateBy).HasMaxLength(DeliveryDimension.MaxAggregateByLength);
             e.Property(d => d.CleanJson).IsRequired();
             e.Property(d => d.DefinitionHash).HasMaxLength(16).IsRequired();
+            e.Property(d => d.TableName).HasMaxLength(128);
             // A dimension named by its id: every member, original, build and change of it names it so.
             e.HasIndex(d => d.DimensionId).IsUnique();
             // A flow's dimension in a partition, by its name: what a build registers and a page finds.
             e.HasIndex(d => new { d.PartitionId, d.FlowId, d.Name }).IsUnique();
+            // The dimensions writing one table, one a partition: what a build asks before it writes and a removal before it drops.
+            e.HasIndex(d => d.TableName);
         });
 
         modelBuilder.Entity<DeliveryDimensionRun>(e =>
@@ -2211,30 +2252,49 @@ public static class DeliveryModel
             e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.MemberId });
             // The originals most records hold first, a page at a time.
             e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.Count, v.ValueId }).IsDescending(false, false, true, false);
+            // A dimension's keys in the order they arrived, a page at a time, as one range of this dimension alone.
+            e.HasIndex(v => new { v.PartitionId, v.DimensionId, v.ValueId });
         });
 
         modelBuilder.Entity<DeliveryDimensionAttributeValue>(e =>
         {
             e.ToTable("DimensionAttribute", SchemaName);
-            // A key's attributes, read with it a page at a time: one row per value, so a collected attribute holds several.
-            e.HasKey(a => new { a.PartitionId, a.DimensionId, a.ValueId, a.Name, a.Value });
-            ExactText(e.Property(a => a.Name)).HasMaxLength(DeliveryDimensionAttributeValue.MaxNameLength).IsRequired();
+            e.HasKey(a => new { a.PartitionId, a.AttributeValueId });
+            e.Property(a => a.AttributeValueId).ValueGeneratedOnAdd();
             ExactText(e.Property(a => a.Value)).HasMaxLength(DeliveryDimensionAttributeValue.MaxValueLength).IsRequired();
             e.Property(a => a.ValueFrom).HasMaxLength(DeliveryDimensionValue.MaxOriginalLength);
+            e.HasIndex(a => a.AttributeValueId).IsUnique();
+            // A key's attributes, read with it a page at a time: one row per value, so a collected attribute holds several,
+            // and a key holds a value of an attribute once.
+            e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.ValueId, a.AttributeId, a.Value }).IsUnique();
             // The keys an attribute value holds (Country is Norway), and an attribute's values: one seek either way.
-            e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.Name, a.Value });
+            e.HasIndex(a => new { a.PartitionId, a.DimensionId, a.AttributeId, a.Value });
+        });
+
+        modelBuilder.Entity<DeliveryDimensionAttributeName>(e =>
+        {
+            e.ToTable("DimensionAttributeName", SchemaName);
+            e.HasKey(n => new { n.PartitionId, n.AttributeId });
+            e.Property(n => n.AttributeId).ValueGeneratedOnAdd();
+            ExactText(e.Property(n => n.Name)).HasMaxLength(DeliveryDimensionAttributeValue.MaxNameLength).IsRequired();
+            e.HasIndex(n => n.AttributeId).IsUnique();
+            // A dimension's attribute by its name, once: what a build finds the number by.
+            e.HasIndex(n => new { n.PartitionId, n.DimensionId, n.Name }).IsUnique();
         });
 
         modelBuilder.Entity<DeliveryDimensionCollectedText>(e =>
         {
             e.ToTable("DimensionCollectedText", SchemaName);
-            e.HasKey(t => new { t.PartitionId, t.DimensionId, t.Name, t.TextHash });
-            ExactText(e.Property(t => t.Name)).HasMaxLength(DeliveryDimensionAttributeValue.MaxNameLength).IsRequired();
+            e.HasKey(t => new { t.PartitionId, t.TextId });
+            e.Property(t => t.TextId).ValueGeneratedOnAdd();
             e.Property(t => t.TextHash).HasMaxLength(32).IsFixedLength().IsRequired();
             ExactText(e.Property(t => t.Text)).HasMaxLength(DeliveryDimensionValue.MaxOriginalLength).IsRequired();
             ExactText(e.Property(t => t.Value)).HasMaxLength(DeliveryDimensionAttributeValue.MaxValueLength).IsRequired();
+            e.HasIndex(t => t.TextId).IsUnique();
+            // A text of a collected attribute, once, by its hash, since a text may be longer than a key holds.
+            e.HasIndex(t => new { t.PartitionId, t.DimensionId, t.AttributeId, t.TextHash }).IsUnique();
             // The texts of the values a search picks: one seek.
-            e.HasIndex(t => new { t.PartitionId, t.DimensionId, t.Name, t.Value });
+            e.HasIndex(t => new { t.PartitionId, t.DimensionId, t.AttributeId, t.Value });
         });
 
         modelBuilder.Entity<DeliveryDimensionChange>(e =>

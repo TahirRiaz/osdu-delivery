@@ -426,8 +426,9 @@ public sealed class OsduTestDatabase : IDisposable
     }
 
     /// <summary>
-    /// Empties every table of the module's schema but its migration history. The schema has no foreign keys and no
-    /// views, so each table is truncated, which also starts its identity column from its seed again.
+    /// Empties every table of the module's schema but its migration history, and drops the tables dimension builds made
+    /// there (<c>dim_...</c>), which are no tables of the model. The schema has no foreign keys and no views, so each
+    /// table is truncated, which also starts its identity column from its seed again.
     /// </summary>
     private static void Empty(string connectionString)
     {
@@ -436,9 +437,10 @@ public sealed class OsduTestDatabase : IDisposable
         using var command = connection.CreateCommand();
         command.Parameters.AddWithValue("@schema", DeliveryModel.SchemaName);
         command.Parameters.AddWithValue("@history", OsduDbContext.MigrationsHistoryTable);
+        command.Parameters.AddWithValue("@made", DimensionTables.Prefix.Replace("_", "[_]", StringComparison.Ordinal) + "%");
         command.CommandText = """
             DECLARE @sql nvarchar(max) = N'';
-            SELECT @sql = @sql + N'TRUNCATE TABLE ' + QUOTENAME(s.name) + N'.' + QUOTENAME(t.name) + N';'
+            SELECT @sql = @sql + CASE WHEN t.name LIKE @made THEN N'DROP TABLE ' ELSE N'TRUNCATE TABLE ' END + QUOTENAME(s.name) + N'.' + QUOTENAME(t.name) + N';'
             FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id
             WHERE s.name = @schema AND t.name <> @history;
             EXEC sys.sp_executesql @sql;

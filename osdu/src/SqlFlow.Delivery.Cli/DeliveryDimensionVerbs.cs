@@ -61,14 +61,15 @@ internal static class DeliveryDimensionVerbs
             return await RemoveAsync(context, ledger, flow, engine.Time, ct).ConfigureAwait(false);
         }
 
-        if (verb is not ("values" or "keys" or "attributes" or "filter" or "history" or "changes" or "export"))
+        if (verb is not ("table" or "values" or "keys" or "attributes" or "filter" or "history" or "changes" or "export"))
         {
-            return context.UsageError("say what to do: list, values, keys, attributes, filter, search, history, changes, export or remove.");
+            return context.UsageError("say what to do: list, table, values, keys, attributes, filter, search, history, changes, export or remove.");
         }
 
         var dimension = await DimensionAsync(context, ledger, flow, ct).ConfigureAwait(false);
         return verb switch
         {
+            "table" => await TableAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "values" => await ValuesAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "keys" => await KeysAsync(context, ledger, dimension, ct).ConfigureAwait(false),
             "attributes" => await AttributesAsync(context, ledger, dimension, ct).ConfigureAwait(false),
@@ -117,6 +118,7 @@ internal static class DeliveryDimensionVerbs
                 ["changes"] = removed.Changes,
                 ["attributes"] = removed.Attributes,
                 ["texts"] = removed.Texts,
+                ["tableDropped"] = removed.TableDropped is { } dropped ? DimensionTables.Shown(dropped) : null,
             }));
             return 0;
         }
@@ -154,6 +156,7 @@ internal static class DeliveryDimensionVerbs
                             ? new JsonObject { ["name"] = a.Name, ["collect"] = a.Collect }
                             : new JsonObject { ["name"] = a.Name, ["steps"] = new JsonArray(a.Steps.Select(s => (JsonNode)JsonValue.Create(s)!).ToArray()) })).ToArray()),
                         ["aggregateBy"] = dimension?.Field?.AggregateBy,
+                        ["table"] = dimension?.TableName is { } table ? DimensionTables.Shown(table) : null,
                         ["values"] = dimension?.Members,
                         ["keys"] = dimension?.Originals,
                         ["lastBuiltUtc"] = dimension?.LastBuiltUtc,
@@ -179,6 +182,9 @@ internal static class DeliveryDimensionVerbs
             var built = dimension.LastBuiltUtc is { } at ? "built " + Stamp(at) : "not built yet";
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
                 $"  {spec.Name}  ({spec.Kind} {spec.Path}{label})  {dimension.Members} value(s) from {dimension.Originals} key(s), {built}"));
+            context.Out.WriteLine(dimension.TableName is { } table
+                ? $"      table {DimensionTables.Shown(table)}"
+                : $"      no table yet: run the flow, or read it with sqlflow dimensions table <flow.yaml> --dimension {spec.Name}");
             if (latest.TryGetValue(dimension.DimensionId, out var newest) && newest.DimensionRunId != dimension.LastRunId)
             {
                 context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
@@ -192,6 +198,106 @@ internal static class DeliveryDimensionVerbs
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// A page of the dimension's table (docs/dimension-plan.md, The table): a row per key and value it collects, with a
+    /// column per attribute; the rows containing --search, holding the attribute values --attr names, ordered by --order.
+    /// A dimension built before dimensions had a table has its table made here.
+    /// </summary>
+    private static async Task<int> TableAsync(CliVerbContext context, ILedger ledger, DimensionState dimension, CancellationToken ct)
+    {
+        var max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max");
+        DimensionTablePage page;
+        try
+        {
+            page = await DimensionTable.ReadAsync(
+                ledger,
+                dimension,
+                new DimensionTableQuery(
+                    context.Arguments.GetOption("--search"), TableMatches(context), context.Arguments.GetOption("--order"), context.Arguments.HasFlag("--desc"), 0, max),
+                ct).ConfigureAwait(false);
+        }
+        catch (DeliveryException ex) when (ex is not DimensionTableMissingException)
+        {
+            throw new FlowValidationException(ex.Message, ex);
+        }
+
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["dimension"] = dimension.Name,
+                ["table"] = page.Table,
+                ["total"] = page.Total,
+                ["more"] = page.More,
+                ["rows"] = new JsonArray(page.Rows.Select(row =>
+                {
+                    var json = new JsonObject { ["id"] = row.Id, ["partition"] = dimension.Partition, ["key_id"] = row.KeyId, ["key"] = row.Key, ["value"] = row.Value };
+                    for (var i = 0; i < page.Attributes.Count; i++)
+                    {
+                        json[page.Attributes[i]] = i < row.Attributes.Count ? row.Attributes[i] : null;
+                    }
+
+                    json["records"] = row.Records;
+                    json["filter"] = row.Filter;
+                    return (JsonNode)json;
+                }).ToArray()),
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"{dimension.Name}: {page.Rows.Count} of {page.Total ?? page.Rows.Count} row(s) of {page.Table}"));
+        foreach (var row in page.Rows)
+        {
+            var attributes = string.Join("  ", page.Attributes.Select((name, i) => $"{name}={(i < row.Attributes.Count && row.Attributes[i] is { } value ? Quoted(value) : "-")}"));
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  {row.Id,10}  {row.Records,12:N0}  {Quoted(row.Value)}  {row.Key}{(attributes.Length == 0 ? string.Empty : "  " + attributes)}"));
+        }
+
+        if (page.More)
+        {
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  more rows follow: raise --max (now {max}), narrow with --search or --attr, or export the table."));
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// The attribute matches --attr asks of the table, each <c>Name=value</c>, named as the table's columns are: the table
+    /// says which it has, so a name it lacks is refused with its columns.
+    /// </summary>
+    private static List<DimensionAttributeMatch>? TableMatches(CliVerbContext context)
+    {
+        var asked = context.Arguments.GetOptions("--attr");
+        if (asked.Count == 0)
+        {
+            return null;
+        }
+
+        var matches = new List<DimensionAttributeMatch>();
+        foreach (var text in asked)
+        {
+            var at = text.IndexOf('=', StringComparison.Ordinal);
+            if (at <= 0 || at == text.Length - 1)
+            {
+                throw new FlowValidationException($"--attr '{text}' is not <attribute>=<value>.");
+            }
+
+            var name = text[..at].Trim();
+            var index = matches.FindIndex(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (index >= 0)
+            {
+                matches[index] = matches[index] with { Values = [.. matches[index].Values, text[(at + 1)..]] };
+            }
+            else
+            {
+                matches.Add(new DimensionAttributeMatch(name, [text[(at + 1)..]]));
+            }
+        }
+
+        return matches;
     }
 
     /// <summary>A page of the dimension's values, in value order or with the most records first, each with its commonest keys.</summary>

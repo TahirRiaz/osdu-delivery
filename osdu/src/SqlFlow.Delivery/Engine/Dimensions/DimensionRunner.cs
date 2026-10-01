@@ -708,6 +708,7 @@ public sealed class DimensionRunner
             Field = field,
             CollectedJson = collectedJson,
             CollectedTexts = collectedTexts ?? [],
+            Table = DimensionTables.Of(_flow.Name, dimension.Name, dimension.Attributes),
             Originals = originals,
             Members = members,
             Read = read,

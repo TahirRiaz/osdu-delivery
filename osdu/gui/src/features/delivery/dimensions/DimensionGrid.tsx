@@ -83,18 +83,21 @@ export function DimensionGrid({ children, onNearEnd, className }: {
 }
 
 /**
- * What a grid shows, behind one button: the columns a reader can leave out, and whether the rows no build finds any more
- * are listed too.
+ * What a grid shows, behind one button: the columns a reader can leave out, and, for a grid that can list them, whether
+ * the rows no build finds any more are listed too.
  */
-export function GridViewMenu({ columns, hidden, onToggle, removed, onRemoved, testId }: {
+export function GridViewMenu({ columns, hidden, atFirst = [], onToggle, removed = false, onRemoved, testId }: {
   columns: GridColumnChoice[];
   hidden: ReadonlySet<string>;
+  /** The columns the grid starts without, so the button marks only what a reader changed. */
+  atFirst?: readonly string[];
   onToggle: (id: string) => void;
-  removed: boolean;
-  onRemoved: (shown: boolean) => void;
+  removed?: boolean;
+  /** Given by a grid that can list what builds no longer find; a grid without such rows leaves it out. */
+  onRemoved?: (shown: boolean) => void;
   testId: string;
 }) {
-  const changed = hidden.size > 0 || removed;
+  const changed = removed || hidden.size !== atFirst.length || atFirst.some((id) => !hidden.has(id));
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -106,7 +109,7 @@ export function GridViewMenu({ columns, hidden, onToggle, removed, onRemoved, te
       </PopoverTrigger>
       <PopoverContent align="end" className="w-64 p-0" data-testid={`${testId}-menu`}>
         {columns.length > 0 && (
-          <div className="flex max-h-72 flex-col gap-0.5 overflow-y-auto border-b border-border p-2">
+          <div className={cn("flex max-h-72 flex-col gap-0.5 overflow-y-auto p-2", onRemoved !== undefined && "border-b border-border")}>
             <span className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Columns</span>
             {columns.map((column) => (
               <label key={column.id} className="flex cursor-pointer items-center gap-2 rounded-sm px-1 py-1 text-[13px] hover:bg-accent/60">
@@ -116,10 +119,12 @@ export function GridViewMenu({ columns, hidden, onToggle, removed, onRemoved, te
             ))}
           </div>
         )}
-        <div className="flex items-center justify-between gap-2 p-3">
-          <Label htmlFor={`${testId}-removed`} className="text-[13px] font-normal">Include what builds no longer find</Label>
-          <Switch id={`${testId}-removed`} checked={removed} onCheckedChange={onRemoved} data-testid={`${testId}-removed`} />
-        </div>
+        {onRemoved !== undefined && (
+          <div className="flex items-center justify-between gap-2 p-3">
+            <Label htmlFor={`${testId}-removed`} className="text-[13px] font-normal">Include what builds no longer find</Label>
+            <Switch id={`${testId}-removed`} checked={removed} onCheckedChange={onRemoved} data-testid={`${testId}-removed`} />
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   );

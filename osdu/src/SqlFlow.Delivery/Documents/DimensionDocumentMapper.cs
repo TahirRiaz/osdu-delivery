@@ -6,6 +6,7 @@ using System.Text.Json.Serialization;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Json;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Search;
@@ -164,6 +165,13 @@ internal static class DimensionMapper
             {
                 throw new FlowValidationException(
                     $"{source}: dimensions[{i}] is named '{dimension.Name}', as an earlier dimension is; a run, a page and a filter name each dimension by its name, so each needs its own.");
+            }
+
+            // Each dimension has its own table, named with the letters, digits and underscores of its name.
+            if (dimensions.FirstOrDefault(d => string.Equals(DimensionTables.NameOf("f", d.Name), DimensionTables.NameOf("f", dimension.Name), StringComparison.OrdinalIgnoreCase)) is { } alike)
+            {
+                throw new FlowValidationException(
+                    $"{source}: dimensions[{i}] '{dimension.Name}' would share its table with '{alike.Name}': a table's name keeps the letters, digits and underscores of a dimension's name, and theirs are the same. Rename one of them.");
             }
 
             dimensions.Add(dimension);

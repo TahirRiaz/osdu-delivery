@@ -214,7 +214,12 @@ public sealed class DeliveryCliModule : ICliModule
             [
                 "sqlflow dimensions list <flow.yaml> [--partition <id>]",
                 "                                   A dimension flow's dimensions in a partition: what each holds, when it",
-                "                                   was built, and a newer build that failed or is running (needs --db)",
+                "                                   was built, its table, and a newer build that failed or is running",
+                "                                   (needs --db)",
+                "sqlflow dimensions table <flow.yaml> --dimension <name> [--search <text>] [--attr <attribute>=<value> ...] [--order value|key|records|id|<attribute>] [--desc] [--max <n>]",
+                "                                   The dimension as one table, osdu.dim_<flow>_<dimension>: a row per key",
+                "                                   and value it collects, a column per attribute, each row with the number",
+                "                                   a table of facts joins on (needs --db)",
                 "sqlflow dimensions values <flow.yaml> --dimension <name> [--search <text>] [--attr <attribute>=<value> ...] [--order value|records] [--removed] [--max <n>]",
                 "                                   A dimension's values, each human-friendly value with its records, its",
                 "                                   search filter and the keys most records hold (needs --db)",
@@ -245,15 +250,15 @@ public sealed class DeliveryCliModule : ICliModule
                 "                                   cache flow captures; recorded as an activity of the flow (needs --db)",
                 "sqlflow dimensions export <flow.yaml> --dimension <name> [--set values|keys|table] [--format csv|jsonl] [--out <file>]",
                 "                                   The whole of a dimension's values or keys, each with its search filter,",
-                "                                   or its table: a row per key and value it collects, a column per",
-                "                                   attribute, for cascading selects (needs --db). Building is a run:",
+                "                                   or its table: its rows and columns as the database holds them",
+                "                                   (needs --db). Building is a run:",
                 "                                   sqlflow run <flow.yaml> --payload '{\"dimensions\":[\"name\"]}'",
             ],
             DeliveryDimensionVerbs.DimensionsAsync)
         {
-            Subcommands = ["list", "values", "keys", "attributes", "filter", "search", "history", "changes", "export", "remove"],
+            Subcommands = ["list", "table", "values", "keys", "attributes", "filter", "search", "history", "changes", "export", "remove"],
             ValueOptions = ["--partition", "--dimension", "--search", "--order", "--value", "--pick", "--where", "--attr", "--attribute", "--kind", "--within", "--max", "--build", "--change", "--set", "--format", "--out"],
-            Flags = ["--removed", "--left-out"],
+            Flags = ["--removed", "--left-out", "--desc"],
         },
     ];
 

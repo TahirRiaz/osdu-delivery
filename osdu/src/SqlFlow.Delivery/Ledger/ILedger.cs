@@ -1902,6 +1902,36 @@ public interface ILedger
     Task<IReadOnlyList<DimensionChangeState>> ListDimensionChangesAsync(int dimensionId, DimensionChangeQuery query, CancellationToken ct = default);
 
     /// <summary>
+    /// Makes sure the dimension has its table (<see cref="DimensionTables"/>) with the rows the ledger holds of it, as a
+    /// build's write does, without a build: for a dimension built before dimensions had a table, or one whose table was
+    /// dropped. Answers whether the table had to be made or widened. False when the ledger holds no such dimension.
+    /// </summary>
+    /// <exception cref="DeliveryException">Another dimension writes a table of that name, or the table cannot be made.</exception>
+    Task<bool> EnsureDimensionTableAsync(int dimensionId, DimensionTableSpec table, CancellationToken ct = default);
+
+    /// <summary>
+    /// The dimension's table as the database holds it: its name and its attribute columns, in order. Null when the ledger
+    /// holds no such dimension.
+    /// </summary>
+    /// <exception cref="DimensionTableMissingException">The database holds no table of the dimension.</exception>
+    Task<DimensionTableShape?> DimensionTableShapeAsync(int dimensionId, CancellationToken ct = default);
+
+    /// <summary>
+    /// A page of the dimension's table in the dimension's partition, as <paramref name="query"/> narrows and orders it. Null
+    /// when the ledger holds no such dimension.
+    /// </summary>
+    /// <exception cref="DimensionTableMissingException">The database holds no table of the dimension.</exception>
+    /// <exception cref="DeliveryException">The query names a column the table does not have.</exception>
+    Task<DimensionTablePage?> ReadDimensionTableAsync(int dimensionId, DimensionTableQuery query, CancellationToken ct = default);
+
+    /// <summary>
+    /// Every row of the dimension's table in the dimension's partition, by value then row number, one at a time, so a table
+    /// of millions of rows is never held whole. Nothing when the ledger holds no such dimension.
+    /// </summary>
+    /// <exception cref="DimensionTableMissingException">The database holds no table of the dimension.</exception>
+    IAsyncEnumerable<DimensionTableRow> StreamDimensionTableAsync(int dimensionId, CancellationToken ct = default);
+
+    /// <summary>
     /// The types of the cache flows of the dimension's partition that capture it (<c>dimension: &lt;name&gt;,
     /// dimensionFlow: &lt;flow&gt;</c>), as the last repository sync recorded them; none when no cache flow does, or the
     /// ledger holds no such dimension.

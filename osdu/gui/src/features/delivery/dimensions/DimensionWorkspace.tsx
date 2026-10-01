@@ -19,12 +19,14 @@ import { DimensionDefinition } from "./DimensionDefinition";
 import { DimensionBuilds, DimensionChanges } from "./DimensionHistory";
 import { DimensionKeys } from "./DimensionKeys";
 import { DimensionRemoveButton } from "./DimensionRemoveButton";
+import { DimensionTableGrid } from "./DimensionTableGrid";
 import { DimensionValueSheet } from "./DimensionValueSheet";
 import { DimensionValues } from "./DimensionValues";
 import { DIMENSION_VIEWS, STANDING_VISUALS, coverage, percent, type DimensionEntry, type DimensionView } from "./dimensionFormat";
 
 /** What each tab is for, as hovering its name says it. */
 const VIEW_PURPOSE: Record<DimensionView, string> = {
+  table: "The dimension as one table, as the database holds it: a row per key and value it collects, with the key's value, a column per attribute, and the records of the row. What a query, a report or a cascade of selects reads.",
   values: "The human-friendly values a person picks, each with the records holding it, the keys it stands for, its attributes and the search finding its records. Pick values to write the search that finds their records.",
   keys: "Every key exactly as the index holds it (an id, for a reference), with the value it belongs to, its attributes, and the search finding exactly its records.",
   changes: "What each build changed: the keys that arrived, left, came back, or moved to another value.",
@@ -33,6 +35,7 @@ const VIEW_PURPOSE: Record<DimensionView, string> = {
 };
 
 const VIEW_LABEL: Record<DimensionView, string> = {
+  table: "Table",
   values: "Values",
   keys: "Keys",
   changes: "Changes",
@@ -175,8 +178,9 @@ function Switcher({ entry, siblings, onOpen }: { entry: DimensionEntry; siblings
  * dimension, its name and where it stands, the other dimensions a click away, Export and Build; under it, in a line, the
  * facts it is read against (values and keys, keys without a label, keys of no value, how many records hold a key, when it
  * was built), each opening the tab that explains it, and what it reads. Then what its newest build or its declaration
- * asks of the reader, and its five tabs, whose grids scroll inside the page. The tab and the value open in a sheet live
- * in the URL, so a link lands on the same view.
+ * asks of the reader, and its tabs, whose grids scroll inside the page: the dimension as one table first, then its values,
+ * its keys, what builds changed, the builds and the definition. The tab and the value open in a sheet live in the URL, so
+ * a link lands on the same view.
  */
 export function DimensionWorkspace({ entry, siblings, view, onView, value, onValue, onLaunch, onOpen, onRemoved }: {
   entry: DimensionEntry;
@@ -323,6 +327,9 @@ export function DimensionWorkspace({ entry, siblings, view, onView, value, onVal
                   ))}
                 </TabsList>
               </div>
+              <TabsContent value="table">
+                <DimensionTableGrid dimensionId={dimension.dimensionId} table={dimension.table} attributes={dimension.attributes} unlabelled={dimension.unlabelled} />
+              </TabsContent>
               <TabsContent value="values">
                 <DimensionValues entry={entry} dimensionId={dimension.dimensionId} onValue={onValue} />
               </TabsContent>

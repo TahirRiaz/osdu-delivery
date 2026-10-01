@@ -456,22 +456,33 @@ public sealed class DimensionRunTests : IDisposable
         Assert.Equal([("RECALL", 1, 2L), ("PETREL", 1, 1L)], await ListAsync("Source", null, [a.MemberId]));
 
         // The table: a row per wellbore and source, each with its country, field and records, what cascading selects read.
+        // The export is the dimension's own table written out: each row under its number, with the key's number, in the
+        // partition, and the key's filter at the end of the fixed columns.
         var table = new StringWriter();
         var rows = await DimensionExport.WriteAsync(ledger, wellbores, DimensionExportSet.Table, DimensionExportFormat.Csv, table, CancellationToken.None);
         var lines = table.ToString().Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
-        Assert.Equal("key,value,Country,Field,Source,records", lines[0]);
+        Assert.Equal("id,partition,key_id,key,value,Country,Field,Source,records,filter", lines[0]);
         Assert.Equal(7, rows);
+        string Filter(string key) => "\"" + keys[key].Filter!.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+        string Row(int id, string key, string rest) => $"{id},dev,{keys[key].ValueId},dev:master-data--Wellbore:{key}:,{rest}," + Filter(key);
         Assert.Equal(
             [
-                "dev:master-data--Wellbore:A:,NO A,Norway,Statfjord,PETREL,1",
-                "dev:master-data--Wellbore:A:,NO A,Norway,Statfjord,RECALL,2",
-                "dev:master-data--Wellbore:B:,NO B,Norway,Not specified,Not specified,1",
-                "dev:master-data--Wellbore:B:,NO B,Norway,Not specified,RECALL,1",
-                "dev:master-data--Wellbore:C:,DK C,Denmark,Tyra,PETREL,1",
-                "dev:master-data--Wellbore:C:,DK C,Denmark,Tyra,RECALL,1",
-                "dev:master-data--Wellbore:D:,Not specified,Not specified,Not specified,Not specified,1",
+                Row(1, "C", "DK C,Denmark,Tyra,PETREL,1"),
+                Row(2, "C", "DK C,Denmark,Tyra,RECALL,1"),
+                Row(3, "A", "NO A,Norway,Statfjord,PETREL,1"),
+                Row(4, "A", "NO A,Norway,Statfjord,RECALL,2"),
+                Row(5, "B", "NO B,Norway,Not specified,Not specified,1"),
+                Row(6, "B", "NO B,Norway,Not specified,RECALL,1"),
+                Row(7, "D", "Not specified,Not specified,Not specified,Not specified,1"),
             ],
-            lines.Skip(1).Order(StringComparer.Ordinal));
+            lines.Skip(1));
+        var jsonl = new StringWriter();
+        await DimensionExport.WriteAsync(ledger, wellbores, DimensionExportSet.Table, DimensionExportFormat.JsonLines, jsonl, CancellationToken.None);
+        var firstRow = JsonNode.Parse(jsonl.ToString().Split("\n", StringSplitOptions.RemoveEmptyEntries)[0])!.AsObject();
+        Assert.Equal(["id", "partition", "key_id", "key", "value", "attributes", "records", "filter"], firstRow.Select(p => p.Key));
+        Assert.Equal((1L, "dev", "DK C", "PETREL", 1L), (
+            firstRow["id"]!.GetValue<long>(), firstRow["partition"]!.GetValue<string>(), firstRow["value"]!.GetValue<string>(),
+            firstRow["attributes"]!["Source"]!.GetValue<string>(), firstRow["records"]!.GetValue<long>()));
 
         // A search picking a source finds the logs holding it, however it is spelled, not every log of the wellbores holding
         // it; Not specified finds the logs holding none; and a source picked with a country, the country's logs holding it.
@@ -498,6 +509,230 @@ public sealed class DimensionRunTests : IDisposable
             .Single(k => k.Original == "dev:master-data--Wellbore:A:");
         Assert.Equal([("Source", "RECALL", (long?)3L)], again.Attributes.Where(x => x.Name == "Source").Select(x => (x.Name, x.Value, x.Records)));
         OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    /// <summary>The columns of a table in the module's schema, in order; none when it is not there.</summary>
+    private async Task<IReadOnlyList<string>> ColumnsAsync(string table)
+        => await SqlAsync($"SELECT c.[name] FROM sys.columns AS c WHERE c.[object_id] = OBJECT_ID(N'[osdu].[{table}]', N'U') ORDER BY c.[column_id];");
+
+    private async Task<List<string>> SqlAsync(string sql)
+    {
+        await using var connection = new SqlConnection(_db.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        var rows = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            rows.Add(string.Join("|", Enumerable.Range(0, reader.FieldCount).Select(i => reader.IsDBNull(i) ? "(null)" : Convert.ToString(reader.GetValue(i), System.Globalization.CultureInfo.InvariantCulture))));
+        }
+
+        return rows;
+    }
+
+    [Fact]
+    public async Task A_dimension_is_one_table_whose_columns_follow_its_declaration_and_whose_rows_keep_their_numbers()
+    {
+        _platform.Add("dev:master-data--GeoPoliticalEntity:NO", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Norway" });
+        _platform.Add("dev:master-data--GeoPoliticalEntity:DK", "osdu:wks:master-data--GeoPoliticalEntity:1.0.0", new JsonObject { ["GeoPoliticalEntityName"] = "Denmark" });
+        foreach (var (name, country) in new[] { ("A", "NO"), ("B", "NO"), ("C", "DK") })
+        {
+            _platform.Add($"dev:master-data--Wellbore:{name}", Wellbore, new JsonObject
+            {
+                ["FacilityName"] = $"{country} {name}",
+                ["FacilityID"] = $"uuid-{name}",
+                ["GeoContexts"] = new JsonArray(new JsonObject { ["GeoPoliticalEntityID"] = $"dev:master-data--GeoPoliticalEntity:{country}:" }),
+            });
+        }
+
+        foreach (var (log, wellbore, source) in new[] { ("1", "A", "RECALL"), ("2", "A", "PETREL"), ("3", "A", "RECALL"), ("4", "B", "RECALL"), ("5", "C", "PETREL") })
+        {
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:{wellbore}:", ["Source"] = source });
+        }
+
+        const string Declared = """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                label: data.FacilityName
+                attributes:
+                  Country: [data.GeoContexts.GeoPoliticalEntityID, data.GeoPoliticalEntityName]
+
+            """;
+        const string Table = "dim_wells_dimensions_Wellbore";
+        var (runner, ledger, flow) = await RunnerAsync(Head + Declared);
+
+        // The first build makes the table: the dimension as one table, named after its flow and its name, keyed by an
+        // identity, with a column for each attribute it declares. Any SQL client reads it and joins on its numbers.
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        Assert.Equal(Table, wellbores.TableName);
+        Assert.Equal(["id", "partition", "key_id", "key", "value", "records", "filter", "Country"], await ColumnsAsync(Table));
+        Assert.Equal(
+            ["PK_" + Table + "|CLUSTERED|1|id|1", "IX_key|NONCLUSTERED|0|partition, key_id|0", "IX_value|NONCLUSTERED|0|partition, value, id|1"],
+            await SqlAsync($"""
+                SELECT i.[name], i.[type_desc], CAST(i.[is_primary_key] AS int),
+                    STRING_AGG(c.[name], ', ') WITHIN GROUP (ORDER BY ic.[key_ordinal]), MAX(CAST(c.[is_identity] AS int))
+                FROM sys.indexes AS i
+                JOIN sys.index_columns AS ic ON ic.[object_id] = i.[object_id] AND ic.[index_id] = i.[index_id]
+                JOIN sys.columns AS c ON c.[object_id] = ic.[object_id] AND c.[column_id] = ic.[column_id]
+                WHERE i.[object_id] = OBJECT_ID(N'[osdu].[{Table}]') GROUP BY i.[name], i.[type_desc], i.[is_primary_key], i.[index_id] ORDER BY i.[index_id];
+                """));
+        var keys = (await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 10)))
+            .ToDictionary(k => k.Original[^2..^1], StringComparer.Ordinal);
+        Assert.Equal(
+            [
+                $"1|dev|{keys["C"].ValueId}|dev:master-data--Wellbore:C:|DK C|1|{keys["C"].Filter}|Denmark",
+                $"2|dev|{keys["A"].ValueId}|dev:master-data--Wellbore:A:|NO A|3|{keys["A"].Filter}|Norway",
+                $"3|dev|{keys["B"].ValueId}|dev:master-data--Wellbore:B:|NO B|1|{keys["B"].Filter}|Norway",
+            ],
+            await SqlAsync($"SELECT * FROM [osdu].[{Table}] ORDER BY [id];"));
+
+        // A page of it, as the page and the CLI read it: searched, narrowed by an attribute, ordered by any column, counted.
+        var page = await DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(Limit: 2), CancellationToken.None);
+        Assert.Equal(("osdu." + Table, 3L, true), (page.Table, page.Total, page.More));
+        Assert.Equal(["Country"], page.Attributes);
+        Assert.Equal([(1L, "DK C"), (2L, "NO A")], page.Rows.Select(r => (r.Id, r.Value)));
+        var next = await DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(Offset: 2, Limit: 2), CancellationToken.None);
+        Assert.Equal((null, false, "NO B"), (next.Total, next.More, Assert.Single(next.Rows).Value));
+        var byRecords = await DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(OrderBy: "Records", Descending: true), CancellationToken.None);
+        Assert.Equal([("NO A", 3L), ("DK C", 1L), ("NO B", 1L)], byRecords.Rows.Select(r => (r.Value, r.Records)));
+        Assert.False(byRecords.More);
+        var norway = await DimensionTable.ReadAsync(
+            ledger, wellbores, new DimensionTableQuery(Attributes: [new DimensionAttributeMatch("country", ["Norway"])], OrderBy: "country"), CancellationToken.None);
+        Assert.Equal(2L, norway.Total);
+        Assert.Equal(["NO A", "NO B"], norway.Rows.Select(r => r.Value));
+        Assert.Equal(("dev:master-data--Wellbore:A:", keys["A"].ValueId, keys["A"].Filter), (norway.Rows[0].Key, norway.Rows[0].KeyId, norway.Rows[0].Filter));
+        Assert.Equal(["Norway"], norway.Rows[0].Attributes);
+        Assert.Empty((await DimensionTable.ReadAsync(
+            ledger, wellbores, new DimensionTableQuery(Attributes: [new DimensionAttributeMatch("Country", ["norway"])]), CancellationToken.None)).Rows);
+        var searched = await DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(Search: "denm"), CancellationToken.None);
+        Assert.Equal("DK C", Assert.Single(searched.Rows).Value);
+        Assert.Equal(1L, (await DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(Search: "wellbore:b"), CancellationToken.None)).Total);
+        Assert.Empty((await DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(Search: "%"), CancellationToken.None)).Rows);
+        var noColumn = await Assert.ThrowsAsync<DeliveryException>(() => DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(OrderBy: "Basin"), CancellationToken.None));
+        Assert.Contains("has no column 'Basin' to order by; it has value, key, records, id, Country", noColumn.Message, StringComparison.Ordinal);
+        var noAttribute = await Assert.ThrowsAsync<DeliveryException>(() => DimensionTable.ReadAsync(
+            ledger, wellbores, new DimensionTableQuery(Attributes: [new DimensionAttributeMatch("Basin", ["X"])]), CancellationToken.None));
+        Assert.Contains("has no attribute column 'Basin'; it has Country", noAttribute.Message, StringComparison.Ordinal);
+
+        // A build that finds the same thing writes no row of the table: each keeps its number, and nothing was touched.
+        var before = await SqlAsync($"SELECT [id], %%physloc%% FROM [osdu].[{Table}] ORDER BY [id];");
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Equal(before, await SqlAsync($"SELECT [id], %%physloc%% FROM [osdu].[{Table}] ORDER BY [id];"));
+        Assert.False(await DimensionTable.EnsureAsync(ledger, wellbores, CancellationToken.None));
+
+        // The flow declares more: the table gains a column for each new attribute on the next build, with no migration.
+        // The attribute it collects makes a row for each value a key holds, so the rows are written again.
+        (runner, ledger, flow) = await RunnerAsync(Head + Declared + """
+                  UUID: data.FacilityID
+                  Source: { collect: data.Source }
+            """);
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Equal(["id", "partition", "key_id", "key", "value", "records", "filter", "Country", "UUID", "Source"], await ColumnsAsync(Table));
+        Assert.Equal(
+            ["DK C|Denmark|uuid-C|PETREL|1", "NO A|Norway|uuid-A|PETREL|1", "NO A|Norway|uuid-A|RECALL|2", "NO B|Norway|uuid-B|RECALL|1"],
+            await SqlAsync($"SELECT [value], [Country], [UUID], [Source], [records] FROM [osdu].[{Table}] WHERE [partition] = N'dev' ORDER BY [value], [Source];"));
+        wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var recall = await DimensionTable.ReadAsync(
+            ledger, wellbores, new DimensionTableQuery(Attributes: [new DimensionAttributeMatch("Source", ["RECALL"])], OrderBy: "records", Descending: true), CancellationToken.None);
+        Assert.Equal(["Country", "UUID", "Source"], recall.Attributes);
+        Assert.Equal([("NO A", 2L), ("NO B", 1L)], recall.Rows.Select(r => (r.Value, r.Records)));
+
+        // What changed is rewritten where it is: a log that moves to another source changes two rows and no number.
+        var ids = await SqlAsync($"SELECT [id] FROM [osdu].[{Table}] WHERE [value] = N'NO B' OR [value] = N'DK C' ORDER BY [id];");
+        _platform.Records.Single(r => r["id"]!.GetValue<string>() == "dev:work-product-component--WellLog:2")["data"]!["Source"] = "RECALL";
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Equal(
+            ["DK C|PETREL|1", "NO A|RECALL|3", "NO B|RECALL|1"],
+            await SqlAsync($"SELECT [value], [Source], [records] FROM [osdu].[{Table}] ORDER BY [value], [Source];"));
+        Assert.Equal(ids, await SqlAsync($"SELECT [id] FROM [osdu].[{Table}] WHERE [value] = N'NO B' OR [value] = N'DK C' ORDER BY [id];"));
+
+        // An attribute the flow stops declaring keeps its column, emptied, so a query naming it still runs; a column
+        // somebody added to the table is theirs and is left as it is. The page shows what the dimension declares.
+        await SqlAsync($"ALTER TABLE [osdu].[{Table}] ADD [Notes] nvarchar(100) NULL;");
+        await SqlAsync($"UPDATE [osdu].[{Table}] SET [Notes] = N'mine';");
+        (runner, ledger, flow) = await RunnerAsync(Head + Declared + """
+                  Source: { collect: data.Source }
+            """);
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Equal(["id", "partition", "key_id", "key", "value", "records", "filter", "Country", "UUID", "Source", "Notes"], await ColumnsAsync(Table));
+        Assert.Equal(["DK C|(null)|PETREL|mine", "NO A|(null)|RECALL|mine", "NO B|(null)|RECALL|mine"], await SqlAsync($"SELECT [value], [UUID], [Source], [Notes] FROM [osdu].[{Table}] ORDER BY [value];"));
+        wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        Assert.Equal(["Country", "Source"], (await DimensionTable.ShapeAsync(ledger, wellbores, CancellationToken.None)).Attributes);
+
+        // A table dropped by hand is made again, with its rows, by whoever next reads it; so is the table of a dimension
+        // built before dimensions had one, which names none.
+        await SqlAsync($"DROP TABLE [osdu].[{Table}];");
+        Assert.Equal(3, (await DimensionTable.ReadAsync(ledger, wellbores, new DimensionTableQuery(), CancellationToken.None)).Total);
+        Assert.Equal(["id", "partition", "key_id", "key", "value", "records", "filter", "Country", "Source"], await ColumnsAsync(Table));
+        await SqlAsync($"DROP TABLE [osdu].[{Table}]; UPDATE [osdu].[Dimension] SET [TableName] = NULL;");
+        wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        Assert.Null(wellbores.TableName);
+        var exported = new StringWriter();
+        Assert.Equal(3, await DimensionExport.WriteAsync(ledger, wellbores, DimensionExportSet.Table, DimensionExportFormat.Csv, exported, CancellationToken.None));
+        Assert.Equal(Table, (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!.TableName);
+
+        // A key no build finds any more is no row of it.
+        _platform.Records.RemoveAll(r => r["id"]!.GetValue<string>() == "dev:work-product-component--WellLog:5");
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Equal(["NO A", "NO B"], await SqlAsync($"SELECT [value] FROM [osdu].[{Table}] ORDER BY [value];"));
+
+        // Removing the dimension drops its table with it.
+        wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var removed = await DimensionRemoval.RemoveAsync(ledger, wellbores, "admin@example.test", _clock, CancellationToken.None);
+        Assert.Equal(Table, removed.TableDropped);
+        Assert.Contains("dropped the table osdu." + Table, removed.Describe(), StringComparison.Ordinal);
+        Assert.Empty(await ColumnsAsync(Table));
+        Assert.Empty(await SqlAsync("SELECT [Name] FROM [osdu].[DimensionAttributeName];"));
+    }
+
+    [Fact]
+    public async Task A_table_name_another_flows_dimension_writes_is_refused_and_its_table_left_alone()
+    {
+        _platform.Add("dev:work-product-component--WellLog:1", WellLog, new JsonObject { ["Source"] = "RECALL" });
+        const string Declared = """
+            dimensions:
+              - name: Source
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.Source
+            """;
+        var (runner, ledger, flow) = await RunnerAsync(Head + Declared);
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        Assert.Equal(["id", "partition", "key_id", "key", "value", "records", "filter"], await ColumnsAsync("dim_wells_dimensions_Source"));
+
+        // Another flow whose name differs only in a character a table's name leaves out would write the same table.
+        var (other, _, _) = await RunnerAsync(Head.Replace("name: wells-dimensions", "name: wells.dimensions", StringComparison.Ordinal) + Declared, "flows/other.yaml");
+        var refused = await Assert.ThrowsAsync<DimensionBuildsFailedException>(() => other.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None));
+        Assert.Contains(
+            "would write the table osdu.dim_wells_dimensions_Source, which dimension Source of wells-dimensions writes", refused.Message, StringComparison.Ordinal);
+        var failed = (await ledger.ListDimensionsAsync(null, null)).Single(d => d.FlowName == "wells.dimensions");
+        Assert.Equal((DimensionRunStatus.Failed, (string?)null), ((await ledger.ListDimensionRunsAsync(failed.DimensionId, 1)).Single().Status, failed.TableName));
+
+        // The first flow's table is untouched, and the refused dimension goes without taking it.
+        var removed = await DimensionRemoval.RemoveAsync(ledger, failed, "admin@example.test", _clock, CancellationToken.None);
+        Assert.Null(removed.TableDropped);
+        Assert.Equal(["dev|RECALL|RECALL|1"], await SqlAsync("SELECT [partition], [key], [value], [records] FROM [osdu].[dim_wells_dimensions_Source];"));
+        Assert.Equal("dim_wells_dimensions_Source", (await ledger.FindDimensionAsync(flow.LedgerId, "Source"))!.TableName);
+    }
+
+    [Fact]
+    public void A_table_is_named_after_its_flow_and_dimension_and_stays_a_name_sql_server_takes()
+    {
+        Assert.Equal("dim_recall_welllog_05_dimensions_Wellbore", DimensionTables.NameOf("recall-welllog-05-dimensions", "Wellbore"));
+        Assert.Equal("dim_a_b_Well_Type", DimensionTables.NameOf("a.b", "Well-Type"));
+        var longest = DimensionTables.NameOf(new string('f', 190), new string('d', 60));
+        Assert.Equal(120, longest.Length);
+        Assert.NotEqual(longest, DimensionTables.NameOf(new string('f', 190), new string('d', 59) + "e"));
+        Assert.Equal("osdu.dim_x_y", DimensionTables.Shown(DimensionTables.NameOf("x", "y")));
+
+        var table = DimensionTables.Of("f", "D", [new DimensionAttributeSpec("Country", ["data.A"]), new DimensionAttributeSpec("Source", [], "data.Source")]);
+        Assert.Equal([("Country", false), ("Source", true)], table.Columns.Select(c => (c.Name, c.Collected)));
+        var tooMany = Assert.Throws<DeliveryException>(() => DimensionTables.Of(
+            "f", "D", Enumerable.Range(0, DimensionSpec.MaxAttributes + 1).Select(i => new DimensionAttributeSpec($"A{i}", ["data.A"])).ToList()));
+        Assert.Contains("declares 21 attributes, and a dimension's table holds 20", tooMany.Message, StringComparison.Ordinal);
     }
 
     [Fact]

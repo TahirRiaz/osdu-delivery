@@ -49,13 +49,28 @@ public sealed record DeliveryDimensionBuildDto(
 /// the index stores its field, how many values and keys it holds now, the build that wrote that (<c>Current</c>), and the
 /// newest build when that is another one (<c>Latest</c>: one that failed, was cancelled or is running). <c>DimensionId</c> is
 /// null for a dimension no build has registered yet. <c>Changed</c> is true when the declaration differs from the one its
-/// values were built with.
+/// values were built with. <c>Table</c> is the dimension's own table (<c>osdu.dim_...</c>): the dimension as one table, a
+/// row per key and value it collects; null until a build has written it.
 /// </summary>
 public sealed record DeliveryDimensionDto(
     int? DimensionId, string Name, string? Description, string Kind, string? Query, string? BuiltQuery, string Path, IReadOnlyList<string> Label,
     string? Unlabelled, IReadOnlyList<DeliveryDimensionAttributeSpecDto> Attributes, IReadOnlyList<string> Clean, bool CountRecords, long MaxValues, bool Declared,
     bool BuildsHere, bool Changed, DeliveryDimensionFieldDto? Field, long Values, long Keys, DateTime? LastBuiltUtc, DeliveryDimensionBuildDto? Current,
-    DeliveryDimensionBuildDto? Latest);
+    DeliveryDimensionBuildDto? Latest, string? Table);
+
+/// <summary>
+/// One row of a dimension's table: the row's number (what a table of facts joins on), the key's number, the key, its
+/// value, its attributes in the order of the table's <c>Attributes</c> (null where the key has none), the records of the
+/// row, and the search filter finding the key's records.
+/// </summary>
+public sealed record DeliveryDimensionTableRowDto(long Id, long KeyId, string Key, string Value, IReadOnlyList<string?> Attributes, long Records, string? Filter);
+
+/// <summary>
+/// A page of a dimension's table: the table's name, its attribute columns, the rows, whether more follow, and on a first
+/// page how many rows the query matches in all.
+/// </summary>
+public sealed record DeliveryDimensionTableDto(
+    string Table, IReadOnlyList<string> Attributes, IReadOnlyList<DeliveryDimensionTableRowDto> Rows, bool More, long? Total);
 
 /// <summary>
 /// An attribute a dimension reads of its keys: its name, and the paths it is read through from the record a key names, or
@@ -236,6 +251,7 @@ public static class DeliveryDimensionEndpoints
         delivery.MapGet("/dimensions", GetBoardAsync).WithName("GetDeliveryDimensionBoard");
         delivery.MapGet("/flows/{pipelineId:guid}/dimensions", GetFlowBoardAsync).WithName("GetDeliveryDimensionFlowBoard");
         delivery.MapGet("/dimensions/{dimensionId:int}", GetDimensionAsync).WithName("GetDeliveryDimension");
+        delivery.MapGet("/dimensions/{dimensionId:int}/table", ReadTableAsync).WithName("ReadDeliveryDimensionTable");
         delivery.MapGet("/dimensions/{dimensionId:int}/values", ListValuesAsync).WithName("ListDeliveryDimensionValues");
         delivery.MapGet("/dimensions/{dimensionId:int}/values/{valueId:long}", GetValueAsync).WithName("GetDeliveryDimensionValue");
         delivery.MapGet("/dimensions/{dimensionId:int}/keys", ListKeysAsync).WithName("ListDeliveryDimensionKeys");
@@ -347,6 +363,72 @@ public static class DeliveryDimensionEndpoints
         return TypedResults.Ok(new DeliveryDimensionDetailDto(
             pipeline?.Id, pipeline?.RepoId, dimension.FlowName, dimension.FlowId, dimension.Partition, flow is null ? [] : Parameters(flow),
             ToDto(spec, dimension.Partition, dimension, builds)));
+    }
+
+    /// <summary>
+    /// A page of the dimension's table (docs/dimension-plan.md, The table): the rows holding <c>search</c> in the key, the
+    /// value or an attribute, and every attribute value asked for (<c>attr=Name:value</c>), ordered by <c>order</c>
+    /// (<c>value</c>, <c>key</c>, <c>records</c>, <c>id</c> or an attribute's name) ascending or, with <c>dir=desc</c>,
+    /// descending, from row <c>offset</c>. A dimension built before dimensions had a table has its table made here.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryDimensionTableDto>, ProblemHttpResult>> ReadTableAsync(
+        int dimensionId, string? search, string[]? attr, string? order, string? dir, int? offset, int? limit, ILedger ledger, CancellationToken ct)
+    {
+        if (SearchProblem(search) is { } badSearch)
+        {
+            return badSearch;
+        }
+
+        if (order is { Length: > DimensionAttributeSpec.MaxNameLength })
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Unknown column", $"order is a column of the table: at most {DimensionAttributeSpec.MaxNameLength} characters.");
+        }
+
+        var descending = false;
+        switch (dir?.Trim().ToLowerInvariant())
+        {
+            case null or "" or "asc":
+                break;
+            case "desc":
+                descending = true;
+                break;
+            default:
+                return Problem(StatusCodes.Status400BadRequest, "Unknown direction", $"dir '{dir}' is not one of asc, desc.");
+        }
+
+        if (offset is < 0)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Invalid offset", "offset is the number of rows before the page, zero or more.");
+        }
+
+        if (await ledger.GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension)
+        {
+            return NoDimension(dimensionId);
+        }
+
+        // The columns are the table's own, which the store checks the names against: a build that failed after its
+        // declaration changed leaves the table with the attributes of the last one that wrote.
+        var (matches, badAttribute) = AttributeMatches(attr, name => name, _ => string.Empty);
+        if (badAttribute is not null)
+        {
+            return badAttribute;
+        }
+
+        try
+        {
+            var page = await DimensionTable.ReadAsync(
+                ledger, dimension, new DimensionTableQuery(search, matches, order, descending, offset ?? 0, PageSize(limit)), ct).ConfigureAwait(false);
+            return TypedResults.Ok(new DeliveryDimensionTableDto(
+                page.Table,
+                page.Attributes,
+                page.Rows.Select(r => new DeliveryDimensionTableRowDto(r.Id, r.KeyId, r.Key, r.Value, r.Attributes, r.Records, r.Filter)).ToList(),
+                page.More,
+                page.Total));
+        }
+        catch (DeliveryException ex)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "No table", ex.Message);
+        }
     }
 
     private static async Task<Results<Ok<DeliveryDimensionValuePageDto>, ProblemHttpResult>> ListValuesAsync(
@@ -906,7 +988,8 @@ public static class DeliveryDimensionEndpoints
             state?.Originals ?? 0,
             state?.LastBuiltUtc,
             current is null ? null : ToDto(current),
-            latest is null ? null : ToDto(latest));
+            latest is null ? null : ToDto(latest),
+            state?.TableName is { } table ? DimensionTables.Shown(table) : null);
     }
 
     private static DeliveryDimensionBuildDto ToDto(DimensionRunState r) => new(
@@ -935,12 +1018,25 @@ public static class DeliveryDimensionEndpoints
     /// </summary>
     private static (IReadOnlyList<DimensionAttributeMatch>? Matches, ProblemHttpResult? Problem) AttributeMatches(DimensionState dimension, string[]? asked)
     {
+        var declared = DimensionRunner.AttributesOf(dimension.AttributesJson);
+        return AttributeMatches(
+            asked,
+            name => declared.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase))?.Name,
+            name => NoAttribute(dimension, name, declared));
+    }
+
+    /// <summary>
+    /// The matches the <c>attr</c> parameters ask for, each attribute named as <paramref name="named"/> gives it; a name it
+    /// gives nothing for is a problem saying what <paramref name="none"/> does.
+    /// </summary>
+    private static (IReadOnlyList<DimensionAttributeMatch>? Matches, ProblemHttpResult? Problem) AttributeMatches(
+        string[]? asked, Func<string, string?> named, Func<string, string> none)
+    {
         if (asked is null || asked.Length == 0)
         {
             return (null, null);
         }
 
-        var declared = DimensionRunner.AttributesOf(dimension.AttributesJson);
         var matches = new List<DimensionAttributeMatch>();
         foreach (var text in asked)
         {
@@ -957,20 +1053,19 @@ public static class DeliveryDimensionEndpoints
                 return (null, Problem(StatusCodes.Status400BadRequest, "Invalid attribute filter", $"An attribute value is at most {DimensionSpec.MaxAttributeValueLength} characters."));
             }
 
-            var attribute = declared.FirstOrDefault(a => string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase));
-            if (attribute is null)
+            if (named(name) is not { } attribute)
             {
-                return (null, Problem(StatusCodes.Status400BadRequest, "No such attribute", NoAttribute(dimension, name, declared)));
+                return (null, Problem(StatusCodes.Status400BadRequest, "No such attribute", none(name)));
             }
 
-            var index = matches.FindIndex(m => m.Name == attribute.Name);
+            var index = matches.FindIndex(m => string.Equals(m.Name, attribute, StringComparison.OrdinalIgnoreCase));
             if (index >= 0)
             {
                 matches[index] = matches[index] with { Values = [.. matches[index].Values, value] };
             }
             else
             {
-                matches.Add(new DimensionAttributeMatch(attribute.Name, [value]));
+                matches.Add(new DimensionAttributeMatch(attribute, [value]));
             }
         }
 

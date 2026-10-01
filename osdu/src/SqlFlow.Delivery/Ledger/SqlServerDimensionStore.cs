@@ -5,8 +5,14 @@ using System.Text;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using SqlFlow.Core;
 using SqlFlow.Core.Data;
+using SqlFlow.Core.Ingestion;
+using SqlFlow.Core.Model;
 using SqlFlow.Delivery.Data;
+using SqlFlow.SqlServer;
+using SqlFlow.SqlServer.Catalog;
+using SqlFlow.SqlServer.Schema;
 
 namespace SqlFlow.Delivery.Ledger;
 
@@ -14,8 +20,9 @@ namespace SqlFlow.Delivery.Ledger;
 /// Writes a completed dimension build in one transaction (docs/dimension-plan.md, Tables): the build's originals and members
 /// are copied into temporary tables, and set-based statements add what is new, change what changed, mark removed what the
 /// build no longer found and bring back what it found again, log every change to an original, rewrite the attributes of
-/// the originals it found, and close the build with its counts. A reader sees the dimension as one build left it, never half of the next. An application lock per dimension
-/// keeps two builds of one dimension from writing at once; a build of another dimension writes beside it.
+/// the originals it found, bring the dimension's own table to what the build found, and close the build with its counts. A
+/// reader sees the dimension as one build left it, never half of the next. An application lock per dimension keeps two
+/// builds of one dimension from writing at once; a build of another dimension writes beside it.
 /// </summary>
 internal static class SqlServerDimensionStore
 {
@@ -61,6 +68,7 @@ internal static class SqlServerDimensionStore
             [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [ValueFrom] nvarchar(1024) NULL,
             [Records] bigint NULL,
+            [AttributeId] int NULL,
             PRIMARY KEY ([OriginalHash], [Name], [Value]));
         CREATE TABLE #DimText (
             [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL,
@@ -68,7 +76,17 @@ internal static class SqlServerDimensionStore
             [Text] nvarchar(1024) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
             [Records] bigint NOT NULL,
+            [AttributeId] int NULL,
             PRIMARY KEY ([Name], [TextHash]));
+        """ + "\n" + NameStageSql;
+
+    // The attributes the dimension declares, each with its place among them: what a write that knows the declaration
+    // (it carries the table) stages, so every attribute has its number and its place among the dimension's columns.
+    private const string NameStageSql = """
+        CREATE TABLE #DimName (
+            [Name] nvarchar(64) COLLATE Latin1_General_100_BIN2 NOT NULL PRIMARY KEY,
+            [Ordinal] smallint NULL,
+            [Collected] bit NOT NULL);
         """;
 
     private const string LockSql = """
@@ -77,9 +95,105 @@ internal static class SqlServerDimensionStore
         SELECT @granted;
         """;
 
+    // The dimension's attributes, each under its number. A write that knows the declaration (it carries the table) gives
+    // each declared attribute its place, and takes the place of one the dimension no longer declares; an attribute keeps
+    // its number through all of it. The attribute that made the table's rows before the write is remembered first: when
+    // the write makes them by another, no row the table holds can be matched, and they are written again.
+    private const string NamesSql = """
+        DECLARE @collectedWas nvarchar(64) = (
+            SELECT TOP (1) n.[Name] FROM [osdu].[DimensionAttributeName] AS n
+            WHERE n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Ordinal] IS NOT NULL AND n.[Collected] = 1
+            ORDER BY n.[Ordinal]);
+
+        INSERT INTO [osdu].[DimensionAttributeName] ([PartitionId], [DimensionId], [Name], [Ordinal], [Collected])
+        SELECT @p, @d, s.[Name], NULL, s.[Collected]
+        FROM #DimName AS s
+        WHERE NOT EXISTS (
+            SELECT 1 FROM [osdu].[DimensionAttributeName] AS n WHERE n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Name] = s.[Name])
+        ORDER BY ISNULL(s.[Ordinal], 32767), s.[Name];
+
+        IF @tableName IS NOT NULL
+        BEGIN
+            UPDATE n SET n.[Ordinal] = s.[Ordinal], n.[Collected] = ISNULL(s.[Collected], n.[Collected])
+            FROM [osdu].[DimensionAttributeName] AS n
+            LEFT JOIN #DimName AS s ON s.[Name] = n.[Name]
+            WHERE n.[PartitionId] = @p AND n.[DimensionId] = @d
+              AND (ISNULL(n.[Ordinal], 0) <> ISNULL(s.[Ordinal], 0) OR n.[Collected] <> ISNULL(s.[Collected], n.[Collected]));
+        END;
+        """;
+
+    private static string Slots(Func<string, string> each, string between)
+        => string.Join(between, Enumerable.Range(1, DimensionTables.Slots).Select(i => each(DimensionTables.Slot(i))));
+
+    private static string Slots(Func<int, string, string> each, string between)
+        => string.Join(between, Enumerable.Range(1, DimensionTables.Slots).Select(i => each(i, DimensionTables.Slot(i))));
+
+    // The dimension laid out as its table holds it (docs/dimension-plan.md, The table): a row per key the dimension holds
+    // now and value it collects, each attribute in the column of its place, read from what the write has just kept and
+    // joined by the attributes' numbers. An attribute read from the record a key names is one value of the key, so every
+    // such attribute of a key is read in one pass and laid out by its place; the collected attribute is the one that
+    // makes rows, so it is joined.
+    private static readonly string RowsSql = $"""
+        DECLARE @collectedId int, @collectedOrdinal smallint, @collectedNow nvarchar(64);
+        SELECT TOP (1) @collectedId = n.[AttributeId], @collectedOrdinal = n.[Ordinal], @collectedNow = n.[Name]
+        FROM [osdu].[DimensionAttributeName] AS n
+        WHERE n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Ordinal] IS NOT NULL AND n.[Collected] = 1
+        ORDER BY n.[Ordinal];
+
+        DROP TABLE IF EXISTS #DimRow;
+        CREATE TABLE #DimRow (
+            [ValueId] bigint NOT NULL,
+            [Part] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Key] nvarchar(1024) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            [Value] nvarchar(256) COLLATE Latin1_General_100_BIN2 NOT NULL,
+            {Slots(slot => $"[{slot}] nvarchar(256) COLLATE Latin1_General_100_BIN2 NULL,", "\n    ")}
+            [Records] bigint NOT NULL,
+            [Filter] nvarchar(4000) COLLATE Latin1_General_100_BIN2 NULL,
+            PRIMARY KEY ([ValueId], [Part]));
+
+        INSERT INTO #DimRow ([ValueId], [Part], [Key], [Value], {Slots(slot => $"[{slot}]", ", ")}, [Records], [Filter])
+        SELECT k.[ValueId], ISNULL(c.[Value], N''), k.[Original], m.[Value],
+            {Slots((i, slot) => $"CASE WHEN @collectedOrdinal = {i} THEN c.[Value] ELSE x.[{slot}] END", ",\n    ")},
+            ISNULL(c.[Records], k.[Count]), k.[Filter]
+        FROM [osdu].[DimensionValue] AS k
+        INNER JOIN [osdu].[DimensionMember] AS m ON m.[PartitionId] = k.[PartitionId] AND m.[MemberId] = k.[MemberId]
+        LEFT JOIN (
+            SELECT a.[ValueId],
+                {Slots((i, slot) => $"MAX(CASE WHEN n.[Ordinal] = {i} THEN a.[Value] END) AS [{slot}]", ",\n        ")}
+            FROM [osdu].[DimensionAttribute] AS a
+            INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = a.[PartitionId] AND n.[AttributeId] = a.[AttributeId]
+            WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND n.[Ordinal] IS NOT NULL AND n.[Collected] = 0
+            GROUP BY a.[ValueId]) AS x ON x.[ValueId] = k.[ValueId]
+        LEFT JOIN [osdu].[DimensionAttribute] AS c
+            ON c.[PartitionId] = @p AND c.[DimensionId] = @d AND c.[AttributeId] = @collectedId AND c.[ValueId] = k.[ValueId]
+        WHERE k.[PartitionId] = @p AND k.[DimensionId] = @d AND k.[RemovedRunId] IS NULL;
+        """;
+
+    // The dimension's table brought to what the write kept: the rows are laid out, then the statements made for this
+    // table (DimensionTables.ApplySql, since its columns are the dimension's own) delete the rows that left, rewrite the
+    // ones that changed and add the new ones, in the write's transaction. The table itself was made, or widened, before
+    // the transaction began.
+    private static readonly string TableSql = """
+        IF @tableName IS NOT NULL
+        BEGIN
+
+        """ + RowsSql + "\n\n" + """
+            DECLARE @rewrite bit = CASE WHEN ISNULL(@collectedWas, N'') <> ISNULL(@collectedNow, N'') THEN 1 ELSE 0 END;
+            EXEC sys.sp_executesql @applySql, N'@partition nvarchar(256), @rewrite bit', @partition = @partitionName, @rewrite = @rewrite;
+            DROP TABLE #DimRow;
+
+            UPDATE [osdu].[Dimension] SET [TableName] = @tableName
+            WHERE [PartitionId] = @p AND [DimensionId] = @d AND ([TableName] IS NULL OR [TableName] <> @tableName);
+        END;
+        """;
+
+    // The table's rows written again outside a build: the same steps as a build's write, under the dimension's write
+    // lock, from the attributes the declaration names.
+    private static readonly string EnsureTableSql = "SET NOCOUNT ON;\n" + NamesSql + "\n\n" + TableSql;
+
     // The whole merge, in the order that keeps every step's reads true: members first, so each original can be given the id
     // of its member; then the originals, whose changes are gathered as they are made; then the log and the counts.
-    private const string MergeSql = """
+    private static readonly string MergeSql = """
         SET NOCOUNT ON;
         DECLARE @firstBuild bit = CASE WHEN EXISTS (
             SELECT 1 FROM [osdu].[Dimension] WHERE [PartitionId] = @p AND [DimensionId] = @d AND [LastRunId] IS NOT NULL) THEN 0 ELSE 1 END;
@@ -157,6 +271,21 @@ internal static class SqlServerDimensionStore
         WHERE v.[PartitionId] = @p AND v.[DimensionId] = @d AND v.[RemovedRunId] IS NULL
           AND NOT EXISTS (SELECT 1 FROM #DimValue AS s WHERE s.[OriginalHash] = v.[OriginalHash]);
 
+        -- Every attribute the build read has its number: an attribute's values are kept and joined by it, never by its
+        -- name. A name read that the declaration does not hold (a write that carries none) still gets one.
+        INSERT INTO #DimName ([Name], [Ordinal], [Collected])
+        SELECT t.[Name], NULL, t.[Collected]
+        FROM (SELECT [Name], CAST(MAX(CASE WHEN [Records] IS NULL THEN 0 ELSE 1 END) AS bit) AS [Collected] FROM #DimAttr GROUP BY [Name]
+              UNION
+              SELECT [Name], CAST(1 AS bit) FROM #DimText WHERE [Name] NOT IN (SELECT [Name] FROM #DimAttr)) AS t
+        WHERE NOT EXISTS (SELECT 1 FROM #DimName AS s WHERE s.[Name] = t.[Name]);
+
+        """ + "\n" + NamesSql + "\n\n" + """
+        UPDATE t SET t.[AttributeId] = n.[AttributeId]
+        FROM #DimAttr AS t INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Name] = t.[Name];
+        UPDATE t SET t.[AttributeId] = n.[AttributeId]
+        FROM #DimText AS t INNER JOIN [osdu].[DimensionAttributeName] AS n ON n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Name] = t.[Name];
+
         -- The attribute values of every original the build found are what it read: one no longer read is dropped, one read
         -- again rewritten only when where it was read or how many records hold it changed, and a new one added. An original
         -- the build did not find keeps what its last build read.
@@ -165,34 +294,36 @@ internal static class SqlServerDimensionStore
         INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = a.[PartitionId] AND v.[ValueId] = a.[ValueId]
         INNER JOIN #DimValue AS s ON s.[OriginalHash] = v.[OriginalHash]
         WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d
-          AND NOT EXISTS (SELECT 1 FROM #DimAttr AS t WHERE t.[OriginalHash] = s.[OriginalHash] AND t.[Name] = a.[Name] AND t.[Value] = a.[Value]);
+          AND NOT EXISTS (SELECT 1 FROM #DimAttr AS t WHERE t.[OriginalHash] = s.[OriginalHash] AND t.[AttributeId] = a.[AttributeId] AND t.[Value] = a.[Value]);
         DECLARE @attributesChanged bigint = @@ROWCOUNT;
 
         UPDATE a SET a.[ValueFrom] = t.[ValueFrom], a.[Records] = t.[Records]
         FROM [osdu].[DimensionAttribute] AS a
         INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = a.[PartitionId] AND v.[ValueId] = a.[ValueId]
-        INNER JOIN #DimAttr AS t ON t.[OriginalHash] = v.[OriginalHash] AND t.[Name] = a.[Name] AND t.[Value] = a.[Value]
+        INNER JOIN #DimAttr AS t ON t.[OriginalHash] = v.[OriginalHash] AND t.[AttributeId] = a.[AttributeId] AND t.[Value] = a.[Value]
         WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d
           AND (ISNULL(a.[ValueFrom], N'') <> ISNULL(t.[ValueFrom], N'') OR (a.[ValueFrom] IS NULL AND t.[ValueFrom] IS NOT NULL)
                OR (a.[ValueFrom] IS NOT NULL AND t.[ValueFrom] IS NULL)
                OR ISNULL(a.[Records], -1) <> ISNULL(t.[Records], -1));
         SET @attributesChanged += @@ROWCOUNT;
 
-        INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [Name], [Value], [ValueFrom], [Records])
-        SELECT @p, @d, v.[ValueId], t.[Name], t.[Value], t.[ValueFrom], t.[Records]
+        INSERT INTO [osdu].[DimensionAttribute] ([PartitionId], [DimensionId], [ValueId], [AttributeId], [Value], [ValueFrom], [Records])
+        SELECT @p, @d, v.[ValueId], t.[AttributeId], t.[Value], t.[ValueFrom], t.[Records]
         FROM #DimAttr AS t
         INNER JOIN [osdu].[DimensionValue] AS v ON v.[PartitionId] = @p AND v.[DimensionId] = @d AND v.[OriginalHash] = t.[OriginalHash]
         WHERE NOT EXISTS (
             SELECT 1 FROM [osdu].[DimensionAttribute] AS a
-            WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND a.[ValueId] = v.[ValueId] AND a.[Name] = t.[Name] AND a.[Value] = t.[Value]);
+            WHERE a.[PartitionId] = @p AND a.[DimensionId] = @d AND a.[ValueId] = v.[ValueId] AND a.[AttributeId] = t.[AttributeId] AND a.[Value] = t.[Value])
+        ORDER BY v.[ValueId], t.[AttributeId], t.[Value];
         SET @attributesChanged += @@ROWCOUNT;
 
         -- The texts a build collected replace those the dimension had, unless it could not settle the field (and so read none).
         IF @fieldIndex IS NOT NULL
         BEGIN
             DELETE FROM [osdu].[DimensionCollectedText] WHERE [PartitionId] = @p AND [DimensionId] = @d;
-            INSERT INTO [osdu].[DimensionCollectedText] ([PartitionId], [DimensionId], [Name], [TextHash], [Text], [Value], [Records])
-            SELECT @p, @d, t.[Name], t.[TextHash], t.[Text], t.[Value], t.[Records] FROM #DimText AS t;
+            INSERT INTO [osdu].[DimensionCollectedText] ([PartitionId], [DimensionId], [AttributeId], [TextHash], [Text], [Value], [Records])
+            SELECT @p, @d, t.[AttributeId], t.[TextHash], t.[Text], t.[Value], t.[Records] FROM #DimText AS t
+            ORDER BY t.[AttributeId], t.[Value], t.[Text];
         END;
 
         -- The first build's originals are its arrivals, told by the build that first found each; a later build logs its own.
@@ -214,6 +345,7 @@ internal static class SqlServerDimensionStore
             [Members] = @members, [Originals] = @originals, [LastRunId] = @run, [LastBuiltUtc] = @now
         WHERE [PartitionId] = @p AND [DimensionId] = @d;
 
+        """ + "\n\n" + TableSql + "\n\n" + """
         SELECT
             (SELECT COUNT_BIG(*) FROM #DimChange WHERE [Change] = N'added'),
             (SELECT COUNT_BIG(*) FROM #DimChange WHERE [Change] = N'removed'),
@@ -231,22 +363,44 @@ internal static class SqlServerDimensionStore
         EXEC @granted = sys.sp_getapplock @Resource = @resource, @LockMode = N'Exclusive', @LockOwner = N'Session', @LockTimeout = @timeout;
         IF @granted < 0
         BEGIN
-            SELECT CAST(@granted AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint);
+            SELECT CAST(@granted AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint), CAST(0 AS bigint),
+                CAST(NULL AS sysname);
             RETURN;
         END;
 
         BEGIN TRY
             DECLARE @n bigint, @texts bigint = 0, @attributes bigint = 0, @changes bigint = 0, @keys bigint = 0, @values bigint = 0, @builds bigint = 0;
+            DECLARE @table sysname = (SELECT [TableName] FROM [osdu].[Dimension] WHERE [PartitionId] = @p AND [DimensionId] = @d);
+            DECLARE @dropped sysname = NULL;
+
+            -- The dimension's rows in its own table, which every partition the flow builds it in writes to.
+            IF @table IS NOT NULL AND OBJECT_ID(N'[osdu].' + QUOTENAME(@table), N'U') IS NOT NULL
+            BEGIN
+                DECLARE @rows nvarchar(max) = N'WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].' + QUOTENAME(@table)
+                    + N' WHERE [partition] = @partition; IF @@ROWCOUNT < @batch BREAK; END;';
+                EXEC sys.sp_executesql @rows, N'@batch int, @partition nvarchar(256)', @batch = @batch, @partition = @partitionName;
+            END;
+
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionCollectedText] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @texts += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionAttribute] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @attributes += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionChange] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @changes += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionValue] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @keys += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionMember] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @values += @n; IF @n < @batch BREAK; END;
             WHILE 1 = 1 BEGIN DELETE TOP (@batch) FROM [osdu].[DimensionRun] WHERE [PartitionId] = @p AND [DimensionId] = @d; SET @n = @@ROWCOUNT; SET @builds += @n; IF @n < @batch BREAK; END;
+            DELETE FROM [osdu].[DimensionAttributeName] WHERE [PartitionId] = @p AND [DimensionId] = @d;
             DELETE FROM [osdu].[Dimension] WHERE [PartitionId] = @p AND [DimensionId] = @d;
             SET @n = @@ROWCOUNT;
+
+            -- The table holds every partition the flow builds the dimension in: it goes with the last of them.
+            IF @table IS NOT NULL AND NOT EXISTS (SELECT 1 FROM [osdu].[Dimension] WHERE [TableName] = @table)
+            BEGIN
+                DECLARE @drop nvarchar(400) = N'DROP TABLE IF EXISTS [osdu].' + QUOTENAME(@table) + N';';
+                EXEC sys.sp_executesql @drop;
+                SET @dropped = @table;
+            END;
+
             EXEC sys.sp_releaseapplock @Resource = @resource, @LockOwner = N'Session';
-            SELECT @n, @values, @keys, @builds, @changes, @attributes, @texts;
+            SELECT @n, @values, @keys, @builds, @changes, @attributes, @texts, @dropped;
         END TRY
         BEGIN CATCH
             EXEC sys.sp_releaseapplock @Resource = @resource, @LockOwner = N'Session';
@@ -254,8 +408,396 @@ internal static class SqlServerDimensionStore
         END CATCH;
         """;
 
-    /// <summary>The rows a removal took from each table.</summary>
-    public sealed record Removed(long Values, long Keys, long Builds, long Changes, long Attributes, long Texts);
+    /// <summary>The rows a removal took from each table, and the dimension's own table when the dimension was the last to write it.</summary>
+    public sealed record Removed(long Values, long Keys, long Builds, long Changes, long Attributes, long Texts, string? TableDropped);
+
+    /// <summary>
+    /// The attribute columns of table <paramref name="table"/> as dimension <paramref name="dimensionId"/> reads it: the
+    /// attributes it declares now, in their order, each with a column there.
+    /// </summary>
+    /// <exception cref="DimensionTableMissingException">The database holds no such table.</exception>
+    public static async Task<IReadOnlyList<string>> TableAttributesAsync(OsduDbContext db, short partitionId, int dimensionId, string table, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await TableAttributesAsync((SqlConnection)db.Database.GetDbConnection(), partitionId, dimensionId, table, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<IReadOnlyList<string>> TableAttributesAsync(SqlConnection connection, short partitionId, int dimensionId, string table, CancellationToken ct)
+    {
+        await using var command = new SqlCommand(
+            """
+            SELECT CASE WHEN OBJECT_ID(@table, N'U') IS NULL THEN 0 ELSE 1 END;
+            SELECT n.[Name]
+            FROM [osdu].[DimensionAttributeName] AS n
+            WHERE n.[PartitionId] = @p AND n.[DimensionId] = @d AND n.[Ordinal] IS NOT NULL AND COL_LENGTH(@table, n.[Name]) IS NOT NULL
+            ORDER BY n.[Ordinal];
+            """,
+            connection) { CommandTimeout = CommandTimeoutSeconds };
+        command.Parameters.Add(new SqlParameter("@table", SqlDbType.NVarChar, 300) { Value = DimensionTables.Qualified(table) });
+        command.Parameters.Add(new SqlParameter("@p", SqlDbType.SmallInt) { Value = partitionId });
+        command.Parameters.Add(new SqlParameter("@d", SqlDbType.Int) { Value = dimensionId });
+        var columns = new List<string>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        if (!await reader.ReadAsync(ct).ConfigureAwait(false) || reader.GetInt32(0) == 0)
+        {
+            throw new DimensionTableMissingException(
+                $"The table {DimensionTables.Shown(table)} is not in the database: it was dropped, or never made. Run the flow's pipeline to make it again.");
+        }
+
+        await reader.NextResultAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            columns.Add(reader.GetString(0));
+        }
+
+        return columns;
+    }
+
+    /// <summary>A column of the table by the name a caller gave it, ignoring case; null when the table has none of that name.</summary>
+    private static string? TableColumn(IReadOnlyList<string> attributes, string name)
+        => name.Trim().ToLowerInvariant() switch
+        {
+            "key" => "key",
+            "value" => "value",
+            "records" => "records",
+            "id" => "id",
+            _ => attributes.FirstOrDefault(a => string.Equals(a, name.Trim(), StringComparison.OrdinalIgnoreCase)),
+        };
+
+    private static string Bracketed(string identifier) => DimensionTables.Quoted(identifier);
+
+    /// <summary>The columns a row begins with, the ones it ends with, and the ones text is searched in beside the attributes.</summary>
+    private static readonly string[] LeadColumns = ["[id]", "[key_id]", "[key]", "[value]"];
+
+    private static readonly string[] EndColumns = ["[records]", "[filter]"];
+
+    private static readonly string[] SearchedColumns = ["[value]", "[key]"];
+
+    /// <summary>The rows a statement over a table reads: the row's number, the key's, the key, the value, each attribute, the records and the filter.</summary>
+    private static string TableColumns(IReadOnlyList<string> attributes, string alias = "")
+        => string.Join(", ", LeadColumns.Concat(attributes.Select(Bracketed)).Concat(EndColumns).Select(c => alias + c));
+
+    /// <summary>A row of a table, its columns read in the order the statement names them, as a reader streaming them needs.</summary>
+    private static DimensionTableRow TableRow(SqlDataReader reader, int attributes)
+    {
+        var id = reader.GetInt64(0);
+        var keyId = reader.GetInt64(1);
+        var key = reader.GetString(2);
+        var value = reader.GetString(3);
+        var values = new string?[attributes];
+        for (var i = 0; i < attributes; i++)
+        {
+            values[i] = reader.IsDBNull(4 + i) ? null : reader.GetString(4 + i);
+        }
+
+        var records = reader.GetInt64(4 + attributes);
+        return new DimensionTableRow(id, keyId, key, value, values, records, reader.IsDBNull(5 + attributes) ? null : reader.GetString(5 + attributes));
+    }
+
+    /// <summary>
+    /// A page of the rows of <paramref name="table"/> in partition <paramref name="partition"/>, narrowed and ordered as
+    /// <paramref name="query"/> asks, with how many rows it matches in all on a first page.
+    /// </summary>
+    /// <remarks>
+    /// A page is found before it is read: the first statement orders the numbers of the rows the query matches and keeps
+    /// the page's, which is all it sorts (a number and the column ordered by, never a key or a filter), and the second
+    /// reads those rows by their numbers. Rows in value order come from the index that keeps them so. Text is searched
+    /// case-folded and compared exactly, which is several times quicker than a comparison by a language's rules, and an
+    /// attribute's value is matched exactly, as the lists that offer it hold it; either reads the partition's rows once,
+    /// for the count and the page together.
+    /// </remarks>
+    /// <exception cref="DimensionTableMissingException">The database holds no such table.</exception>
+    /// <exception cref="DeliveryException">The query orders or narrows by a column the table does not have.</exception>
+    public static async Task<DimensionTablePage> ReadTableAsync(
+        OsduDbContext db, short partitionId, int dimensionId, string table, string partition, DimensionTableQuery query, int maxPage, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(query);
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            var attributes = await TableAttributesAsync(connection, partitionId, dimensionId, table, ct).ConfigureAwait(false);
+            var where = new List<string> { "[partition] = @partition" };
+            var parameters = new List<SqlParameter> { new("@partition", SqlDbType.NVarChar, 256) { Value = partition } };
+            if (!string.IsNullOrWhiteSpace(query.Search))
+            {
+                // What is typed is found anywhere in the key, the value or an attribute, ignoring case; its own wildcards are text.
+                var like = "%" + query.Search.Trim().Replace("\\", "\\\\", StringComparison.Ordinal).Replace("%", "\\%", StringComparison.Ordinal)
+                    .Replace("_", "\\_", StringComparison.Ordinal).Replace("[", "\\[", StringComparison.Ordinal) + "%";
+                parameters.Add(new SqlParameter("@like", SqlDbType.NVarChar, 600) { Value = like });
+                where.Add("(" + string.Join(" OR ", SearchedColumns.Concat(attributes.Select(Bracketed))
+                    .Select(c => $"UPPER({c}) COLLATE {DimensionTables.Exact} LIKE UPPER(@like) ESCAPE N'\\'")) + ")");
+            }
+
+            var matched = 0;
+            foreach (var match in query.Attributes ?? [])
+            {
+                var column = attributes.FirstOrDefault(a => string.Equals(a, match.Name, StringComparison.OrdinalIgnoreCase))
+                    ?? throw new DeliveryException(
+                        $"The table {DimensionTables.Shown(table)} has no attribute column '{match.Name}'{(attributes.Count == 0 ? "; it has none" : $"; it has {string.Join(", ", attributes)}")}.");
+                var names = new List<string>();
+                foreach (var value in match.Values.Distinct(StringComparer.Ordinal))
+                {
+                    var name = string.Create(CultureInfo.InvariantCulture, $"@m{matched++}");
+                    parameters.Add(new SqlParameter(name, SqlDbType.NVarChar, DeliveryDimensionAttributeValue.MaxValueLength) { Value = value });
+                    names.Add(name);
+                }
+
+                if (names.Count > 0)
+                {
+                    where.Add($"{Bracketed(column)} COLLATE {DimensionTables.Exact} IN ({string.Join(", ", names)})");
+                }
+            }
+
+            var ordered = string.IsNullOrWhiteSpace(query.OrderBy) ? "value" : TableColumn(attributes, query.OrderBy)
+                ?? throw new DeliveryException(
+                    $"The table {DimensionTables.Shown(table)} has no column '{query.OrderBy}' to order by; it has value, key, records, id{(attributes.Count == 0 ? string.Empty : ", " + string.Join(", ", attributes))}.");
+
+            // A row's number tells it from every other, so the order ends with it: every page then holds its own rows.
+            var direction = query.Descending ? "DESC" : "ASC";
+            var order = ordered == "id" ? $"[id] {direction}" : $"{Bracketed(ordered)} {direction}, [id]";
+            var take = Math.Clamp(query.Limit, 1, maxPage);
+            var offset = Math.Max(0, query.Offset);
+            var filter = string.Join(" AND ", where);
+            var from = DimensionTables.Qualified(table);
+
+            long? total = null;
+            var rows = new List<DimensionTableRow>(take);
+            if (where.Count > 1)
+            {
+                // A search or an attribute's value is found by reading the partition's rows, so they are read once: the
+                // numbers of the rows that match are kept with the column they are ordered by, counted, and the page
+                // taken from them.
+                var by = ordered == "id" ? string.Empty : $", {Bracketed(ordered)} AS [o]";
+                var matchOrder = ordered == "id" ? $"[id] {direction}" : $"[o] {direction}, [id]";
+                await using var command = new SqlCommand(
+                    $"""
+                    SET NOCOUNT ON;
+                    DECLARE @page TABLE ([n] int IDENTITY(1, 1) NOT NULL PRIMARY KEY, [id] bigint NOT NULL);
+                    SELECT [id]{by} INTO #match FROM {from} WHERE {filter};
+                    DECLARE @total bigint = ROWCOUNT_BIG();
+                    INSERT INTO @page ([id])
+                    SELECT [id] FROM #match ORDER BY {matchOrder} OFFSET @offset ROWS FETCH NEXT @take ROWS ONLY;
+                    DROP TABLE #match;
+                    SELECT @total;
+                    SELECT {TableColumns(attributes, "t.")}
+                    FROM @page AS g INNER JOIN {from} AS t ON t.[id] = g.[id]
+                    ORDER BY g.[n];
+                    """,
+                    connection)
+                {
+                    CommandTimeout = CommandTimeoutSeconds,
+                };
+                command.Parameters.AddRange(parameters.ToArray());
+                command.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+                command.Parameters.Add(new SqlParameter("@take", SqlDbType.Int) { Value = take });
+                await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                if (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    total = reader.GetInt64(0);
+                }
+
+                await reader.NextResultAsync(ct).ConfigureAwait(false);
+                while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                {
+                    rows.Add(TableRow(reader, attributes.Count));
+                }
+            }
+            else
+            {
+                // Every row of the partition: counted from the narrow index that keeps them in value order, on a first
+                // page, and the page's numbers taken in order, from that index when the order is the value's.
+                if (offset == 0)
+                {
+                    await using var count = new SqlCommand($"SELECT COUNT_BIG(*) FROM {from} WHERE {filter};", connection) { CommandTimeout = CommandTimeoutSeconds };
+                    count.Parameters.AddRange(parameters.Select(p => (SqlParameter)((ICloneable)p).Clone()).ToArray());
+                    total = Convert.ToInt64(await count.ExecuteScalarAsync(ct).ConfigureAwait(false), CultureInfo.InvariantCulture);
+                }
+
+                if (total != 0)
+                {
+                    await using var command = new SqlCommand(
+                        $"""
+                        SET NOCOUNT ON;
+                        DECLARE @page TABLE ([n] int IDENTITY(1, 1) NOT NULL PRIMARY KEY, [id] bigint NOT NULL);
+                        INSERT INTO @page ([id])
+                        SELECT [id] FROM {from} WHERE {filter} ORDER BY {order} OFFSET @offset ROWS FETCH NEXT @take ROWS ONLY;
+                        SELECT {TableColumns(attributes, "t.")}
+                        FROM @page AS g INNER JOIN {from} AS t ON t.[id] = g.[id]
+                        ORDER BY g.[n];
+                        """,
+                        connection)
+                    {
+                        CommandTimeout = CommandTimeoutSeconds,
+                    };
+                    command.Parameters.AddRange(parameters.ToArray());
+                    command.Parameters.Add(new SqlParameter("@offset", SqlDbType.Int) { Value = offset });
+                    command.Parameters.Add(new SqlParameter("@take", SqlDbType.Int) { Value = take });
+                    await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    {
+                        rows.Add(TableRow(reader, attributes.Count));
+                    }
+                }
+            }
+
+            // A first page knows how many rows there are; a later one says more may follow while it comes back full.
+            var more = total is { } all ? offset + rows.Count < all : rows.Count == take;
+            return new DimensionTablePage(DimensionTables.Shown(table), attributes, rows, more, total);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Every row of <paramref name="table"/> in partition <paramref name="partition"/>, by value then row number, one at a time.</summary>
+    /// <exception cref="DimensionTableMissingException">The database holds no such table.</exception>
+    public static async IAsyncEnumerable<DimensionTableRow> StreamTableAsync(
+        OsduDbContext db, short partitionId, int dimensionId, string table, string partition,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            var attributes = await TableAttributesAsync(connection, partitionId, dimensionId, table, ct).ConfigureAwait(false);
+
+            // The whole table in order is a sort of every row, and a row is declared wide (a key, a filter), so the server
+            // would reserve memory for the widest table it can imagine: a tenth of what it may give one query sorts any
+            // dimension, past it the sort uses tempdb, and other queries keep their memory.
+            await using var command = new SqlCommand(
+                $"SELECT {TableColumns(attributes)} FROM {DimensionTables.Qualified(table)} WHERE [partition] = @partition ORDER BY [value], [id] OPTION (MAX_GRANT_PERCENT = 10);",
+                connection)
+            {
+                CommandTimeout = CommandTimeoutSeconds,
+            };
+            command.Parameters.Add(new SqlParameter("@partition", SqlDbType.NVarChar, 256) { Value = partition });
+            await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                yield return TableRow(reader, attributes.Count);
+            }
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>What preparing a dimension's table came to: the statements that write its rows, and whether its schema had to change.</summary>
+    private sealed record PreparedTable(string ApplySql, bool Changed);
+
+    /// <summary>
+    /// Makes sure the dimension's table is there with a column for every attribute it declares, before the write's
+    /// transaction begins: SQLFlow's schema evolution reads the table as it is, creates it when it is missing and adds the
+    /// column of an attribute it does not have, and never drops or narrows one (docs/dimension-plan.md, The table). Then
+    /// the two indexes it is read through, and the statements that write its rows.
+    /// </summary>
+    /// <exception cref="DeliveryException">The table cannot be made or widened: the database user may not, or the table was changed by hand into something a build cannot write.</exception>
+    private static async Task<PreparedTable> PrepareTableAsync(SqlConnection connection, short partitionId, int dimensionId, DimensionTableSpec table, CancellationToken ct)
+    {
+        var target = new RelationalObject { Database = connection.Database, Schema = DeliveryModel.SchemaName, Name = table.Name };
+        try
+        {
+            var plan = await new SchemaSyncService(new SqlServerCatalogReader())
+                .PlanAsync(connection, target, DimensionTables.Desired(table), DimensionTables.KeyColumns, ct).ConfigureAwait(false);
+            var batch = EvolutionDdlGenerator.Generate(target, plan, allowTableRewrite: false);
+            await SqlServerSchemaProvider.ApplyDdlAsync(connection, batch, new SchemaApplyOptions(), ct).ConfigureAwait(false);
+            await using (var indexes = new SqlCommand(DimensionTables.IndexSql(table.Name), connection) { CommandTimeout = CommandTimeoutSeconds })
+            {
+                await indexes.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
+            // A column the table has and the declaration does not is one of an attribute the dimension declared before
+            // (it is emptied), or one somebody added to the table, which is theirs and is left alone.
+            var extra = plan.Drift.Where(d => d.Kind == DriftKind.ExtraTargetColumn).Select(d => d.Column).ToList();
+            var retired = new List<string>();
+            if (extra.Count > 0)
+            {
+                await using var known = new SqlCommand(
+                    "SELECT n.[Name] FROM [osdu].[DimensionAttributeName] AS n WHERE n.[PartitionId] = @p AND n.[DimensionId] = @d;", connection)
+                {
+                    CommandTimeout = CommandTimeoutSeconds,
+                };
+                known.Parameters.Add(new SqlParameter("@p", SqlDbType.SmallInt) { Value = partitionId });
+                known.Parameters.Add(new SqlParameter("@d", SqlDbType.Int) { Value = dimensionId });
+                var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                await using (var reader = await known.ExecuteReaderAsync(ct).ConfigureAwait(false))
+                {
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                    {
+                        names.Add(reader.GetString(0));
+                    }
+                }
+
+                retired.AddRange(extra.Where(names.Contains));
+            }
+
+            return new PreparedTable(DimensionTables.ApplySql(table, retired), batch.HasChanges);
+        }
+        catch (Exception ex) when (ex is SqlException or SqlFlowException)
+        {
+            throw new DeliveryException(
+                $"The dimension's table {DimensionTables.Shown(table.Name)} could not be made ready, so nothing was written: {ex.Message.Trim()} The database user the module connects as needs CREATE TABLE in the database and ALTER on the osdu schema; a table changed by hand into something a build cannot write is put right, or dropped so the next run makes it again.",
+                ex);
+        }
+    }
+
+    /// <summary>The parameters a statement that writes a dimension's table takes; all null leaves the table as it is.</summary>
+    private static void AddTable(SqlCommand command, DimensionTableSpec? table, PreparedTable? prepared, string partition)
+    {
+        command.Parameters.Add(new SqlParameter("@tableName", SqlDbType.NVarChar, 128) { Value = (object?)table?.Name ?? DBNull.Value });
+        command.Parameters.Add(new SqlParameter("@applySql", SqlDbType.NVarChar, -1) { Value = (object?)prepared?.ApplySql ?? DBNull.Value });
+        command.Parameters.Add(new SqlParameter("@partitionName", SqlDbType.NVarChar, 256) { Value = partition });
+    }
+
+    /// <summary>
+    /// Makes sure dimension <paramref name="dimensionId"/> has <paramref name="table"/> with the rows the ledger holds of
+    /// it, as a build's write does, without a build: for a dimension built before dimensions had a table, or one whose
+    /// table was dropped. Says whether the table had to be made or widened.
+    /// </summary>
+    public static async Task<bool> EnsureTableAsync(
+        OsduDbContext db, short partitionId, int dimensionId, string partition, DimensionTableSpec table, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(table);
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            var prepared = await PrepareTableAsync(connection, partitionId, dimensionId, table, ct).ConfigureAwait(false);
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false);
+            var transaction = (SqlTransaction)tx.GetDbTransaction();
+            await LockAsync(connection, transaction, partitionId, dimensionId, ct).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, "DROP TABLE IF EXISTS #DimName;\n" + NameStageSql, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimName", NameColumns, NameTypes, table.Columns, NameRow, ct).ConfigureAwait(false);
+            await using (var command = Command(connection, transaction, EnsureTableSql))
+            {
+                command.Parameters.Add(new SqlParameter("@p", SqlDbType.SmallInt) { Value = partitionId });
+                command.Parameters.Add(new SqlParameter("@d", SqlDbType.Int) { Value = dimensionId });
+                AddTable(command, table, prepared, partition);
+                await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
+            await tx.CommitAsync(ct).ConfigureAwait(false);
+            return prepared.Changed;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
 
     /// <summary>The most rows one statement of a removal deletes.</summary>
     private const int RemoveBatch = 20_000;
@@ -265,7 +807,7 @@ internal static class SqlServerDimensionStore
     /// dimension (<see cref="ILedger.RemoveDimensionAsync"/>).
     /// </summary>
     /// <exception cref="DeliveryException">Another write of the dimension held its lock past the timeout.</exception>
-    public static async Task<Removed> RemoveAsync(OsduDbContext db, short partitionId, int dimensionId, CancellationToken ct)
+    public static async Task<Removed> RemoveAsync(OsduDbContext db, short partitionId, int dimensionId, string partition, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(db);
         await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
@@ -276,6 +818,7 @@ internal static class SqlServerDimensionStore
             command.Parameters.Add(new SqlParameter("@p", SqlDbType.SmallInt) { Value = partitionId });
             command.Parameters.Add(new SqlParameter("@d", SqlDbType.Int) { Value = dimensionId });
             command.Parameters.Add(new SqlParameter("@batch", SqlDbType.Int) { Value = RemoveBatch });
+            command.Parameters.Add(new SqlParameter("@partitionName", SqlDbType.NVarChar, 256) { Value = partition });
             command.Parameters.Add(new SqlParameter("@resource", SqlDbType.NVarChar, 255) { Value = string.Create(CultureInfo.InvariantCulture, $"osdu-dimension:{partitionId}:{dimensionId}") });
             command.Parameters.Add(new SqlParameter("@timeout", SqlDbType.Int) { Value = LockTimeoutMs });
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
@@ -290,7 +833,9 @@ internal static class SqlServerDimensionStore
                     $"A build of dimension {dimensionId} held its write lock for more than {LockTimeoutMs / 1000} seconds (sp_getapplock answered {reader.GetInt64(0)}), so nothing was removed. Remove it again when the build has finished."));
             }
 
-            return new Removed(reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6));
+            return new Removed(
+                reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3), reader.GetInt64(4), reader.GetInt64(5), reader.GetInt64(6),
+                await reader.IsDBNullAsync(7, ct).ConfigureAwait(false) ? null : reader.GetString(7));
         }
         finally
         {
@@ -313,7 +858,7 @@ internal static class SqlServerDimensionStore
     /// counts, in one transaction. A deadlock rolls it all back and it is written again.
     /// </summary>
     public static async Task<Written> WriteAsync(
-        OsduDbContext db, short partitionId, DimensionWrite write, Func<Written, DeliveryDimensionRun, Task> close, CancellationToken ct)
+        OsduDbContext db, short partitionId, string partition, DimensionWrite write, Func<Written, DeliveryDimensionRun, Task> close, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(write);
@@ -322,7 +867,7 @@ internal static class SqlServerDimensionStore
         {
             try
             {
-                return await WriteOnceAsync(db, partitionId, write, close, ct).ConfigureAwait(false);
+                return await WriteOnceAsync(db, partitionId, partition, write, close, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (attempt < DeadlockAttempts && SqlServerLedgerBulk.IsDeadlock(ex))
             {
@@ -333,13 +878,17 @@ internal static class SqlServerDimensionStore
     }
 
     private static async Task<Written> WriteOnceAsync(
-        OsduDbContext db, short partitionId, DimensionWrite write, Func<Written, DeliveryDimensionRun, Task> close, CancellationToken ct)
+        OsduDbContext db, short partitionId, string partition, DimensionWrite write, Func<Written, DeliveryDimensionRun, Task> close, CancellationToken ct)
     {
         await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
         try
         {
-            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false);
             var connection = (SqlConnection)db.Database.GetDbConnection();
+
+            // The table's schema is settled before the transaction: a table made or a column added stays when the write
+            // does not, empty, and the next write finds it there.
+            var prepared = write.Table is null ? null : await PrepareTableAsync(connection, partitionId, write.DimensionId, write.Table, ct).ConfigureAwait(false);
+            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct).ConfigureAwait(false);
             var transaction = (SqlTransaction)tx.GetDbTransaction();
             await LockAsync(connection, transaction, partitionId, write.DimensionId, ct).ConfigureAwait(false);
             await ExecuteAsync(connection, transaction, StageSql, ct).ConfigureAwait(false);
@@ -347,6 +896,7 @@ internal static class SqlServerDimensionStore
             await CopyAsync(connection, transaction, "#DimMember", MemberColumns, MemberTypes, write.Members, (member, _) => MemberRow(member), ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimAttr", AttributeColumns, AttributeTypes, AttributesOf(write), (attribute, _) => attribute, ct).ConfigureAwait(false);
             await CopyAsync(connection, transaction, "#DimText", TextColumns, TextTypes, TextsOf(write), (text, _) => text, ct).ConfigureAwait(false);
+            await CopyAsync(connection, transaction, "#DimName", NameColumns, NameTypes, write.Table?.Columns ?? [], NameRow, ct).ConfigureAwait(false);
 
             Written written;
             await using (var command = Command(connection, transaction, MergeSql))
@@ -360,6 +910,7 @@ internal static class SqlServerDimensionStore
                 command.Parameters.Add(new SqlParameter("@aggregateBy", SqlDbType.NVarChar, DeliveryDimension.MaxAggregateByLength) { Value = (object?)write.Field?.AggregateBy ?? DBNull.Value });
                 command.Parameters.Add(new SqlParameter("@repeats", SqlDbType.Bit) { Value = write.Field?.Repeats ?? false });
                 command.Parameters.Add(new SqlParameter("@collected", SqlDbType.NVarChar, -1) { Value = (object?)write.CollectedJson ?? DBNull.Value });
+                AddTable(command, write.Table, prepared, partition);
                 await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
                 if (!await reader.ReadAsync(ct).ConfigureAwait(false))
                 {
@@ -481,6 +1032,13 @@ internal static class SqlServerDimensionStore
 
         return rows;
     }
+
+    private static readonly string[] NameColumns = ["Name", "Ordinal", "Collected"];
+
+    private static readonly Type[] NameTypes = [typeof(string), typeof(short), typeof(bool)];
+
+    /// <summary>A declared attribute with its place among them, from 1.</summary>
+    private static object?[] NameRow(DimensionTableColumn column, int index) => [column.Name, (short)(index + 1), column.Collected];
 
     private static readonly string[] MemberColumns = ["Value", "Records", "RecordsExact", "Originals", "Unfilterable", "Filter", "FilterParts"];
 

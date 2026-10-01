@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Data;
@@ -88,9 +89,16 @@ public sealed partial class OsduLedger
         }
 
         var partition = await WritePartitionAsync(write.FlowId, ct).ConfigureAwait(false);
+        if (write.Table is { } table)
+        {
+            await GuardTableNameAsync(write.DimensionId, table, ct).ConfigureAwait(false);
+        }
+
+        var partitionName = await PartitionNameAsync(partition, ct).ConfigureAwait(false) ?? string.Empty;
+
         await using var db = Open();
         DeliveryDimensionRun? closed = null;
-        await SqlServerDimensionStore.WriteAsync(db, partition, write, (written, run) =>
+        await SqlServerDimensionStore.WriteAsync(db, partition, partitionName, write, (written, run) =>
         {
             run.Status = DimensionRunStatus.Completed;
             run.AggregateBy = write.Field?.AggregateBy;
@@ -341,17 +349,19 @@ public sealed partial class OsduLedger
         short partition, int dimensionId, IReadOnlyCollection<long> ids, int perAttribute, CancellationToken ct)
     {
         var chosen = ids.ToList();
-        var rows = await ReadAsync(
+        var names = (await AttributeIdsAsync(partition, dimensionId, ct).ConfigureAwait(false)).ToDictionary(n => n.Value, n => n.Key);
+        var grouped = await ReadAsync(
             db => db.DeliveryDimensionAttributeValues.AsNoTracking()
                 .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId)
                 .Join(
                     db.DeliveryDimensionValues.Where(v => v.PartitionId == partition && v.DimensionId == dimensionId && v.RemovedRunId == null
                         && v.MemberId != null && chosen.Contains(v.MemberId.Value)),
-                    a => a.ValueId, v => v.ValueId, (a, v) => new { MemberId = v.MemberId!.Value, a.Name, a.Value })
-                .GroupBy(x => new { x.MemberId, x.Name, x.Value })
-                .Select(g => new { g.Key.MemberId, g.Key.Name, g.Key.Value, Keys = g.Count() })
+                    a => a.ValueId, v => v.ValueId, (a, v) => new { MemberId = v.MemberId!.Value, a.AttributeId, a.Value })
+                .GroupBy(x => new { x.MemberId, x.AttributeId, x.Value })
+                .Select(g => new { g.Key.MemberId, g.Key.AttributeId, g.Key.Value, Keys = g.Count() })
                 .ToListAsync(ct),
             ct).ConfigureAwait(false);
+        var rows = grouped.Where(r => names.ContainsKey(r.AttributeId)).Select(r => new { r.MemberId, Name = names[r.AttributeId], r.Value, r.Keys }).ToList();
         var take = Math.Max(1, perAttribute);
         return rows
             .GroupBy(r => r.MemberId)
@@ -366,17 +376,23 @@ public sealed partial class OsduLedger
 
     /// <summary>
     /// <paramref name="keys"/> narrowed to those holding every match of <paramref name="matches"/>: under the attribute's
-    /// name, one of its values, each compared exactly, through the attribute index.
+    /// number (<paramref name="attributeIds"/>, by name), one of its values, each compared exactly, through the attribute
+    /// index. An attribute the dimension has no number for holds no value, so no key holds it.
     /// </summary>
     private static IQueryable<DeliveryDimensionValue> WithAttributes(
-        OsduDbContext db, IQueryable<DeliveryDimensionValue> keys, short partition, int dimensionId, IReadOnlyList<DimensionAttributeMatch> matches)
+        OsduDbContext db, IQueryable<DeliveryDimensionValue> keys, short partition, int dimensionId, IReadOnlyList<DimensionAttributeMatch> matches,
+        IReadOnlyDictionary<string, int> attributeIds)
     {
         foreach (var match in matches)
         {
-            var name = match.Name;
+            if (!attributeIds.TryGetValue(match.Name, out var attribute))
+            {
+                return keys.Where(v => false);
+            }
+
             var wanted = match.Values.Distinct(StringComparer.Ordinal).ToList();
             keys = keys.Where(v => db.DeliveryDimensionAttributeValues.Any(a => a.PartitionId == partition && a.DimensionId == dimensionId && a.ValueId == v.ValueId
-                && a.Name == name && wanted.Contains(a.Value)));
+                && a.AttributeId == attribute && wanted.Contains(a.Value)));
         }
 
         return keys;
@@ -386,6 +402,7 @@ public sealed partial class OsduLedger
     {
         var take = Math.Clamp(query.Limit, 1, MaxDimensionPage);
         var search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim();
+        var attributeIds = query.Attributes is { Count: > 0 } ? await AttributeIdsAsync(partition, dimensionId, ct).ConfigureAwait(false) : [];
         return await ReadAsync(
             db =>
             {
@@ -400,7 +417,7 @@ public sealed partial class OsduLedger
                     // A member holding a key that holds every attribute asked for: one key, not several between them.
                     var matching = WithAttributes(
                         db, db.DeliveryDimensionValues.Where(v => v.PartitionId == partition && v.DimensionId == dimensionId && v.RemovedRunId == null),
-                        partition, dimensionId, matches);
+                        partition, dimensionId, matches, attributeIds);
                     members = members.Where(m => matching.Any(v => v.MemberId == m.MemberId));
                 }
 
@@ -501,7 +518,9 @@ public sealed partial class OsduLedger
         var attributes = (await ReadAsync(
                 db => db.DeliveryDimensionAttributeValues.AsNoTracking()
                     .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId && ids.Contains(a.ValueId))
-                    .Select(a => new { a.ValueId, a.Name, a.Value, a.ValueFrom, a.Records })
+                    .Join(
+                        db.DeliveryDimensionAttributeNames, a => new { a.PartitionId, a.AttributeId }, n => new { n.PartitionId, n.AttributeId },
+                        (a, n) => new { a.ValueId, n.Name, a.Value, a.ValueFrom, a.Records })
                     .ToListAsync(ct),
                 ct).ConfigureAwait(false))
             .GroupBy(a => a.ValueId)
@@ -519,6 +538,7 @@ public sealed partial class OsduLedger
     {
         var take = Math.Clamp(query.Limit, 1, MaxDimensionPage);
         var search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim();
+        var attributeIds = query.Attributes is { Count: > 0 } ? await AttributeIdsAsync(partition, dimensionId, ct).ConfigureAwait(false) : [];
         return await ReadAsync(
             db =>
             {
@@ -546,7 +566,7 @@ public sealed partial class OsduLedger
 
                 if (query.Attributes is { Count: > 0 } matches)
                 {
-                    values = WithAttributes(db, values, partition, dimensionId, matches);
+                    values = WithAttributes(db, values, partition, dimensionId, matches, attributeIds);
                 }
 
                 if (search is not null)
@@ -678,11 +698,18 @@ public sealed partial class OsduLedger
         // offers every value the other picks leave, the one picked among them.
         var others = (query.Attributes ?? []).Where(m => !string.Equals(m.Name, name, StringComparison.Ordinal)).ToList();
         var memberIds = query.MemberIds is { Count: > 0 } ids ? ids.Distinct().ToList() : null;
+        var attributeIds = await AttributeIdsAsync(partition, dimensionId, ct).ConfigureAwait(false);
+        if (!attributeIds.TryGetValue(name, out var attribute))
+        {
+            // No build has kept a value of the attribute yet, so it holds none.
+            return [];
+        }
+
         var rows = await ReadAsync(
             db =>
             {
                 var attributes = db.DeliveryDimensionAttributeValues.AsNoTracking()
-                    .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId && a.Name == name);
+                    .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId && a.AttributeId == attribute);
                 if (text is not null)
                 {
                     attributes = attributes.Where(a => EF.Functions.Collate(a.Value, DeliveryModel.SearchCollation).Contains(text));
@@ -696,10 +723,10 @@ public sealed partial class OsduLedger
 
                 if (others.Count > 0)
                 {
-                    keys = WithAttributes(db, keys, partition, dimensionId, others);
+                    keys = WithAttributes(db, keys, partition, dimensionId, others, attributeIds);
                 }
 
-                // An attribute's values over the keys a build finds now, from the index on name and value: a collected value counts
+                // An attribute's values over the keys a build finds now, from the index on attribute and value: a collected value counts
                 // the records holding it, any other every record of its keys.
                 return attributes
                     .Join(keys, a => a.ValueId, v => v.ValueId, (a, v) => new { a.Value, Records = a.Records ?? v.Count })
@@ -744,10 +771,127 @@ public sealed partial class OsduLedger
         }
 
         await using var db = Open();
-        var counts = await SqlServerDimensionStore.RemoveAsync(db, partition, dimensionId, ct).ConfigureAwait(false);
+        var counts = await SqlServerDimensionStore.RemoveAsync(db, partition, dimensionId, dimension.Partition ?? string.Empty, ct).ConfigureAwait(false);
         return new DimensionRemoved(
             dimensionId, dimension.Name, dimension.FlowName, dimension.Partition,
-            counts.Values, counts.Keys, counts.Builds, counts.Changes, counts.Attributes, counts.Texts);
+            counts.Values, counts.Keys, counts.Builds, counts.Changes, counts.Attributes, counts.Texts, counts.TableDropped);
+    }
+
+    public async Task<bool> EnsureDimensionTableAsync(int dimensionId, DimensionTableSpec table, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(table);
+        if (await GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension
+            || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return false;
+        }
+
+        await GuardTableNameAsync(dimensionId, table, ct).ConfigureAwait(false);
+        await using var db = Open();
+        return await SqlServerDimensionStore.EnsureTableAsync(db, partition, dimensionId, dimension.Partition ?? string.Empty, table, ct).ConfigureAwait(false);
+    }
+
+    public async Task<DimensionTableShape?> DimensionTableShapeAsync(int dimensionId, CancellationToken ct = default)
+    {
+        if (await GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension
+            || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
+        var table = TableOf(dimension);
+        await using var db = Open();
+        return new DimensionTableShape(
+            DimensionTables.Shown(table), await SqlServerDimensionStore.TableAttributesAsync(db, partition, dimensionId, table, ct).ConfigureAwait(false));
+    }
+
+    public async Task<DimensionTablePage?> ReadDimensionTableAsync(int dimensionId, DimensionTableQuery query, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        if (await GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension
+            || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return null;
+        }
+
+        var table = TableOf(dimension);
+        await using var db = Open();
+        return await SqlServerDimensionStore.ReadTableAsync(db, partition, dimensionId, table, dimension.Partition ?? string.Empty, query, MaxDimensionPage, ct)
+            .ConfigureAwait(false);
+    }
+
+    public async IAsyncEnumerable<DimensionTableRow> StreamDimensionTableAsync(int dimensionId, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (await GetDimensionAsync(dimensionId, ct).ConfigureAwait(false) is not { } dimension
+            || await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            yield break;
+        }
+
+        var table = TableOf(dimension);
+        await using var db = Open();
+        await foreach (var row in SqlServerDimensionStore.StreamTableAsync(db, partition, dimensionId, table, dimension.Partition ?? string.Empty, ct).ConfigureAwait(false))
+        {
+            yield return row;
+        }
+    }
+
+    /// <summary>The table a build wrote of the dimension.</summary>
+    private static string TableOf(DimensionState dimension)
+        => dimension.TableName
+            ?? throw new DimensionTableMissingException(
+                $"Dimension {dimension.Name} of {dimension.FlowName} has no table yet: it was built before dimensions had one. Run the flow's pipeline to make it.");
+
+    /// <summary>
+    /// Refuses a table whose name another dimension writes. A table's name keeps the letters, digits and underscores of
+    /// its flow's and its dimension's names, so two names apart only in what it leaves out would write one table; and a
+    /// table holds the rows of one dimension a partition, so a second dimension of the same names in the same partition
+    /// (kept under another ledger of a flow that changed how it names its partition) would write over this one's rows.
+    /// </summary>
+    private async Task GuardTableNameAsync(int dimensionId, DimensionTableSpec table, CancellationToken ct)
+    {
+        var name = table.Name;
+        var rows = await ReadAsync(
+            db => db.DeliveryDimensions.AsNoTracking()
+                .Where(d => d.DimensionId == dimensionId || d.TableName == name)
+                .Select(d => new { d.PartitionId, d.DimensionId, d.FlowName, d.Name, d.TableName })
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+        if (rows.FirstOrDefault(r => r.DimensionId == dimensionId) is not { } own)
+        {
+            return;
+        }
+
+        foreach (var other in rows.Where(r => r.DimensionId != dimensionId && r.TableName == name))
+        {
+            if (!string.Equals(other.FlowName, own.FlowName, StringComparison.OrdinalIgnoreCase) || !string.Equals(other.Name, own.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DeliveryException(
+                    $"Dimension {own.Name} of {own.FlowName} would write the table {DimensionTables.Shown(name)}, which dimension {other.Name} of {other.FlowName} writes: the two names differ only in characters a table's name leaves out. Rename one of them.");
+            }
+
+            if (other.PartitionId == own.PartitionId)
+            {
+                throw new DeliveryException(
+                    string.Create(CultureInfo.InvariantCulture,
+                        $"Dimension {own.Name} of {own.FlowName} is kept twice in this partition (dimensions {other.DimensionId} and {own.DimensionId}, under two ledgers of the flow), and both would write the table {DimensionTables.Shown(name)}. Remove the one the flow no longer builds, then run the flow again."));
+            }
+        }
+    }
+
+    /// <summary>
+    /// The numbers the attributes of dimension <paramref name="dimensionId"/> are kept under, by name, compared exactly:
+    /// what a read asked for an attribute by its name joins its values on.
+    /// </summary>
+    private async Task<Dictionary<string, int>> AttributeIdsAsync(short partition, int dimensionId, CancellationToken ct)
+    {
+        var rows = await ReadAsync(
+            db => db.DeliveryDimensionAttributeNames.AsNoTracking()
+                .Where(n => n.PartitionId == partition && n.DimensionId == dimensionId)
+                .Select(n => new { n.Name, n.AttributeId })
+                .ToListAsync(ct),
+            ct).ConfigureAwait(false);
+        return rows.ToDictionary(r => r.Name, r => r.AttributeId, StringComparer.Ordinal);
     }
 
     public async Task<IReadOnlyList<DimensionCollectedText>> ListDimensionCollectedTextsAsync(
@@ -761,6 +905,10 @@ public sealed partial class OsduLedger
 
         var take = Math.Max(1, limit);
         var found = new List<DimensionCollectedText>();
+        if (!(await AttributeIdsAsync(partition, dimensionId, ct).ConfigureAwait(false)).TryGetValue(name, out var attribute))
+        {
+            return found;
+        }
 
         // Every text when no value is named; else the texts of the values named, a chunk of them a read, from the index on name and value.
         var chunks = values is null ? new string[]?[] { null } : values.Distinct(StringComparer.Ordinal).Chunk(LookupChunk).Cast<string[]?>();
@@ -770,14 +918,14 @@ public sealed partial class OsduLedger
                 db =>
                 {
                     var texts = db.DeliveryDimensionCollectedTexts.AsNoTracking()
-                        .Where(t => t.PartitionId == partition && t.DimensionId == dimensionId && t.Name == name);
+                        .Where(t => t.PartitionId == partition && t.DimensionId == dimensionId && t.AttributeId == attribute);
                     if (chunk is not null)
                     {
                         texts = texts.Where(t => chunk.Contains(t.Value));
                     }
 
                     return texts.OrderBy(t => t.Value).ThenBy(t => t.Text).Take(take - found.Count)
-                        .Select(t => new DimensionCollectedText(t.Name, t.Text, t.Value, t.Records))
+                        .Select(t => new DimensionCollectedText(name, t.Text, t.Value, t.Records))
                         .ToListAsync(ct);
                 },
                 ct).ConfigureAwait(false);
@@ -921,6 +1069,7 @@ public sealed partial class OsduLedger
         AttributesJson = d.AttributesJson,
         CollectedJson = d.CollectedJson,
         DefinitionHash = d.DefinitionHash,
+        TableName = d.TableName,
         Members = d.Members,
         Originals = d.Originals,
         LastRunId = d.LastRunId,

@@ -61,9 +61,10 @@ export function standingOf(dimension: DeliveryDimension): DimensionStanding {
 }
 
 /** The five questions a dimension's page answers, a tab each. */
-export type DimensionView = "values" | "keys" | "changes" | "builds" | "definition";
+export type DimensionView = "table" | "values" | "keys" | "changes" | "builds" | "definition";
 
-export const DIMENSION_VIEWS: readonly DimensionView[] = ["values", "keys", "changes", "builds", "definition"];
+/** A dimension's tabs, in order; the first is the one a dimension opens on. */
+export const DIMENSION_VIEWS: readonly DimensionView[] = ["table", "values", "keys", "changes", "builds", "definition"];
 
 /** How the page's link names the search builder in place of a dimension. */
 export const SEARCH_REF = "search";

@@ -2342,6 +2342,8 @@ export interface DeliveryDimension {
   lastBuiltUtc: string | null;
   current: DeliveryDimensionBuild | null;
   latest: DeliveryDimensionBuild | null;
+  /** The dimension's own table in the database (`osdu.dim_...`); null until a build has written it. */
+  table: string | null;
 }
 
 /** One dimension flow in the partition a board is read in. */
@@ -2653,6 +2655,41 @@ export interface DeliveryDimensionChangeQuery {
   limit?: number;
 }
 
+/**
+ * One row of a dimension's table: the row's number (what a table of facts joins on), the key's number, the key, its value,
+ * its attributes in the order of the table's attribute columns (null where the key has none), the records of the row,
+ * and the search finding the key's records.
+ */
+export interface DeliveryDimensionTableRow {
+  id: number;
+  keyId: number;
+  key: string;
+  value: string;
+  attributes: (string | null)[];
+  records: number;
+  filter: string | null;
+}
+
+/** A page of a dimension's table; `total` is how many rows the query matches, when the page says. */
+export interface DeliveryDimensionTable {
+  table: string;
+  attributes: string[];
+  rows: DeliveryDimensionTableRow[];
+  more: boolean;
+  total: number | null;
+}
+
+export interface DeliveryDimensionTableQuery {
+  search?: string;
+  /** The column the rows are ordered by: value, key, records, id or an attribute's name. */
+  order?: string;
+  dir?: "asc" | "desc";
+  offset?: number;
+  limit?: number;
+  /** Only the rows holding every attribute value named. */
+  attributes?: DimensionAttributeCondition[];
+}
+
 export type DimensionExportSet = "values" | "keys" | "table";
 export type DimensionExportFormat = "csv" | "jsonl";
 
@@ -2749,6 +2786,10 @@ export const deliveryApi = {
   removeDimension: (dimensionId: number) => del<DeliveryDimensionRemoved>(`/api/v1/delivery/dimensions/${dimensionId}`),
   /** A dimension with its declaration, the build that wrote what it holds and its newest build. */
   dimension: (dimensionId: number) => get<DeliveryDimensionDetail>(`/api/v1/delivery/dimensions/${dimensionId}`),
+  /** A page of a dimension's table, as the database holds it: narrowed, ordered, from a row on. */
+  dimensionTable: (dimensionId: number, { attributes, search, ...query }: DeliveryDimensionTableQuery = {}) =>
+    get<DeliveryDimensionTable>(
+      `/api/v1/delivery/dimensions/${dimensionId}/table${attributesQuery(attributes)}`, defined({ ...query, search: search === "" ? undefined : search })),
   /** A page of a dimension's values, in value order or with the most records first. */
   dimensionValues: (dimensionId: number, { attributes, ...query }: DeliveryDimensionValueQuery = {}) =>
     get<DeliveryDimensionValuePage>(`/api/v1/delivery/dimensions/${dimensionId}/values${attributesQuery(attributes)}`, defined(query)),

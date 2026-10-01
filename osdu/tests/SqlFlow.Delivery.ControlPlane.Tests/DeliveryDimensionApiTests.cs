@@ -331,17 +331,54 @@ public sealed class DeliveryDimensionApiTests
                 Assert.Equal(DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:"])[0], row.GetProperty("filter").GetString());
             }
 
-            // The table cascading selects read: a row per key, its value and a column per attribute, named as declared.
+            // The dimension as one table: these builds wrote none (as a build before dimensions had tables), so the first
+            // read makes it, named after the flow and the dimension, with a column per attribute as declared.
+            var tableName = "osdu.dim_" + flowName.Replace('-', '_') + "_Wellbore";
+            Assert.Equal(JsonValueKind.Null, (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}")).GetProperty("dimension").GetProperty("table").ValueKind);
+            var whole = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table");
+            Assert.Equal((tableName, 3L, false), (whole.GetProperty("table").GetString(), whole.GetProperty("total").GetInt64(), whole.GetProperty("more").GetBoolean()));
+            Assert.Equal(["Country"], whole.GetProperty("attributes").EnumerateArray().Select(a => a.GetString()));
+            Assert.Equal(
+                [("15/9-F-1", "Norway", 7L), ("15/9-F-4", "Norway", 3L), ("dev:master-data--Wellbore:9999:", null, 1L)],
+                whole.GetProperty("rows").EnumerateArray().Select(r => (r.GetProperty("value").GetString(), r.GetProperty("attributes")[0].GetString(), r.GetProperty("records").GetInt64())));
+            var firstRow = whole.GetProperty("rows")[0];
+            Assert.Equal(
+                ("dev:master-data--Wellbore:1001:", DimensionFilters.Of(wellboreField, ["dev:master-data--Wellbore:1001:"])[0]),
+                (firstRow.GetProperty("key").GetString(), firstRow.GetProperty("filter").GetString()));
+            Assert.True(firstRow.GetProperty("id").GetInt64() > 0 && firstRow.GetProperty("keyId").GetInt64() > 0);
+            Assert.Equal(tableName, (await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}")).GetProperty("dimension").GetProperty("table").GetString());
+
+            // A page of it narrowed by an attribute and ordered by any column, searched, and paged.
+            var norwegianRows = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=country:Norway&order=records&dir=desc");
+            Assert.Equal(2L, norwegianRows.GetProperty("total").GetInt64());
+            Assert.Equal(["15/9-F-1", "15/9-F-4"], norwegianRows.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("value").GetString()));
+            Assert.Equal("15/9-F-4", Assert.Single((await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?search=f-4")).GetProperty("rows").EnumerateArray()).GetProperty("value").GetString());
+            var secondPage = await JsonAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?offset=1&limit=1");
+            Assert.Equal(("15/9-F-4", true, JsonValueKind.Null), (
+                Assert.Single(secondPage.GetProperty("rows").EnumerateArray()).GetProperty("value").GetString(), secondPage.GetProperty("more").GetBoolean(),
+                secondPage.GetProperty("total").ValueKind));
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?dir=sideways", HttpStatusCode.BadRequest, "not one of asc, desc");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?order=Basin", HttpStatusCode.BadRequest, "has no column 'Basin' to order by");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=Basin:X", HttpStatusCode.BadRequest, "has no attribute column 'Basin'; it has Country");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?attr=Norway", HttpStatusCode.BadRequest, "is not Name:value");
+            await ProblemAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/table?offset=-1", HttpStatusCode.BadRequest, "zero or more");
+            await ProblemAsync(client, token, "/api/v1/delivery/dimensions/2147483000/table", HttpStatusCode.NotFound, "No dimension");
+
+            // The table export is that table written out, row for row.
             using (var table = await SendAsync(client, token, $"/api/v1/delivery/dimensions/{wellboreId}/export?set=table&format=csv"))
             {
+                var lines = (await table.Content.ReadAsStringAsync()).Split("\r\n", StringSplitOptions.RemoveEmptyEntries);
+                Assert.Equal("id,partition,key_id,key,value,Country,records,filter", lines[0]);
                 Assert.Equal(
                     [
-                        "key,value,Country,records",
-                        "dev:master-data--Wellbore:1001:,15/9-F-1,Norway,7",
-                        "dev:master-data--Wellbore:1002:,15/9-F-4,Norway,3",
-                        "dev:master-data--Wellbore:9999:,dev:master-data--Wellbore:9999:,,1",
+                        $"{partition},dev:master-data--Wellbore:1001:,15/9-F-1,Norway,7",
+                        $"{partition},dev:master-data--Wellbore:1002:,15/9-F-4,Norway,3",
+                        $"{partition},dev:master-data--Wellbore:9999:,dev:master-data--Wellbore:9999:,,1",
                     ],
-                    (await table.Content.ReadAsStringAsync()).Split("\r\n", StringSplitOptions.RemoveEmptyEntries));
+                    lines.Skip(1).Select(l => l.Split(',')).Select(c => string.Join(',', c[1], c[3], c[4], c[5], c[6])));
+                Assert.Equal(
+                    whole.GetProperty("rows").EnumerateArray().Select(r => (r.GetProperty("id").GetInt64(), r.GetProperty("keyId").GetInt64())),
+                    lines.Skip(1).Select(l => l.Split(',')).Select(c => (long.Parse(c[0], CultureInfo.InvariantCulture), long.Parse(c[2], CultureInfo.InvariantCulture))));
                 Assert.EndsWith("-table.csv", table.Content.Headers.ContentDisposition?.FileNameStar ?? table.Content.Headers.ContentDisposition?.FileName ?? string.Empty, StringComparison.Ordinal);
             }
 
@@ -415,6 +452,18 @@ public sealed class DeliveryDimensionApiTests
             await using (var osdu = SampleEstate.Context(cs))
             {
                 var ids = await osdu.DeliveryDimensions.Where(d => d.FlowId == flow.LedgerId).Select(d => d.DimensionId).ToListAsync();
+
+                // The tables the reads made of these dimensions are no tables of the model, so they are dropped by name.
+                foreach (var made in await osdu.DeliveryDimensions.Where(d => d.FlowId == flow.LedgerId && d.TableName != null).Select(d => d.TableName!).Distinct().ToListAsync())
+                {
+                    // The name is one the module made: letters, digits and underscores, in brackets.
+                    var drop = "DROP TABLE IF EXISTS " + DimensionTables.Qualified(made) + ";";
+                    await osdu.Database.ExecuteSqlRawAsync(drop);
+                }
+
+                await osdu.DeliveryDimensionAttributeValues.Where(a => ids.Contains(a.DimensionId)).ExecuteDeleteAsync();
+                await osdu.DeliveryDimensionAttributeNames.Where(n => ids.Contains(n.DimensionId)).ExecuteDeleteAsync();
+                await osdu.DeliveryDimensionCollectedTexts.Where(t => ids.Contains(t.DimensionId)).ExecuteDeleteAsync();
                 await osdu.DeliveryDimensionChanges.Where(c => ids.Contains(c.DimensionId)).ExecuteDeleteAsync();
                 await osdu.DeliveryDimensionValues.Where(v => ids.Contains(v.DimensionId)).ExecuteDeleteAsync();
                 await osdu.DeliveryDimensionMembers.Where(m => ids.Contains(m.DimensionId)).ExecuteDeleteAsync();

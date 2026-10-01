@@ -8,16 +8,22 @@ export interface GridColumnChoice {
 
 /**
  * Which columns of a grid a reader left out, remembered in the browser under `storageKey`, so a dimension with many
- * attributes keeps the ones worth their width. Returns the ids left out and the function that flips one.
+ * attributes keeps the ones worth their width. A grid starts without the columns of `atFirst`, until the reader chooses.
+ * Returns the ids left out and the function that flips one.
  */
-export function useHiddenColumns(storageKey: string): [ReadonlySet<string>, (id: string) => void] {
+export function useHiddenColumns(storageKey: string, atFirst: readonly string[] = []): [ReadonlySet<string>, (id: string) => void] {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => {
     try {
-      const kept: unknown = JSON.parse(window.localStorage.getItem(storageKey) ?? "[]");
-      return new Set(Array.isArray(kept) ? kept.filter((id): id is string => typeof id === "string") : []);
+      const stored = window.localStorage.getItem(storageKey);
+      if (stored === null) {
+        return new Set(atFirst);
+      }
+
+      const kept: unknown = JSON.parse(stored);
+      return new Set(Array.isArray(kept) ? kept.filter((id): id is string => typeof id === "string") : atFirst);
     } catch {
-      // A browser that keeps nothing (or kept something else there) shows every column.
-      return new Set();
+      // A browser that keeps nothing (or kept something else there) shows the grid as it starts.
+      return new Set(atFirst);
     }
   });
 

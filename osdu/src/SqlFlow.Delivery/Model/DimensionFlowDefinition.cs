@@ -385,11 +385,11 @@ public sealed record DimensionAttributeSpec(string Name, IReadOnlyList<string> S
     public const int MaxNameLength = 64;
 
     /// <summary>
-    /// Names an attribute cannot take: the columns a cached dimension's rows hold already, and the words a key's own facts
-    /// are known by.
+    /// Names an attribute cannot take: the columns a cached dimension's rows and a dimension's table hold already, and the
+    /// words a key's own facts are known by.
     /// </summary>
     public static readonly IReadOnlySet<string> Reserved =
-        new HashSet<string>(["value", "keys", "key", "records", "filter", "label", "id"], StringComparer.OrdinalIgnoreCase);
+        new HashSet<string>(["value", "keys", "key", "key_id", "records", "filter", "label", "id", "partition"], StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Whether <paramref name="name"/> is an attribute name: a letter, then letters, digits and underscores.</summary>
     public static bool IsName(string? name)

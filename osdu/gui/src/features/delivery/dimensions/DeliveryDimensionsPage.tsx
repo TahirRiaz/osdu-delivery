@@ -77,7 +77,7 @@ function summaryCells(board: DeliveryDimensionBoard, entries: DimensionEntry[], 
 
 /** The tab a link names, the values tab when it names none or one that is not a tab. */
 function viewOf(value: string | null): DimensionView {
-  return DIMENSION_VIEWS.find((view) => view === value) ?? "values";
+  return DIMENSION_VIEWS.find((view) => view === value) ?? DIMENSION_VIEWS[0];
 }
 
 /**
@@ -161,7 +161,7 @@ export default function DeliveryDimensionsPage() {
           entry={selected}
           siblings={selected.standing === "undeclared" ? entries : shown}
           view={viewOf(params.get("view"))}
-          onView={(view) => update({ view: view === "values" ? null : view })}
+          onView={(view) => update({ view: view === DIMENSION_VIEWS[0] ? null : view })}
           value={value}
           onValue={(valueId) => update({ value: valueId === null ? null : String(valueId) })}
           onLaunch={setLaunch}
