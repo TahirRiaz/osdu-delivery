@@ -17,6 +17,7 @@ import { CorrelationError } from "@/components/CorrelationError";
 import { DataTable } from "@/components/DataTable";
 import { DetailPair } from "@/components/DetailPair";
 import { EmptyState } from "@/components/EmptyState";
+import { LineageJumpButton } from "@/components/LineageJumpButton";
 import { PagedTable, type Column } from "@/components/PagedTable";
 import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
@@ -29,6 +30,7 @@ import { RecordMappingReference } from "./CacheMappingReference";
 import { CacheTypeRail } from "./CacheTypeRail";
 import { CachedValueText } from "./CachedValueText";
 import { KindText } from "./KindText";
+import { cacheTypeLineageTarget } from "./lineageTargets";
 import { cachedCell, isLookupEntityType, recordIdentity, splitRecordId, type CachedTypeSummary } from "./cacheFormat";
 import { SECTION_ROWS, browsedTypes, columnNames, typeSampleQuery, type BrowsedType } from "./cacheRecordsModel";
 import { earlierTypeVersions, shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
@@ -305,9 +307,12 @@ function SourceLine({ source }: { source: DeliveryCacheTypeSource }) {
 /**
  * The head of a type's table: its name and entity type, how many records the version being read holds (and, with a
  * search, how many of them match), where the records come from and which cache flow declares the type, and the prefix
- * every id repeats, which the id column leaves out.
+ * every id repeats, which the id column leaves out. Its lineage jump opens the type's node: the cache flows writing it and
+ * the mappings reading it.
  */
-function TypeHeader({ type, matches, idPrefix }: {
+function TypeHeader({ scope, type, matches, idPrefix }: {
+  /** The partition whose cache holds the type. */
+  scope: string;
   type: BrowsedType;
   /** How many records match the search; undefined while counting, null without a search. */
   matches: number | null | undefined;
@@ -330,6 +335,9 @@ function TypeHeader({ type, matches, idPrefix }: {
             : matches === undefined
               ? <Skeleton className="inline-block h-3 w-24 align-middle" />
               : `${matches.toLocaleString()} of ${counted(type.items, type)} match`}
+        </span>
+        <span className="self-center">
+          <LineageJumpButton target={cacheTypeLineageTarget(type, scope)} iconOnly />
         </span>
       </div>
       <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px] text-muted-foreground">
@@ -429,6 +437,7 @@ function TypeSection({ scope, type, search, version, eager, onOpen, onItem }: {
             ? <Skeleton className="inline-block h-3 w-16 align-middle" />
             : `${total.toLocaleString()} match${total === 1 ? "" : "es"}`}
       </span>
+      <LineageJumpButton target={cacheTypeLineageTarget(type, scope)} iconOnly />
     </div>
   );
 
@@ -635,6 +644,7 @@ export function DeliveryCacheRecords({ scope, types, type, onType, versions, onC
       <div className="flex min-w-0 flex-col gap-3">
         {selected !== null && (
           <TypeHeader
+            scope={scope}
             type={selected}
             matches={matches === null ? null : matches.get(selected.name)}
             idPrefix={selected.key === null ? sharedIdPrefix(sampleRows) : null}

@@ -16,11 +16,14 @@ import { CorrelationError } from "@/components/CorrelationError";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FilterBar } from "@/components/FilterBar";
 import { GlyphRef } from "@/components/GlyphRef";
+import { LineageJumpButton } from "@/components/LineageJumpButton";
 import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
+import { useActivePartition } from "./activePartition";
 import { KindText } from "./KindText";
+import { mappingLineageTarget } from "./lineageTargets";
 import { MappingCoverageView } from "./MappingCoverageView";
 import { MappingShapeView } from "./MappingShapeView";
 
@@ -40,6 +43,12 @@ function LoadError({ error, testId }: { error: unknown; testId: string }) {
   return isApiError(error)
     ? <CorrelationError error={error} data-testid={testId} />
     : <p className="text-[13px] text-destructive" data-testid={testId}>{String(error)}</p>;
+}
+
+/** The jump to a mapping's node in the lineage graph: the flows rendering with it, and the cache types and kinds it reads. */
+function MappingLineage({ mapping }: { mapping: DeliveryMapping }) {
+  const [partition] = useActivePartition();
+  return <LineageJumpButton target={mappingLineageTarget(mapping, partition)} iconOnly />;
 }
 
 const mappingColumns: Column<DeliveryMapping>[] = [
@@ -96,6 +105,7 @@ const mappingColumns: Column<DeliveryMapping>[] = [
   },
   { id: "path", header: "Path", render: (row) => <GlyphRef icon={FileCode} title="Path" body={row.relativePath} mono /> },
   { id: "seen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },
+  { id: "lineage", header: "", align: "right", width: 56, render: (row) => <MappingLineage mapping={row} /> },
 ];
 
 /** The mapping documents the synced repositories hold: what every delivery flow renders with. The caches they read are on the OSDU cache page. */

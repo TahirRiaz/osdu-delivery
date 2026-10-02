@@ -121,6 +121,57 @@ test.describe.serial("lineage", () => {
     await expect(graph.getByText("LogType", { exact: true }).first()).toBeVisible();
   });
 
+  test("a mapping's row jumps to its node in the graph", async ({ adminPage }) => {
+    await adminPage.goto("/delivery/documents");
+    const row = adminPage.getByTestId("delivery-mappings-table").getByTestId("table-row").filter({ hasText: WELL_LOG_MAPPING }).first();
+    await row.getByTestId("search-open-graph").click();
+
+    // The picker names the mapping and the file it is read from, and offers the node the partition's flows read. The
+    // jump opens the picker, not the mapping's sheet the row itself opens.
+    const menu = adminPage.getByTestId("lineage-jump-menu");
+    await expect(menu).toContainText(WELL_LOG_MAPPING);
+    await expect(menu).toContainText(`${SOURCE}/mappings/`);
+    await expect(adminPage.getByTestId("delivery-mapping-detail")).toHaveCount(0);
+    const option = adminPage.getByTestId("lineage-jump-option");
+    await expect(option).toHaveCount(1, { timeout: 30_000 });
+    await expect(option).toContainText(`${PARTITION}.${SOURCE}/mappings`);
+    await expect(option).toContainText("Written by 0 flows, read by 2 flows");
+    await option.click();
+
+    const graph = adminPage.getByTestId("page-lineage-graph");
+    await expect(graph).toBeVisible();
+    await expect(graph.getByText(WELL_LOG_MAPPING, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(graph.getByText(`osdu mapping · ${PARTITION}.${SOURCE}/mappings`).first()).toBeVisible();
+    await expect(graph.getByText(DELIVERY_FLOW, { exact: true }).first()).toBeVisible();
+  });
+
+  test("a cache type jumps to its node in the graph, from its own table and from its section", async ({ adminPage }) => {
+    // From the type's own table: the node the two reference flows write and the mappings resolving units read.
+    await adminPage.goto("/delivery/cache?type=UnitOfMeasure");
+    const header = adminPage.getByTestId("delivery-cache-type-header");
+    await expect(header.getByTestId("delivery-cache-type-name")).toHaveText("UnitOfMeasure", { timeout: 30_000 });
+    await header.getByTestId("search-open-graph").click();
+    const option = adminPage.getByTestId("lineage-jump-option");
+    await expect(option).toHaveCount(1, { timeout: 30_000 });
+    await expect(option).toContainText(`${PARTITION}.cache`);
+    await expect(option).toContainText("Written by 2 flows");
+    await option.click();
+
+    const graph = adminPage.getByTestId("page-lineage-graph");
+    await expect(graph).toBeVisible();
+    await expect(graph.getByText("UnitOfMeasure", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(graph.getByText(`osdu cache · ${PARTITION}.cache`).first()).toBeVisible();
+
+    // From the type's section among every type's records: the same node, and the section is not opened by the jump.
+    await adminPage.goto("/delivery/cache");
+    const section = adminPage.locator('[data-testid="delivery-cache-section"][data-type="LogCurveFamily"]');
+    await section.getByTestId("search-open-graph").click();
+    await expect(adminPage.getByTestId("lineage-jump-menu")).toContainText("LogCurveFamily");
+    await expect(adminPage.getByTestId("lineage-jump-option")).toContainText(`${PARTITION}.cache`, { timeout: 30_000 });
+    await adminPage.getByTestId("lineage-jump-option").click();
+    await expect(graph.getByText("LogCurveFamily", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+  });
+
   test("the catalog tree groups datasets by system, partition and group", async ({ adminPage }) => {
     await adminPage.goto("/catalog");
     const tree = adminPage.getByRole("tree", { name: "Catalog tree" });

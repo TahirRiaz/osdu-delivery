@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { CircleAlert, FileWarning, ListChecks, PencilLine, Play, Tags, X } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -7,8 +8,10 @@ import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { repoApi } from "@/api/endpoints";
 import { EmptyState } from "@/components/EmptyState";
 import { FilterBar } from "@/components/FilterBar";
+import { LineageJumpButton } from "@/components/LineageJumpButton";
 import { RelativeTime } from "@/components/RelativeTime";
 import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
@@ -189,9 +192,15 @@ function flowAbout(flow: DeliveryAssertionFlow): string {
   return `${flow.description ?? "Tests of what OSDU holds."}\n${fails}`;
 }
 
-/** One assertion flow on the board: its last run, the ways to run it, and its tests, one line each. */
-function FlowSection({ flow, tests, scope, picked, onPick, onOpen, onLaunch }: {
+/**
+ * One assertion flow on the board: its last run, the ways to run it, and its tests, one line each. On the board of every
+ * flow its heading also jumps to the flow in the lineage graph, where the types its tests read lead back to the flows
+ * delivering them; a flow's own page already links there.
+ */
+function FlowSection({ flow, repoName, tests, scope, picked, onPick, onOpen, onLaunch }: {
   flow: DeliveryAssertionFlow;
+  /** The name of the repository the flow is synced from, as the lineage jump names its graph. */
+  repoName: string;
   tests: readonly DeliveryAssertionTest[];
   scope: "all" | "flow";
   picked: ReadonlySet<string>;
@@ -225,6 +234,12 @@ function FlowSection({ flow, tests, scope, picked, onPick, onOpen, onLaunch }: {
         )}
         <div className="ml-auto flex items-center gap-1.5">
           {last !== null && <ReportDownloads assertionRunId={last.assertionRunId} flowName={flow.name} partition={last.partition} testId="board-flow-report" />}
+          {scope === "all" && (
+            <LineageJumpButton
+              target={{ kind: "node", repoId: flow.repoId, repoName, focusId: flow.pipelineId, label: flow.name, sublabel: flow.description ?? undefined }}
+              iconOnly
+            />
+          )}
           <Button
             size="sm"
             onClick={() => onLaunch([...picked])}
@@ -300,6 +315,14 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
   const [filter, setFilter] = useState<BoardFilter | null>(null);
   const [picked, setPicked] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
   const [launch, setLaunch] = useState<AssertionLaunch | null>(null);
+
+  // The repositories' names, which the board's flows carry only the ids of: a flow's lineage jump names its graph by it.
+  const repos = useQuery({
+    queryKey: ["repos", "names-for-assertion-board"],
+    queryFn: () => repoApi.list({ page: 1, pageSize: 200 }),
+    enabled: scope === "all",
+  });
+  const repoNames = useMemo(() => new Map((repos.data?.items ?? []).map((repo) => [repo.id, repo.name])), [repos.data]);
 
   const totals = board.totals;
   const allTags = useMemo(() => {
@@ -409,6 +432,7 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
           <FlowSection
             key={flow.pipelineId}
             flow={flow}
+            repoName={repoNames.get(flow.repoId) ?? flow.repoId}
             tests={tests}
             scope={scope}
             picked={picked.get(flow.pipelineId) ?? new Set()}
