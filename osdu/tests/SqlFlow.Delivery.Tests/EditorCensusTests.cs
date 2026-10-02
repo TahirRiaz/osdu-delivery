@@ -55,6 +55,19 @@ public sealed class EditorCensusTests
             Assert.False(string.IsNullOrWhiteSpace(path), $"{file} has an entry without a path.");
             Assert.False(string.IsNullOrWhiteSpace(key["type"]?.GetValue<string>()), $"{file}: {path} has no type.");
             Assert.False(string.IsNullOrWhiteSpace(key["description"]?.GetValue<string>()), $"{file}: {path} has no description.");
+
+            // The language engine reads these as text. A number or a boolean there fails the parse of the whole file,
+            // and the kind is then neither documented nor checked in the editor, the language server or the MCP server.
+            foreach (var textual in new[] { "default", "appliesWhen", "definedIn", "validation" })
+            {
+                Assert.True(
+                    key[textual] is null || key[textual]!.GetValueKind() == System.Text.Json.JsonValueKind.String,
+                    $"{file}: {path} writes its {textual} as a JSON {key[textual]?.GetValueKind()}; write it as text (\"false\", \"1000\").");
+            }
+
+            Assert.True(
+                key["enumValues"] is null || key["enumValues"]!.AsArray().All(v => v?.GetValueKind() == System.Text.Json.JsonValueKind.String),
+                $"{file}: {path} lists an enum value that is not text.");
         }
 
         Assert.Equal(keys.Count, Paths(census).Count);

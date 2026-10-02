@@ -129,7 +129,7 @@
       "type": "boolean",
       "required": false,
       "description": "Count each value's records exactly, with one count of the search per value whose keys could share a record. Where the attribute repeats in a record (a list, an array of objects) the index counts keys held, not records, so without this such a value's count is the sum of its keys' and marked as not exact.",
-      "default": false
+      "default": "false"
     },
     {
       "path": "dimensions[].description",
@@ -154,7 +154,7 @@
       "type": "integer",
       "required": false,
       "description": "The most distinct values the dimension keeps, between 1 and 5000000: a build that finds more fails before it writes anything, since it holds the values in memory while it groups them.",
-      "default": 1000000
+      "default": "1000000"
     },
     {
       "path": "dimensions[].name",
@@ -440,7 +440,7 @@
       "type": "integer",
       "required": false,
       "description": "How many groups the platform's aggregation returns: its `AGGREGATION_SIZE`, 1000 unless its operators changed it, between 10 and 10000. A build pages past it by value ranges, taking a range answered with fewer groups as complete, so this must not be more than the platform's setting; less only asks more often.",
-      "default": 1000
+      "default": "1000"
     },
     {
       "path": "source.auth",
