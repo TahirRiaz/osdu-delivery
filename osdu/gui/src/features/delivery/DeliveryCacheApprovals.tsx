@@ -3,7 +3,6 @@ import { Link as RouterLink } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Check, ShieldCheck, X } from "lucide-react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -17,6 +16,7 @@ import { PagedTable, type Column } from "@/components/PagedTable";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
+import { ChangeBadge } from "./ChangeMark";
 import { DeliveryCacheGaps } from "./DeliveryCacheGaps";
 import { RecordId } from "./DeliveryCacheRecords";
 
@@ -39,15 +39,6 @@ const statuses: { value: string; label: string }[] = [
 ];
 
 const statusLabel = { ...Object.fromEntries(statuses.map((s) => [s.value, s.label])), delivering: "Rolling out" } as Record<string, string>;
-
-const changeTone: Record<string, string> = {
-  changed: "bg-info/15 text-info",
-  removed: "bg-destructive/15 text-destructive",
-  unmatched: "bg-warning/15 text-warning",
-  listed: "bg-info/15 text-info",
-  relisted: "bg-info/15 text-info",
-  found: "bg-success/15 text-success",
-};
 
 /** What each kind of change means for the records built from the cached value, as the detail panel says it. */
 const changeMeaning: Record<string, string> = {
@@ -209,7 +200,7 @@ const columns: Column<DeliveryUpdateTag>[] = [
     render: (row) => (
       <span className="flex flex-col gap-0.5">
         <span className="inline-flex items-center gap-1.5 font-mono text-[12px]">
-          <Badge variant="secondary" className={changeTone[row.change] ?? ""}>{row.change}</Badge>
+          <ChangeBadge change={row.change} className="font-sans" />
           {row.typeName}<span className="-mx-1 text-muted-foreground">.</span>{row.path}
         </span>
         <RecordId id={row.itemId} maxWidth={300} />
@@ -239,7 +230,7 @@ function TagDetail({ tag, onDecided }: { tag: DeliveryUpdateTag; onDecided: () =
   return (
     <div className="flex flex-col gap-4 p-3" data-testid="delivery-cache-tag-detail">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="secondary" className={changeTone[tag.change] ?? ""}>{tag.change}</Badge>
+        <ChangeBadge change={tag.change} />
         <span className="font-mono text-[13px] font-medium">
           {tag.typeName}<span className="text-muted-foreground">.</span>{tag.path}
         </span>

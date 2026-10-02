@@ -19,8 +19,14 @@ import { fetchAllPipelines } from "@/features/pipelines/fetchAllPipelines";
 import { useActivePartition } from "./activePartition";
 import { SubmissionStatusBadge } from "./DeliveryBadges";
 
+/**
+ * One count of a flow's records. A tone says what the records it counts are (delivered, held), so a count of none takes
+ * no tone: a zero is the absence of the thing, and is drawn as quietly as an empty cell.
+ */
 function Count({ label, value, tone }: { label: string; value: number; tone?: "success" | "warning" | "destructive" | "info" }) {
-  const color = tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : tone === "destructive" ? "text-destructive" : tone === "info" ? "text-info" : "";
+  const color = value === 0
+    ? "text-muted-foreground"
+    : tone === "success" ? "text-success" : tone === "warning" ? "text-warning" : tone === "destructive" ? "text-destructive" : tone === "info" ? "text-info" : "";
   return (
     <div className="min-w-0">
       <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
@@ -107,8 +113,8 @@ function FlowCard({ pipeline, stats, active, elsewhere, onOpen }: {
             <Count label="Records" value={stats.total} />
             <Count label="Delivered" value={stats.delivered} tone="success" />
             <Count label="Pending" value={stats.pending + stats.delivering} tone="info" />
-            <Count label="Held" value={stats.held} tone={stats.held > 0 ? "warning" : undefined} />
-            <Count label="Failed" value={stats.failed} tone={stats.failed > 0 ? "destructive" : undefined} />
+            <Count label="Held" value={stats.held} tone="warning" />
+            <Count label="Failed" value={stats.failed} tone="destructive" />
             <Count label="Last 24h" value={stats.deliveredLast24h} />
           </div>
           <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">

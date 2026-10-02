@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { Link as RouterLink } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, GitCommitHorizontal } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -25,6 +24,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cachedFieldsText, cachedText } from "./cacheFormat";
 import { CachedRecordId } from "./DeliveryCacheRecords";
+import { ChangeBadge, ChangeCount } from "./ChangeMark";
 import { shortHash, typeVersions, type CacheTypeVersion } from "./cacheTypeVersions";
 import { shortId } from "./idTail";
 
@@ -42,18 +42,6 @@ const changeFilters: { value: ChangeFilter; label: string }[] = [
   { value: "removed", label: "Removed" },
 ];
 
-const changeTone: Record<DeliveryCacheChange, string> = {
-  changed: "bg-info/15 text-info",
-  added: "bg-success/15 text-success",
-  removed: "bg-destructive/15 text-destructive",
-};
-
-const countTone: Record<DeliveryCacheChange, string> = {
-  changed: "text-info",
-  added: "text-success",
-  removed: "text-destructive",
-};
-
 function keyOf(entry: DeliveryCacheHistoryEntry): string {
   return `${entry.version.scope}:${entry.version.version}`;
 }
@@ -70,8 +58,8 @@ function movedText(type: DeliveryCacheHistoryType): string {
 }
 
 /**
- * The types one version moved, each tinted by how (added, changed, removed); the rest are counted, and named on hover. A
- * version that moved no type says so, with why it was written on hover.
+ * The types one version moved, each led by the glyph of how (added, changed, removed); the rest are counted, and named
+ * on hover. A version that moved no type says so, with why it was written on hover.
  */
 function TypesMoved({ entry }: { entry: DeliveryCacheHistoryEntry }) {
   if (entry.types.length === 0) {
@@ -91,9 +79,9 @@ function TypesMoved({ entry }: { entry: DeliveryCacheHistoryEntry }) {
     <span className="flex flex-wrap items-center gap-1" data-testid="delivery-cache-history-types">
       {shown.map((type) => (
         <RichTooltip key={type.name} body={movedText(type)} mono>
-          <Badge variant="secondary" className={cn("font-mono text-[11px]", changeTone[type.change])} data-testid="delivery-cache-history-type">
+          <ChangeBadge change={type.change} className="font-mono text-[11px]" data-testid="delivery-cache-history-type">
             {type.name}
-          </Badge>
+          </ChangeBadge>
         </RichTooltip>
       ))}
       {rest > 0 && (
@@ -105,7 +93,7 @@ function TypesMoved({ entry }: { entry: DeliveryCacheHistoryEntry }) {
   );
 }
 
-/** What one version changed, as tinted counts. */
+/** What one version changed, as counts each led by the glyph of its kind. */
 function ChangeCounts({ entry }: { entry: DeliveryCacheHistoryEntry }) {
   if (entry.before === null) {
     return (
@@ -121,12 +109,8 @@ function ChangeCounts({ entry }: { entry: DeliveryCacheHistoryEntry }) {
   }
 
   return (
-    <span className="inline-flex gap-3 font-mono text-[12px] tabular-nums">
-      {parts.map((kind) => (
-        <span key={kind} className={countTone[kind]}>
-          {entry[kind].toLocaleString()} {kind}
-        </span>
-      ))}
+    <span className="inline-flex gap-3">
+      {parts.map((kind) => <ChangeCount key={kind} change={kind} count={entry[kind]} />)}
     </span>
   );
 }
@@ -166,7 +150,7 @@ function Difference({ row }: { row: DeliveryCacheDiffItem }) {
 const changeColumn: Column<DeliveryCacheDiffItem> = {
   id: "change",
   header: "Change",
-  render: (row) => <Badge variant="secondary" className={changeTone[row.change]}>{row.change}</Badge>,
+  render: (row) => <ChangeBadge change={row.change} />,
 };
 
 const typeColumn: Column<DeliveryCacheDiffItem> = {
@@ -302,7 +286,7 @@ export function CacheChanges({ scope, from, to, type, counts, header, unchanged,
               <SheetHeader className="border-b border-border">
                 <SheetTitle className="flex flex-wrap items-center gap-2">
                   <span className="font-mono">{row.typeName}</span>
-                  <Badge variant="secondary" className={changeTone[row.change]}>{row.change}</Badge>
+                  <ChangeBadge change={row.change} />
                 </SheetTitle>
                 <SheetDescription className="font-mono text-[12px] text-foreground">{row.recordId}</SheetDescription>
                 <p className="text-[12px] text-muted-foreground">{row.entityType}</p>
@@ -646,12 +630,8 @@ function TypeChange({ version }: { version: CacheTypeVersion }) {
   const counts = (["changed", "added", "removed"] as const).filter((kind) => version[kind] > 0);
   return (
     <span className="inline-flex items-center gap-2 whitespace-nowrap">
-      <Badge variant="secondary" className={changeTone[version.change]}>{version.change}</Badge>
-      {counts.map((kind) => (
-        <span key={kind} className={cn("font-mono text-[12px] tabular-nums", countTone[kind])}>
-          {version[kind].toLocaleString()} {kind}
-        </span>
-      ))}
+      <ChangeBadge change={version.change} />
+      {counts.map((kind) => <ChangeCount key={kind} change={kind} count={version[kind]} />)}
     </span>
   );
 }
