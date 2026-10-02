@@ -64,6 +64,21 @@ The container image turns three further variables into node options through its 
 work) and `SQLFLOW_WORKER_DRAIN_SECONDS` (how long a stopping node finishes what it holds; keep it below the
 orchestrator's termination grace period).
 
+### The MCP server
+
+`osdu-delivery-mcp` holds no secret of its own. Run as a service, it forwards the token each request carries; run by a
+person, it holds the personal access token that person's sign-in minted, in a file under their profile
+([reference/guides/mcp.md](reference/guides/mcp.md)).
+
+| Variable | Meaning |
+| --- | --- |
+| `SQLFLOW_CONTROL_PLANE_URL` | The control plane the tools call. Required for the service; a person's own server remembers the address it was last given. |
+| `SQLFLOW_CONTROL_PLANE_TOKEN` | A bearer token to use instead of signing in, for a person's own server. The service never reads it: over HTTP the caller's token is the only credential. |
+| `SQLFLOW_GUI_URL` | The GUI's public address, so the links a result carries are absolute. Unset, they are root-relative. |
+| `SQLFLOW_MCP_HTTP_BIND` | The service's listen address (loopback `127.0.0.1:8787` unless set; the image sets `0.0.0.0:8080`). |
+| `SQLFLOW_MCP_HTTP_ALLOWED_HOSTS` | A `Host` header allowlist for the service. Unset disables the check, since every request needs a bearer token. |
+| `SQLFLOW_MCP_LOG` | The log filter (default `info`). |
+
 ### The CLI
 
 | Variable | Meaning |

@@ -13,6 +13,24 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **An MCP server for AI assistants, answering from metadata alone.** `osdu-delivery-mcp`
+  (`osdu/hosts/osdu-delivery-mcp`) is SQLFlow's MCP server composed with the delivery module, as the control plane and
+  the CLI hosts are compositions: everything SQLFlow's server answers about the catalog, lineage, runs, schedules and
+  its documentation, plus twenty-seven `delivery_*` tools over the module's own endpoints. An assistant can find a
+  record by what the caller holds and read everything the ledger kept of it (its state, every attempt, the file and
+  row it came from, who acted on it), read a flow at a glance, its submissions and the audit trail, the partitions and
+  the central configuration, a cache's health and history, mappings, templates and OSDU schemas, the assertion board
+  and dimension builds, check and scaffold a mapping, and, under the `operate` scope, probe a target, verify, sync,
+  release and redeliver records and decide cache changes, each recorded in the audit trail by the endpoint it calls.
+  The server returns no data: not what OSDU holds for a record, not a source row or a rendered document, not a cached
+  value or a dimension's values, and the records an assertion quotes are counted rather than shown; SQLFlow's tools
+  that read rows or reach a datasource are left out of this host. Removing records from OSDU is not offered. The
+  product's documentation is compiled into the binary and indexed section by section beside SQLFlow's reference, and
+  the flow-language tools know the flow kinds and documents the module adds. It runs over stdio for a person's own
+  client and over HTTP as a stateless service that forwards each caller's token; the image is
+  `osdu/deploy/docker/mcp.Dockerfile`, in the compose stack behind a profile and in `k8s/mcp.yaml`. The chat
+  assistant's tool list is the product's: SQLFlow's metadata readers and the module's, the actions left off
+  ([osdu/docs/reference/guides/mcp.md](osdu/docs/reference/guides/mcp.md)).
 - **A mapping is a node in the lineage graph, and everything it reads feeds it.** Each mapping a delivery flow pins is
   an `osdu mapping` node (the reference, captioned by its partition and the folder it is filed in), sitting between what
   it reads and the flow that renders with it: cache type, mapping, delivery flow, OSDU type. A mapping reads the cache
@@ -751,6 +769,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **The editor documents and checks dimension flows.** Three keys of the dimension census wrote their default as a
+  JSON number or boolean, where the language engine reads text, so the whole file failed to parse and a dimension flow
+  was neither documented nor checked in the YAML editor or the language server. The defaults are written as text, as
+  every other census writes them, and `EditorCensusTests` holds every census to that.
 - **A warning that does not hold reads as a warning.** An assertion of severity `warning` or `info` that did not hold was
   shown as a failure everywhere a single assertion shows: a red cross, red found and failing counts, a red "hold" count
   on the report, the board and the test's sheet, and a red square in its history, so a run that passed with one warned

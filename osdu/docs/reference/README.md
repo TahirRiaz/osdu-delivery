@@ -31,5 +31,6 @@ Every environment variable and secret reference is listed once, in
 | --- | --- | --- |
 | [guides/deployment.md](guides/deployment.md) | Deploying OSDU Delivery: the three images, the tiers, and triggering from an external scheduler. | [deployment](../../../sqlflow/docs/reference/guides/deployment.md) |
 | [guides/notifications.md](guides/notifications.md) | Failure notifications for delivery, retrieval, cache and assertion flows. | [notifications](../../../sqlflow/docs/reference/guides/notifications.md) |
+| [guides/mcp.md](guides/mcp.md) | The MCP server for AI assistants: what it answers, that it answers from metadata alone, and how it is installed and deployed. | [tools](../../../sqlflow/tools/README.md) |
 
 The deployment assets themselves, with their own README, are in [../../deploy/](../../deploy/README.md).

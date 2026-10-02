@@ -22,6 +22,10 @@ The image names carry the product rather than the platform, because the vendored
 images from its own deployment assets and these are different artifacts. Project, namespace, binary and
 environment-variable names stay `SqlFlow.*` and `SQLFLOW_*`.
 
+A fourth image, `osdu-delivery-mcp`, is optional: the MCP server an AI assistant connects to, built from
+`osdu/hosts/osdu-delivery-mcp` with the same context. It is stateless, holds no credential, and sits behind the
+ingress under `/mcp` in an estate that offers an assistant ([mcp.md](mcp.md)).
+
 ## What each tier holds
 
 - **The control plane** is the API, the scheduler, the managed git sync and the run dispatcher, plus the module's
