@@ -330,6 +330,30 @@ public sealed class DeliveryModuleTests
         }
     }
 
+    [Fact]
+    public async Task TheModule_GivesTheChatAssistantTheProductsTools_AndKeepsAListADeploymentConfigured()
+    {
+        await using var factory = Host();
+        using var client = factory.CreateClient();
+
+        // SQLFlow's own default names the tools that read rows, which the product's MCP server does not offer; the
+        // module replaces it with the metadata readers and its own.
+        var tools = factory.Services.GetRequiredService<IOptions<SqlFlow.ControlPlane.Configuration.ControlPlaneOptions>>().Value.Assistant.Mcp.AllowedTools;
+        Assert.Equal(DeliveryAssistantTools.Allowed, tools);
+        Assert.Contains("delivery_record", tools);
+        Assert.Contains("list_runs", tools);
+        Assert.DoesNotContain("run_query", tools);
+        Assert.DoesNotContain("delivery_redeliver_record", tools);
+        Assert.DoesNotContain("trigger_run", tools);
+
+        // A deployment that configured the list keeps what it configured: the module only replaces the shipped default.
+        await using var configured = Host().WithSetting("ControlPlane:Assistant:Mcp:AllowedTools:0", "delivery_probe_target");
+        using var other = configured.CreateClient();
+        var kept = configured.Services.GetRequiredService<IOptions<SqlFlow.ControlPlane.Configuration.ControlPlaneOptions>>().Value.Assistant.Mcp.AllowedTools;
+        Assert.Contains("delivery_probe_target", kept);
+        Assert.NotEqual(DeliveryAssistantTools.Allowed, kept);
+    }
+
     /// <summary>The control plane with the module, and without the settings a test host must not act on (no network warm-up).</summary>
     private static ControlPlaneAppFactory Host()
         => new ControlPlaneAppFactory()

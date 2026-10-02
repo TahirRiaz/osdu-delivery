@@ -3,6 +3,7 @@ using SqlFlow.Delivery.Catalog;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.ControlPlane.Api;
+using SqlFlow.ControlPlane.Configuration;
 using SqlFlow.ControlPlane.Hosting;
 using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.ControlPlane.Background;
@@ -66,6 +67,10 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
 
         // The delivery records category of the control plane's search: resolved per request, beside the built-in ones.
         services.Services.AddScoped<ISearchContributor, RecordSearchContributor>();
+
+        // The chat assistant's tools are the product's: SQLFlow's metadata readers and the delivery module's, as the
+        // product's MCP server offers them (osdu/docs/reference/guides/mcp.md). A deployment's own list is kept.
+        services.Services.PostConfigure<ControlPlaneOptions>(DeliveryAssistantTools.Apply);
 
         // The OSDU data definitions (the Open Group's public repository of OSDU schemas) the Templates page browses and
         // saves templates from, kept as a local copy: each release downloaded once as one archive and read from disk
