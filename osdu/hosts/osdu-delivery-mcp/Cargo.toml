@@ -1,0 +1,44 @@
+[package]
+name = "osdu-delivery-mcp"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+description = "The OSDU Delivery MCP server: SQLFlow's MCP server composed with the delivery module's tools (the record ledger, submissions, the audit trail, mappings, templates, the partition caches, assertions and dimensions)"
+
+# SQLFlow's MCP server is a library a host composes (sqlflow/tools/sqlflow-mcp); this crate is the host. The library
+# carries the delivery module, so the tests drive it as the binary runs it; the binary is its entry point.
+[lib]
+name = "osdu_delivery_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "osdu-delivery-mcp"
+path = "src/main.rs"
+
+[dependencies]
+sqlflow-mcp = { path = "../../../sqlflow/tools/sqlflow-mcp" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[dev-dependencies]
+# The control plane the tests call is a small HTTP server of their own, and the HTTP transport is driven as a remote
+# client drives it. Same versions as the server library's, so nothing is built twice.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+http = "1"
+bytes = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+
+# A workspace of its own: the crate lives in osdu/, outside SQLFlow's tools workspace, which holds no module of any
+# product. Its lock file is committed, so a build is the build that was tested.
+[workspace]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
