@@ -1,0 +1,91 @@
+# The MCP server: the endpoint AI assistants (and the control plane's own chat assistant) connect to. Stateless and
+# credential-free: every request carries the caller's bearer token, which it forwards to the control plane, so it
+# scales as the GUI does and holds no secret. It answers from metadata alone (osdu/docs/reference/guides/mcp.md).
+#
+# Optional, and whole in this one file (the deployment, its service, and the /mcp path of the estate's host): an
+# estate that offers no assistant does not apply it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osdu-delivery-mcp
+  namespace: osdu-delivery
+  labels:
+    app: osdu-delivery-mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: osdu-delivery-mcp
+  template:
+    metadata:
+      labels:
+        app: osdu-delivery-mcp
+    spec:
+      containers:
+        - name: mcp
+          image: osdu-delivery-mcp:latest # replace with your registry tag
+          ports:
+            - containerPort: 8080
+          env:
+            # The control plane inside the cluster; the tools call nothing else.
+            - name: SQLFLOW_CONTROL_PLANE_URL
+              value: "http://osdu-delivery-controlplane"
+            # The GUI's public address, so results link to its pages.
+            - name: SQLFLOW_GUI_URL
+              value: "https://osdu-delivery.example.com"
+            # The host the ingress serves it under; requests naming another host are refused.
+            - name: SQLFLOW_MCP_HTTP_ALLOWED_HOSTS
+              value: "osdu-delivery.example.com"
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: osdu-delivery-mcp
+  namespace: osdu-delivery
+spec:
+  selector:
+    app: osdu-delivery-mcp
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+# The MCP endpoint on the estate's host, beside /api and the GUI: one more path of the same host, so a client is
+# given https://osdu-delivery.example.com/mcp. An ingress of its own keeps this manifest whole: applying it adds the
+# path, and deleting it takes the path away, without touching ingress.yaml. TLS is the host's (ingress.yaml).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: osdu-delivery-mcp
+  namespace: osdu-delivery
+  annotations:
+    # An MCP session streams its answers; the controller must not buffer them or cut a long call short.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [osdu-delivery.example.com]
+      secretName: osdu-delivery-tls
+  rules:
+    - host: osdu-delivery.example.com
+      http:
+        paths:
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: osdu-delivery-mcp
+                port: { number: 80 }

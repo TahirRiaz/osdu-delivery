@@ -39,3 +39,17 @@ sqlflow/data/
 sqlflow/media/
 sqlflow/logo/
 sqlflow/schemas/
+
+# The Rust workspaces' build output (gigabytes once built locally); an image that needs a binary builds it from source.
+**/target/
+
+# The MCP image compiles the documentation into its binary (osdu/deploy/docker/mcp.Dockerfile): SQLFlow's reference
+# pages, wiki and key census, the product's pages and census, and the four design pages the product's index cites.
+# They are re-included here, after the rules above that leave documentation out; a few megabytes of text.
+!sqlflow/docs/reference/
+!sqlflow/docs/wiki/
+!osdu/docs/
+!docs/assertions-design.md
+!docs/interfaces-design.md
+!docs/partitions-design.md
+!docs/lineage-design.md

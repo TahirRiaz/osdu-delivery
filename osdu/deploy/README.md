@@ -22,6 +22,22 @@ The image names carry the product rather than the platform, because the vendored
 own `sqlflow-*` images from its own deployment assets; these are different artifacts. Project, namespace, binary
 and environment-variable names stay `SqlFlow.*` and `SQLFLOW_*`, as the project's naming rule says.
 
+A fourth image is optional: the MCP server, for AI assistants and for the control plane's own chat assistant
+([../docs/reference/guides/mcp.md](../docs/reference/guides/mcp.md)).
+
+| Image | Built from | Scales on | Behind the ingress? |
+| --- | --- | --- | --- |
+| `osdu-delivery-mcp` | `osdu/deploy/docker/mcp.Dockerfile` | trivially (stateless, holds no credential) | yes, under `/mcp`, when the estate offers an assistant |
+
+```bash
+docker build -f osdu/deploy/docker/mcp.Dockerfile -t osdu-delivery-mcp:latest .
+```
+
+It is a Rust binary, built from `osdu/hosts/osdu-delivery-mcp` and SQLFlow's server under `sqlflow/tools`, with the
+documentation compiled into it; the root `.dockerignore` re-includes the documentation trees it reads. It is in the
+compose stack (behind a profile) and in `k8s/mcp.yaml`. The Bicep templates and `deploy-prod.ps1` deploy the three
+tiers above and do not provision it.
+
 ## How the tiers fit together
 
 - **The control plane** is the API, the scheduler, the managed git sync and the run dispatcher. It owns the run
@@ -70,6 +86,12 @@ docker compose up -d --build mssql dbinit controlplane gui
 # put it in .env as SQLFLOW_NODE_TOKEN, then:
 docker compose up -d --build worker
 docker compose up -d --scale worker=3   # more compute, nothing else changes
+```
+
+The MCP server is behind a profile, since not every estate offers an assistant:
+
+```bash
+docker compose --profile mcp up -d --build mcp     # http://localhost:8787/mcp
 ```
 
 GUI at <http://localhost:8081>, API at <http://localhost:5000>. Bootstrap provisioning creates the `SQLFlow`
@@ -151,6 +173,8 @@ kubectl apply -f osdu/deploy/k8s/gui.yaml
 kubectl apply -f osdu/deploy/k8s/ingress.yaml
 # mint the node token, add it to the secret, then:
 kubectl apply -f osdu/deploy/k8s/worker-pool.yaml
+# optional: the MCP server, on the same host under /mcp
+kubectl apply -f osdu/deploy/k8s/mcp.yaml
 ```
 
 The layout and the reasoning behind it:
@@ -158,6 +182,9 @@ The layout and the reasoning behind it:
 - **One host, path split** (`/api` and `/openapi` to the control plane, `/` to the GUI): the SPA runs same-origin
   with the API, so no CORS configuration exists anywhere. The GUI image's `SQLFLOW_API_BASE_URL=""` means "same
   origin".
+- **The MCP server is one more path of that host** (`/mcp`, in `mcp.yaml` with an ingress of its own, so applying
+  or deleting that one file adds or removes it). It is stateless and holds no secret: a client sends its own token
+  on every request, and the server forwards it to the control plane inside the cluster.
 - **The control plane runs one replica, API-only** (`ControlPlane__Worker__Enabled=false`). A rolling update
   briefly overlaps two replicas; the old one releases the dispatch lease on its graceful stop and the nodes retry.
 - **Forwarded headers are trusted from the ingress only** (`ControlPlane__Proxy__*`): set `KnownNetworks` to your

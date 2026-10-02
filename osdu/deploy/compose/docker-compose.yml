@@ -15,6 +15,7 @@
 #
 # GUI:            http://localhost:8081  (sign in with the bootstrap admin from .env)
 # Control plane:  http://localhost:5000  (OpenAPI at /openapi/v1.json)
+# MCP server:     http://localhost:8787/mcp  (optional: --profile mcp)
 #
 # The node takes work from the control plane's dispatcher over HTTP, authenticated with a personal access token
 # minted with the `node` scope. That token can only be minted once the control plane is running, which is why a
@@ -154,6 +155,29 @@ services:
       SQLFLOW_API_BASE_URL: http://localhost:5000
     ports:
       - "8081:8080"
+    restart: unless-stopped
+
+  # The MCP server, for AI assistants: SQLFlow's, composed with the delivery module. Optional, so it sits behind a
+  # profile: docker compose --profile mcp up -d --build mcp
+  # It holds no credential. A client sends its own token (a personal access token from the GUI's token page) as
+  # Authorization: Bearer on every request, and the server forwards it to the control plane, which enforces its
+  # scopes. It answers from metadata alone (osdu/docs/reference/guides/mcp.md).
+  # MCP endpoint: http://localhost:8787/mcp   Probe: http://localhost:8787/healthz
+  mcp:
+    profiles: ["mcp"]
+    build:
+      # The repository root: the server compiles the documentation under osdu/docs and sqlflow/docs into its binary.
+      context: ../../..
+      dockerfile: osdu/deploy/docker/mcp.Dockerfile
+    depends_on:
+      controlplane:
+        condition: service_healthy
+    environment:
+      SQLFLOW_CONTROL_PLANE_URL: http://controlplane:8080
+      # Results carry links into the GUI; this is where a browser reaches it in this layout.
+      SQLFLOW_GUI_URL: http://localhost:8081
+    ports:
+      - "8787:8080"
     restart: unless-stopped
 
 volumes:
