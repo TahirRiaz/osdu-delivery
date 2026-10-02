@@ -1,4 +1,4 @@
-//! Streamable HTTP transport for the MCP server (`sqlflow-mcp http`).
+//! Streamable HTTP transport for the MCP server (`sqlflow-mcp http`, or a host's own program).
 //!
 //! Hosts rmcp's [`StreamableHttpService`] behind a small hyper front end with two
 //! routes: `GET /healthz` (unauthenticated readiness probe for the container
@@ -27,8 +27,6 @@ use hyper_util::rt::TokioIo;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 
-use crate::control_plane::ControlPlane;
-use crate::docs::DocsIndex;
 use crate::server::{bearer_token, SqlFlowMcp};
 
 /// The MCP endpoint path clients are pointed at, e.g. `https://host/mcp`.
@@ -43,14 +41,28 @@ pub struct HttpServerOptions {
     pub allowed_hosts: Vec<String>,
 }
 
-pub async fn serve(
-    docs: Arc<DocsIndex>,
-    cp: Arc<ControlPlane>,
-    opts: HttpServerOptions,
+/// Serves `server` over HTTP on `opts.bind` until the process is asked to stop: every session gets a
+/// copy of it, so the host's composition (its modules' tools, pages and links) is the same for all of
+/// them.
+pub async fn serve(server: SqlFlowMcp, opts: HttpServerOptions) -> Result<()> {
+    let listener = tokio::net::TcpListener::bind(opts.bind)
+        .await
+        .with_context(|| format!("could not bind {}", opts.bind))?;
+    serve_on(server, listener, opts.allowed_hosts, tokio::signal::ctrl_c()).await
+}
+
+/// The same on a listener the caller bound, until `shutdown` resolves: what [`serve`] runs, and what
+/// lets the transport be driven on a port the system picked.
+pub async fn serve_on(
+    server: SqlFlowMcp,
+    listener: tokio::net::TcpListener,
+    allowed_hosts: Vec<String>,
+    shutdown: impl std::future::Future<Output = std::io::Result<()>>,
 ) -> Result<()> {
-    let config = if !opts.allowed_hosts.is_empty() {
-        StreamableHttpServerConfig::default().with_allowed_hosts(opts.allowed_hosts.clone())
-    } else if opts.bind.ip().is_loopback() {
+    let bind = listener.local_addr().context("the listener has no local address")?;
+    let config = if !allowed_hosts.is_empty() {
+        StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts)
+    } else if bind.ip().is_loopback() {
         // Loopback bind: rmcp's localhost-only default already matches.
         StreamableHttpServerConfig::default()
     } else {
@@ -63,20 +75,24 @@ configured); every MCP request still requires a bearer token"
     // Cancelling this token ends open SSE streams and in-flight sessions on shutdown.
     let cancel = config.cancellation_token.clone();
 
+    // The realm a bare request is challenged with names the program that is serving.
+    let challenge: Arc<http::HeaderValue> = Arc::new(
+        http::HeaderValue::from_str(&format!("Bearer realm=\"{}\"", server.name()))
+            .context("the server's name cannot be sent in a WWW-Authenticate header")?,
+    );
+
     let mcp_service = StreamableHttpService::new(
-        move || Ok(SqlFlowMcp::new_http(docs.clone(), cp.clone())),
+        move || Ok(server.clone()),
         LocalSessionManager::default().into(),
         config,
     );
 
-    let listener = tokio::net::TcpListener::bind(opts.bind)
-        .await
-        .with_context(|| format!("could not bind {}", opts.bind))?;
-    tracing::info!("MCP over HTTP listening on http://{}{}", opts.bind, MCP_PATH);
+    tracing::info!("MCP over HTTP listening on http://{}{}", bind, MCP_PATH);
 
+    tokio::pin!(shutdown);
     loop {
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => {
+            signal = &mut shutdown => {
                 if let Err(e) = signal {
                     tracing::error!("shutdown signal listener failed: {e}; stopping the server");
                 } else {
@@ -96,11 +112,12 @@ configured); every MCP request still requires a bearer token"
                     }
                 };
                 let service = mcp_service.clone();
+                let challenge = challenge.clone();
                 tokio::spawn(async move {
                     let io = TokioIo::new(stream);
                     let conn = hyper::server::conn::http1::Builder::new().serve_connection(
                         io,
-                        service_fn(move |req| route(service.clone(), req)),
+                        service_fn(move |req| route(service.clone(), challenge.clone(), req)),
                     );
                     if let Err(e) = conn.await {
                         // Client disconnects mid-SSE land here; not a server fault.
@@ -114,6 +131,7 @@ configured); every MCP request still requires a bearer token"
 
 async fn route(
     mcp: StreamableHttpService<SqlFlowMcp, LocalSessionManager>,
+    challenge: Arc<http::HeaderValue>,
     req: Request<Incoming>,
 ) -> Result<Response<BoxBody<Bytes, std::convert::Infallible>>, std::convert::Infallible> {
     let path = req.uri().path();
@@ -131,10 +149,8 @@ async fn route(
             StatusCode::UNAUTHORIZED,
             "missing or malformed Authorization header; expected: Bearer <SQLFlow access token>",
         );
-        resp.headers_mut().insert(
-            http::header::WWW_AUTHENTICATE,
-            http::HeaderValue::from_static("Bearer realm=\"sqlflow-mcp\""),
-        );
+        resp.headers_mut()
+            .insert(http::header::WWW_AUTHENTICATE, challenge.as_ref().clone());
         return Ok(resp);
     }
     Ok(mcp.handle(req).await)

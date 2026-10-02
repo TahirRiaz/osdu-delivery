@@ -6,7 +6,7 @@
 //! (RFC 8628) against the endpoints added to `AuthEndpoints.cs`, with a token
 //! paste (`set_access_token` / `SQLFLOW_CONTROL_PLANE_TOKEN`) as a fallback.
 
-use crate::config::{self, TokenCache};
+use crate::config::{self, StateStore, TokenCache};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -88,8 +88,50 @@ struct AccessTokenInfo {
 const PAT_LIFETIME_DAYS: i64 = 90;
 const PAT_ROTATE_WINDOW_DAYS: i64 = 14;
 
+/// How one server names itself to the control plane, and where it keeps its sign-in: the program's
+/// name and version (the user agent, the device grant's client id, and the label of the access token
+/// it mints) and its state files. SQLFlow's own server is the default; a host that composes the
+/// server under a name of its own passes its own.
+#[derive(Debug, Clone)]
+pub struct ClientIdentity {
+    name: String,
+    version: String,
+    state: StateStore,
+}
+
+impl ClientIdentity {
+    pub fn new(name: &str, version: &str, state: StateStore) -> Self {
+        ClientIdentity {
+            name: name.to_string(),
+            version: version.to_string(),
+            state,
+        }
+    }
+
+    /// The program's name, for example `sqlflow-mcp`.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// Where this program keeps its control-plane URL and its token.
+    pub fn state(&self) -> &StateStore {
+        &self.state
+    }
+}
+
+impl Default for ClientIdentity {
+    fn default() -> Self {
+        ClientIdentity::new("sqlflow-mcp", env!("CARGO_PKG_VERSION"), StateStore::default())
+    }
+}
+
 pub struct ControlPlane {
     http: reqwest::Client,
+    identity: ClientIdentity,
     base_url: RwLock<String>,
     token: RwLock<Option<TokenCache>>,
     /// The device code of an in-flight `login`, so `check_auth_status` can poll
@@ -102,8 +144,8 @@ pub struct ControlPlane {
 
 impl ControlPlane {
     /// Build the client from persisted config/token, overridden by env vars.
-    pub fn from_env() -> Self {
-        let cfg = config::load_config();
+    pub fn from_env(identity: &ClientIdentity) -> Self {
+        let cfg = identity.state.load_config();
         let base_url = std::env::var("SQLFLOW_CONTROL_PLANE_URL")
             .ok()
             .or(cfg.control_plane_url)
@@ -117,17 +159,30 @@ impl ControlPlane {
                 token_id: None,
                 renewable: false,
             })
-            .or_else(config::load_token);
+            .or_else(|| identity.state.load_token());
+        ControlPlane::new(identity, &base_url, token)
+    }
+
+    /// The client for the control plane at `base_url`, holding `token` when the caller has one.
+    /// Nothing is read from the environment or from disk; [`from_env`](Self::from_env) is this with
+    /// both resolved.
+    pub fn new(identity: &ClientIdentity, base_url: &str, token: Option<TokenCache>) -> Self {
         ControlPlane {
             http: reqwest::Client::builder()
-                .user_agent(concat!("sqlflow-mcp/", env!("CARGO_PKG_VERSION")))
+                .user_agent(format!("{}/{}", identity.name, identity.version))
                 .build()
                 .expect("failed to build HTTP client"),
-            base_url: RwLock::new(normalize_base(&base_url)),
+            identity: identity.clone(),
+            base_url: RwLock::new(normalize_base(base_url)),
             token: RwLock::new(token),
             pending_device_code: RwLock::new(None),
             rotate_lock: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// The program this client names itself as.
+    pub fn identity(&self) -> &ClientIdentity {
+        &self.identity
     }
 
     pub fn pending_device_code(&self) -> Option<String> {
@@ -140,9 +195,9 @@ impl ControlPlane {
 
     pub fn set_base_url(&self, url: &str) {
         *self.base_url.write().unwrap() = normalize_base(url);
-        let mut cfg = config::load_config();
+        let mut cfg = self.identity.state.load_config();
         cfg.control_plane_url = Some(self.base_url());
-        let _ = config::save_config(&cfg);
+        let _ = self.identity.state.save_config(&cfg);
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -155,12 +210,12 @@ impl ControlPlane {
     }
 
     pub fn set_token(&self, token: TokenCache) {
-        let _ = config::save_token(&token);
+        let _ = self.identity.state.save_token(&token);
         *self.token.write().unwrap() = Some(token);
     }
 
     pub fn clear_token(&self) {
-        let _ = config::clear_token();
+        let _ = self.identity.state.clear_token();
         *self.token.write().unwrap() = None;
     }
 
@@ -194,7 +249,7 @@ impl ControlPlane {
         let resp = self
             .http
             .post(self.url("/api/v1/auth/device"))
-            .json(&json!({ "clientId": "sqlflow-mcp", "scope": "read operate author" }))
+            .json(&json!({ "clientId": self.identity.name, "scope": "read operate author" }))
             .send()
             .await
             .context("could not start device authorization")?;
@@ -266,7 +321,7 @@ impl ControlPlane {
             .http
             .post(self.url("/api/v1/me/tokens"))
             .bearer_auth(bearer)
-            .json(&json!({ "name": client_token_name(), "scopes": scopes, "expiresInDays": PAT_LIFETIME_DAYS }))
+            .json(&json!({ "name": client_token_name(&self.identity.name), "scopes": scopes, "expiresInDays": PAT_LIFETIME_DAYS }))
             .send()
             .await
             .context("could not provision an access token")?;
@@ -402,16 +457,36 @@ impl ControlPlane {
 
 /// A human label for the tokens this client mints, so they are recognizable in the GUI's token list. The host name
 /// is best-effort; a nameless host still yields a usable, if generic, label.
-fn client_token_name() -> String {
+fn client_token_name(client: &str) -> String {
     let host = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
         .filter(|h| !h.trim().is_empty())
         .unwrap_or_else(|| "host".to_string());
-    format!("sqlflow-mcp ({host})")
+    format!("{client} ({host})")
 }
 
 /// Strip a trailing slash so `url()` concatenation is well-formed.
 fn normalize_base(url: &str) -> String {
     url.trim_end_matches('/').to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_identity_is_sqlflows_own() {
+        let identity = ClientIdentity::default();
+        assert_eq!(identity.name(), "sqlflow-mcp");
+        assert_eq!(identity.version(), env!("CARGO_PKG_VERSION"));
+        assert_eq!(identity.state, StateStore::default());
+    }
+
+    #[test]
+    fn a_minted_token_is_labelled_with_the_host_program() {
+        // The label is what tells one client's tokens from another's in the GUI's token list.
+        assert!(client_token_name("sqlflow-mcp").starts_with("sqlflow-mcp ("));
+        assert!(client_token_name("probe-mcp").starts_with("probe-mcp ("));
+    }
 }
