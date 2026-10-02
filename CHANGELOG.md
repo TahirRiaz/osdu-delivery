@@ -473,6 +473,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The palette reads, there is one blue, and the lineage graph wears the workbench's colors in both themes.** The
+  status colors (green, amber, blue, red) are set where their own text reads at 4.6:1 or more on the tint a chip fills
+  with, in light and in dark, and the four sit level with each other; in light mode they were under the 4.5:1 the design
+  book asks, and in dark mode the red was dimmer than the rest. "Informational" is the same blue as links, buttons and
+  the status bar, not a second blue a few points off it. Control borders are stronger, so a field's edge is found. The
+  lineage graph is drawn from the same tokens as every other page: a navy canvas with card nodes in dark mode (it was
+  the graph library's neutral gray), the editor surface with white cards in light, and an edge's label sitting on the
+  canvas color with no box around it. The cache's versions and changes no longer tint every chip: a type a version
+  moved, a change's kind and a count are neutral, led by a small glyph in the tone (a plus for added, a dot for changed,
+  a minus for removed), so a version that added several hundred records is not a block of green, and the delivery
+  overview draws a count of zero quietly instead of in green or blue. The workbench also tells the browser which mode it
+  is in and opts out of page-recoloring extensions: Dark Reader was redrawing both themes over the product's own (boxes
+  behind edge labels, orange chips in the title bar, a light theme that looked dark), and with the opt-out it leaves the
+  page as designed. If the page still looks recolored, the extension is an older one that ignores the opt-out: turn it
+  off for the site.
 - **The audit trail shows what happened, and fits its page.** A run that completed having changed nothing (it planned,
   held and sent no record: a schedule that fired and found nothing new) is marked `Idle` in `osdu.Activity` (migration
   `ActivityIdle`, module version 1.16.0, which marks the earlier such runs from their submissions and attempts). The

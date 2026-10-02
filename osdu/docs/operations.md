@@ -843,9 +843,9 @@ Pipelines like any other flow.
   one: Compare with current always has a change to show. A version whose content came back to what the current one
   holds is marked as the same as current, and offers no comparison.
 - **History.** Every version, newest first, each with the cache flow that wrote it and what captured it (the run and
-  who asked, or an import from files), the types it changed (each tinted by whether it arrived, changed or left, the
-  rest counted and named on hover, or no type changed when the version was written for something else, such as a
-  changed OSDU feature flag), and what it changed compared with the version captured before it (so many changed, added,
+  who asked, or an import from files), the types it changed (each led by a glyph for whether it arrived, changed or
+  left, the rest counted and named on hover, or no type changed when the version was written for something else, such as
+  a changed OSDU feature flag), and what it changed compared with the version captured before it (so many changed, added,
   removed, or no changes). With a type in scope the list is that type's own versions: the versions of the cache at
   which its content hash moved, each with the hash, how many records of the type it holds, and whether it added,
   changed or removed the type with how many records; the versions that held it unchanged are counted above the list
