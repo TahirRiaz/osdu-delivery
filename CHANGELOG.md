@@ -26,7 +26,9 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   read off the template the mapping pins, from the module database; a host without it (the offline `sqlflow lineage`),
   a template version that is not saved and a database that does not answer each leave those types out with a warning
   naming the mapping, the properties and the template, and a template saved later is picked up by the next sync. A
-  mapping rendered for two partitions is a node in each. Design and limits: `docs/lineage-design.md` section 3.1.
+  mapping rendered for two partitions is a node in each. An estate synced by an earlier build needs nothing done to it:
+  the first sync after the upgrade sees that its stored graph holds no mapping and computes the lineage again, though no
+  document changed. Design and limits: `docs/lineage-design.md` section 3.1.
 
 - **Send a whole flow's records again.** A deliver run's `redeliver` no longer needs `recordKeys`: without them it sends
   again, changed or not, every record the flow has delivered in the partition (the metadata and payload, the record, or

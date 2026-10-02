@@ -119,7 +119,9 @@ public sealed class DeliveryModuleDatabaseTests
     [Fact]
     public async Task A_mapping_change_is_read_from_wherever_the_module_database_is()
     {
-        await using var estate = await TestEstate.CreateAsync(separateDatabases: true);
+        // The lineage check asks the catalog about the graph it stores before it asks the module about its mappings, so
+        // this estate's catalog database holds SQLFlow's catalog, as the database a sync runs against always does.
+        await using var estate = await TestEstate.CreateAsync(separateDatabases: true, withCatalog: true);
         using var repository = new SampleRepository();
         await SyncAsync(estate, repository.Root, new List<string>(), commit: false);
 
@@ -221,9 +223,11 @@ public sealed class DeliveryModuleDatabaseTests
 
         /// <summary>
         /// Two databases, or one holding both. With <paramref name="declareModule"/> false the module is given no connection
-        /// of its own, which is how a host that keeps the <c>osdu</c> schema in the catalog's database is configured.
+        /// of its own, which is how a host that keeps the <c>osdu</c> schema in the catalog's database is configured. With
+        /// <paramref name="withCatalog"/> the catalog's database is migrated to SQLFlow's catalog, for a test that reads it;
+        /// the others only need its connection and its transaction.
         /// </summary>
-        public static async Task<TestEstate> CreateAsync(bool separateDatabases, bool declareModule = true)
+        public static async Task<TestEstate> CreateAsync(bool separateDatabases, bool declareModule = true, bool withCatalog = false)
         {
             OsduScratchDatabase catalog;
             try
@@ -252,6 +256,11 @@ public sealed class DeliveryModuleDatabaseTests
                     appliedBy: "module database tests",
                     appliedUtc: Now,
                     catalogAppliedMigrations: CatalogDatabase.KnownMigrations);
+                if (withCatalog)
+                {
+                    await CatalogDatabase.MigrateAsync(catalog.ConnectionString);
+                }
+
                 return new TestEstate(catalog, module, moduleConnectionString);
             }
             catch

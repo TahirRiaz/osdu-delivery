@@ -6,10 +6,12 @@ using SqlFlow.Catalog;
 using SqlFlow.Catalog.Modules;
 using SqlFlow.Core;
 using SqlFlow.Core.Identity;
+using SqlFlow.Core.Lineage;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Lineage.Collection;
 using ContentHash = SqlFlow.Delivery.Hashing.ContentHash;
 
 namespace SqlFlow.Delivery.Catalog;
@@ -113,15 +115,53 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     /// reconciliation leaves out) is not a change. Cache flows need no check here: they are flows, which the sync compares
     /// itself. A template one of the repository's mappings pins, saved since the mappings were last reconciled, is a change
     /// too: what a <c>ref</c> is checked against is read off that template, so the lineage computed without it left those
-    /// cache types out (<see cref="PinnedTemplateSavedSinceAsync"/>).
+    /// cache types out (<see cref="PinnedTemplateSavedSinceAsync"/>). And so is a stored graph that does not hold what the
+    /// documents describe, whatever the documents did: one a build drew before a mapping was a node of it
+    /// (<see cref="StoredGraphLacksMappingsAsync"/>), which no document change would ever bring forward.
     /// </summary>
     public async Task<bool> LineageInputsChangedAsync(CatalogDbContext context, Guid repoId, string root, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        if (await StoredGraphLacksMappingsAsync(context, repoId, ct).ConfigureAwait(false))
+        {
+            return true;
+        }
+
         await using var work = await OpenAsync(context, write: false, ct).ConfigureAwait(false);
         return await MappingsChangedAsync(work.Context, repoId, root, ct).ConfigureAwait(false)
             || await PinnedTemplateSavedSinceAsync(work.Context, repoId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Whether the graph the catalog holds for the repository lacks a mapping it should hold: a delivery flow stored as
+    /// writing an OSDU type, with no read of a mapping's node. A delivery flow writes an OSDU type because its mapping
+    /// names one, and reads that mapping as a node, so a stored graph with the write and without the read was drawn by a
+    /// build from before mappings were nodes. The sync only computes lineage again when a document changes, and upgrading
+    /// the build changes none, so without this the old picture (every cache type wired straight to the flow, and the ones
+    /// a mapping only checks its ids against wired to nothing) would stay until someone edited a flow or pressed sync now.
+    /// </summary>
+    /// <remarks>
+    /// The question is asked of the catalog, which is where the stored graph is, so the answer cannot drift from it: once
+    /// a sync has stored the mapping's node this is false, and it stays false. Two flows keep it true, and so have their
+    /// repository's lineage computed on every sync until they are put right; each already carries a sync warning. One is a
+    /// flow whose mapping cannot be a node (<see cref="OsduLineage.Mapping"/>), which reads what the mapping reads itself.
+    /// The other is a flow whose mapping cannot be read while its protocol still registers a dataset kind, which is then
+    /// the only OSDU type it is stored as writing.
+    /// </remarks>
+    public static Task<bool> StoredGraphLacksMappingsAsync(CatalogDbContext catalog, Guid repoId, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(catalog);
+        var types = ServerIdentity.DatasetPrefix + OsduLineage.TypeSystem;
+        var mappings = ServerIdentity.DatasetPrefix + OsduLineage.MappingSystem + ":";
+        var reads = nameof(LineageRelation.Reads);
+        var writes = nameof(LineageRelation.Writes);
+        return catalog.Pipelines.AsNoTracking()
+            .Where(p => p.RepoId == repoId && p.Active && p.Kind == FlowDefinition.FlowTypeName)
+            .AnyAsync(
+                p => catalog.LineageEdges.Any(e => e.PipelineId == p.Id && e.Relation == writes && e.ObjectKey.StartsWith(types))
+                    && !catalog.LineageEdges.Any(e => e.PipelineId == p.Id && e.Relation == reads && e.ObjectKey.StartsWith(mappings)),
+                ct);
     }
 
     /// <summary>

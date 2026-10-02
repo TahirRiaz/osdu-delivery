@@ -1,4 +1,7 @@
+using Microsoft.EntityFrameworkCore;
+using SqlFlow.Catalog;
 using SqlFlow.Core;
+using SqlFlow.Core.Identity;
 using SqlFlow.Core.Lineage;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Documents;
@@ -850,6 +853,97 @@ public sealed class LineageTests : IDisposable
         File.Copy(PathOf("mappings/Wellbore@1.0.0.yaml"), Path.Combine(checkout, "Wellbore@1.0.0.yaml"));
         var rooted = Assert.IsAssignableFrom<RegisteredFlowDocument>(Loader().LoadFile(top)).DescribeLineage(new RegisteredLineageContext(top, checkout));
         Assert.Equal(OsduLineage.RootGroup, Assert.Single(rooted.Derivations).Dataset.Group);
+    }
+
+    [Fact]
+    public async Task A_graph_stored_before_mappings_were_nodes_is_computed_again_by_the_next_sync_and_then_stands()
+    {
+        using var database = new OsduTestDatabase();
+        var repo = "lineage-upgrade-" + Guid.NewGuid().ToString("N")[..10];
+        var repoId = FlowIdentity.FromName(repo);
+        var sync = new CatalogSync(Loader(), [new DeliveryCatalogSync(new DeliveryDocumentLoader())]);
+        var mappings = ServerIdentity.DatasetPrefix + OsduLineage.MappingSystem + ":";
+
+        async Task<CatalogSyncResult> SyncAsync(DateTime nowUtc)
+        {
+            await using var db = database.CreateCatalogContext();
+            return await sync.SyncAsync(db, _root, repo, null, nowUtc);
+        }
+
+        async Task<bool> LacksMappingsAsync()
+        {
+            await using var db = database.CreateCatalogContext();
+            return await DeliveryCatalogSync.StoredGraphLacksMappingsAsync(db, repoId, CancellationToken.None);
+        }
+
+        // The edges that are a mapping's: the reads of its node, what the node reads, and what a flow inherits through it.
+        async Task<int> MappingEdgesAsync()
+        {
+            await using var db = database.CreateCatalogContext();
+            return await db.LineageEdges.CountAsync(e => e.RepoId == repoId
+                && (e.ObjectKey.StartsWith(mappings) || (e.ViaModule != null && e.ViaModule.StartsWith(mappings))));
+        }
+
+        var touched = new List<string>();
+        try
+        {
+            // A repository nothing is stored of yet has nothing to lack.
+            Assert.False(await LacksMappingsAsync());
+
+            var first = await SyncAsync(Utc);
+            Assert.True(first.LineageEdges > 0);
+            var drawn = await MappingEdgesAsync();
+            Assert.True(drawn > 0);
+            Assert.False(await LacksMappingsAsync());
+
+            // Nothing changed, so the stored graph is the graph and no lineage is computed.
+            Assert.Equal(0, (await SyncAsync(Utc.AddMinutes(5))).LineageEdges);
+
+            // The graph as a build from before mappings were nodes stored it: the same flows writing the same OSDU types,
+            // and nothing of a mapping. No document differs from what the catalog holds.
+            await using (var db = database.CreateCatalogContext())
+            {
+                touched = await db.LineageEdges.Where(e => e.RepoId == repoId).Select(e => e.ObjectKey).Distinct().ToListAsync();
+                await db.LineageEdges
+                    .Where(e => e.RepoId == repoId && (e.ObjectKey.StartsWith(mappings) || (e.ViaModule != null && e.ViaModule.StartsWith(mappings))))
+                    .ExecuteDeleteAsync();
+            }
+
+            Assert.Equal(0, await MappingEdgesAsync());
+            Assert.True(await LacksMappingsAsync());
+
+            // The next sync, the one a restarted host runs on its own, computes the lineage again and stores the mappings.
+            var healed = await SyncAsync(Utc.AddMinutes(10));
+            Assert.Equal(first.LineageEdges, healed.LineageEdges);
+            Assert.Equal(drawn, await MappingEdgesAsync());
+            Assert.False(await LacksMappingsAsync());
+
+            // And then it stands: the question is asked of the stored graph, so once answered it is not asked into a loop.
+            Assert.Equal(0, (await SyncAsync(Utc.AddMinutes(15))).LineageEdges);
+
+            // A flow that is not active, and a flow of another kind writing a type, say nothing of a mapping.
+            await using (var db = database.CreateCatalogContext())
+            {
+                await db.LineageEdges
+                    .Where(e => e.RepoId == repoId && (e.ObjectKey.StartsWith(mappings) || (e.ViaModule != null && e.ViaModule.StartsWith(mappings))))
+                    .ExecuteDeleteAsync();
+                await db.Pipelines.Where(p => p.RepoId == repoId && p.Kind == FlowDefinition.FlowTypeName)
+                    .ExecuteUpdateAsync(set => set.SetProperty(p => p.Active, false));
+            }
+
+            Assert.False(await LacksMappingsAsync());
+        }
+        finally
+        {
+            await using var db = database.CreateCatalogContext();
+            await RepoStore.DeleteAsync(db, repoId, CancellationToken.None);
+
+            // The nodes this repository's edges named are global rows; the ones no other repository names go with it.
+            var kept = await db.LineageEdges.Where(e => touched.Contains(e.ObjectKey)).Select(e => e.ObjectKey).Distinct().ToListAsync();
+            var mine = touched.Except(kept, StringComparer.Ordinal).ToList();
+            await db.ObjectColumns.Where(c => mine.Contains(c.ObjectKey)).ExecuteDeleteAsync();
+            await db.Objects.Where(o => mine.Contains(o.Key)).ExecuteDeleteAsync();
+        }
     }
 
     [Fact]

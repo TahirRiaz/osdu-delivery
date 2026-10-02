@@ -339,6 +339,15 @@ scan, sees an empty estate.
   whether a template one of those mappings pins was saved after the sync that last saw the mapping
   (`PinnedTemplateSavedSinceAsync`): a mapping synced before its template was saved had its lineage computed without
   it, and the first sync after the save computes it again. A saved template never changes, so this holds for one sync.
+- The same gate asks whether the stored graph holds what the documents describe at all
+  (`StoredGraphLacksMappingsAsync`): a delivery flow stored as writing an OSDU type, with no read of a mapping's node, was
+  drawn by a build from before mappings were nodes. Upgrading the build changes no document, so without this question
+  the old picture (every named cache type wired straight to the flow, the others wired to nothing, no mapping) stayed
+  until someone edited a flow or pressed sync now. With it the first ordinary sync after an upgrade computes the lineage
+  again. The question is asked of the catalog, where the stored graph is, so once the mapping's node is stored it is
+  false and stays false. Two misconfigured flows keep it true, and have their repository's lineage computed on every
+  sync until they are put right, each already under a sync warning: one whose mapping cannot be a node, and one whose
+  mapping cannot be read while its protocol still registers a dataset kind.
 - The cache page's streams (`DeliveryCacheStreams`) read the same edges. A delivery flow is a reader of every cache type
   it reads through its mapping, the ones its ids are checked against included, and a mapping's node is never taken for a
   place a stream's content starts.
@@ -410,7 +419,9 @@ scan, sees an empty estate.
   with no template store, a template that is not saved and a store that fails each say so in the warning, the failure
   redacted and read once for the whole scan; a mapping that cannot be a node leaves its reads with the flow; a mapping
   rendered for two partitions is a node in each; a mapping filed at the checkout's root; and a template saved after its
-  mapping was synced is a lineage input change for one sync.
+  mapping was synced is a lineage input change for one sync. Through a real repository sync with the module's
+  extension: a graph stored without its mappings, the documents unchanged, is computed again by the next sync, which
+  stores the same edges a first sync does, and the sync after that computes nothing.
 - **Cache streams** (`DeliveryCacheStreamsTests`). A type whose content passes through a delivery flow starts at that
   flow's table and files, never at the mapping it renders with or at a cache type nothing fills.
 - **SQL Server chain suite.** The chain's waves with the delivery kind registered.
