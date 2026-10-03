@@ -83,7 +83,7 @@ function Target({ row }: { row: DeliveryActivity }) {
  * that changed nothing are left out unless asked for, and counted. Each entry opens with the ids it worked on, its
  * recorded parameters and, for runs, the captured log.
  *
- * The flow is the trail's first filter, and every other filter works within it. It is kept in the address (`?flow=`, a
+ * The flow follows the actor search, and every other filter works within it. It is kept in the address (`?flow=`, a
  * ledger identity) rather than with the other filters, so a link can open one flow's trail and the trail opened from the
  * menu is every flow's again. The choices are the flows with activity in the partition: delivery flows, each interface of
  * a source, and dimensions.
@@ -178,6 +178,7 @@ export default function DeliveryActivityPage() {
         subtitle={`Every run and intervention on ${scope}${active === null ? "" : ` in ${active}`}, newest first.`}
       />
       <FilterBar>
+        <SearchInput value={actor} onChange={setActor} placeholder="Actor, e.g. admin or schedule:" label="Filter by actor" testId="delivery-activity-actor" className="sm:w-64" />
         <FilterCombobox
           options={flowOptions}
           value={flow}
@@ -189,7 +190,6 @@ export default function DeliveryActivityPage() {
           testId="delivery-activity-flow"
           className="w-64"
         />
-        <SearchInput value={actor} onChange={setActor} placeholder="Actor, e.g. admin or schedule:" label="Filter by actor" testId="delivery-activity-actor" className="sm:w-64" />
         <Select value={kind} onValueChange={setKind}>
           <SelectTrigger size="sm" className="h-8 w-40" data-testid="delivery-activity-kind"><SelectValue /></SelectTrigger>
           <SelectContent>

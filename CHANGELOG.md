@@ -13,8 +13,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
-- **The audit trail narrows to one flow.** A flow picker leads the trail's filters, and the actor, action, outcome and
-  idle filters work within the flow chosen. Its choices are the flows with activity in the workbench's partition
+- **The audit trail narrows to one flow.** A flow picker follows the trail's actor search, and the actor, action,
+  outcome and idle filters work within the flow chosen. Its choices are the flows with activity in the workbench's partition
   (delivery flows, each interface of a source, and dimensions), which `GET /delivery/activities/flows` lists with one
   index seek per ledger; `GET /delivery/activities` takes a choice's ledger identity as `flowId`, as the Records page's
   lookup does. The flow lives in the page's address, so a link opens one flow's trail, and the trail of one flow gives
