@@ -13,15 +13,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
-- **The explorer shows how to search for any part of a record.** Beside every value and section of a record, a search
-  button shows the Lucene queries that find records by it: the whole value (a text by its `keyword`), its words, and
-  whether a record holds it, each said in words, with how the platform indexes it read from the saved template of the
-  record's kind. A value in a nested list is asked inside `nested(...)`; a list the platform does not index inside says
-  so rather than offering a query that finds nothing. A query is copied as written or as a search request, or searched
-  in the explorer. `POST /delivery/explorer/element-queries` answers it ([osdu/docs/explorer.md](osdu/docs/explorer.md),
-  The query of an element). Every list of records says what it is read by, exactly as sent: the kind and the Lucene
-  query its search, place and values make, copied or taken into the search box to be changed there (it was only a
-  tooltip behind a copy icon, and nothing at all for a type browsed).
+- **The explorer shows the query that finds any part of a record.** Beside every value and section of a record, a search
+  button shows the Lucene query that finds the records holding exactly it, with Copy and Search: a value by its whole
+  value (a text by its `keyword`, inside `nested(...)` in a nested list), an item of a nested list by all its values
+  together in one `nested(...)`, and a list or an object by every value it holds; a value's words and whether a record
+  holds one beside it. How each value is indexed is read from the saved template of the record's kind; where it cannot
+  say, the query is written from the value and marked guessed. How it was written is a tooltip away.
+  `POST /delivery/explorer/element-queries` answers it ([osdu/docs/explorer.md](osdu/docs/explorer.md), The query of an
+  element). Every list of records says what it is read by, exactly as sent: the kind and the Lucene query its search,
+  place and values make, copied or taken into the search box to be changed there.
 - **The explorer builds a dimension while it browses.** **Build a dimension**, in the explorer's header, docks a builder
   beside the records, and the records are browsed, searched and drilled into as ever; the workbench's side bar folds
   while it is docked, and comes back as it was left when it closes. The kind's saved template says

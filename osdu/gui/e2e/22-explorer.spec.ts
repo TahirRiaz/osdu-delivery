@@ -136,16 +136,17 @@ test.describe.serial("explorer", () => {
     const record = adminPage.getByTestId("explorer-record");
     await expect(record.getByTestId("osdu-record-name")).toHaveText("NO 33/9-C-28 B", { timeout: 60_000 });
 
-    // The wellbore's name: its whole value by its keyword, its words, and whether a record holds one, each said in words.
+    // The wellbore's name: exactly its value by its keyword, with its words and whether a record holds one beside it.
     await record.locator('[data-testid="explorer-element-query"][data-path="data.FacilityName"]').click();
     const panel = adminPage.getByTestId("explorer-element-queries");
-    const exact = panel.locator('[data-testid="explorer-element-query-item"][data-purpose="equal"]');
+    const exact = panel.locator('[data-testid="explorer-element-query-item"][data-purpose="exact"]');
     await expect(exact.getByTestId("explorer-element-lucene")).toHaveText('data.FacilityName.keyword:"NO 33/9-C-28 B"', { timeout: 30_000 });
     await expect(panel.locator('[data-testid="explorer-element-query-item"][data-purpose="exists"]').getByTestId("explorer-element-lucene")).toHaveText("_exists_:data.FacilityName");
-    await expect(panel.getByTestId("explorer-element-reading")).toContainText("data.FacilityName.keyword");
 
-    // The stand-in's wellbores are of a version no template is saved of: the newest saved of the type reads them, and says so.
-    await expect(panel.getByTestId("explorer-element-notes")).toContainText("is read by osdu:wks:master-data--Wellbore:1.3.0");
+    // How it was written is a tooltip away: the stand-in's wellbores are of a version no template is saved of, so the
+    // newest saved of the type reads them.
+    await panel.getByTestId("explorer-element-about").hover();
+    await expect(adminPage.getByRole("tooltip")).toContainText("osdu:wks:master-data--Wellbore:1.3.0");
 
     // Searching with it finds the wellbore, by a Lucene query in the explorer's own search.
     await exact.getByTestId("explorer-element-search").click();

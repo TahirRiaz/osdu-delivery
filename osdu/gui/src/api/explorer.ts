@@ -142,8 +142,8 @@ export type ExplorerRead = DeliveryOsduRead;
 
 /** A query that finds records by an element of a record, and what it finds, in words. */
 export interface ExplorerElementQuery {
-  /** `equal` (the whole value), `words` (the words of a text, their case aside) or `exists` (any value there). */
-  purpose: "equal" | "words" | "exists";
+  /** `exact` (exactly this value, or every value a section holds), `words` (the words of a text, their case aside) or `exists` (any value there). */
+  purpose: "exact" | "words" | "exists";
   /** The Lucene query, as the search service's `query` takes it. */
   query: string;
   says: string;
@@ -157,7 +157,7 @@ export interface ExplorerElementField {
   flattenedPath: string | null;
 }
 
-/** The queries that find records by an element, how the index holds it in words, the template that says so, and why none finds it where none can. */
+/** The queries that find records by an element, the exact one first; how the index holds it, in words; the template read; why a query is a guess; and why none can be written, where none can. */
 export interface ExplorerElementAnswer {
   kind: string;
   path: string;
@@ -165,8 +165,16 @@ export interface ExplorerElementAnswer {
   field: ExplorerElementField | null;
   reading: string | null;
   queries: ExplorerElementQuery[];
+  /** Why the queries are written from the values, where the template could not say how they are indexed; null otherwise. */
+  guess: string | null;
   problem: string | null;
   notes: string[];
+}
+
+/** A value inside a section, by its path in the record, and what the record holds there. */
+export interface ExplorerElementLeaf {
+  path: string;
+  value: string | number | boolean | null;
 }
 
 export interface ExplorerElementRequest {
@@ -175,6 +183,8 @@ export interface ExplorerElementRequest {
   path: string;
   section: boolean;
   value?: string | number | boolean | null;
+  /** For a section, the values it holds at any depth, at most 48. */
+  values?: ExplorerElementLeaf[];
 }
 
 /** The Lucene queries that find records by an element of a record, read from the saved template of its kind. */

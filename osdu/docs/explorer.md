@@ -121,25 +121,26 @@ and so is every type browsed (the last twelve).
 
 ## The query of an element
 
-Beside every value and every section of a record (each row of the fields view, each list item of a table, each line of
-the JSON view), a small search button shows how to find records by it with a Lucene query, which with OSDU's schemas is
-rarely obvious. How the platform indexes the element is read from the saved template of the record's kind (another
-version of its type where that one is not saved, which the panel says), and each query is written by the code the
-module's own searches are written by:
+Beside every value and every section of a record (each row of the fields view, each item of a list's table, each line of
+the JSON view), a search button shows the Lucene query that finds the records holding exactly that element, with
+**Copy** and **Search** (which searches the explorer with the record's kind):
 
-- **This value, whole**: the exact value, asked of the field that holds it whole: a text's `keyword` sub-field
-  (`data.FacilityName.keyword:"NO 16/2-9 S"`), a keyword, a number, a boolean or a date as itself.
-- **These words**: a text's words in order, their case aside (`data.FacilityName:"NO 16/2-9 S"`), which a value that
-  contains them answers as well. A record's id is found by its whole value alone.
-- **Holds any**: whether a record holds the element at all (`_exists_:data.FacilityName`), for a value and for a section.
+- **A value**: `data.FacilityName.keyword:"NO 16/2-9 S"`, a text by its `keyword` sub-field that holds it whole, a
+  keyword, a number, a boolean or a date as itself; in a nested list, `nested(data.GeoContexts, (GeoTypeID.keyword:"..."))`.
+  Beside it, its words (`data.FacilityName:"NO 16/2-9 S"`, in any case) and whether a record holds one
+  (`_exists_:data.FacilityName`, not asked of a nested list, which a top-level query does not see).
+- **An item of a nested list**: all its values together in one item,
+  `nested(data.GeoContexts, (GeoPoliticalEntityID.keyword:"...Norway:" AND GeoTypeID.keyword:"...Country:"))`, the flat
+  `AND` the search service's parser reads one property at a time.
+- **A whole list, an object or a list of values**: every value it holds, each item of a nested list as its own
+  `nested(...)`, joined by `AND`. A record may hold more besides. Up to 48 values are compared.
 
-A value inside a nested list (a wellbore's `GeoContexts`, `NameAliases`, `VerticalMeasurements`) is asked inside
-`nested(data.GeoContexts, (GeoTypeID.keyword:"..."))`, naming it relative to the list, and the panel says why; a list of
-objects the template gives no indexing hint is not indexed inside, and the panel says that no query reaches it rather
-than offering one that finds nothing. A list whose items are a choice of forms (`oneOf`, as `GeoContexts` is) is read
-through its forms. Each query reads in words what it finds, and is copied as written, copied as a search request
-(`kind`, `query`), or searched in the explorer with the record's kind. Nothing is read from OSDU to write them. Without a
-saved template, the index is read from the value (text, number, boolean, date) and the panel says it is a guess.
+How each value is indexed is read from the saved template of the record's kind (another version of its type where that
+one is not saved), as every search the module writes reads it; a list whose items are a choice of forms (`oneOf`, as
+`GeoContexts` is) is read through its forms. Where the template cannot say (no template saved, a property it does not
+declare, a list it leaves unindexed), the query is written from the value and marked **guessed**, with why in its
+tooltip. How the query was written (the field, the template, the notes) is in the info tooltip; nothing is read from
+OSDU to write it.
 
 ## Building a dimension
 
@@ -232,7 +233,7 @@ partition for ten), so going back to a type or a page already read shows it at o
 | `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters` (`path`, `index` text, keyword, number, boolean or date, `value`; at most 12); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`) to group by. |
 | `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold, read from one of them. |
 | `POST /api/v1/delivery/explorer/read?partition=` | operate | One record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
-| `POST /api/v1/delivery/explorer/element-queries` | operate | The Lucene queries that find records by an element of a record ([The query of an element](#the-query-of-an-element)). Body: `kind` (the record's), `path` (as the record inspector names it, a list's items by their place: `data.GeoContexts[1].GeoTypeID`), `section` (true for an object, a list or an item), `value` (a text, a number, a boolean or null). Answers each query (`purpose` equal, words or exists, `query`, `says`), how the index holds the element (`field`, `reading`), the saved `template` read, why no query finds it (`problem`), and `notes`. Read from the saved templates alone. |
+| `POST /api/v1/delivery/explorer/element-queries` | operate | The Lucene query that finds the records holding exactly an element of a record ([The query of an element](#the-query-of-an-element)). Body: `kind` (the record's), `path` (as the record inspector names it, a list's items by their place: `data.GeoContexts[1].GeoTypeID`), `section` (true for an object, a list or an item), `value` (a value's: a text, a number, a boolean or null), `values` (a section's, at most 48: each `path` and `value`). Answers the queries, the exact one first (`purpose` exact, words or exists, `query`, `says`), how the index holds the element (`field`, `reading`), the saved `template` read, why the query is a guess (`guess`), why none can be written (`problem`), and `notes`. Read from the saved templates alone. |
 | `GET /api/v1/delivery/explorer/dimension/candidates?kind=` | operate | The keys the saved template of a `kind` (wildcards per segment) suggests for a dimension ([Building a dimension](#building-a-dimension)), the likeliest first: `path`, the entity types it `names`, whether it is `repeated` in a record, and the template's `title` and `description`; with the `template` read, or why nothing is suggested (`missing`). Read from the saved templates alone. |
 | `POST /api/v1/delivery/explorer/dimension/keys?partition=` | operate | The commonest keys of a drafted dimension's path, which its example steps through. Body: `kind` (wildcards per segment), `query` (as long as a search's text), `path` (a property path, no filter). Answers the records the kind (and the query) holds, the keys with their records (up to 25, `moreKeys` when there are more), how the path is indexed (`keyFieldGuessed` when no saved template says, read as text), notes, and the service's words when it refused the query. |
 | `POST /api/v1/delivery/explorer/dimension/compose?partition=` | operate | A draft written as the item a dimension flow lists, and checked. Body: `draft` (`name`, `description`, `kind`, `query`, `path`, `label` (paths), `unlabelled`, `attributes` (`name`, `steps` or `collect`), `clean` (`step`, and a replace's `pattern` and `with`), `keyColumn`, `valueColumn`, `countRecords`, `maxValues`), and `example`, a key to make into its row. Answers `yaml`, `item` (its lines and the line each part is on), `dimension` and `blueprint` once it loads, `table`, `issues` (`severity`, `message`, `target`, `code`), `valid` (it loads, with no error), and the `example` row or `exampleProblem`. |

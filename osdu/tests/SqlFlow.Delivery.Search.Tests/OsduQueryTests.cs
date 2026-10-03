@@ -213,6 +213,35 @@ public class OsduQueryTests
             OsduQuery.Equal(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), "WB-A").Text);
 
     [Fact]
+    public void Several_properties_of_one_nested_object_are_compared_together_flat_as_the_service_reads_them()
+    {
+        var entity = OsduField.Text("data.GeoContexts.GeoPoliticalEntityID", "data.GeoContexts");
+        var type = OsduField.Text("data.GeoContexts.GeoTypeID", "data.GeoContexts");
+        var depth = OsduField.Number("data.GeoContexts.Depth", "data.GeoContexts");
+
+        var query = OsduQuery.NestedAll("data.GeoContexts", [(entity, "dev:master-data--GeoPoliticalEntity:Norway:"), (type, "dev:reference-data--GeoPoliticalEntityType:Country:"), (depth, "12.5")]);
+
+        // No parentheses of their own: the service prefixes the first property and each one after an AND with the array's path.
+        Assert.Equal(
+            "nested(data.GeoContexts, (GeoPoliticalEntityID.keyword:\"dev:master-data--GeoPoliticalEntity:Norway:\" AND GeoTypeID.keyword:\"dev:reference-data--GeoPoliticalEntityType:Country:\" AND Depth:\"12.5\"))",
+            query.Text);
+
+        // One comparison is Equal's own.
+        Assert.Equal(OsduQuery.Equal(type, "x").Text, OsduQuery.NestedAll("data.GeoContexts", [(type, "x")]).Text);
+    }
+
+    [Fact]
+    public void A_nested_comparison_of_none_of_another_array_or_of_a_value_the_service_would_rewrite_is_refused()
+    {
+        var type = OsduField.Text("data.GeoContexts.GeoTypeID", "data.GeoContexts");
+        Assert.Throws<OsduQueryException>(() => OsduQuery.NestedAll("data.GeoContexts", []));
+        Assert.Throws<OsduQueryException>(() => OsduQuery.NestedAll("data.NameAliases", [(type, "x")]));
+        Assert.Throws<OsduQueryException>(() => OsduQuery.NestedAll("data.GeoContexts", [(OsduField.Text("data.FacilityName"), "x")]));
+        Assert.Contains("next property", Assert.Throws<OsduQueryException>(() => OsduQuery.NestedAll("data.GeoContexts", [(type, "SAND X:1")])).Message, StringComparison.Ordinal);
+        Assert.Contains("parentheses do not balance", Assert.Throws<OsduQueryException>(() => OsduQuery.NestedAll("data.GeoContexts", [(type, "a (b")])).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void A_nested_array_must_hold_the_property_it_is_named_for()
     {
         Assert.Throws<OsduQueryException>(() => OsduField.Text("data.FacilityName", "data.NameAliases"));

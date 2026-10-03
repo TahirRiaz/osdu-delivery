@@ -270,6 +270,49 @@ public sealed record OsduQuery
         return new OsduQuery($"nested({parent}, ({inner.Text}))", compared: null);
     }
 
+    /// <summary>
+    /// Finds the records holding one object of the nested array <paramref name="path"/> whose properties equal every value
+    /// given, each compared as <see cref="Equal"/> compares it: <c>nested(data.GeoContexts, (GeoPoliticalEntityID.keyword:"x"
+    /// AND GeoTypeID.keyword:"y"))</c>, all of them in the same object. The comparisons are joined flat by <c>AND</c>, with no
+    /// parentheses of their own, which is the form the service's parser reads one property at a time: it prefixes the first
+    /// property with the array's path, and each one that follows an <c>AND</c> (<see cref="ServiceParser"/>). One comparison
+    /// is the same as <see cref="Equal"/>'s.
+    /// </summary>
+    /// <exception cref="OsduQueryException">
+    /// No comparison was given, one is of a property outside the array, or a value cannot be asked for exactly or carried
+    /// inside a nested query; the message names it.
+    /// </exception>
+    public static OsduQuery NestedAll(string path, IReadOnlyList<(OsduField Field, string Value)> comparisons)
+    {
+        var parent = OsduPath.Of(path);
+        ArgumentNullException.ThrowIfNull(comparisons);
+        if (comparisons.Count == 0)
+        {
+            throw new OsduQueryException($"a nested query over '{parent}' compares at least one property.");
+        }
+
+        var terms = new List<string>(comparisons.Count);
+        foreach (var (field, value) in comparisons)
+        {
+            ArgumentNullException.ThrowIfNull(field);
+            ArgumentNullException.ThrowIfNull(value);
+            if (!string.Equals(field.NestedPath, parent, StringComparison.Ordinal))
+            {
+                throw new OsduQueryException($"'{field.Path}' is not a property of the nested array '{parent}', so it cannot be compared inside it.");
+            }
+
+            var checkedValue = CheckEqual(field, value, caseInsensitive: false);
+            if (ServiceParser.NestedQueryProblem(checkedValue) is { } problem)
+            {
+                throw new OsduQueryException($"the value compared with '{field.Path}' inside the nested array '{parent}' cannot be asked for: {problem}.");
+            }
+
+            terms.Add($"{ComparedPath(field, caseInsensitive: false)}:{LuceneText.Phrase(checkedValue)}");
+        }
+
+        return new OsduQuery($"nested({parent}, ({string.Join(" AND ", terms)}))", compared: null);
+    }
+
     /// <summary>Every one of <paramref name="queries"/> must hold. One query is itself; none is refused.</summary>
     /// <exception cref="OsduQueryException">No query was given.</exception>
     public static OsduQuery All(params OsduQuery[] queries) => Join("AND", queries);

@@ -231,7 +231,7 @@ public sealed class DeliveryExplorerApiTests
             Assert.True(answered.StatusCode == HttpStatusCode.OK, text);
             var answer = JsonDocument.Parse(text).RootElement;
             var queries = answer.GetProperty("queries").EnumerateArray().ToDictionary(q => q.GetProperty("purpose").GetString()!, q => q.GetProperty("query").GetString());
-            Assert.Equal("data.FacilityName.keyword:\"NO 16/2-9 S\"", queries["equal"]);
+            Assert.Equal("data.FacilityName.keyword:\"NO 16/2-9 S\"", queries["exact"]);
             Assert.Equal("_exists_:data.FacilityName", queries["exists"]);
             Assert.Equal(SampleEstate.WellboreTemplateKind, answer.GetProperty("template").GetProperty("kind").GetString());
             Assert.Equal("text", answer.GetProperty("field").GetProperty("index").GetString());
@@ -248,18 +248,26 @@ public sealed class DeliveryExplorerApiTests
             var answer = JsonDocument.Parse(await nested.Content.ReadAsStringAsync()).RootElement;
             Assert.Equal(
                 "nested(data.NameAliases, (AliasName.keyword:\"NO 16/2-9 S\"))",
-                answer.GetProperty("queries").EnumerateArray().Single(q => q.GetProperty("purpose").GetString() == "equal").GetProperty("query").GetString());
+                answer.GetProperty("queries").EnumerateArray().Single(q => q.GetProperty("purpose").GetString() == "exact").GetProperty("query").GetString());
         }
 
-        // A section, and what the request cannot be read as.
-        using (var section = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/element-queries", new
+        // An item of a nested list, by the values it holds: all of them together inside one nested query.
+        using (var item = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/element-queries", new
         {
             kind = SampleEstate.WellboreTemplateKind,
-            path = "data.FacilitySpecifications",
+            path = "data.NameAliases[0]",
             section = true,
+            values = new object[]
+            {
+                new { path = "data.NameAliases[0].AliasName", value = "NO 16/2-9 S" },
+                new { path = "data.NameAliases[0].AliasNameTypeID", value = "dev:reference-data--AliasNameType:Borehole:" },
+            },
         }))
         {
-            Assert.Contains("_exists_:data.FacilitySpecifications", await section.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            var answer = JsonDocument.Parse(await item.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal(
+                "nested(data.NameAliases, (AliasName.keyword:\"NO 16/2-9 S\" AND AliasNameTypeID.keyword:\"dev:reference-data--AliasNameType:Borehole:\"))",
+                answer.GetProperty("queries")[0].GetProperty("query").GetString());
         }
 
         await RefusedAsync(client, token, "/api/v1/delivery/explorer/element-queries", new { kind = "osdu:wks:WellLog", path = "data.X" }, HttpStatusCode.BadRequest, "osdu:wks:WellLog");
