@@ -491,6 +491,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The audit trail's detail reads at a glance.** The sheet an entry opens is wider, as wide as the window leaves beside
+  the menu and never under 48rem, and leads with how the entry ended and what it was: an outcome pill, the action and
+  the flow, the summary it recorded (the error, in red, when it failed), who started it, when and for how long, and the
+  record, submission and run it worked on as chips that open them and copy them whole. Its parameters are one setting a
+  line instead of a JSON editor of braces, a long list showing its first items and counting the rest, with the whole
+  document behind a copy button. The captured run log is read into the workbench's trace view, the one a run's trace
+  uses: a row per event with its time and step, the full line and a copy behind each, as tall as the log and scrolling
+  inside itself when it is long, where a plain text box wrapped every line back under its timestamp. A running entry's
+  sheet refreshes until it ends, and one that cannot be read says why.
 - **The Tests board holds a hundred flows.** It listed every flow as a card with every test under it, so a hundred
   flows of about a dozen tests each made a page some fifty screens long, in name order, with the failing tests spread
   through it. Each flow is now one line: the type it reads, how its tests stand (a bar and the counts, worst first,
