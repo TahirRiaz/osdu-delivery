@@ -497,8 +497,13 @@ Pipelines like any other flow.
   services through a delivery flow's connection ([explorer.md](explorer.md)). The kinds of its records are a list of
   groups and types with their counts beside a grid of the records, which scrolls in place a hundred rows at a time up to
   the search's first ten thousand. One field takes an id (which opens the record), the start of one, a name, any text or
-  a Lucene query; a property's values group and narrow the records. A record opens in the record inspector under the
-  place it sits in, with its versions compared side by side, its links, and the records that mention it.
+  a Lucene query; a property's values group and narrow the records, and every list says the kind and the Lucene query
+  it is read by, exactly as sent, to copy or change. A record opens in the record inspector under the place it sits in,
+  with its versions compared side by side, its links, and the records that mention it; beside every value and section,
+  the query that finds exactly it (a value, a list, an object, a nested list's item). **Build a dimension** docks the
+  dimension builder beside the records, the workbench's side bar folded meanwhile: the key, the value and the attributes
+  are picked on the values as the records are browsed and drilled into, and the YAML a dimension flow lists is written
+  and checked as a flow's own ([explorer.md](explorer.md#building-a-dimension)).
 - **A flow's page** (Pipelines): the Delivery tab (stats, probe the target, release blocked, sync timelines),
   the Records tab (search and filters, every row opens the record), the Submissions tab, which says for each
   submission which selection it read. **A source that delivers several interfaces is read one interface at a time**,
