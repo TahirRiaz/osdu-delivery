@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Http;
@@ -34,61 +33,39 @@ public sealed record DimensionFieldWire(string Path, string Index, string? Neste
 }
 
 /// <summary>
-/// What the builder asks to show a person the records a dimension reads: the kind and the query narrowing it, the key's
-/// path and how it is indexed once one is picked, the example key, which record of the kind (or of those holding the key) to
-/// show, and the trails to follow from the record the key names, each the paths that name the records read next.
+/// What the builder asks of the keys a dimension reads: the kind and the query narrowing it, the key's path, and how the
+/// path is indexed, which says how the search groups its values.
 /// </summary>
-public sealed record DimensionSampleRequest
+public sealed record DimensionKeysRequest
 {
     public required string Kind { get; init; }
 
     /// <summary>The query narrowing the records, its tokens filled; null for every record of the kind.</summary>
     public string? Query { get; init; }
 
-    public string? Path { get; init; }
+    public required string Path { get; init; }
 
+    /// <summary>How the path is indexed; null where no template and no mapping of the record says so, and the keys cannot be grouped.</summary>
     public DimensionFieldWire? KeyField { get; init; }
 
     /// <summary>
     /// Whether <see cref="KeyField"/> is a guess, made because no saved template says how the path is indexed: text, which most
-    /// properties of data are. A guess is said in the sample's notes, since a build refuses such a path until a template is saved.
+    /// properties of data are. A guess is said in the answer's notes, since a build refuses such a path until a template is saved.
     /// </summary>
     public bool KeyFieldGuessed { get; init; }
-
-    public string? Key { get; init; }
-
-    /// <summary>Which record to show, from 0, of the kind's records or of those holding the key.</summary>
-    public int At { get; init; }
-
-    public IReadOnlyList<IReadOnlyList<string>> Trails { get; init; } = [];
 }
 
-/// <summary>A part of a record left out of what a page is shown: the location of an array or a text, how much it holds, and how much is shown.</summary>
-/// <param name="Path">The location, its segments joined by dots and an array's items by their place (<c>data.Curves</c>, <c>data.Curves.3.Name</c>).</param>
-/// <param name="Held">The items the array holds, or the characters the text holds.</param>
-/// <param name="Shown">The items, or characters, shown.</param>
-public sealed record DimensionSampleCut(string Path, int Held, int Shown);
-
-/// <summary>A record as the search holds it, which is what a build reads: its id, its kind, the record itself (cut where it is long), and where it was cut.</summary>
-public sealed record DimensionSampleRecord(string Id, string? Kind, JsonObject Record, IReadOnlyList<DimensionSampleCut> Cut);
-
 /// <summary>A key of the dimension with how many of its records hold it, as the search counts them.</summary>
-public sealed record DimensionSampleKey(string Key, long Count);
+public sealed record DimensionKeyCount(string Key, long Count);
 
 /// <summary>
-/// The records a trail reaches from the record the key names: the paths followed, the ids the last of them named (at most as
-/// many as a build follows), the records the search holds of them, and why the trail stopped short, when it did.
+/// The keys a dimension reads, as the builder steps through them for its example: how many records the kind (and the
+/// query) holds, the commonest keys with their records, whether there are more, how the key was read (and whether that was
+/// a guess), what the read had to say, and the search service's own words when it refused the query.
 /// </summary>
-public sealed record DimensionSampleTrail(IReadOnlyList<string> Steps, IReadOnlyList<string> Reached, IReadOnlyList<DimensionSampleRecord> Records, string? Problem);
-
-/// <summary>
-/// What the builder shows of the records a dimension reads: how many records the kind (and the key) has, the record shown and
-/// its place, the commonest keys, whether there are more, how the key was read (and whether that was a guess), the records
-/// each trail reaches, what the reads had to say, and the search service's own words when it refused the query.
-/// </summary>
-public sealed record DimensionSample(
-    long Total, int At, DimensionSampleRecord? Record, IReadOnlyList<DimensionSampleKey>? Keys, bool MoreKeys, DimensionFieldWire? KeyField,
-    bool KeyFieldGuessed, IReadOnlyList<DimensionSampleTrail> Trails, IReadOnlyList<string> Notes, string? Refusal);
+public sealed record DimensionKeys(
+    long Total, IReadOnlyList<DimensionKeyCount> Keys, bool MoreKeys, DimensionFieldWire? KeyField, bool KeyFieldGuessed,
+    IReadOnlyList<string> Notes, string? Refusal);
 
 /// <summary>
 /// One key of a draft as a build would make it: the key, its label and the record it came from, why it has none, its value
@@ -100,33 +77,15 @@ public sealed record DimensionExample(
     IReadOnlyList<DimensionAttributeState> Attributes, long? Records, string? Filter, IReadOnlyList<string> Notes);
 
 /// <summary>
-/// The reads the explorer's dimension builder makes of OSDU (osdu/docs/explorer.md, Building a dimension): the records of a
-/// kind as the search holds them, which is what a build reads; the commonest keys of a path; the records a key names and
-/// those they name in turn, so a person can pick what to read from them; and one key made into its row exactly as a build
-/// makes it, through the build's own labeler, collector display, cleaner and attribute assembly. Nothing is written.
+/// The reads the explorer's dimension builder makes of OSDU (osdu/docs/explorer.md, Building a dimension), beyond the
+/// explorer's own reads of the records a person browses: the commonest keys of a path, which the builder's example steps
+/// through, and one key made into its row exactly as a build makes it, through the build's own labeler, collector display,
+/// cleaner and attribute assembly. Nothing is written.
 /// </summary>
 public sealed class DimensionSampler
 {
     /// <summary>The keys offered as examples: the commonest, as a dimension's own pages offer theirs.</summary>
     public const int ExampleKeys = 25;
-
-    /// <summary>The records of a kind a person steps through before a key is picked.</summary>
-    public const int ExampleRecords = 25;
-
-    /// <summary>The trails one sample follows: every chain prefix of a dimension and a few a person opened besides.</summary>
-    public const int MaxTrails = 16;
-
-    /// <summary>The paths one trail follows: the records a chain reads all but its last path in.</summary>
-    public const int MaxTrailSteps = DimensionSpec.MaxLabelSteps - 1;
-
-    /// <summary>The items of an array a record is shown with.</summary>
-    public const int ShownItems = 50;
-
-    /// <summary>The characters of a text a record is shown with.</summary>
-    public const int ShownText = 2_000;
-
-    /// <summary>The records the trails of one sample show at most, so an answer stays a page's size.</summary>
-    public const int MaxTrailRecords = 80;
 
     private readonly OsduSearch _search;
     private readonly ILogger _log;
@@ -139,65 +98,39 @@ public sealed class DimensionSampler
         _log = log;
     }
 
-    /// <summary>The records, keys and trails <paramref name="request"/> asks for.</summary>
-    public async Task<DimensionSample> SampleAsync(DimensionSampleRequest request, CancellationToken ct)
+    /// <summary>
+    /// The commonest keys <paramref name="request"/> names, with the count of the records the query matches: one search,
+    /// grouped by the key's field, its refusal answered in the service's words rather than thrown.
+    /// </summary>
+    public async Task<DimensionKeys> KeysAsync(DimensionKeysRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
-        if (request.At is < 0 or >= ExampleRecords)
-        {
-            throw new ArgumentOutOfRangeException(nameof(request), $"A sample shows one of the first {ExampleRecords} records, from 0.");
-        }
-
         var notes = new List<string>();
-        var keyField = request.KeyField?.Field();
-        var key = string.IsNullOrEmpty(request.Key) ? null : request.Key;
-        if (keyField is not null && request.KeyFieldGuessed)
+        var field = request.KeyField?.Field();
+        if (field is null)
         {
-            notes.Add($"No saved template of {request.Kind} says how {keyField.Path} is indexed, so it is read here as text, which most properties are. A build reads it only once the template is saved.");
+            notes.Add($"How {request.Path} is indexed is not known, so its keys are not grouped: save the template of {request.Kind} to read them.");
         }
-        string? keyFilter = null;
-        if (key is not null && keyField is not null)
+        else if (request.KeyFieldGuessed)
         {
-            if (DimensionFilters.Filterable(keyField, key))
-            {
-                keyFilter = DimensionFilters.Of(keyField, [key])[0];
-            }
-            else
-            {
-                notes.Add("The key holds what no query can carry, so the record shown is one of the kind, not one known to hold the key.");
-            }
+            notes.Add($"No saved template of {request.Kind} says how {field.Path} is indexed, so it is read here as text, which most properties are. A build reads it only once the template is saved.");
         }
 
-        var page = await _search.PageAsync(
-            new OsduSearchQuery { Kind = request.Kind, Query = keyFilter is null ? request.Query : DimensionFilters.Within(request.Query, keyFilter) },
-            request.At, 1, null, ct).ConfigureAwait(false);
-        if (page.Refusal is { } refusal)
+        var answer = await _search.PageAsync(new OsduSearchQuery { Kind = request.Kind, Query = request.Query }, 0, 1, field?.AggregateBy, ct).ConfigureAwait(false);
+        if (answer.Refusal is { } refusal)
         {
-            return new DimensionSample(0, request.At, null, null, false, request.KeyField, request.KeyFieldGuessed, [], notes, refusal);
+            return new DimensionKeys(0, [], false, request.KeyField, request.KeyFieldGuessed, notes, refusal);
         }
 
-        var record = page.Hits.Count > 0 ? Shown(page.Hits[0]) : null;
-        IReadOnlyList<DimensionSampleKey>? keys = null;
-        var moreKeys = false;
-        if (request.Path is not null && keyField is not null)
-        {
-            try
-            {
-                var (_, buckets) = await _search.AggregateAsync(new OsduSearchQuery { Kind = request.Kind, Query = request.Query }, keyField.AggregateBy, ct).ConfigureAwait(false);
-                var held = buckets.Where(b => !string.IsNullOrEmpty(b.Key)).ToList();
-                keys = held.Take(ExampleKeys).Select(b => new DimensionSampleKey(b.Key!, b.Count)).ToList();
-                moreKeys = held.Count > ExampleKeys;
-            }
-            catch (OsduStatusException ex)
-            {
-                notes.Add($"The search service would not group the records by {request.Path} ({keyField.AggregateBy}): {ex.Message}");
-            }
-        }
-
-        var trails = request.Trails.Count == 0 || key is null
-            ? []
-            : await TrailsAsync(key, request.Trails, notes, ct).ConfigureAwait(false);
-        return new DimensionSample(page.Total, request.At, record, keys, moreKeys, request.KeyField, request.KeyFieldGuessed, trails, notes, null);
+        var held = answer.Buckets.Where(b => !string.IsNullOrEmpty(b.Key)).ToList();
+        return new DimensionKeys(
+            answer.Total,
+            held.Take(ExampleKeys).Select(b => new DimensionKeyCount(b.Key!, b.Count)).ToList(),
+            held.Count > ExampleKeys,
+            request.KeyField,
+            request.KeyFieldGuessed,
+            notes,
+            null);
     }
 
     /// <summary>
@@ -324,160 +257,4 @@ public sealed class DimensionSampler
 
         return values.Values.OrderByDescending(v => v.Records).ThenBy(v => v.Value, StringComparer.Ordinal).ToList();
     }
-
-    /// <summary>
-    /// The records each trail reaches from the record <paramref name="key"/> names: each path of a trail read in the records the
-    /// one before reached, the references it holds followed as a build follows them, and the records of the last read whole.
-    /// Records are read once, whichever trails reach them.
-    /// </summary>
-    private async Task<List<DimensionSampleTrail>> TrailsAsync(string key, IReadOnlyList<IReadOnlyList<string>> trails, List<string> notes, CancellationToken ct)
-    {
-        var found = new List<DimensionSampleTrail>(trails.Count);
-        if (DimensionLabeler.StartOf(key) is not { } start)
-        {
-            found.AddRange(trails.Select(t => new DimensionSampleTrail(t, [], [], $"The key {Clipped(key)} names no OSDU record, so no record is read through it: only a key holding a record id has a value or attributes read through it.")));
-            return found;
-        }
-
-        var read = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
-        var shown = 0;
-        foreach (var trail in trails)
-        {
-            IReadOnlyList<string> ids = [start];
-            string? problem = null;
-            foreach (var step in trail)
-            {
-                var path = DimensionPath.Parse(step).Path
-                    ?? throw new ArgumentException($"'{step}' is not a path a trail can follow: {DimensionPath.Parse(step).Problem}.", nameof(trails));
-                await ReadAsync(ids, read, ct).ConfigureAwait(false);
-                var held = ids.Where(read.ContainsKey).ToList();
-                if (held.Count == 0)
-                {
-                    problem = $"The search holds no record {ids[0]}.";
-                    ids = [];
-                    break;
-                }
-
-                var next = DimensionLabeler.ReferencesAt(path, held.Select(id => read[id]));
-                if (next.Count == 0)
-                {
-                    problem = held.Count == 1
-                        ? $"The record reached holds no record id at {step}."
-                        : string.Create(CultureInfo.InvariantCulture, $"None of the {held.Count} records reached holds a record id at {step}.");
-                    ids = [];
-                    break;
-                }
-
-                ids = next;
-            }
-
-            var records = new List<DimensionSampleRecord>();
-            if (ids.Count > 0)
-            {
-                await ReadAsync(ids, read, ct).ConfigureAwait(false);
-                foreach (var id in ids.Where(read.ContainsKey))
-                {
-                    if (shown >= MaxTrailRecords)
-                    {
-                        notes.Add(string.Create(CultureInfo.InvariantCulture, $"The trails reach more records than one page shows; the first {MaxTrailRecords} are shown."));
-                        break;
-                    }
-
-                    records.Add(Shown(read[id]));
-                    shown++;
-                }
-
-                if (records.Count == 0 && problem is null)
-                {
-                    problem = ids.Count == 1 ? $"The search holds no record {ids[0]}." : $"The search holds none of the {ids.Count} records reached.";
-                }
-            }
-
-            found.Add(new DimensionSampleTrail(trail, ids, records, problem));
-        }
-
-        return found;
-    }
-
-    /// <summary>The records of <paramref name="ids"/> not read yet, read whole into <paramref name="read"/>: one search per entity type, as a build searches them.</summary>
-    private async Task ReadAsync(IReadOnlyList<string> ids, Dictionary<string, JsonObject> read, CancellationToken ct)
-    {
-        foreach (var group in ids.Where(id => !read.ContainsKey(id)).Distinct(StringComparer.Ordinal).GroupBy(DimensionLabeler.EntityTypeOf, StringComparer.Ordinal))
-        {
-            foreach (var chunk in group.Chunk(DimensionLabeler.IdsPerQuery))
-            {
-                var (_, hits) = await _search.FirstAsync(
-                    new OsduSearchQuery { Kind = DimensionLabeler.KindOfType(group.Key), Query = OsduQuery.AnyOf(DimensionLabeler.Id, chunk).Text },
-                    chunk.Length, ct).ConfigureAwait(false);
-                foreach (var hit in hits)
-                {
-                    if (hit["id"] is JsonValue id && id.TryGetValue<string>(out var text) && !string.IsNullOrEmpty(text))
-                    {
-                        read[text] = hit;
-                    }
-                }
-            }
-        }
-    }
-
-    /// <summary>A record as a page is shown it: a copy with every array cut at <see cref="ShownItems"/> items and every text at <see cref="ShownText"/> characters, saying where.</summary>
-    internal static DimensionSampleRecord Shown(JsonObject record)
-    {
-        ArgumentNullException.ThrowIfNull(record);
-        var copy = (JsonObject)record.DeepClone();
-        var cut = new List<DimensionSampleCut>();
-        Cut(copy, string.Empty, cut);
-        var id = copy["id"] is JsonValue idValue && idValue.TryGetValue<string>(out var text) ? text : string.Empty;
-        var kind = copy["kind"] is JsonValue kindValue && kindValue.TryGetValue<string>(out var kindText) ? kindText : null;
-        return new DimensionSampleRecord(id, kind, copy, cut);
-    }
-
-    private static void Cut(JsonNode? node, string at, List<DimensionSampleCut> cut)
-    {
-        switch (node)
-        {
-            case JsonObject obj:
-                foreach (var name in obj.Select(p => p.Key).ToList())
-                {
-                    var child = obj[name];
-                    var path = at.Length == 0 ? name : $"{at}.{name}";
-                    if (child is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > ShownText)
-                    {
-                        obj[name] = text[..ShownText];
-                        cut.Add(new DimensionSampleCut(path, text.Length, ShownText));
-                        continue;
-                    }
-
-                    Cut(child, path, cut);
-                }
-
-                break;
-            case JsonArray array:
-                if (array.Count > ShownItems)
-                {
-                    cut.Add(new DimensionSampleCut(at, array.Count, ShownItems));
-                    while (array.Count > ShownItems)
-                    {
-                        array.RemoveAt(array.Count - 1);
-                    }
-                }
-
-                for (var i = 0; i < array.Count; i++)
-                {
-                    var path = string.Create(CultureInfo.InvariantCulture, $"{at}.{i}");
-                    if (array[i] is JsonValue value && value.TryGetValue<string>(out var text) && text.Length > ShownText)
-                    {
-                        array[i] = text[..ShownText];
-                        cut.Add(new DimensionSampleCut(path, text.Length, ShownText));
-                        continue;
-                    }
-
-                    Cut(array[i], path, cut);
-                }
-
-                break;
-        }
-    }
-
-    private static string Clipped(string value) => value.Length > 80 ? value[..80] + "..." : value;
 }

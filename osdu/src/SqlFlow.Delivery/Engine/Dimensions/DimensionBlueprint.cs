@@ -131,11 +131,7 @@ public static class DimensionBlueprints
         }
         else
         {
-            var matching = saved.Where(t => KindPatterns.Matches(dimension.Kind, t.Kind))
-                .GroupBy(t => t.Kind, StringComparer.OrdinalIgnoreCase)
-                .Select(g => g.OrderByDescending(t => t.CapturedUtc).First())
-                .OrderByDescending(t => KindPatterns.VersionOf(t.Kind)).ThenBy(t => t.Kind, StringComparer.Ordinal)
-                .ToList();
+            var matching = Matching(dimension.Kind, saved);
             kinds = matching.Select(t => new BlueprintKind(t.Kind, null, t.Version)).ToList();
             sourceTemplate = matching.Select(t => new BlueprintTemplate(t.Kind, t.Version)).FirstOrDefault();
             if (sourceTemplate is null)
@@ -233,6 +229,21 @@ public static class DimensionBlueprints
     }
 
     /// <summary>A path of the dimension's own records, described by their template and classified as the build's search reads it.</summary>
+    /// <summary>
+    /// The saved templates a dimension's kind pattern matches, each kind's newest saved first and the newest version of the
+    /// kind first: the first is the template a dimension's own records are described by before a build.
+    /// </summary>
+    public static IReadOnlyList<TemplateInfo> Matching(string kind, IReadOnlyList<TemplateInfo> saved)
+    {
+        ArgumentNullException.ThrowIfNull(kind);
+        ArgumentNullException.ThrowIfNull(saved);
+        return saved.Where(t => KindPatterns.Matches(kind, t.Kind))
+            .GroupBy(t => t.Kind, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.OrderByDescending(t => t.CapturedUtc).First())
+            .OrderByDescending(t => KindPatterns.VersionOf(t.Kind)).ThenBy(t => t.Kind, StringComparer.Ordinal)
+            .ToList();
+    }
+
     private static ReadDraft SourceRead(string id, string path, BlueprintUse use, SchemaSnapshot? schema)
     {
         var (parsed, _) = DimensionPath.Parse(path);

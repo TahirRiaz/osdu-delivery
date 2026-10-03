@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { IconAction } from "@/components/IconAction";
 import { explorerApi, type ExplorerHit, type ExplorerPage, type ExplorerRead } from "../../../api/explorer";
 import { idParts, recordNameOf } from "../osduRecordModel";
+import type { InspectorField } from "../OsduRecordInspector";
 import { OsduRecordPanel } from "../OsduRecordView";
 import { ExplorerProblem, ExplorerErrorText } from "./ExplorerProblem";
 import { ScopeCrumbs } from "./ExplorerResults";
@@ -126,7 +127,7 @@ function NearIds({ partition, id, onOpen }: { partition: string | null; id: stri
  * any two of its versions compare side by side, and an id OSDU holds nothing under offers the records whose ids are near.
  * Every record opened is remembered in this browser, so the reader finds it again.
  */
-export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpenId, onBrowseQuery, onSwitchPartition }: {
+export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpenId, onBrowseQuery, onSwitchPartition, fieldActions }: {
   partition: string | null;
   id: string;
   /** The version the record is opened at; null for its latest. */
@@ -140,6 +141,8 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
   /** Leaves the record for the records a Lucene query finds. */
   onBrowseQuery: (query: string) => void;
   onSwitchPartition: (partition: string) => void;
+  /** What shows beside each value of the records on the trail: a dimension's picks, while one is built. */
+  fieldActions?: (field: InspectorField) => ReactNode;
 }) {
   const answered = useQuery({
     queryKey: ["explorer", "read", partition, id, version],
@@ -211,6 +214,7 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
             place,
             mentions: (mentioned, open) => <Mentions partition={partition} id={mentioned} onOpen={open} onBrowse={onBrowseQuery} />,
             notFound: (missing) => <NearIds partition={partition} id={missing} onOpen={onOpenId} />,
+            fieldActions,
           }}
           fill
         />

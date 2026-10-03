@@ -18,12 +18,11 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The reads the explorer's dimension builder makes of OSDU (osdu/docs/explorer.md, Building a dimension), against a stand-in
-/// of the search service as a build reads it: the records of a kind one at a time, the commonest keys of a path, the records
-/// a key names and those they name in turn, each followed as a build follows it, long records cut where a page would drown,
-/// a query the service refuses answered with its words; and one key made into its row exactly as a build makes it, through
-/// the build's own labeler, collector display, cleaner and attribute assembly. Then the same through the explorer's operation,
-/// as the control plane runs it.
+/// The reads the explorer's dimension builder makes of OSDU beyond the explorer's own (osdu/docs/explorer.md, Building a
+/// dimension), against a stand-in of the search service as a build reads it: the commonest keys of a path in one search,
+/// the query narrowing them, a query the service refuses answered with its words; and one key made into its row exactly as
+/// a build makes it, through the build's own labeler, collector display, cleaner and attribute assembly. Then the same
+/// through the explorer's operation, as the control plane runs it.
 /// </summary>
 public class DimensionSamplerTests
 {
@@ -85,55 +84,37 @@ public class DimensionSamplerTests
         return new DimensionSampler(new OsduSearch(client, RecordExplorer.QueryPath, RetrievalSource.DefaultSearchPath, NullLogger.Instance), NullLogger.Instance);
     }
 
-    private static DimensionSampleRequest Request(string? key = null, int at = 0, params IReadOnlyList<string>[] trails) => new()
+    private static DimensionKeysRequest Request(string? query = null) => new()
     {
         Kind = WellLog,
+        Query = query,
         Path = "data.WellboreID",
         KeyField = DimensionFieldWire.Of(WellboreId),
-        Key = key,
-        At = at,
-        Trails = trails,
     };
 
     [Fact]
-    public async Task Before_a_key_is_picked_the_records_of_the_kind_are_shown_one_at_a_time_whole()
+    public async Task The_commonest_keys_are_listed_most_records_first_with_the_records_counted_in_one_search()
     {
         var platform = Estate();
-        var sampler = Sampler(platform);
+        var keys = await Sampler(platform).KeysAsync(Request(), CancellationToken.None);
 
-        var first = await sampler.SampleAsync(new DimensionSampleRequest { Kind = WellLog }, CancellationToken.None);
-        var third = await sampler.SampleAsync(new DimensionSampleRequest { Kind = WellLog, At = 2 }, CancellationToken.None);
+        Assert.Equal([(W1 + ":", 3L), (W2 + ":", 1L), ("unknown-well", 1L)], keys.Keys.Select(k => (k.Key, k.Count)));
+        Assert.Equal(5, keys.Total);
+        Assert.False(keys.MoreKeys);
+        Assert.Equal("data.WellboreID", keys.KeyField!.Path);
+        Assert.False(keys.KeyFieldGuessed);
+        Assert.Null(keys.Refusal);
 
-        Assert.Equal(5, first.Total);
-        Assert.Equal("dev:work-product-component--WellLog:L1", first.Record!.Id);
-        Assert.Equal(WellLog, first.Record.Kind);
-        Assert.Equal("dev:work-product-component--WellLog:L3", third.Record!.Id);
-        Assert.Equal(2, third.At);
-
-        // A whole record, as the search holds it, and nothing of keys or trails before a key is picked.
-        Assert.Equal("Recall", first.Record.Record["data"]!["Source"]!.GetValue<string>());
-        Assert.Null(first.Keys);
-        Assert.Empty(first.Trails);
-        Assert.Null(first.Refusal);
-        var asked = JsonNode.Parse(platform.Calls[0].Body!)!;
-        Assert.Null(asked["returnedFields"]);
+        // One search: a page of one record, grouped by the key's keyword, which counts the records as it groups them.
+        var asked = JsonNode.Parse(Assert.Single(platform.Calls).Body!)!;
+        Assert.Equal("data.WellboreID.keyword", asked["aggregateBy"]!.GetValue<string>());
         Assert.Equal(1, asked["limit"]!.GetValue<int>());
+        Assert.True(asked["trackTotalCount"]!.GetValue<bool>());
         OsduContracts.AssertConform(platform.Calls, null, OsduContracts.Search);
     }
 
     [Fact]
-    public async Task With_a_key_path_the_commonest_keys_are_listed_most_records_first()
-    {
-        var sample = await Sampler(Estate()).SampleAsync(Request(), CancellationToken.None);
-
-        Assert.Equal([(W1 + ":", 3L), (W2 + ":", 1L), ("unknown-well", 1L)], sample.Keys!.Select(k => (k.Key, k.Count)));
-        Assert.False(sample.MoreKeys);
-        Assert.Equal("data.WellboreID", sample.KeyField!.Path);
-        Assert.False(sample.KeyFieldGuessed);
-    }
-
-    [Fact]
-    public async Task More_keys_than_a_page_offers_are_said_to_be_more()
+    public async Task More_keys_than_the_examples_offer_are_said_to_be_more()
     {
         var platform = new FakeDimensionPlatform();
         for (var i = 0; i < DimensionSampler.ExampleKeys + 5; i++)
@@ -141,138 +122,56 @@ public class DimensionSamplerTests
             platform.Add($"dev:work-product-component--WellLog:L{i}", WellLog, new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:W{i:D2}:" });
         }
 
-        var sample = await Sampler(platform).SampleAsync(Request(), CancellationToken.None);
+        var keys = await Sampler(platform).KeysAsync(Request(), CancellationToken.None);
 
-        Assert.Equal(DimensionSampler.ExampleKeys, sample.Keys!.Count);
-        Assert.True(sample.MoreKeys);
+        Assert.Equal(DimensionSampler.ExampleKeys, keys.Keys.Count);
+        Assert.True(keys.MoreKeys);
+        Assert.Equal(DimensionSampler.ExampleKeys + 5, keys.Total);
     }
 
     [Fact]
-    public async Task With_a_key_the_record_shown_is_one_holding_it_and_the_total_is_of_those()
+    public async Task The_query_narrows_the_keys_to_those_its_records_hold()
     {
-        var sample = await Sampler(Estate()).SampleAsync(Request(W2 + ":"), CancellationToken.None);
+        var keys = await Sampler(Estate()).KeysAsync(Request("data.Source.keyword:\"Recall\""), CancellationToken.None);
 
-        Assert.Equal(1, sample.Total);
-        Assert.Equal("dev:work-product-component--WellLog:L4", sample.Record!.Id);
+        Assert.Equal([(W1 + ":", 2L), ("unknown-well", 1L)], keys.Keys.Select(k => (k.Key, k.Count)));
+        Assert.Equal(3, keys.Total);
     }
 
     [Fact]
     public async Task A_guessed_key_field_is_said_to_be_a_guess()
     {
-        var sample = await Sampler(Estate()).SampleAsync(Request() with { KeyFieldGuessed = true }, CancellationToken.None);
+        var keys = await Sampler(Estate()).KeysAsync(Request() with { KeyFieldGuessed = true }, CancellationToken.None);
 
-        Assert.True(sample.KeyFieldGuessed);
-        Assert.Contains(sample.Notes, n => n.Contains("is read here as text", StringComparison.Ordinal));
+        Assert.True(keys.KeyFieldGuessed);
+        Assert.Contains(keys.Notes, n => n.Contains("is read here as text", StringComparison.Ordinal));
+        Assert.NotEmpty(keys.Keys);
     }
 
     [Fact]
-    public async Task A_trail_reads_the_record_the_key_names_and_follows_its_references_as_a_build_does()
+    public async Task Without_knowing_how_the_key_is_indexed_the_records_are_counted_and_no_key_is_grouped()
     {
         var platform = Estate();
-        var sample = await Sampler(platform).SampleAsync(
-            Request(W1 + ":", 0, [], ["data.GeoContexts.GeoPoliticalEntityID"], ["data.GeoContexts.FieldID"], ["data.GeoContexts[FieldID*=Sverdrup].FieldID"]),
-            CancellationToken.None);
+        var keys = await Sampler(platform).KeysAsync(Request() with { KeyField = null }, CancellationToken.None);
 
-        Assert.Equal(4, sample.Trails.Count);
-        var own = sample.Trails[0];
-        Assert.Equal([W1], own.Reached);
-        Assert.Equal(W1, Assert.Single(own.Records).Id);
-        Assert.Null(own.Problem);
-
-        // Every political entity the wellbore names, in the order it names them, each read whole.
-        var entities = sample.Trails[1];
-        Assert.Equal([Rogaland, Norway], entities.Reached);
-        Assert.Equal([Rogaland, Norway], entities.Records.Select(r => r.Id));
-        Assert.Equal("Norway", entities.Records[1].Record["data"]!["GeoPoliticalEntityName"]!.GetValue<string>());
-
-        Assert.Equal(Sverdrup, Assert.Single(sample.Trails[2].Records).Id);
-        Assert.Equal(Sverdrup, Assert.Single(sample.Trails[3].Records).Id);
-
-        // Each record was read once, whichever trails reached it: one search per entity type and step.
-        var idSearches = platform.Calls.Select(c => JsonNode.Parse(c.Body!)!).Where(b => b["query"]?.GetValue<string>()?.StartsWith("id:", StringComparison.Ordinal) == true).ToList();
-        Assert.Equal(3, idSearches.Count);
-        Assert.Equal(["*:*:master-data--Wellbore:*", "*:*:master-data--GeoPoliticalEntity:*", "*:*:master-data--Field:*"], idSearches.Select(b => b["kind"]!.GetValue<string>()));
-        OsduContracts.AssertConform(platform.Calls, null, OsduContracts.Search);
+        Assert.Empty(keys.Keys);
+        Assert.Equal(5, keys.Total);
+        Assert.Contains(keys.Notes, n => n.Contains("is indexed is not known", StringComparison.Ordinal));
+        Assert.Null(JsonNode.Parse(Assert.Single(platform.Calls).Body!)!["aggregateBy"]);
     }
 
     [Fact]
-    public async Task A_trail_says_why_it_stops_short()
-    {
-        var sampler = Sampler(Estate());
-
-        var noRecord = await sampler.SampleAsync(Request("unknown-well", 0, new List<string>()), CancellationToken.None);
-        Assert.Contains("names no OSDU record", Assert.Single(noRecord.Trails).Problem, StringComparison.Ordinal);
-
-        var missing = await sampler.SampleAsync(Request("dev:master-data--Wellbore:W9:", 0, [], ["data.GeoContexts.FieldID"]), CancellationToken.None);
-        Assert.Equal("The search holds no record dev:master-data--Wellbore:W9.", missing.Trails[0].Problem);
-        Assert.Equal("The search holds no record dev:master-data--Wellbore:W9.", missing.Trails[1].Problem);
-        Assert.Empty(missing.Trails[1].Records);
-
-        var noReference = await sampler.SampleAsync(Request(W2 + ":", 0, ["data.GeoContexts.FieldID"]), CancellationToken.None);
-        Assert.Equal("The record reached holds no record id at data.GeoContexts.FieldID.", noReference.Trails[0].Problem);
-        Assert.Empty(noReference.Trails[0].Records);
-    }
-
-    [Fact]
-    public async Task A_step_follows_at_most_as_many_references_as_a_build_does()
-    {
-        var platform = new FakeDimensionPlatform();
-        var names = new JsonArray();
-        for (var i = 0; i < DimensionLabeler.MaxReferencesPerStep + 6; i++)
-        {
-            var id = $"dev:master-data--Field:F{i:D2}";
-            platform.Add(id, "osdu:wks:master-data--Field:1.0.0", new JsonObject { ["FieldName"] = $"Field {i}" });
-            names.Add(new JsonObject { ["FieldID"] = id + ":" });
-        }
-
-        platform.Add(W1, WellboreKind, new JsonObject { ["GeoContexts"] = names });
-        var sample = await Sampler(platform).SampleAsync(Request(W1 + ":", 0, ["data.GeoContexts.FieldID"]), CancellationToken.None);
-
-        Assert.Equal(DimensionLabeler.MaxReferencesPerStep, sample.Trails[0].Reached.Count);
-        Assert.Equal(DimensionLabeler.MaxReferencesPerStep, sample.Trails[0].Records.Count);
-    }
-
-    [Fact]
-    public void A_long_array_and_a_long_text_are_cut_where_a_page_would_drown_and_say_where()
-    {
-        var curves = new JsonArray(Enumerable.Range(0, 120).Select(i => (JsonNode?)new JsonObject { ["Mnemonic"] = $"C{i}" }).ToArray());
-        var record = new JsonObject
-        {
-            ["id"] = "dev:work-product-component--WellLog:L1",
-            ["kind"] = WellLog,
-            ["data"] = new JsonObject { ["Curves"] = curves, ["Notes"] = new string('x', 5_000), ["Tags"] = new JsonArray("a", new string('y', 3_000)) },
-        };
-
-        var shown = DimensionSampler.Shown(record);
-
-        Assert.Equal(DimensionSampler.ShownItems, shown.Record["data"]!["Curves"]!.AsArray().Count);
-        Assert.Equal(DimensionSampler.ShownText, shown.Record["data"]!["Notes"]!.GetValue<string>().Length);
-        Assert.Contains(new DimensionSampleCut("data.Curves", 120, DimensionSampler.ShownItems), shown.Cut);
-        Assert.Contains(new DimensionSampleCut("data.Notes", 5_000, DimensionSampler.ShownText), shown.Cut);
-        Assert.Contains(new DimensionSampleCut("data.Tags.1", 3_000, DimensionSampler.ShownText), shown.Cut);
-
-        // The record itself is left as it was read.
-        Assert.Equal(120, record["data"]!["Curves"]!.AsArray().Count);
-    }
-
-    [Fact]
-    public async Task A_query_the_service_refuses_is_answered_with_its_words_and_nothing_else_is_read()
+    public async Task A_query_the_service_refuses_is_answered_with_its_words()
     {
         var platform = Estate();
         platform.Fail = _ => HttpStatusCode.BadRequest;
 
-        var sample = await Sampler(platform).SampleAsync(Request(W1 + ":", 0, new List<string>()), CancellationToken.None);
+        var keys = await Sampler(platform).KeysAsync(Request(), CancellationToken.None);
 
-        Assert.NotNull(sample.Refusal);
-        Assert.Null(sample.Record);
-        Assert.Empty(sample.Trails);
+        Assert.NotNull(keys.Refusal);
+        Assert.Empty(keys.Keys);
+        Assert.Equal(0, keys.Total);
         Assert.Single(platform.Calls);
-    }
-
-    [Fact]
-    public async Task A_sample_shows_only_the_first_records()
-    {
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => Sampler(Estate()).SampleAsync(Request(at: DimensionSampler.ExampleRecords), CancellationToken.None));
     }
 
     private static DimensionSpec Spec(string? unlabelled = "Not specified", IReadOnlyList<CleanStep>? clean = null, IReadOnlyList<string>? label = null) => new()
@@ -341,7 +240,7 @@ public class DimensionSamplerTests
     {
         var sampler = Sampler(Estate());
         var unnamed = await sampler.ExampleAsync(Spec(unlabelled: null), "unknown-well", null, WellboreId, Collected(), DimensionCleaner.Identity, CancellationToken.None);
-        Assert.Equal(DimensionLabeler.NamesNoRecord, unnamed.Problem);
+        Assert.Equal("it names no OSDU record", unnamed.Problem);
         Assert.Equal("unknown-well", unnamed.Value);
         Assert.Equal([("Recall", 1L)], unnamed.Attributes.Where(a => a.Name == "Source").Select(a => (a.Value, a.Records ?? 0)));
 
@@ -420,20 +319,18 @@ public class DimensionSamplerTests
     }
 
     [Fact]
-    public async Task The_operation_samples_through_the_flows_connection_with_the_partition_filled_into_the_query()
+    public async Task The_operation_reads_the_keys_through_the_flows_connection_with_the_partition_filled_into_the_query()
     {
         var platform = Estate();
         var operation = new ExploreOperation(Samples.Engine(ledger: null), platform, allowLoopback: true);
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal);
-        var request = Request(W1 + ":", 0, [], ["data.GeoContexts.GeoPoliticalEntityID"]) with { Query = "NOT data.Source.keyword:\"{partition}\"" };
-        LongArgument.Put(arguments, ExploreOperation.SampleArgument, JsonSerializer.Serialize(request, ExploreOperation.BuilderJson));
+        LongArgument.Put(arguments, ExploreOperation.KeysArgument, JsonSerializer.Serialize(Request("NOT data.Source.keyword:\"{partition}\""), ExploreOperation.BuilderJson));
 
-        var answered = JsonNode.Parse(await operation.ExecuteAsync(Task(await FlowFileAsync(), ExploreOperation.DimensionSampleAction, arguments), CancellationToken.None))!;
+        var answered = JsonNode.Parse(await operation.ExecuteAsync(Task(await FlowFileAsync(), ExploreOperation.DimensionKeysAction, arguments), CancellationToken.None))!;
 
         Assert.Equal(("dev", "explorer-route"), (answered["partition"]!.GetValue<string>(), answered["connection"]!.GetValue<string>()));
-        var answer = answered["answer"]!;
-        Assert.Equal(W1, answer["trails"]![0]!["records"]![0]!["id"]!.GetValue<string>());
-        Assert.Equal(2, answer["trails"]![1]!["records"]!.AsArray().Count);
+        var keys = answered["answer"]!.Deserialize<DimensionKeys>(ExploreOperation.BuilderJson)!;
+        Assert.Equal(W1 + ":", keys.Keys[0].Key);
         Assert.All(platform.Calls, c => Assert.Equal("dev", c.Headers["data-partition-id"]));
         Assert.Contains(platform.Calls, c => c.Body!.Contains("NOT data.Source.keyword:\\\"dev\\\"", StringComparison.Ordinal));
         Assert.DoesNotContain(platform.Calls, c => c.Body!.Contains("{partition}", StringComparison.Ordinal));
@@ -484,26 +381,26 @@ public class DimensionSamplerTests
         Assert.Contains("reads the dictionary CurveAliases", refused.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>A sample the operation refuses, as the control plane refuses it before it is sent.</summary>
-    public static TheoryData<string, string> RefusedSamples => new()
+    /// <summary>A keys request the operation refuses, as the control plane refuses it before it is sent.</summary>
+    public static TheoryData<string, string> RefusedKeys => new()
     {
-        { """{"kind":"osdu:wks:WellLog"}""", "osdu:wks:WellLog" },
-        { """{"kind":"osdu:wks:work-product-component--WellLog:1.4.0","at":25}""", "first 25 records" },
-        { """{"kind":"osdu:wks:work-product-component--WellLog:1.4.0","trails":[["a","b","c"]]}""", "at most 2 paths" },
-        { """{"kind":"osdu:wks:work-product-component--WellLog:1.4.0","trails":[["data[Type=]x"]]}""", "is not a path a trail can follow" },
-        { """{"kind":"osdu:wks:work-product-component--WellLog:1.4.0","trails":""", "is not what the dimension builder sends" },
+        { """{"kind":"osdu:wks:WellLog","path":"data.WellboreID"}""", "osdu:wks:WellLog" },
+        { """{"kind":"osdu:wks:work-product-component--WellLog:1.4.0","path":"data..WellboreID"}""", "is not a property path a key is read at" },
+        { """{"kind":"osdu:wks:work-product-component--WellLog:1.4.0","path":"data[Type=x].WellboreID"}""", "is not a property path a key is read at" },
+        { """{"kind":"osdu:wks:work-product-component--WellLog:1.4.0","path":" "}""", "is not a property path a key is read at" },
+        { """{"kind":"osdu:wks:work-product-component--WellLog:1.4.0","path":""", "is not what the dimension builder sends" },
         { """{"path":"data.X"}""", "is not what the dimension builder sends" },
     };
 
     [Theory]
-    [MemberData(nameof(RefusedSamples))]
-    public void The_operation_refuses_a_sample_it_cannot_read(string json, string why)
+    [MemberData(nameof(RefusedKeys))]
+    public void The_operation_refuses_keys_it_cannot_read(string json, string why)
     {
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal);
-        LongArgument.Put(arguments, ExploreOperation.SampleArgument, json);
+        LongArgument.Put(arguments, ExploreOperation.KeysArgument, json);
         var payload = new ComputeTaskPayload { Operation = ExploreOperation.OperationName, SourceRef = "explorer-route", Arguments = arguments };
 
-        var refused = Assert.ThrowsAny<SqlFlowException>(() => ExploreOperation.SampleOf(payload, "dev"));
+        var refused = Assert.ThrowsAny<SqlFlowException>(() => ExploreOperation.KeysOf(payload, "dev"));
 
         Assert.Contains(why, refused.Message, StringComparison.Ordinal);
     }

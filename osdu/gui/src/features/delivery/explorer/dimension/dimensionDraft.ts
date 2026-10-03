@@ -1,10 +1,13 @@
-import type { DimensionDraft, DimensionDraftAttribute, DimensionDraftCleanStep, DimensionSampleRecord } from "../../../../api/explorer";
+import type { DimensionDraft, DimensionDraftAttribute, DimensionDraftCleanStep, DimensionKeyCandidate } from "../../../../api/explorer";
+import type { InspectorTrailRecord } from "../../OsduRecordInspector";
 import { isRecordReference, withoutVersion } from "../../osduDocument";
 
-// What the dimension builder holds while a person picks a dimension from the records OSDU holds (osdu/docs/explorer.md,
-// Building a dimension): the draft, kept in the page's address; where a pick in a record is (a location) and the path it
-// becomes; the trails the builder reads; and the filters it suggests where a pick reaches more than one value. Every check
-// of what a dimension may hold is the control plane's, which reads the draft back through the loader a flow is read by.
+// What the explorer's dimension builder holds while a person builds a dimension from the records OSDU holds (osdu/docs/
+// explorer.md, Building a dimension): the draft, kept in the explorer's address; what a pick in a record on the explorer's
+// trail makes of it (the trail's first record is one of the dimension's kind, the link it is left by is the key, and every
+// link after it a step of a value's path); the filters suggested where a step passes through one item of a list; and which
+// values of a record the draft reads, to mark them. Every check of what a dimension may hold is the control plane's, which
+// reads the draft back through the loader a flow is read by.
 
 /** The most records a label or an attribute reads through, one path each: DimensionSpec.MaxLabelSteps. */
 export const MAX_STEPS = 3;
@@ -12,7 +15,7 @@ export const MAX_STEPS = 3;
 /** The most attributes a dimension reads: DimensionSpec.MaxAttributes. */
 export const MAX_ATTRIBUTES = 20;
 
-/** The examples a page steps through: the commonest keys, or the first records of the kind. */
+/** The keys the example steps through: the commonest, as a dimension's own pages offer theirs. */
 export const EXAMPLES = 25;
 
 /** The longest attribute name: DimensionAttributeSpec.MaxNameLength. */
@@ -21,10 +24,13 @@ export const MAX_NAME_LENGTH = 64;
 /** The clean steps written as their name alone, as the documentation names them. */
 export const PLAIN_STEPS = ["trim", "collapseSpaces", "upper", "lower", "nfc", "nfkc", "foldSeparators"] as const;
 
+/** The explorer's address part holding the draft while a dimension is built. */
+export const DRAFT_PARAM = "dim";
+
 /** Names an attribute cannot take: the columns every dimension's table has, and the words a key's own facts go by. */
 const RESERVED = new Set(["value", "keys", "key", "key_id", "records", "filter", "label", "id", "partition"]);
 
-/** A draft that has picked nothing but the kind it reads. */
+/** A draft that has picked nothing but the kind it reads (none yet, for an empty kind). */
 export function emptyDraft(kind: string): DimensionDraft {
   return {
     name: "",
@@ -45,17 +51,14 @@ export function emptyDraft(kind: string): DimensionDraft {
 
 const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
 const texts = (value: unknown): string[] => (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []);
+const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /**
  * The draft an address holds, read defensively: an address is typed, pasted and kept, so whatever it holds that is not a
- * draft's part is passed over rather than trusted. An address holding no draft starts one for `kind`.
+ * draft's part is passed over rather than trusted. An address holding nothing a draft can be read from starts an empty one.
  */
-export function draftFromParam(param: string | null, kind: string | null): DimensionDraft {
-  const fresh = emptyDraft(kind ?? "");
-  if (param === null || param === "") {
-    return fresh;
-  }
-
+export function draftFromParam(param: string): DimensionDraft {
+  const fresh = emptyDraft("");
   let parsed: unknown;
   try {
     parsed = JSON.parse(param);
@@ -63,14 +66,14 @@ export function draftFromParam(param: string | null, kind: string | null): Dimen
     return fresh;
   }
 
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+  if (!isObject(parsed)) {
     return fresh;
   }
 
-  const held = parsed as Record<string, unknown>;
+  const held = parsed;
   const attributes = Array.isArray(held.attributes)
     ? held.attributes
-      .filter((a): a is Record<string, unknown> => a !== null && typeof a === "object" && !Array.isArray(a))
+      .filter(isObject)
       .map((a): DimensionDraftAttribute => ({
         name: text(a.name) ?? "",
         steps: Array.isArray(a.steps) ? texts(a.steps) : null,
@@ -80,14 +83,14 @@ export function draftFromParam(param: string | null, kind: string | null): Dimen
     : [];
   const clean = Array.isArray(held.clean)
     ? held.clean
-      .filter((c): c is Record<string, unknown> => c !== null && typeof c === "object" && typeof (c as Record<string, unknown>).step === "string")
+      .filter((c): c is Record<string, unknown> => isObject(c) && typeof c.step === "string")
       .map((c): DimensionDraftCleanStep => ({ step: c.step as string, pattern: text(c.pattern), with: text(c.with) }))
     : [];
   const maxValues = typeof held.maxValues === "number" && Number.isSafeInteger(held.maxValues) ? held.maxValues : null;
   return {
     name: text(held.name) ?? "",
     description: text(held.description),
-    kind: text(held.kind) ?? fresh.kind,
+    kind: text(held.kind) ?? "",
     query: text(held.query),
     path: text(held.path),
     label: texts(held.label),
@@ -115,7 +118,7 @@ export function draftParam(draft: DimensionDraft): string {
   return JSON.stringify(kept);
 }
 
-/** Where a pick is in a record: property names and array places, from the record's root. */
+/** Where a value is in a record: property names and array places, from the record's root. */
 export type Location = (string | number)[];
 
 /** How a filter compares a property of an object with its text: equal, containing it, or ending with it. */
@@ -126,6 +129,19 @@ export interface SegmentFilter {
   property: string;
   compare: FilterCompare;
   value: string;
+}
+
+/**
+ * The location an inspector's path names: `data.GeoContexts[1].GeoPoliticalEntityID` is data, GeoContexts, item 1 of it,
+ * then GeoPoliticalEntityID.
+ */
+export function locationOf(path: string): Location {
+  const location: Location = [];
+  for (const match of path.matchAll(/\[(\d+)\]|([^.[\]]+)/g)) {
+    location.push(match[1] !== undefined ? Number(match[1]) : match[2]);
+  }
+
+  return location;
 }
 
 /** The property names of a location, its array places left out, as a path names them. */
@@ -165,6 +181,30 @@ export function filterProblem(filter: SegmentFilter): string | null {
   return value.includes("]") ? "The text cannot hold ], which ends a filter." : null;
 }
 
+/** A segment of a written step: the property, and the filter on the objects it holds. */
+interface StepSegment {
+  name: string;
+  filter: SegmentFilter | null;
+}
+
+/** The segments of a step as a draft writes it (`data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName`); null for text that is not one. */
+export function stepSegments(step: string): StepSegment[] | null {
+  const segments: StepSegment[] = [];
+  for (const part of step.match(/[^.[]+(?:\[[^\]]*\])?/g) ?? []) {
+    const match = /^([A-Za-z0-9_]+)(?:\[([A-Za-z0-9_]+)(\*=|\$=|=)([^\]]*)\])?$/.exec(part);
+    if (match === null) {
+      return null;
+    }
+
+    segments.push({
+      name: match[1],
+      filter: match[2] === undefined ? null : { property: match[2], compare: match[3] as FilterCompare, value: match[4] },
+    });
+  }
+
+  return segments.length === 0 ? null : segments;
+}
+
 /** The property a path ends with, its filters set aside. */
 export function lastProperty(path: string): string {
   const names = plainPath(path).split(".");
@@ -200,12 +240,12 @@ export function attributeNameFor(path: string, taken: readonly string[]): string
 }
 
 /**
- * A name for the dimension: the type of record its key names (a wellbore's id makes a `Wellbore` dimension), or the property
- * its key is read at, with whatever a dimension's name may not hold left out.
+ * A name for the dimension: the type of record its key names (a wellbore's id, or a key the template says names wellbores,
+ * makes a `Wellbore` dimension), or the property its key is read at, with whatever a dimension's name may not hold left out.
  */
-export function dimensionNameFor(path: string, example: string | null): string {
-  const named = example !== null && isRecordReference(example) ? entityTypeOf(example) : null;
-  const base = named === null ? lastProperty(path) : (named.split("--")[1] ?? named);
+export function dimensionNameFor(path: string, example: string | null, names: readonly string[] = []): string {
+  const named = example !== null && isRecordReference(example) ? entityTypeOf(example) : names.find((name) => name.includes("--")) ?? null;
+  const base = named === null ? lastProperty(path) : typeName(named);
   const cleaned = base.replace(/[^A-Za-z0-9._-]/g, "").replace(/^[^A-Za-z0-9]+/, "");
   return cleaned.slice(0, 100);
 }
@@ -221,9 +261,25 @@ export function typeName(entityType: string): string {
   return at < 0 ? entityType : entityType.slice(at + 2);
 }
 
+/**
+ * Whether `kind` is one the dimension's `pattern` reads: four segments each, each the same ignoring case or matched by its
+ * wildcards, a star standing for any text, as KindPatterns matches them.
+ */
+export function kindMatches(pattern: string, kind: string): boolean {
+  const want = pattern.split(":");
+  const have = kind.split(":");
+  if (want.length !== 4 || have.length !== 4) {
+    return false;
+  }
+
+  return want.every((segment, index) => {
+    const expression = segment.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+    return new RegExp(`^${expression}$`, "i").test(have[index]);
+  });
+}
+
 /** One chain of a draft: its value (the label) or an attribute, read through `steps` from the record a key names. */
 export interface DraftChain {
-  id: string;
   role: "label" | "attribute";
   name: string | null;
   steps: string[];
@@ -233,69 +289,16 @@ export interface DraftChain {
 export function chainsOf(draft: DimensionDraft): DraftChain[] {
   const chains: DraftChain[] = [];
   if (draft.label.length > 0) {
-    chains.push({ id: "label", role: "label", name: null, steps: draft.label });
+    chains.push({ role: "label", name: null, steps: draft.label });
   }
 
-  draft.attributes.forEach((attribute, index) => {
+  for (const attribute of draft.attributes) {
     if (attribute.collect === null && attribute.steps !== null && attribute.steps.length > 0) {
-      chains.push({ id: `attribute:${index}`, role: "attribute", name: attribute.name, steps: attribute.steps });
+      chains.push({ role: "attribute", name: attribute.name, steps: attribute.steps });
     }
-  });
+  }
+
   return chains;
-}
-
-/** A trail as a key of a map: its steps, in order. */
-export const trailKey = (trail: readonly string[]) => JSON.stringify(trail);
-
-/**
- * The trails the builder reads from the record the example key names: that record itself, every part of every chain a
- * further step is read from (a chain of three paths reads its second in the records the first names, and its third in
- * those the second names), and the trails a person opened to look at before reading anything there. Each once, shortest
- * first, at most `max`.
- */
-export function trailsOf(draft: DimensionDraft, opened: readonly string[][], max = 16): string[][] {
-  const trails: string[][] = [[]];
-  const seen = new Set([trailKey([])]);
-  const add = (trail: string[]) => {
-    const key = trailKey(trail);
-    if (!seen.has(key) && trail.length < MAX_STEPS) {
-      seen.add(key);
-      trails.push(trail);
-    }
-  };
-
-  for (const chain of chainsOf(draft)) {
-    for (let length = 1; length < chain.steps.length; length++) {
-      add(chain.steps.slice(0, length));
-    }
-  }
-
-  opened.forEach(add);
-  return trails.sort((a, b) => a.length - b.length).slice(0, max);
-}
-
-/** Whether `trail` begins with `prefix`, step for step. */
-export function startsWith(trail: readonly string[], prefix: readonly string[]): boolean {
-  return prefix.length <= trail.length && prefix.every((step, index) => trail[index] === step);
-}
-
-/** A use of a property in the records a trail reaches: the chain reading it there, and whether that is its last step. */
-export interface PropertyUse {
-  chain: DraftChain;
-  last: boolean;
-  step: string;
-}
-
-/** What reads the property at `path` (its filters aside) in the records `trail` reaches. */
-export function usesAt(draft: DimensionDraft, trail: readonly string[], path: string): PropertyUse[] {
-  const uses: PropertyUse[] = [];
-  for (const chain of chainsOf(draft)) {
-    if (chain.steps.length > trail.length && startsWith(chain.steps, trail) && plainPath(chain.steps[trail.length]) === path) {
-      uses.push({ chain, last: chain.steps.length === trail.length + 1, step: chain.steps[trail.length] });
-    }
-  }
-
-  return uses;
 }
 
 /** A property a filter can compare, with the values the objects hold there. */
@@ -399,42 +402,8 @@ export function valueAt(record: unknown, location: Location): unknown {
   return at;
 }
 
-/** A list of objects a pick passes through: the segment holding it (its place among the location's names), its objects, the one picked, and where the rest of the location starts. */
-export interface ListOnTheWay {
-  segment: number;
-  objects: Record<string, unknown>[];
-  chosen: number;
-  /** The location within each object: what follows the list's place. */
-  within: Location;
-}
-
-/**
- * Where a pick at `location` reaches more than one value, so a build would keep the first it finds: the nearest list of
- * objects on the way, by the place of the segment holding it among the location's names, with the objects it holds and the
- * one picked. Null where the location meets no such list.
- */
-export function listOnTheWay(record: unknown, location: Location): ListOnTheWay | null {
-  let found: ListOnTheWay | null = null;
-  let names = -1;
-  for (let i = 0; i < location.length; i++) {
-    const part = location[i];
-    if (typeof part === "string") {
-      names++;
-      continue;
-    }
-
-    const list = valueAt(record, location.slice(0, i));
-    if (Array.isArray(list) && list.length > 1 && list.every((item) => item !== null && typeof item === "object" && !Array.isArray(item))) {
-      found = { segment: names, objects: list as Record<string, unknown>[], chosen: part, within: location.slice(i + 1) };
-    }
-  }
-
-  return found;
-}
-
-/** The values each of `records` holds at `location`, its lists stepped into: what a build reads there, record by record. */
-export function valuesAcross(records: readonly unknown[], location: Location): string[][] {
-  const names = namesOf(location);
+/** The values each of `records` holds at the property names `names`, its lists stepped into: what a build reads there, record by record. */
+export function valuesAcross(records: readonly unknown[], names: readonly string[]): string[][] {
   const read = (node: unknown, at: number): string[] => {
     if (Array.isArray(node)) {
       return node.flatMap((item) => read(item, at));
@@ -445,62 +414,65 @@ export function valuesAcross(records: readonly unknown[], location: Location): s
       return value === null ? [] : [value];
     }
 
-    return node !== null && typeof node === "object" ? read((node as Record<string, unknown>)[names[at]], at + 1) : [];
+    return isObject(node) ? read(node[names[at]], at + 1) : [];
   };
 
   return records.map((record) => read(record, 0));
 }
 
-/** Whether a value is one a dimension reads: a text, a number or a boolean, or a list of them. */
-export function isReadable(value: unknown): boolean {
-  const one = (v: unknown) => typeof v === "string" || typeof v === "number" || typeof v === "boolean";
-  return one(value) || (Array.isArray(value) && value.length > 0 && value.every(one));
+/** The first value a record holds at a key's path (`data.WellboreID`), its lists stepped into; null where it holds none. */
+export function firstValueAt(record: Record<string, unknown> | null, path: string): string | null {
+  if (record === null) {
+    return null;
+  }
+
+  return valuesAcross([record], path.split("."))[0].find((value) => value.trim() !== "") ?? null;
 }
 
-/** Whether a value names a record: a record id, or a list of them. */
-export function namesRecords(value: unknown): boolean {
-  return isRecordReference(value) || (Array.isArray(value) && value.length > 0 && value.every(isRecordReference));
-}
+/**
+ * Whether a step as a draft writes it reads the value at `location` of `record`: the same properties, and every filter on
+ * the way keeping the object the location passes through (the item of a list, or the record's data).
+ */
+export function stepReads(step: string, location: Location, record: Record<string, unknown> | null): boolean {
+  const segments = stepSegments(step);
+  const names = namesOf(location);
+  if (segments === null || segments.length !== names.length || segments.some((segment, index) => segment.name !== names[index])) {
+    return false;
+  }
 
-/** What a record is called in a list of them: its name where it holds one, else the code its id ends with. */
-export function recordName(record: DimensionSampleRecord): string {
-  const data = record.record.data;
-  if (data !== null && typeof data === "object" && !Array.isArray(data)) {
-    const held = data as Record<string, unknown>;
-    for (const name of ["Name", "FacilityName", "FieldName", "GeoPoliticalEntityName", "ProjectName", "Code"]) {
-      if (typeof held[name] === "string" && held[name] !== "") {
-        return held[name] as string;
-      }
+  let name = -1;
+  for (let at = 0; at < location.length; at++) {
+    if (typeof location[at] !== "string") {
+      continue;
     }
 
-    const named = Object.entries(held).find(([property, value]) => property.endsWith("Name") && typeof value === "string" && value !== "");
-    if (named !== undefined) {
-      return named[1] as string;
+    name++;
+    const filter = segments[name].filter;
+    if (filter === null) {
+      continue;
+    }
+
+    // The objects the filter compares: the item the location steps into next, or what the segment holds.
+    const into = typeof location[at + 1] === "number" ? location.slice(0, at + 2) : location.slice(0, at + 1);
+    const held = valueAt(record, into);
+    const kept = Array.isArray(held) ? held.filter(isObject).some((object) => keeps(object, filter)) : isObject(held) && keeps(held, filter);
+    if (!kept) {
+      return false;
     }
   }
 
-  const parts = record.id.split(":");
-  return parts[parts.length - 1] || parts[parts.length - 2] || record.id;
+  return true;
 }
 
-/** What a person can make of a property of a record. */
-export type PickAction = "key" | "collect" | "value" | "attribute" | "follow";
-
-/** A pick in a record: what to make of it, the trail of the records it is in (null for the dimension's own), where it is, and the records shown beside it. */
-export interface PropertyPick {
-  action: PickAction;
-  trail: string[] | null;
-  location: Location;
-  records: DimensionSampleRecord[];
-  chosen: number;
-}
-
-/** A pick that reaches several values, waiting on how it is read: the objects answering it, the one picked, what each holds there, and the segment a filter goes on. */
+/**
+ * A pick that passes through one item of a list whose items answer differently, waiting on how it is read: the list, its
+ * items, the one picked, what each holds there, and where a filter goes.
+ */
 export interface AmbiguousPick {
   /** What is being picked, as a person reads it. */
   what: string;
-  /** Records reached, or the items of a list on the way. */
-  kind: "records" | "items";
+  /** The list's path in the record it is in (`data.GeoContexts`). */
+  list: string;
   objects: Record<string, unknown>[];
   /** What each object is called, for the list. */
   names: string[];
@@ -511,11 +483,11 @@ export interface AmbiguousPick {
   leaf: string | null;
   /** True when every value is followed rather than the first kept: a step naming the next records. */
   follows: boolean;
-  /** The segment a filter goes on, by its place among the location's names. */
+  /** The step of the path the filter goes on, from 0. */
+  step: number;
+  /** The segment of that step the filter goes on, by its place among the step's names. */
   segment: number;
 }
-
-const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Whether the objects answer a pick differently: another object holds a value too where a step follows them all, or the values are not one. */
 function differs(values: string[][], chosen: number, follows: boolean): boolean {
@@ -539,55 +511,11 @@ function itemName(object: Record<string, unknown>, index: number): string {
 }
 
 /**
- * Whether a pick reaches several values, so how it is read is a person's to say: several records of the trail answering it
- * (a filter then goes on their data), or a list of objects on the way within the record picked in (a filter goes on that
- * list). A key and a collected path are read whole, so they never are.
- */
-export function ambiguityOf(pick: PropertyPick): AmbiguousPick | null {
-  if (pick.trail === null || pick.action === "key" || pick.action === "collect") {
-    return null;
-  }
-
-  const follows = pick.action === "follow";
-  const what = pick.action === "value" ? "the value of each key" : pick.action === "attribute" ? "the attribute" : "the records named next";
-  const record = pick.records[pick.chosen]?.record;
-  if (record === undefined) {
-    return null;
-  }
-
-  if (pick.records.length > 1 && pick.location[0] === "data") {
-    const objects = pick.records.map((r) => (isObject(r.record.data) ? r.record.data : {}));
-    const values = valuesAcross(objects, pick.location.slice(1));
-    if (differs(values, pick.chosen, follows)) {
-      const leaf = pick.location[1];
-      return {
-        what, kind: "records", objects, names: pick.records.map(recordName), values, chosen: pick.chosen,
-        leaf: typeof leaf === "string" ? leaf : null, follows, segment: 0,
-      };
-    }
-  }
-
-  const list = listOnTheWay(record, pick.location);
-  if (list !== null) {
-    const values = valuesAcross(list.objects, list.within);
-    if (differs(values, list.chosen, follows)) {
-      const leaf = list.within[0];
-      return {
-        what, kind: "items", objects: list.objects, names: list.objects.map(itemName), values, chosen: list.chosen,
-        leaf: typeof leaf === "string" ? leaf : null, follows, segment: list.segment,
-      };
-    }
-  }
-
-  return null;
-}
-
-/**
  * The name an attribute read through `steps` starts from: what its filter keeps (`Country` of a filter on a country's type),
  * the type of the records its last step reads in when it reads through another record (`Field`), else the property it ends
  * with (`FacilityID`).
  */
-export function chainNameBase(steps: readonly string[], filter: SegmentFilter | null, readIn: DimensionSampleRecord | undefined): string {
+export function chainNameBase(steps: readonly string[], filter: SegmentFilter | null, readIn: string | null): string {
   if (filter !== null && filter.value.includes(":")) {
     const code = filter.value.split(":").filter((part) => part.trim() !== "").pop();
     if (code !== undefined && /^[A-Za-z][A-Za-z0-9_ -]*$/.test(code.trim())) {
@@ -595,159 +523,291 @@ export function chainNameBase(steps: readonly string[], filter: SegmentFilter | 
     }
   }
 
-  if (steps.length > 1 && readIn !== undefined) {
-    return typeName(entityTypeOf(readIn.id));
+  if (steps.length > 1 && readIn !== null) {
+    return typeName(entityTypeOf(readIn));
   }
 
   return lastProperty(steps[steps.length - 1] ?? "");
 }
 
+/** What a person can make of a value of a record on the explorer's trail. */
+export type BuildAction = "key" | "collect" | "value" | "attribute";
+
+/** A pick in the explorer: what to make of a value, the records from the one the explorer opened to the one it is in, and its path there. */
+export interface BuildPick {
+  action: BuildAction;
+  trail: InspectorTrailRecord[];
+  /** The value's path in the last record of the trail, as the inspector names it (`data.GeoContexts[1].GeoPoliticalEntityID`). */
+  path: string;
+}
+
+/** A step of a value's or an attribute's path: where it is read, in which record. */
+export interface PlannedStep {
+  location: Location;
+  /** The id of the record the step is read in. */
+  readIn: string;
+}
+
+/** What a pick makes of the draft before any question is answered. */
+export interface PickPlan {
+  action: BuildAction;
+  /** The kind the dimension reads once the pick is made. */
+  kind: string;
+  /** The key once the pick is made. */
+  key: string;
+  /** What the dimension is named after when it has no name yet: a value the key holds in the record picked from. */
+  keyExample: string | null;
+  /** The key's or the collected path, for a key or a collect. */
+  path: string;
+  /** The steps of a value's or an attribute's path, the first read in the record the key names. */
+  steps: PlannedStep[];
+  /** The lists of objects the steps pass through one item of, where the objects answer differently: a question each. */
+  questions: AmbiguousPick[];
+}
+
+/** Why a pick cannot be made, and the key that would let it, where another key would. */
+export interface PickRefusal {
+  problem: string;
+  rekey: string | null;
+}
+
+/** The kind a record says it is; empty where it says none. */
+function kindOf(record: Record<string, unknown> | null): string {
+  return record === null ? "" : text(record.kind) ?? "";
+}
+
 /**
- * The draft and the opened trails once `pick` is made, read by `filter` on its segment where it reached several values: a
- * key replaces the key (naming the dimension when it is unnamed, and starting the trails afresh); a collected path replaces
- * the attribute collected; a value replaces the value read; an attribute is added under a name no column has; and a follow
- * opens the records the property names, for a further pick there. A pick the draft already holds changes nothing.
- * `columns` are the names of the key's and the value's columns, which no attribute may take.
+ * What a pick in the explorer makes of the draft, or why it cannot be made. The trail's first record is one of the
+ * dimension's kind (it sets the kind of a draft that has none): its values are made the key or collected. A value of a
+ * record further along is the dimension's value or an attribute: the link the first record was left by is the key (it
+ * becomes the key of a draft without one, and must be it otherwise), and every link after it a step, each read in the
+ * record before. Where a step passes through one item of a list whose items answer differently, a question asks which.
  */
-export function applyPick(
-  draft: DimensionDraft, opened: string[][], pick: PropertyPick, filter: SegmentFilter | null, segment: number | null, columns: readonly string[],
-): { draft: DimensionDraft; opened: string[][]; keyChanged: boolean } {
-  const filters = new Map<number, SegmentFilter>();
-  if (filter !== null && segment !== null) {
-    filters.set(segment, filter);
+export function planOf(draft: DimensionDraft, pick: BuildPick): PickPlan | PickRefusal {
+  const refused = (problem: string, rekey: string | null = null): PickRefusal => ({ problem, rekey });
+  const root = pick.trail[0];
+  if (root === undefined || root.record === null) {
+    return refused("The record is still being read.");
   }
 
-  const plain = pathOf(pick.location);
-  const path = pathOf(pick.location, filters);
-  const record = pick.records[pick.chosen];
-  const unchanged = { draft, opened, keyChanged: false };
-  const covered = (steps: string[]) => opened.filter((trail) => !startsWith(steps, trail));
-  switch (pick.action) {
-    case "key": {
-      if (draft.path === plain) {
-        return unchanged;
-      }
-
-      const held = valueAt(record?.record, pick.location);
-      const example = typeof held === "string" ? held : Array.isArray(held) && typeof held[0] === "string" ? held[0] : null;
-      return {
-        draft: { ...draft, path: plain, name: draft.name.trim() === "" ? dimensionNameFor(plain, example) : draft.name },
-        opened: [],
-        keyChanged: true,
-      };
-    }
-
-    case "collect": {
-      const others = draft.attributes.filter((a) => a.collect === null);
-      if (draft.attributes.some((a) => a.collect === plain)) {
-        return unchanged;
-      }
-
-      const name = attributeNameFor(plain, [...others.map((a) => a.name), ...columns]);
-      return { draft: { ...draft, attributes: [...others, { name, steps: null, collect: plain }] }, opened, keyChanged: false };
-    }
-
-    case "value": {
-      const steps = [...(pick.trail ?? []), path];
-      if (JSON.stringify(steps) === JSON.stringify(draft.label)) {
-        return unchanged;
-      }
-
-      return { draft: { ...draft, label: steps }, opened: covered(steps), keyChanged: false };
-    }
-
-    case "attribute": {
-      const steps = [...(pick.trail ?? []), path];
-      if (draft.attributes.some((a) => a.collect === null && JSON.stringify(a.steps) === JSON.stringify(steps))) {
-        return unchanged;
-      }
-
-      const name = attributeNameFor(chainNameBase(steps, filter, record), [...draft.attributes.map((a) => a.name), ...columns]);
-      return { draft: { ...draft, attributes: [...draft.attributes, { name, steps, collect: null }] }, opened: covered(steps), keyChanged: false };
-    }
-
-    case "follow": {
-      const trail = [...(pick.trail ?? []), path];
-      if (trail.length >= MAX_STEPS || opened.some((o) => trailKey(o) === trailKey(trail))) {
-        return unchanged;
-      }
-
-      return { draft, opened: [...opened, trail], keyChanged: false };
-    }
-  }
-}
-
-/** The trails a person opened, as the address holds them: lists of paths, read defensively, at most `MAX_STEPS - 1` paths each. */
-export function openedFromParam(param: string | null): string[][] {
-  if (param === null || param === "") {
-    return [];
+  const rootKind = kindOf(root.record);
+  if (rootKind === "") {
+    return refused("This record says no kind, so no dimension can read it.");
   }
 
-  try {
-    const parsed: unknown = JSON.parse(param);
-    if (!Array.isArray(parsed)) {
-      return [];
+  if (draft.kind !== "" && !kindMatches(draft.kind, rootKind)) {
+    return refused(`The dimension reads ${draft.kind}, and this record is ${rootKind}. Open one of its records, or start over to read this kind.`);
+  }
+
+  const kind = draft.kind === "" ? rootKind : draft.kind;
+  const location = locationOf(pick.path);
+  const names = namesOf(location);
+  if (names.length === 0) {
+    return refused("This is no property of the record.");
+  }
+
+  const level = pick.trail.length - 1;
+  const plain = names.join(".");
+  if (pick.action === "key" || pick.action === "collect") {
+    if (level > 0) {
+      return refused("A key is read in the dimension's own records: go back along the trail to the first record, and pick it there.");
     }
 
-    return parsed
-      .filter((trail): trail is unknown[] => Array.isArray(trail))
-      .map(texts)
-      .filter((trail) => trail.length > 0 && trail.length < MAX_STEPS)
-      .slice(0, 8);
-  } catch {
-    return [];
+    if (pick.action === "key" && draft.path === plain) {
+      return refused(`${plain} is the key.`);
+    }
+
+    const collected = draft.attributes.find((a) => a.collect === plain);
+    if (pick.action === "collect" && collected !== undefined) {
+      return refused(`${plain} is collected as ${collected.name}.`);
+    }
+
+    return {
+      action: pick.action, kind, key: pick.action === "key" ? plain : draft.path ?? "", keyExample: firstValueAt(root.record, plain),
+      path: plain, steps: [], questions: [],
+    };
   }
-}
 
-/** Which example the address names, from 0: a whole number under `EXAMPLES`, else the first. */
-export function exampleAt(param: string | null): number {
-  const at = Number(param ?? "");
-  return Number.isSafeInteger(at) && at >= 0 && at < EXAMPLES ? at : 0;
-}
+  if (level === 0) {
+    return refused("A value is read in the record the key names: open that record from the key's link, and pick it there.");
+  }
 
-/** Where the builder goes back to: the explorer view it was opened from, or the explorer itself; never anywhere else. */
-export function backOf(param: string | null): string {
-  return param !== null && /^\/delivery\/explorer(?:[/?]|$)/.test(param) && !param.startsWith("/delivery/explorer/dimension") ? param : "/delivery/explorer";
-}
+  if (level > MAX_STEPS) {
+    return refused(`This record is ${level} links from the dimension's record, and a value or an attribute reads through at most ${MAX_STEPS} records.`);
+  }
 
-/** A build as the builder holds it: the draft, the trails opened beside it, and which example fills it. */
-export interface BuilderBuild {
-  draft: DimensionDraft;
-  opened: string[][];
-  at: number;
-}
+  for (let at = 1; at <= level; at++) {
+    if (pick.trail[at].from === null) {
+      return refused("This record was opened from the records that mention the one before it, not from a value of it, so no path of a dimension reaches it.");
+    }
 
-/** The build an address holds: its draft (`d`, or a fresh one of the kind it names), its trails (`o`) and its example (`ex`). */
-export function buildOf(params: URLSearchParams): BuilderBuild {
+    if (pick.trail[at - 1].record === null) {
+      return refused("A record on the way is still being read.");
+    }
+  }
+
+  const keyPath = namesOf(locationOf(pick.trail[1].from!)).join(".");
+  if (draft.path !== null && draft.path !== "" && draft.path !== keyPath) {
+    return refused(`This record is reached through ${keyPath}, and the key is ${draft.path}: a value is read in the record the key names.`, keyPath);
+  }
+
+  // Each step is read in the record before the one it opens: the second link in the record the key names, and so on, the
+  // value itself in the record it is picked in.
+  const steps: (PlannedStep & { record: Record<string, unknown> })[] = [];
+  for (let at = 2; at <= level; at++) {
+    steps.push({ location: locationOf(pick.trail[at].from!), readIn: pick.trail[at - 1].id, record: pick.trail[at - 1].record! });
+  }
+
+  const last = pick.trail[level];
+  if (last.record === null) {
+    return refused("The record is still being read.");
+  }
+
+  steps.push({ location, readIn: last.id, record: last.record });
+  const what = pick.action === "value" ? "the value of each key" : "the attribute";
+  const questions: AmbiguousPick[] = [];
+  steps.forEach((step, index) => {
+    const follows = index < steps.length - 1;
+    let segment = -1;
+    step.location.forEach((part, at) => {
+      if (typeof part === "string") {
+        segment++;
+        return;
+      }
+
+      const list = valueAt(step.record, step.location.slice(0, at));
+      if (!Array.isArray(list) || list.length < 2 || !list.every(isObject)) {
+        return;
+      }
+
+      const within = namesOf(step.location.slice(at + 1));
+      const values = valuesAcross(list, within);
+      if (differs(values, part, follows)) {
+        questions.push({
+          what: follows ? "the records named next" : what, list: namesOf(step.location.slice(0, at)).join("."), objects: list,
+          names: list.map(itemName), values, chosen: part, leaf: within[0] ?? null, follows, step: index, segment,
+        });
+      }
+    });
+  });
+
   return {
-    draft: draftFromParam(params.get("d"), params.get("kind")),
-    opened: openedFromParam(params.get("o")),
-    at: exampleAt(params.get("ex")),
+    action: pick.action, kind, key: keyPath, keyExample: firstValueAt(root.record, keyPath), path: plain,
+    steps: steps.map(({ location: at, readIn }) => ({ location: at, readIn })), questions,
   };
 }
 
-/** The address holding `build`: `params` with the build's parts written over, and the rest (the way back) kept as it is. */
-export function addressOf(params: URLSearchParams, build: BuilderBuild): URLSearchParams {
-  const next = new URLSearchParams(params);
-  const draft = draftParam(build.draft);
-  if (draft === "{}") {
-    next.delete("d");
-  } else {
-    next.set("d", draft);
+/**
+ * The draft once a plan is made, each of its questions answered by a filter or by none (`answers`, in the order of the
+ * questions): a key replaces the key, naming the dimension when it is unnamed (after the type its value names, or the
+ * template says it names: `names`); a collected path is added under a name no column has; a value replaces the value read;
+ * an attribute is added under a name no column has. `columns` are the names of the key's and the value's columns.
+ */
+export function applyPlan(
+  draft: DimensionDraft, plan: PickPlan, answers: readonly (SegmentFilter | null)[], columns: readonly string[], names: readonly string[] = [],
+): DimensionDraft {
+  const named = (path: string) => (draft.name.trim() === "" ? dimensionNameFor(path, plan.keyExample, names) : draft.name);
+  const base: DimensionDraft = { ...draft, kind: plan.kind };
+  switch (plan.action) {
+    case "key":
+      return { ...base, path: plan.path, name: named(plan.path) };
+
+    case "collect": {
+      // A dimension collects one attribute at most: a path collected replaces the one collected before.
+      const others = base.attributes.filter((a) => a.collect === null);
+      const name = attributeNameFor(plan.path, [...others.map((a) => a.name), ...columns]);
+      return { ...base, attributes: [...others, { name, steps: null, collect: plan.path }] };
+    }
+
+    case "value":
+    case "attribute": {
+      const keyed: DimensionDraft = base.path === plan.key ? base : { ...base, path: plan.key, name: named(plan.key) };
+      const filters = plan.steps.map(() => new Map<number, SegmentFilter>());
+      let lastFilter: SegmentFilter | null = null;
+      for (let index = 0; index < plan.questions.length; index++) {
+        const question = plan.questions[index];
+        const filter = answers[index] ?? null;
+        if (filter !== null) {
+          filters[question.step].set(question.segment, filter);
+          lastFilter = filter;
+        }
+      }
+
+      const steps = plan.steps.map((step, index) => pathOf(step.location, filters[index]));
+      if (plan.action === "value") {
+        return JSON.stringify(steps) === JSON.stringify(keyed.label) ? keyed : { ...keyed, label: steps };
+      }
+
+      if (keyed.attributes.some((a) => a.collect === null && JSON.stringify(a.steps) === JSON.stringify(steps))) {
+        return keyed;
+      }
+
+      const readIn = plan.steps[plan.steps.length - 1]?.readIn ?? null;
+      const name = attributeNameFor(chainNameBase(steps, lastFilter, readIn), [...keyed.attributes.map((a) => a.name), ...columns]);
+      return { ...keyed, attributes: [...keyed.attributes, { name, steps, collect: null }] };
+    }
+  }
+}
+
+/** A use the draft makes of a value: its key, its value, an attribute, a collected attribute, or a step a value or an attribute is read through. */
+export interface ValueMark {
+  role: "key" | "value" | "attribute" | "collect" | "step";
+  /** The attribute's name; for a step, the value's or the attribute's it leads to. */
+  name: string;
+}
+
+/**
+ * What the draft reads at a value of a record on the explorer's trail: in the trail's first record, its key and what it
+ * collects; in a record reached through the key, every value and attribute whose steps lead there, their filters checked
+ * against the records on the way, and the steps on the way to them.
+ */
+export function marksOf(draft: DimensionDraft, trail: readonly InspectorTrailRecord[], path: string): ValueMark[] {
+  const root = trail[0];
+  if (root === undefined || root.record === null || (draft.kind !== "" && !kindMatches(draft.kind, kindOf(root.record)))) {
+    return [];
   }
 
-  next.delete("kind");
-  if (build.opened.length === 0) {
-    next.delete("o");
-  } else {
-    next.set("o", JSON.stringify(build.opened));
+  const location = locationOf(path);
+  const level = trail.length - 1;
+  if (level === 0) {
+    const plain = namesOf(location).join(".");
+    return [
+      ...(draft.path === plain ? [{ role: "key" as const, name: "key" }] : []),
+      ...draft.attributes.filter((a) => a.collect === plain).map((a) => ({ role: "collect" as const, name: a.name })),
+    ];
   }
 
-  if (build.at === 0) {
-    next.delete("ex");
-  } else {
-    next.set("ex", String(build.at));
+  if (draft.path === null || trail[1].from === null || namesOf(locationOf(trail[1].from)).join(".") !== draft.path) {
+    return [];
   }
 
-  return next;
+  const marks: ValueMark[] = [];
+  for (const chain of chainsOf(draft)) {
+    if (chain.steps.length < level) {
+      continue;
+    }
+
+    let reaches = true;
+    for (let step = 0; step < level - 1 && reaches; step++) {
+      const opened = trail[step + 2];
+      reaches = opened.from !== null && stepReads(chain.steps[step], locationOf(opened.from), trail[step + 1].record);
+    }
+
+    if (!reaches || !stepReads(chain.steps[level - 1], location, trail[level].record)) {
+      continue;
+    }
+
+    const name = chain.role === "label" ? "value" : chain.name ?? "";
+    marks.push(chain.steps.length === level ? { role: chain.role === "label" ? "value" : "attribute", name } : { role: "step", name });
+  }
+
+  return marks;
+}
+
+/**
+ * The key a build starts from: the likeliest of the template's suggestions that the record in view holds a value at, or
+ * the likeliest of all where it holds none of them (or none is in view); null where the template suggests nothing.
+ */
+export function chooseKey(candidates: readonly DimensionKeyCandidate[], record: Record<string, unknown> | null): DimensionKeyCandidate | null {
+  return candidates.find((candidate) => firstValueAt(record, candidate.path) !== null) ?? candidates[0] ?? null;
 }

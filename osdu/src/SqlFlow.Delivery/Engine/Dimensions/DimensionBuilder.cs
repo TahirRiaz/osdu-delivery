@@ -218,7 +218,7 @@ public static partial class DimensionBuilder
         if (Trimmed(draft.Path) is null)
         {
             issues.Add(new DimensionDraftIssue(
-                DimensionDraftIssue.Error, "Pick the key: the property of each record whose distinct values the dimension holds, such as data.WellboreID.", "path"));
+                DimensionDraftIssue.Error, "Pick the key: the value of each record whose distinct values the dimension holds, such as data.WellboreID. The values marked with a key name other records, as a key most often does.", "path"));
         }
 
         return issues;

@@ -188,55 +188,49 @@ export interface DimensionFieldWire {
   nestedPath: string | null;
 }
 
-/** A part of a record left out of what is shown: an array or a text, how much it holds and how much is shown. */
-export interface DimensionSampleCut {
-  path: string;
-  held: number;
-  shown: number;
-}
-
-/** A record as the search holds it, which is what a build reads. */
-export interface DimensionSampleRecord {
-  id: string;
-  kind: string | null;
-  record: Record<string, unknown>;
-  cut: DimensionSampleCut[];
-}
-
-export interface DimensionSampleKey {
+/** A key of the dimension with how many of its records hold it, as the search counts them. */
+export interface DimensionKeyCount {
   key: string;
   count: number;
 }
 
-/** The records a trail reaches from the record the key names, and why it stopped short, when it did. */
-export interface DimensionSampleTrail {
-  steps: string[];
-  reached: string[];
-  records: DimensionSampleRecord[];
-  problem: string | null;
-}
-
-/** What the builder shows of the records a dimension reads. */
-export interface DimensionSample {
+/** The commonest keys a drafted dimension reads, which its example steps through. */
+export interface DimensionKeys {
+  /** The records the kind (and the query) holds. */
   total: number;
-  at: number;
-  record: DimensionSampleRecord | null;
-  keys: DimensionSampleKey[] | null;
+  keys: DimensionKeyCount[];
   moreKeys: boolean;
   keyField: DimensionFieldWire | null;
   keyFieldGuessed: boolean;
-  trails: DimensionSampleTrail[];
   notes: string[];
+  /** The search service's own words when it refused the query. */
   refusal: string | null;
 }
 
-export interface DimensionSampleRequest {
+export interface DimensionKeysRequest {
   kind: string;
   query?: string | null;
-  path?: string | null;
-  key?: string | null;
-  at?: number;
-  trails?: string[][];
+  path: string;
+}
+
+/** A property a kind's template suggests as a dimension's key: a value naming another record. */
+export interface DimensionKeyCandidate {
+  /** The path as a dimension writes it, a list stepped into by its name. */
+  path: string;
+  /** The entity types the value names (`master-data--Wellbore`), or a group alone. */
+  names: string[];
+  /** Whether a record holds several values there: a list of ids, or a property of the items of a list. */
+  repeated: boolean;
+  title: string | null;
+  description: string | null;
+}
+
+/** The keys a kind's saved template suggests, the likeliest first, or why there are none. */
+export interface DimensionKeySuggestions {
+  kind: string;
+  template: { kind: string; version: string } | null;
+  keys: DimensionKeyCandidate[];
+  missing: string | null;
 }
 
 /** One key of a draft made into its row as a build makes it. */
@@ -268,9 +262,14 @@ export interface DimensionCompose {
   exampleProblem: string | null;
 }
 
-/** The records a drafted dimension reads, its commonest keys, and the records its trails reach from the example key. */
-export function sampleDimension(partition: string | null, request: DimensionSampleRequest) {
-  return post<ExplorerAnswer<DimensionSample>>(`/api/v1/delivery/explorer/dimension/sample${partitionQuery(partition)}`, request);
+/** The keys the saved template of `kind` suggests for a dimension, the likeliest first; read from the templates alone. */
+export function dimensionKeyCandidates(kind: string) {
+  return get<DimensionKeySuggestions>(`/api/v1/delivery/explorer/dimension/candidates?kind=${encodeURIComponent(kind)}`);
+}
+
+/** The commonest keys of a drafted dimension's path, read through the partition's connection. */
+export function dimensionKeys(partition: string | null, request: DimensionKeysRequest) {
+  return post<ExplorerAnswer<DimensionKeys>>(`/api/v1/delivery/explorer/dimension/keys${partitionQuery(partition)}`, request);
 }
 
 /** A drafted dimension written as YAML and checked, with `example` made into its row. */

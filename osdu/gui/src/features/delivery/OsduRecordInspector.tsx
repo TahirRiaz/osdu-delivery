@@ -97,6 +97,25 @@ interface EarlierRecord {
  */
 type OpenLink = (id: string, from: string | null) => void;
 
+/** One record of the trail as a page acting on values is given it: its id, what it holds as shown, and the value that named it. */
+export interface InspectorTrailRecord {
+  id: string;
+  /** The record as the inspector shows it; null while its read has not answered. */
+  record: Record<string, unknown> | null;
+  /** The path, in the record before it on the trail, of the value that named it; null for the first, or one opened from its mentions. */
+  from: string | null;
+}
+
+/** A value of a record on the trail, as a page that acts on values is given it. */
+export interface InspectorField {
+  /** The record's place on the trail: 0 for the record the page opened. */
+  level: number;
+  /** The value: its path in the record (`data.GeoContexts[1].GeoPoliticalEntityID`) and what it holds. */
+  node: RecordNode;
+  /** Every record on the trail up to this one, this one last, each as shown. */
+  trail: InspectorTrailRecord[];
+}
+
 /** What a page adds to the inspector around the records it shows. */
 export interface InspectorExtras {
   /** Where the first record sits, as crumb steps in front of its name (the explorer's partition, group and type). */
@@ -108,6 +127,8 @@ export interface InspectorExtras {
   mentions?: (id: string, open: (id: string) => void) => ReactNode;
   /** What to offer where OSDU holds no record under an id: the records whose ids are near it. */
   notFound?: (id: string) => ReactNode;
+  /** What a page shows beside each value of a record on the trail, in the fields and the JSON views (the dimension builder's picks). */
+  fieldActions?: (field: InspectorField) => ReactNode;
 }
 
 function text(value: unknown): string | null {
@@ -504,9 +525,11 @@ function LinksView({ model, ownId, onOpenLink, opening, onSelect }: { model: Rec
 }
 
 /** A branch as rows: each field or item with its value, a nested branch as a step into it. */
-function FieldRows({ node, term, hits, ownId, onOpenLink, opening, onSelect, shown, onShowMore }: {
+function FieldRows({ node, term, hits, ownId, onOpenLink, opening, onSelect, shown, onShowMore, actions }: {
   node: RecordNode; term: string; hits: Set<string>; ownId: string | null; onOpenLink?: OpenLink; opening?: string | null;
   onSelect: (path: string) => void; shown: number; onShowMore: () => void;
+  /** What a page shows beside a value, at the end of its row. */
+  actions?: (leaf: RecordNode) => ReactNode;
 }) {
   return (
     <div className="flex flex-col">
@@ -525,6 +548,7 @@ function FieldRows({ node, term, hits, ownId, onOpenLink, opening, onSelect, sho
                 </button>
               )}
           </span>
+          {actions !== undefined && child.kind === "leaf" && <span className="shrink-0 self-center">{actions(child)}</span>}
         </div>
       ))}
       {shown < node.children.length && (
@@ -669,8 +693,10 @@ const PUNCTUATION = "text-muted-foreground";
  * key that holds a branch steps into it (and the brace of a list's item into that item), and a value that names another
  * OSDU record opens it. Lists show their first hundred items and the rest on a click; the search term is marked.
  */
-function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect }: {
+function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect, actions }: {
   node: RecordNode; term: string; hits: Set<string>; ownId: string | null; onOpenLink?: OpenLink; opening?: string | null; onSelect: (path: string) => void;
+  /** What a page shows beside a value, after its line. */
+  actions?: (leaf: RecordNode) => ReactNode;
 }) {
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const [shownItems, setShownItems] = useState<ReadonlyMap<string, number>>(() => new Map());
@@ -752,7 +778,7 @@ function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect }: {
         );
     const hit = hits.has(current.path);
     if (current.kind === "leaf") {
-      line(current.path, depth, <>{label}{leafValue(current)}{comma}</>, undefined, hit);
+      line(current.path, depth, <>{label}{leafValue(current)}{comma}{actions !== undefined && <span className="ml-1.5 inline-flex align-middle">{actions(current)}</span>}</>, undefined, hit);
       return;
     }
 
@@ -834,7 +860,7 @@ function outlineRowFor(model: RecordModel, path: string): string {
  * back to the record it was opened from. A picked version replaces the record in place, with the outline and the place
  * in it kept.
  */
-function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack, readVersion, opening, actions, place, mentions }: {
+function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack, readVersion, opening, actions, place, mentions, fieldActions }: {
   /** The read of the record at its latest. */
   read: DeliveryOsduRead & { record: Record<string, unknown> };
   level: number;
@@ -852,6 +878,8 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
   place?: ReactNode;
   /** The records that mention this one, given a way to open one of them on the trail; absent where a page cannot list them. */
   mentions?: (open: (id: string) => void) => ReactNode;
+  /** What a page shows beside each value of the record as shown (the version picked, or its latest). */
+  fieldActions?: (leaf: RecordNode, record: Record<string, unknown>) => ReactNode;
 }) {
   const [picked, setPicked] = useState<{ version: number; read: DeliveryOsduRead } | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -873,6 +901,7 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
 
   const kind = text(record.kind);
   const model = useMemo(() => buildModel(record, read.targetId), [record, read.targetId]);
+  const leafActions = fieldActions === undefined ? undefined : (leaf: RecordNode) => fieldActions(leaf, record);
   const whole = useMemo(() => documentNode(record), [record]);
   const [chosen, setChosen] = useState<string>(() => (model.sections.length > 0 ? model.sections[0].path : RECORD));
   const [mode, setMode] = useState<ViewMode>("fields");
@@ -1089,7 +1118,7 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
           {/* Keyed by what is shown, so every step opens at the top of what it shows rather than where the last view was scrolled. */}
           <div key={`${selected}:${mode}:${shownVersion ?? ""}`} className="min-h-0 flex-1 overflow-y-auto" data-testid="osdu-record-json">
             {selected === DOCUMENT
-              ? <JsonView key={`document:${shownVersion ?? ""}`} node={whole} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={goFromDocument} />
+              ? <JsonView key={`document:${shownVersion ?? ""}`} node={whole} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={goFromDocument} actions={leafActions} />
               : selected === RECORD
               ? <RecordView read={shownRead} record={record} />
               : selected === ACCESS
@@ -1101,12 +1130,12 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
                   : node === undefined
                     ? <EmptyState title="Nothing selected" description="Pick a branch of the record on the left." />
                     : mode === "json"
-                      ? <JsonView key={node.path} node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} />
+                      ? <JsonView key={node.path} node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} actions={leafActions} />
                       : node.children.length === 0
                         ? <EmptyState title={node.kind === "array" ? "An empty list" : "An empty object"} />
                         : isTable
                           ? <ItemTable node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} />
-                          : <FieldRows node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} />}
+                          : <FieldRows node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} actions={leafActions} />}
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
@@ -1177,6 +1206,14 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
             actions={actions}
             place={level === 0 ? extras?.place : undefined}
             mentions={extras?.mentions === undefined || onOpenLink === undefined ? undefined : (open) => extras.mentions!(read.targetId, open)}
+            fieldActions={extras?.fieldActions === undefined ? undefined : (leaf, shown) => extras.fieldActions!({
+              level,
+              node: leaf,
+              trail: [
+                ...entries.slice(0, level).map((earlier) => ({ id: earlier.id, record: earlier.read?.record ?? null, from: earlier.from ?? null })),
+                { id: entry.id, record: shown, from: entry.from ?? null },
+              ],
+            })}
           />
         ),
       };

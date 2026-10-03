@@ -116,68 +116,81 @@ and so is every type browsed (the last twelve).
 
 ## Building a dimension
 
-**Build a dimension**, in the explorer's header while the partition is reachable, opens a workspace of its own
-(`/delivery/explorer/dimension`) that writes a dimension's YAML from what a person picks in the records OSDU holds: the
-item a dimension flow lists under `dimensions:` ([dimension-plan.md](dimension-plan.md), The document). It starts from
-the kind or the type the explorer was showing (a type reads every version of its kind, `*:*:<type>:*`), or asks for one
-from the kinds of the partition with their counts. Browsing is left as it was: the builder is a page of its own, and
-**Explorer** goes back to the explorer as it was left.
+**Build a dimension**, in the explorer's header, turns the explorer into a dimension's workbench: the builder docks beside
+the records, and everything else stays as it is. The records are browsed, searched and drilled into as ever, and each
+part of the dimension is picked on the value it is read from, in the record where it is. The output is the item a
+dimension flow lists under `dimensions:` ([dimension-plan.md](dimension-plan.md), The document).
 
-The workspace is read left to right, as a build reads:
+**The kind and the key.** The build reads the kind or the type the explorer shows (a type reads every version of its
+kind, `*:*:<type>:*`), or, started where none is picked, the first one picked after. As it starts, it reads the kind's
+saved template for the values that name other records (`x-osdu-relationship`): those are the keys a dimension most often
+has, the record a record belongs to, whose name is the value. They are listed under **Keys** in the builder, the
+likeliest first (a single value before a list of them, a property of `data` itself before a nested one, master data
+before work products and reference data, and a property named after the type it names, such as `WellboreID`, before
+another), and in every record of the kind each of them is marked with a key. The likeliest one the record in view holds
+is made the key at once, and the dimension named after the type it names; any other is one click away, in the list or on
+the value itself. A kind with no saved template suggests nothing, and says so.
 
-- **Searched**: one record of the kind. A property's menu makes it the **key** (its distinct values are the dimension's
-  keys), or **collects** it (an attribute holding every value the key's records hold there, each with its count).
-- **Found by id**: once a key is picked, the record the example key names, and the records those name in turn. A
-  property there is read as the **value** or as an **attribute**, or **followed** to the records it names, opening them
-  in a further card; a value or an attribute reads through at most three records, as the document allows. A card with
-  several records switches between them.
-- **The table**: a column for the key, the value and each attribute, each renamed in place and filled with the example
-  row; how each value is cleaned (`trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`, `foldSeparators`, and any
-  number of `replace` steps, applied in the order picked) and what a key holds where nothing is read (`unlabelled`); and
-  under **More settings** the description, every version of the kind, the query, exact counting and the most values. A
-  `map` step, which reads a table of the database, is written in the flow file itself.
-- **The YAML**: written again as each pick is made. Each problem is listed with the part it is about, and pointing at it
-  lights the line and the column; **Copy** takes the YAML, and **How a row is built** draws it as a flow's Definition tab
-  draws a dimension, filled with the example key's row.
+**Picks where the value is.** Beside every value of a record, in the fields and the JSON views, a small menu offers what
+the value can be made, by where the record is on the explorer's trail:
 
-A pick that reaches several values asks which is meant. A list of objects (the `GeoContexts` of a wellbore) or several
-records (the political entities a wellbore names) give several values where a build keeps the first it finds, and
-following them follows them all. The dialog lists them, suggests the filter that keeps the one picked, preferring a
-property that names a type (`data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName`),
-marks what it keeps as it is changed and says what a build would then read; or the first is kept, or all followed. A
-filter's text holds no `]`, and one that keeps nothing is refused.
+- In a record of the dimension's kind (the first on the trail): **Make it the key**, or **Collect it** (an attribute
+  holding every value the key's records hold there, each with how many hold it; a dimension collects one).
+- In a record opened from one of its links: **Read it as the value**, or **Read it as an attribute**. The link the first
+  record was left by is the key (it is made the key where none is yet), and every link followed after it is a step of
+  the path, so a value read two links on (a wellbore's country, reached through its GeoContexts) is written as the
+  steps a build follows: `data.GeoContexts.GeoPoliticalEntityID`, then `data.GeoPoliticalEntityName`. A value or an
+  attribute reads through at most three records, as the document allows.
 
-**The example.** Before a key is picked, the arrows step through the kind's first 25 records. After, they step through
-the keys held by the most records (up to 25, as the search service groups them), and each fills every part: the record
-shown is one holding the key, the cards hold the records it names, and the table its row. The row is made by the build's
-own code (the labeller following at most 20 references a step, the cleaning, the attributes, the count of the records
-holding the key, and the collected values with theirs), so it reads what a build of the draft would read. Where the
-value is read from a record, a key naming no record, or whose record holds nothing at the value's path, takes the
+A pick that cannot be made says why on the menu: a record of another kind, a record reached through another link than the
+key's (where making that link the key is offered instead), one opened from the records that mention the one before it
+(which no path reaches), or one too many links away. What the draft reads is marked on the values themselves: the key,
+the value, each attribute, and the links a value or an attribute is read through.
+
+**A step through one item of a list.** Following a link inside a list (the fourth of a wellbore's GeoContexts) passes
+through one item of it, where a build follows every item, and reading a value inside one keeps the first it finds. Where
+the items answer differently, the builder asks which are meant: it lists them, suggests the filter keeping the one
+followed, preferring a property that names a type (`data.GeoContexts[GeoTypeID*=GeoPoliticalEntityType:Country:]`),
+marks what the filter keeps as it is changed, and says what a build would then read; or every item is followed, or the
+first value kept. A filter's text holds no `]`, and one that keeps nothing is refused.
+
+**The table, the example and the YAML.** The builder holds the table (a column for the key, the value and each
+attribute, each renamed in place and filled with the example row), how each value is cleaned (`trim`, `collapseSpaces`,
+`upper`, `lower`, `nfc`, `nfkc`, `foldSeparators`, and any number of `replace` steps, applied in the order picked; a
+`map` step, which reads a table of the database, is written in the flow file itself), what a key holds where nothing is
+read (`unlabelled`), and under **More settings** the description, every version of the kind, the query, exact counting
+and the most values. The example key is the record in view's own, then the keys held by the most records (up to 25), and
+every part is filled with what it reads, made by the build's own code: the labeller following at most 20 references a
+step, the cleaning, the attributes, the count of the records holding the key, and the collected values with theirs.
+Where the value is read from a record, a key naming no record, or whose record holds nothing there, takes the
 `unlabelled` text; without one, and where the key is its own value, it is the key as a value shows it (the code a record
-id ends with).
+id ends with). The YAML is written again as each pick is made, each problem listed with the part it is about (pointing
+at it lights the line and the column), **Copy the YAML** takes it, and **How a row is built** draws it as a flow's
+Definition tab draws a dimension, filled with the example key's row.
 
 **Checked as a flow's own dimension.** The YAML is written by the control plane's writer, which quotes whatever YAML
-would read otherwise (`yes`, `1.0`, `#`, a leading `-`, a colon and a space, a control character), and read back by the loader a flow
-is read by, so what the builder shows is what a flow loads. It is then described by the dimension's blueprint against
-the saved templates, and compared with the dimensions the database and the synced flows hold. An error is what the
-loader refuses (pointed at its part), or a key or a collected path of `data` with no saved template of the kind, which a
-build refuses too (with a link to the Templates page). A warning is a path a template does not declare, records reached
-by id that no saved template describes (read as written), or a name whose table another dimension writes.
+would read otherwise (`yes`, `1.0`, `#`, a leading `-`, a colon and a space, a control character), and read back by the
+loader a flow is read by, so what the builder shows is what a flow loads. It is then described by the dimension's
+blueprint against the saved templates, and compared with the dimensions the database and the synced flows hold. An
+error is what the loader refuses (pointed at its part), or a key or a collected path of `data` with no saved template of
+the kind, which a build refuses too (with a link to the Templates page). A warning is a path a template does not
+declare, records reached by id that no saved template describes (read as written), or a name whose table another
+dimension writes.
 
 **Nothing is saved.** The builder makes no flow and no dimension, writes nothing to OSDU or the database, and keeps
-nothing of its own: the YAML is pasted into a dimension flow, which a repository sync brings in. Its reads are the
-explorer's (`delivery-explore`, through the same connection, as the actions `dimension-sample` and
-`dimension-example`), each a search: a page of the kind's records, the keys grouped by one aggregation, the records a
-trail reaches read once per id and type, and for the example the counts and groups of the records holding the key. A
-record is shown with every list cut at 50 items and every text at 2,000 characters, saying where. The draft (`d`), the
-cards opened (`o`), the example (`ex`) and the way back (`back`) are the page's address, so a link or a refresh lands on
-the same build. Reading OSDU with a flow's credentials takes the operate scope.
+nothing of its own: the YAML is pasted into a dimension flow, which a repository sync brings in. The draft is part of the
+explorer's address (`dim`), so a link or a refresh brings the same build back beside the same records; closing the
+builder drops it, and asks first once it has a key. Its reads of OSDU are the explorer's own (the records browsed and
+followed) and two through the same connection (`delivery-explore`, as the actions `dimension-keys` and
+`dimension-example`): the commonest keys of the key's path, grouped by one search, and for the example the counts and
+groups of the records holding the key. The suggested keys are read from the saved templates alone. Reading OSDU with a
+flow's credentials takes the operate scope.
 
 ## Kept in the address
 
 The text and whether it is Lucene (`q`, `lq`), the place (`kind`, `*:*:*:*` for every type), the values narrowed to
-(`f`), the order (`sort`), the types alone (`view=types`) and the record open (`id`, and `v` for a version) are the
-page's address, so a link, Back and a refresh land on the same view; a link naming
+(`f`), the order (`sort`), the types alone (`view=types`), the record open (`id`, and `v` for a version) and a dimension
+being built (`dim`) are the page's address, so a link, Back and a refresh land on the same view; a link naming
 a partition (`partition`) makes it the title bar's. What was read is kept for a minute and reused (the kinds of a whole
 partition for ten), so going back to a type or a page already read shows it at once; the refresh button reads again.
 
@@ -190,7 +203,8 @@ partition for ten), so going back to a type or a page already read shows it at o
 | `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters` (`path`, `index` text, keyword, number, boolean or date, `value`; at most 12); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`) to group by. |
 | `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold, read from one of them. |
 | `POST /api/v1/delivery/explorer/read?partition=` | operate | One record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
-| `POST /api/v1/delivery/explorer/dimension/sample?partition=` | operate | What a drafted dimension reads ([Building a dimension](#building-a-dimension)). Body: `kind` (wildcards per segment), `query` (as long as a search's text), `path` (the key's), `key` (the example key), `at` (which of the first 25 records, from 0), `trails` (at most 16, each the one or two paths naming the records read next). Answers the record shown (cut, saying where), the count, the commonest keys with their counts (up to 25, `moreKeys` when there are more), how the key's path is indexed (`keyFieldGuessed` when no saved template says, read as text), the records each trail reaches with why one stops, and notes. |
+| `GET /api/v1/delivery/explorer/dimension/candidates?kind=` | operate | The keys the saved template of a `kind` (wildcards per segment) suggests for a dimension ([Building a dimension](#building-a-dimension)), the likeliest first: `path`, the entity types it `names`, whether it is `repeated` in a record, and the template's `title` and `description`; with the `template` read, or why nothing is suggested (`missing`). Read from the saved templates alone. |
+| `POST /api/v1/delivery/explorer/dimension/keys?partition=` | operate | The commonest keys of a drafted dimension's path, which its example steps through. Body: `kind` (wildcards per segment), `query` (as long as a search's text), `path` (a property path, no filter). Answers the records the kind (and the query) holds, the keys with their records (up to 25, `moreKeys` when there are more), how the path is indexed (`keyFieldGuessed` when no saved template says, read as text), notes, and the service's words when it refused the query. |
 | `POST /api/v1/delivery/explorer/dimension/compose?partition=` | operate | A draft written as the item a dimension flow lists, and checked. Body: `draft` (`name`, `description`, `kind`, `query`, `path`, `label` (paths), `unlabelled`, `attributes` (`name`, `steps` or `collect`), `clean` (`step`, and a replace's `pattern` and `with`), `keyColumn`, `valueColumn`, `countRecords`, `maxValues`), and `example`, a key to make into its row. Answers `yaml`, `item` (its lines and the line each part is on), `dimension` and `blueprint` once it loads, `table`, `issues` (`severity`, `message`, `target`, `code`), `valid` (it loads, with no error), and the `example` row or `exampleProblem`. |
 
 Every read answers `200` with what it found; there is nothing to poll. A request the read would refuse (a kind that is

@@ -25,15 +25,11 @@ using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
-/// <summary>What the dimension builder asks to be shown of the records a dimension reads.</summary>
+/// <summary>What the dimension builder asks of the keys a drafted dimension reads.</summary>
 /// <param name="Kind">The kind whose records are read, wildcards allowed per segment.</param>
 /// <param name="Query">The query narrowing them, as the dimension would write it; null for every record of the kind.</param>
-/// <param name="Path">The key's path, once one is picked: the commonest keys are read, and the record shown is one holding <paramref name="Key"/>.</param>
-/// <param name="Key">The example key, once one is picked: the records it names are read along each trail.</param>
-/// <param name="At">Which record to show, from 0: of the kind's records, or of those holding the key.</param>
-/// <param name="Trails">The trails to follow from the record the key names, each the paths naming the records read next.</param>
-public sealed record DeliveryDimensionSampleRequest(
-    string? Kind, string? Query = null, string? Path = null, string? Key = null, int? At = null, IReadOnlyList<IReadOnlyList<string>>? Trails = null);
+/// <param name="Path">The key's path: its commonest values are read, each with the records holding it.</param>
+public sealed record DeliveryDimensionKeysRequest(string? Kind, string? Query = null, string? Path = null);
 
 /// <summary>A drafted dimension to write as YAML and check, and the key to make an example row of.</summary>
 public sealed record DeliveryDimensionComposeRequest(DimensionDraft? Draft, string? Example = null);
@@ -60,8 +56,9 @@ public sealed record DeliveryDimensionComposeDto(
 /// <summary>
 /// The explorer's dimension builder (osdu/docs/explorer.md, Building a dimension): what a person picks from the records OSDU
 /// holds, written as the item a dimension flow lists and checked by the same loader and blueprint a flow's own dimension is.
-/// A sample shows the records a dimension reads, through the connection the explorer reads the partition by; a compose writes
-/// the draft, checks it, and makes one key into its row as a build would. Nothing is saved: the YAML is the builder's output.
+/// The explorer's own reads show the records a person picks from; here, the keys a kind's template suggests, the commonest
+/// keys of a path (through the connection the explorer reads the partition by), and a compose that writes the draft, checks
+/// it, and makes one key into its row as a build would. Nothing is saved: the YAML is the builder's output.
 /// </summary>
 public static partial class DeliveryExplorerEndpoints
 {
@@ -70,39 +67,58 @@ public static partial class DeliveryExplorerEndpoints
 
     private static void MapDimensionBuilderEndpoints(RouteGroupBuilder delivery)
     {
-        delivery.MapPost("/explorer/dimension/sample", SampleDimensionAsync).WithName("SampleDeliveryDimensionDraft");
+        delivery.MapGet("/explorer/dimension/candidates", DimensionCandidatesAsync).WithName("SuggestDeliveryDimensionKeys");
+        delivery.MapPost("/explorer/dimension/keys", DimensionKeysAsync).WithName("ReadDeliveryDimensionKeys");
         delivery.MapPost("/explorer/dimension/compose", ComposeDimensionAsync).WithName("ComposeDeliveryDimensionDraft");
     }
 
-    /// <summary>The records a drafted dimension reads, its commonest keys, and the records its trails reach from the example key.</summary>
-    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> SampleDimensionAsync(
-        DeliveryDimensionSampleRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
+    /// <summary>
+    /// The keys the saved template of a kind suggests for a dimension, the likeliest first: the properties whose values name
+    /// other records. Read from the templates alone; nothing is asked of OSDU.
+    /// </summary>
+    private static async Task<Results<Ok<DimensionKeySuggestions>, ProblemHttpResult>> DimensionCandidatesAsync(
+        [FromQuery] string? kind, ITemplateStore templates, CancellationToken ct)
+    {
+        var trimmed = kind?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return DeliveryEndpoints.Invalid("Name the kind whose records the dimension reads.");
+        }
+
+        if (ExplorerKinds.Problem(trimmed) is { } wrong)
+        {
+            return DeliveryEndpoints.Invalid(wrong);
+        }
+
+        return TypedResults.Ok(await DimensionKeyCandidates.SuggestAsync(trimmed, templates, ct).ConfigureAwait(false));
+    }
+
+    /// <summary>The commonest keys of a drafted dimension's path, with the records holding each, which the builder's example steps through.</summary>
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> DimensionKeysAsync(
+        DeliveryDimensionKeysRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
         ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ITemplateStore templates, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user,
         CancellationToken ct)
     {
-        if (SampleProblem(body) is { } invalid)
+        if (KeysProblem(body) is { } invalid)
         {
             return DeliveryEndpoints.Invalid(invalid);
         }
 
         var kind = body!.Kind!.Trim();
-        var path = string.IsNullOrWhiteSpace(body.Path) ? null : body.Path.Trim();
-        var (field, guessed) = path is null ? (null, false) : await KeyFieldAsync(templates, kind, path, ct).ConfigureAwait(false);
-        var sample = new DimensionSampleRequest
+        var path = body.Path!.Trim();
+        var (field, guessed) = await KeyFieldAsync(templates, kind, path, ct).ConfigureAwait(false);
+        var keys = new DimensionKeysRequest
         {
             Kind = kind,
             Query = string.IsNullOrWhiteSpace(body.Query) ? null : body.Query.Trim(),
             Path = path,
             KeyField = field is null ? null : DimensionFieldWire.Of(field),
             KeyFieldGuessed = guessed,
-            Key = string.IsNullOrEmpty(body.Key) ? null : body.Key,
-            At = body.At ?? 0,
-            Trails = (body.Trails ?? []).Select(t => (IReadOnlyList<string>)t.Select(s => s.Trim()).ToList()).ToList(),
         };
 
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal);
-        LongArgument.Put(arguments, ExploreOperation.SampleArgument, JsonSerializer.Serialize(sample, ExploreOperation.BuilderJson));
-        return await QueueAsync(ExploreOperation.DimensionSampleAction, arguments, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct)
+        LongArgument.Put(arguments, ExploreOperation.KeysArgument, JsonSerializer.Serialize(keys, ExploreOperation.BuilderJson));
+        return await QueueAsync(ExploreOperation.DimensionKeysAction, arguments, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct)
             .ConfigureAwait(false);
     }
 
@@ -174,8 +190,8 @@ public static partial class DeliveryExplorerEndpoints
             exampleProblem));
     }
 
-    /// <summary>Why a sample cannot be asked, as the operation would refuse it; null when it can.</summary>
-    internal static string? SampleProblem(DeliveryDimensionSampleRequest? body)
+    /// <summary>Why the keys cannot be asked for, as the operation would refuse them; null when they can.</summary>
+    internal static string? KeysProblem(DeliveryDimensionKeysRequest? body)
     {
         var kind = body?.Kind?.Trim();
         if (string.IsNullOrEmpty(kind))
@@ -193,44 +209,13 @@ public static partial class DeliveryExplorerEndpoints
             return string.Create(CultureInfo.InvariantCulture, $"The query is longer than the {MaxQueryLength:N0} characters a search takes.");
         }
 
-        if (body.Path is { } path && !string.IsNullOrWhiteSpace(path) && PathProblem(path.Trim()) is { } badPath)
+        var path = body.Path?.Trim();
+        if (string.IsNullOrEmpty(path))
         {
-            return badPath;
+            return "Name the key's path, such as data.WellboreID.";
         }
 
-        if (body.Key is { Length: > DimensionSpec.MaxOriginalLength })
-        {
-            return string.Create(CultureInfo.InvariantCulture, $"The key is longer than the {DimensionSpec.MaxOriginalLength:N0} characters a dimension keeps.");
-        }
-
-        if (body.At is < 0 or >= DimensionSampler.ExampleRecords)
-        {
-            return $"A sample shows one of the first {DimensionSampler.ExampleRecords} records, from 0.";
-        }
-
-        var trails = body.Trails ?? [];
-        if (trails.Count > DimensionSampler.MaxTrails)
-        {
-            return $"A sample follows at most {DimensionSampler.MaxTrails} trails.";
-        }
-
-        foreach (var trail in trails)
-        {
-            if (trail is null || trail.Count > DimensionSampler.MaxTrailSteps)
-            {
-                return $"A trail follows at most {DimensionSampler.MaxTrailSteps} paths: a label or an attribute reads through at most {DimensionSpec.MaxLabelSteps} records.";
-            }
-
-            foreach (var step in trail)
-            {
-                if (StepProblem(step) is { } badStep)
-                {
-                    return badStep;
-                }
-            }
-        }
-
-        return null;
+        return PathProblem(path);
     }
 
     /// <summary>Why a draft is too large to be read, part by part; null when it is not. What each part may hold is the loader's to say.</summary>
@@ -280,20 +265,6 @@ public static partial class DeliveryExplorerEndpoints
         return SearchFields.IsDataPath(path) || SearchFields.RecordProperty(path).Problem is not { } problem ? null : $"The key {problem}";
     }
 
-    /// <summary>Why a trail's step cannot be followed, as the loader says it of a label's step; null when it can.</summary>
-    private static string? StepProblem(string? step)
-    {
-        if (string.IsNullOrWhiteSpace(step) || step.Length > DimensionBuilder.MaxTextLength)
-        {
-            return "Every step of a trail is a path.";
-        }
-
-        var (path, problem) = DimensionPath.Parse(step);
-        return path is not null && OsduPath.IsPath(string.Join('.', path.Segments.Select(s => s.Name)))
-            ? null
-            : $"'{step.Trim()}' is not a path a label or an attribute is read through{(problem is null ? string.Empty : $" ({problem})")}.";
-    }
-
     /// <summary>
     /// How the platform indexes the key's path, as a build settles it: by the saved template of the kind (a dimension's
     /// blueprint picks it the same way), or by the indexer's own mapping for a property of the record itself. A path of data
@@ -301,7 +272,7 @@ public static partial class DeliveryExplorerEndpoints
     /// </summary>
     private static async Task<(OsduField? Field, bool Guessed)> KeyFieldAsync(ITemplateStore templates, string kind, string path, CancellationToken ct)
     {
-        var described = await DimensionBlueprints.DescribeAsync(new DimensionSpec { Name = "sample", Kind = kind, Path = path }, templates, [], ct).ConfigureAwait(false);
+        var described = await DimensionBlueprints.DescribeAsync(new DimensionSpec { Name = "key", Kind = kind, Path = path }, templates, [], ct).ConfigureAwait(false);
         var key = described.Source.Reads.First(r => r.Id == BlueprintRoles.KeyRead);
         if (key.Index is { } index && new DimensionFieldWire(path, index.Index, index.NestedPath).Field() is { } field)
         {

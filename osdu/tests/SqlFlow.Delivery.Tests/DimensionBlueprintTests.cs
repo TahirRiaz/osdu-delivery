@@ -282,6 +282,107 @@ public class DimensionBlueprintTests
     public void A_kind_pattern_matches_segment_by_segment(string pattern, string kind, bool matches)
         => Assert.Equal(matches, KindPatterns.Matches(pattern, kind));
 
+    // ---- The keys a kind's template suggests (osdu/docs/explorer.md, Building a dimension) ----
+
+    [Fact]
+    public async Task A_logs_template_suggests_the_wellbore_it_belongs_to_first()
+    {
+        var logs = Schema(WellLogKind);
+        var suggested = await DimensionKeyCandidates.SuggestAsync(WellLogKind, new MemoryTemplates(logs, Schema(WellboreKind)), CancellationToken.None);
+
+        Assert.Null(suggested.Missing);
+        Assert.Equal(new BlueprintTemplate(WellLogKind, logs.Version), suggested.Template);
+        var first = suggested.Keys[0];
+        Assert.Equal(("data.WellboreID", false), (first.Path, first.Repeated));
+        Assert.Contains("master-data--Wellbore", first.Names);
+
+        // Every suggestion names records and is a path of data, once; a single value comes before every list.
+        Assert.All(suggested.Keys, k => Assert.StartsWith("data.", k.Path, StringComparison.Ordinal));
+        Assert.All(suggested.Keys, k => Assert.NotEmpty(k.Names));
+        Assert.Equal(suggested.Keys.Count, suggested.Keys.Select(k => k.Path).Distinct(StringComparer.Ordinal).Count());
+        var firstRepeated = suggested.Keys.ToList().FindIndex(k => k.Repeated);
+        Assert.True(firstRepeated > 0);
+        Assert.All(suggested.Keys.Skip(firstRepeated), k => Assert.True(k.Repeated));
+        Assert.Contains(suggested.Keys, k => k.Path == "data.ResourceHostRegionIDs" && k.Repeated);
+
+        // A property of data itself before one nested in an object of it, among the single values.
+        var singles = suggested.Keys.Take(firstRepeated).Select(k => k.Path.Split('.').Length).ToList();
+        Assert.Equal(singles.Order(), singles);
+    }
+
+    [Fact]
+    public async Task A_wellbores_template_suggests_its_well_before_its_operators()
+    {
+        var suggested = await DimensionKeyCandidates.SuggestAsync(WellboreKind, new MemoryTemplates(Schema(WellboreKind)), CancellationToken.None);
+
+        Assert.Equal("data.WellID", suggested.Keys[0].Path);
+        Assert.Contains("master-data--Well", suggested.Keys[0].Names);
+        var operators = suggested.Keys.ToList().FindIndex(k => k.Names.Contains("master-data--Organisation"));
+        Assert.True(operators > 0);
+    }
+
+    [Fact]
+    public async Task A_type_is_suggested_for_by_its_newest_saved_template_as_a_blueprint_describes_it()
+    {
+        var logs = Schema(WellLogKind);
+        var suggested = await DimensionKeyCandidates.SuggestAsync("*:*:work-product-component--WellLog:*", new MemoryTemplates(Schema(WellboreKind), logs), CancellationToken.None);
+
+        Assert.Equal(new BlueprintTemplate(WellLogKind, logs.Version), suggested.Template);
+        Assert.Equal("data.WellboreID", suggested.Keys[0].Path);
+    }
+
+    [Fact]
+    public async Task A_kind_no_saved_template_matches_suggests_nothing_and_says_what_to_save()
+    {
+        var suggested = await DimensionKeyCandidates.SuggestAsync("osdu:wks:master-data--Field:1.0.0", new MemoryTemplates(Schema(WellLogKind)), CancellationToken.None);
+
+        Assert.Empty(suggested.Keys);
+        Assert.Null(suggested.Template);
+        Assert.Contains("No saved template matches osdu:wks:master-data--Field:1.0.0", suggested.Missing, StringComparison.Ordinal);
+        Assert.Contains("Templates page", suggested.Missing, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Suggestions_put_a_single_value_first_then_a_property_of_data_then_master_data_then_one_named_after_its_type()
+    {
+        static string Names(string group, string entity) => $$"""[{ "GroupType": "{{group}}", "EntityType": "{{entity}}" }]""";
+        var schema = new SchemaSnapshot("osdu:wks:work-product-component--Thing:1.0.0", JsonNode.Parse($$"""
+            {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string" },
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "ColourID": { "type": "string", "x-osdu-relationship": {{Names("reference-data", "Colour")}} },
+                    "OwnerID": { "type": "string", "x-osdu-relationship": {{Names("master-data", "Organisation")}} },
+                    "ReportID": { "type": "string", "x-osdu-relationship": {{Names("work-product-component", "Report")}} },
+                    "WellboreID": { "type": "string", "x-osdu-relationship": {{Names("master-data", "Wellbore")}} },
+                    "Plain": { "type": "string" },
+                    "Place": { "type": "object", "properties": { "CountryID": { "type": "string", "x-osdu-relationship": {{Names("master-data", "Country")}} } } },
+                    "WellboreIDs": { "type": "array", "items": { "type": "string", "x-osdu-relationship": {{Names("master-data", "Wellbore")}} } },
+                    "Items": {
+                      "type": "array",
+                      "items": { "type": "object", "properties": { "ColourID": { "type": "string", "x-osdu-relationship": {{Names("reference-data", "Colour")}} } } }
+                    },
+                    "Datasets": { "type": "array", "items": { "type": "string", "x-osdu-relationship": [{ "GroupType": "dataset" }] } }
+                  }
+                }
+              }
+            }
+            """)!.AsObject(), DateTimeOffset.UnixEpoch);
+
+        var suggested = DimensionKeyCandidates.Of(OsduTemplate.From(schema));
+
+        Assert.Equal(
+            [
+                ("data.WellboreID", false), ("data.OwnerID", false), ("data.ReportID", false), ("data.ColourID", false), ("data.Place.CountryID", false),
+                ("data.WellboreIDs", true), ("data.Datasets", true), ("data.Items.ColourID", true),
+            ],
+            suggested.Select(k => (k.Path, k.Repeated)));
+        Assert.Equal(["dataset"], suggested.Single(k => k.Path == "data.Datasets").Names);
+    }
+
     private static (int, int, int, int) At(DimensionYamlSpan span) => (span.Line, span.Column, span.EndLine, span.EndColumn);
 
     private static DimensionPath Path(string text) => DimensionPath.Parse(text).Path!;

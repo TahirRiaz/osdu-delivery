@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { Link, useLocation, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers, TableProperties, Telescope, Unplug } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,6 +9,7 @@ import { useAuth } from "@/auth/AuthContext";
 import { EmptyState } from "@/components/EmptyState";
 import { Page } from "@/components/Page";
 import { RichTooltip } from "@/components/RichTooltip";
+import type { DeliveryOsduRead } from "../../../api/delivery";
 import { explorerApi, type ExplorerFilter, type ExplorerSearchRequest, type ExplorerSort, type ExplorerTypes } from "../../../api/explorer";
 import { isPartitionId, useActivePartition } from "../activePartition";
 import { useWindowFit } from "../useWindowFit";
@@ -19,23 +20,16 @@ import { ExplorerResults } from "./ExplorerResults";
 import { ExplorerRecent, ExplorerSearchBar } from "./ExplorerSearchBar";
 import { ExplorerTypeRail } from "./ExplorerTypeRail";
 import { ExplorerWelcome } from "./ExplorerWelcome";
+import { BuildFieldActions } from "./dimension/BuildFieldActions";
+import { DimensionBuildPanel } from "./dimension/DimensionBuildPanel";
+import { useDimensionBuild } from "./dimension/useDimensionBuild";
 import {
   ALL_KINDS, filtersOf, filtersText, recordAt, rememberType, scopeKind, scopeLabel, scopeOf, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
 } from "./explorerModel";
 
-/**
- * The dimension builder, started from the kind or the type in view (every version of a type), and given the way back to this
- * view; a group or every type leaves the kind to pick there.
- */
-function builderLink(scope: ExplorerScope, back: string): string {
-  const query = new URLSearchParams({ back });
-  if (scope.level === "kind") {
-    query.set("kind", scope.kind);
-  } else if (scope.level === "type") {
-    query.set("kind", `*:*:${scope.entityType}:*`);
-  }
-
-  return `/delivery/explorer/dimension?${query.toString()}`;
+/** The kind a dimension built here reads from the explorer's place: a kind, or every version of a type; null for a group or every type. */
+function buildKind(scope: ExplorerScope): string | null {
+  return scope.level === "kind" || scope.level === "type" ? scopeKind(scope) ?? null : null;
 }
 
 /** The least height the explorer keeps, so a short window still shows a few rows. */
@@ -66,7 +60,7 @@ function WindowFrame({ hidden = false, children, testId }: { hidden?: boolean; c
  */
 export default function ExplorerPage() {
   const [params, setParams] = useSearchParams();
-  const location = useLocation();
+  const queryClient = useQueryClient();
   const [active, setActive] = useActivePartition();
   const { hasScope } = useAuth();
   const canOperate = hasScope("operate");
@@ -125,6 +119,15 @@ export default function ExplorerPage() {
   });
   const reachable = canOperate && connection.data?.available === true;
 
+  // A dimension built from what the explorer shows: the records are browsed and drilled into as ever, and each value picked
+  // from where it is (osdu/docs/explorer.md, Building a dimension).
+  const build = useDimensionBuild({ partition: active, reachable, scopeKind: buildKind(scope), recordId, recordVersion });
+  const openKind = () => {
+    const read = recordId === null ? undefined : queryClient.getQueryData<DeliveryOsduRead>(["explorer", "read", active, recordId, recordVersion]);
+    return read?.found === true && typeof read.record?.kind === "string" ? read.record.kind : null;
+  };
+  const startKind = buildKind(scope) ?? build.recordKind ?? "";
+
   // The types are counted for the search and its values, never for the place: the list is what a place is picked from.
   const typesRequest: ExplorerSearchRequest = { text: text === "" ? undefined : text, lucene, filters };
   const types = useExplorerRead<ExplorerTypes>(
@@ -177,13 +180,14 @@ export default function ExplorerPage() {
         className="min-w-[280px] max-w-[760px] flex-1"
       />
       {(browsing || recordId !== null) && <ExplorerRecent onOpen={openRecent} />}
-      {reachable && (
-        <RichTooltip title="Build a dimension" body="Pick a dimension's key, value and attributes from the records shown, and get the YAML a dimension flow lists. Opens on its own; this view stays as it is.">
-          <Button variant="outline" size="sm" className="ml-auto" asChild>
-            <Link to={builderLink(scope, `${location.pathname}${location.search}`)} data-testid="explorer-build-dimension">
-              <TableProperties />
-              Build a dimension
-            </Link>
+      {reachable && build.draft === null && (
+        <RichTooltip
+          title="Build a dimension"
+          body="Pick a dimension's key, value and attributes from the records as you browse them, following their links as far as a value is read, and get the YAML a dimension flow lists. The builder opens beside the records."
+        >
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => build.start(buildKind(scope) ?? openKind() ?? "")} data-testid="explorer-build-dimension">
+            <TableProperties />
+            Build a dimension
           </Button>
         </RichTooltip>
       )}
@@ -276,10 +280,30 @@ export default function ExplorerPage() {
               onOpenId={openId}
               onBrowseQuery={(query) => navigate({ q: query, lq: "1", kind: null, f: null, id: null, v: null })}
               onSwitchPartition={(partition) => setActive(partition)}
+              fieldActions={build.draft === null ? undefined : (field) => <BuildFieldActions field={field} build={build} />}
             />
           </WindowFrame>
         )}
       </>
+    );
+  }
+
+  // While a dimension is built, the builder docks beside whatever the explorer shows, in a frame of the same height.
+  if (build.draft !== null && connection.data?.available === true) {
+    content = (
+      <WindowFrame testId="explorer-build-frame">
+        <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+          <ResizablePanel minSize="40" className="flex min-h-0 flex-col gap-3 overflow-auto pr-1">
+            {content}
+          </ResizablePanel>
+          <ResizableHandle />
+          <ResizablePanel defaultSize={560} minSize={380} maxSize="60" className="flex min-h-0 flex-col pl-1">
+            <Card className="flex min-h-0 flex-1 flex-col gap-0 overflow-hidden rounded-lg p-0">
+              <DimensionBuildPanel build={build} startKind={startKind} />
+            </Card>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </WindowFrame>
     );
   }
 

@@ -22,9 +22,10 @@ namespace SqlFlow.ControlPlane.Tests;
 /// The explorer's dimension builder as the API serves it (osdu/docs/explorer.md, Building a dimension): a draft written as the
 /// item a dimension flow lists and read back by the loader a flow is read by; checked against the saved templates as a flow's
 /// own dimension is, a missing template said with what to save; every mistake pointed at the part it is about; a name whose
-/// table another flow's dimension writes warned of; and an example key made into its row, and a sample of the records read,
-/// through the connection the explorer reads the partition by, given exactly what the operation reads back. Nothing here
-/// reaches an OSDU: the operations are stood in for (<see cref="RecordedOperations"/>), and what each was given is read back.
+/// table another flow's dimension writes warned of; the keys a kind's saved template suggests; and an example key made into
+/// its row, and the commonest keys of a path, through the connection the explorer reads the partition by, given exactly what
+/// the operation reads back. Nothing here reaches an OSDU: the operations are stood in for (<see cref="RecordedOperations"/>),
+/// and what each was given is read back.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]
@@ -338,7 +339,7 @@ public sealed class DeliveryExplorerDimensionApiTests
     }
 
     [Fact]
-    public async Task A_sample_is_read_through_the_connection_the_keys_index_settled_by_the_template_or_said_to_be_a_guess()
+    public async Task The_keys_are_read_through_the_connection_the_keys_index_settled_by_the_template_or_said_to_be_a_guess()
     {
         var estate = await SeedAsync();
         var operations = new RecordedOperations();
@@ -348,29 +349,25 @@ public sealed class DeliveryExplorerDimensionApiTests
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
-            using (var sampled = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/sample", new
+            using (var read = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/keys", new
             {
                 kind = WellLog,
                 query = " data.Source:\"Recall\" ",
                 path = " data.WellboreID ",
-                key = "dev:master-data--Wellbore:W1:",
-                at = 3,
-                trails = new[] { Array.Empty<string>(), new[] { " data.GeoContexts.GeoPoliticalEntityID " } },
             }, estate.Headed))
             {
-                Assert.True(sampled.StatusCode == HttpStatusCode.OK, await sampled.Content.ReadAsStringAsync());
+                Assert.True(read.StatusCode == HttpStatusCode.OK, await read.Content.ReadAsStringAsync());
             }
 
             var ran = operations.Last();
-            Assert.Equal((ExploreOperation.DimensionSampleAction, estate.ConnectionFlow), (ran.Argument(ExploreOperation.ActionArgument), ran.SourceRef));
-            var request = JsonSerializer.Deserialize<DimensionSampleRequest>(LongArgument.Read(ran, ExploreOperation.SampleArgument)!, ExploreOperation.BuilderJson)!;
-            Assert.Equal((WellLog, "data.Source:\"Recall\"", "data.WellboreID", 3), (request.Kind, request.Query, request.Path, request.At));
+            Assert.Equal((ExploreOperation.DimensionKeysAction, estate.ConnectionFlow), (ran.Argument(ExploreOperation.ActionArgument), ran.SourceRef));
+            var request = JsonSerializer.Deserialize<DimensionKeysRequest>(LongArgument.Read(ran, ExploreOperation.KeysArgument)!, ExploreOperation.BuilderJson)!;
+            Assert.Equal((WellLog, "data.Source:\"Recall\"", "data.WellboreID"), (request.Kind, request.Query, request.Path));
             Assert.Equal(new DimensionFieldWire("data.WellboreID", "text", null), request.KeyField);
             Assert.False(request.KeyFieldGuessed);
-            Assert.Equal([[], ["data.GeoContexts.GeoPoliticalEntityID"]], request.Trails.Select(t => t.ToArray()));
 
             // A kind no saved template describes is read with the key read as text, said to be a guess.
-            using (var guessed = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/sample", new
+            using (var guessed = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/keys", new
             {
                 kind = "osdu:wks:work-product-component--WellLog:9.9.9",
                 path = "data.WellboreID",
@@ -379,12 +376,12 @@ public sealed class DeliveryExplorerDimensionApiTests
                 Assert.True(guessed.StatusCode == HttpStatusCode.OK, await guessed.Content.ReadAsStringAsync());
             }
 
-            var guess = JsonSerializer.Deserialize<DimensionSampleRequest>(LongArgument.Read(operations.Last(), ExploreOperation.SampleArgument)!, ExploreOperation.BuilderJson)!;
+            var guess = JsonSerializer.Deserialize<DimensionKeysRequest>(LongArgument.Read(operations.Last(), ExploreOperation.KeysArgument)!, ExploreOperation.BuilderJson)!;
             Assert.True(guess.KeyFieldGuessed);
             Assert.Equal("text", guess.KeyField!.Index);
 
             // A property of the record itself is indexed as the indexer maps it, template or not.
-            using (var own = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/sample", new
+            using (var own = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/keys", new
             {
                 kind = "osdu:wks:work-product-component--WellLog:9.9.9",
                 path = "legal.legaltags",
@@ -393,12 +390,60 @@ public sealed class DeliveryExplorerDimensionApiTests
                 Assert.True(own.StatusCode == HttpStatusCode.OK, await own.Content.ReadAsStringAsync());
             }
 
-            var tags = JsonSerializer.Deserialize<DimensionSampleRequest>(LongArgument.Read(operations.Last(), ExploreOperation.SampleArgument)!, ExploreOperation.BuilderJson)!;
+            var tags = JsonSerializer.Deserialize<DimensionKeysRequest>(LongArgument.Read(operations.Last(), ExploreOperation.KeysArgument)!, ExploreOperation.BuilderJson)!;
             Assert.Equal(("keyword", false), (tags.KeyField!.Index, tags.KeyFieldGuessed));
 
             // A partition no flow reaches has no connection to read through.
-            using var unreached = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/sample", new { kind = WellLog }, "z" + estate.Suffix);
+            using var unreached = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/dimension/keys", new { kind = WellLog, path = "data.WellboreID" }, "z" + estate.Suffix);
             Assert.Equal(HttpStatusCode.Conflict, unreached.StatusCode);
+        }
+        finally
+        {
+            await CleanAsync(estate);
+        }
+    }
+
+    [Fact]
+    public async Task The_keys_a_kinds_saved_template_suggests_are_answered_from_the_templates_alone()
+    {
+        var estate = await SeedAsync();
+        var operations = new RecordedOperations();
+        try
+        {
+            await using var factory = Host(estate, operations);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            using (var suggested = await SendAsync(client, token, HttpMethod.Get, "/api/v1/delivery/explorer/dimension/candidates?kind=" + Uri.EscapeDataString(" *:*:work-product-component--WellLog:* "), null, estate.Headed))
+            {
+                var text = await suggested.Content.ReadAsStringAsync();
+                Assert.True(suggested.StatusCode == HttpStatusCode.OK, text);
+                var answer = JsonDocument.Parse(text).RootElement;
+                Assert.Equal("*:*:work-product-component--WellLog:*", answer.GetProperty("kind").GetString());
+                Assert.Equal(WellLog, answer.GetProperty("template").GetProperty("kind").GetString());
+                var first = answer.GetProperty("keys")[0];
+                Assert.Equal(("data.WellboreID", false), (first.GetProperty("path").GetString(), first.GetProperty("repeated").GetBoolean()));
+                Assert.Contains("master-data--Wellbore", first.GetProperty("names").EnumerateArray().Select(n => n.GetString()));
+                Assert.Equal(JsonValueKind.Null, answer.GetProperty("missing").ValueKind);
+            }
+
+            using (var unsaved = await SendAsync(client, token, HttpMethod.Get, "/api/v1/delivery/explorer/dimension/candidates?kind=" + Uri.EscapeDataString("osdu:wks:master-data--Nothing:1.0.0"), null, estate.Headed))
+            {
+                var answer = JsonDocument.Parse(await unsaved.Content.ReadAsStringAsync()).RootElement;
+                Assert.Equal(HttpStatusCode.OK, unsaved.StatusCode);
+                Assert.Empty(answer.GetProperty("keys").EnumerateArray());
+                Assert.Contains("No saved template matches", answer.GetProperty("missing").GetString(), StringComparison.Ordinal);
+            }
+
+            foreach (var (kind, why) in new[] { ("", "Name the kind"), ("osdu:wks:WellLog", "osdu:wks:WellLog") })
+            {
+                using var refused = await SendAsync(client, token, HttpMethod.Get, "/api/v1/delivery/explorer/dimension/candidates?kind=" + Uri.EscapeDataString(kind), null, estate.Headed);
+                Assert.Equal(HttpStatusCode.BadRequest, refused.StatusCode);
+                Assert.Contains(why, await refused.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+            }
+
+            // Nothing is asked of OSDU: the suggestions are the templates'.
+            Assert.Empty(operations.Given);
         }
         finally
         {
@@ -416,16 +461,14 @@ public sealed class DeliveryExplorerDimensionApiTests
             "{\"draft\":{\"name\":\"W\",\"kind\":\"k\",\"attributes\":[" + string.Join(',', Enumerable.Repeat("{\"name\":\"A\",\"steps\":[\"data.A\"]}", DimensionBuilder.MaxListLength + 1)) + "]}}",
             "more than the 64 entries"
         },
-        { "sample", "{}", "Name the kind" },
-        { "sample", "{\"kind\":\"osdu:wks:WellLog\"}", "osdu:wks:WellLog" },
-        { "sample", "{\"kind\":\"" + WellLog + "\",\"path\":\"data..x\"}", "is not a property path" },
-        { "sample", "{\"kind\":\"" + WellLog + "\",\"path\":\"acl.nothing\"}", "The key " },
-        { "sample", "{\"kind\":\"" + WellLog + "\",\"key\":\"" + new string('k', 1025) + "\"}", "longer than the 1,024" },
-        { "sample", "{\"kind\":\"" + WellLog + "\",\"at\":25}", "first 25 records" },
-        { "sample", "{\"kind\":\"" + WellLog + "\",\"trails\":[" + string.Join(',', Enumerable.Repeat("[]", 17)) + "]}", "at most 16 trails" },
-        { "sample", "{\"kind\":\"" + WellLog + "\",\"trails\":[[\"a\",\"b\",\"c\"]]}", "at most 2 paths" },
-        { "sample", "{\"kind\":\"" + WellLog + "\",\"trails\":[[\"data[Type=]x\"]]}", "is not a path" },
-        { "sample", "{\"kind\":\"" + WellLog + "\",\"query\":\"" + new string('q', DeliveryExplorerEndpoints.MaxQueryLength + 1) + "\"}", "longer than the" },
+        { "keys", "{}", "Name the kind" },
+        { "keys", "{\"kind\":\"osdu:wks:WellLog\",\"path\":\"data.WellboreID\"}", "osdu:wks:WellLog" },
+        { "keys", "{\"kind\":\"" + WellLog + "\"}", "Name the key's path" },
+        { "keys", "{\"kind\":\"" + WellLog + "\",\"path\":\" \"}", "Name the key's path" },
+        { "keys", "{\"kind\":\"" + WellLog + "\",\"path\":\"data..x\"}", "is not a property path" },
+        { "keys", "{\"kind\":\"" + WellLog + "\",\"path\":\"data[Type=x].WellboreID\"}", "is not a property path" },
+        { "keys", "{\"kind\":\"" + WellLog + "\",\"path\":\"acl.nothing\"}", "The key " },
+        { "keys", "{\"kind\":\"" + WellLog + "\",\"path\":\"data.WellboreID\",\"query\":\"" + new string('q', DeliveryExplorerEndpoints.MaxQueryLength + 1) + "\"}", "longer than the" },
     };
 
     [Theory]

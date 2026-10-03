@@ -62,8 +62,8 @@ export function BuilderColumns({ draft, compose, issues, recordKind, onChange, o
       </div>
       <table className="w-full table-fixed border-collapse text-[12.5px]">
         <colgroup>
-          <col className="w-[30%]" />
           <col className="w-[36%]" />
+          <col className="w-[34%]" />
           <col />
           <col className="w-8" />
         </colgroup>

@@ -23,7 +23,7 @@ namespace SqlFlow.Delivery.Engine.Operations;
 /// <item><description><c>search</c>: one page of the records a search finds (<c>search</c>).</description></item>
 /// <item><description><c>fields</c>: the properties the records of a <c>kind</c> hold, read from one of them.</description></item>
 /// <item><description><c>read</c>: one record from the storage service by its <c>targetId</c>, at its latest or at a <c>version</c>, with its version list.</description></item>
-/// <item><description><c>dimension-sample</c>: what the dimension builder shows of the records a dimension reads (<see cref="DimensionSampler.SampleAsync"/>), asked by the <c>sample</c> long argument.</description></item>
+/// <item><description><c>dimension-keys</c>: the commonest keys of a drafted dimension's path, which the builder's example steps through (<see cref="DimensionSampler.KeysAsync"/>), asked by the <c>keys</c> long argument.</description></item>
 /// <item><description><c>dimension-example</c>: one key of a drafted dimension made into its row as a build makes it (<see cref="DimensionSampler.ExampleAsync"/>): the dimension's item as YAML (<c>item</c>), the <c>key</c>, and how the key and each collected path are indexed (<c>fields</c>).</description></item>
 /// </list>
 /// Every read goes to the platform's own services (search and storage, openapi v2), whatever route the flow delivers by.
@@ -41,8 +41,8 @@ public sealed class ExploreOperation : DeliveryOperation
     /// <summary>The task argument naming the kind whose properties are read.</summary>
     public const string KindArgument = "kind";
 
-    /// <summary>The long argument (<see cref="LongArgument"/>) carrying a <see cref="DimensionSampleRequest"/> as JSON.</summary>
-    public const string SampleArgument = "sample";
+    /// <summary>The long argument (<see cref="LongArgument"/>) carrying a <see cref="DimensionKeysRequest"/> as JSON.</summary>
+    public const string KeysArgument = "keys";
 
     /// <summary>The long argument carrying a drafted dimension's item, as <see cref="DimensionBuilder.ToYaml"/> writes it.</summary>
     public const string ItemArgument = "item";
@@ -57,11 +57,11 @@ public sealed class ExploreOperation : DeliveryOperation
     public const string SearchAction = "search";
     public const string FieldsAction = "fields";
     public const string ReadAction = "read";
-    public const string DimensionSampleAction = "dimension-sample";
+    public const string DimensionKeysAction = "dimension-keys";
     public const string DimensionExampleAction = "dimension-example";
 
     /// <summary>Every read the task can name.</summary>
-    public static readonly IReadOnlyList<string> Actions = [TypesAction, SearchAction, FieldsAction, ReadAction, DimensionSampleAction, DimensionExampleAction];
+    public static readonly IReadOnlyList<string> Actions = [TypesAction, SearchAction, FieldsAction, ReadAction, DimensionKeysAction, DimensionExampleAction];
 
     /// <summary>How the dimension builder's requests and answers are written: the web's conventions, as the API writes them.</summary>
     public static JsonSerializerOptions BuilderJson { get; } = ReadOnly(new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -113,7 +113,7 @@ public sealed class ExploreOperation : DeliveryOperation
         {
             TypesAction => await explorer.TypesAsync(ExplorerSearch.Parse(payload.Argument(SearchArgument)), ct).ConfigureAwait(false),
             SearchAction => await explorer.SearchAsync(ExplorerSearch.Parse(payload.Argument(SearchArgument)), ct).ConfigureAwait(false),
-            DimensionSampleAction => await Sampler(client, context).SampleAsync(SampleOf(payload, partition), ct).ConfigureAwait(false),
+            DimensionKeysAction => await Sampler(client, context).KeysAsync(KeysOf(payload, partition), ct).ConfigureAwait(false),
             DimensionExampleAction => await ExampleAsync(context, Sampler(client, context), payload, partition, ct).ConfigureAwait(false),
             _ => await explorer.FieldsAsync(payload.RequireArgument(KindArgument), ct).ConfigureAwait(false),
         };
@@ -135,37 +135,24 @@ public sealed class ExploreOperation : DeliveryOperation
     }
 
     /// <summary>
-    /// The builder's sample request, checked again here as the control plane checked it, its query's <c>{partition}</c> filled
+    /// The builder's keys request, checked again here as the control plane checked it, its query's <c>{partition}</c> filled
     /// with the partition the connection reads, as a build fills it.
     /// </summary>
-    internal static DimensionSampleRequest SampleOf(ComputeTaskPayload payload, string? partition)
+    internal static DimensionKeysRequest KeysOf(ComputeTaskPayload payload, string? partition)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        var request = Deserialize<DimensionSampleRequest>(LongArgument.Require(payload, SampleArgument), SampleArgument);
+        var request = Deserialize<DimensionKeysRequest>(LongArgument.Require(payload, KeysArgument), KeysArgument);
         if (ExplorerKinds.Problem(request.Kind) is { } wrong)
         {
             throw new SqlFlowException(wrong);
         }
 
-        if (request.At is < 0 or >= DimensionSampler.ExampleRecords)
+        if (string.IsNullOrWhiteSpace(request.Path) || !OsduPath.IsPath(request.Path.Trim()))
         {
-            throw new SqlFlowException($"A sample shows one of the first {DimensionSampler.ExampleRecords} records, from 0; {request.At} is not one.");
+            throw new SqlFlowException($"'{request.Path}' is not a property path a key is read at, such as data.WellboreID.");
         }
 
-        if (request.Trails.Count > DimensionSampler.MaxTrails || request.Trails.Any(t => t is null || t.Count > DimensionSampler.MaxTrailSteps))
-        {
-            throw new SqlFlowException($"A sample follows at most {DimensionSampler.MaxTrails} trails, each of at most {DimensionSampler.MaxTrailSteps} paths.");
-        }
-
-        foreach (var step in request.Trails.SelectMany(t => t))
-        {
-            if (DimensionPath.Parse(step).Problem is { } problem)
-            {
-                throw new SqlFlowException($"'{step}' is not a path a trail can follow: {problem}.");
-            }
-        }
-
-        return request with { Query = Filled(request.Query, partition) };
+        return request with { Path = request.Path.Trim(), Query = Filled(request.Query, partition) };
     }
 
     /// <summary>
