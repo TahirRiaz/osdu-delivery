@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode, type UIEvent } from "react";
+import { useRef, type ReactNode, type UIEvent } from "react";
 import { Loader2, SlidersHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
+import { useWindowFit } from "../useWindowFit";
 import type { GridColumnChoice } from "./dimensionGridState";
 
 /** The least height a grid keeps, so a short window still shows a few rows. */
@@ -16,6 +17,9 @@ const BELOW_GRID = 84;
 
 /** How near its end a grid is scrolled, in pixels, before the next page is asked for. */
 const NEAR_END = 320;
+
+/** The table's own scrolling container, which the grid sizes to the window. */
+const tableContainer = (element: HTMLElement) => element.querySelector<HTMLElement>('[data-slot="table-container"]');
 
 /**
  * A table of a dimension as a grid that stays on the screen: its rows scroll inside it, under column headers that stay in
@@ -30,31 +34,7 @@ export function DimensionGrid({ children, onNearEnd, className }: {
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
-  // The grid's height follows the window: what is left below where the grid starts. Set on the element itself, so the
-  // rows never render at a height the next frame changes.
-  useEffect(() => {
-    const element = ref.current;
-    if (element === null) {
-      return undefined;
-    }
-
-    const fit = () => {
-      const container = element.querySelector<HTMLElement>('[data-slot="table-container"]');
-      if (container !== null) {
-        const room = window.innerHeight - container.getBoundingClientRect().top - BELOW_GRID;
-        container.style.maxHeight = `${Math.max(MIN_GRID_HEIGHT, Math.floor(room))}px`;
-      }
-    };
-
-    fit();
-    const observer = new ResizeObserver(fit);
-    observer.observe(document.body);
-    window.addEventListener("resize", fit);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", fit);
-    };
-  }, []);
+  useWindowFit(ref, BELOW_GRID, MIN_GRID_HEIGHT, tableContainer);
 
   const scrolled = (event: UIEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;

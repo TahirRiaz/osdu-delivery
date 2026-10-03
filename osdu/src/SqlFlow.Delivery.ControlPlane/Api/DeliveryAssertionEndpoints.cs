@@ -45,10 +45,11 @@ public sealed record DeliveryAssertionRunDto(
 /// <summary>
 /// One assertion flow on a board, in the partition the board is read in: its tests, the partitions it tests and whether the
 /// board's partition is one, the parameters a run of it takes, its last run, and what keeps the flow from being shown (a
-/// document the catalog cannot parse, a partition it does not test).
+/// document the catalog cannot parse, a partition it does not test). <c>Parses</c> tells the two apart: false when the
+/// catalog's copy of the document does not parse, which needs a fix, where a flow of another partition needs none.
 /// </summary>
 public sealed record DeliveryAssertionFlowDto(
-    Guid PipelineId, Guid RepoId, string Name, string? Description, string? Batch, string? Partition, bool TestsPartition,
+    Guid PipelineId, Guid RepoId, string Name, string? Description, string? Batch, string? Partition, bool TestsPartition, bool Parses,
     IReadOnlyList<string> Partitions, string FailRunOn, IReadOnlyList<DeliveryParameterDto> Parameters, string? Problem, DeliveryAssertionRunDto? LastRun,
     IReadOnlyList<DeliveryAssertionTestDto> Tests);
 
@@ -339,7 +340,7 @@ public static class DeliveryAssertionEndpoints
             if (flow is null || bound is null)
             {
                 flows.Add(new DeliveryAssertionFlowDto(
-                    pipeline.Id, pipeline.RepoId, pipeline.Name, flow?.Description, flow?.Batch ?? pipeline.Batch, partition, false,
+                    pipeline.Id, pipeline.RepoId, pipeline.Name, flow?.Description, flow?.Batch ?? pipeline.Batch, partition, false, flow is not null,
                     flow?.Served(registered) ?? [], FailRunOnText(flow?.FailRunOn ?? FailRunOn.Error), flow is null ? [] : Parameters(flow), problem, null, []));
                 continue;
             }
@@ -369,7 +370,7 @@ public static class DeliveryAssertionEndpoints
                     test.DefinitionHash);
             }).ToList();
             flows.Add(new DeliveryAssertionFlowDto(
-                pipeline.Id, pipeline.RepoId, pipeline.Name, bound.Description, bound.Batch, testPartition, true, bound.Served(registered),
+                pipeline.Id, pipeline.RepoId, pipeline.Name, bound.Description, bound.Batch, testPartition, true, true, bound.Served(registered),
                 FailRunOnText(bound.FailRunOn), Parameters(bound), null, lastRun is null ? null : ToDto(lastRun), tests));
         }
 

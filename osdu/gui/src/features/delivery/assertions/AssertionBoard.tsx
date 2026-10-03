@@ -1,288 +1,92 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CircleAlert, FileWarning, ListChecks, PencilLine, Play, Tags, X } from "lucide-react";
+import { Boxes, CircleAlert, ListChecks, Play, Tags, X, type LucideIcon } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { repoApi } from "@/api/endpoints";
 import { EmptyState } from "@/components/EmptyState";
-import { FilterBar } from "@/components/FilterBar";
-import { LineageJumpButton } from "@/components/LineageJumpButton";
+import { FilterBar, activeFilterClass } from "@/components/FilterBar";
 import { RelativeTime } from "@/components/RelativeTime";
-import { RichTooltip } from "@/components/RichTooltip";
 import { SearchInput } from "@/components/SearchInput";
 import { cn } from "@/lib/utils";
 import type { DeliveryAssertionBoard, DeliveryAssertionFlow, DeliveryAssertionTest } from "../../../api/delivery";
 import { KindText } from "../KindText";
-import { StatusStrip, TestOutcomeIcon, type StripCell } from "./AssertionBadges";
+import { StatusStrip, type StripCell } from "./AssertionBadges";
+import { AssertionBoardGrid, KindName } from "./AssertionBoardGrid";
 import { AssertionRunDialog, ReportDownloads, type AssertionLaunch } from "./AssertionRunDialog";
 import { AssertionTestSheet } from "./AssertionTestSheet";
-import { OUTCOME_ORDER, STANDING_TEXT, runStatusVisual, standingOf, testVerdict, type TestStanding } from "./assertionFormat";
-
-/** What the status strip filters the tests by: where they stand, or what keeps them from being trusted. */
-type BoardFilter = TestStanding | "problems" | "changed";
+import {
+  boardEntries, boardFilterOf, boardSortOf, facetCounts, narrowing, type BoardCriteria, type BoardEntry, type BoardFilter, type BoardSort,
+} from "./assertionBoardModel";
+import { STANDING_TEXT, counted, kindEntity, runStatusVisual, type TestStanding } from "./assertionFormat";
 
 /** The search parameters the test sheet owns, cleared with it. */
 const SHEET_PARAMS = ["test", "flow", "testTab", "check"];
 
-function matches(test: DeliveryAssertionTest, term: string, tags: ReadonlySet<string>, filter: BoardFilter | null): boolean {
-  if (tags.size > 0 && !test.tags.some((tag) => tags.has(tag))) {
-    return false;
-  }
+/**
+ * The search parameters the board's criteria live in, so a board narrowed to what needs a look is still narrowed after
+ * a report opened from it is left with Back, and a link can name it: the term, the strip filter, the types and tags
+ * picked, and the order.
+ */
+const CRITERIA_PARAMS = ["q", "status", "type", "tag"];
 
-  if (filter === "problems" ? test.problems.length === 0 : filter === "changed" ? !test.changed : filter !== null && standingOf(test) !== filter) {
-    return false;
-  }
-
-  return term === ""
-    || [test.name, test.description ?? "", test.kind, test.query ?? "", ...test.tags, ...test.assertions.map((a) => a.label)]
-      .some((text) => text.toLowerCase().includes(term));
-}
+/** Several values of one search parameter as one string, so a set read from them keeps its identity across renders. */
+const SEPARATOR = "\n";
 
 /**
- * The order tests are listed in: by the type they read when a flow reads several, so each type heads its tests once, then
- * what needs a look first, then as the document declares them.
+ * Values the tests carry (their types, their tags) as a picker: every test carrying one of the values picked is shown.
+ * The list scrolls, so a board of a hundred flows' types stays one popover.
  */
-function byStanding(tests: readonly DeliveryAssertionTest[]): DeliveryAssertionTest[] {
-  const kindOrder = [...new Set(tests.map((t) => t.kind))];
-  return tests
-    .map((test, order) => ({ test, order }))
-    .sort((a, b) => kindOrder.indexOf(a.test.kind) - kindOrder.indexOf(b.test.kind)
-      || OUTCOME_ORDER.indexOf(standingOf(a.test)) - OUTCOME_ORDER.indexOf(standingOf(b.test))
-      || a.order - b.order)
-    .map((entry) => entry.test);
-}
-
-/** The tags the tests carry, as a picker: every test carrying one of the tags picked is shown. */
-function TagFilter({ tags, picked, onChange }: {
-  tags: readonly (readonly [string, number])[];
+function FacetFilter({ icon: Icon, label, values, picked, onChange, render, summary, testId }: {
+  icon: LucideIcon;
+  label: string;
+  values: readonly (readonly [string, number])[];
   picked: ReadonlySet<string>;
   onChange: (next: ReadonlySet<string>) => void;
+  render: (value: string) => ReactNode;
+  summary: (picked: readonly string[]) => string;
+  testId: string;
 }) {
-  if (tags.length === 0) {
+  if (values.length === 0) {
     return null;
   }
 
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className={cn(picked.size > 0 && "border-primary/70 bg-primary/10 dark:bg-primary/20")} data-testid="assertion-board-tags">
-          <Tags />
-          {picked.size === 0 ? "Tags" : [...picked].map((tag) => `#${tag}`).join(", ")}
+        <Button variant="outline" size="sm" className={cn("max-w-64", picked.size > 0 && activeFilterClass)} data-testid={testId}>
+          <Icon />
+          <span className="truncate">{picked.size === 0 ? label : summary([...picked])}</span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-56 p-1">
-        {tags.map(([tag, count]) => (
-          <label key={tag} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-[12.5px] hover:bg-accent/50">
-            <Checkbox
-              checked={picked.has(tag)}
-              onCheckedChange={(on) => {
-                const next = new Set(picked);
-                if (on === true) {
-                  next.add(tag);
-                } else {
-                  next.delete(tag);
-                }
+      <PopoverContent align="start" className="w-80 p-1">
+        <div className="flex max-h-80 flex-col overflow-y-auto">
+          {values.map(([value, count]) => (
+            <label key={value} className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-[12.5px] hover:bg-accent/50">
+              <Checkbox
+                checked={picked.has(value)}
+                onCheckedChange={(on) => {
+                  const next = new Set(picked);
+                  if (on === true) {
+                    next.add(value);
+                  } else {
+                    next.delete(value);
+                  }
 
-                onChange(next);
-              }}
-              data-testid={`tag-${tag}`}
-            />
-            <span className="flex-1 font-mono">#{tag}</span>
-            <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{count}</span>
-          </label>
-        ))}
+                  onChange(next);
+                }}
+                data-testid={`${testId}-${value}`}
+              />
+              <span className="min-w-0 flex-1">{render(value)}</span>
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{count}</span>
+            </label>
+          ))}
+        </div>
       </PopoverContent>
     </Popover>
-  );
-}
-
-/**
- * One test on one line: where it stands, the verdict of its last result, and a way to run it again for how the data
- * stands now. The flow's heading says when its last run was; a test whose last result is older than that (a run that
- * left it out) says which run it is from and when, since an older result may no longer describe the data.
- */
-function TestRow({ test, lastRunId, picked, onPick, onOpen, onRun }: {
-  test: DeliveryAssertionTest;
-  lastRunId: number | null;
-  picked: boolean;
-  onPick: (next: boolean) => void;
-  onOpen: () => void;
-  onRun: () => void;
-}) {
-  const standing = standingOf(test);
-  const verdict = testVerdict(test);
-  const stale = test.latest !== null && lastRunId !== null && test.latest.assertionRunId !== lastRunId ? test.latest : null;
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(event) => { if (event.key === "Enter") { onOpen(); } }}
-      className={cn(
-        "group grid cursor-pointer grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-x-2.5 px-3 py-1 outline-none transition-colors hover:bg-accent/50 focus-visible:bg-accent/50",
-        "md:grid-cols-[auto_auto_minmax(0,16rem)_minmax(0,1fr)_10rem_auto]",
-        standing === "elsewhere" && "opacity-55",
-      )}
-      data-testid={`board-test-${test.name}`}
-      data-standing={standing}
-    >
-      <span onClick={(event) => event.stopPropagation()} className="flex items-center">
-        <Checkbox
-          checked={picked}
-          onCheckedChange={(next) => onPick(next === true)}
-          disabled={!test.runsHere}
-          aria-label={`Pick ${test.name} to run`}
-          className={cn(!picked && "opacity-40 group-hover:opacity-100")}
-          data-testid={`board-test-${test.name}-pick`}
-        />
-      </span>
-      <TestOutcomeIcon outcome={standing} />
-      <span className="flex min-w-0 items-center gap-1.5">
-        {test.description !== null
-          ? <RichTooltip body={test.description}><span className="truncate font-mono text-[12.5px]">{test.name}</span></RichTooltip>
-          : <span className="truncate font-mono text-[12.5px]">{test.name}</span>}
-        {test.problems.length > 0 && (
-          <Tooltip>
-            <TooltipTrigger asChild><FileWarning className="size-4 shrink-0 text-destructive" data-testid="board-test-problems" /></TooltipTrigger>
-            <TooltipContent className="max-w-md">It does not fit the schema of its type: {test.problems.join(" ")}</TooltipContent>
-          </Tooltip>
-        )}
-        {test.changed && (
-          <Tooltip>
-            <TooltipTrigger asChild><PencilLine className="size-4 shrink-0 text-warning" data-testid="board-test-changed" /></TooltipTrigger>
-            <TooltipContent className="max-w-sm">Changed since its latest result: run it again for a result of what it checks now.</TooltipContent>
-          </Tooltip>
-        )}
-      </span>
-      <span className={cn("hidden truncate text-[12px] md:block", STANDING_TEXT[verdict.standing] ?? "text-muted-foreground")} data-testid="board-test-verdict">
-        {verdict.text}
-      </span>
-      <span className="hidden truncate text-right text-[11.5px] text-warning md:block" data-testid="board-test-stale">
-        {stale !== null && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span>run #{stale.assertionRunId}, <RelativeTime value={stale.completedUtc} absolute={false} /></span>
-            </TooltipTrigger>
-            <TooltipContent className="max-w-sm">The flow's last run left this test out, so this is its result from an earlier run. Run it for how the data stands now.</TooltipContent>
-          </Tooltip>
-        )}
-      </span>
-      <span onClick={(event) => event.stopPropagation()}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon-xs" onClick={onRun} disabled={!test.runsHere} aria-label={`Run ${test.name}`} data-testid={`board-test-${test.name}-run`}>
-              <Play />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{test.runsHere ? "Run this test" : "It does not test this partition"}</TooltipContent>
-        </Tooltip>
-      </span>
-    </div>
-  );
-}
-
-/** The flow's own facts, read on hover of its name: what it is for and what fails a run of it. */
-function flowAbout(flow: DeliveryAssertionFlow): string {
-  const fails = flow.failRunOn === "never" ? "A run of it never fails on its tests; it only reports." : flow.failRunOn === "warning" ? "A run fails on a warning or worse." : "A run fails on a failed or errored test.";
-  return `${flow.description ?? "Tests of what OSDU holds."}\n${fails}`;
-}
-
-/**
- * One assertion flow on the board: its last run, the ways to run it, and its tests, one line each. On the board of every
- * flow its heading also jumps to the flow in the lineage graph, where the types its tests read lead back to the flows
- * delivering them; a flow's own page already links there.
- */
-function FlowSection({ flow, repoName, tests, scope, picked, onPick, onOpen, onLaunch }: {
-  flow: DeliveryAssertionFlow;
-  /** The name of the repository the flow is synced from, as the lineage jump names its graph. */
-  repoName: string;
-  tests: readonly DeliveryAssertionTest[];
-  scope: "all" | "flow";
-  picked: ReadonlySet<string>;
-  onPick: (name: string, next: boolean) => void;
-  onOpen: (test: DeliveryAssertionTest) => void;
-  onLaunch: (tests: readonly string[]) => void;
-}) {
-  const ordered = useMemo(() => byStanding(tests), [tests]);
-  const kinds = new Set(flow.tests.map((t) => t.kind));
-  const last = flow.lastRun;
-  const lastVisual = last === null ? null : runStatusVisual(last.status);
-  const runnable = flow.testsPartition && flow.problem === null;
-
-  return (
-    <Card className="gap-0 overflow-hidden rounded-lg p-0" data-testid={`board-flow-${flow.name}`}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b bg-muted/30 px-3 py-2">
-        {scope === "all" && (
-          <RichTooltip body={flowAbout(flow)}>
-            <Link to={`/pipelines/${flow.pipelineId}?tab=tests`} className="truncate font-mono text-[13px] font-medium hover:underline" data-testid="board-flow-link">
-              {flow.name}
-            </Link>
-          </RichTooltip>
-        )}
-        {kinds.size === 1 && <span className="min-w-0 max-w-[26rem] text-muted-foreground"><KindText kind={[...kinds][0]!} /></span>}
-        {last !== null && lastVisual !== null && (
-          <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground" data-testid="board-flow-last-run">
-            <lastVisual.icon className={cn("size-3.5", STANDING_TEXT[last.status as TestStanding] ?? "")} aria-label={lastVisual.label} />
-            <Link to={`/delivery/assertions/runs/${last.assertionRunId}`} className="font-mono hover:underline">#{last.assertionRunId}</Link>
-            <RelativeTime value={last.completedUtc ?? last.startedUtc} absolute={false} />
-          </span>
-        )}
-        <div className="ml-auto flex items-center gap-1.5">
-          {last !== null && <ReportDownloads assertionRunId={last.assertionRunId} flowName={flow.name} partition={last.partition} testId="board-flow-report" />}
-          {scope === "all" && (
-            <LineageJumpButton
-              target={{ kind: "node", repoId: flow.repoId, repoName, focusId: flow.pipelineId, label: flow.name, sublabel: flow.description ?? undefined }}
-              iconOnly
-            />
-          )}
-          <Button
-            size="sm"
-            onClick={() => onLaunch([...picked])}
-            disabled={!runnable}
-            data-testid={picked.size > 0 ? "board-flow-run-picked" : "board-flow-run-all"}
-          >
-            <Play />
-            {picked.size > 0 ? `Run ${picked.size} picked` : "Run all"}
-          </Button>
-        </div>
-      </div>
-      {flow.problem !== null && (
-        <Alert variant="destructive" className="rounded-none border-0 border-b" data-testid="board-flow-problem">
-          <CircleAlert />
-          <AlertDescription>{flow.problem}</AlertDescription>
-        </Alert>
-      )}
-      {ordered.length === 0
-        ? flow.problem === null && (
-          <p className="px-3 py-3 text-[12.5px] text-muted-foreground" data-testid="board-flow-none">
-            {flow.tests.length === 0 ? "The flow declares no test." : "No test of this flow matches the filters."}
-          </p>
-        )
-        : (
-          <div className="divide-y">
-            {ordered.map((test, index) => (
-              <div key={test.name}>
-                {kinds.size > 1 && (index === 0 || ordered[index - 1]!.kind !== test.kind) && (
-                  <div className="bg-muted/20 px-3 py-1 text-muted-foreground"><KindText kind={test.kind} /></div>
-                )}
-                <TestRow
-                  test={test}
-                  lastRunId={last?.assertionRunId ?? null}
-                  picked={picked.has(test.name)}
-                  onPick={(next) => onPick(test.name, next)}
-                  onOpen={() => onOpen(test)}
-                  onRun={() => onLaunch([test.name])}
-                />
-              </div>
-            ))}
-          </div>
-        )}
-    </Card>
   );
 }
 
@@ -302,18 +106,74 @@ function openedTest(flows: readonly DeliveryAssertionFlow[], flowId: string | nu
   return null;
 }
 
+/** Which flows the reader opened or closed against what the criteria open, and under which criteria they did. */
+interface Expansion {
+  criteria: string;
+  flipped: ReadonlySet<string>;
+}
+
+const NOTHING_FLIPPED: ReadonlySet<string> = new Set();
+
+/**
+ * A board of one flow names it once above its tests: the type it reads, its last run with its report, and its run
+ * buttons, with what keeps it from running here.
+ */
+function FlowHeading({ flow, picked, onLaunch }: {
+  flow: DeliveryAssertionFlow;
+  picked: readonly string[];
+  onLaunch: (flow: DeliveryAssertionFlow, tests: readonly string[]) => void;
+}) {
+  const kinds = new Set(flow.tests.map((t) => t.kind));
+  const last = flow.lastRun;
+  const lastVisual = last === null ? null : runStatusVisual(last.status);
+  const runnable = flow.testsPartition && flow.problem === null;
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b bg-muted/30 px-3 py-2">
+        {kinds.size === 1 && <span className="min-w-0 max-w-[26rem] text-muted-foreground"><KindText kind={[...kinds][0]!} /></span>}
+        {last !== null && lastVisual !== null && (
+          <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground" data-testid="board-flow-last-run">
+            <lastVisual.icon className={cn("size-3.5", STANDING_TEXT[last.status as TestStanding] ?? "")} aria-label={lastVisual.label} />
+            <Link to={`/delivery/assertions/runs/${last.assertionRunId}`} className="font-mono hover:underline">#{last.assertionRunId}</Link>
+            <RelativeTime value={last.completedUtc ?? last.startedUtc} absolute={false} />
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          {last !== null && <ReportDownloads assertionRunId={last.assertionRunId} flowName={flow.name} partition={last.partition} testId="board-flow-report" />}
+          <Button
+            size="sm"
+            onClick={() => onLaunch(flow, picked)}
+            disabled={!runnable}
+            data-testid={picked.length > 0 ? "board-flow-run-picked" : "board-flow-run-all"}
+          >
+            <Play />
+            {picked.length > 0 ? `Run ${picked.length} picked` : "Run all"}
+          </Button>
+        </div>
+      </div>
+      {flow.problem !== null && (
+        <Alert variant="destructive" className="rounded-none border-0 border-b" data-testid="board-flow-problem">
+          <CircleAlert />
+          <AlertDescription>{flow.problem}</AlertDescription>
+        </Alert>
+      )}
+    </>
+  );
+}
+
 /**
  * The board of assertion flows in the workbench's partition (docs/assertions-design.md section 8): how the data stands
- * now, one test a line, by flow. The status strip's counts are the filters to the tests they count; a test opens in a
- * sheet on what it found, and runs again from its line, with others picked, or with every test of its flow. How tests
- * came out over earlier runs is the flow's History and Reports tabs' to show.
+ * now. Every flow is one line that opens on its tests, what needs a look first, in a grid that stays as tall as the window
+ * leaves, so a hundred flows read as a hundred lines and the page never grows with them. The status strip's counts, the
+ * search and the type and tag pickers narrow the board to the tests they find and open their flows on them; a search that
+ * names flows lists them closed. A test opens in a sheet on what it found, and runs again from its line, with others
+ * picked, or with every test of its flow. How tests came out over earlier runs is the flow's History and Reports tabs' to
+ * show. The board of one flow, on its Tests tab, lists its tests directly under its heading.
  */
 export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard; scope: "all" | "flow" }) {
   const [params, setParams] = useSearchParams();
-  const [term, setTerm] = useState("");
-  const [tags, setTags] = useState<ReadonlySet<string>>(new Set());
-  const [filter, setFilter] = useState<BoardFilter | null>(null);
-  const [picked, setPicked] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  const [picks, setPicks] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  const [expansion, setExpansion] = useState<Expansion>({ criteria: "", flipped: NOTHING_FLIPPED });
   const [launch, setLaunch] = useState<AssertionLaunch | null>(null);
 
   // The repositories' names, which the board's flows carry only the ids of: a flow's lineage jump names its graph by it.
@@ -324,57 +184,111 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
   });
   const repoNames = useMemo(() => new Map((repos.data?.items ?? []).map((repo) => [repo.id, repo.name])), [repos.data]);
 
-  const totals = board.totals;
-  const allTags = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const test of board.flows.flatMap((flow) => flow.tests)) {
-      for (const tag of test.tags) {
-        counts.set(tag, (counts.get(tag) ?? 0) + 1);
-      }
-    }
-
-    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [board.flows]);
+  const term = params.get("q") ?? "";
+  const filter = boardFilterOf(params.get("status"));
+  const sort = boardSortOf(params.get("sort"));
+  const typeKey = params.getAll("type").join(SEPARATOR);
+  const tagKey = params.getAll("tag").join(SEPARATOR);
   const lowered = term.trim().toLowerCase();
-  const shown = useMemo(
-    () => board.flows.map((flow) => ({ flow, tests: flow.tests.filter((test) => matches(test, lowered, tags, filter)) })),
-    [board.flows, filter, lowered, tags],
-  );
-  const filtering = lowered !== "" || tags.size > 0 || filter !== null;
-  const visible = filtering ? shown.filter((entry) => entry.tests.length > 0) : shown;
+  const criteria = useMemo<BoardCriteria>(() => ({
+    term: lowered,
+    filter,
+    types: new Set(typeKey === "" ? [] : typeKey.split(SEPARATOR)),
+    tags: new Set(tagKey === "" ? [] : tagKey.split(SEPARATOR)),
+  }), [filter, lowered, tagKey, typeKey]);
+  const criteriaKey = [lowered, filter ?? "", typeKey, tagKey].join("\u0000");
+  const narrowed = narrowing(criteria);
+
+  const entries = useMemo(() => boardEntries(board.flows, criteria, sort), [board.flows, criteria, sort]);
+  const allTypes = useMemo(() => facetCounts(board.flows, (test) => [test.kind]), [board.flows]);
+  const allTags = useMemo(() => facetCounts(board.flows, (test) => test.tags), [board.flows]);
   const opened = openedTest(board.flows, scope === "all" ? params.get("flow") : null, params.get("test"));
 
-  const open = (flow: DeliveryAssertionFlow, test: DeliveryAssertionTest | null) => {
-    setParams((was) => {
-      const next = new URLSearchParams(was);
-      for (const key of SHEET_PARAMS) {
-        next.delete(key);
+  // A flow opens when the criteria narrowed its tests, and a reader's own opening or closing of it reverses that until the
+  // criteria change, when every flow takes what the new criteria say again.
+  const flipped = expansion.criteria === criteriaKey ? expansion.flipped : NOTHING_FLIPPED;
+  const isOpen = useCallback((entry: BoardEntry) => entry.narrowed !== flipped.has(entry.flow.pipelineId), [flipped]);
+  const allOpen = entries.length > 0 && entries.every(isOpen);
+
+  const update = useCallback((change: (next: URLSearchParams) => void) => setParams((was) => {
+    const next = new URLSearchParams(was);
+    change(next);
+    return next;
+  }, { replace: true }), [setParams]);
+
+  const setMany = (key: string, values: ReadonlySet<string>) => update((next) => {
+    next.delete(key);
+    for (const value of values) {
+      next.append(key, value);
+    }
+  });
+
+  const onToggle = useCallback((flowId: string) => setExpansion((was) => {
+    const next = new Set(was.criteria === criteriaKey ? was.flipped : NOTHING_FLIPPED);
+    if (next.has(flowId)) {
+      next.delete(flowId);
+    } else {
+      next.add(flowId);
+    }
+
+    return { criteria: criteriaKey, flipped: next };
+  }), [criteriaKey]);
+
+  const onToggleAll = () => setExpansion({
+    criteria: criteriaKey,
+    flipped: new Set(entries.filter((entry) => entry.narrowed === allOpen).map((entry) => entry.flow.pipelineId)),
+  });
+
+  const onSort = useCallback((next: BoardSort) => update((was) => {
+    if (next === "status") {
+      was.delete("sort");
+    } else {
+      was.set("sort", next);
+    }
+  }), [update]);
+
+  const onOpen = useCallback((flow: DeliveryAssertionFlow, test: DeliveryAssertionTest | null) => update((next) => {
+    for (const key of SHEET_PARAMS) {
+      next.delete(key);
+    }
+
+    if (test !== null) {
+      next.set("test", test.name);
+      if (scope === "all") {
+        next.set("flow", flow.pipelineId);
       }
+    }
+  }), [scope, update]);
 
-      if (test !== null) {
-        next.set("test", test.name);
-        if (scope === "all") {
-          next.set("flow", flow.pipelineId);
-        }
-      }
-
-      return next;
-    }, { replace: true });
-  };
-
-  const pick = (flow: DeliveryAssertionFlow, name: string, on: boolean) => setPicked((was) => {
+  const onPick = useCallback((flowId: string, name: string, on: boolean) => setPicks((was) => {
     const next = new Map(was);
-    const set = new Set(next.get(flow.pipelineId) ?? []);
+    const set = new Set(next.get(flowId) ?? []);
     if (on) {
       set.add(name);
     } else {
       set.delete(name);
     }
 
-    next.set(flow.pipelineId, set);
-    return next;
-  });
+    if (set.size === 0) {
+      next.delete(flowId);
+    } else {
+      next.set(flowId, set);
+    }
 
+    return next;
+  }), []);
+
+  const onLaunch = useCallback((flow: DeliveryAssertionFlow, tests: readonly string[]) => setLaunch({
+    pipelineId: flow.pipelineId, repoId: flow.repoId, flowName: flow.name, tests, tags: [],
+  }), []);
+
+  // What is picked counts the tests each flow still declares and runs here, as its run button does.
+  const picked = board.flows
+    .map((flow) => ({ flow, names: flow.tests.filter((t) => t.runsHere && (picks.get(flow.pipelineId)?.has(t.name) ?? false)).map((t) => t.name) }))
+    .filter((entry) => entry.names.length > 0);
+  const pickedTests = picked.reduce((sum, entry) => sum + entry.names.length, 0);
+
+  const totals = board.totals;
   const cells: StripCell[] = [
     { key: "failed", label: "Failing", count: totals.failed, standing: "failed", hint: "A check of error severity failed." },
     { key: "errored", label: "Errored", count: totals.errored, standing: "errored", hint: "The test could not find out: a query OSDU refused, a service that did not answer." },
@@ -396,6 +310,48 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
     );
   }
 
+  const clear = () => update((next) => {
+    for (const key of CRITERIA_PARAMS) {
+      next.delete(key);
+    }
+  });
+
+  const shownTests = entries.reduce((sum, entry) => sum + entry.tests.filter((test) => test.runsHere).length, 0);
+  const single = scope === "flow" ? board.flows[0] : undefined;
+  const none = narrowed
+    ? (
+      <EmptyState
+        title={scope === "all" ? "No flow or test matches" : "No test of this flow matches"}
+        description="Clear the filters to see every test."
+        data-testid="assertion-board-none"
+      />
+    )
+    : single !== undefined && single.problem === null && (
+      <p className="px-3 py-3 text-[12.5px] text-muted-foreground" data-testid="board-flow-none">The flow declares no test.</p>
+    );
+
+  const footer = single !== undefined && single.problem !== null && single.tests.length === 0 ? undefined : (
+    <div className="flex h-8 shrink-0 items-center justify-between gap-3 border-t px-3 text-xs text-muted-foreground" data-testid="assertion-board-footer">
+      <span className="truncate font-mono tabular-nums">
+        {scope === "all"
+          ? narrowed
+            ? `${entries.length.toLocaleString("en-US")} of ${counted(board.flows.length, "flow")}, ${shownTests.toLocaleString("en-US")} of ${counted(totals.tests, "test")}`
+            : `${counted(board.flows.length, "flow")}, ${counted(totals.tests, "test")}`
+          : narrowed
+            ? `${shownTests.toLocaleString("en-US")} of ${counted(totals.tests, "test")}`
+            : counted(totals.tests, "test")}
+      </span>
+      {pickedTests > 0 && (
+        <span className="flex shrink-0 items-center gap-2" data-testid="assertion-board-picked">
+          {scope === "all" && picked.length > 1
+            ? `${counted(pickedTests, "test")} picked in ${picked.length} flows, each run from its flow's line`
+            : `${counted(pickedTests, "test")} picked`}
+          <Button variant="ghost" size="xs" onClick={() => setPicks(new Map())} data-testid="assertion-board-unpick">Clear</Button>
+        </span>
+      )}
+    </div>
+  );
+
   return (
     <div className="flex flex-col gap-3" data-testid="assertion-board">
       <StatusStrip
@@ -404,50 +360,89 @@ export function AssertionBoard({ board, scope }: { board: DeliveryAssertionBoard
         bar={{ passed: totals.passed, warned: totals.warned, failed: totals.failed, errored: totals.errored, skipped: totals.notRun }}
         cells={cells}
         selected={filter}
-        onSelect={(key) => setFilter(key as BoardFilter | null)}
+        onSelect={(key) => update((next) => {
+          if (key === null) {
+            next.delete("status");
+          } else {
+            next.set("status", key as BoardFilter);
+          }
+        })}
         testId="assertion-scoreboard"
       />
 
       <FilterBar>
         <SearchInput
           value={term}
-          onChange={setTerm}
-          placeholder="Find a test by name, type, tag, query or check"
-          label="Find a test"
+          onChange={(value) => update((next) => {
+            if (value === "") {
+              next.delete("q");
+            } else {
+              next.set("q", value);
+            }
+          })}
+          placeholder={scope === "all" ? "Find a flow, or a test by its name, type, tag, query or check" : "Find a test by its name, type, tag, query or check"}
+          label={scope === "all" ? "Find a flow or a test" : "Find a test"}
           testId="assertion-board-search"
-          className="sm:w-96"
+          className="sm:w-[30rem]"
         />
-        <TagFilter tags={allTags} picked={tags} onChange={setTags} />
-        {filtering && (
-          <Button variant="ghost" size="sm" onClick={() => { setTerm(""); setTags(new Set()); setFilter(null); }} data-testid="assertion-board-clear">
+        {allTypes.length > 1 && (
+          <FacetFilter
+            icon={Boxes}
+            label="Types"
+            values={allTypes}
+            picked={criteria.types}
+            onChange={(next) => setMany("type", next)}
+            render={(kind) => <KindName kind={kind} />}
+            summary={(kinds) => kinds.length === 1 ? kindEntity(kinds[0]!) : `${kinds.length} types`}
+            testId="assertion-board-types"
+          />
+        )}
+        <FacetFilter
+          icon={Tags}
+          label="Tags"
+          values={allTags}
+          picked={criteria.tags}
+          onChange={(next) => setMany("tag", next)}
+          render={(tag) => <span className="font-mono">#{tag}</span>}
+          summary={(tags) => tags.map((tag) => `#${tag}`).join(", ")}
+          testId="assertion-board-tags"
+        />
+        {narrowed && (
+          <Button variant="ghost" size="sm" onClick={clear} data-testid="assertion-board-clear">
             <X />
             Clear
           </Button>
         )}
       </FilterBar>
 
-      {visible.length === 0
-        ? <EmptyState title="No test matches" description="Clear the filters to see every test." data-testid="assertion-board-none" />
-        : visible.map(({ flow, tests }) => (
-          <FlowSection
-            key={flow.pipelineId}
-            flow={flow}
-            repoName={repoNames.get(flow.repoId) ?? flow.repoId}
-            tests={tests}
-            scope={scope}
-            picked={picked.get(flow.pipelineId) ?? new Set()}
-            onPick={(name, on) => pick(flow, name, on)}
-            onOpen={(test) => open(flow, test)}
-            onLaunch={(names) => setLaunch({ pipelineId: flow.pipelineId, repoId: flow.repoId, flowName: flow.name, tests: names, tags: [] })}
-          />
-        ))}
+      <AssertionBoardGrid
+        scope={scope}
+        entries={entries}
+        isOpen={isOpen}
+        allOpen={allOpen}
+        onToggleAll={onToggleAll}
+        sort={sort}
+        onSort={onSort}
+        listKey={`${criteriaKey} ${sort}`}
+        repoNames={repoNames}
+        picks={picks}
+        onToggle={onToggle}
+        onPick={onPick}
+        onOpen={onOpen}
+        onLaunch={onLaunch}
+        none={none}
+        footer={footer}
+        heading={single !== undefined
+          ? <FlowHeading flow={single} picked={picked.find((entry) => entry.flow === single)?.names ?? []} onLaunch={onLaunch} />
+          : undefined}
+      />
 
       {opened !== null && (
         <AssertionTestSheet
           flow={opened.flow}
           test={opened.test}
-          onClose={() => open(opened.flow, null)}
-          onRun={(test) => setLaunch({ pipelineId: opened.flow.pipelineId, repoId: opened.flow.repoId, flowName: opened.flow.name, tests: [test.name], tags: [] })}
+          onClose={() => onOpen(opened.flow, null)}
+          onRun={(test) => onLaunch(opened.flow, [test.name])}
         />
       )}
       <AssertionRunDialog launch={launch} onClose={() => setLaunch(null)} />

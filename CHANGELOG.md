@@ -491,6 +491,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The Tests board holds a hundred flows.** It listed every flow as a card with every test under it, so a hundred
+  flows of about a dozen tests each made a page some fifty screens long, in name order, with the failing tests spread
+  through it. Each flow is now one line: the type it reads, how its tests stand (a bar and the counts, worst first,
+  every count on hover), its last run, and its run buttons. The flows come in the order of what needs a look, failed
+  tests first and the flow with more of them before the one with fewer, then errored, a document that does not parse,
+  warned, unfit and not run, then passing, and flows of other partitions last; the column headings order them by name or
+  by the newest run instead. A flow opens in place on its tests, its line staying under the headings while they scroll,
+  and the heading's toggle opens or closes every flow. The grid is as tall as the window leaves and scrolls inside
+  itself, so the page no longer grows with the flows, and it renders only the flows in and near view, so opening every
+  flow of a thousand tests stays quick. The strip of counts, the search, and a new type picker beside the tag picker
+  narrow the board to the tests they find and open their flows on them; the search also finds a flow by its name, and
+  lists those flows closed. The criteria and the order live in the page's address, so a report opened from the board and
+  left with Back finds it as it was. The board names a flow whose document does not parse apart from one that tests
+  other partitions (`parses` on each flow of `GET /api/v1/delivery/assertions`), so the first is ranked with the errors
+  and the second, which needs nothing here, last. A pipeline's Tests tab lists its flow's tests in the same grid.
 - **The palette reads, there is one blue, and the lineage graph wears the workbench's colors in both themes.** The
   status colors (green, amber, blue, red) are set where their own text reads at 4.6:1 or more on the tint a chip fills
   with, in light and in dark, and the four sit level with each other; in light mode they were under the 4.5:1 the design

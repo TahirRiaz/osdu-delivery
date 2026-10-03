@@ -86,6 +86,9 @@ public sealed class DeliveryAssertionApiTests
             });
             db.Pipelines.Add(Pipeline(pipelineId, repoId, flowName, "assertion", yaml, now));
             db.Pipelines.Add(Pipeline(deliveryPipelineId, repoId, flowName + "-delivery", "ingestion", "flowType: ingestion", now));
+            db.Pipelines.Add(Pipeline(
+                CatalogIdentity.Pipeline(repoId, flowName + "-broken"), repoId, flowName + "-broken", "assertion",
+                $"flowType: assertion\nname: {flowName}-broken\nsource: {{ endpoint: http://localhost }}\ntests: []", now));
             await db.SaveChangesAsync();
         }
 
@@ -129,6 +132,8 @@ public sealed class DeliveryAssertionApiTests
             Assert.Equal(partition, board.GetProperty("partition").GetString());
             var listed = board.GetProperty("flows").EnumerateArray().Single(f => f.GetProperty("name").GetString() == flowName);
             Assert.True(listed.GetProperty("testsPartition").GetBoolean());
+            Assert.True(listed.GetProperty("parses").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, listed.GetProperty("problem").ValueKind);
             Assert.Equal([partition], listed.GetProperty("partitions").EnumerateArray().Select(p => p.GetString()));
             Assert.Equal("logSource", listed.GetProperty("parameters")[0].GetProperty("name").GetString());
             Assert.Equal("STAT_COMP", listed.GetProperty("parameters")[0].GetProperty("default").GetString());
@@ -154,6 +159,21 @@ public sealed class DeliveryAssertionApiTests
             // A test reading fields of a kind whose template is not saved is told so, and how to capture one.
             var problem = Assert.Single(tests["unsaved-kind"].GetProperty("problems").EnumerateArray()).GetString();
             Assert.Contains("sqlflow template capture", problem, StringComparison.Ordinal);
+
+            // A flow whose document does not parse says why, and that it does not parse, which needs a fix.
+            var broken = board.GetProperty("flows").EnumerateArray().Single(f => f.GetProperty("name").GetString() == flowName + "-broken");
+            Assert.False(broken.GetProperty("parses").GetBoolean());
+            Assert.False(broken.GetProperty("testsPartition").GetBoolean());
+            Assert.Contains("does not parse", broken.GetProperty("problem").GetString(), StringComparison.Ordinal);
+            Assert.Empty(broken.GetProperty("tests").EnumerateArray());
+
+            // Read in a partition it does not test, the flow parses, says which partition it tests, and lists no test.
+            var other = await JsonAsync(client, token, $"/api/v1/delivery/assertions?partition=elsewhere{suffix}");
+            var elsewhere = other.GetProperty("flows").EnumerateArray().Single(f => f.GetProperty("name").GetString() == flowName);
+            Assert.True(elsewhere.GetProperty("parses").GetBoolean());
+            Assert.False(elsewhere.GetProperty("testsPartition").GetBoolean());
+            Assert.Contains(partition, elsewhere.GetProperty("problem").GetString(), StringComparison.Ordinal);
+            Assert.Empty(elsewhere.GetProperty("tests").EnumerateArray());
 
             // One flow's board is the same flow, alone.
             var own = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId}/assertions?partition={partition}");

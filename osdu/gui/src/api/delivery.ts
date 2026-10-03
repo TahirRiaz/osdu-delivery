@@ -2131,6 +2131,8 @@ export interface DeliveryAssertionFlow {
   partition: string | null;
   /** False when the flow does not test the board's partition (or its document does not parse: see `problem`). */
   testsPartition: boolean;
+  /** False when the catalog's copy of the document does not parse, which needs a fix; a flow of another partition parses. */
+  parses: boolean;
   partitions: string[];
   failRunOn: "error" | "warning" | "never";
   /** The parameters a run of the flow takes, which its tests use as `{name}` tokens. */

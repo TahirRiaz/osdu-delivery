@@ -224,8 +224,14 @@ would test.
 
 The GUI is built on one rule: a test is worth what its last run found about the data as it is now, so every surface
 leads with that, says each thing once, and leaves earlier runs to the flow's History and Reports tabs. The board (OSDU,
-**Tests**) shows every test of every assertion flow, one line each with the verdict of its last result, under a strip of
-counts that filter them; a test whose result is older than its flow's last run says so. A test opens in a sheet whose
+**Tests**) is built for a hundred flows and their thousand tests: one line per flow, saying the type it reads, how its
+tests stand (a bar and the counts, worst first), its last run, and its run buttons, in a grid that is as tall as the window
+leaves and scrolls inside itself. The flows come in the order of what needs a look (failed tests first, then errored, a
+document that does not parse, warned, unfit, not run, then passing, and flows of other partitions last), or by name, or by
+newest run. A flow opens in place on its tests, one line each with the verdict of its last result; a test whose result is
+older than its flow's last run says so. The strip of counts, the search, and the type and tag pickers narrow the board to
+the tests they find and open their flows on them; a search that names flows lists them closed. The criteria live in the
+page's address, so a report opened from the board and left with Back finds it as it was. A test opens in a sheet whose
 **Checks** tab opens on the checks that ask for a look, each of which opens on its own with what it found and the records
 that failed it, and whose **Definition** tab says what the test reads. A pipeline of the kind has three tabs: **Tests**
 (its board), **History** (its tests against its runs, with how often each flipped) and **Reports** (its runs). A report
