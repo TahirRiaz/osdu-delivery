@@ -15,14 +15,16 @@ using SqlFlow.Execution;
 namespace SqlFlow.Delivery.Engine.Operations;
 
 /// <summary>
-/// The ad-hoc operations a node runs near the target on the control plane's behalf: what the GUI's buttons do
-/// when they need OSDU rather than the ledger. A task names the flow (<c>sourceRef</c>) whose target and
-/// credentials it uses and carries the flow file's location (<c>repoRoot</c> + <c>relativePath</c> as the
-/// catalog knows them, or an absolute <c>flowFile</c>); the node resolves every credential itself, exactly as it
-/// does for a run. The document must declare the named flow, so a stale catalog can never aim an operation at
-/// the wrong target. A flow that declares interfaces is acted on through the one the task names (<c>interface</c>); the
-/// others are never touched. A flow that names its partitions is acted on in the one the task names (<c>partition</c>),
-/// resolving its references with the central configuration the control plane supplied for it (<c>references</c>).
+/// The ad-hoc operations of a flow: what the GUI's buttons do when they need OSDU or the ingestion tables rather than the
+/// ledger. A person's reads run in the control plane as they are asked (<see cref="DirectOperations"/>); what scans or
+/// writes (a value check, a removal) is queued for a node. Either way the payload is the same: it names the flow
+/// (<c>sourceRef</c>) whose target and credentials it uses and carries the flow file's location (<c>repoRoot</c> +
+/// <c>relativePath</c> as the catalog knows them, or an absolute <c>flowFile</c>), and the process running it resolves every
+/// credential itself, exactly as it does for a run. The document must declare the named flow, so a stale catalog can never
+/// aim an operation at the wrong target. A flow that declares interfaces is acted on through the one the payload names
+/// (<c>interface</c>); the others are never touched. A flow that names its partitions is acted on in the one the payload
+/// names (<c>partition</c>), resolving its references with the central configuration the control plane supplied for it
+/// (<c>references</c>).
 /// </summary>
 public abstract class DeliveryOperation : IComputeOperation
 {
@@ -69,34 +71,31 @@ public abstract class DeliveryOperation : IComputeOperation
         var bound = source.Resolve(requested, registry);
         var flow = bound.Interface(payload.Argument("interface"));
 
-        // Every task resolves its references as a run of the same flow and partition does: from the configuration the control
-        // plane supplied, the partition's own values first, and only then from the node's environment.
+        // Every operation resolves its references as a run of the same flow and partition does: from the configuration the
+        // control plane supplied, the partition's own values first, and only then from the process's environment.
         var context = _context.WithSuppliedReferences(Supplied(payload).ReferencesFor(bound.Partition));
         var result = await RunAsync(context, flow, payload, ct).ConfigureAwait(false);
         return JsonSerializer.Serialize(result, JsonOptions);
     }
 
     /// <summary>
-    /// Runs the operation on <paramref name="flow"/>, the interface the task names bound to the partition it names, with
-    /// <paramref name="context"/>: the node's services resolving references with the configuration supplied for the task.
+    /// Runs the operation on <paramref name="flow"/>, the interface the payload names bound to the partition it names, with
+    /// <paramref name="context"/>: the process's services resolving references with the configuration supplied for it.
     /// </summary>
     protected abstract Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct);
 
-    /// <summary>The flow's protocol over a fresh HTTP runtime; the caller disposes the runtime.</summary>
-    protected static async Task<(HttpRuntime Http, IDeliveryProtocol Protocol)> OpenTargetAsync(EngineContext context, FlowDefinition flow, CancellationToken ct)
+    /// <summary>
+    /// A connection to the flow's target for one operation: the one the engine keeps for that target between operations
+    /// (<see cref="TargetClients"/>), so a token and its connections are not made again for every read, or one of its own
+    /// where the engine keeps none. The caller disposes the lease; a kept connection stays.
+    /// </summary>
+    protected static async Task<TargetLease> OpenTargetAsync(EngineContext context, FlowDefinition flow, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
-        var http = new HttpRuntime(flow.Reliability, context.Secrets, context.Time, allowLoopback: EngineContext.LoopbackAllowed);
-        try
-        {
-            var protocol = await context.Protocols.CreateAsync(flow, http, context.Loggers, ct).ConfigureAwait(false);
-            return (http, protocol);
-        }
-        catch
-        {
-            http.Dispose();
-            throw;
-        }
+        ArgumentNullException.ThrowIfNull(flow);
+        return context.Clients is { } clients
+            ? await clients.OpenAsync(context, flow, ct).ConfigureAwait(false)
+            : TargetClients.OneOff(context, flow, null, EngineContext.LoopbackAllowed);
     }
 
     /// <summary>
@@ -152,7 +151,7 @@ public abstract class DeliveryOperation : IComputeOperation
         file = Path.GetFullPath(file);
         if (!File.Exists(file))
         {
-            throw new SqlFlowException($"The flow file for '{payload.SourceRef}' was not found on this node: {file}");
+            throw new SqlFlowException($"The flow file for '{payload.SourceRef}' was not found where its repository was synced: {file}. Re-sync the repository.");
         }
 
         return file;
@@ -176,23 +175,21 @@ public sealed class ProbeTargetOperation : DeliveryOperation
 
     protected override async Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
-        var (http, protocol) = await OpenTargetAsync(context, flow, ct).ConfigureAwait(false);
-        using (http)
+        using var target = await OpenTargetAsync(context, flow, ct).ConfigureAwait(false);
+        var protocol = await target.ProtocolAsync(ct).ConfigureAwait(false);
+        var probe = await protocol.ProbeAsync(ct).ConfigureAwait(false);
+        return new
         {
-            var probe = await protocol.ProbeAsync(ct).ConfigureAwait(false);
-            return new
-            {
-                flow = flow.Label,
-                protocol = protocol.Kind.ToString(),
-                endpoint = flow.Target.Endpoint,
-                auth = flow.Target.Auth.Type.ToString(),
-                probe.Reachable,
-                probe.Status,
-                probe.Detail,
-                probe.Path,
-                checkedUtc = context.Time.GetUtcNow().UtcDateTime,
-            };
-        }
+            flow = flow.Label,
+            protocol = protocol.Kind.ToString(),
+            endpoint = flow.Target.Endpoint,
+            auth = flow.Target.Auth.Type.ToString(),
+            probe.Reachable,
+            probe.Status,
+            probe.Detail,
+            probe.Path,
+            checkedUtc = context.Time.GetUtcNow().UtcDateTime,
+        };
     }
 }
 
@@ -239,11 +236,9 @@ public sealed class ReadRecordOperation : DeliveryOperation
             }
         }
 
-        var (http, protocol) = await OpenTargetAsync(context, flow, ct).ConfigureAwait(false);
-        using (http)
-        {
-            return await ReadBackAsync(protocol, flow.Label, targetId, targetState, version, deliveryKey, context.Time, ct).ConfigureAwait(false);
-        }
+        using var target = await OpenTargetAsync(context, flow, ct).ConfigureAwait(false);
+        var protocol = await target.ProtocolAsync(ct).ConfigureAwait(false);
+        return await ReadBackAsync(protocol, flow.Label, targetId, targetState, version, deliveryKey, context.Time, ct).ConfigureAwait(false);
     }
 
     /// <summary>The version a read task names (<c>version</c>), or null to read the record at its latest.</summary>

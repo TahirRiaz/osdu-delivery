@@ -12,12 +12,11 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sqlflow_mcp::json_str;
 use sqlflow_mcp::rmcp::handler::server::wrapper::Parameters;
 use sqlflow_mcp::rmcp::{self, schemars, tool, tool_router};
 
 use super::{DeliveryTools, PIPELINE_HINT, RECORD_HINT};
-use crate::support::{guid, optional_guid, refuse, text, Query, TASK_TEXT_LIMIT};
+use crate::support::{guid, optional_guid, refuse, text, Query};
 
 /// The most records one call names by key, as a run's payload carries at most.
 const MAX_KEYS: usize = 1000;
@@ -132,10 +131,10 @@ pub struct DecideCacheChangesInput {
 #[tool_router(router = operate_router, vis = "pub(crate)")]
 impl DeliveryTools {
     #[tool(
-        description = "Probe a delivery flow's OSDU target (operate scope): a node runs the flow's token exchange and reaches the services \
-it delivers to, and the answer says step by step what answered and what did not. Use it for 'is the dev OSDU \
-reachable', 'why does every delivery fail with 401', and after credentials or configuration changed. It reads no \
-records and writes nothing. The tool waits for the node, usually a few seconds."
+        description = "Probe a delivery flow's OSDU target (operate scope): the control plane runs the flow's token exchange and reaches \
+the service it delivers to, and the answer says whether it answered, with the status and the path asked. Use it for \
+'is the dev OSDU reachable', 'why does every delivery fail with 401', and after credentials or configuration changed. \
+It reads no records and writes nothing. It answers in seconds."
     )]
     async fn delivery_probe_target(&self, Parameters(i): Parameters<FlowTargetInput>) -> String {
         let pipeline = match guid("pipelineId", &i.pipeline_id, PIPELINE_HINT) {
@@ -146,14 +145,7 @@ records and writes nothing. The tool waits for the node, usually a few seconds."
             .text("interface", i.interface)
             .text("partition", i.partition)
             .onto(&format!("/api/v1/delivery/flows/{pipeline}/probe"));
-        let accepted = match self.ctx.send(&path, json!({})).await {
-            Ok(accepted) => accepted,
-            Err(error) => return refuse(format!("{error:#}")),
-        };
-        match self.ctx.follow_task("probe", &accepted, Some(TASK_TEXT_LIMIT)).await {
-            Ok(task) => json_str(&task),
-            Err(error) => refuse(format!("{error:#}")),
-        }
+        self.ctx.post(&path, json!({})).await
     }
 
     #[tool(

@@ -71,6 +71,22 @@ services:
       ControlPlane__Cors__AllowedOrigins__0: http://localhost:8081
       # Compute belongs to the worker service; this replica is API + scheduler + sync only.
       ControlPlane__Worker__Enabled: "false"
+      # A person's reads of a flow (a probe of its target, a record read back from OSDU, its rows read from the
+      # ingestion tables, a preview, a scope's values, the explorer) run here under the flow's own credentials, so the
+      # references the flows use resolve here as they do on the worker. Keep this list and the worker's the same. The
+      # control plane never delivers: runs, value checks and removals stay on the worker.
+      SQLFLOW_CONN_PRE: "Server=mssql;Database=OsduDeliveryPre;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      SQLFLOW_CONN_DWH: "Server=mssql;Database=OsduDeliveryIng;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
+      OSDU_URL: ${OSDU_URL:-}
+      OSDU_TOKEN_URL: ${OSDU_TOKEN_URL:-}
+      OSDU_SCOPE: ${OSDU_SCOPE:-}
+      OSDU_CLIENT_ID: ${OSDU_CLIENT_ID:-}
+      OSDU_CLIENT_SECRET: ${OSDU_CLIENT_SECRET:-}
+      OSDU_DATA_PARTITION: ${OSDU_DATA_PARTITION:-}
+      OSDU_ACL_OWNER: ${OSDU_ACL_OWNER:-}
+      OSDU_ACL_VIEWER: ${OSDU_ACL_VIEWER:-}
+      OSDU_LEGAL_TAG: ${OSDU_LEGAL_TAG:-}
+      SQLFLOW_DELIVERY_PRIVATE_NETWORKS: ${SQLFLOW_DELIVERY_PRIVATE_NETWORKS:-}
     ports:
       - "5000:8080"
     healthcheck:
@@ -126,8 +142,9 @@ services:
       # loads the keyed tables into the second, and the OSDU flow reads those tables.
       SQLFLOW_CONN_PRE: "Server=mssql;Database=OsduDeliveryPre;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
       SQLFLOW_CONN_DWH: "Server=mssql;Database=OsduDeliveryIng;User ID=sa;Password=${MSSQL_SA_PASSWORD};TrustServerCertificate=True"
-      # Every ${env:...} reference the flows declare resolves here, on the node; the sample estate names these
-      # nine. The control plane carries none of them. A plan run needs no OSDU target, so they can stay empty.
+      # Every ${env:...} reference the flows declare resolves here, on the node, and in the control plane, which
+      # answers a person's reads of a flow; the sample estate names these nine. A plan run needs no OSDU target, so
+      # they can stay empty.
       OSDU_URL: ${OSDU_URL:-}
       OSDU_TOKEN_URL: ${OSDU_TOKEN_URL:-}
       OSDU_SCOPE: ${OSDU_SCOPE:-}

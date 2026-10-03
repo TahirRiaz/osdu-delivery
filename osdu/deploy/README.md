@@ -146,7 +146,9 @@ Sign in at the `guiUrl` output with the bootstrap admin, then mint a node-scoped
   (`SQLFLOW_AZURE_AUTH=mi`). The `osdu` schema's connection and the pre and ingestion connections are wired for
   free under their fixed names, on both tiers. The OSDU credentials a pool's flows use are added via
   `workerFlowEnv`, one `{ name, secretName }` entry per reference naming a secret created in the vault out of
-  band, so no credential passes through the template. The deploying principal needs to create role assignments
+  band, so no credential passes through the template. The control plane is given the same references, because a
+  person's reads of a flow (a probe, a record read back, a preview, a source read, the explorer) run there under
+  the flow's own credentials; it never delivers. The deploying principal needs to create role assignments
   (Owner or User Access Administrator) and to write vault secrets (Key Vault Secrets Officer; the vault uses RBAC).
 - **Bring your own SQL and network**: `existingSqlServer=<host[,port]>` points the databases at a server you
   already run (a Managed Instance FQDN, for example) instead of creating one; create the databases there yourself,
@@ -194,10 +196,13 @@ The layout and the reasoning behind it:
   `GET /api/v1/node/scale-target?pool=<name>` with the node token and scales the matching Deployment;
   `minReplicaCount: 0` means an idle pool costs nothing. Copy `worker-pool.yaml` per pool (set
   `SQLFLOW_WORKER_POOL` and the URL's `?pool=`).
-- **Secrets stay on the tier that uses them**: the control plane gets the metadata connection and JWT material;
-  nodes get a node token, the git token, a connection to the `osdu` schema of their own, the pre and ingestion
-  connections and every `${env:...}` reference their pool's flows use, and never the catalog's own credential. Nothing data-plane
-  ever passes through the control plane.
+- **Secrets stay on the tier that uses them**: the control plane gets the metadata connection and JWT material,
+  and the flows' `${env:...}` references, which a person's reads of a flow (a probe, a record read back, a preview,
+  a source read, the explorer) resolve there as a run resolves them on a node; nodes get a node token, the git
+  token, a connection to the `osdu` schema of their own, the pre and ingestion connections and every `${env:...}`
+  reference their pool's flows use, and never the catalog's own credential. Keep `controlplane.yaml`'s flow
+  references and the pools' the same. The control plane reads; nothing it does delivers, and no run passes through
+  it.
 
 ## Scale-in must not sever a delivery
 

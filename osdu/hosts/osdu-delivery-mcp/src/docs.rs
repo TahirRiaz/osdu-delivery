@@ -143,6 +143,16 @@ const SOURCES: &[Source] = &[
         text: osdu_doc!("dimension-plan.md"),
     },
     Source {
+        id: "delivery-explorer",
+        title: "The explorer",
+        doc_type: "guide",
+        path: "osdu/docs/explorer.md",
+        summary: "The Explorer page: browsing what an OSDU partition holds by type, searching by id or text, a record under the place it sits, two versions compared, and the API it reads through.",
+        keywords: &["explorer", "browse", "search", "kind", "type", "lucene", "near ids", "mentions", "compare versions", "partition"],
+        verbs: false,
+        text: osdu_doc!("explorer.md"),
+    },
+    Source {
         id: "delivery-interfaces",
         title: "Interfaces: one flow per source",
         doc_type: "concept",

@@ -14,7 +14,7 @@ public sealed class HttpRuntime : IDisposable
     private readonly HttpClient _client;
 
     /// <param name="reliability">The flow's reliability settings.</param>
-    /// <param name="secrets">Resolves the secret references auth names.</param>
+    /// <param name="secrets">Resolves every reference the flow reaches its target with: the endpoint, the headers and the secrets auth names.</param>
     /// <param name="time">The clock; the system clock when null.</param>
     /// <param name="handler">A handler to send through instead of the network (the tests).</param>
     /// <param name="allowLoopback">Whether loopback addresses are reachable.</param>
@@ -40,8 +40,15 @@ public sealed class HttpRuntime : IDisposable
         Retry = new RetryPolicy(reliability.Retry, clock);
         Data = new HttpExecutor(_client, Retry, new RateLimiter(reliability.RateLimitRps, clock), new UrlGuard(reliability.UrlAllowlist, Network), reliability.MaxResponseBytes, clock, observer);
         Auth = new HttpExecutor(_client, Retry, new RateLimiter(0, clock), new UrlGuard([], Network), 1024 * 1024, clock, observer);
+        Secrets = secrets;
         AuthResolver = new AuthResolver(secrets, clock);
     }
+
+    /// <summary>
+    /// What resolves every reference this stack reaches the target with: the endpoint, the headers and the credentials. A
+    /// run's or an operation's own, carrying the central configuration it was given ahead of the process's environment.
+    /// </summary>
+    public ISecretResolver Secrets { get; }
 
     /// <summary>The addresses this stack reaches.</summary>
     public NetworkPolicy Network { get; }

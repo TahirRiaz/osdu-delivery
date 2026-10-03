@@ -34,7 +34,7 @@ Everything the platform already reads ([environment-variables.md](environment-va
 | `Osdu:Telemetry:AzureMonitorConnectionRef` | control plane | The Azure Monitor connection string, as a reference; required when the exporter is `azuremonitor`. |
 | `Osdu:Telemetry:ExportSeconds` / `:ServiceName` / `:ServiceInstanceId` | control plane | How often the metrics are sent (default 60, never under 5), and what a backend groups them under (default `osdu-delivery`, and the machine name). |
 | `OSDU_TELEMETRY_EXPORTER` and `OSDU_TELEMETRY_*` | nodes | The same settings for a node, which takes every setting from its environment: `_OTLP_ENDPOINT`, `_OTLP_PROTOCOL`, `_OTLP_HEADERS`, `_AZURE_MONITOR_CONNECTION`, `_EXPORT_SECONDS`, `_SERVICE_NAME`, `_SERVICE_INSTANCE`. A one-shot CLI command exports nothing: it ends before the first export. |
-| `Osdu:TargetProbe:SettleSeconds` / `:MaxPerPass` | control plane | How long a pass waits for the probes it queued before moving on (default 60, 0 not to wait; whatever has not come back is recorded by the next pass), and how many interfaces one pass probes across every flow (default 200, the rest on the passes after it once the estate is narrowed). |
+| `Osdu:TargetProbe:MaxPerPass` | control plane | How many interfaces one pass probes across every flow (default 200, the rest on the passes after it once the estate is narrowed). |
 | `Osdu:Database:Connection` / `SQLFLOW_OSDU_DB` | every tier | Where the `osdu` schema is (the ledger, the mappings, the templates and the caches), as a `${env:...}` or `${keyvault:...}` reference; the login needs rights on schema `osdu` alone, and a literal secret is refused at startup. Left unset it is the catalog's own database, which is what the shipped deployments do: one metadata database, the two schemas beside each other. An estate that must keep them in two databases names the second here, on the control plane, which migrates and verifies it after the catalog, and on every node. A node opens no catalog connection at all, so a node always needs this, pointed at whichever database holds the schema; without it a node validates and plans but delivers nothing. Which of the two shapes an estate is cannot be changed by editing the setting afterwards, so choose before the first migrate. |
 | Repository layout | flow repositories | `mappings/` next to the flows (or named under `render.mappings`), and the cache flows (`flowType: cache`) that fill the partition caches the mappings read, committed and synced. The templates the mappings pin and every version of every cache live in the catalog, never in the repository; nothing writes to the repository. |
 
@@ -164,18 +164,18 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /cache/gaps` | read | What delivered records of the partition `scope` names were built without, most records first, paged (`page`, `pageSize`) with the count of every gap: each value no cached record answered to (`unlisted`, a wellbore the cache does not hold yet), each key a `$findAll` found no row under in any form it was asked for (`listed`, a field no access group lists; a reference with and without its version separator is one key), and each id written without its record (`unverified`), with how many records were built so; `type` narrows to one cached type, and `empty=true` adds the paths read that held nothing (a wellbore without a field). Every gap is filled by the refresh that brings what is missing, which tags the records and redelivers them. |
 | `GET /records/{flowId}/{key}/cache` | read | What one record read out of the cache when it was rendered: the partition, the cached item, the path and the value. |
 | `POST /flows/{pipelineId}/release` | operate | Release the flow's blocked records (all, or `keys`). |
-| `POST /flows/{pipelineId}/probe` | operate | Queue a target probe on a node; poll `GET /api/v1/compute/tasks/{taskId}`. |
+| `POST /flows/{pipelineId}/probe` | operate | Probe the flow's target under the flow's credentials and answer with what it found: `reachable`, the `status` the service answered and the `path` asked. A refusal is an answer, not a failure. |
 | `POST /flows/{pipelineId}/sync` | operate | Queue a timeline sync of the interface's records ([Syncing the ledger with the source](#syncing-the-ledger-with-the-source)): the ones `keys` names, every one `filter` matches (resolved when queued, at most 1,000, the most a run names; refused with 409 when it no longer matches `expected`), or, with neither, every record. Answers the run to follow. Nothing reaches OSDU. |
 | `POST /records/{flowId}/{key}/sync` | operate | Queue a timeline sync of one record: a run that reads its row by its stored key and consolidates the ledger with it. |
 | `POST /records/{flowId}/{key}/release`, `/redeliver`, `/verify` | operate | Release one record; redeliver it (`scope`: `all`, `record`, or `files`, `bulk` or `workflow` as the record's route sends them, a part the route does not send being refused with 400; on the fileAndDdms, manifestAndDdms and workflow routes a part is sent alone, the others staying as OSDU holds them; `metadata` names the record and `payload` every part; `run` true queues a deliver run scoped to the record, which reads it from the ingestion tables by key under its last submission's parameter values, marks it with that scope and sends it); queue a verify run scoped to it. |
-| `POST /records/{flowId}/{key}/source` | operate | Queue a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its system columns, its child datasets, and the origin file and row. Nothing is planned or delivered; poll `GET /api/v1/compute/tasks/{taskId}`. |
-| `POST /records/{flowId}/{key}/read` | operate | Queue a read-back, on a node, of the OSDU record the flow's record claimed; a record that never queued a document has none to read. |
-| `POST /flows/{pipelineId}/preview` | operate | Queue a preview of one record on a node ([Previewing a record](#previewing-a-record)): `key` names it (a delivery key, an OSDU id the ledger holds, a source key as the Records page shows it, or a JSON array of the key's parts), or is left out for the first record of the scope; `values` fill the flow's parameters, the declared defaults filling the rest. The record is rendered as a delivery would render it and nothing is sent or written. An undeclared parameter, a required one without a value, a key with a control character or over 4,000 characters, and values over 4,000 characters as JSON are refused with 400 before anything is queued. Poll `GET /api/v1/compute/tasks/{taskId}`: a key that names no row is an answer (`found` false with the `reason`), not a failure. |
-| `POST /flows/{pipelineId}/scope-values` | operate | Queue a read of the values each parameter of the interface's scope can take, on a node: for every parameter `source.record.scope` binds to a column of the record table, the distinct values that column holds in rows not marked deleted, the most rows first with each one's row count, up to 500 (`more` when it holds more). It needs no parameter value, since it is what a value is picked from, reads with the flow's own connection whatever the source and its columns, and writes nothing. What the Preview tab, a mapping's value check and the trigger dialog offer for a scope's value. Poll `GET /api/v1/compute/tasks/{taskId}`. |
+| `POST /records/{flowId}/{key}/source` | operate | Read the record's rows as the ingestion tables hold them now, with the flow's own connection, and answer with them: the record row with its system columns, its child datasets, and the origin file and row. Nothing is planned or delivered. |
+| `POST /records/{flowId}/{key}/read` | operate | Read back the OSDU record the flow's record claimed, through the flow's route, and answer with it (`version` reads it at that version); a record that never queued a document has none to read. |
+| `POST /flows/{pipelineId}/preview` | operate | Preview one record and answer with it ([Previewing a record](#previewing-a-record)): `key` names it (a delivery key, an OSDU id the ledger holds, a source key as the Records page shows it, or a JSON array of the key's parts), or is left out for the first record of the scope; `values` fill the flow's parameters, the declared defaults filling the rest. The record is rendered as a delivery would render it and nothing is sent or written. An undeclared parameter, a required one without a value, a key with a control character or over 4,000 characters, and values over 4,000 characters as JSON are refused with 400 before anything runs. A key that names no row is an answer (`found` false with the `reason`), not a failure. |
+| `POST /flows/{pipelineId}/scope-values` | operate | Read the values each parameter of the interface's scope can take, and answer with them: for every parameter `source.record.scope` binds to a column of the record table, the distinct values that column holds in rows not marked deleted, the most rows first with each one's row count, up to 500 (`more` when it holds more). It needs no parameter value, since it is what a value is picked from, reads with the flow's own connection whatever the source and its columns, and writes nothing. What the Preview tab, a mapping's value check and the trigger dialog offer for a scope's value. |
 | `POST /flows/{pipelineId}/check-values` | operate | Queue a value check of one interface's rows on a node ([Checking a mapping's values](#checking-a-mappings-values)): `targets` names the attributes to check as template paths (none checks every attribute; at most 200), `values` fill the flow's parameters, `maxRows` is how many rows to read (10,000 when left out, 0 for the whole scope), `samples` how many example records each finding names (20 when left out, at most 500) and `skipSamples` how many it passes over first, and `mapping` the mapping it is asked of (`Name@version`), which the flow must render with. Nothing is sent or written. A target that is not a template path, an undeclared parameter, a required one without a value, a negative count, and arguments over 4,000 characters as JSON are refused with 400 before anything is queued; a target no entry of the mapping reaches fails the task, naming it. Poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{flowId}/{key}/preview` | operate | The same preview for one record of the ledger, read in the scope it was last planned under: what the record renders to now, which its page compares with what OSDU holds. |
-| `POST /flows/{pipelineId}/osdu/read` | operate | Queue a read of any OSDU record by `targetId`, on a node, through the flow's route and credentials: a record a document refers to, which the ledger may never have delivered. A version or the trailing colon of a reference is dropped, and the record is read at its latest version. An id that is not `partition:group--Entity:unique` is refused with 400. Nothing is written. |
-| `GET /explorer/connection`, `POST /explorer/types`, `/explorer/search`, `/explorer/fields`, `/explorer/read` | read; operate | The explorer ([explorer.md](explorer.md#the-api)): how a partition of OSDU is reached, and the reads a node makes of it there through a delivery flow's connection (the kinds a search finds with their counts, a page of the records it finds, the properties a kind's records hold, one record from the storage service). Nothing is written, and nothing the ledger keeps is read. |
+| `POST /flows/{pipelineId}/osdu/read` | operate | Read any OSDU record by `targetId` through the flow's route and credentials, and answer with it: a record a document refers to, which the ledger may never have delivered. A version or the trailing colon of a reference is dropped, and the record is read at its latest version. An id that is not `partition:group--Entity:unique` is refused with 400. Nothing is written. |
+| `GET /explorer/connection`, `POST /explorer/types`, `/explorer/search`, `/explorer/fields`, `/explorer/read` | read; operate | The explorer ([explorer.md](explorer.md#the-api)): how a partition of OSDU is reached, and the reads made of it there through a delivery flow's connection (the kinds a search finds with their counts, a page of the records it finds, the properties a kind's records hold, one record from the storage service). Nothing is written, and nothing the ledger keeps is read. |
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
@@ -187,9 +187,22 @@ A route under `/flows/{pipelineId}` that acts on records (`records`, `target`, `
 single form, or a source of one interface, needs no name. For a source of several, the request names the interface
 with `?interface=<name>`: without it the answer is 400 (`Interface required`, listing the interfaces), and a name the
 flow does not declare is 404 (`No such interface`). A record's own routes need no name, because the ledger identity in
-their path is the interface's; the record's answer names its `interface`, and so do a submission's and a target's. A
-task a route queues for a node (a probe, a read-back, a read by id, a source read, a preview, a removal) carries the
-interface, and the node acts through that interface alone.
+their path is the interface's; the record's answer names its `interface`, and so do a submission's and a target's. An
+operation a route runs (a probe, a read-back, a read by id, a source read, a preview, a scope's values, an explorer read,
+a value check, a removal) carries the interface, and acts through that interface alone.
+
+**What a person waits on is answered in the request; what scans or writes is queued for a node.** A probe, a read-back,
+a read by id, a source read, a preview, a scope's values and the explorer's reads run in the control plane as they are
+asked, given exactly what a node would be given (the flow file where the repository was synced, the interface, the
+partition, the partition's central configuration, who asked), so they reach the same target with the same credentials,
+and the response is the answer: there is no task to poll. A failure answers as a problem saying which side failed: 502
+when OSDU or the ingestion tables refused or failed, 504 when no answer came in time, 422 when the flow cannot serve what
+was asked, every resolved secret redacted. The control plane keeps one connection per flow target between these reads (at
+most 64 targets, each retired after 10 minutes unused or 30 in all, or at once on the 401 a rotated secret draws), so a
+token is fetched once rather than for every read, and a read is a person's: at most two attempts, no wait on a
+Retry-After, and an answer within 60 seconds or a 504. A value check, which may render every row of a scope, and a
+removal, which writes to OSDU and the ledger, are compute tasks a node runs; their routes answer 202 with the task to
+poll at `GET /api/v1/compute/tasks/{taskId}`. Runs are a node's, always: the control plane delivers nothing.
 
 A flow that names its partitions ([documents.md](documents.md#partitions)) keeps a ledger per partition as well, so the
 same routes work in one partition of it: the request names it with `?partition=<name>`. Without it the answer is 400
@@ -350,11 +363,12 @@ from its mapping, so a plan finds them (`plan` to see them, the flow's next run 
 
 ## Previewing a record
 
-A preview answers "what would this flow send for this record?" before anything is sent. It renders one record on a
-node exactly as a delivery renders it: the same planner, the mapping the flow pins, the template it pins and the
+A preview answers "what would this flow send for this record?" before anything is sent. It renders one record exactly
+as a delivery renders it: the same planner, the mapping the flow pins, the template it pins and the
 partition's current cache version, and the platform's search asked only what the mapping's searches ask a run. Nothing
 is written anywhere: not OSDU, not the ledger, not the work location. It is not a run, so it is not in the run history;
-it is a node task, like a read-back, because only a node holds the flow's connection to its ingestion tables.
+like a read-back, the control plane runs it as it is asked, with the flow's own connection to its ingestion tables, and
+answers with it.
 
 - **Which record.** The first record of the scope in key order, or the one a key names. A key is what an operator
   holds: a source key as the Records page shows it (`recall:NORWAY_WELLDB/12359/1`, or just `NORWAY_WELLDB/12359/1`),
@@ -376,14 +390,13 @@ it is a node task, like a read-back, because only a node holds the flow's connec
   the ledger's record of each, the searches the render made, the preflight's warnings, and the record's rows as the
   ingestion tables hold them.
 - **Bounds.** Child rows are shown to 100 per dataset and values to 4,000 characters; payload files to 50 per part; a
-  document over 2,000,000 characters is described by its size and hash and left out. A node's answer stays under the
-  8,000,000 characters a task result holds, leaving out the child rows, then the document, then the record row if it
-  must, and saying so. `sqlflow preview --out` writes a preview whole.
+  document over 2,000,000 characters is described by its size and hash and left out. The answer stays under 7,000,000
+  characters, leaving out the child rows, then the document, then the record row if it must, and saying so. `sqlflow preview --out` writes a preview whole.
 - **What it does not do.** It sends nothing, so what a DDMS would answer, and the values it keeps on the record (a bulk
   data link), are not in it; the route's steps say where those come from.
 
 A record's page compares the other way round: its **Render** tab renders the record afresh from its current source
-row and reads what OSDU holds, both on a node, and shows the two side by side with OSDU's own fields (`version`,
+row and reads what OSDU holds, both at once, and shows the two side by side with OSDU's own fields (`version`,
 `createUser`, `createTime`, `modifyUser`, `modifyTime`) set aside, keys in order, and a placeholder named as a value
 the platform gives rather than as a change. The ledger keeps what it sent as a hash, not as the document, so the
 comparison is with what the record renders to now.
@@ -394,8 +407,8 @@ A preview shows one record. A value check answers the question across a flow's r
 attribute the value its template expects, and why?" It renders every row it reads on a node exactly as a delivery renders
 it (the render's own assembly, entry by entry, over the flow's ingestion tables, the partition's current cache version
 and the platform's search, asked in rounds as a run asks), and then holds every value written to what the template says
-of its attribute. Nothing is written anywhere: not OSDU, not the ledger, not the work location. Like a preview it is a
-node task, not a run.
+of its attribute. Nothing is written anywhere: not OSDU, not the ledger, not the work location. Unlike a preview, which
+renders one record while the page waits, it is a node task, since it may render every row of a scope; it is not a run.
 
 - **What each row comes to, for each attribute.** Every computation a mapping can make is covered, because the check is
   the render: a column, an expression, a static value, a cache lookup (`$cache` with its `findBy` lines and a
@@ -573,11 +586,11 @@ Pipelines like any other flow.
   - **Source**: where the row came from: the source key, the ingestion file and row the delivered document was built
     from (and the newer row a waiting document is built from), when the row was received and the source last
     modified, the key columns that find it (each value beside the column the flow's `source.record.key` names, with a
-    copy of the key as the ledger holds it), and a read of its rows as the ingestion tables hold them now, on a node
-    with the flow's own connection.
+    copy of the key as the ledger holds it), and a read of its rows as the ingestion tables hold them now, with the
+    flow's own connection.
   - **Render**: the record's output, built from the data available now. **Render** builds the record's manifest from
-    its current source row with the flow's mapping and the cache, on a node, and reads what OSDU holds through the
-    flow's route; nothing is sent. Only the manifest is built, not the DDMS sections a DDMS route sends besides it (bulk
+    its current source row with the flow's mapping and the cache, and reads what OSDU holds through the flow's route,
+    both at once; nothing is sent. Only the manifest is built, not the DDMS sections a DDMS route sends besides it (bulk
     data, series, rows). Above the result, the mapping and cache version that rendered the document OSDU holds sit
     beside those the render used, each flagged where it changed since. The result names what the route does with the
     manifest (the DDMS it reaches, and the route's own notes: the link a DDMS keeps on the record, keys carried forward
@@ -587,7 +600,7 @@ Pipelines like any other flow.
     kind) or whole, with the searches the render made. Nothing is shown twice: the comparison is the list of what
     differs. The render stays on the tab while another is looked at. An old `?tab=document`, `?tab=compare` or
     `?tab=context` link opens it.
-  - **OSDU**: the record as OSDU holds it, read on a node through the flow's route, in an **inspector** of fixed
+  - **OSDU**: the record as OSDU holds it, read through the flow's route, in an **inspector** of fixed
     height, so a record of ten thousand values is read the way a file tree is, never as one tall page.
     - **One location bar** says where the reader is, and nothing below it repeats it. It has a row of its own across
       the inspector, and a path longer than the row wraps onto a further line rather than clipping. The page's own
@@ -787,8 +800,8 @@ Pipelines like any other flow.
 
   **A scope's values are picked, not typed.** Wherever a flow's scope is given its values (the value check here, a
   flow's Preview tab, and the trigger dialog of a delivery flow), a parameter the flow's `source.record.scope` binds to a
-  column of its record table lists the values that column holds, with how many rows hold each, read on a node from the
-  flow's own table (`POST /flows/{pipelineId}/scope-values`), so every source offers its own column's values without a
+  column of its record table lists the values that column holds, with how many rows hold each, read from the flow's
+  own table (`POST /flows/{pipelineId}/scope-values`), so every source offers its own column's values without a
   list kept anywhere. Any value can still be typed, and one the column holds no row of is flagged, since the scope would
   read nothing. A parameter the scope does not read (one naming the work location) is typed.
 - **Templates**: browse the schemas OSDU publishes through a delivery flow's connection (a node runs the search and the
@@ -1019,7 +1032,7 @@ redacted before it is written.
 | Records held with `External Data Services could not use this ...` | The record's last error names every rule it breaks | Fix the source rows or the mapping so the registry entry, data job or proxy dataset carries what EDS needs, or say what the deployment needs under `target.eds` (a partition whose jobs fetch no files: `retrieval: false`; a gc build: `build: gc`), then Release ([documents.md](documents.md#external-data-services)). |
 | Everything re-renders after a change | The render context on the record | Only `render.*` and the template version its mapping pins enter the render context; a moved mapping version, template version or cache version renders every record that uses it again. Only a record whose rendered document differs is sent; the rest are skipped as unchanged and take the new context. |
 | A run fails: the mapping pins a template that is not saved in the catalog | The run's error names the mapping, the kind and the version | Save that version (the Templates page, `sqlflow template capture` or `import`) and run again. A schema that changed since saves as another version, which the mapping then has to pin. |
-| Is OSDU reachable with the flow's credentials? | Probe target on the flow's Delivery tab | The probe runs on a node and reports the status of the service's info endpoint. |
+| Is OSDU reachable with the flow's credentials? | Probe target on the flow's Delivery tab | The control plane probes the target under the flow's credentials and reports the status of the service's info endpoint. |
 | A submission stays `running` with batches `queued` | The submission's batches; the run page's fan-out family | A drain member failed or a node went away. The parent settles what it can; re-run the submission (or trigger `drain` with the submission) to drain the rest. |
 | Records pending with `workflow run ... failed` | The record's attempts: the `workflow` step names the run | The ingestion DAG failed; its own log says why. The next try triggers a new run automatically; fix the data or the manifest section first when the DAG rejected the content. |
 | A retrieval run `failed` | The Retrievals tab: the row's error; the run's trace | The watermark did not move, so the next run covers the same window. Fix the cause (credentials, the query, the lake location) and run again; a run's directory is never reused. |
@@ -1095,26 +1108,25 @@ can be put on a schedule so nobody has to press it.
 The schedule is off unless a deployment turns it on, and deliberately so: a pass costs a token exchange and one request
 against a live OSDU for every interface it covers. Configuration is under `Osdu:TargetProbe` (see
 [Configuration](#configuration)): `Enabled`, `IntervalMinutes` (default 15, never under 5), `Pipelines` to narrow it to
-the flows that matter, `MaxPerPass` to bound one pass of a large estate, and `SettleSeconds` for how long a pass waits
-for what it queued.
+the flows that matter, and `MaxPerPass` to bound one pass of a large estate.
 
 What a pass does, in order:
 
-1. **Settles what is still open.** Every probe an earlier pass, or an earlier life of the host, left running is found
-   again from the ledger, not from memory: a probe whose task has finished is recorded with its outcome, and one whose
-   task the queue no longer holds is recorded as an error rather than left open forever. A restart loses nothing.
-2. **Queues this pass's probes**, once per interface of each flow it covers, through the same path the operator's
-   button takes (`delivery-probe` on a node, under the flow's own credentials), so a schedule and a button report the
-   same thing. The task and the activity are recorded under the actor `service:schedule`.
-3. **Waits up to `SettleSeconds`** for them, and records whatever has come back. The rest is settled by the next pass.
+1. **Closes what is still open.** Every probe an earlier life of the host left running (the host stopped while it ran,
+   or it was queued for a node before probes ran in the control plane) is found again from the ledger, not from memory,
+   and recorded as an error that did not finish rather than left open forever. A restart loses nothing.
+2. **Probes each interface** of each flow it covers, four at a time, through the same path the operator's button takes
+   (`delivery-probe` in the control plane, under the flow's own credentials and its partition's central configuration),
+   so a schedule and a button report the same thing. Each probe opens its activity under the actor `service:schedule`
+   and closes it with what it found as soon as it answers, within the bounded wait a person's read has.
 
 Every probe, scheduled or not, is an activity of kind `probe` in the ledger's audit trail, so the last result per flow
 and interface is on the flow's Activity tab and in `sqlflow` alongside every other operator action, with who asked and
 when. Each settled probe is also counted on `osdu_delivery.probes` (see [Metrics](#metrics)).
 
 What to alert on: any `unreachable` outcome for a flow that is supposed to be delivering, and a run of `error`
-outcomes, which says the probes themselves are not getting through (no node is taking the tasks, the flow file is not
-on the node, a credential will not resolve) rather than anything about the OSDU.
+outcomes, which says the probes themselves are not getting through (the flow file is not where its repository was synced,
+a credential will not resolve, the flow no longer parses) rather than anything about the OSDU.
 
 A probe writes nothing to OSDU: it reads what the route's own probe path reads, which is the service's health or
 version endpoint under the flow's target.
@@ -1216,11 +1228,12 @@ The control plane recovers most of this by itself, in this order:
    (`reliability.leaseSeconds`, 300 by default), recovers it, applies what the stopped worker had appended and sends
    the rest ([ledger.md](ledger.md#leasing)). Nothing is delivered twice.
 4. **Queued runs.** Nothing expires a queued run: one queued before the outage is handed out as soon as a node polls.
-5. **Compute tasks.** A probe, a read-back, a source read or a removal that was *queued* is failed when the control
-   plane returns if it has waited longer than `Dispatch:TaskQueuedExpiryMinutes` (15), with "No worker claimed the task
-   within N minutes"; the wait is measured from when it was enqueued, so a requeue does not reset it. One that was
-   *running* is requeued and runs again, which is safe: a removal that runs again reports what has already gone as
-   already gone and writes its own attempt.
+5. **Compute tasks.** A value check or a removal that was *queued* is failed when the control plane returns if it has
+   waited longer than `Dispatch:TaskQueuedExpiryMinutes` (15), with "No worker claimed the task within N minutes"; the
+   wait is measured from when it was enqueued, so a requeue does not reset it. One that was *running* is requeued and
+   runs again, which is safe: a removal that runs again reports what has already gone as already gone and writes its own
+   attempt. A probe, a read-back, a preview or a source read is never queued: it runs in the control plane while its
+   request waits, so the outage failed only the requests in flight, which are asked again.
 6. **Schedules.** The next occurrence after now fires; the ones the outage covered do not, unless the schedule declares
    `catchup: true`, which fires one missed occurrence per scheduler tick (`ControlPlane:Scheduler:PollSeconds`, 15)
    until it is current. For a delivery flow this rarely matters: a deliver run plans from the watermark, so one run
@@ -1249,8 +1262,7 @@ Then the operator's own pass, in this order:
    by re-running the submission, or by triggering `drain` with its `submissionId` (see the Runbook).
 5. **Records.** Each flow's Records tab filtered to `delivering`, where the lease on the record page is in the past.
    Nothing has to be done: the flow's next deliver run recovers them. If no run is due, trigger `drain`.
-6. **Compute tasks.** Queue the probes, read-backs, source reads and removals that were failed with "No worker claimed
-   the task" again.
+6. **Compute tasks.** Queue the value checks and removals that were failed with "No worker claimed the task" again.
 7. **Schedules.** For a flow whose occurrence the outage covered and whose data has to be current before the next one,
    trigger it once by hand.
 

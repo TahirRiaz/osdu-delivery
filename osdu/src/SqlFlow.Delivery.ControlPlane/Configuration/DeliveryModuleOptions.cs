@@ -66,13 +66,6 @@ public sealed class TargetProbeOptions
     /// <summary>Minutes between passes. Default 15, and never below <see cref="MinimumIntervalMinutes"/>.</summary>
     public int IntervalMinutes { get; set; } = 15;
 
-    /// <summary>
-    /// Seconds a pass waits for the probes it just queued to come back from the nodes before it moves on. A probe that
-    /// has not come back by then is recorded by the next pass instead, so this only decides how quickly an outcome
-    /// shows up, never whether it is recorded. Zero waits not at all. Default 60.
-    /// </summary>
-    public int SettleSeconds { get; set; } = 60;
-
     /// <summary>Interfaces probed in one pass, across every flow. Default 200.</summary>
     public int MaxPerPass { get; set; } = 200;
 
@@ -98,11 +91,6 @@ public sealed class TargetProbeOptions
             throw new InvalidOperationException(
                 $"{SectionName}:IntervalMinutes must be between {MinimumIntervalMinutes} and 1440 (a day): every pass costs a token " +
                 "exchange and a request against a live OSDU for each interface of each active delivery flow.");
-        }
-
-        if (SettleSeconds is < 0 or > 300)
-        {
-            throw new InvalidOperationException($"{SectionName}:SettleSeconds must be between 0 and 300.");
         }
 
         if (MaxPerPass is < 1 or > 1000)

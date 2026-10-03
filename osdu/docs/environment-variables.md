@@ -27,8 +27,10 @@ naming rule says.
 
 ## Which tier reads what
 
-The three tiers hold different credentials on purpose, and the split is load-bearing: nothing data-plane ever
-passes through the control plane.
+The three tiers hold different credentials on purpose. The control plane never delivers: runs, value checks and
+removals run on the nodes. It does read: what a person asks of a flow and waits on (a probe of its target, a record
+read back from OSDU, its rows read from the ingestion tables, a preview, a scope's values, the explorer) runs in the
+control plane under the flow's own credentials, so the flows' references resolve there as they do on a node.
 
 ### The control plane
 
@@ -37,6 +39,8 @@ passes through the control plane.
 | `SQLFLOW_CATALOG_DB` | The metadata connection string (`SQLFlow` in the shipped deployments): SQLFlow's catalog schema, and the OSDU module's `osdu` schema beside it. Also accepted as `ControlPlane:Catalog:ConnectionReference`, which may itself be a `${keyvault:...}` reference. The module's schema is elsewhere only when the module declares a connection of its own. |
 | `SQLFLOW_GIT_TOKEN`, `SQLFLOW_GIT_USERNAME` | The credential managed sync fetches private flow repositories with, when a repo source declares no reference of its own. The username is for hosts that pair the token with one (Bitbucket app passwords, `x-token-auth`); GitHub needs the token alone. |
 | `SQLFLOW_AZURE_AUTH` | How the process authenticates to Azure for Key Vault and storage: `default`, `cli`, `managedidentity` (`mi`), `serviceprincipal` (`sp`). The standard `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` family applies exactly as the Azure SDK defines it. |
+| every `${env:...}` reference the flows declare | What a person's reads of a flow resolve here, as a run resolves it on a node: the ingestion database connection, the OSDU endpoint and its credentials. The same list the nodes are given; a value the central configuration holds needs no variable. |
+| `SQLFLOW_DELIVERY_PRIVATE_NETWORKS`, `SQLFLOW_DELIVERY_ALLOW_LOOPBACK` | The ranges those reads may reach, exactly as on a node (below). |
 
 Everything else the control plane reads is ASP.NET Core configuration under the `ControlPlane` section
 (`ControlPlane__Jwt__SigningKey`, `ControlPlane__Bootstrap__AdminPasswordReference`,

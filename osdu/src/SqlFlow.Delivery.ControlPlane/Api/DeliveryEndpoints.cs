@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
+using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.ControlPlane.Background;
@@ -1685,8 +1686,8 @@ public static class DeliveryEndpoints
     /// the ledger stored. Nothing is planned and nothing is delivered; the task's result carries the record row with its
     /// system columns, its child datasets and the origin file and row the ingestion tables record.
     /// </summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadSourceAsync(
-        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ReadSourceAsync(
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
@@ -1703,7 +1704,7 @@ public static class DeliveryEndpoints
             arguments["values"] = last.ParametersJson;
         }
 
-        return await EnqueueOperationAsync(db, dispatcher, flow, ReadSourceRowOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        return await DirectOperationRunner.RunAsync(db, config, direct, flow, ReadSourceRowOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
     }
 
     /// <summary>The flow parameter values a submission was opened with; none when it recorded none or is unknown.</summary>
@@ -1851,8 +1852,8 @@ public static class DeliveryEndpoints
         return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRunAccepted(runId, RunStatuses.Queued));
     }
 
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadRecordAsync(
-        Guid flowId, Guid key, DeliveryReadRequest? request, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ReadRecordAsync(
+        Guid flowId, Guid key, DeliveryReadRequest? request, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
     {
         if (InvalidVersion(request) is { } invalid)
         {
@@ -1867,7 +1868,7 @@ public static class DeliveryEndpoints
 
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["deliveryKey"] = key.ToString("D") };
         WithVersion(arguments, request);
-        return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        return await DirectOperationRunner.RunAsync(db, config, direct, flow, ReadRecordOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
     }
 
     /// <summary>A version to read at is a positive whole number; the storage service numbers versions from one.</summary>
@@ -1888,9 +1889,9 @@ public static class DeliveryEndpoints
     /// refuse is a 400 rather than a task that fails; whether the key names a row is the node's to find, in the flow's own
     /// ingestion tables, and is an answer rather than a failure.
     /// </summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> PreviewAsync(
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> PreviewAsync(
         Guid pipelineId, DeliveryPreviewRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
@@ -1931,7 +1932,7 @@ public static class DeliveryEndpoints
             arguments["values"] = json;
         }
 
-        return await EnqueueOperationAsync(db, dispatcher, flow, PreviewRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        return await DirectOperationRunner.RunAsync(db, config, direct, flow, PreviewRecordOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1939,9 +1940,9 @@ public static class DeliveryEndpoints
     /// <c>source.record.scope</c> binds it to in the flow's own record table: what a page offers for a scope's value rather
     /// than having it typed. Nothing is written.
     /// </summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ScopeValuesAsync(
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ScopeValuesAsync(
         Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
-        IPartitionRegistry partitions, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        IPartitionRegistry partitions, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
@@ -1949,8 +1950,7 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        return await EnqueueOperationAsync(
-            db, dispatcher, flow, ScopeValuesOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), user, ct).ConfigureAwait(false);
+        return await DirectOperationRunner.RunAsync(db, config, direct, flow, ScopeValuesOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), user, loggers, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1978,8 +1978,8 @@ public static class DeliveryEndpoints
     /// with nothing sent: what the page compares with what OSDU holds. The row is read in the scope the record was last
     /// planned under, as the source row read reads it.
     /// </summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> PreviewRecordAsync(
-        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> PreviewRecordAsync(
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
@@ -2001,7 +2001,7 @@ public static class DeliveryEndpoints
             arguments["values"] = last.ParametersJson;
         }
 
-        return await EnqueueOperationAsync(db, dispatcher, flow, PreviewRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        return await DirectOperationRunner.RunAsync(db, config, direct, flow, PreviewRecordOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
     }
 
     /// <summary>The longest OSDU id a read takes; storage ids are far shorter, and a longer text is not one.</summary>
@@ -2012,9 +2012,9 @@ public static class DeliveryEndpoints
     /// the ledger may never have delivered. The id may carry a version or the trailing colon of a reference; the read is of
     /// the record, at its latest version. Nothing is written.
     /// </summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadTargetAsync(
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ReadTargetAsync(
         Guid pipelineId, DeliveryReadRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
     {
         if (TargetProblem(request, out var asked) is { } invalid)
         {
@@ -2029,7 +2029,7 @@ public static class DeliveryEndpoints
 
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["targetId"] = TargetId.WithoutVersion(asked) };
         WithVersion(arguments, request);
-        return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        return await DirectOperationRunner.RunAsync(db, config, direct, flow, ReadRecordOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -2294,8 +2294,9 @@ public static class DeliveryEndpoints
             ? "The DDMS collection is chosen by the kind the flow's mapping renders, which the repository sync has not read yet."
             : DdmsRouting.Of(flow).Explain(kind);
 
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ProbeAsync(
-        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ProbeAsync(
+        Guid pipelineId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
+        DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
@@ -2303,19 +2304,18 @@ public static class DeliveryEndpoints
             return problem!;
         }
 
-        return await QueueProbeAsync(db, dispatcher, flow, RequestActor.Label(user), RequestActor.Of(user), ct).ConfigureAwait(false);
+        return await ProbeTargetAsync(db, config, direct, flow, RequestActor.Label(user), loggers, ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Queues one interface's target probe on a node: the one path an operator's "Probe target" and the scheduled probe
+    /// One interface's target probe, run in this process: the one path an operator's "Probe target" and the scheduled probe
     /// (<see cref="Background.ScheduledTargetProbeService"/>) both take, so what a schedule reports is what a button
-    /// reports. <paramref name="actor"/> is the label the node records the task under (<c>user:alice</c>,
-    /// <c>service:schedule</c>), <paramref name="requestedBy"/> who asked, for the task row's audit.
+    /// reports. <paramref name="actor"/> is who asked (<c>user:alice</c>, <c>service:schedule</c>).
     /// </summary>
-    internal static Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> QueueProbeAsync(
-        CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, string actor, string? requestedBy, CancellationToken ct)
-        => EnqueueOperationAsync(
-            db, dispatcher, flow, ProbeTargetOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), actor, requestedBy, ct);
+    internal static Task<Results<ContentHttpResult, ProblemHttpResult>> ProbeTargetAsync(
+        CatalogDbContext db, DeliveryConfigStore config, DirectOperations direct, FlowContext flow, string actor, ILoggerFactory loggers, CancellationToken ct)
+        => DirectOperationRunner.RunAsync(
+            db, config, direct, flow, ProbeTargetOperation.OperationName, new Dictionary<string, string>(StringComparer.Ordinal), actor, loggers, ct);
 
     /// <summary>
     /// The ledger's retention pass: everything the <c>osdu</c> schema grows without bound and a delivered record does not
@@ -2671,7 +2671,7 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>A failure as it may be stored and shown: the message with every resolved secret redacted out of it.</summary>
-    private static string Redacted(Exception ex) => SecretHygiene.RedactedMessage(ex);
+    internal static string Redacted(Exception ex) => SecretHygiene.RedactedMessage(ex);
 
     /// <summary>Queues a target-side operation for a node: the flow file's location rides along, every credential
     /// stays a reference the node resolves.</summary>
@@ -2688,12 +2688,34 @@ public static class DeliveryEndpoints
         CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, string operation, IReadOnlyDictionary<string, string> arguments,
         string actor, string? requestedBy, CancellationToken ct)
     {
+        var (payload, problem) = await OperationPayloadAsync(db, flow, operation, arguments, actor, ct).ConfigureAwait(false);
+        if (payload is null)
+        {
+            return problem!;
+        }
+
+        var taskId = await dispatcher.EnqueueComputeTaskAsync(
+            db,
+            new ComputeTaskEnqueueRequest(operation, flow.Pipeline.Name, FlowDefinition.FlowTypeName, payload.ToJson(), RequestedBy: requestedBy),
+            ct).ConfigureAwait(false);
+        return TypedResults.Accepted($"/api/v1/compute/tasks/{taskId}", new ComputeTaskAccepted(taskId, RunStatuses.Queued));
+    }
+
+    /// <summary>
+    /// What an operation of <paramref name="flow"/> is given, wherever it runs: the flow file's location as the catalog knows
+    /// it, who asked, the repository whose central configuration it resolves with, and the interface and partition it acts
+    /// through, beside its own <paramref name="arguments"/>. An operation queued for a node (a value check, a removal) and one
+    /// run in this process (<see cref="DirectOperationRunner"/>) are given the same, so they act alike.
+    /// </summary>
+    internal static async Task<(ComputeTaskPayload? Payload, ProblemHttpResult? Problem)> OperationPayloadAsync(
+        CatalogDbContext db, FlowContext flow, string operation, IReadOnlyDictionary<string, string> arguments, string actor, CancellationToken ct)
+    {
         var rootPath = await db.Repos.AsNoTracking().Where(r => r.Id == flow.Pipeline.RepoId).Select(r => r.RootPath).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(rootPath))
         {
-            return TypedResults.Problem(
-                detail: "The flow's repository has no synced root path, so no node can locate the flow file for this operation.",
-                statusCode: StatusCodes.Status409Conflict, title: "Repository not materialized");
+            return (null, TypedResults.Problem(
+                detail: "The flow's repository has no synced root path, so the flow file cannot be located for this operation.",
+                statusCode: StatusCodes.Status409Conflict, title: "Repository not materialized"));
         }
 
         var taskArguments = new Dictionary<string, string>(arguments, StringComparer.Ordinal)
@@ -2701,12 +2723,12 @@ public static class DeliveryEndpoints
             ["repoRoot"] = rootPath,
             ["relativePath"] = flow.Pipeline.RelativePath,
             ["actor"] = actor,
-            // The repository whose central configuration the dispatcher gives the task, as it gives a run.
+            // The repository whose central configuration the operation resolves its references with, as a run does.
             [ConfiguredRunDispatcher.RepoArgument] = flow.Pipeline.RepoId.ToString("D"),
         };
         if (flow.Flow.Interface is { } interfaceName)
         {
-            // The node acts through this interface of the source, and through no other.
+            // The operation acts through this interface of the source, and through no other.
             taskArguments["interface"] = interfaceName;
         }
 
@@ -2723,14 +2745,10 @@ public static class DeliveryEndpoints
             Arguments = taskArguments,
         };
 
-        // The operation is one of the module's own (the node registers it beside the platform's), so the payload is
-        // checked as a registered operation's: the platform's own list of operations does not name it.
+        // The operation is one of the module's own, so the payload is checked as a registered operation's: the platform's
+        // own list of operations does not name it.
         payload.Validate([operation]);
-        var taskId = await dispatcher.EnqueueComputeTaskAsync(
-            db,
-            new ComputeTaskEnqueueRequest(operation, flow.Pipeline.Name, FlowDefinition.FlowTypeName, payload.ToJson(), RequestedBy: requestedBy),
-            ct).ConfigureAwait(false);
-        return TypedResults.Accepted($"/api/v1/compute/tasks/{taskId}", new ComputeTaskAccepted(taskId, RunStatuses.Queued));
+        return (payload, null);
     }
 
     private static ProblemHttpResult NotFound(string resource, Guid id)

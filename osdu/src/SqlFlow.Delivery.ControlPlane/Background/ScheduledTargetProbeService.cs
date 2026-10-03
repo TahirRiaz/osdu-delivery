@@ -6,7 +6,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SqlFlow.Catalog;
-using SqlFlow.ControlPlane.Background;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.ControlPlane.Api;
@@ -14,6 +13,7 @@ using SqlFlow.Delivery.ControlPlane.Configuration;
 using SqlFlow.Delivery.Diagnostics;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -30,19 +30,16 @@ public static class ProbeOutcomes
     /// <summary>The service refused the call or did not answer at all. The target is there to be alerted on.</summary>
     public const string Unreachable = "unreachable";
 
-    /// <summary>The probe itself could not run: no node took it, the flow file was not on the node, a credential would not resolve.</summary>
+    /// <summary>The probe itself could not run: the flow file could not be read, a credential would not resolve, the host stopped while it ran.</summary>
     public const string Error = "error";
-
-    /// <summary>The probe task was cancelled before it recorded anything.</summary>
-    public const string Cancelled = "cancelled";
 }
 
 /// <summary>
 /// Probes the target of every active delivery flow on a schedule, so a deployment learns that an OSDU stopped answering
-/// without an operator pressing "Probe target" (go-live map OPS-2). Each pass queues the same node operation the
-/// operator's button queues (<see cref="DeliveryEndpoints.QueueProbeAsync"/>, which runs <c>delivery-probe</c> under the
-/// flow's own credentials), once per interface of each flow, since each interface has a target of its own. What comes
-/// back is recorded in the ledger's audit trail as a <c>probe</c> activity by <c>service:schedule</c>, and counted on
+/// without an operator pressing "Probe target" (go-live map OPS-2). Each pass runs the probe the operator's button runs
+/// (<see cref="DeliveryEndpoints.ProbeTargetAsync"/>, <c>delivery-probe</c> in this process under the flow's own
+/// credentials), once per interface of each flow, since each interface has a target of its own. What comes back is
+/// recorded in the ledger's audit trail as a <c>probe</c> activity by <c>service:schedule</c>, and counted on
 /// <c>osdu_delivery.probes</c>, so the last result per flow and interface is readable without asking for anything and an
 /// alert can be built on either.
 /// </summary>
@@ -51,11 +48,10 @@ public static class ProbeOutcomes
 /// live OSDU for every interface it covers. <c>:IntervalMinutes</c> paces it (never under
 /// <see cref="TargetProbeOptions.MinimumIntervalMinutes"/>), <c>:Pipelines</c> narrows it to named flows and
 /// <c>:MaxPerPass</c> bounds one pass of a large estate.</para>
-/// <para>A probe runs on a node, so its result arrives after the task is queued. A pass therefore settles first (every
-/// probe an earlier pass, or an earlier life of this host, left open, found again from the ledger rather than from
-/// memory), then queues this pass's probes, then waits up to <c>:SettleSeconds</c> for them; whatever has not come back
-/// by then is settled by the next pass. Nothing is lost across a restart, and no probe stays open forever: a task the
-/// queue no longer holds settles the activity as an error.</para>
+/// <para>A probe answers within its own bounded wait (<see cref="Engine.Operations.TargetClients.Interactive"/>), so a pass
+/// opens each probe's activity, runs the probe and closes the activity with what it found, <see cref="Concurrency"/> at a
+/// time. An activity a pass leaves open (the host stopped while the probe ran) is found again from the ledger by the next
+/// pass and closed as unfinished, so nothing stays open forever and nothing is lost across a restart.</para>
 /// <para>Hosted on every replica. The control plane runs one today (go-live map OPS-3); were it ever more, each replica
 /// would keep its own schedule, which costs one extra probe per interval per replica and records each outcome correctly,
 /// since a pass only settles the probes whose activities it can still find open.</para>
@@ -65,23 +61,20 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
     /// <summary>The activity kind every probe is recorded under, scheduled or not.</summary>
     public const string ActivityKind = "probe";
 
-    /// <summary>The actor the scheduled probe records its activities and its tasks under.</summary>
+    /// <summary>The actor the scheduled probe records its activities under.</summary>
     public const string ScheduleActor = "service:schedule";
 
-    /// <summary>The activity outcome of a probe that has been queued and has not come back yet.</summary>
+    /// <summary>The probes one pass runs at once: enough that a few silent targets do not hold up the estate.</summary>
+    public const int Concurrency = 4;
+
+    /// <summary>The activity outcome of a probe still running.</summary>
     private const string Running = "running";
 
     /// <summary>Delivery pipelines one pass reads. Past this an estate is narrowed with <c>:Pipelines</c>.</summary>
     private const int MaxPipelinesPerPass = 1000;
 
-    /// <summary>Open probes one pass carries over, which is at most one per interface probed.</summary>
+    /// <summary>Open probes one pass closes, which is at most one per interface probed.</summary>
     private const int MaxOpenProbes = 1000;
-
-    /// <summary>Task rows read in one query, so the id list stays well inside the provider's parameter limit.</summary>
-    private const int TaskLookupChunk = 200;
-
-    /// <summary>How often a pass looks again at the probes it just queued, while it waits for them.</summary>
-    private static readonly TimeSpan SettlePollStep = TimeSpan.FromSeconds(2);
 
     private readonly IServiceProvider _services;
     private readonly TimeProvider _clock;
@@ -141,8 +134,8 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
     }
 
     /// <summary>
-    /// One pass: settle what earlier passes left open, probe every interface this pass covers, and wait up to
-    /// <c>:SettleSeconds</c> for those probes to come back.
+    /// One pass: close what an earlier pass left open (a probe the host stopped while it ran), then probe every interface
+    /// this pass covers, each settled as soon as it answers.
     /// </summary>
     public async Task ProbePassAsync(CancellationToken ct)
     {
@@ -151,23 +144,40 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
         var ledger = scope.ServiceProvider.GetRequiredService<ILedger>();
         var documents = scope.ServiceProvider.GetRequiredService<DeliveryDocumentLoader>();
         var partitions = scope.ServiceProvider.GetRequiredService<IPartitionRegistry>();
-        var dispatcher = scope.ServiceProvider.GetRequiredService<IRunDispatcher>();
-        var placing = new LedgerPlacing(
-            scope.ServiceProvider.GetRequiredService<EngineContext>(), scope.ServiceProvider.GetRequiredService<DeliveryConfigStore>());
 
-        var carried = await OpenProbesAsync(ledger, ct).ConfigureAwait(false);
-        await SweepAsync(catalog, ledger, carried, ct).ConfigureAwait(false);
+        await CloseUnfinishedAsync(ledger, ct).ConfigureAwait(false);
+        var interfaces = await CoveredAsync(catalog, documents, partitions, ct).ConfigureAwait(false);
+        await Parallel.ForEachAsync(
+            interfaces,
+            new ParallelOptions { MaxDegreeOfParallelism = Concurrency, CancellationToken = ct },
+            async (flow, token) =>
+            {
+                try
+                {
+                    await ProbeOneAsync(flow, token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // One flow's target must never stop the rest of the estate being probed.
+                    LogProbeNotRun(flow.Flow.Label, Redacted(ex));
+                }
+            }).ConfigureAwait(false);
 
-        var queued = await QueueAsync(catalog, ledger, documents, partitions, dispatcher, placing, ct).ConfigureAwait(false);
-        await AwaitSettlementAsync(catalog, ledger, queued, ct).ConfigureAwait(false);
+        if (interfaces.Count > 0)
+        {
+            LogProbed(interfaces.Count);
+        }
     }
 
-    // ---- Queueing ----------------------------------------------------------------------------------------------
+    // ---- Covering ------------------------------------------------------------------------------------------------
 
-    /// <summary>Queues a probe for every interface this pass covers, and starts each one's activity.</summary>
-    private async Task<List<PendingProbe>> QueueAsync(
-        CatalogDbContext catalog, ILedger ledger, DeliveryDocumentLoader documents, IPartitionRegistry partitions, IRunDispatcher dispatcher, LedgerPlacing placing,
-        CancellationToken ct)
+    /// <summary>Every interface this pass covers, bound to the partition it delivers to, up to <c>:MaxPerPass</c>.</summary>
+    private async Task<List<DeliveryEndpoints.FlowContext>> CoveredAsync(
+        CatalogDbContext catalog, DeliveryDocumentLoader documents, IPartitionRegistry partitions, CancellationToken ct)
     {
         var names = _options.PipelineNames();
         var pipelines = await PipelinesAsync(catalog, names, ct).ConfigureAwait(false);
@@ -182,7 +192,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
             }
         }
 
-        var queued = new List<PendingProbe>();
+        var covered = new List<DeliveryEndpoints.FlowContext>();
         var budget = _options.MaxPerPass;
         var capped = false;
         RegisteredPartitions? registry = null;
@@ -220,25 +230,8 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
                 }
 
                 budget--;
-                try
-                {
-                    var bound = flow.Partition is { } partition ? source.Source.ForPartition(partition) : source.Source;
-                    var pending = await QueueOneAsync(
-                        catalog, ledger, dispatcher, placing, new DeliveryEndpoints.FlowContext(source.Pipeline, bound, flow), ct).ConfigureAwait(false);
-                    if (pending is not null)
-                    {
-                        queued.Add(pending);
-                    }
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    // One flow's target must never stop the rest of the estate being probed.
-                    LogProbeNotQueued(flow.Label, Redacted(ex));
-                }
+                var bound = flow.Partition is { } partition ? source.Source.ForPartition(partition) : source.Source;
+                covered.Add(new DeliveryEndpoints.FlowContext(source.Pipeline, bound, flow));
             }
         }
 
@@ -247,12 +240,7 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
             LogCapped(_options.MaxPerPass);
         }
 
-        if (queued.Count > 0)
-        {
-            LogQueued(queued.Count, pipelines.Count);
-        }
-
-        return queued;
+        return covered;
     }
 
     /// <summary>The active delivery pipelines this pass covers, in name order.</summary>
@@ -274,40 +262,31 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
     }
 
     /// <summary>
-    /// Queues one interface's probe and opens the activity that will carry its outcome, in the ledger of the partition the
-    /// interface delivers to. That ledger is registered first, the way a run registers it (<see cref="LedgerRegistration"/>),
-    /// so a flow whose partition cannot be worked out here, or whose ledger belongs to another partition than its header now
-    /// names, is reported and not probed, and no task is left queued without an activity to report to.
+    /// Probes one interface and records what it found, in the ledger of the partition the interface delivers to. That ledger
+    /// is registered first, the way a run registers it (<see cref="LedgerRegistration"/>), so a flow whose partition cannot be
+    /// worked out here, or whose ledger belongs to another partition than its header now names, is reported and not probed.
+    /// Each probe has a scope of its own, since probes run side by side and a database context serves one at a time.
     /// </summary>
-    private async Task<PendingProbe?> QueueOneAsync(
-        CatalogDbContext catalog, ILedger ledger, IRunDispatcher dispatcher, LedgerPlacing placing, DeliveryEndpoints.FlowContext flow, CancellationToken ct)
+    private async Task ProbeOneAsync(DeliveryEndpoints.FlowContext flow, CancellationToken ct)
     {
-        var configured = await DeliveryEndpoints.ConfiguredAsync(placing.Engine, placing.Config, flow, ct).ConfigureAwait(false);
+        await using var scope = _services.CreateAsyncScope();
+        var services = scope.ServiceProvider;
+        var catalog = services.GetRequiredService<CatalogDbContext>();
+        var ledger = services.GetRequiredService<ILedger>();
+        var config = services.GetRequiredService<DeliveryConfigStore>();
+        var configured = await DeliveryEndpoints.ConfiguredAsync(services.GetRequiredService<EngineContext>(), config, flow, ct).ConfigureAwait(false);
         var placed = await LedgerRegistration.RegisterAsync(ledger, flow.Flow, configured.Secrets, keptWhenUnresolved: true, ct).ConfigureAwait(false);
-
-        var result = await DeliveryEndpoints.QueueProbeAsync(catalog, dispatcher, flow, ScheduleActor, ScheduleActor, ct).ConfigureAwait(false);
-        if (result.Result is not Accepted<ComputeTaskAccepted> accepted || accepted.Value is null)
-        {
-            LogProbeNotQueued(
-                flow.Flow.Label,
-                (result.Result as ProblemHttpResult)?.ProblemDetails.Detail ?? "the control plane would not queue the probe.");
-            return null;
-        }
-
-        var taskId = accepted.Value.TaskId;
         var target = flow.Flow.Target;
-        var partition = placed.Partition;
 
         // What the activity records about the target is what the target view already shows: the endpoint as the document
         // declares it (a reference, never a resolved secret), the partition its ledger is kept under and the protocol.
         // Redacted regardless, since nothing the ledger stores is allowed to carry a credential.
         var parameters = Redacted(JsonSerializer.Serialize(new
         {
-            taskId,
             pipelineId = flow.Pipeline.Id,
             @interface = flow.Flow.Interface,
             endpoint = target.Endpoint,
-            partition,
+            partition = placed.Partition,
             protocol = DeliveryProtocols.Name(target.Protocol),
         }));
 
@@ -322,123 +301,61 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
                 ParametersJson = parameters,
             },
             ct).ConfigureAwait(false);
+        var probe = new OpenProbe(activity.ActivityId, flow.Flow.Label, placed.Partition, flow.Flow.Interface);
 
-        return new PendingProbe(activity.ActivityId, taskId, flow.Flow.Label, partition, flow.Flow.Interface);
+        string outcome, summary;
+        try
+        {
+            var answer = await DeliveryEndpoints.ProbeTargetAsync(
+                catalog, config, services.GetRequiredService<DirectOperations>(), flow, ScheduleActor, services.GetRequiredService<ILoggerFactory>(), ct).ConfigureAwait(false);
+            (outcome, summary) = answer.Result switch
+            {
+                ContentHttpResult { ResponseContent: { } json } => FromResult(json),
+                ProblemHttpResult problem => (ProbeOutcomes.Error, CouldNotRun(problem.ProblemDetails.Detail ?? problem.ProblemDetails.Title ?? "no reason was given")),
+                _ => (ProbeOutcomes.Error, "the probe answered with nothing to record"),
+            };
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // A failure the probe does not describe itself (the configuration could not be read) is still this probe's
+            // outcome, closed now. Only a host that is stopping leaves the activity open, for the next pass to close.
+            (outcome, summary) = (ProbeOutcomes.Error, CouldNotRun(ex.Message));
+        }
+
+        await SettleAsync(ledger, probe, outcome, summary, ct).ConfigureAwait(false);
     }
+
+    /// <summary>A probe that could not run, in the words the audit trail records it with, redacted.</summary>
+    private static string CouldNotRun(string reason) => $"the probe could not run: {Redacted(reason)}";
 
     // ---- Settling ----------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// The probes an earlier pass queued and never settled, read from the ledger so a restart loses none. An activity
-    /// whose task id cannot be read is settled here rather than carried by every pass from now on.
+    /// Closes the probes an earlier pass left open: the host stopped while they ran, or they were queued for a node before
+    /// probes ran in the control plane. Read from the ledger, so a restart loses none; none of them can report any more.
     /// </summary>
-    private async Task<List<PendingProbe>> OpenProbesAsync(ILedger ledger, CancellationToken ct)
+    private async Task CloseUnfinishedAsync(ILedger ledger, CancellationToken ct)
     {
         var running = await ledger.ListActivitiesAsync(
             new ActivityQuery { Kind = ActivityKind, Actor = ScheduleActor, Outcome = Running, Max = MaxOpenProbes }, ct).ConfigureAwait(false);
-
-        var open = new List<PendingProbe>(running.Count);
         foreach (var activity in running)
         {
             ct.ThrowIfCancellationRequested();
-            var (taskId, interfaceName) = Read(activity.ParametersJson);
-            if (taskId is { } id)
-            {
-                open.Add(new PendingProbe(activity.ActivityId, id, activity.FlowName, activity.Partition, interfaceName));
-                continue;
-            }
-
             await SettleAsync(
                 ledger,
-                new PendingProbe(activity.ActivityId, Guid.Empty, activity.FlowName, activity.Partition, interfaceName),
+                new OpenProbe(activity.ActivityId, activity.FlowName, activity.Partition, InterfaceOf(activity.ParametersJson)),
                 ProbeOutcomes.Error,
-                "the probe's task could not be read from its parameters, so its outcome is unknown",
+                "the probe did not finish: the control plane stopped while it ran, or it was queued for a node before probes ran in the control plane",
                 ct).ConfigureAwait(false);
         }
-
-        return open;
-    }
-
-    /// <summary>Waits up to <c>:SettleSeconds</c> for the probes just queued, settling each as it comes back.</summary>
-    private async Task AwaitSettlementAsync(CatalogDbContext catalog, ILedger ledger, IReadOnlyList<PendingProbe> queued, CancellationToken ct)
-    {
-        var deadline = _clock.GetUtcNow() + TimeSpan.FromSeconds(_options.SettleSeconds);
-        var open = queued;
-        while (open.Count > 0)
-        {
-            open = await SweepAsync(catalog, ledger, open, ct).ConfigureAwait(false);
-            var left = deadline - _clock.GetUtcNow();
-            if (open.Count == 0 || left <= TimeSpan.Zero)
-            {
-                // Whatever is still running is settled by the next pass, which finds it open in the ledger.
-                break;
-            }
-
-            await Task.Delay(left < SettlePollStep ? left : SettlePollStep, _clock, ct).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>Settles every probe of <paramref name="pending"/> whose task has finished, and returns those still running.</summary>
-    private async Task<List<PendingProbe>> SweepAsync(
-        CatalogDbContext catalog, ILedger ledger, IReadOnlyList<PendingProbe> pending, CancellationToken ct)
-    {
-        var open = new List<PendingProbe>();
-        if (pending.Count == 0)
-        {
-            return open;
-        }
-
-        var tasks = new Dictionary<Guid, TaskRow>();
-        foreach (var chunk in pending.Chunk(TaskLookupChunk))
-        {
-            var ids = chunk.Select(p => p.TaskId).ToList();
-            var rows = await catalog.ComputeTasks.AsNoTracking()
-                .Where(t => ids.Contains(t.TaskId))
-                .Select(t => new { t.TaskId, t.Status, t.Error, t.ResultJson })
-                .ToListAsync(ct).ConfigureAwait(false);
-            foreach (var row in rows)
-            {
-                tasks[row.TaskId] = new TaskRow(row.Status, row.Error, row.ResultJson);
-            }
-        }
-
-        foreach (var probe in pending)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (!tasks.TryGetValue(probe.TaskId, out var task))
-            {
-                // The queue no longer holds the task (retention, or it was removed): nothing can ever report on this
-                // probe, so it is closed now instead of being read again by every pass.
-                await SettleAsync(
-                    ledger, probe, ProbeOutcomes.Error,
-                    $"the probe's task {probe.TaskId:D} is no longer in the queue, so its result could not be read", ct).ConfigureAwait(false);
-                continue;
-            }
-
-            if (!RunStatuses.IsTerminal(task.Status))
-            {
-                open.Add(probe);
-                continue;
-            }
-
-            var (outcome, summary) = Settlement(task);
-            await SettleAsync(ledger, probe, outcome, summary, ct).ConfigureAwait(false);
-        }
-
-        return open;
     }
 
     /// <summary>Closes one probe's activity with what it found, counts it, and says so in the log.</summary>
-    private async Task SettleAsync(ILedger ledger, PendingProbe probe, string outcome, string summary, CancellationToken ct)
+    private async Task SettleAsync(ILedger ledger, OpenProbe probe, string outcome, string summary, CancellationToken ct)
     {
         // The audit trail's outcome is what an operator acts on, so a target that would not answer reads failed there;
         // the metric's outcome tag keeps the four cases apart.
-        var recorded = outcome switch
-        {
-            ProbeOutcomes.Reachable => "completed",
-            ProbeOutcomes.Cancelled => "cancelled",
-            _ => "failed",
-        };
+        var recorded = outcome == ProbeOutcomes.Reachable ? "completed" : "failed";
 
         try
         {
@@ -460,14 +377,6 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
             LogNotReachable(probe.Where, outcome, summary);
         }
     }
-
-    /// <summary>What a finished task says about the target: the outcome to count and the summary to record.</summary>
-    private static (string Outcome, string Summary) Settlement(TaskRow task) => task.Status switch
-    {
-        RunStatuses.Succeeded => FromResult(task.ResultJson),
-        RunStatuses.Cancelled => (ProbeOutcomes.Cancelled, "the probe was cancelled before it recorded a result"),
-        _ => (ProbeOutcomes.Error, $"the probe could not run: {Redacted(task.Error ?? "the node recorded no reason")}"),
-    };
 
     /// <summary>The probe's own result, as <c>delivery-probe</c> wrote it: reachable or not, with the status and the path it asked on.</summary>
     private static (string Outcome, string Summary) FromResult(string? resultJson)
@@ -496,29 +405,25 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
         }
     }
 
-    /// <summary>The task and the interface an open activity's parameters name.</summary>
-    private static (Guid? TaskId, string? Interface) Read(string? parametersJson)
+    /// <summary>The interface an open activity's parameters name; null for a flow in the single form, or parameters that cannot be read.</summary>
+    private static string? InterfaceOf(string? parametersJson)
     {
         if (string.IsNullOrWhiteSpace(parametersJson))
         {
-            return (null, null);
+            return null;
         }
 
         try
         {
             using var document = JsonDocument.Parse(parametersJson);
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("taskId", out var task) || !task.TryGetGuid(out var taskId))
-            {
-                return (null, null);
-            }
-
-            var named = root.TryGetProperty("interface", out var name) && name.ValueKind == JsonValueKind.String ? name.GetString() : null;
-            return (taskId, named);
+            return root.ValueKind == JsonValueKind.Object && root.TryGetProperty("interface", out var name) && name.ValueKind == JsonValueKind.String
+                ? name.GetString()
+                : null;
         }
         catch (JsonException)
         {
-            return (null, null);
+            return null;
         }
     }
 
@@ -530,21 +435,15 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
     /// <summary>An active delivery pipeline a pass covers.</summary>
     private sealed record PipelineRef(Guid Id, string Name);
 
-    /// <summary>A probe queued on a node and the activity waiting for its outcome.</summary>
-    private sealed record PendingProbe(long ActivityId, Guid TaskId, string FlowLabel, string? Partition, string? Interface)
+    /// <summary>A probe whose activity waits for its outcome.</summary>
+    private sealed record OpenProbe(long ActivityId, string FlowLabel, string? Partition, string? Interface)
     {
         /// <summary>The flow and the partition whose target was probed, as a log line names them.</summary>
         public string Where => Partition is null ? FlowLabel : $"{FlowLabel}@{Partition}";
     }
 
-    /// <summary>What places a flow's ledger in its partition before its probe is queued: the engine and the central configuration.</summary>
-    private sealed record LedgerPlacing(EngineContext Engine, DeliveryConfigStore Config);
-
-    /// <summary>A probe task's row, as much of it as settling one needs.</summary>
-    private sealed record TaskRow(string Status, string? Error, string? ResultJson);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Scheduled probe queued {Probes} target probe(s) across {Flows} delivery flow(s).")]
-    private partial void LogQueued(int probes, int flows);
+    [LoggerMessage(Level = LogLevel.Information, Message = "Scheduled probe probed {Probes} target(s).")]
+    private partial void LogProbed(int probes);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "Scheduled probe of {Flow}: {Summary}")]
     private partial void LogReachable(string flow, string summary);
@@ -555,8 +454,8 @@ public sealed partial class ScheduledTargetProbeService : BackgroundService
     [LoggerMessage(Level = LogLevel.Warning, Message = "Scheduled probe skipped flow {Flow}: {Detail}")]
     private partial void LogFlowUnreadable(string flow, string detail);
 
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Scheduled probe could not queue the probe of {Flow}: {Error}")]
-    private partial void LogProbeNotQueued(string flow, string error);
+    [LoggerMessage(Level = LogLevel.Warning, Message = "Scheduled probe could not probe {Flow}: {Error}")]
+    private partial void LogProbeNotRun(string flow, string error);
 
     [LoggerMessage(Level = LogLevel.Warning, Message = "Scheduled probe covered its whole budget of {MaxPerPass} interface(s) this pass; the rest are probed once the estate is narrowed with Osdu:TargetProbe:Pipelines or the budget is raised.")]
     private partial void LogCapped(int maxPerPass);

@@ -81,9 +81,12 @@ public static class DeliveryServices
 
         // Protocols and the completion callback. The logging listener is always on; hosts add their own (a live
         // feed, metrics, a webhook) by registering more IDeliveryListener instances.
-        services.TryAddSingleton<IProtocolFactory>(sp => new DefaultProtocolFactory(sp.GetRequiredService<ISecretResolver>()));
+        services.TryAddSingleton<IProtocolFactory, DefaultProtocolFactory>();
         services.TryAddSingleton<IRecordSearchFactory>(PlatformRecordSearchFactory.Instance);
         services.AddSingleton<IDeliveryListener, LoggingDeliveryListener>();
+
+        // The connections to OSDU a person's reads keep between calls (a record read back, a probe, the explorer).
+        services.TryAddSingleton(sp => new TargetClients(sp.GetRequiredService<TimeProvider>()));
 
         services.AddSingleton(sp => new EngineContext(
             sp.GetRequiredService<DeliveryDocumentLoader>(),
@@ -101,24 +104,30 @@ public static class DeliveryServices
             sp.GetService<DeliveryLedgerSource>()?.Templates(sp),
             sp.GetService<DeliveryLedgerSource>()?.Cache(sp),
             sp.GetRequiredService<IRecordSearchFactory>(),
-            Partitions: sp.GetService<DeliveryLedgerSource>()?.Partitions(sp)));
+            Partitions: sp.GetService<DeliveryLedgerSource>()?.Partitions(sp),
+            Clients: sp.GetRequiredService<TargetClients>()));
 
-        // Execution: the run executors behind the platform's document executor, and the ad-hoc compute operations
-        // a node runs for the control plane (target probe, record read-back, source row read-back, record preview, value check, scope values, removal and the explorer's reads of OSDU).
+        // Execution: the run executors behind the platform's document executor, the compute operations a node runs for the
+        // control plane (a value check and a removal), and the operations the control plane runs itself.
         services.TryAddSingleton<PartitionLedgers>();
         services.AddSingleton<IFlowDocumentExecutor, DeliveryExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, RetrievalExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, CacheExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, AssertionExecutor>();
         services.AddSingleton<IFlowDocumentExecutor, DimensionExecutor>();
-        services.AddSingleton<IComputeOperation, ProbeTargetOperation>();
-        services.AddSingleton<IComputeOperation, ReadRecordOperation>();
-        services.AddSingleton<IComputeOperation, ReadSourceRowOperation>();
-        services.AddSingleton<IComputeOperation, PreviewRecordOperation>();
+        // What runs long or writes is a node task: a value check across a scope, and a removal.
         services.AddSingleton<IComputeOperation, CheckValuesOperation>();
-        services.AddSingleton<IComputeOperation, ScopeValuesOperation>();
         services.AddSingleton<IComputeOperation, DeleteRecordOperation>();
-        services.AddSingleton<IComputeOperation, ExploreOperation>();
+
+        // What a person asks and waits on runs in the process asked (DirectOperations): a probe, a record read back, a
+        // record's source rows, a preview, a scope's values and the explorer's reads.
+        services.AddSingleton<DeliveryOperation, ProbeTargetOperation>();
+        services.AddSingleton<DeliveryOperation, ReadRecordOperation>();
+        services.AddSingleton<DeliveryOperation, ReadSourceRowOperation>();
+        services.AddSingleton<DeliveryOperation, PreviewRecordOperation>();
+        services.AddSingleton<DeliveryOperation, ScopeValuesOperation>();
+        services.AddSingleton<DeliveryOperation, ExploreOperation>();
+        services.AddSingleton<DirectOperations>();
 
         return services;
     }

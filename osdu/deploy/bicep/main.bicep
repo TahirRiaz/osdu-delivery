@@ -113,7 +113,7 @@ param azureAdClientId string = ''
 @description('Role a first-time SSO user is provisioned with (least privilege by default; an admin raises it afterwards in the GUI).')
 param azureAdDefaultRole string = 'viewer'
 
-@description('ADDITIONAL flow environment references beyond the built-in SQLFLOW_CONN_PRE and SQLFLOW_CONN_DWH, one object per \${env:...} reference the worker pool\'s flows use, and for the OSDU module database connection the ledger is read and written through on a node: { name: the environment variable, secretName: an EXISTING Key Vault secret in keyVaultName holding its value }, e.g. [{ name: \'OSDU_CLIENT_SECRET\', secretName: \'osdu-client-secret\' }]. OSDU credentials are put in the vault out of band and never pass through this template; the node reads them under its own identity, so they never reach the control plane.')
+@description('ADDITIONAL flow environment references beyond the built-in SQLFLOW_CONN_PRE and SQLFLOW_CONN_DWH, one object per \${env:...} reference the worker pool\'s flows use, and for the OSDU module database connection the ledger is read and written through on a node: { name: the environment variable, secretName: an EXISTING Key Vault secret in keyVaultName holding its value }, e.g. [{ name: \'OSDU_CLIENT_SECRET\', secretName: \'osdu-client-secret\' }]. OSDU credentials are put in the vault out of band and never pass through this template; each app reads them under its own identity. The control plane is given the same references, since a person\'s reads of a flow (a probe, a record read back, a preview, the explorer) run there under the flow\'s own credentials; it never delivers.')
 param workerFlowEnv array = []
 
 @description('The pool the worker app serves. Empty takes untargeted runs only.')
@@ -436,11 +436,17 @@ module controlPlane 'control-plane.bicep' = {
     acrLoginServer: acrLoginServer
     minReplicas: controlPlaneMinReplicas
     maxReplicas: controlPlaneMaxReplicas
+    // A person's reads of a flow run here under the flow's own credentials, so the flows' references resolve here as
+    // they do on a node. The control plane sets SQLFLOW_OSDU_DB itself.
+    flowEnv: concat(builtInConnectionEnv, workerFlowEnv)
+    privateNetworks: privateNetworks
   }
   // The app reads these vault secrets at creation and migrates the catalog and the OSDU module at startup.
   dependsOn: [
     catalogDbSecret
     osduDbSecret
+    preDbSecret
+    ingestionDbSecret
     jwtSigningKeySecret
     adminPasswordSecret
     gitTokenSecret
@@ -450,15 +456,10 @@ module controlPlane 'control-plane.bicep' = {
   ]
 }
 
-// What every node reads under fixed names, so a flow document referencing ${env:SQLFLOW_CONN_PRE} or
-// ${env:SQLFLOW_CONN_DWH} moves from test to prod unchanged, and the ledger is reachable wherever the module's
-// database is. A node opens no catalog connection, so without SQLFLOW_OSDU_DB it validates and plans but
-// delivers nothing. Caller-supplied references follow, and must not reuse these three names.
-var builtInFlowEnv = [
-  {
-    name: 'SQLFLOW_OSDU_DB'
-    secretName: osduConnectionSecretName
-  }
+// What every flow reads under fixed names, so a flow document referencing ${env:SQLFLOW_CONN_PRE} or
+// ${env:SQLFLOW_CONN_DWH} moves from test to prod unchanged, wherever the flow is read: on a node, which runs it,
+// and in the control plane, which answers a person's reads of it.
+var builtInConnectionEnv = [
   {
     name: 'SQLFLOW_CONN_PRE'
     secretName: preConnectionSecretName
@@ -468,6 +469,16 @@ var builtInFlowEnv = [
     secretName: ingestionConnectionSecretName
   }
 ]
+
+// And on a node, the ledger, reachable wherever the module's database is. A node opens no catalog connection, so
+// without SQLFLOW_OSDU_DB it validates and plans but delivers nothing. Caller-supplied references follow, and must not
+// reuse these three names.
+var builtInFlowEnv = concat([
+  {
+    name: 'SQLFLOW_OSDU_DB'
+    secretName: osduConnectionSecretName
+  }
+], builtInConnectionEnv)
 
 module worker 'worker.bicep' = {
   name: 'osdu-delivery-worker-app'

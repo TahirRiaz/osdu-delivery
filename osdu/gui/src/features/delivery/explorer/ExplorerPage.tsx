@@ -11,6 +11,7 @@ import { RichTooltip } from "@/components/RichTooltip";
 import { explorerApi, type ExplorerFilter, type ExplorerSearchRequest, type ExplorerSort, type ExplorerTypes } from "../../../api/explorer";
 import { isPartitionId, useActivePartition } from "../activePartition";
 import { useWindowFit } from "../useWindowFit";
+import { failureText } from "../answers";
 import { ExplorerProblem } from "./ExplorerProblem";
 import { ExplorerRecord } from "./ExplorerRecord";
 import { ExplorerResults } from "./ExplorerResults";
@@ -18,7 +19,7 @@ import { ExplorerRecent, ExplorerSearchBar } from "./ExplorerSearchBar";
 import { ExplorerTypeRail } from "./ExplorerTypeRail";
 import { ExplorerWelcome } from "./ExplorerWelcome";
 import {
-  ALL_KINDS, explorerErrorText, filtersOf, filtersText, recordAt, rememberType, scopeKind, scopeLabel, scopeOf, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
+  ALL_KINDS, filtersOf, filtersText, recordAt, rememberType, scopeKind, scopeLabel, scopeOf, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
 } from "./explorerModel";
 
 /** The least height the explorer keeps, so a short window still shows a few rows. */
@@ -167,8 +168,8 @@ export default function ExplorerPage() {
     content = (
       <EmptyState
         icon={<Telescope />}
-        title="The explorer reads OSDU on a node"
-        description="Each read runs on a node through a delivery flow's connection to the partition, which takes the operate scope. Ask an administrator for it."
+        title="The explorer reads OSDU with a flow's credentials"
+        description="Each read goes through a delivery flow's connection to the partition, which takes the operate scope. Ask an administrator for it."
         data-testid="explorer-no-scope"
       />
     );
@@ -203,7 +204,7 @@ export default function ExplorerPage() {
               <ExplorerTypeRail
                 types={types.data?.answer}
                 loading={types.isFetching}
-                error={types.isError ? explorerErrorText(types.error) : types.data?.answer.refusal ?? null}
+                error={types.isError ? failureText(types.error) : types.data?.answer.refusal ?? null}
                 scope={asksRecords ? scope : null}
                 onScope={goScope}
               />

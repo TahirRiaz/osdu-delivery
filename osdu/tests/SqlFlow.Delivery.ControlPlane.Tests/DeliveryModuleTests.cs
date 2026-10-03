@@ -16,6 +16,7 @@ using SqlFlow.Delivery.ControlPlane.Background;
 using SqlFlow.Delivery.ControlPlane.Configuration;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Hosting;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
@@ -36,7 +37,7 @@ namespace SqlFlow.ControlPlane.Tests;
 public sealed class DeliveryModuleTests
 {
     [Fact]
-    public async Task TheModule_RegistersItsKinds_ExecutorsAndComputeOperations()
+    public async Task TheModule_RegistersItsKinds_ExecutorsComputeOperationsAndDirectOperations()
     {
         await using var factory = Host();
         using var client = factory.CreateClient();
@@ -51,9 +52,13 @@ public sealed class DeliveryModuleTests
         Assert.Contains(AssertionFlowDefinition.FlowTypeName, kinds);
         Assert.Contains(DimensionFlowDefinition.FlowTypeName, kinds);
         Assert.Equal(5, executors.Count);
+
+        // A node runs only what scans or writes (a value check, a removal); what a person asks for and waits on is run by the
+        // control plane itself, and is never offered to a node.
+        Assert.Equal(["delivery-check-values", "delivery-delete"], operations.Order(StringComparer.Ordinal).ToList());
         Assert.Equal(
-            ["delivery-check-values", "delivery-delete", "delivery-explore", "delivery-preview", "delivery-probe", "delivery-read", "delivery-scope-values", "delivery-source"],
-            operations.Order(StringComparer.Ordinal).ToList());
+            ["delivery-explore", "delivery-preview", "delivery-probe", "delivery-read", "delivery-scope-values", "delivery-source"],
+            factory.Services.GetRequiredService<DirectOperations>().Names.Order(StringComparer.Ordinal).ToList());
     }
 
     [Fact]

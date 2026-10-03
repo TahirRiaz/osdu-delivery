@@ -124,13 +124,30 @@ public sealed partial class ConfiguredRunDispatcher : IRunDispatcher
             return await _inner.EnqueueComputeTaskAsync(catalog, request, ct).ConfigureAwait(false);
         }
 
-        var arguments = new Dictionary<string, string>(task.Arguments ?? new Dictionary<string, string>(), StringComparer.Ordinal)
-        {
-            [DeliveryOperation.ReferencesArgument] = carried,
-        };
-        var configured = task with { Arguments = arguments };
+        var configured = WithReferences(task, own);
         configured.Validate([request.Operation]);
         return await _inner.EnqueueComputeTaskAsync(catalog, request with { ArgumentsJson = configured.ToJson() }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// <paramref name="task"/> carrying <paramref name="own"/>, the central configuration of its partition, in the argument an
+    /// operation resolves its references from before the environment of the process it runs in. One shape for a task queued
+    /// for a node and for an operation the control plane runs itself, so both resolve a reference to the same value.
+    /// </summary>
+    internal static ComputeTaskPayload WithReferences(ComputeTaskPayload task, IReadOnlyDictionary<string, string> own)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        ArgumentNullException.ThrowIfNull(own);
+        if (own.Count == 0)
+        {
+            return task;
+        }
+
+        var arguments = new Dictionary<string, string>(task.Arguments ?? new Dictionary<string, string>(), StringComparer.Ordinal)
+        {
+            [DeliveryOperation.ReferencesArgument] = new DeliveryRunPayload { References = own }.ToJson()!,
+        };
+        return task with { Arguments = arguments };
     }
 
     // Everything that is not a queueing decision passes straight through: this decorator exists to attach configuration

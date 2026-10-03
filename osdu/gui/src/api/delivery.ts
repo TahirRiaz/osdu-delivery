@@ -1157,8 +1157,8 @@ export interface DeliveryPreviewStep {
 }
 
 /**
- * One record of a flow rendered on a node as a delivery would render it, with nothing sent: the `delivery-preview` task's
- * result. `found` false carries the reason no row was previewed (an unknown key, an empty scope).
+ * One record of a flow rendered as a delivery would render it, with nothing sent: what a preview answers. `found` false
+ * carries the reason no row was previewed (an unknown key, an empty scope).
  */
 export interface DeliveryRecordPreview {
   flow: string;
@@ -1311,7 +1311,26 @@ export interface DeliveryValueCheck {
   checkedUtc: string;
 }
 
-/** A record as OSDU holds it, read on a node through a flow's route: the `delivery-read` task's result. */
+/**
+ * Whether a flow's target answers under its credentials, as the control plane probed it: the route, the endpoint as the
+ * flow writes it, and the service's answer (its status, and the path asked).
+ */
+export interface DeliveryProbeResult {
+  flow: string;
+  protocol: string;
+  endpoint: string;
+  auth: string;
+  reachable: boolean;
+  status: number;
+  detail?: string | null;
+  path?: string | null;
+  checkedUtc: string;
+}
+
+/** A record's rows as the ingestion tables hold them now: the record row with its system columns, its datasets, its origin. */
+export type DeliverySourceRows = Record<string, unknown>;
+
+/** A record as OSDU holds it, read through a flow's route and answered by the control plane. */
 export interface DeliveryOsduRead {
   flow: string;
   deliveryKey?: string | null;
@@ -3140,9 +3159,9 @@ export const deliveryApi = {
   /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
   releaseFlow: (pipelineId: string, keys?: string[], scope?: DeliveryFlowScope) =>
     post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", scope), { keys: keys ?? null }),
-  /** Queues a target probe on a node: is OSDU reachable with the flow's credentials, in the scope's partition? */
+  /** Probes the flow's target: is OSDU reachable with the flow's credentials, in the scope's partition? Answered at once. */
   probe: (pipelineId: string, scope?: DeliveryFlowScope) =>
-    post<ComputeTaskAccepted>(flowPath(pipelineId, "/probe", scope)),
+    post<DeliveryProbeResult>(flowPath(pipelineId, "/probe", scope)),
   release: (record: DeliveryRecordRef) => post<DeliveryReleaseResult>(`${recordApiPath(record)}/release`),
   /** Marks the record for redelivery and (with run) queues the deliver run that sends it. */
   redeliver: (record: DeliveryRecordRef, scope: "all" | "metadata" | "payload" = "all", run = true) =>
@@ -3158,30 +3177,30 @@ export const deliveryApi = {
   /** Queues the same sync for records of the flow's interface: those the request names, or every one without a request. */
   syncFlow: (pipelineId: string, scope?: DeliveryFlowScope, request?: DeliverySyncRequest) =>
     post<DeliveryRunAccepted>(flowPath(pipelineId, "/sync", scope), request ?? {}),
-  /** Queues a read-back of the record as its flow wrote it to OSDU, at its latest version or at `version`; poll the task for the document. */
+  /** Reads the record back as its flow wrote it to OSDU, at its latest version or at `version`. Answered at once. */
   read: (record: DeliveryRecordRef, version?: number) =>
-    post<ComputeTaskAccepted>(`${recordApiPath(record)}/read`, version === undefined ? undefined : { version }),
+    post<DeliveryOsduRead>(`${recordApiPath(record)}/read`, version === undefined ? undefined : { version }),
   /**
-   * Queues a read of the record's rows as the ingestion tables hold them now, on a node: the record row with its
-   * system columns, its child datasets, and the origin file and row the ingestion tables record. Poll the task.
+   * Reads the record's rows as the ingestion tables hold them now, with the flow's own connection: the record row with its
+   * system columns, its child datasets, and the origin file and row the ingestion tables record. Answered at once.
    */
-  readSource: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/source`),
+  readSource: (record: DeliveryRecordRef) => post<DeliverySourceRows>(`${recordApiPath(record)}/source`),
   /**
-   * Queues a preview of one record of an interface on a node: the scope's first record, or the one `key` names (a source
-   * key, a delivery key, an OSDU id the ledger holds, or a JSON array of the key's parts), rendered as a delivery would
-   * render it and sent nowhere. `values` fill the flow's parameters; the declared defaults fill the rest. Poll the task.
+   * Previews one record of an interface: the scope's first record, or the one `key` names (a source key, a delivery key, an
+   * OSDU id the ledger holds, or a JSON array of the key's parts), rendered as a delivery would render it and sent nowhere.
+   * `values` fill the flow's parameters; the declared defaults fill the rest. Answered at once.
    */
   preview: (pipelineId: string, request: { key?: string | null; values?: Record<string, string> }, scope?: DeliveryFlowScope) =>
-    post<ComputeTaskAccepted>(flowPath(pipelineId, "/preview", scope), request),
-  /** Queues a preview of this record, rendered from its current source row as a delivery would render it now. */
-  previewRecord: (record: DeliveryRecordRef) => post<ComputeTaskAccepted>(`${recordApiPath(record)}/preview`),
+    post<DeliveryRecordPreview>(flowPath(pipelineId, "/preview", scope), request),
+  /** Previews this record, rendered from its current source row as a delivery would render it now. Answered at once. */
+  previewRecord: (record: DeliveryRecordRef) => post<DeliveryRecordPreview>(`${recordApiPath(record)}/preview`),
   /**
-   * Queues a read of the values each parameter of an interface's scope can take, on a node: the distinct values of the
-   * column the scope binds it to in the flow's record table, with how many rows hold each. What a page offers for a
-   * scope's value rather than having it typed.
+   * Reads the values each parameter of an interface's scope can take: the distinct values of the column the scope binds it
+   * to in the flow's record table, with how many rows hold each. What a page offers for a scope's value rather than having
+   * it typed. Answered at once.
    */
   scopeValues: (pipelineId: string, scope?: DeliveryFlowScope) =>
-    post<ComputeTaskAccepted>(flowPath(pipelineId, "/scope-values", scope)),
+    post<DeliveryScopeValues>(flowPath(pipelineId, "/scope-values", scope)),
   /** The interfaces of the delivery flows that render with a mapping, in every partition: what its values are checked against. */
   mappingFlows: (mappingId: string) => get<DeliveryMappingFlow[]>(`/api/v1/delivery/mappings/${mappingId}/flows`),
   /**
@@ -3190,9 +3209,9 @@ export const deliveryApi = {
    */
   checkValues: (pipelineId: string, request: DeliveryValueCheckRequest, scope?: DeliveryFlowScope) =>
     post<ComputeTaskAccepted>(flowPath(pipelineId, "/check-values", scope), request),
-  /** Queues a read of any OSDU record by id, through the flow's route and credentials. Poll the task. */
+  /** Reads any OSDU record by id, through the flow's route and credentials. Answered at once. */
   readOsdu: (pipelineId: string, targetId: string, scope?: DeliveryFlowScope, version?: number) =>
-    post<ComputeTaskAccepted>(flowPath(pipelineId, "/osdu/read", scope), version === undefined ? { targetId } : { targetId, version }),
+    post<DeliveryOsduRead>(flowPath(pipelineId, "/osdu/read", scope), version === undefined ? { targetId } : { targetId, version }),
   /** Where the flow's records live in the scope's partition, and which call each removal scope makes against them. */
   target: (pipelineId: string, scope?: DeliveryFlowScope) =>
     get<DeliveryTarget>(`/api/v1/delivery/flows/${pipelineId}/target`, scopeQuery(scope)),

@@ -1,9 +1,8 @@
-// The explorer's calls (osdu/docs/explorer.md): how a partition of OSDU is reached, and the reads a node makes of it there,
-// the kinds its records are of, a page of the records a search finds, the properties a kind's records hold, and one record.
-// Every read is a compute task the control plane queues; the explorer waits on it as the record page waits on a read-back.
+// The explorer's calls (osdu/docs/explorer.md): how a partition of OSDU is reached, and the reads made of it there, the
+// kinds its records are of, a page of the records a search finds, the properties a kind's records hold, and one record.
+// Every read is answered by the control plane at once, through a connection it keeps open between reads.
 
 import { get, post } from "@/api/client";
-import type { ComputeTaskAccepted } from "@/api/types";
 import type { DeliveryOsduRead } from "./delivery";
 
 /** How the explorer reaches a partition: through which flow's connection, or why nothing does. */
@@ -122,18 +121,18 @@ export const explorerApi = {
   /** How the partition is reached; the workbench's when none is named. */
   connection: (partition: string | null) =>
     get<ExplorerConnection>("/api/v1/delivery/explorer/connection", partition === null ? {} : { partition }),
-  /** Queues the count of the records a search finds, kind by kind. */
+  /** The count of the records a search finds, kind by kind. */
   types: (partition: string | null, request: ExplorerSearchRequest) =>
-    post<ComputeTaskAccepted>(`/api/v1/delivery/explorer/types${partitionQuery(partition)}`, request),
-  /** Queues one page of the records a search finds. */
+    post<ExplorerAnswer<ExplorerTypes>>(`/api/v1/delivery/explorer/types${partitionQuery(partition)}`, request),
+  /** One page of the records a search finds. */
   search: (partition: string | null, request: ExplorerSearchRequest) =>
-    post<ComputeTaskAccepted>(`/api/v1/delivery/explorer/search${partitionQuery(partition)}`, request),
-  /** Queues a read of the properties a kind's records hold. */
+    post<ExplorerAnswer<ExplorerPage>>(`/api/v1/delivery/explorer/search${partitionQuery(partition)}`, request),
+  /** The properties a kind's records hold, read from one of them. */
   fields: (partition: string | null, kind: string) =>
-    post<ComputeTaskAccepted>(`/api/v1/delivery/explorer/fields${partitionQuery(partition)}`, { kind }),
-  /** Queues a read of one record from the storage service, at its latest or at one version. */
+    post<ExplorerAnswer<ExplorerFields>>(`/api/v1/delivery/explorer/fields${partitionQuery(partition)}`, { kind }),
+  /** One record from the storage service, at its latest or at one version. */
   read: (partition: string | null, targetId: string, version?: number) =>
-    post<ComputeTaskAccepted>(`/api/v1/delivery/explorer/read${partitionQuery(partition)}`, version === undefined ? { targetId } : { targetId, version }),
+    post<DeliveryOsduRead>(`/api/v1/delivery/explorer/read${partitionQuery(partition)}`, version === undefined ? { targetId } : { targetId, version }),
 };
 
 /** A record read by the explorer: what a record page's read-back answers, read from the storage service. */

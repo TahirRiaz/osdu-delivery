@@ -5,7 +5,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import type { ComputeTask } from "@/api/types";
 import { CodeView } from "@/components/CodeView";
 import { DiffView } from "@/components/DiffView";
 import { TruncatedText } from "@/components/TruncatedText";
@@ -14,13 +13,16 @@ import type { DeliveryOsduRead, DeliveryPreviewInputs, DeliveryRecord, DeliveryR
 import { Fact, FactGrid, NoFact } from "./Facts";
 import { canonicalText, differences, envelopeFirst, withoutOsduFields, type DifferenceKind } from "./osduDocument";
 import { PreviewActionBadge, PreviewChoices, PreviewSearches } from "./RecordPreviewView";
-import { ProblemView, TaskProgress } from "./TemplateSheet";
-import { isTerminalTask, useComputeTask } from "./useComputeTask";
+import type { Settled } from "./answers";
 
-/** The node tasks of one render: the record rendered from its row, and the read of what OSDU holds, when it holds any. */
-export interface RenderTasks {
-  preview: string;
-  read: string | null;
+/**
+ * What one render answered: the record rendered from its row, and the read of what OSDU holds (null when the record has
+ * no id OSDU could hold), each with its result or why there is none, and when it was asked for.
+ */
+export interface RenderResults {
+  preview: Settled<DeliveryRecordPreview>;
+  read: Settled<DeliveryOsduRead> | null;
+  renderedUtc: string;
 }
 
 const KIND_LABELS: Record<DifferenceKind, string> = {
@@ -133,17 +135,6 @@ function InputsGrid({ delivered, now, removed }: { delivered: RenderInputs | nul
   );
 }
 
-/** A settled task's result, a failure, or null while it runs. */
-function settledOf<T>(task: ComputeTask | undefined): { result: T | null; failure: string | null } | null {
-  if (task === undefined || !isTerminalTask(task)) {
-    return null;
-  }
-
-  return task.status === "succeeded" && task.result !== null && task.result !== undefined
-    ? { result: task.result as T, failure: null }
-    : { result: null, failure: task.error ?? `The task ended ${task.status} without an answer.` };
-}
-
 /**
  * The record rendered now, beside what OSDU holds: what its route does with the manifest (the DDMS it reaches, the values
  * it adds or carries forward, which explain a difference the comparison alone cannot), what the next run would do with
@@ -151,34 +142,28 @@ function settledOf<T>(task: ComputeTask | undefined): { result: T | null; failur
  * version, who changed it and when) are set aside, keys are compared in order, and a value the platform gives when the
  * record is sent (a dataset id the File service mints) is counted as such rather than as a change.
  */
-function RenderResult({ tasks }: { tasks: RenderTasks }) {
+function RenderResult({ results }: { results: RenderResults }) {
   const [view, setView] = useState<"beside" | "document">("beside");
-  const previewTask = useComputeTask(tasks.preview);
-  const readTask = useComputeTask(tasks.read);
-  const preview = settledOf<DeliveryRecordPreview>(previewTask.data);
-  const read = tasks.read === null ? { result: null, failure: null } : settledOf<DeliveryOsduRead>(readTask.data);
+  const preview = results.preview;
+  const read = results.read ?? { result: null, failure: null };
 
   const result = preview?.result ?? null;
   const document = result?.document ?? null;
   const rendered = document === null ? null : document.sent ?? document.rendered ?? null;
   const decision = result?.decision ?? null;
   const readResult = read?.result ?? null;
-  // Worked out on each render: a render follows only a click or a task that settled, and the texts compare by value.
+  // Worked out on each render: a render follows only a click or an answer, and the texts compare by value.
   const holds = readResult?.found === true && readResult.record ? withoutOsduFields(readResult.record) : null;
   const compared = holds !== null && rendered !== null
     ? { ...differences(holds, rendered), original: canonicalText(holds), modified: canonicalText(rendered) }
     : null;
   const shown = compared === null ? "document" : view;
   // Nothing to set it beside: the record has no OSDU id a read could follow, or OSDU answered that it holds none.
-  const noTarget = tasks.read === null;
+  const noTarget = results.read === null;
   const absent = readResult !== null && !readResult.found;
 
   return (
     <div className="flex flex-col gap-3">
-      {preview === null && <TaskProgress label="Rendering the record on a node" task={previewTask.data} testId="record-render-progress" />}
-      {tasks.read !== null && read === null && <TaskProgress label="Reading the record from OSDU" task={readTask.data} testId="record-render-read-progress" />}
-      {previewTask.isError && <ProblemView error={previewTask.error} />}
-      {readTask.isError && <ProblemView error={readTask.error} />}
       {preview?.failure && (
         <Alert variant="destructive" data-testid="record-render-failed">
           <CircleAlert />
@@ -328,28 +313,25 @@ function RenderResult({ tasks }: { tasks: RenderTasks }) {
 }
 
 /**
- * The record's output, built from the data available now: its manifest rendered on a node from its current source row
- * with the flow's mapping and cache, set beside what OSDU holds. Only the manifest is built; the DDMS sections a DDMS route
- * sends besides it are not. Above the render, the mapping and cache version that rendered the document OSDU holds beside
- * those the render used, so a change of either is seen at a glance. The ledger keeps what it sent as a hash, not as the
+ * The record's output, built from the data available now: its manifest rendered from its current source row with the
+ * flow's mapping and cache, set beside what OSDU holds. Only the manifest is built; the DDMS sections a DDMS route sends
+ * besides it are not. Above the render, the mapping and cache version that rendered the document OSDU holds beside those
+ * the render used, so a change of either is seen at a glance. The ledger keeps what it sent as a hash, not as the
  * document, so the document shown is always the one the record renders to now.
  */
-export function RecordRenderTab({ record, canOperate, canRender, queueing, onRender, tasks }: {
+export function RecordRenderTab({ record, canOperate, canRender, rendering, onRender, results }: {
   record: DeliveryRecord;
-  /** Whether the viewer holds the operate scope a node task takes. */
+  /** Whether the viewer holds the operate scope a render takes. */
   canOperate: boolean;
-  /** Whether a render may be queued: the record's flow is known and no other request of the page is in flight. */
+  /** Whether a render may be asked for: the record's flow is known and no other request of the page is in flight. */
   canRender: boolean;
-  /** Whether the render is being queued. */
-  queueing: boolean;
+  /** Whether a render is under way. */
+  rendering: boolean;
   onRender: () => void;
-  /** The render as it stands, once one was queued. */
-  tasks: RenderTasks | null;
+  /** What the last render answered; null before any has. */
+  results: RenderResults | null;
 }) {
-  const previewTask = useComputeTask(tasks?.preview ?? null);
-  const readTask = useComputeTask(tasks?.read ?? null);
-  const running = queueing || (tasks !== null && (!isTerminalTask(previewTask.data) || (tasks.read !== null && !isTerminalTask(readTask.data))));
-  const preview = previewTask.data?.status === "succeeded" ? (previewTask.data.result as DeliveryRecordPreview | null | undefined) ?? null : null;
+  const preview = results?.preview.result ?? null;
 
   return (
     <Card className="gap-3 rounded-lg p-3" data-testid="record-render">
@@ -358,12 +340,12 @@ export function RecordRenderTab({ record, canOperate, canRender, queueing, onRen
           variant="outline"
           size="sm"
           onClick={onRender}
-          disabled={!canOperate || !canRender || running}
-          title={canOperate ? undefined : "A render runs on a node, which takes the operate scope."}
+          disabled={!canOperate || !canRender || rendering}
+          title={canOperate ? undefined : "A render reads the flow's tables and OSDU with the flow's credentials, which takes the operate scope."}
           data-testid="record-render-run"
         >
-          {running ? <Loader2 className="animate-spin" /> : <FileCode2 />}
-          {tasks === null ? "Render" : "Render again"}
+          {rendering ? <Loader2 className="animate-spin" /> : <FileCode2 />}
+          {results === null ? "Render" : "Render again"}
         </Button>
         <p className="min-w-0 flex-1 basis-96 text-[12px] text-muted-foreground" data-testid="record-render-scope">
           Builds the record&apos;s manifest from the data available now (source row, mapping, cache) and sets it beside
@@ -375,7 +357,7 @@ export function RecordRenderTab({ record, canOperate, canRender, queueing, onRen
         now={preview === null ? null : currentInputs(preview.inputs)}
         removed={record.status === "deleted"}
       />
-      {tasks !== null && <RenderResult key={tasks.preview} tasks={tasks} />}
+      {results !== null && <RenderResult key={results.renderedUtc} results={results} />}
     </Card>
   );
 }

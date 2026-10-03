@@ -20,7 +20,6 @@ import {
 import { isRecordReference } from "../osduDocument";
 import { idParts } from "../osduRecordModel";
 import { RecordName } from "../RecordName";
-import { runComputeTask } from "../useComputeTask";
 import { ExplorerGroupBy } from "./ExplorerGroupBy";
 import { ExplorerGrid, type GridColumn } from "./ExplorerGrid";
 import { ExplorerProblem } from "./ExplorerProblem";
@@ -105,10 +104,7 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
 }) {
   const pages = useInfiniteQuery({
     queryKey: ["explorer", "search", partition, request],
-    queryFn: ({ pageParam, signal }) => runComputeTask<ExplorerAnswer<ExplorerPage>>(
-      () => explorerApi.search(partition, { ...request, offset: pageParam, limit: EXPLORER_PAGE }),
-      signal,
-    ),
+    queryFn: ({ pageParam }): Promise<ExplorerAnswer<ExplorerPage>> => explorerApi.search(partition, { ...request, offset: pageParam, limit: EXPLORER_PAGE }),
     initialPageParam: 0,
     getNextPageParam: (last) => {
       const next = last.answer.offset + EXPLORER_PAGE;

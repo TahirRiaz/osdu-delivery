@@ -69,9 +69,10 @@ point. The values that matter operationally:
 - **Startup refuses a mismatch.** Pending OSDU migrations, a database newer than this build, or a SQLFlow catalog
   older than the module requires each stop the host with a message naming the migration or version, rather than
   failing later on whichever request first touches a missing table.
-- **No OSDU credential lives here.** The endpoints above read and write the ledger; delivering to OSDU happens on
-  a node, which holds the endpoint credential. A probe, a read-back or a delete from the GUI is queued as a
-  compute task for that reason, not executed in the API.
+- **It reads OSDU; it never delivers to it.** What a person asks of a flow and waits on (a probe of its target, a
+  record read back, a preview, a source read, a scope's values, the explorer) runs here, under the flow's own
+  credentials and its partition's central configuration, so this tier is given the flows' references as a node is.
+  Delivering happens on a node, and so do a value check and a removal, which are queued as compute tasks.
 
 ## See also
 

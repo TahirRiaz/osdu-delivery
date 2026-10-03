@@ -16,8 +16,6 @@ import {
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
-import { isApiError } from "@/api/client";
-import type { ComputeTask, ComputeTaskAccepted } from "@/api/types";
 import { CopyButton } from "@/components/CopyButton";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
@@ -32,8 +30,8 @@ import {
   type RecordModel, type RecordNode,
 } from "./osduRecordModel";
 import { RecordName } from "./RecordName";
+import { failureText } from "./answers";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
-import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
 /** How many rows of one branch show before the rest wait behind a button, so a curve list of thousands stays usable. */
 const PAGE = 100;
@@ -73,12 +71,15 @@ const VIEW_NAMES: Record<string, string> = {
 /** How a branch of the record is shown: one level as fields (or a table of items), or the whole branch as JSON. */
 type ViewMode = "fields" | "json";
 
-/** One record open in the inspector: the read that fetched it, as it stands, and where in the record before it it was found. */
+/** One record open in the inspector: what its read answered, as it stands, and where in the record before it it was found. */
 export interface InspectorEntry {
   id: string;
-  task: ComputeTask | undefined;
-  /** A refusal of the poll itself (not of the read): the task could not be followed. */
+  /** What the read answered; undefined until it has. */
+  read: DeliveryOsduRead | undefined;
+  /** Why the read answered nothing: the control plane's problem, or OSDU's, with its words. */
   error?: unknown;
+  /** Whether the read is under way. */
+  pending: boolean;
   /** The path, in the record before it on the trail, of the value that named this record; absent for the first record. */
   from?: string | null;
 }
@@ -843,7 +844,7 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
   onOpenLink?: OpenLink;
   onBack: (level: number) => void;
   /** Queues a read of this record at one of its versions; absent where it cannot be asked for. */
-  readVersion?: (version: number) => Promise<ComputeTaskAccepted>;
+  readVersion?: (version: number) => Promise<DeliveryOsduRead>;
   opening?: string | null;
   /** The page's own controls over the read (read again, open in a window), kept on the location bar. */
   actions?: ReactNode;
@@ -852,23 +853,18 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
   /** The records that mention this one, given a way to open one of them on the trail; absent where a page cannot list them. */
   mentions?: (open: (id: string) => void) => ReactNode;
 }) {
-  const [picked, setPicked] = useState<{ version: number; taskId: string } | null>(null);
+  const [picked, setPicked] = useState<{ version: number; read: DeliveryOsduRead } | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
-  const pickedTask = useComputeTask(picked?.taskId ?? null);
   const pick = useMutation({
     mutationFn: (version: number) => readVersion!(version),
-    onSuccess: (accepted, version) => setPicked({ version, taskId: accepted.taskId }),
-    onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
+    onSuccess: (answer, version) => setPicked({ version, read: answer }),
+    onError: (error) => toast.error(failureText(error)),
   });
   const latestVersion = read.readVersion ?? read.version ?? null;
-  const pickedRead = picked !== null && isTerminalTask(pickedTask.data) && pickedTask.data?.status === "succeeded"
-    ? (pickedTask.data.result as DeliveryOsduRead | null)
-    : null;
+  const pickedRead = picked?.read ?? null;
   const pickedRecord = pickedRead?.found === true && pickedRead.record ? pickedRead.record : null;
-  const pickedFailure = picked !== null && isTerminalTask(pickedTask.data)
-    ? (pickedTask.data?.status !== "succeeded" ? (pickedTask.data?.error ?? "the read did not answer") : pickedRecord === null ? `The record has no version ${picked.version}` : null)
-    : pickedTask.isError ? String(pickedTask.error) : null;
-  const pickedLoading = pick.isPending || (picked !== null && !isTerminalTask(pickedTask.data) && !pickedTask.isError);
+  const pickedFailure = picked !== null && pickedRecord === null ? `The record has no version ${picked.version}` : null;
+  const pickedLoading = pick.isPending;
   // The record in view: the picked version once it has arrived, the latest until then and when the pick is the latest.
   const showingPicked = pickedRecord !== null && picked !== null && picked.version !== latestVersion;
   const shownRead = showingPicked && pickedRead !== null ? pickedRead : read;
@@ -1147,7 +1143,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
   /** Opens a record after the one at `level` on the trail: one a value of it names (from that value's path), or one that mentions it. */
   onOpenLink?: (level: number, id: string, from: string | null) => void;
   /** How the record at `level` is read at one of its versions; undefined where it cannot be asked for. */
-  readVersionAt: (level: number) => ((version: number) => Promise<ComputeTaskAccepted>) | undefined;
+  readVersionAt: (level: number) => ((version: number) => Promise<DeliveryOsduRead>) | undefined;
   /** Steps back to the entry at `level`, closing everything opened after it. */
   onBack: (level: number) => void;
   /** The page's own controls over the read, shown on the location bar. */
@@ -1164,7 +1160,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
 
   const body = (entry: InspectorEntry, level: number): { content: ReactNode; inspector: boolean } => {
     const back: EarlierRecord | null = level === 0 ? null : { id: entries[level - 1].id, from: entry.from ?? null, level: level - 1 };
-    const read = isTerminalTask(entry.task) && entry.task?.status === "succeeded" ? (entry.task.result as DeliveryOsduRead | null) : null;
+    const read = entry.pending ? null : entry.read ?? null;
     if (read !== null && read.found && read.record) {
       return {
         inspector: true,
@@ -1189,15 +1185,8 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
     let message: ReactNode;
     if (entry.error !== undefined) {
       message = <div className="p-3"><ProblemView error={entry.error} /></div>;
-    } else if (!isTerminalTask(entry.task)) {
-      message = <div className="p-3"><TaskProgress label={level === 0 ? "Reading the record through its flow's route" : "Reading the linked record through the flow's route"} task={entry.task} testId="osdu-read-progress" /></div>;
-    } else if (entry.task?.status !== "succeeded" || read === null) {
-      message = (
-        <Alert variant="destructive" className="m-3 w-auto" data-testid="osdu-read-failed">
-          <AlertTitle>The record could not be read</AlertTitle>
-          <AlertDescription className="whitespace-pre-wrap">{entry.task?.error ?? `The read ended ${entry.task?.status ?? "without an answer"}.`}</AlertDescription>
-        </Alert>
-      );
+    } else if (entry.pending || read === null) {
+      message = <div className="p-3"><TaskProgress label={level === 0 ? "Reading the record from OSDU" : "Reading the linked record from OSDU"} testId="osdu-read-progress" /></div>;
     } else {
       message = (
         <Alert className="m-3 w-auto" data-testid="osdu-not-found">
@@ -1250,7 +1239,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
         return (
           // Every record on the trail stays mounted, so stepping back finds it as it was left; only the last is shown.
           <div
-            key={`${level}:${entry.task?.taskId ?? entry.id}`}
+            key={`${level}:${entry.id}`}
             hidden={level !== shownLevel}
             className={fill ? "flex min-h-0 flex-1 flex-col" : undefined}
             data-testid={level > 0 ? "osdu-linked" : undefined}

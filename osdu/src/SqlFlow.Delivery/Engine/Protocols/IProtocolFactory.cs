@@ -2,7 +2,6 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
-using SqlFlow.Core.Secrets;
 
 namespace SqlFlow.Delivery.Engine.Protocols;
 
@@ -17,16 +16,18 @@ public interface IProtocolFactory
     Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, ILoggerFactory loggers, CancellationToken ct = default);
 }
 
+/// <summary>
+/// The protocols the engine delivers through. Every reference the protocol reaches the target with (the endpoint, the headers,
+/// the credentials of the services behind it) is resolved by the resolver of the runtime it is given
+/// (<see cref="HttpRuntime.Secrets"/>), which applies the central configuration the run or operation was given ahead of the
+/// process's environment. A protocol therefore reaches the endpoint the run's record searches reach, in the partition the run was
+/// bound to, and never one the process's environment names instead.
+/// </summary>
 public sealed class DefaultProtocolFactory : IProtocolFactory
 {
-    private readonly ISecretResolver _secrets;
-
-    public DefaultProtocolFactory(ISecretResolver secrets)
-    {
-        ArgumentNullException.ThrowIfNull(secrets);
-        _secrets = secrets;
-    }
-
     public Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, ILoggerFactory loggers, CancellationToken ct = default)
-        => ProtocolFactory.CreateAsync(flow, http, _secrets, loggers, ct);
+    {
+        ArgumentNullException.ThrowIfNull(http);
+        return ProtocolFactory.CreateAsync(flow, http, http.Secrets, loggers, ct);
+    }
 }

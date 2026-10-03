@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "4301903999259024605"
+      "templateHash": "15043554990261684635"
     }
   },
   "parameters": {
@@ -184,7 +184,7 @@
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "ADDITIONAL flow environment references beyond the built-in SQLFLOW_CONN_PRE and SQLFLOW_CONN_DWH, one object per ${env:...} reference the worker pool's flows use, and for the OSDU module database connection the ledger is read and written through on a node: { name: the environment variable, secretName: an EXISTING Key Vault secret in keyVaultName holding its value }, e.g. [{ name: 'OSDU_CLIENT_SECRET', secretName: 'osdu-client-secret' }]. OSDU credentials are put in the vault out of band and never pass through this template; the node reads them under its own identity, so they never reach the control plane."
+        "description": "ADDITIONAL flow environment references beyond the built-in SQLFLOW_CONN_PRE and SQLFLOW_CONN_DWH, one object per ${env:...} reference the worker pool's flows use, and for the OSDU module database connection the ledger is read and written through on a node: { name: the environment variable, secretName: an EXISTING Key Vault secret in keyVaultName holding its value }, e.g. [{ name: 'OSDU_CLIENT_SECRET', secretName: 'osdu-client-secret' }]. OSDU credentials are put in the vault out of band and never pass through this template; each app reads them under its own identity. The control plane is given the same references, since a person's reads of a flow (a probe, a record read back, a preview, the explorer) run there under the flow's own credentials; it never delivers."
       }
     },
     "workerPool": {
@@ -330,11 +330,7 @@
     "quotedSqlAdminPassword": "[format('''{0}''', replace(parameters('sqlAdminPassword'), '''', ''''''))]",
     "entraSignInAudience": "[if(empty(parameters('azureAdAdditionalAllowedTenantIds')), 'AzureADMyOrg', 'AzureADMultipleOrgs')]",
     "effectiveAzureAdAllowedTenantIds": "[if(parameters('provisionEntraApp'), concat(createArray(subscription().tenantId), parameters('azureAdAdditionalAllowedTenantIds')), parameters('azureAdAllowedTenantIds'))]",
-    "builtInFlowEnv": [
-      {
-        "name": "SQLFLOW_OSDU_DB",
-        "secretName": "[variables('osduConnectionSecretName')]"
-      },
+    "builtInConnectionEnv": [
       {
         "name": "SQLFLOW_CONN_PRE",
         "secretName": "[variables('preConnectionSecretName')]"
@@ -343,7 +339,8 @@
         "name": "SQLFLOW_CONN_DWH",
         "secretName": "[variables('ingestionConnectionSecretName')]"
       }
-    ]
+    ],
+    "builtInFlowEnv": "[concat(createArray(createObject('name', 'SQLFLOW_OSDU_DB', 'secretName', variables('osduConnectionSecretName'))), variables('builtInConnectionEnv'))]"
   },
   "resources": [
     {
@@ -819,6 +816,12 @@
           },
           "maxReplicas": {
             "value": "[parameters('controlPlaneMaxReplicas')]"
+          },
+          "flowEnv": {
+            "value": "[concat(variables('builtInConnectionEnv'), parameters('workerFlowEnv'))]"
+          },
+          "privateNetworks": {
+            "value": "[parameters('privateNetworks')]"
           }
         },
         "template": {
@@ -828,7 +831,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "7008462985697445909"
+              "templateHash": "7863065674274990149"
             }
           },
           "parameters": {
@@ -941,6 +944,20 @@
                 "description": "Username paired with the git token when the host requires one (Bitbucket app passwords take the account username, repository access tokens take x-token-auth; GitHub ignores it). Empty sends the token alone."
               }
             },
+            "flowEnv": {
+              "type": "array",
+              "defaultValue": [],
+              "metadata": {
+                "description": "Flow environment references the reads of a flow resolve here, one object per ${env:...} reference the flows use: { name: the environment variable, secretName: the Key Vault secret holding its value }. The same list the worker app takes (without SQLFLOW_OSDU_DB, which this app already sets), so a flow reaches the same OSDU and the same ingestion tables with the same credentials in both. Empty leaves those reads to whatever the central configuration supplies."
+              }
+            },
+            "privateNetworks": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "The private ranges (CIDR, comma separated) the reads of a flow may reach, for an environment integrated into a VNet whose OSDU or ingestion database resolves to private addresses (SQLFLOW_DELIVERY_PRIVATE_NETWORKS). The same value the worker app takes. Empty reaches public addresses only; loopback, link-local and cloud metadata addresses are never reachable."
+              }
+            },
             "proxyKnownNetworks": {
               "type": "array",
               "defaultValue": [],
@@ -1003,6 +1020,23 @@
           "variables": {
             "copy": [
               {
+                "name": "flowEnvSecrets",
+                "count": "[length(parameters('flowEnv'))]",
+                "input": {
+                  "name": "[format('flow-env-{0}', copyIndex('flowEnvSecrets'))]",
+                  "keyVaultUrl": "[format('{0}secrets/{1}', variables('vaultUri'), parameters('flowEnv')[copyIndex('flowEnvSecrets')].secretName)]",
+                  "identity": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name')))]"
+                }
+              },
+              {
+                "name": "flowEnvVars",
+                "count": "[length(parameters('flowEnv'))]",
+                "input": {
+                  "name": "[parameters('flowEnv')[copyIndex('flowEnvVars')].name]",
+                  "secretRef": "[format('flow-env-{0}', copyIndex('flowEnvVars'))]"
+                }
+              },
+              {
                 "name": "corsEnv",
                 "count": "[length(parameters('corsAllowedOrigins'))]",
                 "input": {
@@ -1052,6 +1086,7 @@
             "bootstrapEnv": "[if(empty(parameters('bootstrapAdminPasswordSecretName')), createArray(), createArray(createObject('name', 'ControlPlane__Bootstrap__AdminUsername', 'value', parameters('bootstrapAdminUsername')), createObject('name', 'ControlPlane__Bootstrap__AdminPasswordReference', 'secretRef', 'bootstrap-admin-password')))]",
             "gitTokenEnv": "[if(empty(parameters('gitTokenSecretName')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_TOKEN', 'secretRef', 'git-token')))]",
             "gitUsernameEnv": "[if(empty(parameters('gitUsername')), createArray(), createArray(createObject('name', 'SQLFLOW_GIT_USERNAME', 'value', parameters('gitUsername'))))]",
+            "privateNetworksEnv": "[if(empty(parameters('privateNetworks')), createArray(), createArray(createObject('name', 'SQLFLOW_DELIVERY_PRIVATE_NETWORKS', 'value', parameters('privateNetworks'))))]",
             "proxyEnv": "[if(empty(parameters('proxyKnownNetworks')), createArray(), concat(createArray(createObject('name', 'ControlPlane__Proxy__Enabled', 'value', 'true')), variables('proxyNetworkEnv')))]",
             "entraEnv": "[if(or(empty(parameters('azureAdAllowedTenantIds')), empty(parameters('azureAdClientId'))), createArray(), concat(variables('azureAdTenantEnv'), createArray(createObject('name', 'ControlPlane__AzureAd__ClientId', 'value', parameters('azureAdClientId')), createObject('name', 'ControlPlane__AzureAd__DefaultRole', 'value', parameters('azureAdDefaultRole')))))]"
           },
@@ -1112,7 +1147,7 @@
                     "transport": "auto"
                   },
                   "registries": "[if(empty(if(not(empty(parameters('acrName'))), reference(resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName'))), '2023-07-01').loginServer, parameters('acrLoginServer'))), createArray(), createArray(createObject('server', if(not(empty(parameters('acrName'))), reference(resourceId('Microsoft.ContainerRegistry/registries', if(empty(parameters('acrName')), 'unused', parameters('acrName'))), '2023-07-01').loginServer, parameters('acrLoginServer')), 'identity', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))))))]",
-                  "secrets": "[concat(variables('baseSecrets'), variables('bootstrapSecrets'), variables('gitTokenSecrets'))]"
+                  "secrets": "[concat(variables('baseSecrets'), variables('bootstrapSecrets'), variables('gitTokenSecrets'), variables('flowEnvSecrets'))]"
                 },
                 "template": {
                   "containers": [
@@ -1123,7 +1158,7 @@
                         "cpu": "[json('0.5')]",
                         "memory": "1.0Gi"
                       },
-                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_OSDU_DB', 'secretRef', 'osdu-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'))]",
+                      "env": "[concat(createArray(createObject('name', 'SQLFLOW_CATALOG_DB', 'secretRef', 'catalog-db'), createObject('name', 'SQLFLOW_OSDU_DB', 'secretRef', 'osdu-db'), createObject('name', 'SQLFLOW_AZURE_AUTH', 'value', 'mi'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-id', parameters('name'))), '2023-01-31').clientId), createObject('name', 'ControlPlane__Jwt__SigningKey', 'secretRef', 'jwt-signing-key'), createObject('name', 'ControlPlane__Jwt__Issuer', 'value', parameters('jwtIssuer')), createObject('name', 'ControlPlane__Jwt__Audience', 'value', parameters('jwtAudience')), createObject('name', 'ControlPlane__Worker__Enabled', 'value', if(parameters('workerEnabled'), 'true', 'false'))), variables('bootstrapEnv'), variables('gitTokenEnv'), variables('gitUsernameEnv'), variables('corsEnv'), variables('proxyEnv'), variables('entraEnv'), variables('privateNetworksEnv'), variables('flowEnvVars'))]",
                       "probes": [
                         {
                           "type": "Liveness",
@@ -1188,11 +1223,13 @@
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('catalogConnectionSecretName'))]",
         "[resourceId('Microsoft.Resources/deployments', 'osdu-delivery-entra-app')]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('gitTokenSecretName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('ingestionConnectionSecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('jwtSigningKeySecretName'))]",
         "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
         "[resourceId('Microsoft.Sql/servers/databases', parameters('sqlServerName'), parameters('osduDatabaseName'))]",
         "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('osduConnectionSecretName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', parameters('keyVaultName'), variables('preConnectionSecretName'))]",
         "[resourceId('Microsoft.Sql/servers/firewallRules', parameters('sqlServerName'), 'AllowAllWindowsAzureIps')]"
       ]
     },
@@ -1255,7 +1292,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "2583402434927479636"
+              "templateHash": "777270660136417359"
             }
           },
           "parameters": {
@@ -1336,7 +1373,7 @@
               "type": "array",
               "defaultValue": [],
               "metadata": {
-                "description": "Flow environment references, one object per ${env:...} reference the pool's flows use, and for the OSDU module database connection the ledger is read and written through: { name: the environment variable, secretName: the Key Vault secret holding its value }. Credentials live on the node, never in the control plane."
+                "description": "Flow environment references, one object per ${env:...} reference the pool's flows use, and for the OSDU module database connection the ledger is read and written through: { name: the environment variable, secretName: the Key Vault secret holding its value }. The control plane is given the same references (main.bicep), since a person's reads of a flow run there; runs and removals run here."
               }
             },
             "acrName": {

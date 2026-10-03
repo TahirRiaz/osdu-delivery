@@ -5,12 +5,10 @@ import { EmptyState } from "@/components/EmptyState";
 import { IconAction } from "@/components/IconAction";
 import { deliveryApi, type DeliveryFlowScope, type DeliveryRecord, type DeliveryRecordRef } from "../../api/delivery";
 import { OsduRecordPanel } from "./OsduRecordView";
-import { ProblemView } from "./TemplateSheet";
-import { isTerminalTask } from "./useComputeTask";
 import type { RecordOsduRead } from "./useRecordOsduRead";
 
 /**
- * A record as OSDU holds it, read through its flow's route on a node, in the OSDU inspector: the read's controls, and
+ * A record as OSDU holds it, read through its flow's route, in the OSDU inspector: the read's controls, and
  * before any read what a read would show or why there is nothing to read. The record page's OSDU tab shows it under the
  * page's header, with a way to open it in a window of its own; that window shows it alone, filling the window.
  */
@@ -38,7 +36,7 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
     explorerParams.set("partition", flowScope.partition);
   }
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
-  const reading = osdu.queueing || (osdu.taskId !== null && !isTerminalTask(osdu.task.data));
+  const reading = osdu.pending;
   // The read's controls: on their own above the empty state, and on the inspector's location bar once there is a read.
   const actions = (
     <>
@@ -46,13 +44,13 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
         variant="outline"
         size="sm"
         className="h-7"
-        onClick={osdu.read}
+        onClick={osdu.readAgain}
         disabled={disabled || reading || !canActOnTarget || !canOperate}
-        title={canOperate ? "Reads the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written." : "A read runs on a node, which takes the operate scope."}
+        title={canOperate ? "Reads the record as OSDU holds it now, through its flow's route and credentials. Nothing is written." : "Reading what OSDU holds takes the operate scope."}
         data-testid="record-osdu-read"
       >
         <BookOpenCheck />
-        {osdu.taskId === null ? "Read" : "Read again"}
+        {osdu.asked ? "Read again" : "Read"}
       </Button>
       {popout && record.targetId !== null && canOperate && (
         <IconAction
@@ -80,33 +78,31 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
 
   return (
     <div className={fill ? "flex min-h-0 flex-1 flex-col gap-2" : "flex flex-col gap-2"} data-testid="record-osdu">
-      {osdu.taskId === null && <div className="flex flex-wrap items-center gap-1">{actions}</div>}
-      {osdu.taskId === null && (
+      {!osdu.asked && <div className="flex flex-wrap items-center gap-1">{actions}</div>}
+      {!osdu.asked && (
         <EmptyState
           icon={<BookOpenCheck />}
           title={canActOnTarget ? "Not read yet" : record.status === "deleted" ? "Removed from OSDU" : "No OSDU id yet"}
           description={canActOnTarget
-            ? "Read shows the record as OSDU holds it now, through its flow's route and credentials, on a node. Nothing is written."
+            ? "Read shows the record as OSDU holds it now, through its flow's route and credentials. Nothing is written."
             : record.status === "deleted"
               ? "The record was removed, so there is nothing of this flow's to read."
               : "The record has not been planned for delivery, so there is nothing to read."}
           data-testid="record-osdu-empty"
         />
       )}
-      {osdu.taskId !== null && (osdu.task.isError
-        ? <ProblemView error={osdu.task.error} testId="record-osdu-error" />
-        : (
-          <OsduRecordPanel
-            key={osdu.taskId}
-            readLinked={pipelineId === null ? null : (id, version) => deliveryApi.readOsdu(pipelineId, id, flowScope, version)}
-            task={osdu.task.data}
-            targetId={record.targetId ?? record.deliveryKey}
-            readRootVersion={canActOnTarget && canOperate ? (version) => deliveryApi.read(deliveryRef, version) : undefined}
-            ledgerVersion={record.targetVersion}
-            actions={actions}
-            fill={fill}
-          />
-        ))}
+      {osdu.asked && (
+        <OsduRecordPanel
+          key={osdu.askedAt}
+          readLinked={pipelineId === null ? null : (id, version) => deliveryApi.readOsdu(pipelineId, id, flowScope, version)}
+          root={{ read: osdu.read, error: osdu.error, pending: osdu.pending }}
+          targetId={record.targetId ?? record.deliveryKey}
+          readRootVersion={canActOnTarget && canOperate ? (version) => deliveryApi.read(deliveryRef, version) : undefined}
+          ledgerVersion={record.targetVersion}
+          actions={actions}
+          fill={fill}
+        />
+      )}
     </div>
   );
 }

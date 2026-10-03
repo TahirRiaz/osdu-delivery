@@ -796,7 +796,7 @@ public static class Samples
             ledger,
             time ?? TimeProvider.System,
             NullLoggerFactory.Instance,
-            protocols ?? new DefaultProtocolFactory(new SecretResolver([new EnvSecretProvider()])),
+            protocols ?? new DefaultProtocolFactory(),
             CompositeDeliveryListener.Empty,
             Templates: templates ?? SampleTemplates,
             Cache: cache ?? SampleCache,

@@ -10,10 +10,11 @@ workbench's title bar names.
 
 ## How it reaches OSDU
 
-The explorer is part of OSDU Delivery and uses its way into OSDU, nothing else of it. Every read runs on a node as a
-compute task (`delivery-explore`), as a record page's read-back does, through the OSDU connection of a delivery flow
-that reaches the partition: the flow's endpoint, credentials and `data-partition-id`, resolved on the node as a run
-resolves them. The reader never picks the flow; the control plane picks it for the partition, the same one every time:
+The explorer is part of OSDU Delivery and uses its way into OSDU, nothing else of it. Every read runs in the control
+plane as it is asked (`delivery-explore`), as a record page's read-back does, through the OSDU connection of a delivery
+flow that reaches the partition: the flow's endpoint, credentials and `data-partition-id`, resolved with the
+partition's central configuration as a run resolves them. The connection is kept between reads, so a token is fetched
+once rather than for every read. The reader never picks the flow; the control plane picks it for the partition, the same one every time:
 
 - a flow that names or serves the partition (`partitions:`, or the registry), or whose `data-partition-id` header names
   it, or whose ledger the directory keeps in it;
@@ -126,13 +127,13 @@ partition for ten), so going back to a type or a page already read shows it at o
 | Route | Scope | What it does |
 | --- | --- | --- |
 | `GET /api/v1/delivery/explorer/connection?partition=` | read | How the partition (else the workbench's, else the registry's default) is reached: `available`, `through` (the flow, `flow/interface` for a source's interface), `endpoint` as written, `route`, or `reason` when nothing reaches it. |
-| `POST /api/v1/delivery/explorer/types?partition=` | operate | Queue the count of the records a search finds, kind by kind. Body: `text`, `lucene`, `mentions`, `filters`. |
-| `POST /api/v1/delivery/explorer/search?partition=` | operate | Queue one page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters` (`path`, `index` text, keyword, number, boolean or date, `value`; at most 12); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`) to group by. |
-| `POST /api/v1/delivery/explorer/fields?partition=` | operate | Queue a read of the properties the records of a `kind` hold, from one of them. |
-| `POST /api/v1/delivery/explorer/read?partition=` | operate | Queue a read of one record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
+| `POST /api/v1/delivery/explorer/types?partition=` | operate | The count of the records a search finds, kind by kind. Body: `text`, `lucene`, `mentions`, `filters`. |
+| `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters` (`path`, `index` text, keyword, number, boolean or date, `value`; at most 12); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`) to group by. |
+| `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold, read from one of them. |
+| `POST /api/v1/delivery/explorer/read?partition=` | operate | One record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
 
-Every queued read answers `202` with the task to poll (`GET /api/v1/datasources/tasks/{taskId}?waitMs=`). A request a
-node would refuse (a kind that is not one, a filter value no exact match carries, a page past the window, text with a
-character that cannot be printed, an id that is not one) is refused with 400 before anything is queued, and a partition
-no flow reaches with 409. The task's search is checked again on the node. The MCP server offers none of these routes:
+Every read answers `200` with what it found; there is nothing to poll. A request the read would refuse (a kind that is
+not one, a filter value no exact match carries, a page past the window, text with a character that cannot be printed,
+an id that is not one) is refused with 400 before anything is read, and a partition no flow reaches with 409. A read
+OSDU refuses or fails answers 502, and one with no answer within 60 seconds 504, each with the reason, redacted. The MCP server offers none of these routes:
 it answers from metadata alone, and the explorer reads OSDU's data.

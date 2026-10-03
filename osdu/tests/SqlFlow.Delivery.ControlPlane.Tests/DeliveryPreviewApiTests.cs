@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Compute;
@@ -18,19 +19,18 @@ namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
 /// The record preview and the read of an OSDU record by id as the API serves them: a preview of a flow's first record or of
-/// a named key, and of a record page's record, each queued for a node with the interface, the key and the scope's values it
-/// is read with; the flow's declared parameters listed so a page can ask for them; and every request a node would refuse
-/// (an undeclared parameter, a required one left out, a key or an id that cannot be one) answered as a 400 before anything
-/// is queued. Nothing here reaches an OSDU: the tasks are queued and read back from the catalog, not run.
+/// a named key, and of a record page's record, each run by the control plane with the interface, the key and the scope's
+/// values it is read with, and nothing queued for a node; the flow's declared parameters listed so a page can ask for them;
+/// and every request the operation would refuse (an undeclared parameter, a required one left out, a key or an id that
+/// cannot be one) answered as a 400 before it runs. Nothing here reaches an OSDU: the operations are stood in for
+/// (<see cref="RecordedOperations"/>), and what each was given is read back.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]
 public sealed class DeliveryPreviewApiTests
 {
-    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
-
     [Fact]
-    public async Task A_preview_and_a_read_by_id_are_queued_for_a_node_with_what_they_read_and_bad_asks_are_refused()
+    public async Task A_preview_and_a_read_by_id_are_run_in_the_control_plane_with_what_they_read_and_bad_asks_are_refused()
     {
         var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -111,13 +111,15 @@ public sealed class DeliveryPreviewApiTests
             },
         ]);
 
+        var operations = new RecordedOperations();
         try
         {
             await using var factory = new ControlPlaneAppFactory()
                 .WithCatalog(cs)
                 .WithModules(new DeliveryControlPlaneModule())
                 .WithSetting("ControlPlane:Worker:Enabled", "false")
-                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+                .WithServices(services => services.AddSingleton(operations.Registry()));
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
@@ -136,9 +138,9 @@ public sealed class DeliveryPreviewApiTests
                 Assert.Equal("NORWAY_WELLDB", project.GetProperty("default").GetString());
             }
 
-            // A preview of a named key, with the scope's values: queued for a node, carrying both and the interface.
+            // A preview of a named key, with the scope's values: run at once, given both and the interface.
             var previewPath = $"/api/v1/delivery/flows/{pipelineId:D}/preview?interface=welllogs";
-            var queued = await QueuedAsync(client, token, previewPath, new { key = "  NORWAY_WELLDB/12359/1 ", values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" } });
+            var queued = await RanAsync(client, token, previewPath, new { key = "  NORWAY_WELLDB/12359/1 ", values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" } });
             Assert.Equal("delivery-preview", queued.Operation);
             Assert.Equal(flowName, queued.SourceRef);
             Assert.Equal("NORWAY_WELLDB/12359/1", queued.Argument("key"));
@@ -146,19 +148,20 @@ public sealed class DeliveryPreviewApiTests
             Assert.Equal("STAT_COMP", JsonDocument.Parse(queued.Argument("values")!).RootElement.GetProperty("logSource").GetString());
 
             // Without a key it previews the scope's first record, and carries no key.
-            var first = await QueuedAsync(client, token, previewPath, new { values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" } });
+            var first = await RanAsync(client, token, previewPath, new { values = new Dictionary<string, string> { ["logSource"] = "STAT_COMP" } });
             Assert.Null(first.Argument("key"));
 
-            // What a node would refuse is refused here, before anything is queued.
+            // What the operation would refuse is refused here, before it runs.
             await RefusedAsync(client, token, previewPath, new { key = "x" }, "needs a value for logSource");
             await RefusedAsync(client, token, previewPath, new { values = new Dictionary<string, string> { ["logSource"] = " " } }, "needs a value for logSource");
             await RefusedAsync(client, token, previewPath, new { values = new Dictionary<string, string> { ["logSource"] = "S", ["region"] = "north" } }, "declares no parameter 'region'");
             await RefusedAsync(client, token, previewPath, new { key = "NORWAY\nWELLDB", values = new Dictionary<string, string> { ["logSource"] = "S" } }, "control character");
             await RefusedAsync(client, token, previewPath, new { key = new string('k', ComputeTaskPayload.MaxArgumentLength + 1), values = new Dictionary<string, string> { ["logSource"] = "S" } }, "characters long");
             await RefusedAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/preview", new { values = new Dictionary<string, string> { ["logSource"] = "S" } }, "name the one this request is about with ?interface=");
+            Assert.Empty(operations.Given);
 
             // A record page's preview names its record by the delivery key, and reads the row the way the record was planned.
-            var record = await QueuedAsync(client, token, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/preview", null);
+            var record = await RanAsync(client, token, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/preview", null);
             Assert.Equal("delivery-preview", record.Operation);
             Assert.Equal(key.Value.ToString("D"), record.Argument("key"));
             Assert.Equal("welllogs", record.Argument("interface"));
@@ -169,30 +172,35 @@ public sealed class DeliveryPreviewApiTests
 
             // A read by id takes a reference as a document holds it and reads the record, at its latest version.
             var readPath = $"/api/v1/delivery/flows/{pipelineId:D}/osdu/read?interface=welllogs";
-            var read = await QueuedAsync(client, token, readPath, new { targetId = " dev:master-data--Wellbore:NO-33-9-C-28-B: " });
+            var read = await RanAsync(client, token, readPath, new { targetId = " dev:master-data--Wellbore:NO-33-9-C-28-B: " });
             Assert.Equal("delivery-read", read.Operation);
             Assert.Equal("dev:master-data--Wellbore:NO-33-9-C-28-B", read.Argument("targetId"));
-            var versioned = await QueuedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B:1712345678901234" });
+            var versioned = await RanAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B:1712345678901234" });
             Assert.Equal("dev:master-data--Wellbore:NO-33-9-C-28-B", versioned.Argument("targetId"));
             Assert.Null(versioned.Argument("version"));
 
             // A version to read at rides beside the id, and a record's own read takes one too; a version that is not
-            // one is refused before anything is queued.
-            var atVersion = await QueuedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B", version = 1712345678901234L });
+            // one is refused before anything runs.
+            var atVersion = await RanAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B", version = 1712345678901234L });
             Assert.Equal("1712345678901234", atVersion.Argument("version"));
             await RefusedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:NO-33-9-C-28-B", version = 0 }, "is not a record version");
             var recordReadPath = $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/read";
-            var recordRead = await QueuedAsync(client, token, recordReadPath, new { version = 3 });
+            var recordRead = await RanAsync(client, token, recordReadPath, new { version = 3 });
             Assert.Equal("delivery-read", recordRead.Operation);
             Assert.Equal(key.Value.ToString("D"), recordRead.Argument("deliveryKey"));
             Assert.Equal("3", recordRead.Argument("version"));
-            Assert.Null((await QueuedAsync(client, token, recordReadPath, null)).Argument("version"));
+            Assert.Null((await RanAsync(client, token, recordReadPath, null)).Argument("version"));
             await RefusedAsync(client, token, recordReadPath, new { version = -1 }, "is not a record version");
 
             await RefusedAsync(client, token, readPath, new { targetId = "" }, "Name the OSDU id to read");
             await RefusedAsync(client, token, readPath, new { targetId = "NO 33/9-C-28 B" }, "is not an OSDU record id");
             await RefusedAsync(client, token, readPath, new { targetId = "dev:Wellbore:x" }, "is not an OSDU record id");
             await RefusedAsync(client, token, readPath, new { targetId = "dev:master-data--Wellbore:" + new string('x', 1100) }, "an OSDU id is at most");
+            Assert.Empty(operations.Given);
+
+            // Every one of them was answered in the request: nothing was queued for a node.
+            await using var catalog = CatalogDatabase.Create(cs);
+            Assert.False(await catalog.ComputeTasks.AnyAsync(t => t.SourceRef == flowName));
         }
         finally
         {
@@ -210,15 +218,15 @@ public sealed class DeliveryPreviewApiTests
             }
         }
 
-        async Task<ComputeTaskPayload> QueuedAsync(HttpClient client, string token, string path, object? body)
+        // The operation's own answer is the response, and the payload it was run with is what a node would have been given.
+        async Task<ComputeTaskPayload> RanAsync(HttpClient client, string token, string path, object? body)
         {
             using var response = await SendAsync(client, token, HttpMethod.Post, path, body);
             var text = await response.Content.ReadAsStringAsync();
-            Assert.True(response.StatusCode == HttpStatusCode.Accepted, $"POST {path} answered {(int)response.StatusCode}: {text}");
-            var taskId = JsonDocument.Parse(text).RootElement.GetProperty("taskId").GetGuid();
-            await using var db = CatalogDatabase.Create(cs);
-            var task = await db.ComputeTasks.AsNoTracking().SingleAsync(t => t.TaskId == taskId);
-            return JsonSerializer.Deserialize<ComputeTaskPayload>(task.ArgumentsJson, WebJson)!;
+            Assert.True(response.StatusCode == HttpStatusCode.OK, $"POST {path} answered {(int)response.StatusCode}: {text}");
+            var payload = operations.Last();
+            Assert.Equal(payload.Operation, JsonDocument.Parse(text).RootElement.GetProperty("ran").GetString());
+            return payload;
         }
     }
 

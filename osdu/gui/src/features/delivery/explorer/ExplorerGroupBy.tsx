@@ -3,7 +3,7 @@ import { ArrowLeft, ListTree, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ExplorerTaskErrorText } from "./ExplorerProblem";
+import { ExplorerErrorText } from "./ExplorerProblem";
 import {
   explorerApi, type ExplorerFieldInfo, type ExplorerFields, type ExplorerFilter, type ExplorerPage, type ExplorerSearchRequest,
 } from "../../../api/explorer";
@@ -59,7 +59,7 @@ export function ExplorerGroupBy({ partition, base, onFilter }: {
                     Reading the properties of a record
                   </div>
                 )}
-                {fields.isError && <ExplorerTaskErrorText error={fields.error} className="px-3 py-3" />}
+                {fields.isError && <ExplorerErrorText error={fields.error} className="px-3 py-3" />}
                 {fields.data !== undefined && <CommandEmpty>No property matches.</CommandEmpty>}
                 {envelope.length > 0 && (
                   <CommandGroup heading="Record">
@@ -90,7 +90,7 @@ export function ExplorerGroupBy({ partition, base, onFilter }: {
                     Counting the values
                   </div>
                 )}
-                {groups.isError && <ExplorerTaskErrorText error={groups.error} className="px-2 py-2" />}
+                {groups.isError && <ExplorerErrorText error={groups.error} className="px-2 py-2" />}
                 {groups.data?.answer.refusal && <p className="px-2 py-2 text-[12px] text-destructive">{`The search service would not group by this property: ${groups.data.answer.refusal}`}</p>}
                 {buckets !== null && buckets.length === 0 && <p className="px-2 py-2 text-[12px] text-muted-foreground">None of these records holds a value of it.</p>}
                 {buckets?.map((bucket, index) => (

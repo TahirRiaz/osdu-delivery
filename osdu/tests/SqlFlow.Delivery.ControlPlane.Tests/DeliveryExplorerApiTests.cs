@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Compute;
@@ -20,18 +21,16 @@ namespace SqlFlow.ControlPlane.Tests;
 /// <summary>
 /// The explorer as the API serves it (osdu/docs/explorer.md): the connection each partition is read through, picked from the
 /// delivery flows that reach it (the storage route first, a flow whose partition is its header's by the partition it names),
-/// none for a partition no flow reaches; each read queued for a node through that connection with what it reads; and every
-/// search a node would refuse answered as a 400 before anything is queued. Nothing here reaches an OSDU: the tasks are
-/// queued and read back from the catalog, not run.
+/// none for a partition no flow reaches; each read run by the control plane through that connection with what it reads, and
+/// nothing queued for a node; and every search the operation would refuse answered as a 400 before it runs. Nothing here
+/// reaches an OSDU: the operations are stood in for (<see cref="RecordedOperations"/>), and what each was given is read back.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]
 public sealed class DeliveryExplorerApiTests
 {
-    private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
-
     [Fact]
-    public async Task Each_partition_is_read_through_one_flows_connection_and_a_search_a_node_would_refuse_is_refused_here()
+    public async Task Each_partition_is_read_through_one_flows_connection_and_a_search_the_operation_would_refuse_is_refused_here()
     {
         var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
@@ -75,13 +74,15 @@ public sealed class DeliveryExplorerApiTests
             await db.SaveChangesAsync();
         }
 
+        var operations = new RecordedOperations();
         try
         {
             await using var factory = new ControlPlaneAppFactory()
                 .WithCatalog(cs)
                 .WithModules(new DeliveryControlPlaneModule())
                 .WithSetting("ControlPlane:Worker:Enabled", "false")
-                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+                .WithServices(services => services.AddSingleton(operations.Registry()));
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
@@ -105,8 +106,8 @@ public sealed class DeliveryExplorerApiTests
             Assert.False(none.GetProperty("available").GetBoolean());
             Assert.Contains($"No delivery flow reaches partition '{unreached}'", none.GetProperty("reason").GetString(), StringComparison.Ordinal);
 
-            // A search crosses to the node as asked, through the storage flow, in the partition it was asked in.
-            var searched = await QueuedAsync(client, token, $"/api/v1/delivery/explorer/search?partition={named}", new
+            // A search runs as asked, through the storage flow, in the partition it was asked in.
+            var searched = await RanAsync(client, token, $"/api/v1/delivery/explorer/search?partition={named}", new
             {
                 text = "NO 33",
                 kind = "*:*:master-data--Wellbore:*",
@@ -123,14 +124,14 @@ public sealed class DeliveryExplorerApiTests
             Assert.Equal(new ExplorerFilter { Path = "legal.legaltags", Index = OsduFieldIndex.Keyword, Value = "dev-private" }, Assert.Single(search.Filters));
             Assert.Equal(new ExplorerField { Path = "data.FacilityTypeID", Index = OsduFieldIndex.Text }, search.Facet);
 
-            var types = await QueuedAsync(client, token, $"/api/v1/delivery/explorer/types?partition={named}", new { text = "NO 33" });
+            var types = await RanAsync(client, token, $"/api/v1/delivery/explorer/types?partition={named}", new { text = "NO 33" });
             Assert.Equal(ExploreOperation.TypesAction, types.Argument(ExploreOperation.ActionArgument));
-            var fields = await QueuedAsync(client, token, $"/api/v1/delivery/explorer/fields?partition={named}", new { kind = "osdu:wks:master-data--Wellbore:1.1.0" });
+            var fields = await RanAsync(client, token, $"/api/v1/delivery/explorer/fields?partition={named}", new { kind = "osdu:wks:master-data--Wellbore:1.1.0" });
             Assert.Equal((ExploreOperation.FieldsAction, "osdu:wks:master-data--Wellbore:1.1.0"), (fields.Argument(ExploreOperation.ActionArgument), fields.Argument(ExploreOperation.KindArgument)));
 
             // A read takes a reference as a document holds it, and a version beside it; a flow whose partition is its header's
             // is told no partition, since its header already names it.
-            var read = await QueuedAsync(client, token, "/api/v1/delivery/explorer/read", new { targetId = $" {headed}:master-data--Wellbore:NO-33: ", version = 1712345678901234L }, headed);
+            var read = await RanAsync(client, token, "/api/v1/delivery/explorer/read", new { targetId = $" {headed}:master-data--Wellbore:NO-33: ", version = 1712345678901234L }, headed);
             Assert.Equal((ExploreOperation.ReadAction, header.Name), (read.Argument(ExploreOperation.ActionArgument), read.SourceRef));
             Assert.Equal(($"{headed}:master-data--Wellbore:NO-33", "1712345678901234"), (read.Argument("targetId"), read.Argument("version")));
             Assert.Null(read.Argument(DeliveryOperation.PartitionArgument));
@@ -146,8 +147,14 @@ public sealed class DeliveryExplorerApiTests
             await RefusedAsync(client, token, $"/api/v1/delivery/explorer/fields?partition={named}", new { kind = " " }, HttpStatusCode.BadRequest, "Name the kind");
             await RefusedAsync(client, token, "/api/v1/delivery/explorer/read?partition=" + named, new { targetId = "NO 33/9-C-28 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
 
-            // A partition no flow reaches has no connection to queue a read through.
+            // A partition no flow reaches has no connection to read through.
             await RefusedAsync(client, token, $"/api/v1/delivery/explorer/search?partition={unreached}", new { text = "x" }, HttpStatusCode.Conflict, "No delivery flow reaches partition");
+            Assert.Empty(operations.Given);
+
+            // Every read was answered in the request: nothing was queued for a node.
+            await using var catalog = CatalogDatabase.Create(cs);
+            var flows = new[] { ddms.Name, storage.Name, header.Name };
+            Assert.False(await catalog.ComputeTasks.AnyAsync(t => flows.Contains(t.SourceRef)));
         }
         finally
         {
@@ -158,15 +165,15 @@ public sealed class DeliveryExplorerApiTests
             await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();
         }
 
-        async Task<ComputeTaskPayload> QueuedAsync(HttpClient client, string token, string path, object? body, string? workbench = null)
+        // The operation's own answer is the response, and the payload it was run with is what a node would have been given.
+        async Task<ComputeTaskPayload> RanAsync(HttpClient client, string token, string path, object? body, string? workbench = null)
         {
             using var response = await SendAsync(client, token, HttpMethod.Post, path, body, workbench);
             var text = await response.Content.ReadAsStringAsync();
-            Assert.True(response.StatusCode == HttpStatusCode.Accepted, $"POST {path} answered {(int)response.StatusCode}: {text}");
-            var taskId = JsonDocument.Parse(text).RootElement.GetProperty("taskId").GetGuid();
-            await using var db = CatalogDatabase.Create(cs);
-            var task = await db.ComputeTasks.AsNoTracking().SingleAsync(t => t.TaskId == taskId);
-            return JsonSerializer.Deserialize<ComputeTaskPayload>(task.ArgumentsJson, WebJson)!;
+            Assert.True(response.StatusCode == HttpStatusCode.OK, $"POST {path} answered {(int)response.StatusCode}: {text}");
+            var payload = operations.Last();
+            Assert.Equal(payload.Operation, JsonDocument.Parse(text).RootElement.GetProperty("ran").GetString());
+            return payload;
         }
     }
 

@@ -1,9 +1,13 @@
+using System.Net;
+using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -52,6 +56,42 @@ public sealed class CentralConfigTests
         // What the configuration does not name is still the node's to answer, so an estate can hold some values
         // centrally and leave the rest where they were.
         Assert.Equal("https://node.example.test", resolver.Resolve("${env:OSDU_URL}"));
+    }
+
+    /// <summary>
+    /// The protocol a run delivers through reaches the endpoint and the partition the configuration names, ahead of the
+    /// node's own environment, exactly as the run's record searches do: the endpoint and headers are resolved by the run's
+    /// resolver, never by the one the node was started with. A node whose environment names another platform delivers
+    /// nothing there.
+    /// </summary>
+    [Fact]
+    public async Task A_protocol_reaches_the_endpoint_and_partition_the_configuration_names_and_not_the_nodes()
+    {
+        var node = new NodeEnvironment(("OSDU_URL", "https://node.example.test"), ("OSDU_DATA_PARTITION", "from-node"));
+        var run = SuppliedReferenceResolver.For(
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["OSDU_URL"] = "https://central.example.test",
+                ["OSDU_DATA_PARTITION"] = "from-control-plane",
+            },
+            node);
+        var flow = Samples.Targeting(new FlowTarget
+        {
+            Endpoint = "${env:OSDU_URL}",
+            Protocol = DeliveryProtocol.Storage,
+            Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "${env:OSDU_DATA_PARTITION}" },
+        });
+        var handler = new FakeHttpHandler().On(HttpMethod.Get, "/api/storage/v2/info", HttpStatusCode.OK, """{"version":"0.0.0"}""");
+        using var http = new HttpRuntime(flow.Reliability, run, handler: handler);
+
+        var protocol = await new DefaultProtocolFactory().CreateAsync(flow, http, NullLoggerFactory.Instance);
+        var probe = await protocol.ProbeAsync();
+
+        Assert.True(probe.Reachable);
+        var call = Assert.Single(handler.Calls);
+        Assert.Equal("central.example.test", call.Uri.Host);
+        Assert.Equal("from-control-plane", call.Headers["data-partition-id"]);
+        Assert.Same(run, http.Secrets);
     }
 
     [Fact]

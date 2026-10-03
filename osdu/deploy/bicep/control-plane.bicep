@@ -12,6 +12,11 @@
 // connection: the module database falls back to the catalog connection whenever it declares no reference of its
 // own. Startup applies SQLFlow's catalog migrations and then the module's.
 //
+// A FLOW'S READS RUN HERE. What a person asks of a flow and waits on (a probe of its target, a record read back from
+// OSDU, its rows read from the ingestion tables, a preview, a scope's values, the explorer) runs in this app under the
+// flow's own credentials, so the references the flows use resolve here as they do on a node: give this app the same
+// flowEnv the worker app takes. The control plane never delivers; runs, value checks and removals stay on the nodes.
+//
 // The defaults deploy the single-app mode (in-process worker enabled, no CORS). main.bicep composes this module
 // with worker.bicep and gui.bicep into the full estate: there the worker is disabled (the API replica does API
 // work only) and the GUI origin is CORS-listed.
@@ -63,6 +68,12 @@ param gitTokenSecretName string = ''
 
 @description('Username paired with the git token when the host requires one (Bitbucket app passwords take the account username, repository access tokens take x-token-auth; GitHub ignores it). Empty sends the token alone.')
 param gitUsername string = ''
+
+@description('Flow environment references the reads of a flow resolve here, one object per \${env:...} reference the flows use: { name: the environment variable, secretName: the Key Vault secret holding its value }. The same list the worker app takes (without SQLFLOW_OSDU_DB, which this app already sets), so a flow reaches the same OSDU and the same ingestion tables with the same credentials in both. Empty leaves those reads to whatever the central configuration supplies.')
+param flowEnv array = []
+
+@description('The private ranges (CIDR, comma separated) the reads of a flow may reach, for an environment integrated into a VNet whose OSDU or ingestion database resolves to private addresses (SQLFLOW_DELIVERY_PRIVATE_NETWORKS). The same value the worker app takes. Empty reaches public addresses only; loopback, link-local and cloud metadata addresses are never reachable.')
+param privateNetworks string = ''
 
 @description('CIDRs of the ingress hops to trust for X-Forwarded-* headers. Leave empty to keep proxy trust off; per-client rate limiting then keys on the ingress hop address instead of the real client.')
 param proxyKnownNetworks array = []
@@ -167,6 +178,12 @@ var gitTokenSecrets = empty(gitTokenSecretName) ? [] : [
   }
 ]
 
+var flowEnvSecrets = [for (entry, i) in flowEnv: {
+  name: 'flow-env-${i}'
+  keyVaultUrl: '${vaultUri}secrets/${entry.secretName}'
+  identity: identity.id
+}]
+
 var baseEnv = [
   // The catalog connection; the control plane's default ConnectionReference (${env:SQLFLOW_CATALOG_DB}) reads
   // exactly this variable.
@@ -229,6 +246,19 @@ var gitUsernameEnv = empty(gitUsername) ? [] : [
   {
     name: 'SQLFLOW_GIT_USERNAME'
     value: gitUsername
+  }
+]
+
+// Every ${env:...} reference a flow's reads use resolves here, as it does on a node.
+var flowEnvVars = [for (entry, i) in flowEnv: {
+  name: entry.name
+  secretRef: 'flow-env-${i}'
+}]
+
+var privateNetworksEnv = empty(privateNetworks) ? [] : [
+  {
+    name: 'SQLFLOW_DELIVERY_PRIVATE_NETWORKS'
+    value: privateNetworks
   }
 ]
 
@@ -295,7 +325,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           identity: identity.id
         }
       ]
-      secrets: concat(baseSecrets, bootstrapSecrets, gitTokenSecrets)
+      secrets: concat(baseSecrets, bootstrapSecrets, gitTokenSecrets, flowEnvSecrets)
     }
     template: {
       containers: [
@@ -306,7 +336,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('0.5')
             memory: '1.0Gi'
           }
-          env: concat(baseEnv, bootstrapEnv, gitTokenEnv, gitUsernameEnv, corsEnv, proxyEnv, entraEnv)
+          env: concat(baseEnv, bootstrapEnv, gitTokenEnv, gitUsernameEnv, corsEnv, proxyEnv, entraEnv, privateNetworksEnv, flowEnvVars)
           probes: [
             {
               type: 'Liveness'

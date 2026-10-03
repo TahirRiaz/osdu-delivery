@@ -3,12 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, RefreshCw, SearchCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IconAction } from "@/components/IconAction";
-import { cn } from "@/lib/utils";
 import { explorerApi, type ExplorerHit, type ExplorerPage, type ExplorerRead } from "../../../api/explorer";
 import { idParts, recordNameOf } from "../osduRecordModel";
 import { OsduRecordPanel } from "../OsduRecordView";
-import { isTerminalTask, useComputeTask } from "../useComputeTask";
-import { ExplorerProblem, ExplorerTaskErrorText } from "./ExplorerProblem";
+import { ExplorerProblem, ExplorerErrorText } from "./ExplorerProblem";
 import { ScopeCrumbs } from "./ExplorerResults";
 import { counted, kindParts, rememberRecord, useExplorerRead, type ExplorerScope } from "./explorerModel";
 
@@ -110,7 +108,7 @@ function NearIds({ partition, id, onOpen }: { partition: string | null; id: stri
         Records with a near id
         {read.isPending && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
       </div>
-      {read.isError && <ExplorerTaskErrorText error={read.error} className="px-3 py-2" />}
+      {read.isError && <ExplorerErrorText error={read.error} className="px-3 py-2" />}
       {read.data !== undefined && near.length === 0 && (
         <p className="px-3 py-2 text-[12px] text-muted-foreground" data-testid="explorer-near-none">
           No id starts with it, and no other type holds its unique part.
@@ -143,17 +141,16 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
   onBrowseQuery: (query: string) => void;
   onSwitchPartition: (partition: string) => void;
 }) {
-  const queued = useQuery({
+  const answered = useQuery({
     queryKey: ["explorer", "read", partition, id, version],
     queryFn: () => explorerApi.read(partition, id, version ?? undefined),
-    // A read is queued once per visit to a record; reading again is the reader's call.
+    // A record is read once per visit; reading again is the reader's call.
     staleTime: Number.POSITIVE_INFINITY,
     gcTime: 60_000,
     retry: false,
     refetchOnWindowFocus: false,
   });
-  const task = useComputeTask(queued.data?.taskId ?? null);
-  const read = isTerminalTask(task.data) && task.data?.status === "succeeded" ? (task.data.result as ExplorerRead | null) : null;
+  const read: ExplorerRead | null = answered.data ?? null;
 
   useEffect(() => {
     if (read?.found && read.record) {
@@ -164,7 +161,7 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
   const parts = idParts(id);
   const entityType = parts.group === "" ? parts.type : `${parts.group}--${parts.type}`;
   const elsewhere = parts.partition !== "" && partition !== null && parts.partition !== partition ? parts.partition : null;
-  const reading = queued.isFetching || (queued.data !== undefined && !isTerminalTask(task.data));
+  const reading = answered.isFetching;
   const place = (
     <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-1" data-testid="explorer-record-place">
       <button
@@ -187,7 +184,7 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
       variant="ghost"
       className="size-7"
       disabled={reading}
-      onClick={() => void queued.refetch()}
+      onClick={() => void answered.refetch()}
       data-testid="explorer-record-refresh"
     />
   );
@@ -200,29 +197,24 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
           <Button variant="outline" size="sm" className="h-6 px-2 text-[12px]" onClick={() => onSwitchPartition(elsewhere)}>{`Read it in ${elsewhere}`}</Button>
         </div>
       )}
-      {queued.isError
-        ? <ExplorerProblem error={queued.error} />
-        : task.isError
-          ? <ExplorerProblem error={task.error} />
-          : (
-            <div className={cn("flex min-h-0 flex-1 flex-col")}>
-              <OsduRecordPanel
-                key={queued.data?.taskId ?? "queueing"}
-                readLinked={(linked, version) => explorerApi.read(partition, linked, version)}
-                task={task.data}
-                targetId={id}
-                readRootVersion={(version) => explorerApi.read(partition, id, version)}
-                ledgerVersion={null}
-                actions={actions}
-                extras={{
-                  place,
-                  mentions: (mentioned, open) => <Mentions partition={partition} id={mentioned} onOpen={open} onBrowse={onBrowseQuery} />,
-                  notFound: (missing) => <NearIds partition={partition} id={missing} onOpen={onOpenId} />,
-                }}
-                fill
-              />
-            </div>
-          )}
+      {/* A read that fails says so under the record's place, as the inspector says why a record could not be read. */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <OsduRecordPanel
+          key={answered.dataUpdatedAt}
+          readLinked={(linked, linkedVersion) => explorerApi.read(partition, linked, linkedVersion)}
+          root={{ read: answered.data, error: answered.error ?? undefined, pending: answered.isPending }}
+          targetId={id}
+          readRootVersion={(picked) => explorerApi.read(partition, id, picked)}
+          ledgerVersion={null}
+          actions={actions}
+          extras={{
+            place,
+            mentions: (mentioned, open) => <Mentions partition={partition} id={mentioned} onOpen={open} onBrowse={onBrowseQuery} />,
+            notFound: (missing) => <NearIds partition={partition} id={missing} onOpen={onOpenId} />,
+          }}
+          fill
+        />
+      </div>
     </div>
   );
 }

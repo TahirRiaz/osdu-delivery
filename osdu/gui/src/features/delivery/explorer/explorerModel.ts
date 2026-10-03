@@ -1,26 +1,23 @@
 import { useQuery, type QueryKey } from "@tanstack/react-query";
-import { isApiError } from "@/api/client";
-import type { ComputeTaskAccepted } from "@/api/types";
 import type { ExplorerAnswer, ExplorerFilter, ExplorerIndex, ExplorerSort } from "../../../api/explorer";
-import { runComputeTask } from "../useComputeTask";
 
 // What the explorer keeps between its parts: the scope a reader narrowed to (every type, a group, a type, one kind), the
-// property values they narrowed by, the kinds of a partition as a tree of groups and types, and the reads, each a node task
-// the page waits on and keeps by what it asked, so going back to a type or a page already read shows it at once.
+// property values they narrowed by, the kinds of a partition as a tree of groups and types, and the reads, each answered
+// by the control plane and kept by what it asked, so going back to a type or a page already read shows it at once.
 
 /** How long an answer stands before a page that shows it again reads it again; what OSDU holds moves slowly. */
 const FRESH_MS = 60_000;
 
 /**
- * One read of the explorer, queued when it is first asked and kept by what it asked (`key`): the same question asked again
+ * One read of the explorer, made when it is first asked and kept by what it asked (`key`): the same question asked again
  * answers from what was read, until it is a minute old (or `freshMs`). A read is never retried by itself; a failure is the reader's to
  * see, and the page's refresh asks again.
  */
-export function useExplorerRead<T>(key: QueryKey, queue: (() => Promise<ComputeTaskAccepted>) | null, freshMs = FRESH_MS) {
+export function useExplorerRead<T>(key: QueryKey, read: (() => Promise<ExplorerAnswer<T>>) | null, freshMs = FRESH_MS) {
   return useQuery({
     queryKey: ["explorer", ...key],
-    queryFn: ({ signal }) => runComputeTask<ExplorerAnswer<T>>(queue!, signal),
-    enabled: queue !== null,
+    queryFn: () => read!(),
+    enabled: read !== null,
     staleTime: freshMs,
     gcTime: 10 * 60_000,
     retry: false,
@@ -314,13 +311,4 @@ export function rememberRecord(record: Omit<RecentRecord, "openedUtc">, openedUt
   } catch {
     // Nothing to do: the explorer works the same without its history.
   }
-}
-
-/** A read that failed, in one line of text: the problem the API answered with, or what the node said. */
-export function explorerErrorText(error: unknown): string {
-  if (isApiError(error)) {
-    return error.detail ?? error.title;
-  }
-
-  return error instanceof Error ? error.message : String(error);
 }

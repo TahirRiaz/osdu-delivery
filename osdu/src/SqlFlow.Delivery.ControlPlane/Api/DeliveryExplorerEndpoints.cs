@@ -5,11 +5,12 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
-using SqlFlow.ControlPlane.Background;
 using SqlFlow.ControlPlane.Hosting;
 using SqlFlow.Core.Compute;
+using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Engine.Search;
@@ -76,8 +77,8 @@ public sealed record DeliveryExplorerFieldsRequest(string? Kind);
 /// <summary>
 /// The explorer (osdu/docs/explorer.md): a browser of what an OSDU partition holds, read live from OSDU's own search and
 /// storage services. It shows what OSDU holds and nothing the delivery system keeps; the delivery system lends it only the way
-/// in: a node runs each read (<see cref="ExploreOperation"/>) through the OSDU connection of a delivery flow that reaches the
-/// partition, as every read of OSDU the GUI asks for runs. The partition is the one the request names, else the workbench's,
+/// in: each read (<see cref="ExploreOperation"/>) runs in this process, as the request's answer, through the OSDU connection
+/// of a delivery flow that reaches the partition, which the engine keeps open between reads. The partition is the one the request names, else the workbench's,
 /// else the registry's default.
 /// </summary>
 /// <remarks>
@@ -130,21 +131,21 @@ public static class DeliveryExplorerEndpoints
     }
 
     /// <summary>The kinds of the records a search finds across every kind, each with its count.</summary>
-    private static Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> TypesAsync(
+    private static Task<Results<ContentHttpResult, ProblemHttpResult>> TypesAsync(
         DeliveryExplorerSearchRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, IRunDispatcher dispatcher, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
-        => QueueSearchAsync(ExploreOperation.TypesAction, body, partition, db, documents, partitions, ledger, dispatcher, request, user, ct);
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
+        => QueueSearchAsync(ExploreOperation.TypesAction, body, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct);
 
     /// <summary>One page of the records a search finds.</summary>
-    private static Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> SearchAsync(
+    private static Task<Results<ContentHttpResult, ProblemHttpResult>> SearchAsync(
         DeliveryExplorerSearchRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, IRunDispatcher dispatcher, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
-        => QueueSearchAsync(ExploreOperation.SearchAction, body, partition, db, documents, partitions, ledger, dispatcher, request, user, ct);
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
+        => QueueSearchAsync(ExploreOperation.SearchAction, body, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct);
 
     /// <summary>The properties the records of a kind hold, read from one of them.</summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> FieldsAsync(
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> FieldsAsync(
         DeliveryExplorerFieldsRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, IRunDispatcher dispatcher, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
     {
         var kind = body?.Kind?.Trim();
         if (string.IsNullOrEmpty(kind))
@@ -159,13 +160,13 @@ public static class DeliveryExplorerEndpoints
 
         return await QueueAsync(
             ExploreOperation.FieldsAction, new Dictionary<string, string>(StringComparer.Ordinal) { [ExploreOperation.KindArgument] = kind },
-            partition, db, documents, partitions, ledger, dispatcher, request, user, ct).ConfigureAwait(false);
+            partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct).ConfigureAwait(false);
     }
 
     /// <summary>One record as the storage service holds it, at its latest or at one version, with its version list.</summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> ReadAsync(
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ReadAsync(
         DeliveryReadRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, IRunDispatcher dispatcher, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
     {
         if (DeliveryEndpoints.TargetProblem(body, out var asked) is { } invalid)
         {
@@ -174,12 +175,12 @@ public static class DeliveryExplorerEndpoints
 
         var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["targetId"] = TargetId.WithoutVersion(asked) };
         DeliveryEndpoints.WithVersion(arguments, body);
-        return await QueueAsync(ExploreOperation.ReadAction, arguments, partition, db, documents, partitions, ledger, dispatcher, request, user, ct).ConfigureAwait(false);
+        return await QueueAsync(ExploreOperation.ReadAction, arguments, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct).ConfigureAwait(false);
     }
 
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> QueueSearchAsync(
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> QueueSearchAsync(
         string action, DeliveryExplorerSearchRequest? body, string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, IRunDispatcher dispatcher, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
     {
         var (search, invalid) = SearchOf(body ?? new DeliveryExplorerSearchRequest());
         if (search is null)
@@ -189,13 +190,13 @@ public static class DeliveryExplorerEndpoints
 
         return await QueueAsync(
             action, new Dictionary<string, string>(StringComparer.Ordinal) { [ExploreOperation.SearchArgument] = search.ToJson() },
-            partition, db, documents, partitions, ledger, dispatcher, request, user, ct).ConfigureAwait(false);
+            partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Queues one of the explorer's reads on a node, through the connection that reaches the partition.</summary>
-    private static async Task<Results<Accepted<ComputeTaskAccepted>, ProblemHttpResult>> QueueAsync(
+    /// <summary>Runs one of the explorer's reads in this process, through the connection that reaches the partition, and answers with it.</summary>
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> QueueAsync(
         string action, Dictionary<string, string> arguments, string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, IRunDispatcher dispatcher, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
     {
         var found = await ConnectAsync(db, documents, partitions, ledger, WorkbenchPartition.Named(partition, request), ct).ConfigureAwait(false);
         if (found.Flow is not { } flow)
@@ -204,10 +205,10 @@ public static class DeliveryExplorerEndpoints
         }
 
         arguments[ExploreOperation.ActionArgument] = action;
-        return await DeliveryEndpoints.EnqueueOperationAsync(db, dispatcher, flow, ExploreOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        return await DirectOperationRunner.RunAsync(db, config, direct, flow, ExploreOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
     }
 
-    /// <summary>The search a request asks, checked as the node checks it, or why it cannot be asked.</summary>
+    /// <summary>The search a request asks, checked as the operation checks it again, or why it cannot be asked.</summary>
     internal static (ExplorerSearch? Search, string? Problem) SearchOf(DeliveryExplorerSearchRequest body)
     {
         ArgumentNullException.ThrowIfNull(body);

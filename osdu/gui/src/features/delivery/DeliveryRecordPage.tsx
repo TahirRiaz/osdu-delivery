@@ -19,7 +19,8 @@ import { BlockedBadge, RecordStatusBadge } from "./DeliveryBadges";
 import { RecordJourney, RecordMilestones } from "./RecordJourney";
 import { RecordName } from "./RecordName";
 import { RecordOsduView } from "./RecordOsduView";
-import { RecordRenderTab, type RenderTasks } from "./RecordRenderTab";
+import { settle } from "./answers";
+import { RecordRenderTab, type RenderResults } from "./RecordRenderTab";
 import { RecordSituation } from "./RecordSituation";
 import { RecordSourceTab } from "./RecordSourceTab";
 import { RemovalDialog } from "./RemovalDialog";
@@ -78,11 +79,9 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const [removeOpen, setRemoveOpen] = useState(false);
   // The removal a node runs for this record, shown under the header whatever tab is open, since it changes the record.
   const [removal, setRemoval] = useState<{ taskId: string; label: string } | null>(null);
-  // A read of the record's rows from the ingestion tables, shown on the Source tab where it was asked for.
-  const [sourceTaskId, setSourceTaskId] = useState<string | null>(null);
   // A render of the record from its current source row, with a read of what OSDU holds beside it, shown on the Render
   // tab where it was asked for; kept here so it is still there after a look at another tab.
-  const [renderTasks, setRenderTasks] = useState<RenderTasks | null>(null);
+  const [renderResults, setRenderResults] = useState<RenderResults | null>(null);
   const ref = useMemo<DeliveryRecordRef>(() => ({ flowId, deliveryKey }), [flowId, deliveryKey]);
   const { hasScope } = useAuth();
   const canOperate = hasScope("operate");
@@ -117,7 +116,6 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     refetchInterval: 30000,
   });
   const removalTask = useComputeTask(removal?.taskId ?? null);
-  const sourceTask = useComputeTask(sourceTaskId);
   useTabTitle(query.data ? (query.data.record.label ?? query.data.record.sourceKey) : undefined);
 
   const refresh = useCallback(() => void queryClient.invalidateQueries({ queryKey: ["delivery"] }), [queryClient]);
@@ -171,22 +169,22 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   // tab. A page opened with ?tab=osdu reads it once, as soon as the record is known to have an id OSDU may hold.
   const readable = query.data !== undefined && query.data.record.targetId !== null && query.data.record.status !== "deleted" && canOperate;
   const osdu = useRecordOsduRead(ref, { readable, readAtOnce: askedTab === "osdu" });
-  // Where the record came from: its rows as the ingestion tables hold them now, read on a node with the flow's own
-  // connection, with the origin file and row the ledger records against every delivered version.
-  const readSource = useMutation({
-    mutationFn: () => deliveryApi.readSource(ref),
-    onSuccess: (accepted) => setSourceTaskId(accepted.taskId),
-    onError: fail,
-  });
-  // What the mapping makes of the record now: rendered on a node from its current source row, and, when OSDU may hold the
-  // record, read from OSDU through its flow's route to set beside it. Neither sends nor writes anything.
+  // Where the record came from: its rows as the ingestion tables hold them now, read with the flow's own connection, with
+  // the origin file and row the ledger records against every delivered version. The Source tab shows the answer, or why
+  // there is none.
+  const readSource = useMutation({ mutationFn: () => deliveryApi.readSource(ref) });
+  // What the mapping makes of the record now: rendered from its current source row, and, when OSDU may hold the record,
+  // read from OSDU through its flow's route to set beside it, both at once. Neither sends nor writes anything; each says
+  // what it found, or why it found nothing.
   const render = useMutation({
-    mutationFn: async (readOsdu: boolean): Promise<RenderTasks> => {
-      const preview = await deliveryApi.previewRecord(ref);
-      const read = readOsdu ? await deliveryApi.read(ref) : null;
-      return { preview: preview.taskId, read: read?.taskId ?? null };
+    mutationFn: async (readOsdu: boolean): Promise<RenderResults> => {
+      const [preview, read] = await Promise.all([
+        settle(deliveryApi.previewRecord(ref)),
+        readOsdu ? settle(deliveryApi.read(ref)) : Promise.resolve(null),
+      ]);
+      return { preview, read, renderedUtc: new Date().toISOString() };
     },
-    onSuccess: setRenderTasks,
+    onSuccess: setRenderResults,
     onError: fail,
   });
   if (query.isError) {
@@ -209,7 +207,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   }
 
   const record = detail.record;
-  const busy = verify.isPending || sync.isPending || redeliver.isPending || release.isPending || osdu.queueing || readSource.isPending
+  const busy = verify.isPending || sync.isPending || redeliver.isPending || release.isPending || osdu.pending || readSource.isPending
     || render.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   // The record's ledger: the interface of its source and the partition it delivers to, which every view of it acts in.
@@ -308,9 +306,9 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
             record={record}
             keyColumns={detail.keyColumns ?? null}
             canRead={detail.pipelineId !== null && !busy}
-            reading={sourceTaskId !== null && !isTerminalTask(sourceTask.data)}
+            reading={readSource.isPending}
             onRead={() => readSource.mutate()}
-            task={sourceTaskId === null ? null : { id: sourceTaskId, state: sourceTask.data }}
+            answer={readSource.isIdle || readSource.isPending ? null : { rows: readSource.data ?? null, error: readSource.error ?? undefined }}
           />
         </TabsContent>
         <TabsContent value="render">
@@ -318,9 +316,9 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
             record={record}
             canOperate={canOperate}
             canRender={detail.pipelineId !== null && !busy}
-            queueing={render.isPending}
+            rendering={render.isPending}
             onRender={() => render.mutate(canActOnTarget)}
-            tasks={renderTasks}
+            results={renderResults}
           />
         </TabsContent>
         <TabsContent value="osdu">

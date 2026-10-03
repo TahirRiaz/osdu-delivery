@@ -1148,11 +1148,10 @@ async fn a_cache_decision_and_a_probe_say_what_they_did() {
     let probe = format!("/api/v1/delivery/flows/{PIPELINE}/probe");
     let estate = Estate::start(vec![
         ("POST /api/v1/delivery/cache/tags/decide", 200, json!({ "decided": 2, "approved": true })),
-        (route(format!("POST {probe}")), 202, json!({ "taskId": "task-5", "status": "queued" })),
         (
-            "GET /api/v1/datasources/tasks/task-5",
+            route(format!("POST {probe}")),
             200,
-            json!({ "taskId": "task-5", "status": "succeeded", "result": { "steps": [{ "name": "token", "ok": true }, { "name": "storage", "ok": false, "status": 401 }] } }),
+            json!({ "flow": "recall-welllog-03-header-delivery", "reachable": false, "status": 401, "detail": "Unauthorized", "path": "/api/storage/v2/info" }),
         ),
     ])
     .await;
@@ -1164,11 +1163,12 @@ async fn a_cache_decision_and_a_probe_say_what_they_did() {
     let none = session.call("delivery_decide_cache_changes", json!({ "tagIds": [], "approve": true })).await;
     assert!(none.starts_with("Error: Name at least one tag"), "{none}");
 
+    // The probe is the control plane's own answer: nothing is queued, and no task is polled.
     let probed = session.json("delivery_probe_target", json!({ "pipelineId": PIPELINE, "partition": "dev" })).await;
-    assert_eq!(probed["status"], json!("succeeded"));
-    assert_eq!(probed["result"]["steps"][1]["status"], json!(401));
+    assert_eq!(probed["reachable"], json!(false));
+    assert_eq!(probed["status"], json!(401));
     assert_eq!(estate.only("POST", &probe).query, "partition=dev");
-    assert_eq!(estate.only("GET", "/api/v1/datasources/tasks/task-5").query, "waitMs=20000");
+    assert!(estate.seen().iter().all(|request| !request.path.starts_with("/api/v1/datasources/tasks")));
 }
 
 #[tokio::test(flavor = "multi_thread")]

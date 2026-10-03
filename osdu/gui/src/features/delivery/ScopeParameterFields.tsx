@@ -38,7 +38,7 @@ interface ScopeParameterFieldsProps {
 /**
  * A flow's parameters as fields, for the pages that read a scope of it (a flow's Preview tab, a mapping's value check, the
  * trigger dialog). A parameter the scope binds to a column of the record table offers that column's values, with how many
- * rows hold each, read on a node from the flow's own table whatever the source, and still takes any value typed; a value
+ * rows hold each, read from the flow's own table whatever the source, and still takes any value typed; a value
  * the column holds no row of says the scope would read nothing. Any other parameter (one naming the work location) is
  * typed. The fields are returned side by side for the page to lay out.
  */

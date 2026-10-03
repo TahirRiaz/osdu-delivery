@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
-import { CircleAlert, Eye, Loader2 } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Eye, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,7 +15,6 @@ import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RecordPreviewView } from "./RecordPreviewView";
 import { ScopeParameterFields } from "./ScopeParameterFields";
 import { ProblemView, TaskProgress } from "./TemplateSheet";
-import { isTerminalTask, useComputeTask } from "./useComputeTask";
 
 /** The longest key the control plane takes; a longer text is a paste of something else. */
 const MAX_KEY = 4000;
@@ -48,7 +46,7 @@ function valuesToSend(parameters: DeliveryParameter[], values: Record<string, st
 }
 
 /**
- * The Preview tab of a delivery flow: one record rendered on a node exactly as a delivery would render it, and sent
+ * The Preview tab of a delivery flow: one record rendered exactly as a delivery would render it, and sent
  * nowhere. The record is the scope's first, or the one a key names; the flow's parameters fill the scope, their defaults
  * where none is given. What comes back is the record's document as its route sends it, what the next run would do with
  * it, the requests the route would make, the files it would upload and what it refers to.
@@ -66,23 +64,9 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
   const linkedKey = searchParams.get("previewKey");
   const [key, setKey] = useState(linkedKey ?? "");
   const [values, setValues] = useState<Record<string, string>>(() => linkedValues(searchParams.get("previewValues")));
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const task = useComputeTask(taskId);
-
-  // What the last preview that finished answered: kept while the next one runs, so the page does not jump, and replaced
-  // when the next one lands.
-  const [outcome, setOutcome] = useState<{ taskId: string; result: DeliveryRecordPreview | null; failure: string | null } | null>(null);
-  const settled = task.data !== undefined && isTerminalTask(task.data) ? task.data : undefined;
-  if (settled !== undefined && outcome?.taskId !== settled.taskId) {
-    const answered = settled.status === "succeeded" && settled.result !== null && settled.result !== undefined;
-    setOutcome({
-      taskId: settled.taskId,
-      result: answered ? settled.result as DeliveryRecordPreview : null,
-      failure: answered
-        ? null
-        : settled.error ?? (settled.status === "cancelled" ? "The preview was cancelled before a node finished it." : "The preview ended without an answer."),
-    });
-  }
+  // What the last preview answered: kept while the next one runs, so the page does not jump, and replaced when the next
+  // one lands. A preview that fails says why in its place.
+  const [result, setResult] = useState<DeliveryRecordPreview | null>(null);
 
   // Another interface is another table and another scope, and another partition another cache and target: its preview
   // starts afresh.
@@ -95,8 +79,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
     }
 
     setPreviewedFor(shownFor);
-    setTaskId(null);
-    setOutcome(null);
+    setResult(null);
   }
 
   const preview = useMutation({
@@ -104,12 +87,13 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
       pipelineId,
       { key: key.trim() === "" ? null : key.trim(), values: valuesToSend(parameters, values) },
       scope),
-    onSuccess: (accepted) => setTaskId(accepted.taskId),
+    onSuccess: setResult,
+    onError: () => setResult(null),
   });
 
   const missing = parameters.filter((p) => p.required && (p.default === null || p.default === undefined) && (values[p.name] ?? "").trim() === "");
   const tooLong = key.trim().length > MAX_KEY;
-  const running = preview.isPending || (taskId !== null && !isTerminalTask(task.data));
+  const running = preview.isPending;
   const blocked = !canOperate || current === undefined || missing.length > 0 || tooLong || running;
   const submit = () => {
     if (!blocked) {
@@ -136,9 +120,6 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
     }, { replace: true });
   }, [linkedKey, blocked, current, mutate, setSearchParams]);
 
-  const result = outcome?.result ?? null;
-  const failure = outcome?.failure ?? null;
-
   if (interfaces.isError) {
     return <ProblemView error={interfaces.error} testId="preview-interfaces-error" />;
   }
@@ -162,7 +143,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
         <div className="flex flex-col gap-1">
           <h2 className="text-sm font-semibold">Preview a record</h2>
           <p className="text-[13px] text-muted-foreground">
-            Renders one record on a node exactly as a delivery would. Nothing is sent, and the ledger and the work location are left as they are.
+            Renders one record exactly as a delivery would. Nothing is sent, and the ledger and the work location are left as they are.
             Leave the key empty for the first record of the scope.
           </p>
         </div>
@@ -191,7 +172,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
                     data-testid="preview-key"
                   />
                 </div>
-                <Button type="submit" size="sm" className="h-9" disabled={blocked} title={canOperate ? undefined : "A preview runs on a node, which takes the operate scope."} data-testid="preview-run">
+                <Button type="submit" size="sm" className="h-9" disabled={blocked} title={canOperate ? undefined : "A preview reads the flow's tables and renders with its credentials, which takes the operate scope."} data-testid="preview-run">
                   {running ? <Loader2 className="animate-spin" /> : <Eye />}
                   Preview
                 </Button>
@@ -220,15 +201,7 @@ export function DeliveryPreviewPanel({ pipelineId, flowName }: { pipelineId: str
       </Card>
 
       {preview.isError && <ProblemView error={preview.error} testId="preview-error" />}
-      {running && <TaskProgress label="Rendering the record on a node" task={task.data} testId="preview-progress" />}
-      {task.isError && <ProblemView error={task.error} testId="preview-task-error" />}
-      {failure !== null && !running && (
-        <Alert variant="destructive" data-testid="preview-failed">
-          <CircleAlert />
-          <AlertTitle>The preview could not be made</AlertTitle>
-          <AlertDescription className="whitespace-pre-wrap">{failure}</AlertDescription>
-        </Alert>
-      )}
+      {running && <TaskProgress label="Rendering the record" testId="preview-progress" />}
       {result !== null && <RecordPreviewView preview={result} />}
     </div>
   );

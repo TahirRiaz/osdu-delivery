@@ -10,7 +10,7 @@ namespace SqlFlow.Delivery.Engine.Operations;
 
 /// <summary>
 /// <c>delivery-source</c>: one record's rows as the ingestion tables hold them right now, for a record's detail page.
-/// The node opens the flow's source with the flow's own connection reference and reads the record named by the ledger's
+/// The operation opens the flow's source with the flow's own connection reference and reads the record named by the ledger's
 /// <c>deliveryKey</c> (whose stored key tuple says which row it is) or by <c>sourceKey</c>, a JSON array of the key
 /// parts in key order. Nothing is written: this is the read that answers "what does the source say about this record
 /// today" without planning or delivering anything.

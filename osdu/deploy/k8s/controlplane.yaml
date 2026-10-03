@@ -8,6 +8,11 @@
 #
 # Startup applies SQLFlow's catalog migrations and then the OSDU module's, and refuses to serve against a database
 # newer than this build or a catalog older than the module requires, naming the migration.
+#
+# A flow's reads run here: what a person asks of a flow and waits on (a probe of its target, a record read back from
+# OSDU, its rows read from the ingestion tables, a preview, a scope's values, the explorer) runs in this replica under
+# the flow's own credentials, so it is given the same flow references the worker pods are. It never delivers; runs,
+# value checks and removals stay on the nodes.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,6 +78,37 @@ spec:
                 secretKeyRef: { name: osdu-delivery-secrets, key: entra-client-id, optional: true }
             - name: ControlPlane__AzureAd__DefaultRole
               value: viewer
+            # The private ranges (CIDR, comma separated) a flow's reads may reach, as on the worker pods.
+            - name: SQLFLOW_DELIVERY_PRIVATE_NETWORKS
+              value: ""
+            # Every ${env:...} reference the flows use, as worker-pool.yaml mounts it: a person's reads of a flow
+            # resolve it here as a run resolves it on a node. Keep the two lists the same.
+            - name: SQLFLOW_CONN_PRE
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: pre-connection }
+            - name: SQLFLOW_CONN_DWH
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: ingestion-connection }
+            - name: OSDU_URL
+              value: "https://your-osdu-host"
+            - name: OSDU_TOKEN_URL
+              value: "https://login.microsoftonline.com/your-tenant/oauth2/v2.0/token"
+            - name: OSDU_SCOPE
+              value: "api://your-osdu-app/.default"
+            - name: OSDU_CLIENT_ID
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: osdu-client-id }
+            - name: OSDU_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: { name: osdu-delivery-secrets, key: osdu-client-secret }
+            - name: OSDU_DATA_PARTITION
+              value: "your-partition"
+            - name: OSDU_ACL_OWNER
+              value: "data.default.owners@your-partition.dataservices.energy"
+            - name: OSDU_ACL_VIEWER
+              value: "data.default.viewers@your-partition.dataservices.energy"
+            - name: OSDU_LEGAL_TAG
+              value: "your-partition-default-legal-tag"
           resources:
             requests: { cpu: 250m, memory: 384Mi }
             limits: { cpu: "1", memory: 1Gi }

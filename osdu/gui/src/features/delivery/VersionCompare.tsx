@@ -5,7 +5,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import type { ComputeTaskAccepted } from "@/api/types";
 import { DataTable, type Column } from "@/components/DataTable";
 import { DiffView } from "@/components/DiffView";
 import { TruncatedText } from "@/components/TruncatedText";
@@ -13,7 +12,6 @@ import type { DeliveryOsduRead } from "../../api/delivery";
 import { ChangeCount, ChangeGlyph } from "./ChangeMark";
 import { canonicalText, differences, shortValue, withoutOsduFields, type JsonDifference } from "./osduDocument";
 import { RecordName } from "./RecordName";
-import { runComputeTask } from "./useComputeTask";
 
 /** How one leaf moved between the two versions, from the earlier side's point of view. */
 type Moved = "added" | "changed" | "removed";
@@ -65,7 +63,7 @@ export function VersionCompare({ id, versions, latestVersion, latestRecord, ledg
   latestVersion: number | null;
   latestRecord: Record<string, unknown>;
   ledgerVersion: number | null;
-  readVersion: (version: number) => Promise<ComputeTaskAccepted>;
+  readVersion: (version: number) => Promise<DeliveryOsduRead>;
   /** The versions compared when the comparison opens. */
   from: number;
   to: number;
@@ -76,7 +74,7 @@ export function VersionCompare({ id, versions, latestVersion, latestRecord, ledg
   const reads = useQueries({
     queries: asked.map((version) => ({
       queryKey: ["osdu-record-version", id, version],
-      queryFn: ({ signal }: { signal: AbortSignal }) => runComputeTask<DeliveryOsduRead>(() => readVersion(version), signal),
+      queryFn: () => readVersion(version),
       // A version of a record is what it was written as, for as long as OSDU keeps it.
       staleTime: Number.POSITIVE_INFINITY,
       retry: false,

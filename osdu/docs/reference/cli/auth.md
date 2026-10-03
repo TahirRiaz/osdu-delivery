@@ -42,7 +42,7 @@ The deployment templates set `SQLFLOW_AZURE_AUTH=mi` and `AZURE_CLIENT_ID` on ev
 `sqlflow auth` proves the Azure credential, not the OSDU one. A flow authenticates to OSDU with its own
 `target.auth` block (client credentials, a bearer reference, an API key header), and the OSDU platform's own
 entitlements decide what that principal may write. To check that end of it, probe the flow's target from the GUI
-or the API, which runs on a node as a compute task, or run `sqlflow check`, which validates everything checkable
+or the API, which the control plane answers under the flow's own credentials, or run `sqlflow check`, which validates everything checkable
 without OSDU ([delivery.md](delivery.md)).
 
 It also says nothing about the control plane's own credential: that is `sqlflow login` and `sqlflow whoami`

@@ -40,7 +40,8 @@ public sealed record EngineContext(
     ICacheStore? Cache = null,
     IRecordSearchFactory? Searches = null,
     RunTrace? Trace = null,
-    IPartitionRegistry? Partitions = null)
+    IPartitionRegistry? Partitions = null,
+    Operations.TargetClients? Clients = null)
 {
     /// <summary>The environment switch that lets a flow target a loopback address (local OSDU emulators, tests).</summary>
     public const string AllowLoopbackVariable = "SQLFLOW_DELIVERY_ALLOW_LOOPBACK";

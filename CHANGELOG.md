@@ -34,8 +34,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   within the records in view, the record's own for every type and a type's content read from one of its records, and a
   value picked narrows the records to it. A record opens in the record inspector under the place it sits in, with its
   links, the records that mention it, and, for an id OSDU holds nothing under, the records whose ids are near it.
-  Everything is in the page's address. The reads are the `delivery-explore` node operation and
-  `/api/v1/delivery/explorer/*` ([osdu/docs/explorer.md](osdu/docs/explorer.md)); the MCP server offers none of them.
+  Everything is in the page's address. The reads are the `delivery-explore` operation, answered by the control plane
+  as they are asked, and `/api/v1/delivery/explorer/*` ([osdu/docs/explorer.md](osdu/docs/explorer.md)); the MCP server offers none of them.
 - **Any two versions of an OSDU record compare side by side.** The record inspector's Compare, on a record page's OSDU
   tab as in the explorer, puts any two versions OSDU keeps side by side with what was added, changed and removed, in
   place of the comparison with the latest alone; a version is read once and kept.
@@ -523,6 +523,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A person's reads of a flow are answered at once, by the control plane.** A probe of a flow's target, a record read
+  back from OSDU or read by id, its rows read from the ingestion tables, a preview, a scope's values and every explorer
+  read used to be queued as a compute task for a node and polled; the control plane now runs the same operation in its
+  own process, given exactly what a node was given (the flow file where the repository was synced, the interface, the
+  partition and its central configuration, who asked), and the response is the answer. It keeps one connection per flow
+  target between reads (at most 64, each retired after 10 minutes unused or 30 in all), so a token is fetched once
+  rather than for every read, and a read is a person's: at most two attempts, no wait on a Retry-After, and an answer
+  within 60 seconds. A failure answers as a problem saying which side failed (502 refused or failed, 504 no answer in
+  time, 422 a flow that cannot serve the request), redacted. The scheduled target probe runs the same probe, four at a
+  time, and closes each activity as it answers; `Osdu:TargetProbe:SettleSeconds` is gone. Runs, value checks and
+  removals stay on the nodes: the control plane delivers nothing. Because those reads run under the flow's own
+  credentials, the control plane is now given the flows' references in every shipped deployment (`flowEnv` and
+  `privateNetworks` on `control-plane.bicep`, passed by `main.bicep` from `workerFlowEnv`; the same entries in
+  `controlplane.yaml` and the compose control plane). The MCP server's `delivery_probe_target` returns the probe's
+  answer. ([osdu/docs/operations.md](osdu/docs/operations.md), the delivery API.)
 - **The audit trail's detail reads at a glance.** The sheet an entry opens is wider, as wide as the window leaves beside
   the menu and never under 48rem, and leads with how the entry ended and what it was: an outcome pill, the action and
   the flow, the summary it recorded (the error, in red, when it failed), who started it, when and for how long, and the
@@ -825,6 +840,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **A run delivers to the endpoint its central configuration names.** The protocol a run delivers through resolved its
+  endpoint and headers with the node's own environment, while the run's record searches resolved them with the central
+  configuration first, so a node whose environment named another OSDU or partition than the configuration searched one
+  and delivered to the other. Every reference the protocol reaches the target with is now resolved by the run's own
+  resolver, the central configuration's values first, as the searches always were.
 - **The editor documents and checks dimension flows.** Three keys of the dimension census wrote their default as a
   JSON number or boolean, where the language engine reads text, so the whole file failed to parse and a dimension flow
   was neither documented nor checked in the YAML editor or the language server. The defaults are written as text, as

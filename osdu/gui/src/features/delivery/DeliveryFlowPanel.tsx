@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Radar, RefreshCw, Trash2, Unlock } from "lucide-react";
+import { Loader2, Radar, RefreshCw, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ import { OutsidePartition } from "./PartitionNotice";
 import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./RecordCells";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
+import { failureText } from "./answers";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 import { shortId } from "./idTail";
 
@@ -99,7 +100,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const [drifted, setDrifted] = useState(false);
   const [contains, setContains] = useState(false);
   const [releaseOpen, setReleaseOpen] = useState(false);
-  const [probeTaskId, setProbeTaskId] = useState<string | null>(null);
   // Ticked rows survive paging and filter changes because the page owns them, not the table. `allMatching` is the
   // other selection: not a list of keys but the filter itself, resolved when the removal runs.
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -154,7 +154,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     enabled: ready && section !== "records" && (!many || interfaceName !== null),
     refetchInterval: 10000,
   });
-  const probe = useComputeTask(probeTaskId);
 
   // A removal that finished on a node changed the ledger for every record it touched: refetch the list and the
   // stats once the task settles, so the page shows what it did without a manual reload.
@@ -165,11 +164,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     }
   }, [finishedRemoval, queryClient]);
 
-  const probeTarget = useMutation({
-    mutationFn: () => deliveryApi.probe(pipelineId, scope),
-    onSuccess: (accepted) => setProbeTaskId(accepted.taskId),
-    onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
-  });
+  // A probe asks the target's info endpoint under the flow's credentials and answers at once, reachable or not.
+  const probeTarget = useMutation({ mutationFn: () => deliveryApi.probe(pipelineId, scope) });
   const releaseAll = useMutation({
     mutationFn: () => deliveryApi.releaseFlow(pipelineId, undefined, scope),
     onSuccess: (result) => {
@@ -220,8 +216,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
 
   const s = stats.data;
   const blocked = s ? s.held + s.failed + s.deleted : 0;
-  const probeResult = probe.data;
-  const probeJson = isTerminalTask(probeResult) ? taskResultJson(probeResult) : null;
+  const probeResult = probeTarget.data;
+  const probeJson = probeResult === undefined ? null : JSON.stringify(probeResult, null, 2);
   const removalJson = isTerminalTask(removal.data) ? taskResultJson(removal.data) : null;
   // What the ledger in view is called wherever the view names it: the flow, its interface, and its partition.
   const ledgerName = ledgerLabel(flowName, scope);
@@ -261,7 +257,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 actions={(
                   <>
                     <Button variant="outline" size="sm" onClick={() => probeTarget.mutate()} disabled={probeTarget.isPending} data-testid="delivery-probe">
-                      <Radar />
+                      {probeTarget.isPending ? <Loader2 className="animate-spin" /> : <Radar />}
                       Probe target
                     </Button>
                     <Button variant="outline" size="sm" onClick={() => setReleaseOpen(true)} disabled={blocked === 0} data-testid="delivery-release-all">
@@ -318,14 +314,15 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
               />
             </Card>
           )}
-          {probeTaskId !== null && (
+          {!probeTarget.isIdle && (
             <Card className="gap-2 rounded-lg p-3" data-testid="delivery-probe-result">
               <div className="flex items-center gap-2 text-[13px] font-medium">
                 Target probe
-                <Badge variant="outline">{probeResult?.status ?? "queued"}</Badge>
-                {probeResult?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{probeResult.claimedByNode}</span>}
+                <Badge variant="outline">
+                  {probeTarget.isPending ? "probing" : probeResult === undefined ? "failed" : probeResult.reachable ? "reachable" : "unreachable"}
+                </Badge>
               </div>
-              {probeResult?.error && <p className="text-[13px] text-destructive">{probeResult.error}</p>}
+              {probeTarget.isError && <p className="text-[13px] text-destructive">{failureText(probeTarget.error)}</p>}
               {probeJson !== null && (
                 <CodeView value={probeJson} language="json" height={180} data-testid="delivery-probe-json" />
               )}

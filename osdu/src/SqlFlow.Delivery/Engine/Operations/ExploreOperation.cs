@@ -13,7 +13,7 @@ namespace SqlFlow.Delivery.Engine.Operations;
 /// <summary>
 /// <c>delivery-explore</c>: the explorer's reads of what an OSDU partition holds, through the connection (endpoint, credentials
 /// and partition) of the flow the control plane picked for that partition, and nothing else of the flow: no ledger, mapping
-/// or cache is read. The task's <c>action</c> says which read:
+/// or cache is read. The payload's <c>action</c> says which read:
 /// <list type="bullet">
 /// <item><description><c>types</c>: the kinds of the records a search finds, with their counts (<c>search</c>).</description></item>
 /// <item><description><c>search</c>: one page of the records a search finds (<c>search</c>).</description></item>
@@ -69,8 +69,12 @@ public sealed class ExploreOperation : DeliveryOperation
             throw new SqlFlowException($"'{action}' is not a read the explorer makes: {string.Join(", ", Actions)}.");
         }
 
-        using var http = new HttpRuntime(flow.Reliability, context.Secrets, context.Time, _transport, _allowLoopback);
-        var client = await ProtocolFactory.ClientAsync(http, flow.Target.Endpoint, flow.Target.Auth, flow.Target.Headers, context.Secrets, ct).ConfigureAwait(false);
+        // The connection the engine keeps for the flow's target, so a person browsing is not given a new token and new
+        // connections for every page; a transport of the tests' own is a connection of its own.
+        using var target = _transport is null && context.Clients is { } clients
+            ? await clients.OpenAsync(context, flow, ct).ConfigureAwait(false)
+            : TargetClients.OneOff(context, flow, _transport, _allowLoopback);
+        var client = await target.ClientAsync(ct).ConfigureAwait(false);
         if (action == ReadAction)
         {
             // The storage service's own read, whatever the flow delivers by: the explorer shows the record OSDU keeps.

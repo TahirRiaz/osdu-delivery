@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "2583402434927479636"
+      "templateHash": "777270660136417359"
     }
   },
   "parameters": {
@@ -86,7 +86,7 @@
       "type": "array",
       "defaultValue": [],
       "metadata": {
-        "description": "Flow environment references, one object per ${env:...} reference the pool's flows use, and for the OSDU module database connection the ledger is read and written through: { name: the environment variable, secretName: the Key Vault secret holding its value }. Credentials live on the node, never in the control plane."
+        "description": "Flow environment references, one object per ${env:...} reference the pool's flows use, and for the OSDU module database connection the ledger is read and written through: { name: the environment variable, secretName: the Key Vault secret holding its value }. The control plane is given the same references (main.bicep), since a person's reads of a flow run there; runs and removals run here."
       }
     },
     "acrName": {

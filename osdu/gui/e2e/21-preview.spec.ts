@@ -43,7 +43,7 @@ test.describe.serial("record preview and OSDU read", () => {
     await adminPage.getByTestId("preview-parameter-logSource").press("Escape");
     await expect(run).toBeEnabled();
 
-    // No key: the scope's first record, rendered on a node as a delivery would render it.
+    // No key: the scope's first record, rendered as a delivery would render it.
     await run.click();
     const result = adminPage.getByTestId("preview-result");
     await expect(result).toBeVisible({ timeout: 60_000 });

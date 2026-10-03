@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Compute;
@@ -19,8 +20,10 @@ namespace SqlFlow.ControlPlane.Tests;
 /// <summary>
 /// The value check as the API serves it: the interfaces of the flows that render with a mapping, which is what a mapping's
 /// page checks its values against, a check of one interface's rows queued for a node with the variables, the scope's
-/// values, the row budget and the example records it asks for, and the read of the values the scope's parameters can take. Every request a node would refuse is answered as a 400
-/// before anything is queued. Nothing here reaches an OSDU: the tasks are queued and read back from the catalog, not run.
+/// values, the row budget and the example records it asks for, and the read of the values the scope's parameters can take,
+/// which the control plane answers itself. Every request a node would refuse is answered as a 400 before anything is queued.
+/// Nothing here reaches an OSDU: the check's tasks are queued and read back from the catalog, not run, and the read of the
+/// scope's values is stood in for (<see cref="RecordedOperations"/>).
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]
@@ -120,13 +123,15 @@ public sealed class DeliveryValueCheckApiTests
             await osdu.SaveChangesAsync();
         }
 
+        var operations = new RecordedOperations();
         try
         {
             await using var factory = new ControlPlaneAppFactory()
                 .WithCatalog(cs)
                 .WithModules(new DeliveryControlPlaneModule())
                 .WithSetting("ControlPlane:Worker:Enabled", "false")
-                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+                .WithServices(services => services.AddSingleton(operations.Registry()));
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
@@ -202,14 +207,22 @@ public sealed class DeliveryValueCheckApiTests
             await RefusedAsync(client, token, path, new { values, mapping = "WellLog@9.9.9" }, "renders with mapping WellLog@1.4.0, not WellLog@9.9.9");
             await RefusedAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/check-values", new { values }, "name the one this request is about with ?interface=");
 
-            // What a scope's parameters can be set to is read on a node, from the columns the flow binds them to; it needs no
-            // value itself, since it is what a value is picked from.
-            var scopeValues = await QueuedAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/scope-values?interface=welllogs", null);
+            // What a scope's parameters can be set to is read by the control plane itself, at once, from the columns the flow
+            // binds them to; it needs no value itself, since it is what a value is picked from, and nothing is queued for it.
+            using (var answered = await SendAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/scope-values?interface=welllogs"))
+            {
+                Assert.True(answered.StatusCode == HttpStatusCode.OK, await answered.Content.ReadAsStringAsync());
+            }
+
+            var scopeValues = operations.Last();
             Assert.Equal("delivery-scope-values", scopeValues.Operation);
             Assert.Equal(flowName, scopeValues.SourceRef);
             Assert.Equal("welllogs", scopeValues.Argument("interface"));
             Assert.Null(scopeValues.Argument("values"));
             await RefusedAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/scope-values", new { }, "name the one this request is about with ?interface=");
+            Assert.Empty(operations.Given);
+            await using var catalog = CatalogDatabase.Create(cs);
+            Assert.DoesNotContain(await catalog.ComputeTasks.AsNoTracking().Where(t => t.SourceRef == flowName).Select(t => t.Operation).ToListAsync(), o => o == "delivery-scope-values");
         }
         finally
         {

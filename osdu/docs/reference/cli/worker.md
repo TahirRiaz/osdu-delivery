@@ -34,7 +34,9 @@ it a reference of its own.
 
 ## What else the node holds
 
-Every `${env:...}` reference the pool's flows declare resolves here, never in the control plane:
+Every `${env:...}` reference the pool's flows declare resolves here, and in the control plane as well, which answers
+a person's reads of a flow (a probe, a record read back, a preview, a source read, the explorer) under the same
+credentials:
 
 | Reference | Used for |
 | --- | --- |
@@ -51,10 +53,11 @@ link-local and cloud metadata addresses are never reachable.
 
 ## Compute tasks run here too
 
-A probe of a flow's target, a read-back of a delivered record, and a removal are queued as compute tasks and drain
-on a node, because only a node can reach the OSDU endpoint. They are drained ahead of runs on their own bounded
-gate, so a node busy with long deliveries still answers the GUI promptly, and a burst of them never starves run
-execution.
+A value check of a mapping, which may render every row of a scope, and a removal, which writes to OSDU and the
+ledger, are queued as compute tasks and drain on a node. They are drained ahead of runs on their own bounded gate, so
+a node busy with long deliveries still answers the GUI promptly, and a burst of them never starves run execution. A
+person's reads (a probe, a read-back, a preview, a source read, the explorer) are not queued: the control plane runs
+them while the request waits.
 
 ## The drain is what keeps a scale-in cheap
 

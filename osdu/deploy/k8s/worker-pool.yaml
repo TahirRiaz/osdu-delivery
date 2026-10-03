@@ -61,8 +61,10 @@ spec:
             # cloud metadata addresses are never reachable.
             - name: SQLFLOW_DELIVERY_PRIVATE_NETWORKS
               value: ""
-            # Every ${env:...} reference the pool's flows use resolves HERE, on the node, never in the control
-            # plane. Mount one entry per reference; these cover the delivery chain and the sample estate.
+            # Every ${env:...} reference the pool's flows use resolves HERE, on the node, and in the control plane,
+            # which answers a person's reads of a flow (a probe, a read-back, a preview, the explorer) under the same
+            # credentials: keep this list and controlplane.yaml's the same. Mount one entry per reference; these
+            # cover the delivery chain and the sample estate.
             - name: SQLFLOW_CONN_PRE
               valueFrom:
                 secretKeyRef: { name: osdu-delivery-secrets, key: pre-connection }

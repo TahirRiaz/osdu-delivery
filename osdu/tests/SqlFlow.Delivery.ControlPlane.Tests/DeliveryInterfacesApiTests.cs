@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Core.Identity;
@@ -21,7 +22,7 @@ namespace SqlFlow.ControlPlane.Tests;
 /// A flow that declares interfaces as the API serves it (docs/interfaces-design.md sections 4 and 9): the control plane
 /// describes a pipeline synced before the read model of interfaces existed once it starts, lists the pipeline's interfaces
 /// with their routes and counts, adds a source's counts up, asks which interface a request is about, and leads a record to
-/// its pipeline and interface, the interface travelling with every task it queues for a node.
+/// its pipeline and interface, the interface travelling with every operation run on it.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]
@@ -108,13 +109,15 @@ public sealed class DeliveryInterfacesApiTests
             },
         ]);
 
+        var operations = new RecordedOperations();
         try
         {
             await using var factory = new ControlPlaneAppFactory()
                 .WithCatalog(cs)
                 .WithModules(new DeliveryControlPlaneModule())
                 .WithSetting("ControlPlane:Worker:Enabled", "false")
-                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+                .WithServices(services => services.AddSingleton(operations.Registry()));
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
@@ -232,7 +235,7 @@ public sealed class DeliveryInterfacesApiTests
             Assert.Equal(JsonValueKind.Null, storageTarget.GetProperty("ddms").ValueKind);
             Assert.Equal("POST", storageTarget.GetProperty("recordMethod").GetString());
 
-            // A record leads to its pipeline and interface, and a task queued for it names the interface the node acts through.
+            // A record leads to its pipeline and interface, and an operation run on it names the interface it acts through.
             var record = await JsonAsync(client, token, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}");
             Assert.Equal((pipelineId, flowName, "welllogs"), (record.GetProperty("pipelineId").GetGuid(), record.GetProperty("flowName").GetString(), record.GetProperty("interface").GetString()));
 
@@ -240,12 +243,9 @@ public sealed class DeliveryInterfacesApiTests
             Assert.Equal(["source_project", "log_id"], record.GetProperty("keyColumns").EnumerateArray().Select(c => c.GetString()));
             using (var read = await SendAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/read"))
             {
-                Assert.True(read.StatusCode == HttpStatusCode.Accepted, await read.Content.ReadAsStringAsync());
-                var taskId = JsonDocument.Parse(await read.Content.ReadAsStringAsync()).RootElement.GetProperty("taskId").GetGuid();
-                await using var db = CatalogDatabase.Create(cs);
-                var task = await db.ComputeTasks.AsNoTracking().SingleAsync(t => t.TaskId == taskId);
-                Assert.Equal(flowName, task.SourceRef);
-                Assert.Contains("\"interface\":\"welllogs\"", task.ArgumentsJson.Replace(" ", string.Empty, StringComparison.Ordinal), StringComparison.Ordinal);
+                Assert.True(read.StatusCode == HttpStatusCode.OK, await read.Content.ReadAsStringAsync());
+                var ran = operations.Last();
+                Assert.Equal((flowName, "welllogs"), (ran.SourceRef, ran.Argument("interface")));
             }
         }
         finally

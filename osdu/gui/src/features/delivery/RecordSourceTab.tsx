@@ -1,13 +1,13 @@
-import { Database } from "lucide-react";
+import { Database, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import type { ComputeTask } from "@/api/types";
+import { CodeView } from "@/components/CodeView";
 import { CopyButton } from "@/components/CopyButton";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TruncatedText } from "@/components/TruncatedText";
-import type { DeliveryRecord } from "../../api/delivery";
+import type { DeliveryRecord, DeliverySourceRows } from "../../api/delivery";
 import { Fact, FactGrid, NoFact } from "./Facts";
-import { TaskResultCard } from "./TaskResultCard";
+import { ProblemView } from "./TemplateSheet";
 
 function SectionHeading({ title, description }: { title: string; description?: string }) {
   return (
@@ -105,18 +105,18 @@ function KeyColumns({ json, columns }: { json: string; columns: string[] | null 
 /**
  * Where the record came from: the ingestion file and row the delivered document was built from (and the newer row a
  * waiting document is built from), the source key that names it, the key columns that find it in the ingestion tables,
- * and a read of its rows as those tables hold them now, on a node with the flow's own connection.
+ * and a read of its rows as those tables hold them now, with the flow's own connection.
  */
-export function RecordSourceTab({ record, keyColumns, canRead, reading, onRead, task }: {
+export function RecordSourceTab({ record, keyColumns, canRead, reading, onRead, answer }: {
   record: DeliveryRecord;
   /** The columns the flow's `source.record.key` names, in the order of the record's key tuple; null when unknown. */
   keyColumns: string[] | null;
-  /** Whether the read can be queued: the record's flow is known and no other node task of the page is in flight. */
+  /** Whether the read can be asked for: the record's flow is known and no other request of the page is in flight. */
   canRead: boolean;
   reading: boolean;
   onRead: () => void;
-  /** The read as it stands, once one was queued. */
-  task: { id: string; state: ComputeTask | undefined } | null;
+  /** What the last read answered: the rows, or why there are none; null before any read has answered. */
+  answer: { rows: DeliverySourceRows | null; error?: unknown } | null;
 }) {
   // A record that has not been delivered has only the pending row, which is then simply where it came from; a newer
   // row is a fact only once there is a delivered row for it to be newer than.
@@ -153,14 +153,15 @@ export function RecordSourceTab({ record, keyColumns, canRead, reading, onRead, 
       </Card>
 
       <Card className="gap-2 rounded-lg p-3">
-        <SectionHeading title="As the ingestion tables hold it now" description="read on a node with the flow's own connection; nothing is written" />
+        <SectionHeading title="As the ingestion tables hold it now" description="read with the flow's own connection; nothing is written" />
         <div>
           <Button variant="outline" size="sm" onClick={onRead} disabled={!canRead || reading} data-testid="record-read-source">
-            <Database />
-            {task === null ? "Read the source row" : "Read again"}
+            {reading ? <Loader2 className="animate-spin" /> : <Database />}
+            {answer === null ? "Read the source row" : "Read again"}
           </Button>
         </div>
-        {task !== null && <TaskResultCard key={task.id} label="The record in the ingestion tables" task={task.state} testId="record-source-task" />}
+        {answer?.error !== undefined && <ProblemView error={answer.error} testId="record-source-error" />}
+        {answer?.rows && <CodeView value={JSON.stringify(answer.rows, null, 2)} language="json" height={360} data-testid="record-source-task-json" />}
       </Card>
     </div>
   );

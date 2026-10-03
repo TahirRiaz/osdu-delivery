@@ -8,9 +8,6 @@ use sqlflow_mcp::{encode, json_str};
 /// a tool result is read by a model, and a first page that answers the question is worth more than a long one.
 pub(crate) const DEFAULT_PAGE_SIZE: i64 = 25;
 
-/// How many characters of any one string a node task's result keeps.
-pub(crate) const TASK_TEXT_LIMIT: usize = 4_000;
-
 /// How many characters of an activity's captured log a listing keeps; the activity read alone carries more.
 pub(crate) const LOG_PREVIEW: usize = 400;
 

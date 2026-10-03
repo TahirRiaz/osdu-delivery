@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
@@ -108,7 +109,7 @@ public sealed class DeliveryPartitionsApiTests
             // A node task names its repository and partition, and carries that partition's values alone.
             var task = new ComputeTaskPayload
             {
-                Operation = ReadRecordOperation.OperationName,
+                Operation = CheckValuesOperation.OperationName,
                 SourceRef = "welllogs",
                 Arguments = new Dictionary<string, string>(StringComparer.Ordinal)
                 {
@@ -244,13 +245,15 @@ public sealed class DeliveryPartitionsApiTests
             ]);
         }
 
+        var operations = new RecordedOperations();
         try
         {
             await using var factory = new ControlPlaneAppFactory()
                 .WithCatalog(cs)
                 .WithModules(new DeliveryControlPlaneModule())
                 .WithSetting("ControlPlane:Worker:Enabled", "false")
-                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false");
+                .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+                .WithServices(services => services.AddSingleton(operations.Registry()));
             using var client = factory.CreateClient();
             var token = await TokenAsync(client, ["read", "operate"]);
 
@@ -294,18 +297,19 @@ public sealed class DeliveryPartitionsApiTests
             var records = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/records?partition={test}");
             Assert.Equal(testKey.Value, Assert.Single(records.GetProperty("items").EnumerateArray().ToList()).GetProperty("deliveryKey").GetGuid());
 
-            // A record says where it was delivered, and a task queued for it acts there, with that partition's configuration.
+            // A record says where it was delivered, and a read of it acts there, run by the control plane with that partition's
+            // configuration exactly as a node would be given it.
             var record = await JsonAsync(client, token, $"/api/v1/delivery/records/{testLedger:D}/{testKey.Value:D}");
             Assert.Equal((pipelineId, test), (record.GetProperty("pipelineId").GetGuid(), record.GetProperty("partition").GetString()));
             using (var read = await SendAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/records/{testLedger:D}/{testKey.Value:D}/read"))
             {
-                Assert.True(read.StatusCode == HttpStatusCode.Accepted, await read.Content.ReadAsStringAsync());
-                var taskId = JsonDocument.Parse(await read.Content.ReadAsStringAsync()).RootElement.GetProperty("taskId").GetGuid();
+                Assert.True(read.StatusCode == HttpStatusCode.OK, await read.Content.ReadAsStringAsync());
+                var ran = operations.Last();
+                Assert.Equal(ReadRecordOperation.OperationName, ran.Operation);
+                Assert.Equal(test, ran.Argument(DeliveryOperation.PartitionArgument));
+                Assert.Equal("estate-test-legal", DeliveryRunPayload.Parse(ran.Argument(DeliveryOperation.ReferencesArgument)).References["OSDU_LEGAL_TAG"]);
                 await using var db = CatalogDatabase.Create(cs);
-                var task = await db.ComputeTasks.AsNoTracking().SingleAsync(t => t.TaskId == taskId);
-                var queued = ComputeTaskPayload.FromJson(task.ArgumentsJson, [ReadRecordOperation.OperationName]);
-                Assert.Equal(test, queued.Argument(DeliveryOperation.PartitionArgument));
-                Assert.Equal("estate-test-legal", DeliveryRunPayload.Parse(queued.Argument(DeliveryOperation.ReferencesArgument)).References["OSDU_LEGAL_TAG"]);
+                Assert.False(await db.ComputeTasks.AnyAsync(t => t.SourceRef == flowName));
             }
 
             var devRecord = await JsonAsync(client, token, $"/api/v1/delivery/records/{devLedger:D}/{devKey.Value:D}");

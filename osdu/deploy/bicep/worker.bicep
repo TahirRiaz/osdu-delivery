@@ -52,7 +52,7 @@ param gitUsername string = ''
 @description('The private ranges (CIDR, comma separated) the nodes may reach, for an environment integrated into a VNet whose OSDU, storage accounts or proxy resolve to private addresses (SQLFLOW_DELIVERY_PRIVATE_NETWORKS). Empty reaches public addresses only; loopback, link-local and cloud metadata addresses are never reachable.')
 param privateNetworks string = ''
 
-@description('Flow environment references, one object per \${env:...} reference the pool\'s flows use, and for the OSDU module database connection the ledger is read and written through: { name: the environment variable, secretName: the Key Vault secret holding its value }. Credentials live on the node, never in the control plane.')
+@description('Flow environment references, one object per \${env:...} reference the pool\'s flows use, and for the OSDU module database connection the ledger is read and written through: { name: the environment variable, secretName: the Key Vault secret holding its value }. The control plane is given the same references (main.bicep), since a person\'s reads of a flow run there; runs and removals run here.')
 param flowEnv array = []
 
 @description('Name of a container registry in THIS resource group: the template grants the app identity AcrPull on it and configures the pull. Leave empty for a public registry, or one you authorize yourself via acrLoginServer.')

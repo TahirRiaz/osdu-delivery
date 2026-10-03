@@ -154,7 +154,7 @@ const deliveryKind: FlowKindContribution = {
       ),
     },
     {
-      // One record rendered as a delivery would render it, on a node, and sent nowhere.
+      // One record rendered as a delivery would render it, and sent nowhere.
       value: "preview",
       label: "Preview",
       testId: "pipeline-tab-preview",
@@ -288,7 +288,7 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/assertions", component: DeliveryAssertionsPage },
     { path: "/delivery/assertions/runs/:assertionRunId", component: AssertionReportPage },
     { path: "/delivery/dimensions", component: DeliveryDimensionsPage },
-    // What OSDU holds, read live from it; each read runs on a node, which takes the operate scope.
+    // What OSDU holds, read live from it through a flow's credentials, which takes the operate scope.
     { path: "/delivery/explorer", component: ExplorerPage, requiredScope: "operate" },
   ],
   // Everything this product adds is one group of its own, rather than entries threaded through the platform's generic

@@ -1,7 +1,7 @@
 import { E2E } from "../playwright.config";
 import { expect, test } from "./helpers";
 
-// The explorer: what the partition of OSDU holds, read live through a delivery flow's connection on a node, and nothing
+// The explorer: what the partition of OSDU holds, read live through a delivery flow's connection, and nothing
 // the delivery system keeps. It browses by type, searches by name and by id, reads a record under the place it sits in,
 // follows the records that mention it, compares two of its versions side by side, and offers the ids near one OSDU holds
 // nothing under.
