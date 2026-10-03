@@ -13,6 +13,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The explorer shows how to search for any part of a record.** Beside every value and section of a record, a search
+  button shows the Lucene queries that find records by it: the whole value (a text by its `keyword`), its words, and
+  whether a record holds it, each said in words, with how the platform indexes it read from the saved template of the
+  record's kind. A value in a nested list is asked inside `nested(...)`; a list the platform does not index inside says
+  so rather than offering a query that finds nothing. A query is copied as written or as a search request, or searched
+  in the explorer. `POST /delivery/explorer/element-queries` answers it ([osdu/docs/explorer.md](osdu/docs/explorer.md),
+  The query of an element).
 - **The explorer builds a dimension while it browses.** **Build a dimension**, in the explorer's header, docks a builder
   beside the records, and the records are browsed, searched and drilled into as ever; the workbench's side bar folds
   while it is docked, and comes back as it was left when it closes. The kind's saved template says
@@ -857,6 +864,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- **A property of a list whose items are a choice of forms is searched as the platform indexes it.** A wellbore's
+  `GeoContexts` holds one of several kinds of context (`oneOf`), and only the field's declares `FieldID`. The search
+  classifier read only an object's own properties, so every search the module writes (a mapping's lookup, an assertion,
+  a dimension's key or collected values) refused a property of such a list as not in the schema, and read the list as a
+  list of plain values. The schema now resolves a path through the forms of a `oneOf` or `anyOf` (`ResolveThroughForms`,
+  the forms lookup the path reader already used, now shared), so `data.GeoContexts.GeoPoliticalEntityID` is a text in the
+  nested list `data.GeoContexts`, asked inside `nested(...)`.
 - **A run delivers to the endpoint its central configuration names.** The protocol a run delivers through resolved its
   endpoint and headers with the node's own environment, while the run's record searches resolved them with the central
   configuration first, so a node whose environment named another OSDU or partition than the configuration searched one

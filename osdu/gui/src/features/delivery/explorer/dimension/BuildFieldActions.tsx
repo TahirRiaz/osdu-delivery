@@ -41,7 +41,7 @@ function markText(mark: ValueMark): string {
  */
 export function BuildFieldActions({ field, build }: { field: InspectorField; build: DimensionBuild }) {
   const draft = build.draft;
-  if (draft === null) {
+  if (draft === null || field.node.kind !== "leaf") {
     return null;
   }
 

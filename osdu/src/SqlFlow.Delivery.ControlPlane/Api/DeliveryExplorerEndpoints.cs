@@ -117,6 +117,7 @@ public static partial class DeliveryExplorerEndpoints
         delivery.MapPost("/explorer/search", SearchAsync).WithName("ExploreDeliveryOsduRecords");
         delivery.MapPost("/explorer/fields", FieldsAsync).WithName("ExploreDeliveryOsduFields");
         delivery.MapPost("/explorer/read", ReadAsync).WithName("ExploreDeliveryOsduRecord");
+        MapElementQueryEndpoints(delivery);
         MapDimensionBuilderEndpoints(delivery);
         return delivery;
     }

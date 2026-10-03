@@ -1,5 +1,6 @@
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Search;
+using SqlFlow.Delivery.Snapshots;
 using Xunit;
 
 namespace SqlFlow.Delivery.Tests;
@@ -245,5 +246,38 @@ public class SearchFieldsTests
         Assert.Contains("which is not saved", problem, StringComparison.Ordinal);
         Assert.Contains("sqlflow template import", problem, StringComparison.Ordinal);
         Assert.Empty(resolved.Searches);
+    }
+
+    /// <summary>The sample estate's saved wellbore template, as OSDU publishes it: GeoContexts a nested list of a choice of contexts.</summary>
+    private static SchemaSnapshot PublishedWellbore()
+    {
+        const string kind = "osdu:wks:master-data--Wellbore:1.3.0";
+        var file = Path.Combine(Samples.TemplateFiles, kind.Replace(':', '_') + ".json");
+        return SchemaSnapshot.Parse(kind, File.ReadAllText(file), DateTimeOffset.UnixEpoch);
+    }
+
+    [Fact]
+    public void A_property_one_form_of_a_choice_declares_is_classified_through_the_choice()
+    {
+        // A wellbore's GeoContexts holds one of several kinds of context (oneOf); only some declare a property, and the list
+        // is nested whichever form an item takes.
+        var wellbore = PublishedWellbore();
+        Assert.Equal(OsduField.Text("data.GeoContexts.GeoPoliticalEntityID", "data.GeoContexts"), SearchFields.Classify(wellbore, "data.GeoContexts.GeoPoliticalEntityID").Field);
+        Assert.Equal(OsduField.Text("data.GeoContexts.FieldID", "data.GeoContexts"), SearchFields.ClassifyValue(wellbore, "data.GeoContexts.FieldID").Field);
+        Assert.Equal(new SectionShape("data.GeoContexts", null, null), SearchFields.Section(wellbore, "data.GeoContexts"));
+
+        // A property no form declares is still not one.
+        Assert.Contains("has no property data.GeoContexts.NoSuchProperty", SearchFields.Classify(wellbore, "data.GeoContexts.NoSuchProperty").Problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_section_is_classified_by_the_arrays_it_is_or_sits_in()
+    {
+        var wellbore = PublishedWellbore();
+        Assert.Equal(new SectionShape("data.NameAliases", null, null), SearchFields.Section(wellbore, "data.NameAliases"));
+        Assert.Equal(new SectionShape(null, "data.FacilitySpecifications", null), SearchFields.Section(wellbore, "data.FacilitySpecifications"));
+        Assert.Equal(new SectionShape(null, null, null), SearchFields.Section(wellbore, "data.ResourceHostRegionIDs"));
+        Assert.Contains("a value rather than a section", SearchFields.Section(wellbore, "data.FacilityName").Problem, StringComparison.Ordinal);
+        Assert.Contains("has no property data.Nothing", SearchFields.Section(wellbore, "data.Nothing").Problem, StringComparison.Ordinal);
     }
 }

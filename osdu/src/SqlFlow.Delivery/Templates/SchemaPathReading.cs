@@ -50,11 +50,6 @@ public sealed record SchemaPathReading(string Kind, IReadOnlyList<SchemaSegmentR
 /// </summary>
 public static class SchemaPathReader
 {
-    /// <summary>How deep the forms of a <c>oneOf</c> or <c>anyOf</c> are looked into; OSDU schemas nest one or two.</summary>
-    private const int MaxBranchDepth = 4;
-
-    private static readonly string[] Choices = ["oneOf", "anyOf"];
-
     /// <summary>Describes <paramref name="path"/> in <paramref name="schema"/>.</summary>
     public static SchemaPathReading Read(SchemaSnapshot schema, DimensionPath path)
     {
@@ -134,14 +129,14 @@ public static class SchemaPathReader
             return (direct, schema.EffectiveOf(direct), null);
         }
 
-        var declaring = Forms(schema, holder, 0)
+        var declaring = Forms(schema, holder)
             .Where(f => f.Schema["properties"] is JsonObject props && props[name] is JsonObject)
             .ToList();
         if (declaring.Count > 0)
         {
             var raw = (JsonObject)((JsonObject)declaring[0].Schema["properties"]!)[name]!;
             var titles = declaring.Select(f => f.Title).Distinct(StringComparer.Ordinal).ToList();
-            var all = Forms(schema, holder, 0).Count();
+            var all = Forms(schema, holder).Count();
             return (raw, schema.EffectiveOf(raw), titles.Count == all ? null : string.Join(", ", titles));
         }
 
@@ -159,58 +154,13 @@ public static class SchemaPathReader
     }
 
     /// <summary>Every form a <c>oneOf</c> or <c>anyOf</c> of <paramref name="holder"/> allows, forms of forms included, each with its title.</summary>
-    private static IEnumerable<(JsonObject Schema, string Title)> Forms(SchemaSnapshot schema, JsonObject holder, int depth)
-    {
-        if (depth >= MaxBranchDepth)
-        {
-            yield break;
-        }
-
-        foreach (var keyword in Choices)
-        {
-            if (holder[keyword] is not JsonArray forms)
-            {
-                continue;
-            }
-
-            foreach (var form in forms.OfType<JsonObject>())
-            {
-                JsonObject effective;
-                try
-                {
-                    effective = schema.EffectiveOf(form);
-                }
-                catch (DeliveryException)
-                {
-                    // A form whose reference the bundle does not hold describes nothing; the others still do.
-                    continue;
-                }
-
-                var title = Text(effective, "title") ?? Text(form, "title") ?? RefName(form) ?? keyword;
-                yield return (effective, title);
-                foreach (var inner in Forms(schema, effective, depth + 1))
-                {
-                    yield return inner;
-                }
-            }
-        }
-    }
+    private static IEnumerable<(JsonObject Schema, string Title)> Forms(SchemaSnapshot schema, JsonObject holder) => schema.FormsOf(holder);
 
     /// <summary>
     /// The type a node declares; for one that declares none but allows a choice of forms (a wellbore's geographic context),
     /// the type every form shares.
     /// </summary>
-    private static SchemaType TypeOf(SchemaSnapshot schema, JsonObject node)
-    {
-        var type = SchemaSnapshot.TypeOfNode(node);
-        if (type != SchemaType.Any)
-        {
-            return type;
-        }
-
-        var forms = Forms(schema, node, 0).Select(f => SchemaSnapshot.TypeOfNode(f.Schema)).Where(t => t != SchemaType.Any).Distinct().ToList();
-        return forms.Count == 1 ? forms[0] : SchemaType.Any;
-    }
+    private static SchemaType TypeOf(SchemaSnapshot schema, JsonObject node) => schema.TypeWithForms(node);
 
     private static SchemaFilterReading Filter(SchemaSnapshot schema, JsonObject holds, DimensionPathSegment segment)
     {
@@ -221,7 +171,7 @@ public static class SchemaPathReader
 
     private static string Missing(SchemaSnapshot schema, JsonObject holder, string at, string name)
     {
-        var forms = Forms(schema, holder, 0).Select(f => f.Title).Distinct(StringComparer.Ordinal).ToList();
+        var forms = Forms(schema, holder).Select(f => f.Title).Distinct(StringComparer.Ordinal).ToList();
         if (forms.Count > 0)
         {
             return $"{schema.Kind} declares no {name} at {at}: the object there is one of {forms.Count} forms ({string.Join(", ", forms)}), and none declares it.";
@@ -255,10 +205,6 @@ public static class SchemaPathReader
         SchemaType.Array => "array",
         _ => "any",
     };
-
-    /// <summary>The definition a local reference names (<c>AbstractGeoFieldContext.1.0.0</c> of <c>#/definitions/AbstractGeoFieldContext.1.0.0</c>).</summary>
-    private static string? RefName(JsonObject form)
-        => Text(form, "$ref") is { } reference ? reference[(reference.LastIndexOf('/') + 1)..] : null;
 
     private static string? Text(JsonObject node, string key)
         => node[key] is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text) ? text : null;

@@ -127,7 +127,10 @@ export interface InspectorExtras {
   mentions?: (id: string, open: (id: string) => void) => ReactNode;
   /** What to offer where OSDU holds no record under an id: the records whose ids are near it. */
   notFound?: (id: string) => ReactNode;
-  /** What a page shows beside each value of a record on the trail, in the fields and the JSON views (the dimension builder's picks). */
+  /**
+   * What a page shows beside each value and each section of a record on the trail, in the fields and the JSON views (the
+   * query of an element, the dimension builder's picks); a section is a node of kind `object` or `array`.
+   */
   fieldActions?: (field: InspectorField) => ReactNode;
 }
 
@@ -528,8 +531,8 @@ function LinksView({ model, ownId, onOpenLink, opening, onSelect }: { model: Rec
 function FieldRows({ node, term, hits, ownId, onOpenLink, opening, onSelect, shown, onShowMore, actions }: {
   node: RecordNode; term: string; hits: Set<string>; ownId: string | null; onOpenLink?: OpenLink; opening?: string | null;
   onSelect: (path: string) => void; shown: number; onShowMore: () => void;
-  /** What a page shows beside a value, at the end of its row. */
-  actions?: (leaf: RecordNode) => ReactNode;
+  /** What a page shows beside a value or a section, at the end of its row. */
+  actions?: (node: RecordNode) => ReactNode;
 }) {
   return (
     <div className="flex flex-col">
@@ -548,7 +551,7 @@ function FieldRows({ node, term, hits, ownId, onOpenLink, opening, onSelect, sho
                 </button>
               )}
           </span>
-          {actions !== undefined && child.kind === "leaf" && <span className="shrink-0 self-center">{actions(child)}</span>}
+          {actions !== undefined && <span className="shrink-0 self-center">{actions(child)}</span>}
         </div>
       ))}
       {shown < node.children.length && (
@@ -628,9 +631,11 @@ function useWidth(): [(node: HTMLDivElement | null) => void, number | null] {
  * the first as many as the pane has room for. Each column is given its width and clips its values to it, so the table
  * never scrolls sideways; the columns it leaves out are counted in the last header, and a row opens its whole item.
  */
-function ItemTable({ node, term, hits, ownId, onOpenLink, opening, onSelect, shown, onShowMore }: {
+function ItemTable({ node, term, hits, ownId, onOpenLink, opening, onSelect, shown, onShowMore, actions }: {
   node: RecordNode; term: string; hits: Set<string>; ownId: string | null; onOpenLink?: OpenLink; opening?: string | null;
   onSelect: (path: string) => void; shown: number; onShowMore: () => void;
+  /** What a page shows beside an item, at the end of its row. */
+  actions?: (node: RecordNode) => ReactNode;
 }) {
   const shared = useMemo(() => tableColumns(node.children), [node]);
   const [measured, width] = useWidth();
@@ -661,7 +666,12 @@ function ItemTable({ node, term, hits, ownId, onOpenLink, opening, onSelect, sho
       header: hidden > 0 ? `+${hidden} more` : "",
       width: TABLE_MORE_WIDTH,
       align: "right",
-      render: () => <ChevronRight className="ml-auto size-3.5 text-muted-foreground" aria-label="Open the item" />,
+      render: (item) => (
+        <span className="flex items-center justify-end gap-1">
+          {actions?.(item)}
+          <ChevronRight className="size-3.5 text-muted-foreground" aria-label="Open the item" />
+        </span>
+      ),
     },
   ];
   return (
@@ -695,8 +705,8 @@ const PUNCTUATION = "text-muted-foreground";
  */
 function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect, actions }: {
   node: RecordNode; term: string; hits: Set<string>; ownId: string | null; onOpenLink?: OpenLink; opening?: string | null; onSelect: (path: string) => void;
-  /** What a page shows beside a value, after its line. */
-  actions?: (leaf: RecordNode) => ReactNode;
+  /** What a page shows beside a value or a section, after the line it starts on. */
+  actions?: (node: RecordNode) => ReactNode;
 }) {
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const [shownItems, setShownItems] = useState<ReadonlyMap<string, number>>(() => new Map());
@@ -807,7 +817,13 @@ function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect, acti
       return;
     }
 
-    line(`${current.path}:open`, depth, <>{label}{opener}</>, { open: true, path: current.path }, hit);
+    line(
+      `${current.path}:open`,
+      depth,
+      <>{label}{opener}{actions !== undefined && depth > 0 && <span className="ml-1.5 inline-flex align-middle">{actions(current)}</span>}</>,
+      { open: true, path: current.path },
+      hit,
+    );
     const limit = current.kind === "array" ? Math.min(current.children.length, shownItems.get(current.path) ?? PAGE) : current.children.length;
     current.children.slice(0, limit).forEach((child, index) => {
       walk(child, depth + 1, current.kind === "object" ? child : null, index === current.children.length - 1);
@@ -878,8 +894,8 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
   place?: ReactNode;
   /** The records that mention this one, given a way to open one of them on the trail; absent where a page cannot list them. */
   mentions?: (open: (id: string) => void) => ReactNode;
-  /** What a page shows beside each value of the record as shown (the version picked, or its latest). */
-  fieldActions?: (leaf: RecordNode, record: Record<string, unknown>) => ReactNode;
+  /** What a page shows beside each value and section of the record as shown (the version picked, or its latest). */
+  fieldActions?: (node: RecordNode, record: Record<string, unknown>) => ReactNode;
 }) {
   const [picked, setPicked] = useState<{ version: number; read: DeliveryOsduRead } | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -901,7 +917,7 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
 
   const kind = text(record.kind);
   const model = useMemo(() => buildModel(record, read.targetId), [record, read.targetId]);
-  const leafActions = fieldActions === undefined ? undefined : (leaf: RecordNode) => fieldActions(leaf, record);
+  const leafActions = fieldActions === undefined ? undefined : (node: RecordNode) => fieldActions(node, record);
   const whole = useMemo(() => documentNode(record), [record]);
   const [chosen, setChosen] = useState<string>(() => (model.sections.length > 0 ? model.sections[0].path : RECORD));
   const [mode, setMode] = useState<ViewMode>("fields");
@@ -1134,7 +1150,7 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
                       : node.children.length === 0
                         ? <EmptyState title={node.kind === "array" ? "An empty list" : "An empty object"} />
                         : isTable
-                          ? <ItemTable node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} />
+                          ? <ItemTable node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} actions={leafActions} />
                           : <FieldRows node={node} term={term} hits={hits} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} shown={shown} onShowMore={showMore} actions={leafActions} />}
           </div>
         </ResizablePanel>

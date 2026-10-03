@@ -15,6 +15,7 @@ import { explorerApi, type ExplorerFilter, type ExplorerSearchRequest, type Expl
 import { isPartitionId, useActivePartition } from "../activePartition";
 import { useWindowFit } from "../useWindowFit";
 import { failureText } from "../answers";
+import { ElementQueryButton } from "./ExplorerElementQuery";
 import { ExplorerProblem } from "./ExplorerProblem";
 import { ExplorerRecord } from "./ExplorerRecord";
 import { ExplorerResults } from "./ExplorerResults";
@@ -284,7 +285,12 @@ export default function ExplorerPage() {
               onOpenId={openId}
               onBrowseQuery={(query) => navigate({ q: query, lq: "1", kind: null, f: null, id: null, v: null })}
               onSwitchPartition={(partition) => setActive(partition)}
-              fieldActions={build.draft === null ? undefined : (field) => <BuildFieldActions field={field} build={build} />}
+              fieldActions={(field) => (
+                <span className="inline-flex items-center gap-1">
+                  <ElementQueryButton field={field} onSearch={(kind, query) => navigate({ q: query, lq: "1", kind, f: null, id: null, v: null })} />
+                  {build.draft !== null && <BuildFieldActions field={field} build={build} />}
+                </span>
+              )}
             />
           </WindowFrame>
         )}

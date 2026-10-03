@@ -237,15 +237,95 @@ public static class SearchFields
         }
 
         var segments = path.Split('.');
+        var (nested, flattened, problem) = Through(schema, segments, segments.Length - 1);
+        if (problem is not null)
+        {
+            return IndexedShape.Refused(problem);
+        }
+
+        var leaf = schema.ResolveThroughForms(path);
+        if (leaf is null)
+        {
+            return IndexedShape.Refused($"the schema of {schema.Kind} has no property {path}.");
+        }
+
+        var (index, list, leafProblem) = flattened is not null ? FlattenedLeaf(schema, leaf, path) : typed ? TypedLeaf(schema, leaf, path) : Leaf(schema, leaf, path);
+        if (index is not { } shape)
+        {
+            return IndexedShape.Refused(leafProblem!);
+        }
+
+        return new IndexedShape(OsduField.Of(path, shape, nested), nested is not null || flattened is not null || list, null);
+    }
+
+    /// <summary>
+    /// How the platform indexes a section of a record's data at <paramref name="path"/> (an object, or a list of objects or of
+    /// values): the nested array it is or sits in, the flattened array it is or sits in, or why no query reaches it (an array
+    /// of objects the schema gives no indexing hint, which the platform does not index inside).
+    /// </summary>
+    public static SectionShape Section(SchemaSnapshot schema, string path)
+    {
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!OsduPath.IsPath(path))
+        {
+            return new SectionShape(null, null, $"'{path}' is not a property path a query can name.");
+        }
+
+        var segments = path.Split('.');
+        var (nested, flattened, problem) = Through(schema, segments, segments.Length - 1);
+        if (problem is not null)
+        {
+            return new SectionShape(null, null, problem);
+        }
+
+        var section = schema.ResolveThroughForms(path);
+        if (section is null)
+        {
+            return new SectionShape(null, null, $"the schema of {schema.Kind} has no property {path}.");
+        }
+
+        if (flattened is not null || section.Type == SchemaType.Object)
+        {
+            return new SectionShape(nested, flattened, null);
+        }
+
+        if (section.Type != SchemaType.Array)
+        {
+            return new SectionShape(nested, flattened, $"{path} is a {Name(section.Type)} in the schema of {schema.Kind}, a value rather than a section.");
+        }
+
+        if (!IsObjectItems(schema, section))
+        {
+            return new SectionShape(nested, null, null);
+        }
+
+        return Hint(section) switch
+        {
+            "nested" when nested is not null => new SectionShape(null, null,
+                $"{path} is a nested array inside the nested array {nested}; a query reaches into one nested array, since the search service rewrites the property names inside a nested query by pattern and a query nested twice does not survive that."),
+            "nested" => new SectionShape(path, null, null),
+            "flattened" => new SectionShape(nested, path, null),
+            _ => new SectionShape(null, null,
+                $"{path} is an array of objects the schema of {schema.Kind} gives no x-osdu-indexing hint, and the platform maps such an array as an object whose properties it does not index, so no query reaches inside it."),
+        };
+    }
+
+    /// <summary>
+    /// Down the first <paramref name="count"/> segments of a path in <paramref name="schema"/>: the nested array met, the
+    /// flattened array met, or why the path goes where no query reaches.
+    /// </summary>
+    private static (string? Nested, string? Flattened, string? Problem) Through(SchemaSnapshot schema, string[] segments, int count)
+    {
         string? nested = null;
         string? flattened = null;
-        for (var i = 1; i < segments.Length; i++)
+        for (var i = 1; i <= count; i++)
         {
             var prefix = string.Join('.', segments.Take(i));
-            var property = schema.Resolve(prefix);
+            var property = schema.ResolveThroughForms(prefix);
             if (property is null)
             {
-                return IndexedShape.Refused($"the schema of {schema.Kind} has no property {prefix}.");
+                return (null, null, $"the schema of {schema.Kind} has no property {prefix}.");
             }
 
             if (flattened is not null)
@@ -256,15 +336,15 @@ public static class SearchFields
 
             if (property.Type == SchemaType.Array)
             {
-                if (!IsObjectItems(property))
+                if (!IsObjectItems(schema, property))
                 {
-                    return IndexedShape.Refused($"{prefix} in the schema of {schema.Kind} is a list of values, which has no properties to compare.");
+                    return (null, null, $"{prefix} in the schema of {schema.Kind} is a list of values, which has no properties to compare.");
                 }
 
                 switch (Hint(property))
                 {
                     case "nested" when nested is not null:
-                        return IndexedShape.Refused(
+                        return (null, null,
                             $"{prefix} is a nested array inside the nested array {nested}; a query reaches into one nested array, since the search service rewrites the property names inside a nested query by pattern and a query nested twice does not survive that.");
                     case "nested":
                         nested = prefix;
@@ -273,7 +353,7 @@ public static class SearchFields
                         flattened = prefix;
                         break;
                     default:
-                        return IndexedShape.Refused(
+                        return (null, null,
                             $"{prefix} is an array of objects the schema of {schema.Kind} gives no x-osdu-indexing hint, and the platform maps such an array as an object whose properties it does not index, so no query reaches inside it.");
                 }
 
@@ -282,33 +362,21 @@ public static class SearchFields
 
             if (property.Type != SchemaType.Object)
             {
-                return IndexedShape.Refused($"{prefix} in the schema of {schema.Kind} is a {Name(property.Type)}, which has no properties to compare.");
+                return (null, null, $"{prefix} in the schema of {schema.Kind} is a {Name(property.Type)}, which has no properties to compare.");
             }
         }
 
-        var leaf = schema.Resolve(path);
-        if (leaf is null)
-        {
-            return IndexedShape.Refused($"the schema of {schema.Kind} has no property {path}.");
-        }
-
-        var (index, list, problem) = flattened is not null ? FlattenedLeaf(leaf, path) : typed ? TypedLeaf(leaf, path) : Leaf(leaf, path);
-        if (index is not { } shape)
-        {
-            return IndexedShape.Refused(problem!);
-        }
-
-        return new IndexedShape(OsduField.Of(path, shape, nested), nested is not null || flattened is not null || list, null);
+        return (nested, flattened, null);
     }
 
     /// <summary>How a property outside any flattened array is indexed for a text comparison, by the indexer's order: pattern, then format, then type.</summary>
-    private static (OsduFieldIndex? Index, bool List, string? Problem) Leaf(SchemaProperty leaf, string path)
+    private static (OsduFieldIndex? Index, bool List, string? Problem) Leaf(SchemaSnapshot schema, SchemaProperty leaf, string path)
     {
         var node = leaf.Schema;
         var type = leaf.Type;
         if (type == SchemaType.Array)
         {
-            if (leaf.Items is not { } items || IsObjectItems(leaf))
+            if (leaf.Items is not { } items || IsObjectItems(schema, leaf))
             {
                 return (null, true, $"{path} is a list of objects, not a value; compare a property of the objects in it.");
             }
@@ -354,13 +422,13 @@ public static class SearchFields
     }
 
     /// <summary>How a property outside any flattened array is indexed for reading its values: as <see cref="Leaf"/> types it, and numbers, booleans and dates as what they are.</summary>
-    private static (OsduFieldIndex? Index, bool List, string? Problem) TypedLeaf(SchemaProperty leaf, string path)
+    private static (OsduFieldIndex? Index, bool List, string? Problem) TypedLeaf(SchemaSnapshot schema, SchemaProperty leaf, string path)
     {
         var node = leaf.Schema;
         var type = leaf.Type;
         if (type == SchemaType.Array)
         {
-            if (leaf.Items is not { } items || IsObjectItems(leaf))
+            if (leaf.Items is not { } items || IsObjectItems(schema, leaf))
             {
                 return (null, true, $"{path} is a list of objects, not a value; name a property of the objects in it.");
             }
@@ -414,8 +482,8 @@ public static class SearchFields
     };
 
     /// <summary>A value inside a flattened array: every value is a keyword, and only an object or a list of objects has none.</summary>
-    private static (OsduFieldIndex? Index, bool List, string? Problem) FlattenedLeaf(SchemaProperty leaf, string path)
-        => leaf.Type == SchemaType.Object || (leaf.Type == SchemaType.Array && IsObjectItems(leaf))
+    private static (OsduFieldIndex? Index, bool List, string? Problem) FlattenedLeaf(SchemaSnapshot schema, SchemaProperty leaf, string path)
+        => leaf.Type == SchemaType.Object || (leaf.Type == SchemaType.Array && IsObjectItems(schema, leaf))
             ? (null, true, $"{path} is an object inside a flattened array, not a value; compare one of its properties.")
             : (OsduFieldIndex.Keyword, true, null);
 
@@ -425,9 +493,10 @@ public static class SearchFields
             || (Pattern(items) is { } itemPattern && itemPattern.StartsWith(LinkPatternPrefix, StringComparison.Ordinal));
 
     /// <summary>Whether an array's items are objects the indexer walks into: a schema with a reference, branches or properties.</summary>
-    private static bool IsObjectItems(SchemaProperty array)
+    /// <summary>Whether an array holds objects: items declaring properties, or of type object, or a choice of forms that are all objects.</summary>
+    private static bool IsObjectItems(SchemaSnapshot schema, SchemaProperty array)
         => array.Items is { } items
-            && (items["properties"] is JsonObject || SchemaSnapshot.TypeOfNode(items) == SchemaType.Object);
+            && (items["properties"] is JsonObject || schema.TypeWithForms(items) == SchemaType.Object);
 
     private static string? Hint(SchemaProperty property)
         => property.Schema[IndexingHint] is JsonObject hint && hint["type"] is JsonValue value && value.TryGetValue<string>(out var type)
@@ -457,3 +526,10 @@ public readonly record struct IndexedShape(OsduField? Field, bool Repeats, strin
 {
     public static IndexedShape Refused(string problem) => new(null, false, problem);
 }
+
+/// <summary>
+/// How the index holds a section of a record's data: the nested array it is or sits in (a query reaches it inside
+/// <c>nested(...)</c>), the flattened array it is or sits in (its values are keywords under their dotted paths), or why no
+/// query reaches it.
+/// </summary>
+public readonly record struct SectionShape(string? NestedPath, string? FlattenedPath, string? Problem);

@@ -203,6 +203,71 @@ public sealed class DeliveryExplorerApiTests
         return JsonDocument.Parse(text).RootElement.Clone();
     }
 
+    [Fact]
+    public async Task The_queries_of_an_element_are_read_from_the_saved_template_and_nothing_is_asked_of_OSDU()
+    {
+        var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.SaveTemplatesAsync(cs);
+        var operations = new RecordedOperations();
+        await using var factory = new ControlPlaneAppFactory()
+            .WithCatalog(cs)
+            .WithModules(new DeliveryControlPlaneModule())
+            .WithSetting("ControlPlane:Worker:Enabled", "false")
+            .WithSetting("Osdu:SchemaRepository:WarmOnStart", "false")
+            .WithServices(services => services.AddSingleton(operations.Registry()));
+        using var client = factory.CreateClient();
+        var token = await TokenAsync(client);
+
+        // A text of a wellbore: its whole value by its keyword, its words, and whether a record holds one.
+        using (var answered = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/element-queries", new
+        {
+            kind = SampleEstate.WellboreTemplateKind,
+            path = "data.FacilityName",
+            value = "NO 16/2-9 S",
+        }))
+        {
+            var text = await answered.Content.ReadAsStringAsync();
+            Assert.True(answered.StatusCode == HttpStatusCode.OK, text);
+            var answer = JsonDocument.Parse(text).RootElement;
+            var queries = answer.GetProperty("queries").EnumerateArray().ToDictionary(q => q.GetProperty("purpose").GetString()!, q => q.GetProperty("query").GetString());
+            Assert.Equal("data.FacilityName.keyword:\"NO 16/2-9 S\"", queries["equal"]);
+            Assert.Equal("_exists_:data.FacilityName", queries["exists"]);
+            Assert.Equal(SampleEstate.WellboreTemplateKind, answer.GetProperty("template").GetProperty("kind").GetString());
+            Assert.Equal("text", answer.GetProperty("field").GetProperty("index").GetString());
+        }
+
+        // A value of a nested list, by its place in the record, is asked inside nested(...).
+        using (var nested = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/element-queries", new
+        {
+            kind = SampleEstate.WellboreTemplateKind,
+            path = "data.NameAliases[1].AliasName",
+            value = "NO 16/2-9 S",
+        }))
+        {
+            var answer = JsonDocument.Parse(await nested.Content.ReadAsStringAsync()).RootElement;
+            Assert.Equal(
+                "nested(data.NameAliases, (AliasName.keyword:\"NO 16/2-9 S\"))",
+                answer.GetProperty("queries").EnumerateArray().Single(q => q.GetProperty("purpose").GetString() == "equal").GetProperty("query").GetString());
+        }
+
+        // A section, and what the request cannot be read as.
+        using (var section = await SendAsync(client, token, HttpMethod.Post, "/api/v1/delivery/explorer/element-queries", new
+        {
+            kind = SampleEstate.WellboreTemplateKind,
+            path = "data.FacilitySpecifications",
+            section = true,
+        }))
+        {
+            Assert.Contains("_exists_:data.FacilitySpecifications", await section.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+
+        await RefusedAsync(client, token, "/api/v1/delivery/explorer/element-queries", new { kind = "osdu:wks:WellLog", path = "data.X" }, HttpStatusCode.BadRequest, "osdu:wks:WellLog");
+        await RefusedAsync(client, token, "/api/v1/delivery/explorer/element-queries", new { kind = SampleEstate.WellboreTemplateKind }, HttpStatusCode.BadRequest, "Name the element's path");
+        await RefusedAsync(client, token, "/api/v1/delivery/explorer/element-queries", new { kind = SampleEstate.WellboreTemplateKind, path = "data.X", value = new { a = 1 } }, HttpStatusCode.BadRequest, "is a section");
+        Assert.Empty(operations.Given);
+    }
+
     private static async Task RefusedAsync(HttpClient client, string token, string path, object body, HttpStatusCode status, string why)
     {
         using var response = await SendAsync(client, token, HttpMethod.Post, path, body);

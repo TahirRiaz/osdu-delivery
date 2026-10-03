@@ -138,6 +138,50 @@ export const explorerApi = {
 /** A record read by the explorer: what a record page's read-back answers, read from the storage service. */
 export type ExplorerRead = DeliveryOsduRead;
 
+// ---- The query of an element (osdu/docs/explorer.md, The query of an element) ----
+
+/** A query that finds records by an element of a record, and what it finds, in words. */
+export interface ExplorerElementQuery {
+  /** `equal` (the whole value), `words` (the words of a text, their case aside) or `exists` (any value there). */
+  purpose: "equal" | "words" | "exists";
+  /** The Lucene query, as the search service's `query` takes it. */
+  query: string;
+  says: string;
+}
+
+/** How the index holds an element: its path, how it is kept (`text`, `keyword`, `number`, `boolean`, `date`, or `section`), and the nested or flattened list it sits in. */
+export interface ExplorerElementField {
+  path: string;
+  index: string;
+  nestedPath: string | null;
+  flattenedPath: string | null;
+}
+
+/** The queries that find records by an element, how the index holds it in words, the template that says so, and why none finds it where none can. */
+export interface ExplorerElementAnswer {
+  kind: string;
+  path: string;
+  template: { kind: string; version: string } | null;
+  field: ExplorerElementField | null;
+  reading: string | null;
+  queries: ExplorerElementQuery[];
+  problem: string | null;
+  notes: string[];
+}
+
+export interface ExplorerElementRequest {
+  kind: string;
+  /** The element's path as the record inspector names it: `data.GeoContexts[1].GeoTypeID`. */
+  path: string;
+  section: boolean;
+  value?: string | number | boolean | null;
+}
+
+/** The Lucene queries that find records by an element of a record, read from the saved template of its kind. */
+export function elementQueries(request: ExplorerElementRequest) {
+  return post<ExplorerElementAnswer>("/api/v1/delivery/explorer/element-queries", request);
+}
+
 // ---- The dimension builder (osdu/docs/explorer.md, Building a dimension) ----
 
 /** An attribute of a drafted dimension: read through the record a key names (`steps`), or collected from its own records (`collect`). */

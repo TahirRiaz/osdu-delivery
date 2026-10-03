@@ -15,6 +15,12 @@ public sealed class SchemaSnapshot
     private readonly JsonObject _root;
     private readonly JsonObject? _definitions;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SchemaProperty?> _resolved = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SchemaProperty?> _resolvedThroughForms = new(StringComparer.Ordinal);
+
+    /// <summary>How deep the forms of a <c>oneOf</c> or <c>anyOf</c> are looked into; OSDU schemas nest one or two.</summary>
+    private const int MaxFormDepth = 4;
+
+    private static readonly string[] Choices = ["oneOf", "anyOf"];
     private JsonObject? _effectiveRoot;
 
     public SchemaSnapshot(string kind, JsonObject bundledSchema, DateTimeOffset capturedUtc)
@@ -79,6 +85,133 @@ public sealed class SchemaSnapshot
 
         return result;
     }
+
+    /// <summary>
+    /// Resolves a dotted path as <see cref="Resolve"/> does, and where an object declares no such property, looks into the
+    /// forms its <c>oneOf</c> or <c>anyOf</c> allows: a wellbore's <c>GeoContexts</c> holds one of five kinds of context, and
+    /// only the field's declares <c>FieldID</c>. The property is the first form's that declares it; a type the node does not
+    /// declare is the one every form shares. Returns null when neither the object nor any form declares it.
+    /// </summary>
+    public SchemaProperty? ResolveThroughForms(string dottedPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dottedPath);
+        return _resolvedThroughForms.GetOrAdd(dottedPath, ResolveThroughFormsUncached);
+    }
+
+    private SchemaProperty? ResolveThroughFormsUncached(string dottedPath)
+    {
+        var current = EffectiveRoot;
+        SchemaProperty? result = null;
+        foreach (var segment in dottedPath.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var next = Child(current, segment) ?? ChildOfForms(current, segment);
+            if (next is null)
+            {
+                return null;
+            }
+
+            if (next.Type == SchemaType.Any && TypeWithForms(next.Schema) is var shared && shared != SchemaType.Any)
+            {
+                next = next with { Type = shared };
+            }
+
+            result = next;
+            current = next.Schema;
+            if (next.Type == SchemaType.Array && next.Items is not null)
+            {
+                current = next.Items;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>The property <paramref name="name"/> the first form of <paramref name="holder"/>'s <c>oneOf</c> or <c>anyOf</c> declaring it declares; null for none.</summary>
+    private SchemaProperty? ChildOfForms(JsonObject holder, string name)
+    {
+        foreach (var (form, _) in FormsOf(holder))
+        {
+            if (form["properties"] is JsonObject props && props[name] is JsonObject child)
+            {
+                return Describe(name, Effective(child));
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Every form a <c>oneOf</c> or <c>anyOf</c> of <paramref name="holder"/> allows, forms of forms included, each effective
+    /// and with its title (its own, else the definition its reference names). A form whose reference the bundle does not hold
+    /// describes nothing and is passed over.
+    /// </summary>
+    public IEnumerable<(JsonObject Schema, string Title)> FormsOf(JsonObject holder)
+    {
+        ArgumentNullException.ThrowIfNull(holder);
+        return Forms(holder, 0);
+    }
+
+    private IEnumerable<(JsonObject Schema, string Title)> Forms(JsonObject holder, int depth)
+    {
+        if (depth >= MaxFormDepth)
+        {
+            yield break;
+        }
+
+        foreach (var keyword in Choices)
+        {
+            if (holder[keyword] is not JsonArray forms)
+            {
+                continue;
+            }
+
+            foreach (var form in forms.OfType<JsonObject>())
+            {
+                JsonObject effective;
+                try
+                {
+                    effective = Effective(form);
+                }
+                catch (DeliveryException)
+                {
+                    continue;
+                }
+
+                var title = TitleOf(effective) ?? TitleOf(form) ?? RefName(form) ?? keyword;
+                yield return (effective, title);
+                foreach (var inner in Forms(effective, depth + 1))
+                {
+                    yield return inner;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// The type a node declares; for one that declares none but allows a choice of forms (a wellbore's geographic context),
+    /// the type every form shares, else <see cref="SchemaType.Any"/>.
+    /// </summary>
+    public SchemaType TypeWithForms(JsonObject node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        var type = TypeOf(node);
+        if (type != SchemaType.Any)
+        {
+            return type;
+        }
+
+        var forms = FormsOf(node).Select(f => TypeOf(f.Schema)).Where(t => t != SchemaType.Any).Distinct().ToList();
+        return forms.Count == 1 ? forms[0] : SchemaType.Any;
+    }
+
+    private static string? TitleOf(JsonObject node)
+        => node["title"] is JsonValue value && value.TryGetValue<string>(out var title) && !string.IsNullOrWhiteSpace(title) ? title : null;
+
+    /// <summary>The definition a local reference names (<c>AbstractGeoFieldContext.1.0.0</c> of <c>#/definitions/AbstractGeoFieldContext.1.0.0</c>).</summary>
+    private static string? RefName(JsonObject form)
+        => form["$ref"] is JsonValue value && value.TryGetValue<string>(out var reference) && !string.IsNullOrWhiteSpace(reference)
+            ? reference[(reference.LastIndexOf('/') + 1)..]
+            : null;
 
     /// <summary>The required property names of the object at <paramref name="dottedPath"/> (empty path is the record root).</summary>
     public IReadOnlyList<string> RequiredAt(string dottedPath)
