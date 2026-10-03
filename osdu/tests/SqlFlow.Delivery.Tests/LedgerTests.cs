@@ -184,6 +184,33 @@ public class SqlLedgerTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task Flows_with_activities_are_the_identities_asked_about_with_one_on_the_trail()
+    {
+        var otherFlow = FlowId.Of("other-flow");
+        var quietFlow = FlowId.Of("test-flow-two");
+        var unregistered = FlowId.Of("never-registered");
+        await Ledger.StartActivityAsync(new ActivityRecord { FlowId = _flow, FlowName = "test-flow", Kind = "release", Actor = "user:test", StartedUtc = Now });
+
+        // A ledger with records but no activity is not one: the trail is what is asked about, not the records.
+        var submission = Guid.NewGuid();
+        await Ledger.UpsertPendingAsync(quietFlow, [Pending("QUIET-1", submission) with { FlowId = quietFlow }]);
+        Assert.Equal(new HashSet<Guid> { _flow }, await Ledger.FlowsWithActivitiesAsync([_flow, otherFlow, quietFlow, unregistered, _flow]));
+        Assert.Empty(await Ledger.FlowsWithActivitiesAsync([otherFlow, quietFlow]));
+        Assert.Empty(await Ledger.FlowsWithActivitiesAsync([]));
+
+        // Any activity counts, whatever its outcome: a run that changed nothing, or one that failed.
+        var idle = await Ledger.StartActivityAsync(new ActivityRecord { FlowId = otherFlow, FlowName = "other-flow", Kind = "deliver", Actor = "schedule:test", StartedUtc = Now });
+        await Ledger.CompleteActivityAsync(idle.ActivityId, "completed", "nothing to deliver", null, Now, idle: true);
+        var failed = await Ledger.StartActivityAsync(new ActivityRecord { FlowId = quietFlow, FlowName = "test-flow-two", Kind = "deliver", Actor = "schedule:test", StartedUtc = Now });
+        await Ledger.CompleteActivityAsync(failed.ActivityId, "failed", "the token request timed out", null, Now);
+        Assert.Equal(new HashSet<Guid> { _flow, otherFlow, quietFlow }, await Ledger.FlowsWithActivitiesAsync([_flow, otherFlow, quietFlow]));
+
+        // Thousands of identities are asked about in one statement, as for the records.
+        var many = Enumerable.Range(0, 3000).Select(i => FlowId.Of($"unused-{i}")).Append(otherFlow).ToList();
+        Assert.Equal(new HashSet<Guid> { otherFlow }, await Ledger.FlowsWithActivitiesAsync(many));
+    }
+
+    [Fact]
     public async Task Recent_and_lookup_narrow_to_one_flow()
     {
         var submission = Guid.NewGuid();

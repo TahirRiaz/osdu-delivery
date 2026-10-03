@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
@@ -9,6 +10,7 @@ import { useLocalStorageState } from "@/hooks/useLocalStorageState";
 import { cn } from "@/lib/utils";
 import { deliveryApi, type DeliveryActivity } from "../../api/delivery";
 import { FilterBar } from "@/components/FilterBar";
+import { FilterCombobox, type FilterOption } from "@/components/FilterCombobox";
 import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { PagedTable, type Column } from "@/components/PagedTable";
@@ -21,9 +23,10 @@ import { endingOf, TONE_TEXT } from "./activityEnding";
 import { DeliveryActivitySheet } from "./DeliveryActivitySheet";
 import { RecordRef, RunRef, SubmissionRef } from "./DeliveryRefs";
 import { NoFact } from "./Facts";
+import { ledgerFlowLabel, ledgerFlowOptions } from "./ledgerFlowOptions";
 
 const ALL = "all";
-const KINDS = ["deliver", "intake", "drain", "verify", "probe", "sync", "release", "redeliver", "delete"];
+const KINDS = ["deliver", "intake", "drain", "verify", "probe", "sync", "release", "redeliver", "delete", "remove-dimension"];
 const OUTCOMES = ["running", "completed", "failed", "cancelled"];
 
 /** What the idle-runs switch says on hover: which runs it shows, and why they are left out otherwise. */
@@ -79,17 +82,48 @@ function Target({ row }: { row: DeliveryActivity }) {
  * The audit trail across every delivery flow in the workbench's partition: who did what, when, and how it ended. The runs
  * that changed nothing are left out unless asked for, and counted. Each entry opens with the ids it worked on, its
  * recorded parameters and, for runs, the captured log.
+ *
+ * The flow is the trail's first filter, and every other filter works within it. It is kept in the address (`?flow=`, a
+ * ledger identity) rather than with the other filters, so a link can open one flow's trail and the trail opened from the
+ * menu is every flow's again. The choices are the flows with activity in the partition: delivery flows, each interface of
+ * a source, and dimensions.
  */
 export default function DeliveryActivityPage() {
   const [active] = useActivePartition();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const flow = searchParams.get("flow") ?? "";
   const [actor, setActor] = useLocalStorageState("sqlflow.filters.delivery-activity.actor", "");
   const [kind, setKind] = useLocalStorageState("sqlflow.filters.delivery-activity.kind", ALL);
   const [outcome, setOutcome] = useLocalStorageState("sqlflow.filters.delivery-activity.outcome", ALL);
   const [showIdle, setShowIdle] = useLocalStorageState<boolean>("sqlflow.filters.delivery-activity.idle", false);
   const [selected, setSelected] = useState<number | null>(null);
 
+  const flows = useQuery({ queryKey: ["delivery", "activity-flows", active], queryFn: () => deliveryApi.activityFlows(active) });
+  const flowOptions = useMemo<FilterOption[]>(
+    () => ledgerFlowOptions(
+      flows.data?.map((f) => ({ ...f, hint: f.kind === "delivery" ? undefined : f.kind })),
+      active,
+      flow,
+      flows.isSuccess,
+      `${flow}: no activity${active === null ? "" : ` in ${active}`}`,
+    ),
+    [flows.data, flows.isSuccess, flow, active],
+  );
+  const chosen = flows.data?.find((f) => f.flowId === flow);
+  const selectFlow = (next: string) => setSearchParams((current) => {
+    const params = new URLSearchParams(current);
+    if (next === "") {
+      params.delete("flow");
+    } else {
+      params.set("flow", next);
+    }
+
+    return params;
+  }, { replace: true });
+
   const filters = {
     partition: active ?? undefined,
+    flowId: flow === "" ? undefined : flow,
     actor: actor.trim() === "" ? undefined : actor.trim(),
     kind: kind === ALL ? undefined : kind,
     outcome: outcome === ALL ? undefined : outcome,
@@ -97,13 +131,13 @@ export default function DeliveryActivityPage() {
 
   // How many idle runs match the other filters: what the switch says it shows, or leaves out.
   const idle = useQuery({
-    queryKey: ["delivery", "activities", "idle", actor, kind, outcome, active],
+    queryKey: ["delivery", "activities", "idle", flow, actor, kind, outcome, active],
     queryFn: () => deliveryApi.activities({ ...filters, idle: true, page: 1, pageSize: 1 }),
     refetchInterval: 10000,
   });
   const idleCount = idle.data?.total ?? 0;
 
-  const columns: Column<DeliveryActivity>[] = [
+  const everyColumn: Column<DeliveryActivity>[] = [
     { id: "started", header: "When", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
     // The page never scrolls sideways: the flow keeps to a width that steps down as the table narrows, the result takes
     // what the other columns leave, and both clip with the whole value on hover.
@@ -127,18 +161,34 @@ export default function DeliveryActivityPage() {
     { id: "result", header: "Result", fill: true, floor: 120, render: (row) => <Result row={row} /> },
     { id: "target", header: "Target", render: (row) => <Target row={row} /> },
   ];
+  // One flow's trail names it once, in the filter and the subtitle, and gives its column's width to the result.
+  const columns = flow === "" ? everyColumn : everyColumn.filter((column) => column.id !== "flow");
 
   const emptyMessage = !showIdle && idleCount > 0
     ? `Only idle runs match: ${idleCount} run(s) that changed nothing. Show idle runs to see them.`
-    : "No delivery activity recorded yet.";
+    : flow === ""
+      ? "No delivery activity recorded yet."
+      : "No activity of this flow matches.";
+  const scope = flow === "" ? "every delivery flow" : chosen === undefined ? "the chosen flow" : ledgerFlowLabel(chosen, active);
 
   return (
     <Page data-testid="page-delivery-activity">
       <PageHeader
         title="Delivery audit trail"
-        subtitle={`Every run and intervention on every delivery flow${active === null ? "" : ` in ${active}`}, newest first.`}
+        subtitle={`Every run and intervention on ${scope}${active === null ? "" : ` in ${active}`}, newest first.`}
       />
       <FilterBar>
+        <FilterCombobox
+          options={flowOptions}
+          value={flow}
+          onChange={selectFlow}
+          placeholder="All flows"
+          searchPlaceholder="Search flows"
+          emptyText="No flow matches."
+          ariaLabel="Filter by flow"
+          testId="delivery-activity-flow"
+          className="w-64"
+        />
         <SearchInput value={actor} onChange={setActor} placeholder="Actor, e.g. admin or schedule:" label="Filter by actor" testId="delivery-activity-actor" className="sm:w-64" />
         <Select value={kind} onValueChange={setKind}>
           <SelectTrigger size="sm" className="h-8 w-40" data-testid="delivery-activity-kind"><SelectValue /></SelectTrigger>
@@ -168,7 +218,7 @@ export default function DeliveryActivityPage() {
         </Tooltip>
       </FilterBar>
       <PagedTable
-        queryKey={["delivery", "activities", actor, kind, outcome, active, showIdle]}
+        queryKey={["delivery", "activities", flow, actor, kind, outcome, active, showIdle]}
         fetchPage={(page, pageSize) => deliveryApi.activities({ ...filters, idle: showIdle ? undefined : false, page, pageSize })}
         columns={columns}
         rowKey={(row) => row.activityId}

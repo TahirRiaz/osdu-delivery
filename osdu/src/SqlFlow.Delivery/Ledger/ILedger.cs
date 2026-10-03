@@ -1654,6 +1654,11 @@ public interface ILedger
     /// holds.</summary>
     Task<IReadOnlySet<Guid>> FlowsWithRecordsAsync(IReadOnlyCollection<Guid> flowIds, CancellationToken ct = default);
 
+    /// <summary>The ledger identities among <paramref name="flowIds"/> with at least one activity on the audit trail, of any
+    /// kind or outcome. Like <see cref="FlowsWithRecordsAsync"/> it asks whether each has one, never how many: one index seek
+    /// per identity however long the trail.</summary>
+    Task<IReadOnlySet<Guid>> FlowsWithActivitiesAsync(IReadOnlyCollection<Guid> flowIds, CancellationToken ct = default);
+
     /// <summary>Delivered records due for the drift pass, oldest verification first.</summary>
     Task<IReadOnlyList<RecordState>> ListForVerifyAsync(Guid flowId, DateTime? verifiedBeforeUtc, int max, CancellationToken ct = default);
 

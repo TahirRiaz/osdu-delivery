@@ -337,6 +337,18 @@ export interface DeliveryAttempt {
   sourceDeletedUtc?: string | null;
 }
 
+/**
+ * A flow the audit trail can be narrowed to: a ledger with activity on the trail, named as its ledger's directory names it.
+ * `kind` is the ledger's (`delivery`, `dimension`); `interface` is null for a flow in the single form.
+ */
+export interface DeliveryActivityFlow {
+  flowId: string;
+  flowName: string;
+  kind: string;
+  interface: string | null;
+  partition: string | null;
+}
+
 /** One entry of the audit trail: who did what, when, with which inputs, and how it ended. */
 export interface DeliveryActivity {
   activityId: number;
@@ -1372,7 +1384,10 @@ export interface DeliveryRemovalAccepted {
 }
 
 export interface DeliveryActivityListQuery extends PageQuery {
+  /** One flow, by its pipeline; or by `flowId`, never both. */
   pipelineId?: string;
+  /** One flow, by the ledger identity a choice of `activityFlows` carries. */
+  flowId?: string;
   /** Which interface of that source; required when it delivers more than one. */
   interface?: string;
   /**
@@ -2853,6 +2868,9 @@ export const deliveryApi = {
   activities: (query: DeliveryActivityListQuery = {}) =>
     get<PagedResult<DeliveryActivity>>("/api/v1/delivery/activities", query as QueryParams),
   activity: (activityId: number) => get<DeliveryActivity>(`/api/v1/delivery/activities/${activityId}`),
+  /** The flows with activity on the trail of `partition`, else the workbench's, else every partition. */
+  activityFlows: (partition?: string | null) =>
+    get<DeliveryActivityFlow[]>("/api/v1/delivery/activities/flows", partition ? { partition } : {}),
   mappings: (repoId?: string, status?: string) =>
     get<DeliveryMapping[]>("/api/v1/delivery/mappings", { repoId, status }),
   mapping: (mappingId: string) => get<DeliveryMappingDetail>(`/api/v1/delivery/mappings/${mappingId}`),

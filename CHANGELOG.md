@@ -13,6 +13,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The audit trail narrows to one flow.** A flow picker leads the trail's filters, and the actor, action, outcome and
+  idle filters work within the flow chosen. Its choices are the flows with activity in the workbench's partition
+  (delivery flows, each interface of a source, and dimensions), which `GET /delivery/activities/flows` lists with one
+  index seek per ledger; `GET /delivery/activities` takes a choice's ledger identity as `flowId`, as the Records page's
+  lookup does. The flow lives in the page's address, so a link opens one flow's trail, and the trail of one flow gives
+  its Flow column's width to the result. The action filter offers `remove-dimension` as well.
 - **An MCP server for AI assistants, answering from metadata alone.** `osdu-delivery-mcp`
   (`osdu/hosts/osdu-delivery-mcp`) is SQLFlow's MCP server composed with the delivery module, as the control plane and
   the CLI hosts are compositions: everything SQLFlow's server answers about the catalog, lineage, runs, schedules and

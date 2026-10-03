@@ -584,14 +584,31 @@ internal static class SqlServerLedgerBulk
         WHERE EXISTS (SELECT 1 FROM [osdu].[Record] AS r WHERE r.[PartitionId] = l.[PartitionId] AND r.[FlowId] = l.[FlowId]);
         """;
 
+    // Which of the listed ledger identities have an activity on the audit trail: the same EXISTS per identity, a seek on
+    // the trail's [PartitionId, FlowId, StartedUtc] index.
+    private const string FlowsWithActivitiesSql = """
+        SELECT l.[FlowId]
+        FROM (SELECT DISTINCT CAST(j.[value] AS uniqueidentifier) AS [FlowId] FROM OPENJSON(@flows) AS j) AS f
+        INNER JOIN [osdu].[Ledger] AS l ON l.[FlowId] = f.[FlowId]
+        WHERE EXISTS (SELECT 1 FROM [osdu].[Activity] AS a WHERE a.[PartitionId] = l.[PartitionId] AND a.[FlowId] = l.[FlowId]);
+        """;
+
     /// <summary>The ledger identities among <paramref name="flowIds"/> that hold at least one record, in any state.</summary>
-    public static async Task<IReadOnlyList<Guid>> FlowsWithRecordsAsync(OsduDbContext db, IReadOnlyCollection<Guid> flowIds, CancellationToken ct)
+    public static Task<IReadOnlyList<Guid>> FlowsWithRecordsAsync(OsduDbContext db, IReadOnlyCollection<Guid> flowIds, CancellationToken ct)
+        => FlowsHoldingAsync(db, FlowsWithRecordsSql, flowIds, ct);
+
+    /// <summary>The ledger identities among <paramref name="flowIds"/> with at least one activity, of any kind or outcome.</summary>
+    public static Task<IReadOnlyList<Guid>> FlowsWithActivitiesAsync(OsduDbContext db, IReadOnlyCollection<Guid> flowIds, CancellationToken ct)
+        => FlowsHoldingAsync(db, FlowsWithActivitiesSql, flowIds, ct);
+
+    /// <summary>Runs one of the statements that answer which of <paramref name="flowIds"/> hold a row, given as JSON in <c>@flows</c>.</summary>
+    private static async Task<IReadOnlyList<Guid>> FlowsHoldingAsync(OsduDbContext db, string sql, IReadOnlyCollection<Guid> flowIds, CancellationToken ct)
     {
         await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
         try
         {
             var connection = (SqlConnection)db.Database.GetDbConnection();
-            await using var command = Command(connection, null, FlowsWithRecordsSql, slice: null);
+            await using var command = Command(connection, null, sql, slice: null);
             command.Parameters.Add(new SqlParameter("@flows", SqlDbType.NVarChar, -1) { Value = System.Text.Json.JsonSerializer.Serialize(flowIds) });
             return await GuidsAsync(command, ct).ConfigureAwait(false);
         }

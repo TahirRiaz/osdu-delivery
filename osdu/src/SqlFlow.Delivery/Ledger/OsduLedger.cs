@@ -1204,6 +1204,20 @@ public sealed partial class OsduLedger : ILedger
         return held.ToHashSet();
     }
 
+    public async Task<IReadOnlySet<Guid>> FlowsWithActivitiesAsync(IReadOnlyCollection<Guid> flowIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(flowIds);
+        if (flowIds.Count == 0)
+        {
+            return new HashSet<Guid>();
+        }
+
+        // An EXISTS per identity, as for the records: a partition's trail is mostly scheduled runs, and a DISTINCT over it
+        // would read all of them to learn which flows ran.
+        var active = await ReadAsync(db => SqlServerLedgerBulk.FlowsWithActivitiesAsync(db, flowIds, ct), ct).ConfigureAwait(false);
+        return active.ToHashSet();
+    }
+
     /// <summary>
     /// The records of one partition the recency listing orders: every record of it, those in one custody state, those of
     /// one ledger identity, or those of one identity in one state. Each reads an index that starts with the partition and

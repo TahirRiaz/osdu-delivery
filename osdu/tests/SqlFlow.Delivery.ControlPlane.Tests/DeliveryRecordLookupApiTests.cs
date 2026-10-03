@@ -8,6 +8,7 @@ using SqlFlow.ControlPlane.Api;
 using SqlFlow.Delivery.ControlPlane;
 using SqlFlow.Delivery.ControlPlane.Api;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Engine.Dimensions;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -409,6 +410,93 @@ public sealed class DeliveryRecordLookupApiTests
             await osdu.DeliveryLedgers.Where(l => flows.Contains(l.FlowId)).ExecuteDeleteAsync();
             await osdu.DeliveryLedgerPartitions.Where(p => p.Name == first || p.Name == second).ExecuteDeleteAsync();
         }
+    }
+
+    /// <summary>
+    /// The audit trail narrowed to one flow, as its page's flow filter reads it: the choices are the ledgers of the workbench
+    /// partition with activity on the trail, delivery flows, interfaces of a source and dimensions alike, named by the
+    /// ledger's directory; a choice's ledger identity narrows the trail to that flow, every other filter applies within it,
+    /// and a flow kept in another partition reads empty. Naming a flow by its pipeline and its ledger at once is refused.
+    /// </summary>
+    [Fact]
+    public async Task The_audit_trail_narrows_to_a_flow_it_offers()
+    {
+        var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+
+        var marker = "AF" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        var (home, away) = ("ph" + marker.ToLowerInvariant(), "pq" + marker.ToLowerInvariant());
+        var (wells, curves, dimension, quiet, elsewhere) = (
+            FlowId.Of($"{marker}-wells"), FlowId.Of($"{marker}-logs/curves"), FlowId.Of($"{marker}-dimension"), FlowId.Of($"{marker}-quiet"), FlowId.Of($"{marker}-elsewhere"));
+        var flows = new[] { wells, curves, dimension, quiet, elsewhere };
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        await ledger.RegisterAsync(wells, home, $"{marker}-wells");
+        await ledger.RegisterLedgerAsync(new LedgerEntry { FlowId = curves, Partition = home, Kind = LedgerKinds.Delivery, FlowName = $"{marker}-logs", Interface = "curves", LedgerName = $"{marker}-logs/curves" });
+        await ledger.RegisterLedgerAsync(new LedgerEntry { FlowId = dimension, Partition = home, Kind = LedgerKinds.Dimension, FlowName = $"{marker}-dimension", LedgerName = $"{marker}-dimension" });
+        await ledger.RegisterAsync(quiet, home, $"{marker}-quiet");
+        await ledger.RegisterAsync(elsewhere, away, $"{marker}-elsewhere");
+        try
+        {
+            foreach (var (flow, name, kind, actor) in new[]
+            {
+                (wells, $"{marker}-wells", "deliver", "schedule:" + marker),
+                (wells, $"{marker}-wells", "release", "user:" + marker),
+                (curves, $"{marker}-logs/curves", "deliver", "schedule:" + marker),
+                (dimension, $"{marker}-dimension", DimensionRemoval.ActivityKind, "user:" + marker),
+                (elsewhere, $"{marker}-elsewhere", "deliver", "schedule:" + marker),
+            })
+            {
+                await ledger.StartActivityAsync(new ActivityRecord { FlowId = flow, FlowName = name, Kind = kind, Actor = actor, StartedUtc = DateTime.UtcNow });
+            }
+
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var token = await TokenAsync(client);
+
+            // The choices of the workbench partition: each ledger with activity, by flow, then interface. The quiet flow has
+            // none, and the flow of the other partition is that partition's choice.
+            var offered = await ReadArrayAsync(client, token, "/api/v1/delivery/activities/flows", home);
+            Assert.Equal(
+                [(dimension, $"{marker}-dimension", LedgerKinds.Dimension, (string?)null), (curves, $"{marker}-logs", LedgerKinds.Delivery, "curves"), (wells, $"{marker}-wells", LedgerKinds.Delivery, null)],
+                offered.Select(f => (f.GetProperty("flowId").GetGuid(), f.GetProperty("flowName").GetString()!, f.GetProperty("kind").GetString()!, f.GetProperty("interface").GetString())).ToList());
+            Assert.All(offered, f => Assert.Equal(home, f.GetProperty("partition").GetString()));
+            var everyPartition = await ReadArrayAsync(client, token, "/api/v1/delivery/activities/flows", null);
+            Assert.Contains(everyPartition, f => f.GetProperty("flowId").GetGuid() == elsewhere && f.GetProperty("partition").GetString() == away);
+            Assert.DoesNotContain(everyPartition, f => f.GetProperty("flowId").GetGuid() == quiet);
+
+            // One flow's trail is its entries alone, and the other filters narrow it further.
+            var trail = await ReadAsync(client, token, $"/api/v1/delivery/activities?flowId={wells:D}", home);
+            Assert.Equal(2, trail.GetProperty("total").GetInt64());
+            Assert.All(trail.GetProperty("items").EnumerateArray(), a => Assert.Equal(wells, a.GetProperty("flowId").GetGuid()));
+            var released = await ReadAsync(client, token, $"/api/v1/delivery/activities?flowId={wells:D}&actor=user:{marker}", home);
+            Assert.Equal("release", Assert.Single(released.GetProperty("items").EnumerateArray().ToList()).GetProperty("kind").GetString());
+            Assert.Equal(0, (await ReadAsync(client, token, $"/api/v1/delivery/activities?flowId={wells:D}&kind=delete", home)).GetProperty("total").GetInt64());
+            Assert.Equal(1, (await ReadAsync(client, token, $"/api/v1/delivery/activities?flowId={dimension:D}", home)).GetProperty("total").GetInt64());
+
+            // A flow kept in another partition than the workbench's reads empty; without a workbench partition it reads whole.
+            Assert.Equal(0, (await ReadAsync(client, token, $"/api/v1/delivery/activities?flowId={elsewhere:D}", home)).GetProperty("total").GetInt64());
+            Assert.Equal(1, (await ReadAsync(client, token, $"/api/v1/delivery/activities?flowId={elsewhere:D}", null)).GetProperty("total").GetInt64());
+
+            using var both = await GetAsync(client, token, $"/api/v1/delivery/activities?flowId={wells:D}&pipelineId={Guid.NewGuid():D}");
+            Assert.Equal(HttpStatusCode.BadRequest, both.StatusCode);
+            using var badFlow = await GetAsync(client, token, "/api/v1/delivery/activities?flowId=not-a-flow");
+            Assert.Equal(HttpStatusCode.BadRequest, badFlow.StatusCode);
+        }
+        finally
+        {
+            await using var osdu = SampleEstate.Context(cs);
+            await osdu.DeliveryActivities.Where(a => flows.Contains(a.FlowId)).ExecuteDeleteAsync();
+            await osdu.DeliveryLedgers.Where(l => flows.Contains(l.FlowId)).ExecuteDeleteAsync();
+            await osdu.DeliveryLedgerPartitions.Where(p => p.Name == home || p.Name == away).ExecuteDeleteAsync();
+        }
+    }
+
+    /// <summary>A read of a JSON array at <paramref name="path"/> in the workbench partition <paramref name="partition"/>, or in none.</summary>
+    private static async Task<List<JsonElement>> ReadArrayAsync(HttpClient client, string token, string path, string? partition)
+    {
+        var array = await ReadAsync(client, token, path, partition);
+        return array.EnumerateArray().ToList();
     }
 
     /// <summary>A read of <paramref name="path"/> in the workbench partition <paramref name="partition"/>, or in none.</summary>

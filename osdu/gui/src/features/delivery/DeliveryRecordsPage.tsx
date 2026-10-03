@@ -16,6 +16,7 @@ import { PagedTable } from "@/components/PagedTable";
 import { SearchInput } from "@/components/SearchInput";
 import { useActivePartition } from "./activePartition";
 import { RecordStatusBadge } from "./DeliveryBadges";
+import { ledgerFlowOptions } from "./ledgerFlowOptions";
 import { CompactTime, OsduTarget, RecordIdentity } from "./RecordCells";
 
 const ALL = "all";
@@ -185,28 +186,17 @@ export default function DeliveryRecordsPage() {
   const searching = term !== "";
   const columns = useMemo(() => columnsFor(searching), [searching]);
 
-  // The flow is a ledger identity holding records: one per interface of a source and partition of a flow that names its
-  // partitions. An interface's choice leads with the interface, since a source's interfaces share the flow's name and the
-  // picker is too narrow to show both whole; a partition follows the flow as its ledger is named (flow@partition).
-  // Every read here is the workbench partition's: the flows to narrow to are the ledgers it keeps, and the records are its.
-  // With no partition picked (a catalog that knows none), every partition's, each flow naming its own.
+  // The flow is a ledger identity holding records, named as `ledgerFlowOptions` names a ledger. Every read here is the
+  // workbench partition's: the flows to narrow to are the ledgers it keeps, and the records are its. With no partition
+  // picked (a catalog that knows none), every partition's, each flow naming its own.
   const [active] = useActivePartition();
   const flow = searchParams.get("flow") ?? "";
   const flows = useQuery({ queryKey: ["delivery", "record-flows", active], queryFn: () => deliveryApi.recordFlows(active) });
-  const flowOptions = useMemo<FilterOption[]>(() => {
-    const named = (flows.data ?? []).map((f) => ({
-      value: f.flowId,
-      label: `${f.interface ? `${f.interface} · ${f.flowName}` : f.flowName}${f.partition && active === null ? `@${f.partition}` : ""}`,
-    }));
-    // Two identities named alike (a ledger an interface stopped adopting, say) are told apart by the identity itself.
-    const shared = new Set(named.map((o) => o.label).filter((label, i, all) => all.indexOf(label) !== i));
-    const options: FilterOption[] = named.map((o) => (shared.has(o.label) ? { ...o, hint: `ledger ${o.value}` } : o));
-    // A link can name a flow the list leaves out, because it holds no records or no synced pipeline names it any more;
-    // the filter still applies, and says so.
-    return flow !== "" && flows.isSuccess && !options.some((o) => o.value === flow)
-      ? [{ value: flow, label: "Flow not listed", hint: `${flow}: no records${active === null ? "" : ` in ${active}`}, or no longer synced` }, ...options]
-      : options;
-  }, [flows.data, flows.isSuccess, flow, active]);
+  // A link can name a flow the list leaves out, because it holds no records or no synced pipeline names it any more.
+  const flowOptions = useMemo<FilterOption[]>(
+    () => ledgerFlowOptions(flows.data, active, flow, flows.isSuccess, `${flow}: no records${active === null ? "" : ` in ${active}`}, or no longer synced`),
+    [flows.data, flows.isSuccess, flow, active],
+  );
 
   const setParam = (name: string, next: string | null) => setSearchParams((current) => {
     const params = new URLSearchParams(current);

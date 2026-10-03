@@ -144,6 +144,13 @@ public sealed record DeliveryRecordLinkDto(
 public sealed record DeliveryRecordFlowDto(Guid FlowId, Guid PipelineId, string FlowName, string? Interface, string? Partition = null);
 
 /// <summary>
+/// A flow the audit trail can be narrowed to: the ledger identity its activities carry (<c>FlowId</c>, what the trail's
+/// <c>flowId</c> takes), the flow and interface (null for the single form) the ledger's directory names it by, the kind of
+/// ledger it is (a delivery flow, a dimension), and the partition it is kept under. Only an identity with activity is offered.
+/// </summary>
+public sealed record DeliveryActivityFlowDto(Guid FlowId, string FlowName, string Kind, string? Interface, string? Partition);
+
+/// <summary>
 /// A record with the pipeline (and, for a source, the interface) it belongs to. The pending document itself lives in the
 /// submission's work batches on storage, which the nodes read; its reference and batch are on the record. A waiting record
 /// names the record it waits for (<c>WaitsOn</c>), and every record lists the records waiting for it (<c>WaitedOnBy</c>,
@@ -446,6 +453,7 @@ public static class DeliveryEndpoints
         delivery.MapGet("/submissions/{submissionId:guid}/attempts", ListSubmissionAttemptsAsync).WithName("ListDeliverySubmissionAttempts");
         delivery.MapGet("/submissions/{submissionId:guid}/batches", ListSubmissionBatchesAsync).WithName("ListDeliverySubmissionBatches");
         delivery.MapGet("/activities", ListActivitiesAsync).WithName("ListDeliveryActivities");
+        delivery.MapGet("/activities/flows", ListActivityFlowsAsync).WithName("ListDeliveryActivityFlows");
         delivery.MapGet("/activities/{activityId:long}", GetActivityAsync).WithName("GetDeliveryActivity");
         delivery.MapGet("/mappings", ListMappingsAsync).WithName("ListDeliveryMappings");
         delivery.MapGet("/mappings/{mappingId:guid}", GetMappingAsync).WithName("GetDeliveryMapping");
@@ -1087,17 +1095,25 @@ public static class DeliveryEndpoints
 
     /// <summary>
     /// The audit trail, newest first. <paramref name="idle"/> false leaves out the runs that changed nothing, true lists only
-    /// them (its total is how many the trail left out), and leaving it out lists every activity.
+    /// them (its total is how many the trail left out), and leaving it out lists every activity. One flow's trail is named by
+    /// its pipeline (with the interface and partition a flow's own pages name), or by the ledger identity
+    /// (<paramref name="flowId"/>, one of <see cref="ListActivityFlowsAsync"/>) the trail's flow choice carries; never both.
     /// </summary>
     private static async Task<Results<Ok<PagedResult<DeliveryActivityDto>>, ProblemHttpResult>> ListActivitiesAsync(
-        Guid? pipelineId, Guid? submissionId, Guid? runId, string? kind, string? actor, string? outcome, bool? idle, DateTime? since, DateTime? until,
+        Guid? pipelineId, Guid? flowId, Guid? submissionId, Guid? runId, string? kind, string? actor, string? outcome, bool? idle, DateTime? since, DateTime? until,
         int? page, int? pageSize, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents,
         IPartitionRegistry partitions, ILedger ledger, HttpRequest request, CancellationToken ct)
     {
-        // One flow's trail is read in the partition the request names, as every read of one flow is: the flow's own for a
-        // flow whose partition is its header's. The trail across flows is the partition's the request names, else the
-        // workbench's, else every partition's.
-        Guid? flowId = null;
+        if (pipelineId is not null && flowId is not null)
+        {
+            return Invalid("Name the flow whose trail to read by its pipeline ('pipelineId') or by its ledger identity ('flowId'), not both.");
+        }
+
+        // One flow's trail named by its pipeline is read in the partition the request names, as every read of one flow is:
+        // the flow's own for a flow whose partition is its header's. The trail across flows, and the trail of a ledger
+        // identity, are the partition's the request names, else the workbench's, else every partition's; a ledger kept in
+        // another partition than that reads empty, as the Records page's lookup of one does.
+        var ledgerId = flowId;
         if (pipelineId is { } pid)
         {
             var (flow, problem) = await ResolveKeptAsync(db, documents, partitions, ledger, pid, interfaceName, partition, ct).ConfigureAwait(false);
@@ -1106,7 +1122,7 @@ public static class DeliveryEndpoints
                 return problem!;
             }
 
-            flowId = flow.FlowId;
+            ledgerId = flow.FlowId;
         }
         else
         {
@@ -1116,8 +1132,8 @@ public static class DeliveryEndpoints
         var (p, size) = PageRequest.Normalize(page, pageSize);
         var query = new ActivityQuery
         {
-            Partition = flowId is null ? partition : null,
-            FlowId = flowId,
+            Partition = pipelineId is null ? partition : null,
+            FlowId = ledgerId,
             SubmissionId = submissionId,
             RunId = runId,
             Kind = string.IsNullOrWhiteSpace(kind) ? null : kind.Trim().ToLowerInvariant(),
@@ -1132,6 +1148,29 @@ public static class DeliveryEndpoints
         var items = await ledger.ListActivitiesAsync(query, ct).ConfigureAwait(false);
         var total = await ledger.CountActivitiesAsync(query, ct).ConfigureAwait(false);
         return TypedResults.Ok(new PagedResult<DeliveryActivityDto>(items.Select(ToDto).ToList(), p, size, total));
+    }
+
+    /// <summary>
+    /// The flows the audit trail can be narrowed to: every ledger identity of the partition the request names, else the
+    /// workbench's, else every partition, that has at least one activity, named by the ledger's directory as its activities
+    /// name it (the flow, and the interface of a source that delivers several). A ledger with no activity is not a choice,
+    /// since narrowing to it could only show an empty trail. Unlike the Records page's choices, a ledger no synced pipeline
+    /// holds any more stays one: the trail keeps what was done to a flow after the flow is gone. Ordered by flow, then
+    /// interface, then partition.
+    /// </summary>
+    private static async Task<Ok<IReadOnlyList<DeliveryActivityFlowDto>>> ListActivityFlowsAsync(
+        [FromQuery] string? partition, ILedger ledger, HttpRequest request, CancellationToken ct)
+    {
+        partition = WorkbenchPartition.Named(partition, request);
+        var ledgers = await ledger.ListLedgersAsync(partition, ct).ConfigureAwait(false);
+        var active = await ledger.FlowsWithActivitiesAsync(ledgers.Select(l => l.FlowId).ToList(), ct).ConfigureAwait(false);
+        return TypedResults.Ok<IReadOnlyList<DeliveryActivityFlowDto>>(ledgers
+            .Where(l => active.Contains(l.FlowId))
+            .Select(l => new DeliveryActivityFlowDto(l.FlowId, l.FlowName, l.Kind, l.Interface.Length == 0 ? null : l.Interface, l.Partition))
+            .OrderBy(f => f.FlowName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(f => f.Interface ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(f => f.Partition ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ToList());
     }
 
     private static async Task<Results<Ok<DeliveryActivityDto>, ProblemHttpResult>> GetActivityAsync(long activityId, ILedger ledger, CancellationToken ct)
