@@ -38,6 +38,54 @@ public static class LuceneText
     }
 
     /// <summary>
+    /// <paramref name="value"/> as a bare term the parser reads literally, every character its syntax reserves escaped with
+    /// a backslash: the form a value takes where a phrase cannot go, which is in front of a wildcard. A prefix search writes
+    /// <c>id:</c> and this, then <c>*</c>; a phrase would carry the star as a character to match.
+    /// </summary>
+    /// <remarks>
+    /// The reserved characters are Lucene's classic query parser's (<c>QueryParserBase.escape</c>), which Elasticsearch's
+    /// <c>query_string</c> shares, with the slash and the equals sign it adds. Whitespace is escaped too: unescaped, it ends
+    /// the term and the rest is OR'd in as a term of its own (the service's default operator). The angle brackets cannot be
+    /// escaped at all (Elasticsearch, <c>query_string</c> reserved characters), so a value holding one is refused rather
+    /// than sent as a range it never meant (<see cref="IsEscapable"/>).
+    /// </remarks>
+    /// <exception cref="ArgumentException">The value holds an angle bracket or a control character.</exception>
+    public static string Escape(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (!IsEscapable(value))
+        {
+            throw new ArgumentException("A bare term cannot carry an angle bracket or a control character; ask for such a value as a phrase.", nameof(value));
+        }
+
+        var escaped = new System.Text.StringBuilder(value.Length + 8);
+        foreach (var c in value)
+        {
+            if (Reserved.Contains(c) || char.IsWhiteSpace(c))
+            {
+                escaped.Append('\\');
+            }
+
+            escaped.Append(c);
+        }
+
+        return escaped.ToString();
+    }
+
+    /// <summary>
+    /// Whether <paramref name="value"/> can be written as a bare term (<see cref="Escape"/>): it holds no angle bracket,
+    /// which the parser reads as a range whatever escapes it, and no control character.
+    /// </summary>
+    public static bool IsEscapable(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return !value.Any(c => c is '<' or '>' || char.IsControl(c));
+    }
+
+    /// <summary>The characters a bare term escapes (<see cref="Escape"/>).</summary>
+    private const string Reserved = "\\+-!():^[]\"{}~*?|&/=";
+
+    /// <summary>
     /// Whether <paramref name="value"/> holds a character that cannot survive a query at all: a control character, which
     /// the parser neither escapes nor carries, so a value holding one can never match what is indexed.
     /// </summary>

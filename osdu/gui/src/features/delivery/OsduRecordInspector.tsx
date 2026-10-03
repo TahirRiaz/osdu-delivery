@@ -4,12 +4,12 @@ import {
   ArrowLeft, ChevronDown, CircleCheck, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, Eye, GitCompare, Globe, History,
   Loader2, Scale, SearchX, UserRoundCog, type LucideIcon,
 } from "lucide-react";
+import { VersionCompareDialog } from "./VersionCompare";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -20,18 +20,15 @@ import { isApiError } from "@/api/client";
 import type { ComputeTask, ComputeTaskAccepted } from "@/api/types";
 import { CopyButton } from "@/components/CopyButton";
 import { DataTable, type Column } from "@/components/DataTable";
-import { DiffView } from "@/components/DiffView";
 import { EmptyState } from "@/components/EmptyState";
 import { IconAction } from "@/components/IconAction";
 import { RelativeTime } from "@/components/RelativeTime";
 import { SearchInput } from "@/components/SearchInput";
 import { TruncatedText } from "@/components/TruncatedText";
 import type { DeliveryOsduRead } from "../../api/delivery";
+import { downloadJson, fileNameOf, withoutVersion } from "./osduDocument";
 import {
-  canonicalText, differences, downloadJson, fileNameOf, shortValue, withoutOsduFields, withoutVersion, type DifferenceKind, type JsonDifference,
-} from "./osduDocument";
-import {
-  branchPaths, buildModel, CONTENT_SECTION, describeBranch, documentNode, idParts, isMintedUnique, isReferenceNode, loadLayout, matching, saveLayout, trail,
+  branchPaths, buildModel, CONTENT_SECTION, describeBranch, documentNode, idParts, isMintedUnique, isReferenceNode, loadLayout, matching, recordNameOf, saveLayout, trail,
   type RecordModel, type RecordNode,
 } from "./osduRecordModel";
 import { RecordName } from "./RecordName";
@@ -63,12 +60,14 @@ const DOCUMENT = "document";
 const RECORD = "record";
 const ACCESS = "access";
 const LINKS = "links";
+const MENTIONS = "mentions";
 
 const VIEW_NAMES: Record<string, string> = {
   [DOCUMENT]: "Full document",
   [RECORD]: "System fields",
   [ACCESS]: "Access & legal",
   [LINKS]: "Linked records",
+  [MENTIONS]: "Mentioned by",
 };
 
 /** How a branch of the record is shown: one level as fields (or a table of items), or the whole branch as JSON. */
@@ -91,8 +90,24 @@ interface EarlierRecord {
   level: number;
 }
 
-/** How a record opens another from a value that names it: the id it names, and the path of that value in this record. */
-type OpenLink = (id: string, from: string) => void;
+/**
+ * How a record opens another: the id, and the path of the value in this record that names it; null for a record opened
+ * from somewhere else (one that mentions this record).
+ */
+type OpenLink = (id: string, from: string | null) => void;
+
+/** What a page adds to the inspector around the records it shows. */
+export interface InspectorExtras {
+  /** Where the first record sits, as crumb steps in front of its name (the explorer's partition, group and type). */
+  place?: ReactNode;
+  /**
+   * The records that mention one, as a view under the outline's References: given the record's id, and a way to open one of
+   * them on the trail after it.
+   */
+  mentions?: (id: string, open: (id: string) => void) => ReactNode;
+  /** What to offer where OSDU holds no record under an id: the records whose ids are near it. */
+  notFound?: (id: string) => ReactNode;
+}
 
 function text(value: unknown): string | null {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : null;
@@ -794,67 +809,6 @@ function JsonView({ node, term, hits, ownId, onOpenLink, opening, onSelect }: {
   );
 }
 
-const CHANGE_LABELS: Record<DifferenceKind, string> = {
-  changed: "changed",
-  onlyInOsdu: "added since",
-  onlyInPreview: "removed since",
-  placeholder: "changed",
-};
-
-const CHANGE_TONES: Record<DifferenceKind, string> = {
-  changed: "bg-info/12 text-info",
-  onlyInOsdu: "bg-success/15 text-success",
-  onlyInPreview: "bg-warning/15 text-warning",
-  placeholder: "bg-info/12 text-info",
-};
-
-/**
- * What changed between a picked version and the latest: the count of each kind of change, the two documents side by
- * side with the unchanged stretches folded away, and every changed value with its path, so a reader sees at once
- * what a later delivery (or someone else) did to the record.
- */
-function CompareView({ latest, latestVersion, picked, pickedVersion }: {
-  latest: Record<string, unknown>; latestVersion: number | null; picked: Record<string, unknown>; pickedVersion: number;
-}) {
-  const compared = useMemo(() => {
-    const then = withoutOsduFields(picked);
-    const now = withoutOsduFields(latest);
-    // The picked version is the earlier text and the latest the later, so "added since" reads as the record grew.
-    return { ...differences(now, then), original: canonicalText(then), modified: canonicalText(now) };
-  }, [latest, picked]);
-  const columns: Column<JsonDifference>[] = [
-    { id: "path", header: "Path", render: (row) => <span className="font-mono text-[12px] break-all">{row.path || "(the record)"}</span> },
-    { id: "kind", header: "", render: (row) => <Badge variant="secondary" className={CHANGE_TONES[row.kind]}>{CHANGE_LABELS[row.kind]}</Badge> },
-    { id: "then", header: `Version ${pickedVersion}`, fill: true, render: (row) => <TruncatedText text={row.preview === undefined ? null : shortValue(row.preview)} mono maxWidth={360} /> },
-    { id: "now", header: latestVersion === null ? "Latest" : `Latest (${latestVersion})`, fill: true, render: (row) => <TruncatedText text={row.osdu === undefined ? null : shortValue(row.osdu)} mono maxWidth={360} /> },
-  ];
-  return (
-    <div className="flex min-h-0 flex-col gap-3" data-testid="osdu-version-compare">
-      <div className="flex flex-wrap items-center gap-2 text-[13px]" data-testid="osdu-version-compare-counts">
-        {compared.items.length === 0
-          ? <Badge variant="secondary" className="bg-success/15 text-success">Nothing changed between the two versions</Badge>
-          : (["changed", "onlyInOsdu", "onlyInPreview"] as DifferenceKind[]).map((kind) => {
-            const count = compared.items.filter((item) => item.kind === kind || (kind === "changed" && item.kind === "placeholder")).length;
-            return count === 0 ? null : <Badge key={kind} variant="secondary" className={CHANGE_TONES[kind]}>{`${count} ${CHANGE_LABELS[kind]}`}</Badge>;
-          })}
-        {compared.truncated && <span className="text-muted-foreground">(the first {compared.items.length} differences)</span>}
-      </div>
-      <DiffView
-        original={compared.original}
-        modified={compared.modified}
-        language="json"
-        height={440}
-        foldUnchanged
-        sideLabels={{ original: `Version ${pickedVersion}`, modified: latestVersion === null ? "Latest" : `Latest (${latestVersion})` }}
-        data-testid="osdu-version-diff"
-      />
-      {compared.items.length > 0 && (
-        <DataTable columns={columns} rows={compared.items} rowKey={(row) => `${row.kind}|${row.path}`} emptyMessage="No differences." data-testid="osdu-version-differences" />
-      )}
-    </div>
-  );
-}
-
 /**
  * The outline row that stands for a path: the path itself when the outline shows it, otherwise the nearest branch
  * above it that does. The outline shows a record's objects but not the items of its lists, so an item opened from a
@@ -879,7 +833,7 @@ function outlineRowFor(model: RecordModel, path: string): string {
  * back to the record it was opened from. A picked version replaces the record in place, with the outline and the place
  * in it kept.
  */
-function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack, readVersion, opening, actions }: {
+function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack, readVersion, opening, actions, place, mentions }: {
   /** The read of the record at its latest. */
   read: DeliveryOsduRead & { record: Record<string, unknown> };
   level: number;
@@ -893,6 +847,10 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
   opening?: string | null;
   /** The page's own controls over the read (read again, open in a window), kept on the location bar. */
   actions?: ReactNode;
+  /** Where the record sits, as crumb steps in front of its name; none for a record the page itself names. */
+  place?: ReactNode;
+  /** The records that mention this one, given a way to open one of them on the trail; absent where a page cannot list them. */
+  mentions?: (open: (id: string) => void) => ReactNode;
 }) {
   const [picked, setPicked] = useState<{ version: number; taskId: string } | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
@@ -1037,7 +995,8 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
   const copyPath = node === undefined ? null : <CopyButton iconOnly label="Copy the path" text={node.path} testId="copy-osdu-path" />;
   const location = (
     <>
-      <CrumbStep first>
+      {place}
+      <CrumbStep first={place === undefined}>
         <button
           type="button"
           className={cn("min-w-0 max-w-full cursor-pointer rounded-sm hover:underline", atContent ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
@@ -1046,7 +1005,9 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
           aria-current={atContent ? "location" : undefined}
           data-testid="osdu-crumb-record"
         >
-          <RecordName id={read.targetId} kind={kind} typeOnly={namedByType(read.targetId, level)} className="font-medium" />
+          {place !== undefined
+            ? <span className="font-medium" title={read.targetId} data-testid="osdu-record-name">{recordNameOf(record) ?? idParts(read.targetId).unique}</span>
+            : <RecordName id={read.targetId} kind={kind} typeOnly={namedByType(read.targetId, level)} className="font-medium" />}
         </button>
       </CrumbStep>
       {node === undefined
@@ -1073,10 +1034,17 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
         </ToggleGroup>
       )}
       <VersionPicker read={read} shown={shownVersion} ledgerVersion={level === 0 ? ledgerVersion : null} loading={pickedLoading} onPick={readVersion === undefined ? undefined : pickVersion} />
-      {showingPicked && (
-        <Button variant="outline" size="sm" className="h-7" onClick={() => setCompareOpen(true)} title="What changed between this version and the latest" data-testid="osdu-version-compare-toggle">
+      {readVersion !== undefined && (read.versions?.length ?? 0) >= 2 && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7"
+          onClick={() => setCompareOpen(true)}
+          title={showingPicked ? "What changed between this version and the latest" : "What changed between any two versions OSDU keeps"}
+          data-testid="osdu-version-compare-toggle"
+        >
           <GitCompare />
-          Compare with latest
+          Compare
         </Button>
       )}
       {pickedFailure !== null && <span className="max-w-[240px] truncate text-[11px] text-destructive" title={pickedFailure} data-testid="osdu-version-error">{pickedFailure}</span>}
@@ -1113,6 +1081,7 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
             {model.sections.map((section) => renderOutline(section, 0))}
             <OutlineGroup label="References" />
             <OutlineRow depth={0} selected={selected === LINKS} onSelect={() => select(LINKS)} label={VIEW_NAMES[LINKS]} detail={`${model.references.length}`} testId="osdu-outline-links" />
+            {mentions !== undefined && <OutlineRow depth={0} selected={selected === MENTIONS} onSelect={() => select(MENTIONS)} label={VIEW_NAMES[MENTIONS]} testId="osdu-outline-mentions" />}
           </div>
           <div className="flex items-center gap-1 border-t p-1">
             <IconAction label="Unfold every branch" icon={<ChevronsUpDown />} variant="ghost" className="size-7" onClick={() => remember(branchPaths(model.sections))} data-testid="osdu-tree-expand" />
@@ -1131,6 +1100,8 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
                 ? <AccessView record={record} />
                 : selected === LINKS
                   ? <LinksView model={model} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} />
+                  : selected === MENTIONS && mentions !== undefined
+                  ? mentions((id) => onOpenLink?.(id, null))
                   : node === undefined
                     ? <EmptyState title="Nothing selected" description="Pick a branch of the record on the left." />
                     : mode === "json"
@@ -1143,21 +1114,21 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
-      {showingPicked && picked !== null && (
-        <Dialog open={compareOpen} onOpenChange={setCompareOpen}>
-          <DialogContent className="flex max-h-[90vh] flex-col gap-3 overflow-hidden sm:max-w-6xl" data-testid="osdu-version-compare-dialog">
-            <DialogHeader>
-              <DialogTitle>{`Version ${picked.version} compared with the latest`}</DialogTitle>
-              <DialogDescription>
-                <RecordName id={read.targetId} kind={kind} />
-                {": what a later delivery, or someone else, changed on the record since this version."}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <CompareView latest={read.record} latestVersion={latestVersion} picked={record} pickedVersion={picked.version} />
-            </div>
-          </DialogContent>
-        </Dialog>
+      {readVersion !== undefined && read.versions && read.versions.length >= 2 && (
+        <VersionCompareDialog
+          open={compareOpen}
+          onOpenChange={setCompareOpen}
+          read={read}
+          kind={kind}
+          versions={read.versions}
+          latestVersion={latestVersion}
+          latestRecord={read.record}
+          ledgerVersion={level === 0 ? ledgerVersion : null}
+          readVersion={readVersion}
+          // The version in view against the latest, or the latest against the one before it.
+          from={showingPicked ? picked.version : latestVersion !== null && latestVersion !== read.versions[0] ? latestVersion : read.versions[1]}
+          to={read.versions[0]}
+        />
       )}
     </div>
   );
@@ -1169,18 +1140,20 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
  * the last is shown; the way back on the location bar returns to the record before, as it was, and closes what was
  * opened after it.
  */
-export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, readVersionAt, onBack, actions, fill = false }: {
+export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLink, readVersionAt, onBack, actions, extras, fill = false }: {
   entries: InspectorEntry[];
   ledgerVersion?: number | null;
   opening?: string | null;
-  /** Opens a record a value of the record at `level` names, after it on the trail. */
-  onOpenLink?: (level: number, id: string, from: string) => void;
+  /** Opens a record after the one at `level` on the trail: one a value of it names (from that value's path), or one that mentions it. */
+  onOpenLink?: (level: number, id: string, from: string | null) => void;
   /** How the record at `level` is read at one of its versions; undefined where it cannot be asked for. */
   readVersionAt: (level: number) => ((version: number) => Promise<ComputeTaskAccepted>) | undefined;
   /** Steps back to the entry at `level`, closing everything opened after it. */
   onBack: (level: number) => void;
   /** The page's own controls over the read, shown on the location bar. */
   actions?: ReactNode;
+  /** What the page adds around the records: the first one's place, the records that mention one, what to offer for an id not found. */
+  extras?: InspectorExtras;
   /**
    * Whether the inspector takes the height its flex column parent gives it (a window of its own) rather than a fixed
    * share of the viewport under a page's header (a tab).
@@ -1206,6 +1179,8 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
             readVersion={readVersionAt(level)}
             opening={opening}
             actions={actions}
+            place={level === 0 ? extras?.place : undefined}
+            mentions={extras?.mentions === undefined || onOpenLink === undefined ? undefined : (open) => extras.mentions!(read.targetId, open)}
           />
         ),
       };
@@ -1233,11 +1208,14 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
             <span className="text-[12px] text-muted-foreground">
               {`Read through ${read.flow}`}
               {read.correlationId ? `, correlation id ${read.correlationId}` : ""}
-              {". A record never delivered, or removed with a purge, reads this way."}
+              {". A record never written, or one since removed, reads this way."}
             </span>
           </AlertDescription>
         </Alert>
       );
+      if (extras?.notFound !== undefined) {
+        message = <>{message}{extras.notFound(read.targetId)}</>;
+      }
     }
 
     return {
@@ -1247,7 +1225,16 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
           <LocationBar
             back={back}
             onBack={onBack}
-            location={<CrumbStep first><RecordName id={entry.id} typeOnly={namedByType(entry.id, level)} className="font-medium" /></CrumbStep>}
+            location={(
+              <>
+                {level === 0 ? extras?.place : undefined}
+                <CrumbStep first={level !== 0 || extras?.place === undefined}>
+                  {level === 0 && extras?.place !== undefined
+                    ? <span className="font-medium" title={entry.id}>{idParts(entry.id).unique}</span>
+                    : <RecordName id={entry.id} typeOnly={namedByType(entry.id, level)} className="font-medium" />}
+                </CrumbStep>
+              </>
+            )}
             controls={actions}
           />
           {message}

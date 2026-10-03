@@ -437,6 +437,9 @@ public static class DeliveryEndpoints
 
         // Where each cached type of a partition comes from, who reads it, and what its last refreshes did.
         DeliveryCacheStreams.Map(delivery);
+
+        // How the explorer reaches each partition of OSDU.
+        delivery.MapDeliveryExplorerReadEndpoints();
         delivery.MapGet("/flows/{pipelineId:guid}/stats", GetStatsAsync).WithName("GetDeliveryFlowStats");
         delivery.MapGet("/flows/{pipelineId:guid}/interfaces", ListInterfacesAsync).WithName("ListDeliveryInterfaces");
         delivery.MapGet("/flows/{pipelineId:guid}/records", ListRecordsAsync).WithName("ListDeliveryRecords");
@@ -479,6 +482,10 @@ public static class DeliveryEndpoints
     {
         ArgumentNullException.ThrowIfNull(group);
         var delivery = group.MapGroup("/delivery").WithTags("Delivery");
+
+        // The explorer's reads of what OSDU holds, each run on a node through a flow's connection, as a record's read-back is.
+        delivery.MapDeliveryExplorerOperateEndpoints();
+
         // The records ride in the body, so the route reads a larger body than the default and no larger than that.
         delivery.MapPost("/flows/{pipelineId:guid}/release", ReleaseFlowAsync).WithName("ReleaseDeliveryFlowRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/probe", ProbeAsync).WithName("ProbeDeliveryTarget");
@@ -1864,10 +1871,10 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>A version to read at is a positive whole number; the storage service numbers versions from one.</summary>
-    private static ProblemHttpResult? InvalidVersion(DeliveryReadRequest? request)
+    internal static ProblemHttpResult? InvalidVersion(DeliveryReadRequest? request)
         => request?.Version is { } version && version <= 0 ? Invalid($"{version.ToString(CultureInfo.InvariantCulture)} is not a record version: a positive whole number.") : null;
 
-    private static void WithVersion(Dictionary<string, string> arguments, DeliveryReadRequest? request)
+    internal static void WithVersion(Dictionary<string, string> arguments, DeliveryReadRequest? request)
     {
         if (request?.Version is { } version)
         {
@@ -2009,8 +2016,30 @@ public static class DeliveryEndpoints
         Guid pipelineId, DeliveryReadRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
         IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
-        var asked = request?.TargetId?.Trim();
-        if (string.IsNullOrEmpty(asked))
+        if (TargetProblem(request, out var asked) is { } invalid)
+        {
+            return invalid;
+        }
+
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["targetId"] = TargetId.WithoutVersion(asked) };
+        WithVersion(arguments, request);
+        return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Why a read by OSDU id cannot be asked (no id, one too long, text that is no record id, a version that is no version),
+    /// or null with the id as asked in <paramref name="asked"/>. Every read of a record by its id checks it this way.
+    /// </summary>
+    internal static ProblemHttpResult? TargetProblem(DeliveryReadRequest? request, out string asked)
+    {
+        asked = request?.TargetId?.Trim() ?? string.Empty;
+        if (asked.Length == 0)
         {
             return Invalid("Name the OSDU id to read.");
         }
@@ -2025,20 +2054,7 @@ public static class DeliveryEndpoints
             return Invalid($"'{asked}' is not an OSDU record id: a partition, an entity type such as master-data--Wellbore, and a unique part, separated by colons.");
         }
 
-        if (InvalidVersion(request) is { } invalid)
-        {
-            return invalid;
-        }
-
-        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
-        if (flow is null)
-        {
-            return problem!;
-        }
-
-        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["targetId"] = TargetId.WithoutVersion(asked) };
-        WithVersion(arguments, request);
-        return await EnqueueOperationAsync(db, dispatcher, flow, ReadRecordOperation.OperationName, arguments, user, ct).ConfigureAwait(false);
+        return InvalidVersion(request);
     }
 
     internal static ProblemHttpResult Invalid(string detail)

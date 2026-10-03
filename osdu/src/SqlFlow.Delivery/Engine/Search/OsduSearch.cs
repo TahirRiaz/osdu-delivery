@@ -27,10 +27,15 @@ public sealed record OsduSearchQuery
     /// <summary>The fields each hit is projected onto; empty returns whole hits.</summary>
     public IReadOnlyList<string> ReturnedFields { get; init; } = [];
 
-    /// <summary>The request body of this query with the paging properties a call adds.</summary>
-    internal JsonObject Body(int limit)
+    /// <summary>The request body of this query with the paging properties a call adds: the page size, and where it starts.</summary>
+    internal JsonObject Body(int limit, int offset = 0)
     {
         var body = new JsonObject { ["kind"] = Kind, ["limit"] = limit };
+        if (offset > 0)
+        {
+            body["offset"] = offset;
+        }
+
         if (!string.IsNullOrWhiteSpace(Query))
         {
             body["query"] = Query;
@@ -89,6 +94,17 @@ public sealed class OsduSearchPage
 public sealed record OsduSearchBucket(string? Key, long Count);
 
 /// <summary>
+/// What one page of a search answered (<see cref="OsduSearch.PageAsync"/>): the records the query matches in all, the page's
+/// hits, the groups of the field it was asked to aggregate, or, when the service refused the query, its words and nothing
+/// else.
+/// </summary>
+/// <param name="Total">The records the query matches, exactly; zero for a refusal.</param>
+/// <param name="Hits">The page's hits, each as its own JSON.</param>
+/// <param name="Buckets">The groups of the aggregated field; empty when none was asked for.</param>
+/// <param name="Refusal">The service's words when it refused the query (400), redacted and cut short; null otherwise.</param>
+public sealed record OsduSearchAnswer(long Total, IReadOnlyList<JsonObject> Hits, IReadOnlyList<OsduSearchBucket> Buckets, string? Refusal);
+
+/// <summary>
 /// The OSDU search service as the module reads it (openapi search v2): the exact count of what a query matches, the distinct
 /// values of a field with their counts, one page of hits, and every hit paged through a cursor. One implementation serves
 /// every reader: a retrieval's pages and an assertion's reads go through the same requests, the same cursor handling and
@@ -123,12 +139,40 @@ public sealed class OsduSearch
         _logger = logger;
     }
 
+    /// <summary>
+    /// The furthest an offset page reaches: Elasticsearch's default <c>index.max_result_window</c>, past which a page of
+    /// POST /query is refused and only the cursor search reads on (openapi search v2, <c>limit</c>).
+    /// </summary>
+    public const int MaxWindow = 10_000;
+
+    /// <summary>How much of a refusal's body an answer quotes.</summary>
+    private const int RefusalPreview = 500;
+
     /// <summary>The exact number of records the query matches (openapi search v2, POST /query with trackTotalCount).</summary>
     public async Task<long> CountAsync(OsduSearchQuery query, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(query);
-        var (total, _, _) = await QueryAsync(query, 1, null, ct).ConfigureAwait(false);
-        return total;
+        var answer = await QueryAsync(query, 0, 1, null, refusalAnswers: false, ct).ConfigureAwait(false);
+        return answer.Total;
+    }
+
+    /// <summary>
+    /// One page of what the query matches, <paramref name="limit"/> hits from <paramref name="offset"/> on (openapi search
+    /// v2, POST /query with trackTotalCount and offset), with the groups of <paramref name="aggregateBy"/> when one is named.
+    /// The page ends inside <see cref="MaxWindow"/>. A query the service refuses (400) is answered with its words rather than
+    /// thrown, so a reader can ask a plainer one; anything else that keeps an answer from coming fails the call.
+    /// </summary>
+    public Task<OsduSearchAnswer> PageAsync(OsduSearchQuery query, int offset, int limit, string? aggregateBy, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        if (offset + limit > MaxWindow)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset), $"A page ends within the first {MaxWindow} hits; offset {offset} and limit {limit} reach past them.");
+        }
+
+        return QueryAsync(query, offset, Math.Min(limit, MaxPage), aggregateBy, refusalAnswers: true, ct);
     }
 
     /// <summary>
@@ -139,30 +183,36 @@ public sealed class OsduSearch
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentException.ThrowIfNullOrWhiteSpace(field);
-        var (total, _, buckets) = await QueryAsync(query, 1, field, ct).ConfigureAwait(false);
-        return (total, buckets);
+        var answer = await QueryAsync(query, 0, 1, field, refusalAnswers: false, ct).ConfigureAwait(false);
+        return (answer.Total, answer.Buckets);
     }
 
     /// <summary>The first <paramref name="limit"/> hits the query matches (openapi search v2, POST /query), each as its own JSON, and the total.</summary>
     public async Task<(long Total, IReadOnlyList<JsonObject> Hits)> FirstAsync(OsduSearchQuery query, int limit, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(query);
-        var (total, hits, _) = await QueryAsync(query, Math.Clamp(limit, 1, MaxPage), null, ct).ConfigureAwait(false);
-        return (total, hits);
+        var answer = await QueryAsync(query, 0, Math.Clamp(limit, 1, MaxPage), null, refusalAnswers: false, ct).ConfigureAwait(false);
+        return (answer.Total, answer.Hits);
     }
 
-    private async Task<(long Total, IReadOnlyList<JsonObject> Hits, IReadOnlyList<OsduSearchBucket> Buckets)> QueryAsync(
-        OsduSearchQuery query, int limit, string? aggregateBy, CancellationToken ct)
+    private async Task<OsduSearchAnswer> QueryAsync(
+        OsduSearchQuery query, int offset, int limit, string? aggregateBy, bool refusalAnswers, CancellationToken ct)
     {
         var url = _client.Url(_queryPath);
-        var body = query.Body(limit);
+        var body = query.Body(limit, offset);
         body["trackTotalCount"] = true;
         if (aggregateBy is not null)
         {
             body["aggregateBy"] = aggregateBy;
         }
 
-        var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
+        var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, refusalAnswers ? Refusals : null, ct, idempotent: true).ConfigureAwait(false);
+        if (result.Status == System.Net.HttpStatusCode.BadRequest)
+        {
+            var said = HeaderRedaction.RedactMessage(result.BodyText.ReplaceLineEndings(" ").Trim());
+            return new OsduSearchAnswer(0, [], [], said.Length <= RefusalPreview ? said : said[..RefusalPreview] + "...");
+        }
+
         var root = OsduHttpClient.ParseJson(result, url);
         var total = root.TryGetProperty("totalCount", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt64(out var value)
             ? value
@@ -195,8 +245,11 @@ public sealed class OsduSearch
             }
         }
 
-        return (total, hits, buckets);
+        return new OsduSearchAnswer(total, hits, buckets, null);
     }
+
+    /// <summary>The status a page of the search answers with its words rather than fails on: the service refusing the query.</summary>
+    private static readonly IReadOnlySet<int> Refusals = new HashSet<int> { 400 };
 
     /// <summary>
     /// Every hit the query matches, a page at a time (openapi search v2, POST /query_with_cursor): the first page asks for

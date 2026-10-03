@@ -6,8 +6,10 @@
 // A record can be read back as well, which is what a record page's In OSDU and Compare tabs do: through the storage
 // service, or through the wellbore DDMS a well log flow delivers by. The wellbores are held as records too, and a spec
 // can hold a record of its own for as long as it needs one, through /__e2e/records: a path of this stand-in, not of the
-// platform, so no flow reaches it. Everything else answers 404, so a spec that tried to send a record would fail loudly
-// rather than reach a real OSDU.
+// platform, so no flow reaches it. Holding a record again keeps a version of it, so a record can have a history. The
+// explorer's searches are answered over the same records: the kinds they are of, a page of them by type, a phrase, the
+// start of an id or the records that name one. Everything else answers 404, so a spec that tried to send a record would
+// fail loudly rather than reach a real OSDU.
 //
 // Started by playwright.config.ts beside the control plane, on SQLFLOW_E2E_OSDU_PORT (5301 by default).
 import { createServer } from "node:http";
@@ -71,7 +73,7 @@ function search(body, partition) {
     : { results: [], totalCount: 0 };
 }
 
-/** The records a spec asked the stand-in to hold, by id (its version set aside). */
+/** The records a spec asked the stand-in to hold, by id (its version set aside): every version held, oldest first. */
 const held = new Map();
 
 /** A record reference without its version: p:t:k: and p:t:k:123 read as p:t:k, as the control plane reads them. */
@@ -104,11 +106,178 @@ function wellboreRecord(id) {
   };
 }
 
-/** The record a read of `id` finds: one a spec holds, or a wellbore of the platform; null when there is none. */
+/** The record a read of `id` finds at its latest: one a spec holds, or a wellbore of the platform; null when there is none. */
 function readRecord(id) {
+  const versions = recordVersions(id);
+  return versions.length === 0 ? null : versions[versions.length - 1];
+}
+
+/** Every version of the record `id` names, oldest first: those a spec held, or the one a wellbore of the platform has. */
+function recordVersions(id) {
   const key = withoutVersion(id);
   const own = held.get(key);
-  return own !== undefined ? { ...own, version: own.version ?? VERSION } : wellboreRecord(key);
+  if (own !== undefined) {
+    return own;
+  }
+
+  const wellbore = wellboreRecord(key);
+  return wellbore === null ? [] : [wellbore];
+}
+
+/** Every record of a partition the stand-in holds, at its latest: the platform's wellbores and what specs hold. */
+function partitionRecords(partition) {
+  const wellbores = [...WELLBORES].map((name) => wellboreRecord(`${partition}:master-data--Wellbore:${wellboreId(name)}`));
+  const own = [...held.values()].map((versions) => versions[versions.length - 1]).filter((record) => record.id.startsWith(`${partition}:`));
+  return [...wellbores, ...own].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/** Whether `kind` is one a search's kind pattern names, each `*` standing for any run of characters. */
+function kindMatches(pattern, kind) {
+  const expression = String(pattern).split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+  return new RegExp(`^${expression}$`).test(kind);
+}
+
+/** Every text a record holds, at any depth. */
+function texts(value) {
+  if (typeof value === "string") {
+    return [value];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap(texts);
+  }
+
+  return value !== null && typeof value === "object" ? Object.values(value).flatMap(texts) : [];
+}
+
+/** A Lucene term the explorer wrote with its reserved characters escaped, read back as the text it stands for. */
+function unescape(term) {
+  return term.replace(/\\(.)/g, "$1");
+}
+
+/**
+ * Whether a record answers one clause of the queries the explorer writes: a phrase anywhere in it, an id exactly, an id
+ * that starts with a prefix or ends with a unique part, or a property's whole value; and a clause of clauses joined by
+ * AND, OR and AND NOT. Enough of Lucene to answer the explorer, and nothing more: what it does not read matches nothing.
+ */
+function matches(record, query) {
+  const text = query.trim();
+  if (text.startsWith("(") && text.endsWith(")") && balanced(text.slice(1, -1))) {
+    return matches(record, text.slice(1, -1));
+  }
+
+  for (const [joint, all] of [[" OR ", false], [" AND ", true]]) {
+    const parts = splitTop(text, joint);
+    if (parts.length > 1) {
+      return all
+        ? parts.every((part) => (part.startsWith("NOT ") ? !matches(record, part.slice(4)) : matches(record, part)))
+        : parts.some((part) => matches(record, part));
+    }
+  }
+
+  const phrase = /^"((?:[^"\\]|\\.)*)"$/.exec(text);
+  if (phrase !== null) {
+    const wanted = unescape(phrase[1]).toLowerCase();
+    return texts(record).some((value) => value.toLowerCase().includes(wanted));
+  }
+
+  const exactId = /^id:"((?:[^"\\]|\\.)*)"$/.exec(text);
+  if (exactId !== null) {
+    return record.id === unescape(exactId[1]);
+  }
+
+  const idPattern = /^id:(.+)\*$/.exec(text);
+  if (idPattern !== null) {
+    const [head, tail] = idPattern[1].split("\\:*\\:");
+    return tail === undefined
+      ? record.id.startsWith(unescape(head))
+      : record.id.startsWith(`${unescape(head)}:`) && record.id.split(":").slice(2).join(":").startsWith(unescape(tail));
+  }
+
+  const property = /^([\w.]+?)(?:\.keyword)?:"((?:[^"\\]|\\.)*)"$/.exec(text);
+  if (property !== null) {
+    const value = property[1].split(".").reduce((node, key) => (node !== null && typeof node === "object" ? node[key] : undefined), record);
+    return texts(value).includes(unescape(property[2]));
+  }
+
+  return false;
+}
+
+/** Whether a query's parentheses and quotes balance, so a pair around it encloses the whole of it. */
+function balanced(text) {
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") {
+      i++;
+    } else if (c === '"') {
+      quoted = !quoted;
+    } else if (!quoted && c === "(") {
+      depth++;
+    } else if (!quoted && c === ")" && --depth < 0) {
+      return false;
+    }
+  }
+
+  return depth === 0 && !quoted;
+}
+
+/** A query split at `joint` where it stands outside quotes and parentheses. */
+function splitTop(text, joint) {
+  const parts = [];
+  let depth = 0;
+  let quoted = false;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") {
+      i++;
+    } else if (c === '"') {
+      quoted = !quoted;
+    } else if (!quoted && c === "(") {
+      depth++;
+    } else if (!quoted && c === ")") {
+      depth--;
+    } else if (!quoted && depth === 0 && text.startsWith(joint, i)) {
+      parts.push(text.slice(start, i));
+      start = i + joint.length;
+      i += joint.length - 1;
+    }
+  }
+
+  parts.push(text.slice(start));
+  return parts.map((part) => part.trim());
+}
+
+/** The value a record holds at a dotted path, for grouping (a `.keyword` sub-field read as its property). */
+function valueAt(record, path) {
+  return path.replace(/\.keyword$/, "").split(".").reduce((node, key) => (node !== null && typeof node === "object" ? node[key] : undefined), record);
+}
+
+/**
+ * An explorer's search (POST /query with trackTotalCount): the records of the partition of the kinds asked that answer the
+ * query, a page of them from the offset, the exact count, and the groups of the property asked for.
+ */
+function explore(body, partition) {
+  const found = partitionRecords(partition)
+    .filter((record) => kindMatches(body.kind ?? "*:*:*:*", record.kind))
+    .filter((record) => typeof body.query !== "string" || body.query.trim() === "" || matches(record, body.query));
+  const offset = Number(body.offset ?? 0);
+  const limit = Number(body.limit ?? 10);
+  const answer = { results: found.slice(offset, offset + limit), totalCount: found.length };
+  if (typeof body.aggregateBy === "string") {
+    const groups = new Map();
+    for (const record of found) {
+      for (const value of texts(valueAt(record, body.aggregateBy))) {
+        groups.set(value, (groups.get(value) ?? 0) + 1);
+      }
+    }
+
+    answer.aggregations = [...groups.entries()].map(([key, count]) => ({ key, count }));
+  }
+
+  return answer;
 }
 
 /** A record read: storage's (GET /api/storage/v2/records/{id}) or a wellbore DDMS collection's (GET .../ddms/v3/{collection}/{id}). */
@@ -150,8 +319,12 @@ const server = createServer((request, response) => {
             return;
           }
 
-          held.set(withoutVersion(record.id), record);
-          send(response, 200, { id: record.id, held: held.size });
+          // Holding a record again keeps a version of it, numbered after the last, as storage numbers a record written again.
+          const key = withoutVersion(record.id);
+          const versions = held.get(key) ?? [];
+          const version = record.version ?? (versions.length === 0 ? VERSION : versions[versions.length - 1].version + 1000);
+          held.set(key, [...versions, { ...record, version }]);
+          send(response, 200, { id: record.id, version, held: held.size });
         })
         .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the record: ${error instanceof Error ? error.message : String(error)}` }));
       return;
@@ -161,11 +334,11 @@ const server = createServer((request, response) => {
   const versions = request.method === "GET" ? RECORD_VERSIONS.exec(path) : null;
   if (versions !== null) {
     const id = decodeId(versions[1]);
-    const record = id === null ? null : readRecord(id);
-    if (record === null) {
+    const kept = id === null ? [] : recordVersions(id);
+    if (kept.length === 0) {
       send(response, 404, { code: 404, reason: "Record not found", message: `The e2e OSDU stand-in holds no record ${id ?? path}.` });
     } else {
-      send(response, 200, { recordId: withoutVersion(id), versions: [record.version] });
+      send(response, 200, { recordId: withoutVersion(id), versions: kept.map((record) => record.version) });
     }
 
     return;
@@ -174,8 +347,8 @@ const server = createServer((request, response) => {
   const atVersion = request.method === "GET" ? RECORD_AT_VERSION.exec(path) : null;
   if (atVersion !== null) {
     const id = decodeId(atVersion[1]);
-    const record = id === null ? null : readRecord(id);
-    if (record === null || String(record.version) !== atVersion[2]) {
+    const record = id === null ? null : recordVersions(id).find((kept) => String(kept.version) === atVersion[2]) ?? null;
+    if (record === null) {
       send(response, 404, { code: 404, reason: "Record version not found", message: `The e2e OSDU stand-in holds no version ${atVersion[2]} of ${id ?? path}.` });
     } else {
       send(response, 200, record);
@@ -212,7 +385,12 @@ const server = createServer((request, response) => {
 
   if (request.method === "POST" && path === "/api/search/v2/query") {
     read(request)
-      .then((text) => send(response, 200, search(JSON.parse(text), request.headers["data-partition-id"])))
+      .then((text) => {
+        const body = JSON.parse(text);
+        const partition = request.headers["data-partition-id"];
+        // The explorer asks for the exact count; a render's lookup asks for a handful of ids by a wellbore's name.
+        send(response, 200, body.trackTotalCount === true && typeof partition === "string" && partition !== "" ? explore(body, partition) : search(body, partition));
+      })
       .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the search: ${error instanceof Error ? error.message : String(error)}` }));
     return;
   }

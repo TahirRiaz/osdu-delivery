@@ -175,6 +175,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /flows/{pipelineId}/check-values` | operate | Queue a value check of one interface's rows on a node ([Checking a mapping's values](#checking-a-mappings-values)): `targets` names the attributes to check as template paths (none checks every attribute; at most 200), `values` fill the flow's parameters, `maxRows` is how many rows to read (10,000 when left out, 0 for the whole scope), `samples` how many example records each finding names (20 when left out, at most 500) and `skipSamples` how many it passes over first, and `mapping` the mapping it is asked of (`Name@version`), which the flow must render with. Nothing is sent or written. A target that is not a template path, an undeclared parameter, a required one without a value, a negative count, and arguments over 4,000 characters as JSON are refused with 400 before anything is queued; a target no entry of the mapping reaches fails the task, naming it. Poll `GET /api/v1/compute/tasks/{taskId}`. |
 | `POST /records/{flowId}/{key}/preview` | operate | The same preview for one record of the ledger, read in the scope it was last planned under: what the record renders to now, which its page compares with what OSDU holds. |
 | `POST /flows/{pipelineId}/osdu/read` | operate | Queue a read of any OSDU record by `targetId`, on a node, through the flow's route and credentials: a record a document refers to, which the ledger may never have delivered. A version or the trailing colon of a reference is dropped, and the record is read at its latest version. An id that is not `partition:group--Entity:unique` is refused with 400. Nothing is written. |
+| `GET /explorer/connection`, `POST /explorer/types`, `/explorer/search`, `/explorer/fields`, `/explorer/read` | read; operate | The explorer ([explorer.md](explorer.md#the-api)): how a partition of OSDU is reached, and the reads a node makes of it there through a delivery flow's connection (the kinds a search finds with their counts, a page of the records it finds, the properties a kind's records hold, one record from the storage service). Nothing is written, and nothing the ledger keeps is read. |
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
@@ -444,7 +445,7 @@ read from.
 ## The GUI
 
 Everything this product adds sits in one navigation group, **OSDU**, straight after the platform's Workspace group:
-Delivery, Records, Tests, Audit trail, Mappings, Templates, Cache, Dimensions, Partitions and Mapping builder. The platform's own groups (Operate,
+Delivery, Records, Explorer, Tests, Audit trail, Mappings, Templates, Cache, Dimensions, Partitions and Mapping builder. The platform's own groups (Operate,
 Workspace, Tools, Explore) hold only its generic surfaces, so a delivery flow's own page is still reached through
 Pipelines like any other flow.
 
@@ -477,6 +478,12 @@ Pipelines like any other flow.
   longer by what it was. A mapping declares which of its dataset's columns are identities; without a declaration a
   record is still found by its key, label, OSDU id and file. Records a ledger held before the index existed are
   filled in by a background pass, a page at a time, which repeats every few hours and costs nothing once done.
+- **Explorer** (OSDU): what the workbench's partition of OSDU holds, read live from OSDU's search and storage
+  services through a delivery flow's connection ([explorer.md](explorer.md)). The kinds of its records are a list of
+  groups and types with their counts beside a grid of the records, which scrolls in place a hundred rows at a time up to
+  the search's first ten thousand. One field takes an id (which opens the record), the start of one, a name, any text or
+  a Lucene query; a property's values group and narrow the records. A record opens in the record inspector under the
+  place it sits in, with its versions compared side by side, its links, and the records that mention it.
 - **A flow's page** (Pipelines): the Delivery tab (stats, probe the target, release blocked, sync timelines),
   the Records tab (search and filters, every row opens the record), the Submissions tab, which says for each
   submission which selection it read. **A source that delivers several interfaces is read one interface at a time**,

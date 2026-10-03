@@ -1184,6 +1184,7 @@ async fn no_tool_of_the_server_reads_or_removes_what_osdu_holds() {
         "delivery_cache_items", "delivery_cache_diff", "delivery_cache_gaps",
         "delivery_dimension_values", "delivery_dimension_keys", "delivery_dimension_table", "delivery_dimension_search",
         "delivery_remove_records", "delivery_preview_removal",
+        "delivery_explore", "delivery_explore_types", "delivery_explore_search", "delivery_explore_fields", "delivery_explore_read",
     ] {
         assert!(!listed.contains(absent), "{absent} is offered");
     }
@@ -1193,7 +1194,7 @@ async fn no_tool_of_the_server_reads_or_removes_what_osdu_holds() {
     let data_routes = [
         "/read\"", "/source\"", "/preview", "/scope-values", "/check-values", "/osdu/read", "/cache/items", "/cache/diff",
         "/cache/gaps", "/values", "/keys\"", "/table\"", "/export", "/dimensions/search", "/filter\"", "records/remove", "/delete\"",
-        "/ledger/prune",
+        "/ledger/prune", "/explorer/",
     ];
     for entry in std::fs::read_dir(&sources).expect("the tools folder") {
         let path = entry.expect("an entry").path();

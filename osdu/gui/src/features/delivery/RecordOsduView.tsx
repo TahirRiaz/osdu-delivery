@@ -1,5 +1,5 @@
-import { useHref } from "react-router-dom";
-import { AppWindow, BookOpenCheck } from "lucide-react";
+import { useHref, useNavigate } from "react-router-dom";
+import { AppWindow, BookOpenCheck, Telescope } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/EmptyState";
 import { IconAction } from "@/components/IconAction";
@@ -31,6 +31,12 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
   popout?: boolean;
 }) {
   const windowHref = useHref(`/delivery/records/${deliveryRef.flowId}/${deliveryRef.deliveryKey}/osdu`);
+  const navigate = useNavigate();
+  // The record as the explorer shows it: in its partition, among the records of its type and those that mention it.
+  const explorerParams = new URLSearchParams(record.targetId === null ? {} : { id: record.targetId });
+  if (flowScope.partition) {
+    explorerParams.set("partition", flowScope.partition);
+  }
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   const reading = osdu.queueing || (osdu.taskId !== null && !isTerminalTask(osdu.task.data));
   // The read's controls: on their own above the empty state, and on the inspector's location bar once there is a read.
@@ -48,6 +54,16 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
         <BookOpenCheck />
         {osdu.taskId === null ? "Read" : "Read again"}
       </Button>
+      {popout && record.targetId !== null && canOperate && (
+        <IconAction
+          label="Open in the explorer, among the records of its type and those that mention it"
+          icon={<Telescope />}
+          variant="ghost"
+          className="size-7"
+          onClick={() => navigate(`/delivery/explorer?${explorerParams.toString()}`)}
+          data-testid="record-osdu-explorer"
+        />
+      )}
       {popout && (
         <IconAction
           label="Open the OSDU explorer in a window of its own"
@@ -82,8 +98,7 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
         : (
           <OsduRecordPanel
             key={osdu.taskId}
-            pipelineId={pipelineId}
-            flowScope={flowScope}
+            readLinked={pipelineId === null ? null : (id, version) => deliveryApi.readOsdu(pipelineId, id, flowScope, version)}
             task={osdu.task.data}
             targetId={record.targetId ?? record.deliveryKey}
             readRootVersion={canActOnTarget && canOperate ? (version) => deliveryApi.read(deliveryRef, version) : undefined}

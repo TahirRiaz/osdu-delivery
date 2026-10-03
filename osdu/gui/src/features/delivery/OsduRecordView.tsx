@@ -3,23 +3,25 @@ import { useMutation, useQueries } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { isApiError } from "@/api/client";
 import type { ComputeTask, ComputeTaskAccepted } from "@/api/types";
-import { deliveryApi, type DeliveryFlowScope } from "../../api/delivery";
-import { OsduRecordInspector, type InspectorEntry } from "./OsduRecordInspector";
+import { OsduRecordInspector, type InspectorEntry, type InspectorExtras } from "./OsduRecordInspector";
 import { computeTaskQuery } from "./useComputeTask";
 
 /** How many records can be opened one from the other before the trail refuses to grow. */
 const MAX_TRAIL = 8;
 
+/** How a record other than the page's own is read: by its id, at its latest or at one version, as a node task. */
+export type ReadRecord = (id: string, version?: number) => Promise<ComputeTaskAccepted>;
+
 /**
- * A record read from OSDU, and the records opened from links in it, read in turn through the same flow's route and
- * credentials on a node. They form a trail (the page's record, then each record opened from the one before) shown in
- * one inspector, the last one in view; stepping back along the trail closes what was opened after that point. A
- * version of any record on the trail is read into the inspector in place, without disturbing the trail.
+ * A record read from OSDU, and the records opened from links in it, read in turn the way the page reads records (a record
+ * page through its flow's route and credentials, the explorer through its partition's connection), each on a node. They
+ * form a trail (the page's record, then each record opened from the one before) shown in one inspector, the last one in
+ * view; stepping back along the trail closes what was opened after that point. A version of any record on the trail is
+ * read into the inspector in place, without disturbing the trail.
  */
-export function OsduRecordPanel({ pipelineId, flowScope, task, targetId, readRootVersion, ledgerVersion, actions, fill = false }: {
-  pipelineId: string | null;
-  /** The ledger whose route, credentials and partition a record opened from the page's is read through. */
-  flowScope: DeliveryFlowScope;
+export function OsduRecordPanel({ readLinked, task, targetId, readRootVersion, ledgerVersion, actions, extras, fill = false }: {
+  /** Reads a record opened from the page's, and a version of one; null where nothing more can be read. */
+  readLinked: ReadRecord | null;
   /** The page's own read, as it stands. */
   task: ComputeTask | undefined;
   /** The id the page's read is for, so the trail names it before the read has answered. */
@@ -30,14 +32,16 @@ export function OsduRecordPanel({ pipelineId, flowScope, task, targetId, readRoo
   ledgerVersion?: number | null;
   /** The page's own controls over the read, shown on the inspector's header row. */
   actions?: ReactNode;
+  /** What the page adds to the inspector: the place in front of the record, its mentions, what to offer for an id not found. */
+  extras?: InspectorExtras;
   /** Whether the inspector fills its flex column parent (a window of its own) rather than a share of the viewport. */
   fill?: boolean;
 }) {
-  const [trail, setTrail] = useState<{ id: string; taskId: string; from: string }[]>([]);
+  const [trail, setTrail] = useState<{ id: string; taskId: string; from: string | null }[]>([]);
   const [opening, setOpening] = useState<string | null>(null);
   const reads = useQueries({ queries: trail.map((link) => computeTaskQuery(link.taskId)) });
   const open = useMutation({
-    mutationFn: ({ id }: { id: string; level: number; from: string }) => deliveryApi.readOsdu(pipelineId!, id, flowScope),
+    mutationFn: ({ id }: { id: string; level: number; from: string | null }) => readLinked!(id),
     onMutate: (asked) => setOpening(asked.id),
     // A record opened from the one at level N takes place N+1 and closes everything that was after it. The trail is
     // bounded: past its length the request is refused rather than the first records quietly dropped.
@@ -50,7 +54,7 @@ export function OsduRecordPanel({ pipelineId, flowScope, task, targetId, readRoo
     { id: targetId, task },
     ...trail.map((link, index) => ({ id: link.id, task: reads[index]?.data, error: reads[index]?.error ?? undefined, from: link.from })),
   ];
-  const canOpen = pipelineId !== null;
+  const canOpen = readLinked !== null;
 
   return (
     <OsduRecordInspector
@@ -69,9 +73,10 @@ export function OsduRecordPanel({ pipelineId, flowScope, task, targetId, readRoo
         : undefined}
       readVersionAt={(level) => (level === 0
         ? readRootVersion
-        : canOpen ? (version) => deliveryApi.readOsdu(pipelineId, entries[level].id, flowScope, version) : undefined)}
+        : canOpen ? (version) => readLinked(entries[level].id, version) : undefined)}
       onBack={(to) => setTrail((was) => was.slice(0, to))}
       actions={actions}
+      extras={extras}
       fill={fill}
     />
   );

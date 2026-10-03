@@ -1,6 +1,6 @@
 import {
   CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch, PencilRuler,
-  ScrollText, Shapes, ShieldCheck, Workflow,
+  ScrollText, Shapes, ShieldCheck, Telescope, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
 import type { Column } from "@/components/DataTable";
@@ -36,6 +36,7 @@ const DeliveryPartitionsPage = lazyRoute("DeliveryPartitionsPage", () => import(
 const DeliveryAssertionsPage = lazyRoute("DeliveryAssertionsPage", () => import("./features/delivery/assertions/DeliveryAssertionsPage"));
 const AssertionReportPage = lazyRoute("AssertionReportPage", () => import("./features/delivery/assertions/AssertionReportPage"));
 const DeliveryDimensionsPage = lazyRoute("DeliveryDimensionsPage", () => import("./features/delivery/dimensions/DeliveryDimensionsPage"));
+const ExplorerPage = lazyRoute("ExplorerPage", () => import("./features/delivery/explorer/ExplorerPage"));
 
 const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
@@ -287,17 +288,21 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/assertions", component: DeliveryAssertionsPage },
     { path: "/delivery/assertions/runs/:assertionRunId", component: AssertionReportPage },
     { path: "/delivery/dimensions", component: DeliveryDimensionsPage },
+    // What OSDU holds, read live from it; each read runs on a node, which takes the operate scope.
+    { path: "/delivery/explorer", component: ExplorerPage, requiredScope: "operate" },
   ],
   // Everything this product adds is one group of its own, rather than entries threaded through the platform's generic
   // ones. It sits straight after Workspace, and its entries read in the order the work is done: what has been delivered,
   // one record, how OSDU stands against the tests, who did what, then the documents a delivery is built from, with the
-  // mapping builder, a tool for writing them, last.
+  // mapping builder, a tool for writing them, last. The explorer, which reads what OSDU itself holds, follows the records the
+  // ledger holds.
   navGroups: [
     { id: OSDU_GROUP, label: "OSDU", icon: Layers, after: "workspace" },
   ],
   navItems: [
     { group: OSDU_GROUP, label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery" },
     { group: OSDU_GROUP, label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records" },
+    { group: OSDU_GROUP, label: "Explorer", to: "/delivery/explorer", icon: Telescope, testId: "nav-delivery-explorer" },
     { group: OSDU_GROUP, label: "Tests", to: "/delivery/assertions", icon: ListChecks, testId: "nav-delivery-assertions" },
     { group: OSDU_GROUP, label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
     { group: OSDU_GROUP, label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents" },

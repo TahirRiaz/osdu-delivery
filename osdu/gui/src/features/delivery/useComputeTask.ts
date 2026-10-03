@@ -1,6 +1,6 @@
 import { useQuery, type UseQueryOptions } from "@tanstack/react-query";
 import { datasourceApi } from "@/api/endpoints";
-import type { ComputeTask } from "@/api/types";
+import type { ComputeTask, ComputeTaskAccepted } from "@/api/types";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled", "skipped"]);
 
@@ -44,4 +44,31 @@ export function taskResultJson(task: ComputeTask | undefined): string | null {
 
 export function isTerminalTask(task: ComputeTask | undefined): boolean {
   return task !== undefined && TERMINAL.has(task.status);
+}
+
+/** A node task that ended without an answer (failed, cancelled or skipped), with what it said. */
+export class ComputeTaskError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ComputeTaskError";
+  }
+}
+
+/**
+ * Queues a node task and waits for its answer, a long poll at a time, until the task ends or the caller stops waiting
+ * (`signal`): the answer of a task that succeeded, and a {@link ComputeTaskError} with the task's words for one that did not.
+ * What a query that is one node read runs, so the read is kept by what it asked like any other query.
+ */
+export async function runComputeTask<T>(queue: () => Promise<ComputeTaskAccepted>, signal: AbortSignal): Promise<T> {
+  const accepted = await queue();
+  for (;;) {
+    const task = await datasourceApi.task(accepted.taskId, WAIT_MS, signal);
+    if (TERMINAL.has(task.status)) {
+      if (task.status === "succeeded") {
+        return task.result as T;
+      }
+
+      throw new ComputeTaskError(task.error ?? `The read ended ${task.status} without an answer.`);
+    }
+  }
 }

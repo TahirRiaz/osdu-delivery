@@ -8,12 +8,18 @@ import { useEffect, type RefObject } from "react";
  *
  * `target` picks the element to size inside the one `ref` holds (a table's own scrolling container); a module-level
  * function keeps the fit from being set up again on every render.
+ *
+ * `property` is what is set: the most the element may grow to (`maxHeight`, the default, for a list as tall as its rows up
+ * to the room there is), or its height (`height`, for a frame that fills the room whatever it holds, such as panes side by
+ * side). A frame given its height is watched itself as well, so one shown again after it was hidden is fitted to where it
+ * now starts.
  */
 export function useWindowFit(
   ref: RefObject<HTMLElement | null>,
   below: number,
   min: number,
   target?: (element: HTMLElement) => HTMLElement | null,
+  property: "maxHeight" | "height" = "maxHeight",
 ): void {
   useEffect(() => {
     const element = ref.current;
@@ -24,10 +30,15 @@ export function useWindowFit(
     const fit = () => {
       const fitted = target === undefined ? element : target(element);
       if (fitted !== null) {
+        // A hidden element starts nowhere; it is fitted when it is shown, which the observer below sees.
+        if (fitted.getClientRects().length === 0) {
+          return;
+        }
+
         const room = window.innerHeight - fitted.getBoundingClientRect().top - below;
         const height = `${Math.max(min, Math.floor(room))}px`;
-        if (fitted.style.maxHeight !== height) {
-          fitted.style.maxHeight = height;
+        if (fitted.style[property] !== height) {
+          fitted.style[property] = height;
         }
       }
     };
@@ -45,6 +56,11 @@ export function useWindowFit(
     fit();
     const observer = new ResizeObserver(schedule);
     observer.observe(document.body);
+    if (property === "height") {
+      // Setting its height changes its size once; the fit that follows finds the height already set, and stops there.
+      observer.observe(element);
+    }
+
     for (let node: Element | null = element; node !== null && node !== document.body; node = node.parentElement) {
       for (let before = node.previousElementSibling; before !== null; before = before.previousElementSibling) {
         observer.observe(before);
@@ -57,5 +73,5 @@ export function useWindowFit(
       observer.disconnect();
       window.removeEventListener("resize", schedule);
     };
-  }, [ref, below, min, target]);
+  }, [ref, below, min, target, property]);
 }

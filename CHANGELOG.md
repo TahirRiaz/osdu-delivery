@@ -22,6 +22,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   example key fills each part with what it read. `GET /delivery/flows/{pipelineId}/dimensions/{name}/blueprint` answers
   it from the catalog, the saved templates and the ledger ([osdu/docs/dimension-plan.md](osdu/docs/dimension-plan.md),
   The blueprint).
+- **An explorer of what OSDU holds.** The Explorer page browses the workbench's partition of OSDU live, through the
+  connection of a delivery flow that reaches it, and reads nothing the delivery system keeps. The kinds of its records
+  are a list of groups and types with their counts, from one search aggregation, beside a grid of the records that fits
+  its panel, draws only the rows in view and loads a hundred more as it scrolls, up to the search's first ten thousand.
+  One field takes a whole id (which opens the record), the start of one (completed with the partition), a name or any
+  text (a phrase, and for one word in a type the record whose id ends with it), or a Lucene query; a query the search
+  service refuses is answered plainer with a note, or with the service's words. Group by counts any property's values
+  within the records in view, the record's own for every type and a type's content read from one of its records, and a
+  value picked narrows the records to it. A record opens in the record inspector under the place it sits in, with its
+  links, the records that mention it, and, for an id OSDU holds nothing under, the records whose ids are near it.
+  Everything is in the page's address. The reads are the `delivery-explore` node operation and
+  `/api/v1/delivery/explorer/*` ([osdu/docs/explorer.md](osdu/docs/explorer.md)); the MCP server offers none of them.
+- **Any two versions of an OSDU record compare side by side.** The record inspector's Compare, on a record page's OSDU
+  tab as in the explorer, puts any two versions OSDU keeps side by side with what was added, changed and removed, in
+  place of the comparison with the latest alone; a version is read once and kept.
 - **The audit trail narrows to one flow.** A flow picker follows the trail's actor search, and the actor, action,
   outcome and idle filters work within the flow chosen. Its choices are the flows with activity in the workbench's partition
   (delivery flows, each interface of a source, and dimensions), which `GET /delivery/activities/flows` lists with one

@@ -214,6 +214,26 @@ export function idParts(id: string): { partition: string; group: string; type: s
   };
 }
 
+/** The properties a record is named by in its content, in the order they are tried. */
+const NAME_PROPERTIES = ["FacilityName", "Name", "ProjectName", "Code"];
+
+/** A record's own name, from its content; null when it holds none of the properties a record is named by. */
+export function recordNameOf(record: Record<string, unknown> | null | undefined): string | null {
+  const data = record?.data;
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    return null;
+  }
+
+  for (const property of NAME_PROPERTIES) {
+    const value = (data as Record<string, unknown>)[property];
+    if (typeof value === "string" && value.trim() !== "") {
+      return value;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Whether the unique part of an id was minted by a machine, a hash of 32 hex digits or a GUID, and so names nothing a
  * reader knows. A wellbore's `NO-33-9-C-28-B` or a reference value's `Equinor:NPHI` reads as a name; `5596f42c...`
