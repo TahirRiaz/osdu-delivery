@@ -37,6 +37,7 @@ const DeliveryAssertionsPage = lazyRoute("DeliveryAssertionsPage", () => import(
 const AssertionReportPage = lazyRoute("AssertionReportPage", () => import("./features/delivery/assertions/AssertionReportPage"));
 const DeliveryDimensionsPage = lazyRoute("DeliveryDimensionsPage", () => import("./features/delivery/dimensions/DeliveryDimensionsPage"));
 const ExplorerPage = lazyRoute("ExplorerPage", () => import("./features/delivery/explorer/ExplorerPage"));
+const DimensionBuilderPage = lazyRoute("DimensionBuilderPage", () => import("./features/delivery/explorer/dimension/DimensionBuilderPage"));
 
 const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
@@ -290,6 +291,8 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/dimensions", component: DeliveryDimensionsPage },
     // What OSDU holds, read live from it through a flow's credentials, which takes the operate scope.
     { path: "/delivery/explorer", component: ExplorerPage, requiredScope: "operate" },
+    // A dimension built from what OSDU holds, opened from the explorer and leaving it as it was.
+    { path: "/delivery/explorer/dimension", component: DimensionBuilderPage, requiredScope: "operate" },
   ],
   // Everything this product adds is one group of its own, rather than entries threaded through the platform's generic
   // ones. It sits straight after Workspace, and its entries read in the order the work is done: what has been delivered,
@@ -316,6 +319,7 @@ export const osduDeliveryModule: GuiModule = {
     { pattern: /^\/delivery\/records\/[^/]+/, title: () => "Record" },
     { pattern: /^\/delivery\/submissions\/([^/]+)/, title: (match) => `Submission ${shortId(match[1])}` },
     { pattern: /^\/delivery\/assertions\/runs\/(\d+)/, title: (match) => `Report #${match[1]}` },
+    { pattern: /^\/delivery\/explorer\/dimension/, title: () => "Build a dimension" },
   ],
   kinds: [deliveryKind, retrievalKind, cacheKind, assertionKind, dimensionKind],
   searchCategories: [

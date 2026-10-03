@@ -13,6 +13,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The explorer builds a dimension from picks.** **Build a dimension**, in the explorer's header, opens a workspace of
+  its own that writes the item a dimension flow lists under `dimensions:` from what a person picks in the records OSDU
+  holds, leaving browsing as it was. A property of one of the kind's records is made the key, or collected; the record
+  the example key names opens beside it, and a property there is read as the value or an attribute, or followed to the
+  records it names, up to the three records a value reads through. A pick that reaches several values (a list of
+  objects, several records) asks which is meant and suggests the filter keeping the one picked, such as
+  `data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName`. The table's columns are
+  renamed in place, each value's cleaning and the text for a key with nothing read are set beside them, and the rest
+  (description, every version, query, exact counts, most values) under More settings. The YAML is written by the
+  control plane, read back by the flow loader, described by the dimension's blueprint against the saved templates and
+  compared with the dimensions held, each problem pointed at its line and column; the arrows step through the keys held
+  by the most records, each made into its row by the build's own labelling, cleaning and counting, and How a row is
+  built draws it as the Definition tab does. Nothing is saved. `POST /delivery/explorer/dimension/sample` and
+  `/compose` answer it through the explorer's connection ([osdu/docs/explorer.md](osdu/docs/explorer.md), Building a
+  dimension).
 - **A dimension's Definition shows how its YAML builds it.** The Definition tab draws the dimension left to right: the
   records searched for every distinct key, each step of records found by id (a wellbore, then its field and its
   country), and the table, every path read in the template of the records it is read from (the forms of a `oneOf`

@@ -88,7 +88,7 @@ public sealed record DeliveryExplorerFieldsRequest(string? Kind);
 /// is always read the same way. Reading what OSDU holds with a flow's credentials is an operate action, as reading a record
 /// back is; which connection a partition is read through is anyone's to see.
 /// </remarks>
-public static class DeliveryExplorerEndpoints
+public static partial class DeliveryExplorerEndpoints
 {
     /// <summary>The routes the explorer reads through, best first; a route not listed (dspdm, etp) has no platform endpoint.</summary>
     private static readonly IReadOnlyList<DeliveryProtocol> Routes =
@@ -117,6 +117,7 @@ public static class DeliveryExplorerEndpoints
         delivery.MapPost("/explorer/search", SearchAsync).WithName("ExploreDeliveryOsduRecords");
         delivery.MapPost("/explorer/fields", FieldsAsync).WithName("ExploreDeliveryOsduFields");
         delivery.MapPost("/explorer/read", ReadAsync).WithName("ExploreDeliveryOsduRecord");
+        MapDimensionBuilderEndpoints(delivery);
         return delivery;
     }
 

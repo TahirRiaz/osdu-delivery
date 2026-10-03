@@ -148,8 +148,9 @@ internal sealed class FakeDimensionPlatform : HttpMessageHandler
     {
         var matched = Matching(body);
         var limit = body["limit"]?.GetValue<int>() ?? 10;
+        var offset = body["offset"]?.GetValue<int>() ?? 0;
         var fields = body["returnedFields"] is JsonArray returned ? returned.Select(f => f!.GetValue<string>()).ToList() : null;
-        var hits = matched.Take(limit).Select(r => (JsonNode?)(fields is null ? r.DeepClone() : Project(r, fields))).ToArray();
+        var hits = matched.Skip(offset).Take(limit).Select(r => (JsonNode?)(fields is null ? r.DeepClone() : Project(r, fields))).ToArray();
         var result = new JsonObject { ["results"] = new JsonArray(hits), ["totalCount"] = matched.Count };
         if (body["aggregateBy"]?.GetValue<string>() is { } aggregateBy)
         {

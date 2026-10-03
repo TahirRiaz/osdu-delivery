@@ -114,6 +114,65 @@ before it:
 Every record opened is remembered in the browser (the last twenty, nowhere else), under **Recent** and on the welcome,
 and so is every type browsed (the last twelve).
 
+## Building a dimension
+
+**Build a dimension**, in the explorer's header while the partition is reachable, opens a workspace of its own
+(`/delivery/explorer/dimension`) that writes a dimension's YAML from what a person picks in the records OSDU holds: the
+item a dimension flow lists under `dimensions:` ([dimension-plan.md](dimension-plan.md), The document). It starts from
+the kind or the type the explorer was showing (a type reads every version of its kind, `*:*:<type>:*`), or asks for one
+from the kinds of the partition with their counts. Browsing is left as it was: the builder is a page of its own, and
+**Explorer** goes back to the explorer as it was left.
+
+The workspace is read left to right, as a build reads:
+
+- **Searched**: one record of the kind. A property's menu makes it the **key** (its distinct values are the dimension's
+  keys), or **collects** it (an attribute holding every value the key's records hold there, each with its count).
+- **Found by id**: once a key is picked, the record the example key names, and the records those name in turn. A
+  property there is read as the **value** or as an **attribute**, or **followed** to the records it names, opening them
+  in a further card; a value or an attribute reads through at most three records, as the document allows. A card with
+  several records switches between them.
+- **The table**: a column for the key, the value and each attribute, each renamed in place and filled with the example
+  row; how each value is cleaned (`trim`, `collapseSpaces`, `upper`, `lower`, `nfc`, `nfkc`, `foldSeparators`, and any
+  number of `replace` steps, applied in the order picked) and what a key holds where nothing is read (`unlabelled`); and
+  under **More settings** the description, every version of the kind, the query, exact counting and the most values. A
+  `map` step, which reads a table of the database, is written in the flow file itself.
+- **The YAML**: written again as each pick is made. Each problem is listed with the part it is about, and pointing at it
+  lights the line and the column; **Copy** takes the YAML, and **How a row is built** draws it as a flow's Definition tab
+  draws a dimension, filled with the example key's row.
+
+A pick that reaches several values asks which is meant. A list of objects (the `GeoContexts` of a wellbore) or several
+records (the political entities a wellbore names) give several values where a build keeps the first it finds, and
+following them follows them all. The dialog lists them, suggests the filter that keeps the one picked, preferring a
+property that names a type (`data[GeoPoliticalEntityTypeID*=GeoPoliticalEntityType:Country:].GeoPoliticalEntityName`),
+marks what it keeps as it is changed and says what a build would then read; or the first is kept, or all followed. A
+filter's text holds no `]`, and one that keeps nothing is refused.
+
+**The example.** Before a key is picked, the arrows step through the kind's first 25 records. After, they step through
+the keys held by the most records (up to 25, as the search service groups them), and each fills every part: the record
+shown is one holding the key, the cards hold the records it names, and the table its row. The row is made by the build's
+own code (the labeller following at most 20 references a step, the cleaning, the attributes, the count of the records
+holding the key, and the collected values with theirs), so it reads what a build of the draft would read. Where the
+value is read from a record, a key naming no record, or whose record holds nothing at the value's path, takes the
+`unlabelled` text; without one, and where the key is its own value, it is the key as a value shows it (the code a record
+id ends with).
+
+**Checked as a flow's own dimension.** The YAML is written by the control plane's writer, which quotes whatever YAML
+would read otherwise (`yes`, `1.0`, `#`, a leading `-`, a colon and a space, a control character), and read back by the loader a flow
+is read by, so what the builder shows is what a flow loads. It is then described by the dimension's blueprint against
+the saved templates, and compared with the dimensions the database and the synced flows hold. An error is what the
+loader refuses (pointed at its part), or a key or a collected path of `data` with no saved template of the kind, which a
+build refuses too (with a link to the Templates page). A warning is a path a template does not declare, records reached
+by id that no saved template describes (read as written), or a name whose table another dimension writes.
+
+**Nothing is saved.** The builder makes no flow and no dimension, writes nothing to OSDU or the database, and keeps
+nothing of its own: the YAML is pasted into a dimension flow, which a repository sync brings in. Its reads are the
+explorer's (`delivery-explore`, through the same connection, as the actions `dimension-sample` and
+`dimension-example`), each a search: a page of the kind's records, the keys grouped by one aggregation, the records a
+trail reaches read once per id and type, and for the example the counts and groups of the records holding the key. A
+record is shown with every list cut at 50 items and every text at 2,000 characters, saying where. The draft (`d`), the
+cards opened (`o`), the example (`ex`) and the way back (`back`) are the page's address, so a link or a refresh lands on
+the same build. Reading OSDU with a flow's credentials takes the operate scope.
+
 ## Kept in the address
 
 The text and whether it is Lucene (`q`, `lq`), the place (`kind`, `*:*:*:*` for every type), the values narrowed to
@@ -131,9 +190,14 @@ partition for ten), so going back to a type or a page already read shows it at o
 | `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters` (`path`, `index` text, keyword, number, boolean or date, `value`; at most 12); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`) to group by. |
 | `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold, read from one of them. |
 | `POST /api/v1/delivery/explorer/read?partition=` | operate | One record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
+| `POST /api/v1/delivery/explorer/dimension/sample?partition=` | operate | What a drafted dimension reads ([Building a dimension](#building-a-dimension)). Body: `kind` (wildcards per segment), `query` (as long as a search's text), `path` (the key's), `key` (the example key), `at` (which of the first 25 records, from 0), `trails` (at most 16, each the one or two paths naming the records read next). Answers the record shown (cut, saying where), the count, the commonest keys with their counts (up to 25, `moreKeys` when there are more), how the key's path is indexed (`keyFieldGuessed` when no saved template says, read as text), the records each trail reaches with why one stops, and notes. |
+| `POST /api/v1/delivery/explorer/dimension/compose?partition=` | operate | A draft written as the item a dimension flow lists, and checked. Body: `draft` (`name`, `description`, `kind`, `query`, `path`, `label` (paths), `unlabelled`, `attributes` (`name`, `steps` or `collect`), `clean` (`step`, and a replace's `pattern` and `with`), `keyColumn`, `valueColumn`, `countRecords`, `maxValues`), and `example`, a key to make into its row. Answers `yaml`, `item` (its lines and the line each part is on), `dimension` and `blueprint` once it loads, `table`, `issues` (`severity`, `message`, `target`, `code`), `valid` (it loads, with no error), and the `example` row or `exampleProblem`. |
 
 Every read answers `200` with what it found; there is nothing to poll. A request the read would refuse (a kind that is
 not one, a filter value no exact match carries, a page past the window, text with a character that cannot be printed,
 an id that is not one) is refused with 400 before anything is read, and a partition no flow reaches with 409. A read
-OSDU refuses or fails answers 502, and one with no answer within 60 seconds 504, each with the reason, redacted. The MCP server offers none of these routes:
+OSDU refuses or fails answers 502, and one with no answer within 60 seconds 504, each with the reason, redacted. A
+compose answers `200` with whatever is wrong with the draft among its `issues`, and an example that cannot be made (no
+flow reaches the partition, OSDU refuses) as its `exampleProblem`; only a missing draft, or a part longer than 4,096
+characters or a list longer than 64 entries, is refused with 400. The MCP server offers none of these routes:
 it answers from metadata alone, and the explorer reads OSDU's data.

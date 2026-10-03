@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Layers, Telescope, Unplug } from "lucide-react";
+import { Layers, TableProperties, Telescope, Unplug } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { useAuth } from "@/auth/AuthContext";
@@ -21,6 +22,21 @@ import { ExplorerWelcome } from "./ExplorerWelcome";
 import {
   ALL_KINDS, filtersOf, filtersText, recordAt, rememberType, scopeKind, scopeLabel, scopeOf, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
 } from "./explorerModel";
+
+/**
+ * The dimension builder, started from the kind or the type in view (every version of a type), and given the way back to this
+ * view; a group or every type leaves the kind to pick there.
+ */
+function builderLink(scope: ExplorerScope, back: string): string {
+  const query = new URLSearchParams({ back });
+  if (scope.level === "kind") {
+    query.set("kind", scope.kind);
+  } else if (scope.level === "type") {
+    query.set("kind", `*:*:${scope.entityType}:*`);
+  }
+
+  return `/delivery/explorer/dimension?${query.toString()}`;
+}
 
 /** The least height the explorer keeps, so a short window still shows a few rows. */
 const MIN_HEIGHT = 420;
@@ -50,6 +66,7 @@ function WindowFrame({ hidden = false, children, testId }: { hidden?: boolean; c
  */
 export default function ExplorerPage() {
   const [params, setParams] = useSearchParams();
+  const location = useLocation();
   const [active, setActive] = useActivePartition();
   const { hasScope } = useAuth();
   const canOperate = hasScope("operate");
@@ -160,6 +177,16 @@ export default function ExplorerPage() {
         className="min-w-[280px] max-w-[760px] flex-1"
       />
       {(browsing || recordId !== null) && <ExplorerRecent onOpen={openRecent} />}
+      {reachable && (
+        <RichTooltip title="Build a dimension" body="Pick a dimension's key, value and attributes from the records shown, and get the YAML a dimension flow lists. Opens on its own; this view stays as it is.">
+          <Button variant="outline" size="sm" className="ml-auto" asChild>
+            <Link to={builderLink(scope, `${location.pathname}${location.search}`)} data-testid="explorer-build-dimension">
+              <TableProperties />
+              Build a dimension
+            </Link>
+          </Button>
+        </RichTooltip>
+      )}
     </div>
   );
 

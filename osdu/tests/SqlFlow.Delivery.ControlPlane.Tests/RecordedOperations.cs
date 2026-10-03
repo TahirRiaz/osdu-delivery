@@ -26,6 +26,12 @@ internal sealed class RecordedOperations
     /// <summary>What each operation was given, in the order it was asked.</summary>
     public ConcurrentQueue<ComputeTaskPayload> Given { get; } = new();
 
+    /// <summary>
+    /// What an operation answers a payload with, as its JSON, where a test wants a particular answer (or a failure, thrown):
+    /// null leaves it to the fixed document naming the operation.
+    /// </summary>
+    public Func<ComputeTaskPayload, string?>? Answer { get; set; }
+
     /// <summary>The registry the control plane runs from, made of stand-ins for every operation it runs.</summary>
     public DirectOperations Registry() => new(Names.Select(name => (IComputeOperation)new Recorder(name, this)));
 
@@ -50,7 +56,7 @@ internal sealed class RecordedOperations
         public Task<string> ExecuteAsync(ComputeTaskPayload payload, CancellationToken ct)
         {
             owner.Given.Enqueue(payload);
-            return Task.FromResult($$"""{"ran":"{{Name}}"}""");
+            return Task.FromResult(owner.Answer?.Invoke(payload) ?? $$"""{"ran":"{{Name}}"}""");
         }
     }
 }

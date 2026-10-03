@@ -8,8 +8,9 @@
 // can hold a record of its own for as long as it needs one, through /__e2e/records: a path of this stand-in, not of the
 // platform, so no flow reaches it. Holding a record again keeps a version of it, so a record can have a history. The
 // explorer's searches are answered over the same records: the kinds they are of, a page of them by type, a phrase, the
-// start of an id or the records that name one. Everything else answers 404, so a spec that tried to send a record would
-// fail loudly rather than reach a real OSDU.
+// start of an id or the records that name one, and the dimension builder's: the records holding any of several values,
+// every record but those, and a property's values grouped commonest first. Everything else answers 404, so a spec that
+// tried to send a record would fail loudly rather than reach a real OSDU.
 //
 // Started by playwright.config.ts beside the control plane, on SQLFLOW_E2E_OSDU_PORT (5301 by default).
 import { createServer } from "node:http";
@@ -156,12 +157,17 @@ function unescape(term) {
 }
 
 /**
- * Whether a record answers one clause of the queries the explorer writes: a phrase anywhere in it, an id exactly, an id
- * that starts with a prefix or ends with a unique part, or a property's whole value; and a clause of clauses joined by
- * AND, OR and AND NOT. Enough of Lucene to answer the explorer, and nothing more: what it does not read matches nothing.
+ * Whether a record answers one clause of the queries the explorer and the dimension builder write: every record, a phrase
+ * anywhere in it, an id exactly, an id that starts with a prefix or ends with a unique part, a property's whole value, one
+ * of several whole values, or a property that is there; and a clause of clauses joined by AND, OR and AND NOT. Enough of
+ * Lucene to answer them, and nothing more: what it does not read matches nothing.
  */
 function matches(record, query) {
   const text = query.trim();
+  if (text === "*") {
+    return true;
+  }
+
   if (text.startsWith("(") && text.endsWith(")") && balanced(text.slice(1, -1))) {
     return matches(record, text.slice(1, -1));
   }
@@ -196,8 +202,25 @@ function matches(record, query) {
 
   const property = /^([\w.]+?)(?:\.keyword)?:"((?:[^"\\]|\\.)*)"$/.exec(text);
   if (property !== null) {
-    const value = property[1].split(".").reduce((node, key) => (node !== null && typeof node === "object" ? node[key] : undefined), record);
-    return texts(value).includes(unescape(property[2]));
+    return texts(valueAt(record, property[1])).includes(unescape(property[2]));
+  }
+
+  // One of several whole values, as a dimension's filter and the reads of the records a key names ask: id:("a" OR "b").
+  const anyOf = /^([\w.]+?)(?:\.keyword)?:\((.+)\)$/.exec(text);
+  if (anyOf !== null && balanced(anyOf[2])) {
+    const wanted = splitTop(anyOf[2], " OR ").map((part) => /^"((?:[^"\\]|\\.)*)"$/.exec(part));
+    if (wanted.some((phrase) => phrase === null)) {
+      return false;
+    }
+
+    const held = anyOf[1] === "id" ? [record.id] : texts(valueAt(record, anyOf[1]));
+    return wanted.some((phrase) => held.includes(unescape(phrase[1])));
+  }
+
+  // A property that is there, which is how every record is asked for alongside a NOT: _exists_:id.
+  const exists = /^_exists_:([\w.]+)$/.exec(text);
+  if (exists !== null) {
+    return exists[1] === "id" ? record.id !== "" : texts(valueAt(record, exists[1])).length > 0;
   }
 
   return false;
@@ -274,7 +297,10 @@ function explore(body, partition) {
       }
     }
 
-    answer.aggregations = [...groups.entries()].map(([key, count]) => ({ key, count }));
+    // Commonest first, and by value among groups as common, as the service's terms aggregation orders them.
+    answer.aggregations = [...groups.entries()]
+      .sort(([a, x], [b, y]) => y - x || (a < b ? -1 : a > b ? 1 : 0))
+      .map(([key, count]) => ({ key, count }));
   }
 
   return answer;

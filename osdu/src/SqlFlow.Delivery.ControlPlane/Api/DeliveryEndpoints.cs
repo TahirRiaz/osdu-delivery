@@ -484,7 +484,7 @@ public static class DeliveryEndpoints
         ArgumentNullException.ThrowIfNull(group);
         var delivery = group.MapGroup("/delivery").WithTags("Delivery");
 
-        // The explorer's reads of what OSDU holds, each run on a node through a flow's connection, as a record's read-back is.
+        // The explorer's reads of what OSDU holds, each run in this process through a flow's connection, as a record's read-back is.
         delivery.MapDeliveryExplorerOperateEndpoints();
 
         // The records ride in the body, so the route reads a larger body than the default and no larger than that.

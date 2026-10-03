@@ -970,6 +970,13 @@ public static partial class DeliveryDimensionEndpoints
             dimensions.Sum(d => d.Keys));
     }
 
+    /// <summary>A dimension the explorer's builder drafted, as the dimension pages show one no build has registered yet.</summary>
+    internal static DeliveryDimensionDto DraftDto(DimensionSpec spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        return ToDto(spec, null, null, BuildIndex.None);
+    }
+
     private static DeliveryDimensionDto ToDto(DimensionSpec? spec, string? partition, DimensionState? state, BuildIndex builds)
     {
         var current = state?.LastRunId is { } id && builds.ById.TryGetValue(id, out var wrote) ? wrote : null;
@@ -1177,5 +1184,9 @@ public static partial class DeliveryDimensionEndpoints
     private static ProblemHttpResult Problem(int status, string title, string detail)
         => TypedResults.Problem(detail: detail, statusCode: status, title: title);
 
-    private sealed record BuildIndex(IReadOnlyDictionary<int, DimensionRunState> Latest, IReadOnlyDictionary<long, DimensionRunState> ById);
+    private sealed record BuildIndex(IReadOnlyDictionary<int, DimensionRunState> Latest, IReadOnlyDictionary<long, DimensionRunState> ById)
+    {
+        /// <summary>No build at all: a dimension only drafted.</summary>
+        public static BuildIndex None { get; } = new(new Dictionary<int, DimensionRunState>(), new Dictionary<long, DimensionRunState>());
+    }
 }

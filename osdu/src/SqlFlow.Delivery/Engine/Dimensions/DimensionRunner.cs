@@ -344,7 +344,7 @@ public sealed class DimensionRunner
             read = Counts(values, templatesJson, 0, [], labels, collected);
 
             var cleaner = Cleaner(dimension);
-            var attributes = KeyAttributes(dimension, values.Values.Keys, labels, collected);
+            var attributes = KeyAttributes(dimension, values.Values.Keys, labels, collected.Attributes);
             var (originals, members, notes, countQueries) = await GroupAsync(search, dimension, query, field, resolved.Repeats, cleaner, values, labels, attributes, ct).ConfigureAwait(false);
             notes.AddRange(collected.Notes);
             read = Counts(values, templatesJson, countQueries, notes, labels, collected);
@@ -371,6 +371,20 @@ public sealed class DimensionRunner
             return new DimensionBuildSummary(dimension.Name, DimensionRunStatus.Failed, run.DimensionRunId, 0, 0, 0, 0, 0, DimensionBuildChanges.None, read.Aggregations + read.ScanPages,
                 null, error, read.Notes.Take(DimensionBuildOutcome.MaxNotes).ToList());
         }
+    }
+
+    /// <summary>
+    /// What a key's value is cleaned from: its label when one was read; for a dimension that reads a label and names the value
+    /// of a key without one (<c>unlabelled</c>), that value; otherwise the key's own text as a value shows it (for a key
+    /// naming an OSDU record, the code its id ends with, its escapes decoded). A build and the dimension builder's example
+    /// value a key the same way.
+    /// </summary>
+    internal static string ValueSourceOf(DimensionSpec dimension, string original, KeyLabel? labelled)
+    {
+        ArgumentNullException.ThrowIfNull(dimension);
+        ArgumentNullException.ThrowIfNull(original);
+        return labelled?.Label
+            ?? (dimension.Label.Count > 0 && dimension.Unlabelled is { } unlabelled ? unlabelled : DimensionLabeler.DisplayOf(original));
     }
 
     /// <summary>
@@ -401,8 +415,7 @@ public sealed class DimensionRunner
             // key naming an OSDU record, the code its id ends with, its escapes decoded, so a value is ready to show. The key
             // keeps its own filter, the search that finds exactly the records holding it, and its attributes.
             var labelled = labels.Labels.TryGetValue(original, out var found) ? found : null;
-            var cleaned = cleaner.Clean(labelled?.Label
-                ?? (dimension.Label.Count > 0 && dimension.Unlabelled is { } unlabelled ? unlabelled : DimensionLabeler.DisplayOf(original)));
+            var cleaned = cleaner.Clean(ValueSourceOf(dimension, original, labelled));
             var filterable = DimensionFilters.Filterable(field, original);
             var filter = filterable ? DimensionFilters.Of(field, [original])[0] : null;
             var attributes = keyAttributes.GetValueOrDefault(original);
@@ -660,10 +673,12 @@ public sealed class DimensionRunner
 
     /// <summary>
     /// Each key's attribute values: those read from the record it names, the value the dimension names for what is not read
-    /// under each such attribute a key has none of, and the values it collects from its own records.
+    /// under each such attribute a key has none of, and the values it collects from its own records. A build and the
+    /// dimension builder's example give a key its attributes the same way.
     /// </summary>
-    private static Dictionary<string, IReadOnlyList<DimensionAttributeState>> KeyAttributes(
-        DimensionSpec dimension, IEnumerable<string> keys, KeyLabels labels, CollectedRead collected)
+    internal static Dictionary<string, IReadOnlyList<DimensionAttributeState>> KeyAttributes<TCollected>(
+        DimensionSpec dimension, IEnumerable<string> keys, KeyLabels labels, IReadOnlyDictionary<string, TCollected> collected)
+        where TCollected : IEnumerable<DimensionAttributeState>
     {
         var throughKeys = dimension.Attributes.Where(a => !a.IsCollected).Select(a => a.Name).ToList();
         var all = new Dictionary<string, IReadOnlyList<DimensionAttributeState>>(StringComparer.Ordinal);
@@ -680,7 +695,7 @@ public sealed class DimensionRunner
                 values.AddRange(throughKeys.Where(name => values.All(v => v.Name != name)).Select(name => new DimensionAttributeState(name, none, null)));
             }
 
-            if (collected.Attributes.TryGetValue(key, out var collects))
+            if (collected.TryGetValue(key, out var collects))
             {
                 values.AddRange(collects);
             }

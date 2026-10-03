@@ -58,12 +58,12 @@ public sealed class DimensionLabeler
     /// The most records one step follows for one key: a wellbore names a handful of fields and political entities, and a
     /// path reading more is bounded rather than read whole.
     /// </summary>
-    private const int MaxReferencesPerStep = 20;
+    internal const int MaxReferencesPerStep = 20;
 
     /// <summary>The name the label's chain goes by among the attributes', which no attribute can take.</summary>
     private const string LabelChain = "label";
 
-    private static readonly OsduField Id = OsduField.Keyword("id");
+    internal static readonly OsduField Id = OsduField.Keyword("id");
 
     private readonly OsduSearch _search;
     private readonly ILogger _log;
@@ -112,7 +112,7 @@ public sealed class DimensionLabeler
         var start = new Dictionary<string, (IReadOnlyList<string> References, string? Problem)>(keys.Count, StringComparer.Ordinal);
         foreach (var key in keys)
         {
-            start[key] = TargetId.IsRecordReference(key.Trim()) ? ([TargetId.WithoutVersion(key.Trim())], null) : ([], "it names no OSDU record");
+            start[key] = StartOf(key) is { } first ? ([first], null) : ([], NamesNoRecord);
         }
 
         var reached = chains.ToDictionary(c => c, _ => new Dictionary<string, (IReadOnlyList<string> References, string? Problem)>(start, StringComparer.Ordinal));
@@ -201,14 +201,7 @@ public sealed class DimensionLabeler
                     }
 
                     // Every reference the records reached hold at the path, in order, each once: the next step reads them all.
-                    var next = held
-                        .SelectMany(id => path.Read(records[id]))
-                        .Select(v => v.Trim())
-                        .Where(TargetId.IsRecordReference)
-                        .Select(TargetId.WithoutVersion)
-                        .Distinct(StringComparer.Ordinal)
-                        .Take(MaxReferencesPerStep)
-                        .ToList();
+                    var next = ReferencesAt(path, held.Select(id => records[id]));
                     where[key] = next.Count == 0 ? ([], $"record {held[0]} holds no record reference at {path.Text}") : (next, null);
                 }
             }
@@ -269,7 +262,7 @@ public sealed class DimensionLabeler
         {
             var fields = new List<string>(need.Paths.Count + 1) { "id" };
             fields.AddRange(need.Paths.Order(StringComparer.Ordinal));
-            asks.AddRange(need.Ids.Order(StringComparer.Ordinal).Chunk(IdsPerQuery).Select(chunk => ($"*:*:{type}:*", fields, chunk)));
+            asks.AddRange(need.Ids.Order(StringComparer.Ordinal).Chunk(IdsPerQuery).Select(chunk => (KindOfType(type), fields, chunk)));
         }
 
         // Each search asks for records of its own, so they are asked several at a time and gathered as they answer.
@@ -334,8 +327,40 @@ public sealed class DimensionLabeler
         }
     }
 
+    /// <summary>Why a key has no label when it names no record.</summary>
+    internal const string NamesNoRecord = "it names no OSDU record";
+
+    /// <summary>The record a key names, without its version, where a label is read from first; null for a key that names none.</summary>
+    internal static string? StartOf(string key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        var trimmed = key.Trim();
+        return TargetId.IsRecordReference(trimmed) ? TargetId.WithoutVersion(trimmed) : null;
+    }
+
+    /// <summary>
+    /// Every record reference <paramref name="path"/> holds in <paramref name="records"/>, in the order they are reached, each
+    /// once and without its version, at most <see cref="MaxReferencesPerStep"/>: the records the next step reads.
+    /// </summary>
+    internal static List<string> ReferencesAt(DimensionPath path, IEnumerable<JsonObject> records)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        ArgumentNullException.ThrowIfNull(records);
+        return records
+            .SelectMany(path.Read)
+            .Select(v => v.Trim())
+            .Where(TargetId.IsRecordReference)
+            .Select(TargetId.WithoutVersion)
+            .Distinct(StringComparer.Ordinal)
+            .Take(MaxReferencesPerStep)
+            .ToList();
+    }
+
+    /// <summary>The kind every record of an entity type is searched in: <c>*:*:master-data--Wellbore:*</c>.</summary>
+    internal static string KindOfType(string entityType) => $"*:*:{entityType}:*";
+
     /// <summary>The entity type an id names: its second segment (<c>master-data--Wellbore</c>).</summary>
-    private static string EntityTypeOf(string id) => id.Split(':')[1];
+    internal static string EntityTypeOf(string id) => id.Split(':')[1];
 
     /// <summary>A problem without the record it names, so keys stopped for the same reason are counted together.</summary>
     private static string Reason(string problem)

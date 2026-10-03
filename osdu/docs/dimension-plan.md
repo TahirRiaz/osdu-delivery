@@ -373,6 +373,11 @@ of each segment of its path. Once built, an example key (of those with the most 
 read: the key, its label and the record it came from, each attribute's value and the record it was read from, the values
 it collects, and its row.
 
+The explorer's dimension builder ([explorer.md](explorer.md), Building a dimension) works the other way round: a person
+picks the key, the value and the attributes in the records OSDU holds, and the builder writes the item, reads it back with
+this loader, describes it with this blueprint before any build, and makes an example key's row with a build's own
+labelling, cleaning and counting. Nothing it writes reaches the catalog until the YAML is put in a flow.
+
 ## Removing a dimension
 
 A dimension its flow no longer declares is built no more, and keeps what its last build wrote, so taking it out of the

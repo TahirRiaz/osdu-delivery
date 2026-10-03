@@ -77,13 +77,7 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
                 continue;
             }
 
-            var value = DimensionLabeler.DisplayOf(text).Trim();
-            if (value.Length > DimensionSpec.MaxAttributeValueLength)
-            {
-                value = value[..DimensionSpec.MaxAttributeValueLength];
-            }
-
-            if (value.Length > 0)
+            if (ShownAs(text) is { } value)
             {
                 shown[text] = value;
             }
@@ -316,6 +310,23 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
     }
 
     /// <summary>Whether a key can be the end of a range: the query language can carry it as a bound of the field.</summary>
+    /// <summary>
+    /// A text the dimension's records hold at a collected path, as a key shows it: as a label is (a reference by the code its
+    /// id ends with, its escapes decoded), trimmed, and cut at the longest attribute value; null when that leaves nothing,
+    /// which is no value. A build and the dimension builder's example show it the same way.
+    /// </summary>
+    internal static string? ShownAs(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var value = DimensionLabeler.DisplayOf(text).Trim();
+        if (value.Length > DimensionSpec.MaxAttributeValueLength)
+        {
+            value = value[..DimensionSpec.MaxAttributeValueLength];
+        }
+
+        return value.Length > 0 ? value : null;
+    }
+
     private static bool Bounds(OsduField keyField, string key)
     {
         try
