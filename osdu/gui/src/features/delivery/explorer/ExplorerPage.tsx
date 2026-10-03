@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { useAuth } from "@/auth/AuthContext";
+import { useSideBarFold } from "@/layout/workbench/SideBarRoom";
 import { EmptyState } from "@/components/EmptyState";
 import { Page } from "@/components/Page";
 import { RichTooltip } from "@/components/RichTooltip";
@@ -127,6 +128,9 @@ export default function ExplorerPage() {
     return read?.found === true && typeof read.record?.kind === "string" ? read.record.kind : null;
   };
   const startKind = buildKind(scope) ?? build.recordKind ?? "";
+  const building = build.draft !== null && connection.data?.available === true;
+  // The workbench's side bar is folded while the builder is docked, so the records and the builder share the width.
+  useSideBarFold(building);
 
   // The types are counted for the search and its values, never for the place: the list is what a place is picked from.
   const typesRequest: ExplorerSearchRequest = { text: text === "" ? undefined : text, lucene, filters };
@@ -289,7 +293,7 @@ export default function ExplorerPage() {
   }
 
   // While a dimension is built, the builder docks beside whatever the explorer shows, in a frame of the same height.
-  if (build.draft !== null && connection.data?.available === true) {
+  if (building) {
     content = (
       <WindowFrame testId="explorer-build-frame">
         <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">

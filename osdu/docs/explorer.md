@@ -117,7 +117,9 @@ and so is every type browsed (the last twelve).
 ## Building a dimension
 
 **Build a dimension**, in the explorer's header, turns the explorer into a dimension's workbench: the builder docks beside
-the records, and everything else stays as it is. The records are browsed, searched and drilled into as ever, and each
+the records, and everything else stays as it is. The workbench's side bar folds while the builder is docked, so the
+records and the builder share the width; the activity bar opens it meanwhile, and it comes back as it was left when the
+builder closes. The records are browsed, searched and drilled into as ever, and each
 part of the dimension is picked on the value it is read from, in the record where it is. The output is the item a
 dimension flow lists under `dimensions:` ([dimension-plan.md](dimension-plan.md), The document).
 

@@ -95,8 +95,11 @@ async function buildOnWellLogs(page: Page) {
   await expect(logs).toContainText("5", { timeout: 60_000 });
   await logs.getByRole("button").last().click();
   await expect(page.getByTestId("explorer-grid").getByTestId("explorer-grid-row")).toHaveCount(5, { timeout: 60_000 });
+  await expect(page.getByTestId("nav-delivery-explorer")).toBeVisible();
   await page.getByTestId("explorer-build-dimension").click();
   await expect(page.getByTestId("builder-panel")).toBeVisible();
+  // The workbench's side bar folds while the builder is docked, so the records and the builder share the width.
+  await expect(page.getByTestId("nav-delivery-explorer")).toBeHidden();
   await expect(page.getByTestId("builder-kind")).toContainText("WellLog");
   await expect(page.locator('[data-testid="builder-suggestion"][data-path="data.WellboreID"]')).toHaveAttribute("aria-pressed", "true", { timeout: 60_000 });
 }
@@ -296,6 +299,7 @@ test.describe.serial("dimension builder", () => {
     await adminPage.getByTestId("confirm-dialog-confirm").click();
     await expect(adminPage.getByTestId("builder-panel")).toHaveCount(0);
     await expect(adminPage.getByTestId("explorer-build-dimension")).toBeVisible();
+    await expect(adminPage.getByTestId("nav-delivery-explorer")).toBeVisible();
     await expect(adminPage.getByTestId("explorer-grid").getByTestId("explorer-grid-row")).toHaveCount(5);
   });
 });

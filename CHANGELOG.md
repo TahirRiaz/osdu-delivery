@@ -14,7 +14,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 ### Added
 
 - **The explorer builds a dimension while it browses.** **Build a dimension**, in the explorer's header, docks a builder
-  beside the records, and the records are browsed, searched and drilled into as ever. The kind's saved template says
+  beside the records, and the records are browsed, searched and drilled into as ever; the workbench's side bar folds
+  while it is docked, and comes back as it was left when it closes. The kind's saved template says
   which values name other records: they are marked with a key in every record of the kind and listed in the builder, the
   likeliest made the key as the build starts (a log's `WellboreID`, a wellbore's `WellID`). Beside every value, in the
   fields and the JSON views, a menu makes it the key or collects it in a record of the kind, or reads it as the value or
