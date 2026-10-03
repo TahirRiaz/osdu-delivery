@@ -13,6 +13,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A dimension's Definition shows how its YAML builds it.** The Definition tab draws the dimension left to right: the
+  records searched for every distinct key, each step of records found by id (a wellbore, then its field and its
+  country), and the table, every path read in the template of the records it is read from (the forms of a `oneOf`
+  looked into, a filter's property looked up) and every set of records with no template saved marked as read unchecked.
+  Under it, the dimension's YAML as the flow writes it: pointing at a line, a read or a column lights everything that
+  makes the same column, a click explains it with what the template says of each segment of its path, and once built an
+  example key fills each part with what it read. `GET /delivery/flows/{pipelineId}/dimensions/{name}/blueprint` answers
+  it from the catalog, the saved templates and the ledger ([osdu/docs/dimension-plan.md](osdu/docs/dimension-plan.md),
+  The blueprint).
 - **The audit trail narrows to one flow.** A flow picker follows the trail's actor search, and the actor, action,
   outcome and idle filters work within the flow chosen. Its choices are the flows with activity in the workbench's partition
   (delivery flows, each interface of a source, and dimensions), which `GET /delivery/activities/flows` lists with one

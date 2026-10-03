@@ -285,6 +285,9 @@ public sealed record DimensionMemberAttributes(long MemberId, IReadOnlyList<Dime
 /// </summary>
 public sealed record DimensionAttributeValueState(string Value, int Keys, long Records);
 
+/// <summary>How much of one attribute a build read: the keys a build finds now holding a value read for it, and how many values those are.</summary>
+public sealed record DimensionAttributeCoverage(string Name, int Keys, int Values);
+
 /// <summary>
 /// Which values of one attribute a list reads: those among the keys a build finds now that hold every match of
 /// <paramref name="Attributes"/> but one of the attribute itself, and belong to one of <paramref name="MemberIds"/> when

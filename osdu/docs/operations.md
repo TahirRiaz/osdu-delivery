@@ -116,6 +116,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /assertion-runs/{assertionRunId}/report?format=` | read | The run's report as a file: `json`, `md`, `html` (a page with no script, which prints) or `junit` (a suite per kind, a case per test). 400 for another format. |
 | `GET /dimensions` | read | The dimensions of every active dimension flow ([dimension-plan.md](dimension-plan.md)) in the partition `?partition=` names, else the workbench's: per flow its partitions and whether it builds in this one (`buildsPartition`), its ledger, the `parameters` a run takes, and each dimension it declares (and each its ledger keeps that it no longer declares) with its declaration, what it calls its key and its value (`keyColumn`, `valueColumn`: the names of the two columns of its table, after what it reads or as the flow names them), how the index stores its field, what it holds, the build that wrote that (`current`), the newest build when that is another one (`latest`: failed, cancelled or running), and whether its declaration `changed` since; and the `totals`. A flow whose document does not parse, or that does not build in the partition, says why in `problem`. |
 | `GET /flows/{pipelineId}/dimensions` | read | One dimension flow's dimensions, as above. 409 for a pipeline that is not a dimension flow. |
+| `GET /flows/{pipelineId}/dimensions/{name}/blueprint?partition=` | read | How a dimension of the flow is built ([dimension-plan.md](dimension-plan.md), The blueprint): its YAML (`yaml`: the file, the lines of its item from `firstLine`, and `spans`, where each thing it declares is written), or why none is shown (`yamlMissing`, for one the flow no longer declares); the `blueprint`: the dimension's own records (`source`: kind, query, the kinds read or matched with their records and templates, and the reads of the key and each collected path, with the field the search aggregates), the records read by id step by step (`records`: depth, entity types, the read naming them, the template describing them, and the paths read, each with what the template says of every segment and what keeps it from being read as meant), and the table's `columns` with the reads each is written from; and `coverage`, how many keys hold a value read for each attribute and how many values. Reads the catalog, the saved templates and the ledger only. 404 for a name the flow does not declare and its ledger does not keep, 409 for a pipeline that is not a dimension flow or whose YAML does not parse. |
 | `GET /dimensions/{dimensionId}` | read | One dimension, with the pipeline that declares it and the parameters a build takes. |
 | `GET /dimensions/{dimensionId}/values?search=&order=&removed=&attr=&after=&limit=` | read | A page of its values (100 by default, at most 1,000) in value order or with the most records first (`order=records`), found by the value or any key (`search`, ignoring case) and narrowed by attributes (`attr=Country:Norway`, repeated: any value of one attribute, all attributes, held by one key), each with its records, its search filter, the keys most records hold (`top`, each with its label) and the values its keys' attributes hold. `next` is the cursor of the next page, handed back as `after`. |
 | `GET /dimensions/{dimensionId}/values/{valueId}` | read | One value: its keys, the most records first, each with its label and filter; the value's filter, or why none can be written; and the changes that brought keys to it or took them away. |
@@ -690,12 +691,18 @@ Pipelines like any other flow.
   (found by what is typed); a chip per attribute shows what narrows the grid. A value the dimension gives what it could
   not read (Not specified) is drawn faint. **Changes**: the change log by build, narrowed to what arrived, left, moved
   or came back. **Builds**: every build with its outcome, duration (its reading and its write), values, coverage, changes and how it read, each
-  opening whole (its notes, the kinds and templates it read, the keys labelled, every count). **Definition**, in four
-  parts whose facts line up: **Table** (the table's name, its columns with what each holds on hover, what it is joined
-  on, and the query that reads it, each to copy), **Reads** (the kind, path, query, how the index stores the field and
-  the aggregation that reads it, how records are counted, the most keys read), **Values** (the label as a path from the
-  key's record to the text read, what a key without one is valued, and the clean steps as a pipeline to the value) and
-  **Attributes** (each attribute's path, or the path it collects); then the kinds its last build read. **Export**
+  opening whole (its notes, the kinds and templates it read, the keys labelled, every count). **Definition** draws how the
+  flow's YAML builds the dimension, read against the templates of every record it reads (dimension-plan.md, The
+  blueprint): left to right, the records searched for every distinct key, each step of records found by id (a wellbore,
+  then its field and its country), and the table, each card with the template version describing it or a mark where none
+  is saved, each read with what it makes, a dashed line from a read to the records its ids name and a solid one to the
+  column it writes. Under it, the dimension's YAML as the file holds it, comments and all: pointing at a line, a read or a
+  column lights everything that makes the same column, in the diagram and in the YAML, and a click explains it in the
+  panel beside: what it is for, where and how it is read, what the template says of each segment of its path (its type,
+  how the index stores an array, the form of a choice that declares it, a filter's property), the records it names, what
+  a column holds, how much of an attribute was read, and what keeps a read from working as meant. Once built, an example
+  key fills each part with what it read, stepped through the keys with the most records. A dimension no build has read
+  yet shows the same under its notice. **Export**
   downloads the whole dimension as CSV or JSON Lines: its **table** (row for row as the database holds it), its values,
   or its keys. **Build a search** composes the OSDU search a filter
   panel needs: pick the kind, then values in any of its dimensions through a picker that finds a value by itself or any

@@ -31,7 +31,7 @@ const VIEW_PURPOSE: Record<DimensionView, string> = {
   keys: "Every key exactly as the index holds it (an id, for a reference), with the value it belongs to, its attributes, and the search finding exactly its records.",
   changes: "What each build changed: the keys that arrived, left, came back, or moved to another value.",
   builds: "Every build: what it found, how it read the index and the labels, how complete the keys are, and what it changed.",
-  definition: "How the flow declares the dimension: the kind, query and path it reads, where a key's label and attributes are read, how the index stores the field, and the steps that clean each value.",
+  definition: "How the flow's YAML builds the dimension: the records it searches, the records it reads by id through each key, every path against the template of the records it is read from, and the column of the table each one writes. Point at a line of the YAML to see what it does.",
 };
 
 const VIEW_LABEL: Record<DimensionView, string> = {
@@ -303,17 +303,20 @@ export function DimensionWorkspace({ entry, siblings, view, onView, value, onVal
 
       {dimension.dimensionId === null
         ? (
-          <Card className="gap-0 rounded-lg p-0">
-            <EmptyState
-              icon={<Shapes />}
-              title={`${dimension.name} has not been built in this partition`}
-              description="A build reads every distinct key of the path from the OSDU search, paging past the search's limit on distinct values, reads each key's label from the record it names when the dimension asks for one, and cleans it into its value, keeping every key beside its value. Run the flow's pipeline to see its values."
-              action={dimension.declared
-                ? <Button size="sm" onClick={build} data-testid="dimension-build-first"><Play />Run pipeline</Button>
-                : undefined}
-              data-testid="dimension-not-built"
-            />
-          </Card>
+          <>
+            <Card className="gap-0 rounded-lg p-0">
+              <EmptyState
+                icon={<Shapes />}
+                title={`${dimension.name} has not been built in this partition`}
+                description="A build reads every distinct key of the path from the OSDU search, paging past the search's limit on distinct values, reads each key's label from the record it names when the dimension asks for one, and cleans it into its value, keeping every key beside its value. Below is how its YAML builds it. Run the flow's pipeline to see its values."
+                action={dimension.declared
+                  ? <Button size="sm" onClick={build} data-testid="dimension-build-first"><Play />Run pipeline</Button>
+                  : undefined}
+                data-testid="dimension-not-built"
+              />
+            </Card>
+            {dimension.declared && <DimensionDefinition entry={entry} />}
+          </>
         )
         : (
           <>

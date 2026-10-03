@@ -325,6 +325,39 @@ public sealed partial class OsduLedger
             : page.Select(m => byMember.TryGetValue(m.MemberId, out var attributes) ? m with { Attributes = attributes } : m).ToList();
     }
 
+    public async Task<IReadOnlyList<DimensionAttributeCoverage>> DimensionAttributeCoverageAsync(int dimensionId, CancellationToken ct = default)
+    {
+        if (await DimensionPartitionAsync(dimensionId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return [];
+        }
+
+        var names = (await AttributeIdsAsync(partition, dimensionId, ct).ConfigureAwait(false)).ToDictionary(n => n.Value, n => n.Key);
+        if (names.Count == 0)
+        {
+            return [];
+        }
+
+        // A value read keeps where it was read; the value a key holding none is given keeps nothing there. Counted over the keys a
+        // build finds now, from the index on attribute and value.
+        var rows = await ReadAsync(
+            db =>
+            {
+                var keys = db.DeliveryDimensionValues.Where(v => v.PartitionId == partition && v.DimensionId == dimensionId && v.RemovedRunId == null);
+                return db.DeliveryDimensionAttributeValues.AsNoTracking()
+                    .Where(a => a.PartitionId == partition && a.DimensionId == dimensionId && a.ValueFrom != null)
+                    .Join(keys, a => a.ValueId, v => v.ValueId, (a, v) => new { a.AttributeId, a.ValueId, a.Value })
+                    .GroupBy(x => x.AttributeId)
+                    .Select(g => new { AttributeId = g.Key, Keys = g.Select(x => x.ValueId).Distinct().Count(), Values = g.Select(x => x.Value).Distinct().Count() })
+                    .ToListAsync(ct);
+            },
+            ct).ConfigureAwait(false);
+        return rows.Where(r => names.ContainsKey(r.AttributeId))
+            .Select(r => new DimensionAttributeCoverage(names[r.AttributeId], r.Keys, r.Values))
+            .OrderBy(r => r.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
     public async Task<IReadOnlyList<DimensionMemberAttributes>> MemberAttributesAsync(
         int dimensionId, IReadOnlyCollection<long> memberIds, int perAttribute, CancellationToken ct = default)
     {

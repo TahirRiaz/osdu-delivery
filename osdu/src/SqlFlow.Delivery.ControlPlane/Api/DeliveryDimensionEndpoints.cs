@@ -224,7 +224,7 @@ public sealed record DeliveryDimensionSearchDto(
 /// the record a key names or cleaned from the key; every key and value carries the filter that finds its records. Every read
 /// answers from the ledger; nothing here talks to OSDU, and building a dimension is a run like any other.
 /// </summary>
-public static class DeliveryDimensionEndpoints
+public static partial class DeliveryDimensionEndpoints
 {
     /// <summary>The values or keys a page holds when the request names no limit.</summary>
     public const int DefaultPage = 100;
@@ -255,6 +255,7 @@ public static class DeliveryDimensionEndpoints
         ArgumentNullException.ThrowIfNull(delivery);
         delivery.MapGet("/dimensions", GetBoardAsync).WithName("GetDeliveryDimensionBoard");
         delivery.MapGet("/flows/{pipelineId:guid}/dimensions", GetFlowBoardAsync).WithName("GetDeliveryDimensionFlowBoard");
+        delivery.MapGet("/flows/{pipelineId:guid}/dimensions/{name}/blueprint", GetBlueprintAsync).WithName("GetDeliveryDimensionBlueprint");
         delivery.MapGet("/dimensions/{dimensionId:int}", GetDimensionAsync).WithName("GetDeliveryDimension");
         delivery.MapGet("/dimensions/{dimensionId:int}/table", ReadTableAsync).WithName("ReadDeliveryDimensionTable");
         delivery.MapGet("/dimensions/{dimensionId:int}/values", ListValuesAsync).WithName("ListDeliveryDimensionValues");

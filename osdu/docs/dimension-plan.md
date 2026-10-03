@@ -20,7 +20,7 @@ value and key. A dimension's own table goes one step further: its two columns ar
 table).
 
 Each stage lists what it changes and the tests that close it. A stage is finished only when those tests pass, SQL Server
-suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 13 are built; the recall estate
+suites included. All work is in `osdu/`; nothing in `sqlflow/` changes. Stages 1 to 14 are built; the recall estate
 (`B:\osdu-recall-metadata`) holds a demo flow, `recall/flows/recall-welllog-05-dimensions.yaml`, whose one dimension,
 Wellbore, carries the filters of PetroDB's Log Explorer (country, field, UUID, and the sources its logs collect) as its
 attributes, the table its cascading selects read. The live check listed under Close-out has not been run.
@@ -333,6 +333,46 @@ CLI also answer one select's list from the ledger (`attributes/<name>?attr=...&v
 belonging to the values picked, a pick of the attribute itself aside. A list counts keys exactly; its records are those
 of the keys holding each value (for a collected value, of its records).
 
+## The blueprint
+
+A dimension's YAML says what to read, and the templates say what the records hold; the blueprint puts the two together,
+so a person sees how a build makes each column, before a build and after one (`GET
+/flows/{pipelineId}/dimensions/{name}/blueprint`, the page's **Definition** tab, `DimensionBlueprints`). It reads the
+catalog's copy of the flow, the saved templates and the ledger; nothing is sent to OSDU.
+
+- **The YAML, line by line.** The dimension's item under `dimensions`, comments and all, with where each thing it
+  declares is written (`DimensionYamlSource`): its keys, each path of its label and of each attribute by its place
+  (`label.0`, `attributes.Country.1`), a collected path (`attributes.Source.collect`), each clean step and each column's
+  name. A list or a map written in brackets ends after its closing bracket, and a folded text on its own last line, so
+  pointing at a line finds exactly what it declares.
+- **The dimension's own records.** The kinds its last build read, each with its records and the template version it was
+  read against; before a build, or once the kind pattern has changed, the saved templates the pattern matches. The key
+  and each collected path are classified as the build classifies them (`SearchFields.ClassifyValue`, or the indexer's
+  mapping for a property of the record itself), so the field a build aggregates is known before it runs, and a path the
+  index cannot read says why.
+- **The records read by id.** Each step of the label and of each attribute is read in the records the step before names:
+  the entity types the value names by the template's `x-osdu-relationship` (the logs' `data.WellboreID` names
+  `master-data--Wellbore`), described by the newest saved template of that type. Steps are grouped as a build groups its
+  searches, one entity type at one depth, so a wellbore read for its name, UUID, field and country is one set of records.
+  Each path is read segment by segment through the template (`SchemaPathReader`): the forms of a `oneOf` or `anyOf` are
+  looked into (a wellbore's `GeoContexts` holds five kinds of context, and only the field's declares `FieldID`), and a
+  filter's property is looked up in the objects it compares. A type with no saved template is drawn and named, its paths
+  read as written, unchecked; a step whose type no template names is named by the read before it.
+- **What is wrong is said, not refused.** A key the template does not declare a reference while labels or attributes are
+  read through it, a step before the last that names no record, a last step holding an object, a path the template does
+  not declare: a build reads a label's records as they are, so none of these stops it, and the page marks each.
+- **The table's columns**, in the table's order, each with the reads it is written from, and for each attribute how many
+  of the keys a build finds now hold a value read for it, and how many values those are
+  (`ILedger.DimensionAttributeCoverageAsync`, from the index on attribute and value).
+
+The page draws it left to right: the records searched, each step of records found by id, then the table; a dashed line
+runs from a read to the records its ids name, a solid one from a read to the column written from it, and a line that
+passes a lane runs between its cards. Pointing at a line of the YAML, a read or a column lights everything that makes the
+same column, in the diagram and in the YAML; a click explains it in the panel beside the YAML, with what the template says
+of each segment of its path. Once built, an example key (of those with the most records) fills each part with what it
+read: the key, its label and the record it came from, each attribute's value and the record it was read from, the values
+it collects, and its row.
+
 ## Removing a dimension
 
 A dimension its flow no longer declares is built no more, and keeps what its last build wrote, so taking it out of the
@@ -589,6 +629,19 @@ integration brief's aggregation facts, and the samples README.
   name another column holds refused with nothing renamed; a reader making a dropped table under the names it had and a
   first table under the names the dimension reads by; a page ordered by a column's name and by the two words; the
   API's names and export; the migration up, down with a renamed table, and up again.
+
+### Stage 14: the blueprint
+
+- `DimensionYamlSource` (the dimension's YAML, and where each thing it declares is written), `SchemaPathReader` (a path
+  through a template, the forms of a choice and a segment's filter included), `DimensionBlueprints` and `KindPatterns`;
+  `ILedger.DimensionAttributeCoverageAsync`; `GET /flows/{pipelineId}/dimensions/{name}/blueprint`.
+- The **Definition** tab drawn as the blueprint: the diagram, the YAML with every line linked to it, the panel explaining
+  what is picked, and an example key; shown under the notice of a dimension no build has read yet, too.
+- Tests: the YAML's spans (a folded description, a list on one line, a map in braces, the next item kept out); a path
+  through a `oneOf` and a filter; the recall Wellbore dimension laid out through the logs, the wellbore, a field with no
+  template saved and a country with one; the kinds a build read; no template saved; a key no template calls a reference
+  and a path the index cannot read; kind patterns; the API's blueprint with its YAML, columns and coverage, a dimension
+  the flow no longer declares, and the refusals (SQL Server).
 
 ## Close-out
 

@@ -1974,6 +1974,13 @@ public interface ILedger
         int dimensionId, DimensionAttributeValueQuery query, CancellationToken ct = default);
 
     /// <summary>
+    /// How much of each attribute a build read, over the dimension's keys a build finds now: the keys holding a value read
+    /// from a record or collected from their own (not the dimension's value for what is not read), and how many values those
+    /// are. An attribute no key holds a read value of is left out.
+    /// </summary>
+    Task<IReadOnlyList<DimensionAttributeCoverage>> DimensionAttributeCoverageAsync(int dimensionId, CancellationToken ct = default);
+
+    /// <summary>
     /// The values each attribute holds among the keys a build finds now of each of <paramref name="memberIds"/>: the most keys
     /// first, at most <paramref name="perAttribute"/> per attribute of a member.
     /// </summary>

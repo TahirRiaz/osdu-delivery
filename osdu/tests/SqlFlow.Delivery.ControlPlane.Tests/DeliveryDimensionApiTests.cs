@@ -407,6 +407,36 @@ public sealed class DeliveryDimensionApiTests
                 new DimensionFieldState("keyword", null, "data.Name", Repeats: false), retiredField,
                 [new DimensionOriginalWrite("Log A", "Log A", null, null, 2, Filterable: true, Filter: DimensionFilters.Of(retiredField, ["Log A"])[0])],
                 new DimensionReadCounts { Records = 2, WithValue = 2, Aggregations = 1, Slices = 1 }, now.AddMinutes(-5));
+            // How a dimension is built: its YAML line by line beside the reads it makes, the table's columns written from them,
+            // and how much of each attribute its last build read. A dimension the flow no longer declares is laid out from what
+            // its last build read with.
+            var blueprint = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId}/dimensions/{wellboreName.ToLowerInvariant()}/blueprint?partition={partition}");
+            Assert.True(blueprint.GetProperty("declared").GetBoolean());
+            Assert.Equal(wellboreName, blueprint.GetProperty("dimension").GetString());
+            Assert.Equal(wellboreId, blueprint.GetProperty("dimensionId").GetInt32());
+            var block = blueprint.GetProperty("yaml");
+            Assert.Equal("flows/" + flowName + ".yaml", block.GetProperty("file").GetString());
+            var written = block.GetProperty("lines").EnumerateArray().Select(l => l.GetString()!).ToList();
+            var spans = block.GetProperty("spans").EnumerateArray().ToDictionary(s => s.GetProperty("target").GetString()!, s => s.GetProperty("line").GetInt32());
+            Assert.Equal(block.GetProperty("firstLine").GetInt32() + written.FindIndex(l => l.Trim() == "label: data.FacilityName"), spans["label"]);
+            Assert.Equal(spans["attributes.Country"], spans["attributes.Country.1"]);
+            var laidOut = blueprint.GetProperty("blueprint");
+            var keyRead = laidOut.GetProperty("source").GetProperty("reads")[0];
+            Assert.Equal(("key", "data.WellboreID"), (keyRead.GetProperty("id").GetString(), keyRead.GetProperty("path").GetString()));
+            Assert.Equal(
+                ["id", "partition", "key_id", "WellboreID", "FacilityName", "records", "filter", "Country"],
+                laidOut.GetProperty("columns").EnumerateArray().Select(c => c.GetProperty("name").GetString()));
+            var countryRead = Assert.Single(blueprint.GetProperty("coverage").EnumerateArray());
+            Assert.Equal(("Country", 2, 1), (countryRead.GetProperty("name").GetString(), countryRead.GetProperty("keys").GetInt32(), countryRead.GetProperty("values").GetInt32()));
+
+            var undeclared = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId}/dimensions/Retired/blueprint?partition={partition}");
+            Assert.False(undeclared.GetProperty("declared").GetBoolean());
+            Assert.Equal(JsonValueKind.Null, undeclared.GetProperty("yaml").ValueKind);
+            Assert.Contains("no longer declares Retired", undeclared.GetProperty("yamlMissing").GetString(), StringComparison.Ordinal);
+            Assert.Equal("data.Name", undeclared.GetProperty("blueprint").GetProperty("source").GetProperty("reads")[0].GetProperty("path").GetString());
+            await ProblemAsync(client, token, $"/api/v1/delivery/flows/{pipelineId}/dimensions/Nothing/blueprint?partition={partition}", HttpStatusCode.NotFound, "declares no dimension 'Nothing'");
+            await ProblemAsync(client, token, $"/api/v1/delivery/flows/{otherPipelineId}/dimensions/Retired/blueprint", HttpStatusCode.Conflict, "not a dimension flow");
+
             var admin = await TokenAsync(client, ["read", "operate", "admin"]);
             var operate = await TokenAsync(client, ["read", "operate"]);
             using (var refused = await SendAsync(client, operate, HttpMethod.Delete, $"/api/v1/delivery/dimensions/{retired.DimensionId}"))
