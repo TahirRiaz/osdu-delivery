@@ -94,6 +94,11 @@ the clause the reading added beyond its core (the id clauses), each with a note,
 page's answer with the service's words. Anything else that keeps an answer from coming fails the read, since an empty
 page would say OSDU holds nothing.
 
+Under the place, every list says what it is read by, exactly as the explorer sends it to the search service: the
+`kind` and the Lucene `query` (none where the list is every record of the kind). The search box, the place and the values
+narrowed to all make it, so it is the expression to reuse: copied as written or as a search request, or taken into the
+search box as a Lucene query (**Edit**) to be changed there, the place kept.
+
 ## A record
 
 A record opens in the record inspector the record pages use, filling the page, with the place it sits in leading its

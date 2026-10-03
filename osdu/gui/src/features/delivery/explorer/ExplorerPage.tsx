@@ -258,6 +258,7 @@ export default function ExplorerPage() {
                     onFilters={(next: ExplorerFilter[]) => navigate({ f: filtersText(next) })}
                     onSort={(next: ExplorerSort) => navigate({ sort: next === "relevance" ? null : next }, true)}
                     onSearchEverywhere={() => navigate({ kind: ALL_KINDS })}
+                    onEditQuery={(query) => navigate({ q: query, lq: "1", f: null, id: null, v: null })}
                   />
                 )
                 : (

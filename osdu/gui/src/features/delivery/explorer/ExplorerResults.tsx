@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ArrowDownWideNarrow, ChevronRight, Info, Loader2, RefreshCw, SearchX, X } from "lucide-react";
+import { ArrowDownWideNarrow, ChevronRight, Info, Loader2, Pencil, RefreshCw, SearchCode, SearchX, X } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +33,43 @@ const READINGS: Partial<Record<ExplorerReading, string>> = {
   lucene: "Lucene query",
   mentions: "mentioning the record",
 };
+
+/**
+ * What the list is read by, exactly as the explorer sends it to the search service: the kind and the Lucene query (none
+ * where the list is every record of the kind). The search box, the place picked and the values narrowed to all make it,
+ * so it is the expression to reuse elsewhere: copied as written or as a search request, or taken into the search box to
+ * be changed there.
+ */
+function SentQuery({ kind, query, onEdit }: { kind: string; query: string | null; onEdit: (query: string) => void }) {
+  return (
+    <div className="flex min-w-0 items-start gap-2 border-b bg-muted/30 px-3 py-1.5 text-[12px]" data-testid="explorer-sent">
+      <RichTooltip
+        title="Sent to the search service"
+        body="The kind and the Lucene query this list is read by, exactly as the explorer sends them. The search box, the place picked and the values narrowed to all make it."
+      >
+        <SearchCode className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-label="Sent to the search service" />
+      </RichTooltip>
+      <div className="grid min-w-0 flex-1 grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5">
+        <span className="text-muted-foreground">kind</span>
+        <span className="min-w-0 break-all font-mono" data-testid="explorer-sent-kind">{kind}</span>
+        <span className="text-muted-foreground">query</span>
+        {query
+          ? <span className="max-h-16 min-w-0 overflow-auto break-all font-mono text-foreground" data-testid="explorer-sent-query">{query}</span>
+          : <span className="text-muted-foreground" data-testid="explorer-sent-query">none: every record of the kind</span>}
+      </div>
+      <span className="flex shrink-0 items-center gap-0.5">
+        {query && <CopyButton iconOnly label="Copy the query" text={query} testId="explorer-sent-copy" />}
+        <CopyButton label="As a request" text={JSON.stringify(query ? { kind, query, limit: 10 } : { kind, limit: 10 }, null, 2)} testId="explorer-sent-copy-request" />
+        {query && (
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-[12px]" onClick={() => onEdit(query)} data-testid="explorer-sent-edit">
+            <Pencil />
+            Edit
+          </Button>
+        )}
+      </span>
+    </div>
+  );
+}
 
 /** One step of the place in view: the partition, a group, a type or a kind, the last the current one. */
 function Crumb({ label, current, onClick, mono = false, testId }: { label: string; current: boolean; onClick: () => void; mono?: boolean; testId: string }) {
@@ -90,7 +127,7 @@ export function ScopeCrumbs({ partition, scope, onScope, last = true }: {
  * of the search index, and the total is the index's own count. The service pages through the first ten thousand records
  * a query matches; past them the reader narrows, and the foot of the grid says so.
  */
-export function ExplorerResults({ partition, request, scope, onScope, onOpen, onFilters, onSort, onSearchEverywhere }: {
+export function ExplorerResults({ partition, request, scope, onScope, onOpen, onFilters, onSort, onSearchEverywhere, onEditQuery }: {
   partition: string | null;
   /** The search, without its page. */
   request: ExplorerSearchRequest & { sort: ExplorerSort; filters: ExplorerFilter[] };
@@ -101,6 +138,8 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
   onSort: (sort: ExplorerSort) => void;
   /** Takes the search out of the type in view, to every type. */
   onSearchEverywhere: () => void;
+  /** Puts the query sent in the search box as a Lucene query, to be changed there; the place stays. */
+  onEditQuery: (query: string) => void;
 }) {
   const pages = useInfiniteQuery({
     queryKey: ["explorer", "search", partition, request],
@@ -290,13 +329,6 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
               <Info className="size-3.5 text-warning" aria-label="What the search did" data-testid="explorer-notes" />
             </RichTooltip>
           )}
-          {first?.query && (
-            <RichTooltip title="The query sent" body={first.query} mono>
-              <span className="inline-flex" onClick={(event) => event.stopPropagation()}>
-                <CopyButton iconOnly label="Copy the query sent to the search service" text={first.query} testId="explorer-copy-query" />
-              </span>
-            </RichTooltip>
-          )}
         </span>
         <div className="ml-auto flex items-center gap-1">
           {sortMenu}
@@ -304,6 +336,7 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
           <IconAction label="Read again from OSDU" icon={<RefreshCw />} variant="ghost" className="size-8" onClick={() => void pages.refetch()} data-testid="explorer-refresh" />
         </div>
       </div>
+      {first !== undefined && <SentQuery kind={first.kind} query={first.query} onEdit={onEditQuery} />}
       {request.filters.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-1.5" data-testid="explorer-filters">
           {request.filters.map((filter) => (

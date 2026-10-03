@@ -72,6 +72,10 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-place")).toContainText("Wellbore");
     await expect(adminPage.getByTestId("explorer-count")).toContainText("7 records");
 
+    // What the list is read by, as sent to the search service: the type's kind, and no query.
+    await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:master-data--Wellbore:*");
+    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("every record of the kind");
+
     // A name finds the records holding it, within the type picked.
     await adminPage.getByTestId("explorer-search-input").fill("NO 33/9-C-28");
     await expect(adminPage.getByTestId("explorer-search-hint")).toContainText("search");
@@ -79,12 +83,19 @@ test.describe.serial("explorer", () => {
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
     await expect(grid).toContainText("NO 33/9-C-28 A");
     await expect(grid).toContainText("NO 33/9-C-28 B");
+    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("NO 33/9-C-28");
 
     // A property's values group the records, and a value narrows them to it.
     await adminPage.getByTestId("explorer-group-by").click();
     await adminPage.getByTestId("explorer-group-by-field").filter({ hasText: "FacilityName" }).click({ timeout: 60_000 });
     await adminPage.getByTestId("explorer-group-by-value").filter({ hasText: "NO 33/9-C-28 B" }).click({ timeout: 60_000 });
     await expect(adminPage.getByTestId("explorer-filter")).toContainText("NO 33/9-C-28 B");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+
+    // The value narrowed to is a clause of the query sent, which Edit takes into the search box as Lucene.
+    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText('data.FacilityName.keyword:"NO 33/9-C-28 B"');
+    await adminPage.getByTestId("explorer-sent-edit").click();
+    await expect(adminPage.getByTestId("explorer-search-input")).toHaveValue(/data\.FacilityName\.keyword:"NO 33\/9-C-28 B"/);
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
   });
 

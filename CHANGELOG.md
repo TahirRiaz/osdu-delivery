@@ -19,7 +19,9 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   record's kind. A value in a nested list is asked inside `nested(...)`; a list the platform does not index inside says
   so rather than offering a query that finds nothing. A query is copied as written or as a search request, or searched
   in the explorer. `POST /delivery/explorer/element-queries` answers it ([osdu/docs/explorer.md](osdu/docs/explorer.md),
-  The query of an element).
+  The query of an element). Every list of records says what it is read by, exactly as sent: the kind and the Lucene
+  query its search, place and values make, copied or taken into the search box to be changed there (it was only a
+  tooltip behind a copy icon, and nothing at all for a type browsed).
 - **The explorer builds a dimension while it browses.** **Build a dimension**, in the explorer's header, docks a builder
   beside the records, and the records are browsed, searched and drilled into as ever; the workbench's side bar folds
   while it is docked, and comes back as it was left when it closes. The kind's saved template says
