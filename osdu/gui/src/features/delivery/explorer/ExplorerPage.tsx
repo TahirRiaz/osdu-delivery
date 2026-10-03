@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { Telescope, Unplug } from "lucide-react";
+import { Layers, Telescope, Unplug } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { useAuth } from "@/auth/AuthContext";
@@ -16,8 +16,9 @@ import { ExplorerRecord } from "./ExplorerRecord";
 import { ExplorerResults } from "./ExplorerResults";
 import { ExplorerRecent, ExplorerSearchBar } from "./ExplorerSearchBar";
 import { ExplorerTypeRail } from "./ExplorerTypeRail";
+import { ExplorerWelcome } from "./ExplorerWelcome";
 import {
-  explorerErrorText, filtersOf, filtersText, recordAt, scopeKind, scopeLabel, scopeOf, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
+  ALL_KINDS, explorerErrorText, filtersOf, filtersText, recordAt, rememberType, scopeKind, scopeLabel, scopeOf, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
 } from "./explorerModel";
 
 /** The least height the explorer keeps, so a short window still shows a few rows. */
@@ -37,10 +38,11 @@ function WindowFrame({ hidden = false, children, testId }: { hidden?: boolean; c
 }
 
 /**
- * The explorer (osdu/docs/explorer.md): a browser of what an OSDU partition holds, read live from OSDU. It opens on every
- * record of the partition the title bar names, with the types they are of beside them; a type, a group or a kind narrows
- * them, a search box takes an id (which opens the record), the start of one, a name, any text or a Lucene query, and a
- * property's values group and narrow them further. A record opens in the record inspector, under the place it sits in, with
+ * The explorer (osdu/docs/explorer.md): a browser of what an OSDU partition holds, read live from OSDU. It opens on a
+ * welcome that reads nothing from OSDU: the search box, the records and types opened lately in this browser, and the types
+ * of the partition one click away. Once asked, the types of the partition the title bar names stand beside its records; a
+ * type, a group or a kind narrows them, the search box takes an id (which opens the record), the start of one, a name, any
+ * text or a Lucene query, and a property's values group and narrow them further. A record opens in the record inspector, under the place it sits in, with
  * its versions, its links and the records that mention it. Everything is in the address (the search, the place, the values,
  * the order and the record open), so a link, Back and a refresh land on the same view; the records already read are kept,
  * so going back is immediate. Nothing here reads what the delivery system keeps.
@@ -78,6 +80,10 @@ export default function ExplorerPage() {
   const filters = useMemo(() => filtersOf(filterParam), [filterParam]);
   const sort = sortOf(params.get("sort"));
   const recordId = params.get("id");
+  // What the reader asked for: records (a search, a place, values to narrow to), or the types alone to pick a place from.
+  // Until then nothing is read from OSDU.
+  const asksRecords = text !== "" || kindParam !== null || filters.length > 0;
+  const browsing = asksRecords || params.get("view") === "types";
   const versionParam = Number(params.get("v") ?? "");
   const recordVersion = Number.isSafeInteger(versionParam) && versionParam > 0 ? versionParam : null;
 
@@ -103,11 +109,19 @@ export default function ExplorerPage() {
 
   // The types are counted for the search and its values, never for the place: the list is what a place is picked from.
   const typesRequest: ExplorerSearchRequest = { text: text === "" ? undefined : text, lucene, filters };
-  const types = useExplorerRead<ExplorerTypes>(["types", active, typesRequest], reachable ? () => explorerApi.types(active, typesRequest) : null);
+  const types = useExplorerRead<ExplorerTypes>(
+    ["types", active, typesRequest],
+    reachable && browsing ? () => explorerApi.types(active, typesRequest) : null,
+    // The kinds of a whole partition move slowly; those a search finds are read again sooner.
+    typesRequest.text === undefined && filters.length === 0 ? 10 * 60_000 : undefined,
+  );
   const request = { text: text === "" ? undefined : text, lucene, kind: scopeKind(scope), filters, sort };
 
-
-  const goScope = (next: ExplorerScope) => navigate({ kind: scopeKind(next) ?? null, id: null, v: null });
+  // Every type is a place picked like any other, so the address keeps it rather than falling back to the welcome.
+  const goScope = (next: ExplorerScope) => {
+    rememberType(next);
+    navigate({ kind: scopeKind(next) ?? ALL_KINDS, view: null, id: null, v: null });
+  };
   // An id typed with its version opens the record at that version; the version picker reads the others from there.
   const openId = (typed: string) => {
     const { id, version } = recordAt(typed);
@@ -144,7 +158,7 @@ export default function ExplorerPage() {
         onOpenId={openId}
         className="min-w-[280px] max-w-[760px] flex-1"
       />
-      <ExplorerRecent onOpen={openRecent} />
+      {(browsing || recordId !== null) && <ExplorerRecent onOpen={openRecent} />}
     </div>
   );
 
@@ -172,7 +186,16 @@ export default function ExplorerPage() {
   } else if (connection.data !== undefined) {
     content = (
       <>
+        {!browsing && recordId === null && (
+          <ExplorerWelcome
+            partition={connection.data.partition}
+            onBrowseTypes={() => navigate({ view: "types" })}
+            onOpenRecent={openRecent}
+            onOpenType={(type) => goScope(type.scope)}
+          />
+        )}
         {/* The records stay as they were left while a record is open, so going back finds the list where it was. */}
+        {browsing && (
         <WindowFrame hidden={recordId !== null} testId="explorer-browse-frame">
         <Card className="min-h-0 flex-1 gap-0 overflow-hidden rounded-lg p-0" data-testid="explorer-browse">
           <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
@@ -181,26 +204,38 @@ export default function ExplorerPage() {
                 types={types.data?.answer}
                 loading={types.isFetching}
                 error={types.isError ? explorerErrorText(types.error) : types.data?.answer.refusal ?? null}
-                scope={scope}
+                scope={asksRecords ? scope : null}
                 onScope={goScope}
               />
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel className="flex min-h-0 flex-col">
-              <ExplorerResults
-                partition={active}
-                request={request}
-                scope={scope}
-                onScope={goScope}
-                onOpen={(hit) => openId(hit.id)}
-                onFilters={(next: ExplorerFilter[]) => navigate({ f: filtersText(next) })}
-                onSort={(next: ExplorerSort) => navigate({ sort: next === "relevance" ? null : next }, true)}
-                onSearchEverywhere={() => navigate({ kind: null })}
-              />
+              {asksRecords
+                ? (
+                  <ExplorerResults
+                    partition={active}
+                    request={request}
+                    scope={scope}
+                    onScope={goScope}
+                    onOpen={(hit) => openId(hit.id)}
+                    onFilters={(next: ExplorerFilter[]) => navigate({ f: filtersText(next) })}
+                    onSort={(next: ExplorerSort) => navigate({ sort: next === "relevance" ? null : next }, true)}
+                    onSearchEverywhere={() => navigate({ kind: ALL_KINDS })}
+                  />
+                )
+                : (
+                  <EmptyState
+                    icon={<Layers />}
+                    title="Pick a type"
+                    description="Pick a group, a type or a kind on the left, or search above. All types lists every record of the partition."
+                    data-testid="explorer-pick-type"
+                  />
+                )}
             </ResizablePanel>
           </ResizablePanelGroup>
         </Card>
         </WindowFrame>
+        )}
         {recordId !== null && (
           <WindowFrame testId="explorer-record-frame">
             <ExplorerRecord

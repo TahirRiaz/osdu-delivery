@@ -13,15 +13,15 @@ const FRESH_MS = 60_000;
 
 /**
  * One read of the explorer, queued when it is first asked and kept by what it asked (`key`): the same question asked again
- * answers from what was read, until it is a minute old. A read is never retried by itself; a failure is the reader's to
+ * answers from what was read, until it is a minute old (or `freshMs`). A read is never retried by itself; a failure is the reader's to
  * see, and the page's refresh asks again.
  */
-export function useExplorerRead<T>(key: QueryKey, queue: (() => Promise<ComputeTaskAccepted>) | null) {
+export function useExplorerRead<T>(key: QueryKey, queue: (() => Promise<ComputeTaskAccepted>) | null, freshMs = FRESH_MS) {
   return useQuery({
     queryKey: ["explorer", ...key],
     queryFn: ({ signal }) => runComputeTask<ExplorerAnswer<T>>(queue!, signal),
     enabled: queue !== null,
-    staleTime: FRESH_MS,
+    staleTime: freshMs,
     gcTime: 10 * 60_000,
     retry: false,
     refetchOnWindowFocus: false,
@@ -72,9 +72,12 @@ export function scopeKind(scope: ExplorerScope): string | undefined {
   }
 }
 
+/** The kind pattern of every type, which the address carries once a reader picked every type. */
+export const ALL_KINDS = "*:*:*:*";
+
 /** The scope a kind pattern in the address names; every type for none, or for one the explorer did not write. */
 export function scopeOf(kind: string | null): ExplorerScope {
-  if (kind === null || kind.trim() === "") {
+  if (kind === null || kind.trim() === "" || kind === ALL_KINDS) {
     return { level: "all" };
   }
 
@@ -251,6 +254,46 @@ export function recentRecords(): RecentRecord[] {
       : [];
   } catch {
     return [];
+  }
+}
+
+/** A type browsed lately: the kind pattern the address carried, and the place it names. */
+export interface RecentType {
+  kind: string;
+  scope: ExplorerScope;
+}
+
+const TYPES_KEY = "sqlflow.osdu.explorer.types";
+const TYPES_MAX = 12;
+
+/** The types (a group, a type, a kind) browsed last in this browser, newest first; none when nothing was remembered. */
+export function recentTypes(): RecentType[] {
+  try {
+    const stored: unknown = JSON.parse(window.localStorage.getItem(TYPES_KEY) ?? "[]");
+    return Array.isArray(stored)
+      ? stored
+        .filter((kind): kind is string => typeof kind === "string")
+        .map((kind) => ({ kind, scope: scopeOf(kind) }))
+        .filter((type) => type.scope.level !== "all")
+        .slice(0, TYPES_MAX)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Remembers a type as browsed now, ahead of the others; every type is not one worth remembering. */
+export function rememberType(scope: ExplorerScope): void {
+  const kind = scopeKind(scope);
+  if (kind === undefined) {
+    return;
+  }
+
+  try {
+    const kept = recentTypes().map((type) => type.kind).filter((other) => other !== kind);
+    window.localStorage.setItem(TYPES_KEY, JSON.stringify([kind, ...kept].slice(0, TYPES_MAX)));
+  } catch {
+    // Nothing to do: the welcome simply lists fewer types.
   }
 }
 

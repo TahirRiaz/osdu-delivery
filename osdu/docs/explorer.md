@@ -33,7 +33,14 @@ protocol, so both pages read a record the same way.
 
 ## Browsing
 
-The page opens on every record of the partition, with the kinds they are of on the left:
+The page opens on a welcome that reads nothing from OSDU, so it shows at once however large the partition: the search
+field, the records opened lately and the types browsed lately (both kept in the browser), what the field takes, and
+**Browse types**. OSDU is read only once the reader asks: Browse types reads the types alone and waits for one to be
+picked, a type picked reads its records, a search reads what it finds, and a record opened reads that record and
+nothing behind it. While a read is under way, a slim bar sweeps along the top of the pane it will fill, and what is
+already shown stays readable.
+
+Once asked, the records of the place picked stand beside the kinds of the partition:
 
 - **Types.** One search aggregation over `kind` across every kind (`*:*:*:*`) counts the records of each, and the list
   groups them as OSDU names them: the group (`master-data`, `reference-data`, `work-product-component`, `dataset`, ...),
@@ -103,14 +110,16 @@ before it:
 - **an id OSDU holds nothing under** offers the records whose ids are near it: those that go on from it (a paste cut
   short) and the same unique part under another type. An id of another partition says so, with a way to read it there.
 
-Every record opened is remembered in the browser (the last twenty, nowhere else), under **Recent**.
+Every record opened is remembered in the browser (the last twenty, nowhere else), under **Recent** and on the welcome,
+and so is every type browsed (the last twelve).
 
 ## Kept in the address
 
-The text and whether it is Lucene (`q`, `lq`), the place (`kind`), the values narrowed to (`f`), the order (`sort`)
-and the record open (`id`) are the page's address, so a link, Back and a refresh land on the same view; a link naming
-a partition (`partition`) makes it the title bar's. What was read is kept for a minute and reused, so going back to a
-type or a page already read shows it at once; the refresh button reads again.
+The text and whether it is Lucene (`q`, `lq`), the place (`kind`, `*:*:*:*` for every type), the values narrowed to
+(`f`), the order (`sort`), the types alone (`view=types`) and the record open (`id`, and `v` for a version) are the
+page's address, so a link, Back and a refresh land on the same view; a link naming
+a partition (`partition`) makes it the title bar's. What was read is kept for a minute and reused (the kinds of a whole
+partition for ten), so going back to a type or a page already read shows it at once; the refresh button reads again.
 
 ## The API
 

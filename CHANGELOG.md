@@ -23,7 +23,9 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   it from the catalog, the saved templates and the ledger ([osdu/docs/dimension-plan.md](osdu/docs/dimension-plan.md),
   The blueprint).
 - **An explorer of what OSDU holds.** The Explorer page browses the workbench's partition of OSDU live, through the
-  connection of a delivery flow that reaches it, and reads nothing the delivery system keeps. The kinds of its records
+  connection of a delivery flow that reaches it, and reads nothing the delivery system keeps. It opens on a welcome
+  that reads nothing from OSDU (the search field, the records and types opened lately, and Browse types), and reads
+  only what the reader then asks for. The kinds of its records
   are a list of groups and types with their counts, from one search aggregation, beside a grid of the records that fits
   its panel, draws only the rows in view and loads a hundred more as it scrolls, up to the search's first ten thousand.
   One field takes a whole id (which opens the record), the start of one (completed with the partition), a name or any

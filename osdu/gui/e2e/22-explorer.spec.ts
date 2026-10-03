@@ -48,10 +48,16 @@ test.describe.serial("explorer", () => {
     }
   });
 
-  test("browses the partition by type and searches it by name", async ({ adminPage }) => {
+  test("opens on a welcome, then browses the partition by type and searches it by name", async ({ adminPage }) => {
     await adminPage.getByTestId("nav-delivery-explorer").click();
     await expect(adminPage.getByTestId("page-delivery-explorer")).toBeVisible();
     await expect(adminPage.getByTestId("explorer-live")).toContainText(E2E.osdu.OSDU_DATA_PARTITION, { timeout: 30_000 });
+
+    // Nothing is read from OSDU until the reader asks: the welcome, and no list of types or records behind it.
+    await expect(adminPage.getByTestId("explorer-welcome")).toBeVisible();
+    await expect(adminPage.getByTestId("explorer-types")).toHaveCount(0);
+    await adminPage.getByTestId("explorer-browse-types").click();
+    await expect(adminPage.getByTestId("explorer-pick-type")).toBeVisible();
 
     // The kinds the partition holds, counted by one aggregation: its wellbores and the log this spec holds.
     const types = adminPage.getByTestId("explorer-types");
@@ -108,10 +114,10 @@ test.describe.serial("explorer", () => {
     await expect(compare.getByTestId("osdu-version-differences")).toContainText("STAT_COMP");
     await adminPage.keyboard.press("Escape");
 
-    // Back on the list, as it was left.
+    // Back where the record was opened from: the welcome, which now lists it among the records opened lately.
     await linked.getByTestId("osdu-linked-close").click();
     await record.getByTestId("explorer-record-back").click();
-    await expect(adminPage.getByTestId("explorer-browse")).toBeVisible();
+    await expect(adminPage.getByTestId("explorer-welcome-record").filter({ hasText: "NO 33/9-C-28 B" })).toBeVisible();
   });
 
   test("offers the ids near one OSDU holds nothing under", async ({ adminPage }) => {

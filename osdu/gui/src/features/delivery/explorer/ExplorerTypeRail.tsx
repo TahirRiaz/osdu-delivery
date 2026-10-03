@@ -5,6 +5,7 @@ import { SearchInput } from "@/components/SearchInput";
 import { cn } from "@/lib/utils";
 import type { ExplorerTypes } from "../../../api/explorer";
 import { sameScope, typeTree, type ExplorerScope, type GroupNode } from "./explorerModel";
+import { ReadingBar } from "./ReadingBar";
 
 /** A group with more types than this starts folded, so a partition's long reference lists do not bury the rest. */
 const OPEN_UP_TO = 24;
@@ -72,7 +73,8 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
   types: ExplorerTypes | undefined;
   loading: boolean;
   error: string | null;
-  scope: ExplorerScope;
+  /** The place picked; null while the reader has picked none. */
+  scope: ExplorerScope | null;
   onScope: (scope: ExplorerScope) => void;
 }) {
   const [filter, setFilter] = useState("");
@@ -90,8 +92,9 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
 
   // A group is open as it starts (short groups, and the one holding what is picked) unless the reader toggled it; a filter opens them all.
   const startsOpen = (group: GroupNode) => group.types.length <= OPEN_UP_TO
-    || (scope.level === "type" && group.types.some((type) => type.entityType === scope.entityType))
-    || (scope.level === "kind" && group.types.some((type) => type.kinds.some((kind) => kind.kind === scope.kind)));
+    || (scope?.level === "type" && group.types.some((type) => type.entityType === scope.entityType))
+    || (scope?.level === "kind" && group.types.some((type) => type.kinds.some((kind) => kind.kind === scope.kind)));
+  const picked = (candidate: ExplorerScope) => scope !== null && sameScope(scope, candidate);
   const isOpen = (key: string, starts: boolean) => term !== "" || (toggled.has(key) ? !starts : starts);
   const toggle = (key: string) => setToggled((was) => {
     const next = new Set(was);
@@ -105,7 +108,8 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
   });
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="explorer-types">
+    <div className="relative flex h-full min-h-0 flex-col" data-testid="explorer-types">
+      {loading && <ReadingBar label="Counting the types in OSDU" />}
       <div className="border-b p-2">
         <SearchInput value={filter} onChange={setFilter} placeholder="Filter types" label="Filter the types" className="w-full sm:w-full" testId="explorer-types-filter" />
       </div>
@@ -115,14 +119,14 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
         {types !== undefined && (
           <>
             <div
-              className={cn("flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] hover:bg-accent/50", scope.level === "all" && "bg-accent text-accent-foreground")}
-              data-state={scope.level === "all" ? "active" : undefined}
+              className={cn("flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] hover:bg-accent/50", scope?.level === "all" && "bg-accent text-accent-foreground")}
+              data-state={scope?.level === "all" ? "active" : undefined}
               data-testid="explorer-type-all"
             >
               <button type="button" className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left font-medium" onClick={() => onScope({ level: "all" })}>
                 <Layers className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">All types</span>
-                <Count value={types.total} quiet={scope.level !== "all"} />
+                <Count value={types.total} quiet={scope?.level !== "all"} />
               </button>
             </div>
             {shown.map((group) => {
@@ -134,7 +138,7 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
                     depth={0}
                     label={group.group}
                     count={group.count}
-                    selected={sameScope(scope, groupScope)}
+                    selected={picked(groupScope)}
                     open={open}
                     onToggle={() => toggle(group.group)}
                     onSelect={() => onScope(groupScope)}
@@ -143,7 +147,7 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
                   {open && group.types.map((type) => {
                     const typeScope: ExplorerScope = { level: "type", entityType: type.entityType };
                     const versions = type.kinds.length > 1;
-                    const typeOpen = versions && isOpen(type.entityType, type.kinds.some((kind) => scope.level === "kind" && kind.kind === scope.kind));
+                    const typeOpen = versions && isOpen(type.entityType, type.kinds.some((kind) => scope?.level === "kind" && kind.kind === scope.kind));
                     return (
                       <div key={type.entityType}>
                         <Row
@@ -151,7 +155,7 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
                           label={type.type}
                           title={type.entityType}
                           count={type.count}
-                          selected={sameScope(scope, typeScope)}
+                          selected={picked(typeScope)}
                           open={versions ? typeOpen : undefined}
                           onToggle={versions ? () => toggle(type.entityType) : undefined}
                           onSelect={() => onScope(typeScope)}
@@ -164,7 +168,7 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
                             label={`${kind.parts.version} ${kind.parts.authority}:${kind.parts.source}`}
                             title={kind.kind}
                             count={kind.count}
-                            selected={scope.level === "kind" && scope.kind === kind.kind}
+                            selected={scope?.level === "kind" && scope.kind === kind.kind}
                             onSelect={() => onScope({ level: "kind", kind: kind.kind })}
                             mono
                             testId="explorer-type-kind"

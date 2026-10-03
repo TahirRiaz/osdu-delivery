@@ -33,7 +33,8 @@ export function ExplorerGroupBy({ partition, base, onFilter }: {
   );
 
   // A type's content is offered for a type; across every type only the properties every record has mean the same thing.
-  const offered = (fields.data?.answer.fields ?? []).filter((info) => base.kind !== undefined || !info.path.startsWith("data."));
+  const allTypes = base.kind === undefined || base.kind === "*:*:*:*";
+  const offered = (fields.data?.answer.fields ?? []).filter((info) => !allTypes || !info.path.startsWith("data."));
   const envelope = offered.filter((info) => !info.path.startsWith("data."));
   const content = offered.filter((info) => info.path.startsWith("data."));
   const buckets = groups.data?.answer.facet ?? null;

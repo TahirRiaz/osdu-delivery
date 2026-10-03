@@ -24,6 +24,7 @@ import { runComputeTask } from "../useComputeTask";
 import { ExplorerGroupBy } from "./ExplorerGroupBy";
 import { ExplorerGrid, type GridColumn } from "./ExplorerGrid";
 import { ExplorerProblem } from "./ExplorerProblem";
+import { ReadingBar } from "./ReadingBar";
 import { counted, fieldLabel, kindParts, SORT_LABELS, type ExplorerScope } from "./explorerModel";
 
 /** How a search was read, as a word after the count; nothing for the plain cases. */
@@ -273,7 +274,8 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="explorer-results">
+    <div className="relative flex h-full min-h-0 flex-col" data-testid="explorer-results">
+      {pages.isFetching && <ReadingBar label="Reading the records from OSDU" />}
       <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-1.5">
         <nav className="flex min-w-0 flex-wrap items-center gap-1 text-[13px]" aria-label="Where the records are" data-testid="explorer-place">
           <ScopeCrumbs partition={partition} scope={scope} onScope={onScope} />
