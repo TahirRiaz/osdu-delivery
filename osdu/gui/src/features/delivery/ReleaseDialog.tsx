@@ -12,7 +12,7 @@ export const PLANNED_PER_PASS = 5000;
 
 /**
  * The confirmation of a release of many records, with the choice of a deliver run straight after: the one release dialog,
- * for a flow's blocked records and for a problem's. While the release runs it cannot be dismissed.
+ * for a flow's blocked records and for an issue's. While the release runs it cannot be dismissed.
  */
 export function ReleaseDialog({ open, title, message, confirmLabel, busy, children, testId, onConfirm, onClose }: {
   open: boolean;
@@ -20,7 +20,7 @@ export function ReleaseDialog({ open, title, message, confirmLabel, busy, childr
   message: string;
   confirmLabel: string;
   busy: boolean;
-  /** What else the dialog shows above the run choice (the problem's error, a warning). */
+  /** What else the dialog shows above the run choice (the issue's error, a warning). */
   children?: ReactNode;
   testId: string;
   onConfirm: (run: boolean) => void;

@@ -6,7 +6,7 @@ using SqlFlow.Delivery.Data;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// The statements behind releases and problems (docs/ledger.md, Problems): a release a slice of records at a time, naming
+/// The statements behind releases and problems (docs/ledger.md, Issues): a release a slice of records at a time, naming
 /// each record it released under its intervention; the pages of keys a release of every blocked record or of one problem
 /// walks; and the reads that count a ledger's problems, name their files and sort the records blocked before the ledger
 /// kept problems. Every one reads an index that holds what it is about, so it costs what it reaches.

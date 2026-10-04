@@ -12,7 +12,7 @@ using SqlFlow.Delivery.Model;
 namespace SqlFlow.Delivery.Cli;
 
 /// <summary>
-/// The <c>records</c> verb: an interface's records from the ledger, one record with every try it took, the problems that
+/// The <c>records</c> verb: an interface's records from the ledger, one record with every try it took, the issues that
 /// keep its records blocked, and their release. The GUI and the API have shown a record's history from the start; this is
 /// the same history where an operator already is, on a node or at a terminal, without a control plane to reach (the
 /// project's traceability rule, CLAUDE.md).
@@ -25,14 +25,14 @@ internal static class DeliveryRecordVerbs
     /// <summary>Tries shown for one record when the command line asks for no count.</summary>
     private const int DefaultAttempts = 20;
 
-    /// <summary>Problems listed when the command line asks for no count.</summary>
-    private const int DefaultProblems = 50;
+    /// <summary>Issues listed when the command line asks for no count.</summary>
+    private const int DefaultIssues = 50;
 
-    /// <summary>Files named for one problem.</summary>
-    private const int ProblemFiles = 20;
+    /// <summary>Files named for one issue.</summary>
+    private const int IssueFiles = 20;
 
-    /// <summary>Records of one problem shown side by side, spread across it.</summary>
-    private const int ProblemSamples = 5;
+    /// <summary>Records of one issue shown side by side, spread across it.</summary>
+    private const int IssueSamples = 5;
 
     public static async Task<int> RecordsAsync(CliVerbContext context)
     {
@@ -59,9 +59,9 @@ internal static class DeliveryRecordVerbs
         {
             "list" => await ListAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
             "show" => await ShowAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
-            "problems" => await ProblemsAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
+            "issues" => await IssuesAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
             "release" => await ReleaseAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
-            _ => context.UsageError("say what to do with the records: list, show, problems or release."),
+            _ => context.UsageError("say what to do with the records: list, show, issues or release."),
         };
     }
 
@@ -74,7 +74,7 @@ internal static class DeliveryRecordVerbs
             Search = context.Arguments.GetOption("--search"),
             Mode = context.Arguments.HasFlag("--contains") ? SearchMode.Contains : SearchMode.Prefix,
             Status = Status(status),
-            Problem = Problem(context.Arguments.GetOption("--problem")),
+            Problem = Issue(context.Arguments.GetOption("--issue")),
             Max = Count(context.Arguments.GetOption("--max"), DefaultMax, "--max"),
         };
 
@@ -209,21 +209,21 @@ internal static class DeliveryRecordVerbs
     }
 
     /// <summary>
-    /// The problems keeping the interface's records blocked, the most records first: each with its records, held and
+    /// The issues keeping the interface's records blocked, the most records first: each with its records, held and
     /// failed, when they last changed, the pattern its records' errors share, and an example record with its own error.
-    /// With <c>--problem</c>, that one problem and the files its records came from.
+    /// With <c>--issue</c>, that one issue, the files its records came from and samples spread across it.
     /// </summary>
-    private static async Task<int> ProblemsAsync(CliVerbContext context, ILedger ledger, Guid flowId, string label, CancellationToken ct)
+    private static async Task<int> IssuesAsync(CliVerbContext context, ILedger ledger, Guid flowId, string label, CancellationToken ct)
     {
-        if (Problem(context.Arguments.GetOption("--problem")) is { } named)
+        if (Issue(context.Arguments.GetOption("--issue")) is { } named)
         {
             var problem = await ledger.GetProblemAsync(flowId, named, ct).ConfigureAwait(false)
                 ?? throw new FlowValidationException(
-                    $"{label} has no record blocked by problem {ProblemSignature.Format(named)}; 'records problems' lists the problems it has.");
-            var files = await ledger.ListProblemFilesAsync(flowId, named, ProblemFiles, ct).ConfigureAwait(false);
-            var samples = await ledger.ListProblemSamplesAsync(flowId, named, ProblemSamples, ct).ConfigureAwait(false);
+                    $"{label} has no record blocked by issue {ProblemSignature.Format(named)}; 'records issues' lists the issues it has.");
+            var files = await ledger.ListProblemFilesAsync(flowId, named, IssueFiles, ct).ConfigureAwait(false);
+            var samples = await ledger.ListProblemSamplesAsync(flowId, named, IssueSamples, ct).ConfigureAwait(false);
 
-            // The samples know more of where the problem lies than the listing's newest and oldest record.
+            // The samples know more of where the issue lies than the listing's newest and oldest record.
             problem = problem with { Shape = ProblemSignature.ShapeOf(samples.Select(s => s.LastError).Append(problem.Example?.LastError)) };
             if (context.Json)
             {
@@ -239,12 +239,12 @@ internal static class DeliveryRecordVerbs
                 {
                     ["flow"] = label,
                     ["flowId"] = flowId.ToString(),
-                    ["problem"] = described,
+                    ["issue"] = described,
                 }));
                 return 0;
             }
 
-            WriteProblem(context, problem);
+            WriteIssue(context, problem);
             context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"      from {files.Count} file(s), the most records first:"));
             foreach (var file in files)
             {
@@ -263,29 +263,29 @@ internal static class DeliveryRecordVerbs
             return 0;
         }
 
-        var listing = await ledger.ListProblemsAsync(flowId, Count(context.Arguments.GetOption("--max"), DefaultProblems, "--max"), ct).ConfigureAwait(false);
+        var listing = await ledger.ListProblemsAsync(flowId, Count(context.Arguments.GetOption("--max"), DefaultIssues, "--max"), ct).ConfigureAwait(false);
         if (context.Json)
         {
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
             {
                 ["flow"] = label,
                 ["flowId"] = flowId.ToString(),
-                ["totalProblems"] = listing.TotalProblems,
+                ["totalIssues"] = listing.TotalProblems,
                 ["totalRecords"] = listing.TotalRecords,
                 ["unsorted"] = listing.Unsorted,
-                ["problems"] = new JsonArray(listing.Problems.Select(p => (JsonNode)Described(p)).ToArray()),
+                ["issues"] = new JsonArray(listing.Problems.Select(p => (JsonNode)Described(p)).ToArray()),
             }));
             return 0;
         }
 
         context.Out.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
-            $"{label}: {listing.TotalRecords} blocked record(s) in {listing.TotalProblems} problem(s){(listing.Problems.Count < listing.TotalProblems ? $", the {listing.Problems.Count} largest shown" : string.Empty)}"));
+            $"{label}: {listing.TotalRecords} blocked record(s) in {listing.TotalProblems} issue(s){(listing.Problems.Count < listing.TotalProblems ? $", the {listing.Problems.Count} largest shown" : string.Empty)}"));
         if (listing.Unsorted > 0)
         {
             context.Out.WriteLine(string.Create(
                 CultureInfo.InvariantCulture,
-                $"  and {listing.Unsorted} blocked record(s) not sorted into a problem yet: blocked before the ledger kept problems, and sorted by the control plane a page at a time."));
+                $"  and {listing.Unsorted} blocked record(s) not sorted into an issue yet: blocked before the ledger kept issues, and sorted by the control plane a page at a time."));
         }
 
         if (listing.TotalProblems == 0 && listing.Unsorted == 0)
@@ -296,17 +296,17 @@ internal static class DeliveryRecordVerbs
 
         foreach (var problem in listing.Problems)
         {
-            WriteProblem(context, problem);
+            WriteIssue(context, problem);
         }
 
         return 0;
     }
 
     /// <summary>
-    /// One problem as the terminal shows it: its id, where it lies and its counts, its pattern, and the example with its own
+    /// One issue as the terminal shows it: its id, where it lies and its counts, its pattern, and the example with its own
     /// error.
     /// </summary>
-    private static void WriteProblem(CliVerbContext context, ProblemGroup problem)
+    private static void WriteIssue(CliVerbContext context, ProblemGroup problem)
     {
         context.Out.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
@@ -326,7 +326,7 @@ internal static class DeliveryRecordVerbs
 
     /// <summary>
     /// Releases the interface's blocked records back to pending: the held, the failed and the ones a removal marked
-    /// deleted, every one, the ones named by <c>--key</c>, or every one a problem keeps blocked (<c>--problem</c>). A record
+    /// deleted, every one, the ones named by <c>--key</c>, or every one an issue keeps blocked (<c>--issue</c>). A record
     /// that still holds a rendered document is queued at once, and the rest are planned again by the next run. Fixing what
     /// blocked them is the operator's job; this is the verb that says "try again". It is recorded on the audit trail as
     /// <c>cli:&lt;user&gt;</c>'s, with every record it released named under it.
@@ -343,17 +343,17 @@ internal static class DeliveryRecordVerbs
                 : throw new FlowValidationException($"--key '{value}' is not a delivery key; 'records list' prints them."));
         }
 
-        var problem = Problem(context.Arguments.GetOption("--problem"));
+        var problem = Issue(context.Arguments.GetOption("--issue"));
         if (problem is not null && keys.Count > 0)
         {
-            return context.UsageError("release the records --key names or the ones --problem keeps blocked, not both.");
+            return context.UsageError("release the records --key names or the ones --issue keeps blocked, not both.");
         }
 
-        // The pattern the release records is the problem as the ledger names it now, which is what was listed.
+        // The pattern the release records is the issue as the ledger names it now, which is what was listed.
         var group = problem is { } hash
             ? await ledger.GetProblemAsync(flow.Id, hash, ct).ConfigureAwait(false)
                 ?? throw new FlowValidationException(
-                    $"{label} has no record blocked by problem {ProblemSignature.Format(hash)}; 'records problems' lists the problems it has.")
+                    $"{label} has no record blocked by issue {ProblemSignature.Format(hash)}; 'records issues' lists the issues it has.")
             : null;
 
         using var runtime = FlowRuntime.ForTarget(flow.Interface is null ? engine : engine.ForInterface(flow.Interface), flow);
@@ -367,14 +367,14 @@ internal static class DeliveryRecordVerbs
             {
                 ["flow"] = label,
                 ["flowId"] = flow.Id.ToString(),
-                ["problem"] = group is null ? null : ProblemSignature.Format(group.Problem),
+                ["issue"] = group is null ? null : ProblemSignature.Format(group.Problem),
                 ["released"] = released,
             }));
             return 0;
         }
 
         var named = group is not null
-            ? $" problem {ProblemSignature.Format(group.Problem)} kept blocked"
+            ? $" issue {ProblemSignature.Format(group.Problem)} kept blocked"
             : keys.Count > 0 ? $" of the {keys.Count.ToString(CultureInfo.InvariantCulture)} named" : string.Empty;
         context.Out.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
@@ -433,15 +433,15 @@ internal static class DeliveryRecordVerbs
         ["lastError"] = record.LastError,
         ["sourceFileName"] = record.SourceFileName,
         ["sourceRowNumber"] = record.SourceRowNumber,
-        ["problem"] = record.ProblemHash is { } problem ? ProblemSignature.Format(problem) : null,
+        ["issue"] = record.ProblemHash is { } issue ? ProblemSignature.Format(issue) : null,
     };
 
-    /// <summary>Where a problem lies, in the words the terminal and the JSON use.</summary>
+    /// <summary>Where an issue lies, in the words the terminal and the JSON use.</summary>
     private static string Shape(ProblemShape shape) => shape == ProblemShape.Rows ? "row errors" : "set error";
 
     private static JsonObject Described(ProblemGroup problem) => new()
     {
-        ["problem"] = ProblemSignature.Format(problem.Problem),
+        ["issue"] = ProblemSignature.Format(problem.Problem),
         ["shape"] = problem.Shape == ProblemShape.Rows ? "rows" : "set",
         ["values"] = new JsonArray(problem.Values.Select(v => (JsonNode)JsonValue.Create(v)!).ToArray()),
         ["pattern"] = problem.Pattern,
@@ -494,8 +494,8 @@ internal static class DeliveryRecordVerbs
                 $"--status '{value}' is not a record status; it is one of {string.Join(", ", Enum.GetNames<RecordStatus>().Select(n => n.ToLowerInvariant()))}.");
     }
 
-    /// <summary>A problem as <c>--problem</c> names it: the sixteen characters 'records problems' prints.</summary>
-    private static long? Problem(string? value)
+    /// <summary>An issue as <c>--issue</c> names it: the sixteen characters 'records issues' prints.</summary>
+    private static long? Issue(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -505,7 +505,7 @@ internal static class DeliveryRecordVerbs
         return ProblemSignature.TryParse(value.Trim().ToLowerInvariant(), out var problem)
             ? problem
             : throw new FlowValidationException(
-                $"--problem '{value}' is not a problem; it is the {ProblemSignature.TextLength} characters 'records problems' prints for one.");
+                $"--issue '{value}' is not an issue; it is the {ProblemSignature.TextLength} characters 'records issues' prints for one.");
     }
 
     private static int Count(string? value, int fallback, string option)

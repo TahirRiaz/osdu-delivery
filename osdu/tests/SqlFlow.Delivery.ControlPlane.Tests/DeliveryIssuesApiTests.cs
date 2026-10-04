@@ -17,30 +17,30 @@ using Xunit;
 namespace SqlFlow.ControlPlane.Tests;
 
 /// <summary>
-/// A flow's problems as the API serves them (docs/ledger.md, Problems; docs/operations.md, The API): the blocked records
-/// grouped by the problem their errors share, one problem with the files its records came from, the records listing
-/// narrowed to a problem, the release of a problem's records with each record naming the release in its history, and one
+/// A flow's issues as the API serves them (docs/ledger.md, Issues; docs/operations.md, The API): the blocked records
+/// grouped by the issue their errors share, one issue with the files its records came from, the records listing
+/// narrowed to an issue, the release of an issue's records with each record naming the release in its history, and one
 /// record released and tried at once.
 /// </summary>
 [Trait("Category", "Integration")]
 [Collection(SqlServerSuite.Name)]
-public sealed class DeliveryProblemsApiTests
+public sealed class DeliveryIssuesApiTests
 {
-    /// <summary>The hold of a record whose wellbore the cache does not hold: one problem, whatever the wellbore.</summary>
+    /// <summary>The hold of a record whose wellbore the cache does not hold: one issue, whatever the wellbore.</summary>
     private static string MissingWellbore(string wellbore) => $"osdu.data.WellboreID: '{wellbore}' matches no cached Wellbore, and the entry is required";
 
     private const string EmptyTag = "osdu.tags.Tag4: dataset.tag4 is empty, and the entry is required";
 
     [Fact]
-    public async Task A_flow_s_problems_are_listed_opened_narrowed_to_and_released_together()
+    public async Task A_flow_s_issues_are_listed_opened_narrowed_to_and_released_together()
     {
         var cs = OsduTestServer.Require();
         await CatalogDatabase.MigrateAsync(cs);
         await SampleEstate.MigrateModuleAsync(cs);
 
         var suffix = Guid.NewGuid().ToString("N")[..10];
-        var flowName = "api-problems-" + suffix;
-        var repoId = FlowIdentity.FromName("repo/cp-problems-" + suffix);
+        var flowName = "api-issues-" + suffix;
+        var repoId = FlowIdentity.FromName("repo/cp-issues-" + suffix);
         var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
         var flowId = FlowId.Of(flowName);
         var now = DateTime.UtcNow;
@@ -50,7 +50,7 @@ public sealed class DeliveryProblemsApiTests
             source:
               connection: ${env:OSDU_DATA_DB}
               record: { object: OsduData.arc.Wellbore, key: [facility_name] }
-              work: ../.work/problems
+              work: ../.work/issues
             render:
               mapping: Wellbore@1.0.0
             target:
@@ -63,7 +63,7 @@ public sealed class DeliveryProblemsApiTests
         {
             db.Repos.Add(new CatalogRepo
             {
-                Id = repoId, Name = "cp-problems-" + suffix, RemoteUrl = "https://example/cp-problems.git",
+                Id = repoId, Name = "cp-issues-" + suffix, RemoteUrl = "https://example/cp-issues.git",
                 RootPath = Path.GetTempPath(), FirstSeenUtc = now, LastSyncUtc = now,
             });
             db.Pipelines.Add(new CatalogPipeline
@@ -103,22 +103,22 @@ public sealed class DeliveryProblemsApiTests
             using var client = factory.CreateClient();
             var token = await TokenAsync(client);
 
-            // The problems, the most records first, each with its pattern, counts and example.
-            var listing = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems");
-            Assert.Equal((2L, 4L, 0L), (listing.GetProperty("totalProblems").GetInt64(), listing.GetProperty("totalRecords").GetInt64(), listing.GetProperty("unsorted").GetInt64()));
-            var first = listing.GetProperty("problems")[0];
-            Assert.Equal(missing, first.GetProperty("problem").GetString());
+            // The issues, the most records first, each with its pattern, counts and example.
+            var listing = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/issues");
+            Assert.Equal((2L, 4L, 0L), (listing.GetProperty("totalIssues").GetInt64(), listing.GetProperty("totalRecords").GetInt64(), listing.GetProperty("unsorted").GetInt64()));
+            var first = listing.GetProperty("issues")[0];
+            Assert.Equal(missing, first.GetProperty("issue").GetString());
             Assert.Equal("osdu.data.WellboreID: '<value>' matches no cached Wellbore, and the entry is required", first.GetProperty("pattern").GetString());
             Assert.Equal((3L, 3L, 0L), (first.GetProperty("records").GetInt64(), first.GetProperty("held").GetInt64(), first.GetProperty("failed").GetInt64()));
             // The wellbores the cache lacks name each its own row's value: row errors. The empty tag is the same everywhere.
             Assert.Equal("rows", first.GetProperty("shape").GetString());
-            Assert.Equal("set", listing.GetProperty("problems")[1].GetProperty("shape").GetString());
+            Assert.Equal("set", listing.GetProperty("issues")[1].GetProperty("shape").GetString());
             var example = first.GetProperty("example");
-            Assert.Equal(missing, example.GetProperty("problem").GetString());
+            Assert.Equal(missing, example.GetProperty("issue").GetString());
             Assert.Contains(example.GetProperty("deliveryKey").GetGuid(), wellbores.Select(w => w.DeliveryKey.Value));
 
-            // One problem, with the files its records came from.
-            var detail = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems/{missing}");
+            // One issue, with the files its records came from.
+            var detail = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/issues/{missing}");
             Assert.Equal(
                 [("wells.csv", 2L), ("late.csv", 1L)],
                 detail.GetProperty("files").EnumerateArray().Select(f => (f.GetProperty("fileName").GetString(), f.GetProperty("records").GetInt64())).ToList());
@@ -129,24 +129,24 @@ public sealed class DeliveryProblemsApiTests
             Assert.Equal(
                 ["WB-1", "WB-2", "WB-3"],
                 samples.Select(x => Assert.Single(x.GetProperty("values").EnumerateArray().ToList()).GetString()).Order(StringComparer.Ordinal).ToList());
-            Assert.Equal("rows", detail.GetProperty("problem").GetProperty("shape").GetString());
-            await StatusAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems/not-a-problem", HttpStatusCode.BadRequest);
-            await StatusAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems/{new string('0', 16)}", HttpStatusCode.NotFound);
+            Assert.Equal("rows", detail.GetProperty("issue").GetProperty("shape").GetString());
+            await StatusAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/issues/not-a-issue", HttpStatusCode.BadRequest);
+            await StatusAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/issues/{new string('0', 16)}", HttpStatusCode.NotFound);
 
-            // The records listing narrowed to the problem lists its records alone; a problem it cannot read is refused.
-            var records = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/records?problem={missing}&pageSize=50");
+            // The records listing narrowed to the issue lists its records alone; an issue it cannot read is refused.
+            var records = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/records?issue={missing}&pageSize=50");
             Assert.Equal(3, records.GetProperty("total").GetInt64());
-            Assert.All(records.GetProperty("items").EnumerateArray(), r => Assert.Equal(missing, r.GetProperty("problem").GetString()));
-            await StatusAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/records?problem=xyz", HttpStatusCode.BadRequest);
+            Assert.All(records.GetProperty("items").EnumerateArray(), r => Assert.Equal(missing, r.GetProperty("issue").GetString()));
+            await StatusAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/records?issue=xyz", HttpStatusCode.BadRequest);
 
-            // Released together: every record of the problem, the other problem's left blocked.
-            var released = await JsonAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/problems/{missing}/release", "{}");
-            Assert.Equal((missing, 3, JsonValueKind.Null), (released.GetProperty("problem").GetString(), released.GetProperty("released").GetInt32(), released.GetProperty("runId").ValueKind));
-            var after = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems");
-            Assert.Equal((1L, 1L), (after.GetProperty("totalProblems").GetInt64(), after.GetProperty("totalRecords").GetInt64()));
-            await StatusAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/problems/{missing}/release", HttpStatusCode.NotFound, "{}");
+            // Released together: every record of the issue, the other issue's left blocked.
+            var released = await JsonAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/issues/{missing}/release", "{}");
+            Assert.Equal((missing, 3, JsonValueKind.Null), (released.GetProperty("issue").GetString(), released.GetProperty("released").GetInt32(), released.GetProperty("runId").ValueKind));
+            var after = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/issues");
+            Assert.Equal((1L, 1L), (after.GetProperty("totalIssues").GetInt64(), after.GetProperty("totalRecords").GetInt64()));
+            await StatusAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/issues/{missing}/release", HttpStatusCode.NotFound, "{}");
 
-            // Each record of it names the release in its own history: who asked, for which problem.
+            // Each record of it names the release in its own history: who asked, for which issue.
             foreach (var wellbore in wellbores)
             {
                 var activities = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/records/{flowId:D}/{wellbore.DeliveryKey.Value:D}/activities");
@@ -167,7 +167,7 @@ public sealed class DeliveryProblemsApiTests
                 Assert.Contains(tag.DeliveryKey.Value.ToString("D"), run.Payload, StringComparison.Ordinal);
             }
 
-            Assert.Equal(0L, (await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems")).GetProperty("totalRecords").GetInt64());
+            Assert.Equal(0L, (await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/issues")).GetProperty("totalRecords").GetInt64());
 
             // Every blocked record of the flow released, with a deliver run queued to plan and send them all.
             await ledger.MarkHeldAsync(flowId, [tag]);
@@ -204,7 +204,7 @@ public sealed class DeliveryProblemsApiTests
 
     private static RecordState Held(Guid flowId, string sourceKey, string error, string file) => new()
     {
-        DeliveryKey = DeliveryKey.Derive("problems", [sourceKey]),
+        DeliveryKey = DeliveryKey.Derive("issues", [sourceKey]),
         FlowId = flowId,
         SourceKey = sourceKey,
         MappingName = "Wellbore",

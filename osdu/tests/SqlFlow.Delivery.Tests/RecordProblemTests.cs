@@ -8,7 +8,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// Blocked records grouped by the problem that keeps them so (docs/ledger.md, Problems), on SQL Server: every write that
+/// Blocked records grouped by the problem that keeps them so (docs/ledger.md, Issues), on SQL Server: every write that
 /// blocks a record sorts it into its problem and every write that lets it go clears it, a flow's problems are counted from
 /// the problem index, a problem's records are released together with each one named under the release, and records
 /// blocked before the ledger kept problems are sorted by the backfill.

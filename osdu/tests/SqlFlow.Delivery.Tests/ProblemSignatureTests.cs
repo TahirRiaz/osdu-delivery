@@ -4,7 +4,7 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// What makes two blocked records one problem (docs/ledger.md, Problems): the errors the engine writes, with what names
+/// What makes two blocked records one problem (docs/ledger.md, Issues): the errors the engine writes, with what names
 /// the record (a value, an id, a moment, a number, a file, a correlation id) replaced, and nothing that names the problem.
 /// </summary>
 public class ProblemSignatureTests

@@ -748,8 +748,8 @@ function scopeOf(activity: DeliveryActivity, parameters: Record<string, unknown>
 
 /**
  * A release that named no record and reached this one among others: a release of every blocked record, or of every record
- * one problem kept blocked. The ledger names each record such a release changed, which is how it is on this record's
- * timeline at all; its summary says how many it released once it is done, and a problem's release names the problem's
+ * one issue kept blocked. The ledger names each record such a release changed, which is how it is on this record's
+ * timeline at all; its summary says how many it released once it is done, and an issue's release names the issue's
  * pattern.
  */
 interface Reach {
@@ -779,11 +779,12 @@ function reachOf(activity: DeliveryActivity, parameters: Record<string, unknown>
   }
 
   const records = count === null ? "the records" : `${count.toLocaleString()} record${count === 1 ? "" : "s"}`;
-  if (typeof parameters?.problem === "string") {
+  // A release of one issue's records names the issue (under "problem" in what the first releases wrote).
+  if (typeof (parameters?.issue ?? parameters?.problem) === "string") {
     return {
-      title: `Release asked for ${records} one problem kept blocked, this one among them`,
+      title: `Release asked for ${records} one issue kept blocked, this one among them`,
       count,
-      pattern: typeof parameters.pattern === "string" ? parameters.pattern : null,
+      pattern: typeof parameters?.pattern === "string" ? parameters.pattern : null,
     };
   }
 

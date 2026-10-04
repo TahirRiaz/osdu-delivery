@@ -42,9 +42,9 @@ const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
   () => import("./features/delivery/DeliveryFlowPanel").then((loaded) => ({ default: loaded.DeliveryFlowPanel })),
 );
-const DeliveryProblemsPanel = lazyRoute(
-  "DeliveryProblemsPanel",
-  () => import("./features/delivery/DeliveryProblemsPanel").then((loaded) => ({ default: loaded.DeliveryProblemsPanel })),
+const DeliveryIssuesPanel = lazyRoute(
+  "DeliveryIssuesPanel",
+  () => import("./features/delivery/DeliveryIssuesPanel").then((loaded) => ({ default: loaded.DeliveryIssuesPanel })),
 );
 const DeliveryTargetFacts = lazyRoute(
   "DeliveryTargetFacts",
@@ -150,12 +150,12 @@ const deliveryKind: FlowKindContribution = {
       ),
     },
     {
-      // The blocked records grouped by the problem that keeps them blocked, each problem checked and released as one.
-      value: "problems",
-      label: "Problems",
-      testId: "pipeline-tab-problems",
+      // The blocked records grouped by the issue that keeps them blocked, each issue checked and released as one.
+      value: "issues",
+      label: "Issues",
+      testId: "pipeline-tab-issues",
       render: (pipeline) => (
-        <Deferred><DeliveryProblemsPanel pipelineId={pipeline.id} flowName={pipeline.name} /></Deferred>
+        <Deferred><DeliveryIssuesPanel pipelineId={pipeline.id} flowName={pipeline.name} /></Deferred>
       ),
     },
     {

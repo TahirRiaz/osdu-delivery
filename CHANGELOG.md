@@ -13,25 +13,25 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
-- **Blocked records are grouped by the problem that keeps them blocked.** A flow's page has a **Problems** tab: a
-  million held or failed records read as the handful of problems they share, each its error with the parts each record
+- **Blocked records are grouped by the issue that keeps them blocked.** A flow's page has an **Issues** tab: a
+  million held or failed records read as the handful of issues they share, each its error with the parts each record
   says its own way (a value, an OSDU id, a moment, a number, a file, a correlation id) as placeholders, its records held
   and failed, when they last changed, the files they came from, and an example record with its own error. **Check**
   opens the example on its Render tab, which sends nothing; **Try** releases the example alone and runs it at once;
-  **Records** opens the Records tab narrowed to the problem; **Release** releases every record of the problem together,
+  **Records** opens the Records tab narrowed to the issue; **Release** releases every record of the issue together,
   a thousand to a statement, with a deliver run straight after when asked. The ledger keeps each blocked record's
-  problem beside it (`Record.ProblemHash`, module version 1.24.0, migration `RecordProblems`), written by the hold or the
-  failure that blocks it and cleared by whatever lets it go, and counts problems from a filtered index that holds the
-  blocked records alone; the control plane sorts the records blocked before it kept problems in the background. A
+  issue beside it (`Record.ProblemHash`, module version 1.24.0, migration `RecordProblems`), written by the hold or the
+  failure that blocks it and cleared by whatever lets it go, and counts issues from a filtered index that holds the
+  blocked records alone; the control plane sorts the records blocked before it kept issues in the background. A
   release of many records names each record it released under its activity (`osdu.ActivityRecord`), so every record's
-  timeline shows the release that reached it, a whole flow's or a problem's included. `GET /delivery/flows/{id}/problems`,
-  `GET .../problems/{problem}`, `POST .../problems/{problem}/release`, the records listing's `problem` filter, `run` on a
-  record's release, and `sqlflow records problems` and `records release --problem` answer it
-  ([osdu/docs/ledger.md](osdu/docs/ledger.md), Problems).
-- **A set error is released whole.** Each problem says whether it is a **set error** (every record carries the same
+  timeline shows the release that reached it, a whole flow's or an issue's included. `GET /delivery/flows/{id}/issues`,
+  `GET .../issues/{issue}`, `POST .../issues/{issue}/release`, the records listing's `issue` filter, `run` on a
+  record's release, and `sqlflow records issues` and `records release --issue` answer it
+  ([osdu/docs/ledger.md](osdu/docs/ledger.md), Issues).
+- **A set error is released whole.** Each issue says whether it is a **set error** (every record carries the same
   error, the mistake made once in the dataset, a cache entry, the mapping or a legal tag) or **row errors** (each record
-  names its own row's value), read from the values its records' errors name; the Problems tab writes a set error's value
-  in place and shows five samples spread from a problem's newest to its oldest record, each with Check and Try. A deliver
+  names its own row's value), read from the values its records' errors name; the Issues tab writes a set error's value
+  in place and shows five samples spread from an issue's newest to its oldest record, each with Check and Try. A deliver
   run now plans every record a release or a redelivery asked to be planned again, 5,000 to a pass and as many passes as
   there are, instead of 5,000 a run, and sends what every settled submission still holds, not ten submissions' worth;
   so a release of a million records with a run is planned and sent by that run. A redelivery of many records names each

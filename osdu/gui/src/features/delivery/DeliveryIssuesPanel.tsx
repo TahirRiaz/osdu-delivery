@@ -18,7 +18,7 @@ import { RichTooltip } from "@/components/RichTooltip";
 import { cn } from "@/lib/utils";
 import {
   deliveryApi, deliveryRecordRoute, ledgerLabel,
-  type DeliveryProblem, type DeliveryProblemFile, type DeliveryProblemSample, type DeliveryProblemShape, type DeliveryRecord,
+  type DeliveryIssue, type DeliveryIssueFile, type DeliveryIssueSample, type DeliveryIssueShape, type DeliveryRecord,
 } from "../../api/delivery";
 import { InterfacePicker } from "./InterfacePicker";
 import { OutsidePartition } from "./PartitionNotice";
@@ -28,7 +28,7 @@ import { problemText } from "./problemText";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { useWindowFit } from "./useWindowFit";
 
-/** The least height the problem list keeps, so a short window still shows a few problems. */
+/** The least height the issue list keeps, so a short window still shows a few issues. */
 const MIN_LIST_HEIGHT = 240;
 
 /** What stays under the list and the detail: the page's padding and the workbench's status bar. */
@@ -37,7 +37,7 @@ const BELOW = 24;
 /** How often the counts are read again while the tab is open: each read counts the blocked records of the ledger in view. */
 const REFRESH_MS = 30000;
 
-/** The placeholders a problem's pattern holds where each of its records says something of its own. */
+/** The placeholders an issue's pattern holds where each of its records says something of its own. */
 const PLACEHOLDERS = new Map<string, string>([
   ["<value>", "a value the record read"],
   ["<n>", "a number"],
@@ -55,7 +55,7 @@ const PLACEHOLDER_SPLIT = /(<(?:value|n|id|osdu id|time|path|hash|query)>)/;
 const tableContainer = (element: HTMLElement) => element.querySelector<HTMLElement>('[data-slot="table-container"]');
 
 /** What each shape says, in a word and a sentence. */
-const SHAPES: Record<DeliveryProblemShape, { label: string; icon: typeof Layers; tip: string }> = {
+const SHAPES: Record<DeliveryIssueShape, { label: string; icon: typeof Layers; tip: string }> = {
   set: {
     label: "Set error",
     icon: Layers,
@@ -69,7 +69,7 @@ const SHAPES: Record<DeliveryProblemShape, { label: string; icon: typeof Layers;
 };
 
 /**
- * A problem's pattern: the error its records share, with each part a record says in its own way drawn as a quiet chip
+ * An issue's pattern: the error its records share, with each part a record says in its own way drawn as a quiet chip
  * naming what goes there, so what the records have in common reads at a glance. For a set error the values its records
  * all name are written in place of their chips, since they are part of what every record says.
  */
@@ -78,7 +78,7 @@ function PatternText({ pattern, values, clamp = false, lead }: { pattern: string
   // Which of the record's values each value placeholder stands for: the values come in the order the error names them.
   const valueAt = parts.map((_, index) => parts.slice(0, index).filter((part) => part === "<value>").length);
   return (
-    <span className={cn("break-words", clamp && "line-clamp-2")} data-testid="problem-pattern">
+    <span className={cn("break-words", clamp && "line-clamp-2")} data-testid="issue-pattern">
       {lead}
       {parts.map((part, index) => {
         const meaning = PLACEHOLDERS.get(part);
@@ -88,7 +88,7 @@ function PatternText({ pattern, values, clamp = false, lead }: { pattern: string
 
         const value = part === "<value>" && values !== undefined ? values[valueAt[index]] : undefined;
         return value !== undefined
-          ? <span key={index} className="font-mono text-[12px] text-foreground" data-testid="problem-pattern-value">{value}</span>
+          ? <span key={index} className="font-mono text-[12px] text-foreground" data-testid="issue-pattern-value">{value}</span>
           : (
             <span key={index} className="mx-px rounded border border-border bg-muted px-1 font-mono text-[11px] text-muted-foreground" title={`Here each record names ${meaning} of its own`}>
               {part.slice(1, -1)}
@@ -99,15 +99,15 @@ function PatternText({ pattern, values, clamp = false, lead }: { pattern: string
   );
 }
 
-/** Where a problem lies, as a neutral chip led by its glyph, with what it means on hover. */
-function ShapeMark({ shape }: { shape: DeliveryProblemShape }) {
+/** Where an issue lies, as a neutral chip led by its glyph, with what it means on hover. */
+function ShapeMark({ shape }: { shape: DeliveryIssueShape }) {
   const { label, icon: Icon, tip } = SHAPES[shape];
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span
           className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-border bg-muted/60 px-1.5 align-[1px] text-[11px] font-medium"
-          data-testid="problem-shape"
+          data-testid="issue-shape"
           data-shape={shape}
         >
           <Icon className={cn("size-3 shrink-0", shape === "set" ? "text-primary" : "text-warning")} aria-hidden />
@@ -120,28 +120,28 @@ function ShapeMark({ shape }: { shape: DeliveryProblemShape }) {
 }
 
 /**
- * Where a problem's records stand, in a few words: all held, all failed, or how many of each. A held record met a data
- * problem or a refusal that is not retried; a failed one ran out of retries. Each is led by its glyph in its tone.
+ * Where an issue's records stand, in a few words: all held, all failed, or how many of each. A held record met a data
+ * issue or a refusal that is not retried; a failed one ran out of retries. Each is led by its glyph in its tone.
  */
-function ProblemStates({ problem }: { problem: DeliveryProblem }) {
+function IssueStates({ issue }: { issue: DeliveryIssue }) {
   const held = <CirclePause className="size-3 shrink-0 text-warning" aria-hidden />;
   const failed = <CircleX className="size-3 shrink-0 text-destructive" aria-hidden />;
-  const mixed = problem.held > 0 && problem.failed > 0;
+  const mixed = issue.held > 0 && issue.failed > 0;
   return (
-    <span className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground" data-testid="problem-states">
-      {problem.held > 0 && held}
-      {problem.held > 0 && (mixed ? <span><span className="font-mono tabular-nums">{problem.held.toLocaleString()}</span> held</span> : "all held")}
+    <span className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground" data-testid="issue-states">
+      {issue.held > 0 && held}
+      {issue.held > 0 && (mixed ? <span><span className="font-mono tabular-nums">{issue.held.toLocaleString()}</span> held</span> : "all held")}
       {mixed && <span aria-hidden="true">·</span>}
-      {problem.failed > 0 && failed}
-      {problem.failed > 0 && (mixed ? <span><span className="font-mono tabular-nums">{problem.failed.toLocaleString()}</span> failed</span> : "all failed")}
+      {issue.failed > 0 && failed}
+      {issue.failed > 0 && (mixed ? <span><span className="font-mono tabular-nums">{issue.failed.toLocaleString()}</span> failed</span> : "all failed")}
     </span>
   );
 }
 
-const problemColumns: Column<DeliveryProblem>[] = [
+const issueColumns: Column<DeliveryIssue>[] = [
   {
     id: "pattern",
-    header: "Problem",
+    header: "Issue",
     fill: true,
     floor: 260,
     render: (row) => (
@@ -156,34 +156,34 @@ const problemColumns: Column<DeliveryProblem>[] = [
     align: "right",
     render: (row) => (
       <span className="flex flex-col items-end gap-0.5">
-        <span className="font-mono text-[13px] font-medium tabular-nums" data-testid="problem-records">{row.records.toLocaleString()}</span>
-        <ProblemStates problem={row} />
+        <span className="font-mono text-[13px] font-medium tabular-nums" data-testid="issue-records">{row.records.toLocaleString()}</span>
+        <IssueStates issue={row} />
       </span>
     ),
   },
   {
     id: "newest",
     header: "Last",
-    render: (row) => <CompactTime value={row.newestUtc} caption="A record of this problem last changed" className="text-[12px]" />,
+    render: (row) => <CompactTime value={row.newestUtc} caption="A record of this issue last changed" className="text-[12px]" />,
   },
 ];
 
 /**
- * A flow's blocked records grouped by the problem that keeps them blocked (docs/ledger.md, Problems): a million held
- * records read as the handful of problems they share. A set error, the same mistake in every record of a prepared set, is
+ * A flow's blocked records grouped by the issue that keeps them blocked (docs/ledger.md, Issues): a million held
+ * records read as the handful of issues they share. A set error, the same mistake in every record of a prepared set, is
  * fixed once, checked on a few samples (rendered as they would be now, which sends nothing, or released and tried at once)
  * and then released whole, with a deliver run that plans every record of it. Row errors, each its own row's, are fixed in
  * the rows. One interface's ledger in the title bar's partition, as the Records tab is.
  */
-export function DeliveryProblemsPanel({ pipelineId, flowName }: { pipelineId: string; flowName: string }) {
+export function DeliveryIssuesPanel({ pipelineId, flowName }: { pipelineId: string; flowName: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const {
     names, many, interfaceName, partitions, partition, headerPartition, outside, unplaced, active, scope, ready, selectInterface,
-  } = useInterfaceChoice(pipelineId, ["problem"]);
-  // A link may name the problem to open on (the Records tab's filter carries one); a click picks another.
-  const [chosen, setChosen] = useState<string | null>(searchParams.get("problem"));
+  } = useInterfaceChoice(pipelineId, ["issue"]);
+  // A link may name the issue to open on (the Records tab's filter carries one); a click picks another.
+  const [chosen, setChosen] = useState<string | null>(searchParams.get("issue"));
   const [releaseOpen, setReleaseOpen] = useState(false);
   const list = useRef<HTMLDivElement>(null);
   const detailFrame = useRef<HTMLDivElement>(null);
@@ -191,27 +191,27 @@ export function DeliveryProblemsPanel({ pipelineId, flowName }: { pipelineId: st
   useWindowFit(detailFrame, BELOW, MIN_LIST_HEIGHT);
 
   const listing = useQuery({
-    queryKey: ["delivery", "problems", pipelineId, interfaceName, partition],
-    queryFn: () => deliveryApi.problems(pipelineId, scope),
+    queryKey: ["delivery", "issues", pipelineId, interfaceName, partition],
+    queryFn: () => deliveryApi.issues(pipelineId, scope),
     enabled: ready,
     refetchInterval: REFRESH_MS,
   });
-  const problems = listing.data?.problems;
-  const selected = problems?.find((row) => row.problem === chosen) ?? problems?.[0] ?? null;
+  const issues = listing.data?.issues;
+  const selected = issues?.find((row) => row.issue === chosen) ?? issues?.[0] ?? null;
   const detail = useQuery({
-    queryKey: ["delivery", "problem", pipelineId, interfaceName, partition, selected?.problem],
-    queryFn: () => deliveryApi.problem(pipelineId, selected!.problem, scope),
+    queryKey: ["delivery", "issue", pipelineId, interfaceName, partition, selected?.issue],
+    queryFn: () => deliveryApi.issue(pipelineId, selected!.issue, scope),
     enabled: ready && selected !== null,
     refetchInterval: REFRESH_MS,
   });
-  // The samples know more of where the problem lies than the listing's newest and oldest record.
-  const opened = detail.data?.problem.problem === selected?.problem ? detail.data : undefined;
-  const shape = opened?.problem.shape ?? selected?.shape ?? "set";
+  // The samples know more of where the issue lies than the listing's newest and oldest record.
+  const opened = detail.data?.issue.issue === selected?.issue ? detail.data : undefined;
+  const shape = opened?.issue.shape ?? selected?.shape ?? "set";
 
   const refresh = () => void queryClient.invalidateQueries({ queryKey: ["delivery"] });
   const openRun = (runId: string) => ({ label: "Open run", onClick: () => navigate(`/runs/${runId}`) });
 
-  // One record released and run at once: whether its problem is fixed shows on its timeline, and in this problem's count.
+  // One record released and run at once: whether its issue is fixed shows on its timeline, and in this issue's count.
   const trySample = useMutation({
     mutationFn: (record: DeliveryRecord) => deliveryApi.release(record, true),
     onSuccess: (result) => {
@@ -224,7 +224,7 @@ export function DeliveryProblemsPanel({ pipelineId, flowName }: { pipelineId: st
   });
 
   const release = useMutation({
-    mutationFn: ({ problem, run }: { problem: string; run: boolean }) => deliveryApi.releaseProblem(pipelineId, problem, run, scope),
+    mutationFn: ({ issue, run }: { issue: string; run: boolean }) => deliveryApi.releaseIssue(pipelineId, issue, run, scope),
     onSuccess: (result) => {
       setReleaseOpen(false);
       refresh();
@@ -240,7 +240,7 @@ export function DeliveryProblemsPanel({ pipelineId, flowName }: { pipelineId: st
 
   if (outside !== null || unplaced) {
     return (
-      <div className="flex flex-col gap-4" data-testid="delivery-panel-problems">
+      <div className="flex flex-col gap-4" data-testid="delivery-panel-issues">
         <OutsidePartition flowName={flowName} active={active} partitions={partitions} headerPartition={headerPartition} />
       </div>
     );
@@ -248,42 +248,42 @@ export function DeliveryProblemsPanel({ pipelineId, flowName }: { pipelineId: st
 
   const data = listing.data;
   const ledgerName = ledgerLabel(flowName, scope);
-  const recordsOf = (problem: string) => {
+  const recordsOf = (issue: string) => {
     const params = new URLSearchParams(searchParams);
     params.set("tab", "records");
-    params.set("problem", problem);
+    params.set("issue", issue);
     return `?${params.toString()}`;
   };
 
   return (
-    <div className="flex flex-col gap-3" data-testid="delivery-panel-problems">
+    <div className="flex flex-col gap-3" data-testid="delivery-panel-issues">
       {many && (
         <InterfacePicker names={names} interfaceName={interfaceName} onSelect={selectInterface} caption={`of ${names.length} interfaces of ${flowName}`} />
       )}
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]" data-testid="problems-summary">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]" data-testid="issues-summary">
         {data === undefined ? <Skeleton className="h-5 w-72" /> : (
           <span>
             <span className="font-mono font-medium tabular-nums">{data.totalRecords.toLocaleString()}</span>
             {` blocked record${data.totalRecords === 1 ? "" : "s"} in `}
-            <span className="font-mono font-medium tabular-nums">{data.totalProblems.toLocaleString()}</span>
-            {` problem${data.totalProblems === 1 ? "" : "s"}`}
-            {data.problems.length < data.totalProblems && (
-              <span className="text-muted-foreground">{`, the ${data.problems.length.toLocaleString()} largest listed`}</span>
+            <span className="font-mono font-medium tabular-nums">{data.totalIssues.toLocaleString()}</span>
+            {` issue${data.totalIssues === 1 ? "" : "s"}`}
+            {data.issues.length < data.totalIssues && (
+              <span className="text-muted-foreground">{`, the ${data.issues.length.toLocaleString()} largest listed`}</span>
             )}
           </span>
         )}
         {data !== undefined && data.unsorted > 0 && (
           <RichTooltip
             title="Not sorted yet"
-            body="Held or failed before the ledger kept problems. The control plane sorts them into theirs in the background, a page at a time; records blocked from now on are sorted as they are blocked. Releasing every blocked record from the Delivery tab reaches them too."
+            body="Held or failed before the ledger kept issues. The control plane sorts them into theirs in the background, a page at a time; records blocked from now on are sorted as they are blocked. Releasing every blocked record from the Delivery tab reaches them too."
           >
-            <span className="text-muted-foreground underline decoration-dotted underline-offset-2" data-testid="problems-unsorted">
-              {`and ${data.unsorted.toLocaleString()} not sorted into a problem yet`}
+            <span className="text-muted-foreground underline decoration-dotted underline-offset-2" data-testid="issues-unsorted">
+              {`and ${data.unsorted.toLocaleString()} not sorted into an issue yet`}
             </span>
           </RichTooltip>
         )}
-        <Button variant="ghost" size="sm" className="ml-auto h-7" onClick={refresh} disabled={listing.isFetching} data-testid="problems-refresh">
+        <Button variant="ghost" size="sm" className="ml-auto h-7" onClick={refresh} disabled={listing.isFetching} data-testid="issues-refresh">
           {listing.isFetching ? <Loader2 className="animate-spin" /> : <RefreshCw />}
           Refresh
         </Button>
@@ -291,36 +291,36 @@ export function DeliveryProblemsPanel({ pipelineId, flowName }: { pipelineId: st
 
       {listing.isError ? (
         isApiError(listing.error) ? <CorrelationError error={listing.error} /> : <p className="text-[13px] text-destructive">{String(listing.error)}</p>
-      ) : data !== undefined && data.totalProblems === 0 ? (
+      ) : data !== undefined && data.totalIssues === 0 ? (
         <Card className="rounded-lg p-0">
           <EmptyState
             icon={<CircleCheck />}
-            title={data.unsorted > 0 ? "No problem sorted yet" : "Nothing is blocked"}
+            title={data.unsorted > 0 ? "No issue sorted yet" : "Nothing is blocked"}
             description="A record is blocked when it is held or fails, and stays blocked until its source row changes or it is released."
-            data-testid="problems-empty"
+            data-testid="issues-empty"
           />
         </Card>
       ) : (
         <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
           <div ref={list} className="min-w-0 [&_[data-slot=table-container]]:overflow-y-auto [&_th]:sticky [&_th]:top-0 [&_th]:z-10 [&_th]:bg-card">
             <DataTable
-              columns={problemColumns}
-              rows={problems}
-              rowKey={(row) => row.problem}
-              onRowClick={(row) => setChosen(row.problem)}
-              rowSx={(row) => (row.problem === selected?.problem ? { backgroundColor: "var(--accent)" } : undefined)}
-              emptyMessage="No problem keeps a record of this ledger blocked."
-              data-testid="problems-table"
+              columns={issueColumns}
+              rows={issues}
+              rowKey={(row) => row.issue}
+              onRowClick={(row) => setChosen(row.issue)}
+              rowSx={(row) => (row.issue === selected?.issue ? { backgroundColor: "var(--accent)" } : undefined)}
+              emptyMessage="No issue keeps a record of this ledger blocked."
+              data-testid="issues-table"
             />
           </div>
           <div ref={detailFrame} className="min-w-0 overflow-y-auto">
             {selected === null ? <Skeleton className="h-64 w-full rounded-lg" /> : (
-              <ProblemDetail
-                problem={selected}
+              <IssueDetail
+                issue={selected}
                 shape={shape}
                 samples={opened?.samples}
                 files={opened?.files}
-                recordsLink={recordsOf(selected.problem)}
+                recordsLink={recordsOf(selected.issue)}
                 trying={trySample.isPending ? trySample.variables?.deliveryKey ?? null : null}
                 onTry={(record) => trySample.mutate(record)}
                 onRelease={() => setReleaseOpen(true)}
@@ -334,18 +334,18 @@ export function DeliveryProblemsPanel({ pipelineId, flowName }: { pipelineId: st
         <ReleaseDialog
           open={releaseOpen}
           title={`Release ${selected.records.toLocaleString()} record${selected.records === 1 ? "" : "s"}`}
-          message={`Every record of ${ledgerName} this problem keeps blocked goes back to delivery, however many. A record that still holds its rendered document is sent as it is; the others are planned again from their rows, ${PLANNED_PER_PASS.toLocaleString()} to a pass, all of them by the next run. A record blocked by it after you confirm stays blocked.`}
+          message={`Every record of ${ledgerName} this issue keeps blocked goes back to delivery, however many. A record that still holds its rendered document is sent as it is; the others are planned again from their rows, ${PLANNED_PER_PASS.toLocaleString()} to a pass, all of them by the next run. A record blocked by it after you confirm stays blocked.`}
           confirmLabel={`Release ${selected.records.toLocaleString()}`}
           busy={release.isPending}
-          testId="problem-release-dialog"
-          onConfirm={(run) => release.mutate({ problem: selected.problem, run })}
+          testId="issue-release-dialog"
+          onConfirm={(run) => release.mutate({ issue: selected.issue, run })}
           onClose={() => setReleaseOpen(false)}
         >
           <div className="rounded-md bg-muted/50 px-2 py-1.5 text-[12px]">
             <PatternText pattern={selected.pattern} values={shape === "set" ? selected.values : undefined} />
           </div>
           {shape === "rows" && (
-            <p className="flex items-start gap-1.5 text-[12px] text-muted-foreground" data-testid="problem-release-rows">
+            <p className="flex items-start gap-1.5 text-[12px] text-muted-foreground" data-testid="issue-release-rows">
               <Rows3 className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
               These are row errors: a record whose row still names the same value is held again. Release them once their rows,
               or the cause outside them, are fixed.
@@ -358,65 +358,65 @@ export function DeliveryProblemsPanel({ pipelineId, flowName }: { pipelineId: st
 }
 
 /**
- * One problem: where it lies and what its records share, how many there are and when they last changed, samples spread
+ * One issue: where it lies and what its records share, how many there are and when they last changed, samples spread
  * across its records to check before releasing it, where its records came from, and what can be done: check a sample,
- * try one, see every record of the problem, release them all.
+ * try one, see every record of the issue, release them all.
  */
-function ProblemDetail({ problem, shape, samples, files, recordsLink, trying, onTry, onRelease }: {
-  problem: DeliveryProblem;
-  shape: DeliveryProblemShape;
-  samples: DeliveryProblemSample[] | undefined;
-  files: DeliveryProblemFile[] | undefined;
+function IssueDetail({ issue, shape, samples, files, recordsLink, trying, onTry, onRelease }: {
+  issue: DeliveryIssue;
+  shape: DeliveryIssueShape;
+  samples: DeliveryIssueSample[] | undefined;
+  files: DeliveryIssueFile[] | undefined;
   recordsLink: string;
   /** The key of the sample being tried, while it is. */
   trying: string | null;
   onTry: (record: DeliveryRecord) => void;
   onRelease: () => void;
 }) {
-  const first = samples?.[0]?.record ?? problem.example;
+  const first = samples?.[0]?.record ?? issue.example;
   return (
-    <Card className="gap-3 rounded-lg p-3" data-testid="problem-detail">
+    <Card className="gap-3 rounded-lg p-3" data-testid="issue-detail">
       <div className="flex flex-wrap items-center gap-2">
         <ShapeMark shape={shape} />
         <span className="ml-auto flex items-center gap-1.5">
-          <Button asChild variant="outline" size="sm" className="h-7" data-testid="problem-records-link">
-            <RouterLink to={recordsLink} title="Every record this problem keeps blocked, on the Records tab">
+          <Button asChild variant="outline" size="sm" className="h-7" data-testid="issue-records-link">
+            <RouterLink to={recordsLink} title="Every record this issue keeps blocked, on the Records tab">
               <ListFilter />
               Records
             </RouterLink>
           </Button>
-          <Button size="sm" className="h-7" onClick={onRelease} data-testid="problem-release">
+          <Button size="sm" className="h-7" onClick={onRelease} data-testid="issue-release">
             <Unlock />
-            {`Release ${problem.records.toLocaleString()}`}
+            {`Release ${issue.records.toLocaleString()}`}
           </Button>
         </span>
       </div>
 
       <div className="text-[13px] leading-relaxed">
-        <PatternText pattern={problem.pattern} values={shape === "set" ? problem.values : undefined} />
+        <PatternText pattern={issue.pattern} values={shape === "set" ? issue.values : undefined} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground" data-testid="problem-facts">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground" data-testid="issue-facts">
         <span className="inline-flex items-center gap-1.5">
-          <span><span className="font-mono font-medium tabular-nums text-foreground">{problem.records.toLocaleString()}</span>{` record${problem.records === 1 ? "" : "s"}`}</span>
-          <ProblemStates problem={problem} />
+          <span><span className="font-mono font-medium tabular-nums text-foreground">{issue.records.toLocaleString()}</span>{` record${issue.records === 1 ? "" : "s"}`}</span>
+          <IssueStates issue={issue} />
         </span>
         <span className="inline-flex items-center gap-1">
-          last changed <CompactTime value={problem.oldestUtc} caption="The record that changed longest ago last changed" />
-          to <CompactTime value={problem.newestUtc} caption="The most recently changed record last changed" />
+          last changed <CompactTime value={issue.oldestUtc} caption="The record that changed longest ago last changed" />
+          to <CompactTime value={issue.newestUtc} caption="The most recently changed record last changed" />
         </span>
-        <span className="inline-flex items-center gap-0.5 font-mono" title="The problem's id, which the Records tab and the records verb of the command line take" data-testid="problem-id">
-          {problem.problem}
-          <CopyButton iconOnly label="Copy the problem's id" text={problem.problem} testId="copy-problem-id" />
+        <span className="inline-flex items-center gap-0.5 font-mono" title="The issue's id, which the Records tab and the records verb of the command line take" data-testid="issue-id">
+          {issue.issue}
+          <CopyButton iconOnly label="Copy the issue's id" text={issue.issue} testId="copy-issue-id" />
         </span>
       </div>
 
-      <div className="flex flex-col gap-2 border-t pt-3" data-testid="problem-samples">
+      <div className="flex flex-col gap-2 border-t pt-3" data-testid="issue-samples">
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="text-[13px] font-medium">Samples</span>
-          <span className="text-[12px] text-muted-foreground" data-testid="problem-samples-say">
+          <span className="text-[12px] text-muted-foreground" data-testid="issue-samples-say">
             {samples === undefined
-              ? "spread across the problem's records"
+              ? "spread across the issue's records"
               : shape === "set"
                 ? `the same error in ${samples.length === 1 ? "the one record" : `all ${samples.length}`}, newest to oldest`
                 : `${samples.length} records naming different values, newest to oldest`}
@@ -430,15 +430,15 @@ function ProblemDetail({ problem, shape, samples, files, recordsLink, trying, on
           </ul>
         )}
         {/* A record's own error, where its values stand in for the pattern's placeholders. */}
-        {first?.lastError && first.lastError !== problem.pattern && (
-          <div className="flex items-start gap-1 rounded-md bg-muted/50 px-2 py-1.5" data-testid="problem-example-error">
+        {first?.lastError && first.lastError !== issue.pattern && (
+          <div className="flex items-start gap-1 rounded-md bg-muted/50 px-2 py-1.5" data-testid="issue-example-error">
             <span className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px]">{first.lastError}</span>
-            <CopyButton iconOnly label="Copy the record's error" text={first.lastError} testId="copy-problem-example-error" />
+            <CopyButton iconOnly label="Copy the record's error" text={first.lastError} testId="copy-issue-example-error" />
           </div>
         )}
       </div>
 
-      <div className="flex flex-col gap-1 border-t pt-3" data-testid="problem-files">
+      <div className="flex flex-col gap-1 border-t pt-3" data-testid="issue-files">
         <span className="text-[13px] font-medium">From</span>
         {files === undefined ? <Skeleton className="h-10 w-full" /> : files.length === 0 ? (
           <span className="text-[12px] text-muted-foreground">No file recorded.</span>
@@ -462,7 +462,7 @@ function ProblemDetail({ problem, shape, samples, files, recordsLink, trying, on
  * checks: Check renders it as it would be now and sends nothing, Try releases it alone and runs it.
  */
 function SampleRow({ sample, rows, trying, onTry }: {
-  sample: DeliveryProblemSample;
+  sample: DeliveryIssueSample;
   rows: boolean;
   trying: boolean;
   onTry: (record: DeliveryRecord) => void;
@@ -472,11 +472,11 @@ function SampleRow({ sample, rows, trying, onTry }: {
     ? { fileName: record.pendingSourceFileName, rowNumber: record.pendingSourceRowNumber }
     : { fileName: record.sourceFileName, rowNumber: record.sourceRowNumber };
   return (
-    <li className="flex min-w-0 items-start gap-2 px-2 py-1.5" data-testid="problem-sample">
-      <RouterLink to={deliveryRecordRoute(record)} className="min-w-0 flex-1 rounded hover:bg-accent/40" data-testid="problem-sample-record">
+    <li className="flex min-w-0 items-start gap-2 px-2 py-1.5" data-testid="issue-sample">
+      <RouterLink to={deliveryRecordRoute(record)} className="min-w-0 flex-1 rounded hover:bg-accent/40" data-testid="issue-sample-record">
         <RecordIdentity label={record.label} sourceKey={record.sourceKey} origin={origin} />
         {rows && sample.values.length > 0 && (
-          <span className="mt-0.5 flex flex-wrap gap-1" data-testid="problem-sample-values">
+          <span className="mt-0.5 flex flex-wrap gap-1" data-testid="issue-sample-values">
             {sample.values.map((value, index) => (
               <span key={`${index}-${value}`} className="rounded border border-border bg-muted/60 px-1 font-mono text-[11px]">{value === "" ? "(empty)" : value}</span>
             ))}
@@ -486,7 +486,7 @@ function SampleRow({ sample, rows, trying, onTry }: {
       <span className="flex shrink-0 items-center gap-1">
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button asChild variant="outline" size="icon" className="size-7" data-testid="problem-sample-check">
+            <Button asChild variant="outline" size="icon" className="size-7" data-testid="issue-sample-check">
               <RouterLink to={`${deliveryRecordRoute(record)}?tab=render`} aria-label="Check: render it as it would be now">
                 <ScanSearch />
               </RouterLink>
@@ -498,7 +498,7 @@ function SampleRow({ sample, rows, trying, onTry }: {
         </Tooltip>
         <Tooltip>
           <TooltipTrigger asChild>
-            <Button variant="outline" size="icon" className="size-7" onClick={() => onTry(record)} disabled={trying} aria-label="Try: release it alone and run it" data-testid="problem-sample-try">
+            <Button variant="outline" size="icon" className="size-7" onClick={() => onTry(record)} disabled={trying} aria-label="Try: release it alone and run it" data-testid="issue-sample-try">
               {trying ? <Loader2 className="animate-spin" /> : <Play />}
             </Button>
           </TooltipTrigger>

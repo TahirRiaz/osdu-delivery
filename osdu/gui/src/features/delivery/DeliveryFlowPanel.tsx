@@ -39,7 +39,7 @@ import { shortId } from "./idTail";
 const ALL = "all";
 
 /** The URL filters that name records of one ledger, which the view of another interface or partition drops. */
-const SCOPED_TO_LEDGER = ["submission", "delivered", "run", "problem"] as const;
+const SCOPED_TO_LEDGER = ["submission", "delivered", "run", "issue"] as const;
 
 /** The file and row a record's newest version came from: the queued version's while work waits, as the lookup names it. */
 function originOf(row: DeliveryRecord): RecordOrigin {
@@ -91,8 +91,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const submissionFilter = searchParams.get("submission");
   const deliveredFilter = searchParams.get("delivered");
   const runFilter = searchParams.get("run");
-  // The Problems tab links here to the records one problem keeps blocked.
-  const problemFilter = searchParams.get("problem");
+  // The Issues tab links here to the records one issue keeps blocked.
+  const issueFilter = searchParams.get("issue");
   // The chips point at records of the ledger that was showing; another interface's or partition's records are not those.
   const {
     rows, names, many, interfaceName, partitions, partition, headerPartition, outside, unplaced, active, scope, ready, selectInterface,
@@ -119,8 +119,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
     submissionId: submissionFilter ?? undefined,
     deliveredBy: deliveredFilter ?? undefined,
     runId: runFilter ?? undefined,
-    problem: problemFilter ?? undefined,
-  }), [search, contains, status, drifted, submissionFilter, deliveredFilter, runFilter, problemFilter]);
+    issue: issueFilter ?? undefined,
+  }), [search, contains, status, drifted, submissionFilter, deliveredFilter, runFilter, issueFilter]);
 
   const clearSelection = useCallback(() => {
     setSelected(new Set());
@@ -373,16 +373,16 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 run {shortId(runFilter)}: clear
               </Button>
             )}
-            {problemFilter && (
-              <Button variant="outline" size="sm" className="h-8" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete("problem"); return next; })} data-testid="delivery-records-clear-problem">
-                kept blocked by problem {shortId(problemFilter)}: clear
+            {issueFilter && (
+              <Button variant="outline" size="sm" className="h-8" onClick={() => setSearchParams((current) => { const next = new URLSearchParams(current); next.delete("issue"); return next; })} data-testid="delivery-records-clear-issue">
+                kept blocked by issue {shortId(issueFilter)}: clear
               </Button>
             )}
           </FilterBar>
           {/* A flow that works in partitions has no records until the partition in view is known. */}
           {!ready ? <Skeleton className="h-40 w-full rounded-lg" /> : (
           <PagedTable
-            queryKey={["delivery", "records", pipelineId, interfaceName, partition, search, status, drifted, contains, submissionFilter, deliveredFilter, runFilter, problemFilter]}
+            queryKey={["delivery", "records", pipelineId, interfaceName, partition, search, status, drifted, contains, submissionFilter, deliveredFilter, runFilter, issueFilter]}
             fetchPage={(page, pageSize) => deliveryApi.records(pipelineId, {
               page, pageSize, interface: interfaceName ?? undefined, partition: partition ?? undefined, ...filter,
             })}
@@ -483,7 +483,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
       <ReleaseDialog
         open={releaseOpen}
         title="Release blocked records"
-        message={`Every held, failed and deleted record of ${ledgerName} goes back to delivery, however many. Records that still hold a rendered document are sent as they are; the others are planned again from their rows, ${PLANNED_PER_PASS.toLocaleString()} to a pass, all of them by the next run. To release the records of one problem only, use the Problems tab.`}
+        message={`Every held, failed and deleted record of ${ledgerName} goes back to delivery, however many. Records that still hold a rendered document are sent as they are; the others are planned again from their rows, ${PLANNED_PER_PASS.toLocaleString()} to a pass, all of them by the next run. To release the records of one issue only, use the Issues tab.`}
         confirmLabel={`Release ${blocked.toLocaleString()}`}
         busy={releaseAll.isPending}
         testId="delivery-release-dialog"

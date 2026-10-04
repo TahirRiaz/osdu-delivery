@@ -213,11 +213,11 @@ export interface DeliveryRecord {
   /** The OSDU ids the pending document refers to, each with the property that holds it. */
   references: DeliveryRecordReference[] | null;
   /**
-   * While the record is blocked, held or failed: the problem keeping it so, which every record refused for the same reason
+   * While the record is blocked, held or failed: the issue keeping it so, which every record refused for the same reason
    * shares (sixteen hexadecimal characters). Null otherwise, and until the ledger has sorted a record blocked before it kept
-   * problems.
+   * issues.
    */
-  problem?: string | null;
+  issue?: string | null;
 }
 
 /** An OSDU id a record's pending document refers to, and the property of the record holding it. */
@@ -741,67 +741,67 @@ export interface DeliveryReleaseResult {
 }
 
 /**
- * One problem keeping a flow's records blocked: the error its records share with every part that names a record (a value,
+ * One issue keeping a flow's records blocked: the error its records share with every part that names a record (a value,
  * an id, a moment, a number, a file) replaced by a placeholder such as `<value>`, how many records it keeps blocked, held
  * and failed, when they last changed, and its most recently changed record, with that record's own error.
  */
-export interface DeliveryProblem {
-  /** The problem's id: sixteen hexadecimal characters, what the records listing's `problem` filter takes. */
-  problem: string;
+export interface DeliveryIssue {
+  /** The issue's id: sixteen hexadecimal characters, what the records listing's `issue` filter takes. */
+  issue: string;
   pattern: string;
   records: number;
   held: number;
   failed: number;
-  /** When the record of the problem that changed longest ago last changed. */
+  /** When the record of the issue that changed longest ago last changed. */
   oldestUtc: string;
   /** When its most recently changed record last changed. */
   newestUtc: string;
   example: DeliveryRecord | null;
   /**
-   * Where the problem lies: `set` when its records carry the same error (no value of their own, or the same values in
+   * Where the issue lies: `set` when its records carry the same error (no value of their own, or the same values in
    * each), the mistake made once for the whole set; `rows` when they name values of their own rows, each to be fixed in
-   * its row. The listing reads it from the newest and the oldest record; a problem's samples tell it more surely.
+   * its row. The listing reads it from the newest and the oldest record; an issue's samples tell it more surely.
    */
-  shape: DeliveryProblemShape;
+  shape: DeliveryIssueShape;
   /** The values the example's error names (what its row held); for a set error, the values every record names. */
   values: string[];
 }
 
-export type DeliveryProblemShape = "set" | "rows";
+export type DeliveryIssueShape = "set" | "rows";
 
-/** A record of a problem looked at closely, with the values its error names. */
-export interface DeliveryProblemSample {
+/** A record of an issue looked at closely, with the values its error names. */
+export interface DeliveryIssueSample {
   record: DeliveryRecord;
   values: string[];
 }
 
-/** A flow's problems, the most records first, with how many there are in all and how many blocked records are not sorted yet. */
-export interface DeliveryProblemList {
-  problems: DeliveryProblem[];
-  totalProblems: number;
+/** A flow's issues, the most records first, with how many there are in all and how many blocked records are not sorted yet. */
+export interface DeliveryIssueList {
+  issues: DeliveryIssue[];
+  totalIssues: number;
   totalRecords: number;
-  /** Blocked records held or failed before the ledger kept problems, which the control plane sorts a page at a time. */
+  /** Blocked records held or failed before the ledger kept issues, which the control plane sorts a page at a time. */
   unsorted: number;
 }
 
-/** An ingestion file some of a problem's records came from; a null name for the records that name none. */
-export interface DeliveryProblemFile {
+/** An ingestion file some of an issue's records came from; a null name for the records that name none. */
+export interface DeliveryIssueFile {
   fileName: string | null;
   records: number;
 }
 
-export interface DeliveryProblemDetail {
-  /** The problem, its shape as its samples tell it. */
-  problem: DeliveryProblem;
+export interface DeliveryIssueDetail {
+  /** The issue, its shape as its samples tell it. */
+  issue: DeliveryIssue;
   /** The files its records came from, the most records first. */
-  files: DeliveryProblemFile[];
-  /** Records spread evenly across the problem: its newest, its oldest and the ones between. */
-  samples: DeliveryProblemSample[];
+  files: DeliveryIssueFile[];
+  /** Records spread evenly across the issue: its newest, its oldest and the ones between. */
+  samples: DeliveryIssueSample[];
 }
 
-/** What a release of a problem's records did, and the deliver run it queued when asked to. */
-export interface DeliveryProblemReleaseResult {
-  problem: string;
+/** What a release of an issue's records did, and the deliver run it queued when asked to. */
+export interface DeliveryIssueReleaseResult {
+  issue: string;
   released: number;
   runId: string | null;
 }
@@ -838,8 +838,8 @@ export interface DeliveryRecordListQuery extends PageQuery {
   runId?: string;
   /** Only delivered records whose last verify found drift or a missing record. */
   drifted?: boolean;
-  /** Only the blocked records one problem keeps blocked, by its id. */
-  problem?: string;
+  /** Only the blocked records one issue keeps blocked, by its id. */
+  issue?: string;
 }
 
 /**
@@ -1435,8 +1435,8 @@ export interface DeliveryRecordFilter {
   deliveredBy?: string;
   runId?: string;
   drifted?: boolean;
-  /** The blocked records one problem keeps blocked, by its id. */
-  problem?: string;
+  /** The blocked records one issue keeps blocked, by its id. */
+  issue?: string;
 }
 
 /**
@@ -3246,15 +3246,15 @@ export const deliveryApi = {
   /** Releases one record; with `run`, also queues a deliver run scoped to it, which tries it again at once. */
   release: (record: DeliveryRecordRef, run = false) =>
     post<DeliveryReleaseResult>(`${recordApiPath(record)}/release`, run ? { run: true } : undefined),
-  /** The problems keeping one ledger's records blocked, the most records first. */
-  problems: (pipelineId: string, scope?: DeliveryFlowScope, max?: number) =>
-    get<DeliveryProblemList>(`/api/v1/delivery/flows/${pipelineId}/problems`, { ...scopeQuery(scope), ...(max === undefined ? {} : { max }) }),
-  /** One problem of a ledger, with the files its records came from. */
-  problem: (pipelineId: string, problem: string, scope?: DeliveryFlowScope) =>
-    get<DeliveryProblemDetail>(`/api/v1/delivery/flows/${pipelineId}/problems/${encodeURIComponent(problem)}`, scopeQuery(scope)),
-  /** Releases every record a problem keeps blocked; with `run`, also queues a deliver run of the flow. */
-  releaseProblem: (pipelineId: string, problem: string, run: boolean, scope?: DeliveryFlowScope) =>
-    post<DeliveryProblemReleaseResult>(flowPath(pipelineId, `/problems/${encodeURIComponent(problem)}/release`, scope), { run }),
+  /** The issues keeping one ledger's records blocked, the most records first. */
+  issues: (pipelineId: string, scope?: DeliveryFlowScope, max?: number) =>
+    get<DeliveryIssueList>(`/api/v1/delivery/flows/${pipelineId}/issues`, { ...scopeQuery(scope), ...(max === undefined ? {} : { max }) }),
+  /** One issue of a ledger, with the files its records came from. */
+  issue: (pipelineId: string, issue: string, scope?: DeliveryFlowScope) =>
+    get<DeliveryIssueDetail>(`/api/v1/delivery/flows/${pipelineId}/issues/${encodeURIComponent(issue)}`, scopeQuery(scope)),
+  /** Releases every record an issue keeps blocked; with `run`, also queues a deliver run of the flow. */
+  releaseIssue: (pipelineId: string, issue: string, run: boolean, scope?: DeliveryFlowScope) =>
+    post<DeliveryIssueReleaseResult>(flowPath(pipelineId, `/issues/${encodeURIComponent(issue)}/release`, scope), { run }),
   /** Marks the record for redelivery and (with run) queues the deliver run that sends it. */
   redeliver: (record: DeliveryRecordRef, scope: "all" | "metadata" | "payload" = "all", run = true) =>
     post<DeliveryRedeliverResult>(`${recordApiPath(record)}/redeliver`, { scope, run }),

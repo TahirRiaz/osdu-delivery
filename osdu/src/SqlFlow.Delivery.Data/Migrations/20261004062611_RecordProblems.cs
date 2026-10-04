@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 namespace SqlFlow.Delivery.Data.Migrations
 {
     /// <summary>
-    /// Groups blocked records by the problem that keeps them so (docs/ledger.md, Problems), and names every record a release
+    /// Groups blocked records by the problem that keeps them so (docs/ledger.md, Issues), and names every record a release
     /// reached.
     /// <list type="bullet">
     /// <item><c>Record.ProblemHash</c>: the hash of a blocked, held or failed record's error with every part that names the

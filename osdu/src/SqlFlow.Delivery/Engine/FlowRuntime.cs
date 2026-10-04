@@ -655,8 +655,8 @@ public sealed class FlowRuntime : IDisposable
         }, ct);
 
     /// <summary>
-    /// Releases every record one problem keeps blocked (docs/ledger.md, Problems), after its cause was fixed: the records
-    /// blocked by it when the release begins, however many, and none blocked while it runs. The activity names the problem
+    /// Releases every record one issue keeps blocked (docs/ledger.md, Issues), after its cause was fixed: every record
+    /// blocked by it, however many. The activity names the issue
     /// and its pattern, and every record it releases is named under the activity, so each record's history shows the
     /// release. <paramref name="pattern"/> is what the operator was shown, recorded as they saw it.
     /// </summary>
@@ -664,11 +664,11 @@ public sealed class FlowRuntime : IDisposable
     {
         ArgumentNullException.ThrowIfNull(pattern);
         var named = ProblemSignature.Format(problem);
-        return TrackAsync("release", new { problem = named, pattern }, null, async activity =>
+        return TrackAsync("release", new { issue = named, pattern }, null, async activity =>
         {
             var released = await RequireLedger().ReleaseAsync(Flow.Id, ReleaseSelection.OfProblem(problem), activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            await EmitAsync("record.released", null, $"released by {Actor}", $"the records problem {named} kept blocked", ct).ConfigureAwait(false);
-            return (released, $"released {released} record(s) problem {named} kept blocked: {pattern}", (Guid?)null, false);
+            await EmitAsync("record.released", null, $"released by {Actor}", $"the records issue {named} kept blocked", ct).ConfigureAwait(false);
+            return (released, $"released {released} record(s) issue {named} kept blocked: {pattern}", (Guid?)null, false);
         }, ct);
     }
 

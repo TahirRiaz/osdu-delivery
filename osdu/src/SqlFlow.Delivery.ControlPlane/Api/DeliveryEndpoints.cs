@@ -127,7 +127,7 @@ public sealed record DeliveryRecordDto(
     string? PendingSourceFileName, long? PendingSourceRowNumber, DateTime? PendingSourceUpdatedUtc,
     string? SourceKeyJson, DateTime? PlanRequestedUtc,
     string? WaitingFor = null, IReadOnlyList<DeliveryRecordReferenceDto>? References = null, DateTime? SourceInsertedUtc = null,
-    string? Partition = null, string? Problem = null);
+    string? Partition = null, string? Issue = null);
 
 /// <summary>An OSDU id a record's pending document refers to, and the property of the record holding it.</summary>
 public sealed record DeliveryRecordReferenceDto(string Id, string Property);
@@ -344,8 +344,8 @@ public sealed record DeliveryReleaseResult(int Released, Guid? RunId = null);
 
 /// <summary>
 /// A release of one record. <c>Run</c> also queues a deliver run scoped to it, read under the parameter values it was last
-/// planned with, so the record is tried again at once: how an operator checks, on one record, that a problem's cause is
-/// fixed before releasing every record the problem keeps blocked.
+/// planned with, so the record is tried again at once: how an operator checks, on one record, that an issue's cause is
+/// fixed before releasing every record the issue keeps blocked.
 /// </summary>
 public sealed record DeliveryRecordReleaseRequest(bool Run = false, string? Pool = null);
 
@@ -375,11 +375,11 @@ public sealed record DeliveryTargetDto(
 /// however many submissions touch them afterwards: the set "the batch we ran" means.
 /// </summary>
 /// <summary>
-/// A record listing's filter, as a listing, a removal and a sync name it. <c>Problem</c> keeps the blocked records one
-/// problem keeps blocked: the sixteen characters the flow's problems listing gives it.
+/// A record listing's filter, as a listing, a removal and a sync name it. <c>Issue</c> keeps the blocked records one
+/// issue keeps blocked: the sixteen characters the flow's issues listing gives it.
 /// </summary>
 public sealed record DeliveryRecordFilterDto(
-    string? Status, string? Search, string? Mode, Guid? SubmissionId, Guid? RunId, bool Drifted = false, Guid? DeliveredBy = null, string? Problem = null);
+    string? Status, string? Search, string? Mode, Guid? SubmissionId, Guid? RunId, bool Drifted = false, Guid? DeliveredBy = null, string? Issue = null);
 
 /// <summary>
 /// A removal of one or many records. <c>scope</c> is record, history or everything. The records are named either
@@ -479,8 +479,8 @@ public static class DeliveryEndpoints
         delivery.MapGet("/mappings/{mappingId:guid}", GetMappingAsync).WithName("GetDeliveryMapping");
         DeliveryValueCheckEndpoints.MapReads(delivery);
 
-        // What keeps a flow's records blocked, grouped by problem, and one problem with the files its records came from.
-        DeliveryProblemEndpoints.MapReads(delivery);
+        // What keeps a flow's records blocked, grouped by issue, and one issue with the files its records came from.
+        DeliveryIssueEndpoints.MapReads(delivery);
 
         // The report of assertion flows: boards, runs, history and the report of a run in every format.
         DeliveryAssertionEndpoints.MapReads(delivery);
@@ -521,7 +521,7 @@ public static class DeliveryEndpoints
         delivery.MapPost("/flows/{pipelineId:guid}/preview", PreviewAsync).WithName("PreviewDeliveryFlowRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/scope-values", ScopeValuesAsync).WithName("ListDeliveryFlowScopeValues");
         DeliveryValueCheckEndpoints.MapWrites(delivery);
-        DeliveryProblemEndpoints.MapWrites(delivery);
+        DeliveryIssueEndpoints.MapWrites(delivery);
         delivery.MapPost("/flows/{pipelineId:guid}/osdu/read", ReadTargetAsync).WithName("ReadDeliveryOsduRecord");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
@@ -762,7 +762,7 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
-        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, Guid? deliveredBy, string? problem, int? page, int? pageSize,
+        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, Guid? deliveredBy, string? issue, int? page, int? pageSize,
         [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger, CancellationToken ct)
     {
         var (flow, unresolved) = await ResolveKeptAsync(db, documents, partitions, ledger, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
@@ -771,7 +771,7 @@ public static class DeliveryEndpoints
             return unresolved!;
         }
 
-        var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, search, mode, submissionId, runId, drifted == true, deliveredBy, problem));
+        var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, search, mode, submissionId, runId, drifted == true, deliveredBy, issue));
         if (query is null)
         {
             return invalid!;
@@ -816,23 +816,23 @@ public static class DeliveryEndpoints
             status = parsed;
         }
 
-        long? problem = null;
-        if (!string.IsNullOrWhiteSpace(filter.Problem))
+        long? issue = null;
+        if (!string.IsNullOrWhiteSpace(filter.Issue))
         {
-            if (!ProblemSignature.TryParse(filter.Problem.Trim().ToLowerInvariant(), out var parsed))
+            if (!ProblemSignature.TryParse(filter.Issue.Trim().ToLowerInvariant(), out var parsed))
             {
                 return (null, TypedResults.Problem(
-                    detail: $"problem '{filter.Problem}' is not a problem: a problem is the {ProblemSignature.TextLength} characters the flow's problems listing gives it.",
+                    detail: $"issue '{filter.Issue}' is not an issue: an issue is the {ProblemSignature.TextLength} characters the flow's issues listing gives it.",
                     statusCode: StatusCodes.Status400BadRequest, title: "Invalid request"));
             }
 
-            problem = parsed;
+            issue = parsed;
         }
 
         return (new RecordQuery
         {
             Status = status,
-            Problem = problem,
+            Problem = issue,
             Search = string.IsNullOrWhiteSpace(filter.Search) ? null : filter.Search.Trim(),
             Mode = string.Equals(filter.Mode, "contains", StringComparison.OrdinalIgnoreCase) ? SearchMode.Contains : SearchMode.Prefix,
             SubmissionId = filter.SubmissionId,
@@ -2854,7 +2854,7 @@ public static class DeliveryEndpoints
         r.SourceInsertedUtc,
         // The partition the record's ledger is kept under, whichever way its flow names it.
         r.Partition,
-        // While it is blocked, held or failed: the problem keeping it so, which every record refused for the same reason shares.
+        // While it is blocked, held or failed: the issue keeping it so, which every record refused for the same reason shares.
         r.ProblemHash is { } problem ? ProblemSignature.Format(problem) : null);
 
     private static DeliveryAttemptDto ToDto(AttemptRecord a) => new(

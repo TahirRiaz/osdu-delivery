@@ -3,7 +3,7 @@ using Microsoft.EntityFrameworkCore;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// The ledger's problems (docs/ledger.md, Problems): what keeps a flow's records blocked, grouped by the problem each
+/// The ledger's problems (docs/ledger.md, Issues): what keeps a flow's records blocked, grouped by the problem each
 /// record's error names (<see cref="ProblemSignature"/>), counted from the records through the problem index, and the
 /// signing of the records blocked before the ledger kept problems.
 /// </summary>
