@@ -47,4 +47,36 @@ test.describe.serial("pipelines", () => {
     await tabs.getByRole("tab", { name: /schedules/i }).click();
     await expect(adminPage.getByTestId("paged-table").first()).toBeVisible();
   });
+
+  test("records are redelivered from the Records tab through one dialog, which asks first what bringing them up to date sends", async ({ adminPage }) => {
+    await adminPage.getByTestId("nav-pipelines").click();
+    await adminPage.getByTestId("filter-name").fill(DELIVERY_FLOW);
+    await adminPage.getByTestId("repo-pipeline").filter({ hasText: DELIVERY_FLOW }).first().click();
+    await expect(adminPage.getByTestId("page-pipeline-detail")).toBeVisible();
+
+    // The overview offers it for every delivered record; the earlier specs only planned this flow's records.
+    await expect(adminPage.getByTestId("delivery-redeliver-all")).toBeVisible({ timeout: 30_000 });
+
+    // A ticked record: the dialog opens over the Records tab and names it.
+    await adminPage.getByTestId("pipeline-tabs").getByRole("tab", { name: /records/i }).click();
+    await adminPage.getByTestId("delivery-records-table").getByTestId("row-select").first().check({ timeout: 30_000 });
+    await adminPage.getByTestId("delivery-redeliver-selected").click();
+    const dialog = adminPage.getByTestId("redeliver-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(adminPage.getByTestId("redeliver-selection")).toContainText("One record");
+
+    // Bringing it up to date is offered first, and its check says why there is nothing to check: OSDU holds none of it.
+    await expect(adminPage.getByTestId("redeliver-mode-uptodate")).toHaveAttribute("aria-pressed", "true");
+    await expect(adminPage.getByTestId("redeliver-preview-error")).toContainText("nothing to bring up to date", { timeout: 30_000 });
+
+    // Sending again offers the parts the flow's route sends: a ddms route sends the record and its bulk data.
+    await adminPage.getByTestId("redeliver-mode-again").click();
+    await expect(adminPage.getByTestId("redeliver-part-record")).toBeVisible({ timeout: 30_000 });
+    await expect(adminPage.getByTestId("redeliver-part-bulk")).toBeVisible();
+    await expect(adminPage.getByTestId("redeliver-part-files")).toHaveCount(0);
+    await expect(adminPage.getByTestId("redeliver-confirm")).toHaveText(/Send again/);
+
+    await adminPage.getByTestId("redeliver-cancel").click();
+    await expect(dialog).toHaveCount(0);
+  });
 });

@@ -484,28 +484,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
               )}
             </Card>
           )}
-          {redeliverFor !== null && (
-            <RedeliverDialog
-              open
-              onClose={() => setRedeliverFor(null)}
-              pipelineId={pipelineId}
-              flowId={s?.flowId && s.flowId !== EMPTY_ID ? s.flowId : null}
-              flowScope={scope}
-              flowName={ledgerName}
-              selection={redeliverFor}
-              onDone={(outcome) => {
-                clearSelection();
-                const what = outcome.mode === "uptodate" ? "brought up to date" : "sent again";
-                const asked = redeliverFor.kind === "all" && outcome.marked === 0
-                  ? `Every delivered record will be ${what}`
-                  : `${outcome.marked.toLocaleString()} record${outcome.marked === 1 ? "" : "s"} will be ${what}`;
-                toast.success(
-                  outcome.runId ? `${asked} by a deliver run.` : `${asked} by the flow's next run.`,
-                  outcome.runId ? { action: { label: "Open run", onClick: () => navigate(`/runs/${outcome.runId}`) } } : undefined);
-                void queryClient.invalidateQueries({ queryKey: ["delivery"] });
-              }}
-            />
-          )}
           <RemovalDialog
             open={removeOpen}
             onClose={() => setRemoveOpen(false)}
@@ -533,6 +511,29 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
         />
       )}
 
+      {/* Beside the release dialog rather than in a tab: the overview opens it for every delivered record, the Records tab for a selection. */}
+      {redeliverFor !== null && (
+        <RedeliverDialog
+          open
+          onClose={() => setRedeliverFor(null)}
+          pipelineId={pipelineId}
+          flowId={s?.flowId && s.flowId !== EMPTY_ID ? s.flowId : null}
+          flowScope={scope}
+          flowName={ledgerName}
+          selection={redeliverFor}
+          onDone={(outcome) => {
+            clearSelection();
+            const what = outcome.mode === "uptodate" ? "brought up to date" : "sent again";
+            const asked = redeliverFor.kind === "all" && outcome.marked === 0
+              ? `Every delivered record will be ${what}`
+              : `${outcome.marked.toLocaleString()} record${outcome.marked === 1 ? "" : "s"} will be ${what}`;
+            toast.success(
+              outcome.runId ? `${asked} by a deliver run.` : `${asked} by the flow's next run.`,
+              outcome.runId ? { action: { label: "Open run", onClick: () => navigate(`/runs/${outcome.runId}`) } } : undefined);
+            void queryClient.invalidateQueries({ queryKey: ["delivery"] });
+          }}
+        />
+      )}
       <ReleaseDialog
         open={releaseOpen}
         title="Release blocked records"
@@ -547,11 +548,6 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   );
 }
 
-/**
- * The selection the removal dialog acts on. Ticked keys travel as keys; "all matching" travels as the filter
- * itself with the count that was shown, so the removal covers records no page ever rendered and the API can
- * refuse it if that count has moved.
- */
 /**
  * What a sync of the selection reads: the ticked records, every record the filter matches, or, for all matching an empty
  * filter, every record of the interface, which the sync pages itself rather than naming each.
@@ -582,6 +578,11 @@ function redeliverSelectionFor(
   return narrowed ? { kind: "filter", filter, expected: matched } : { kind: "all", delivered };
 }
 
+/**
+ * The selection the removal dialog acts on. Ticked keys travel as keys; "all matching" travels as the filter
+ * itself with the count that was shown, so the removal covers records no page ever rendered and the API can
+ * refuse it if that count has moved.
+ */
 function selectionFor(
   allMatching: boolean, filter: DeliveryRecordFilter, matched: number, selected: ReadonlySet<string>,
 ): RemovalSelection {
