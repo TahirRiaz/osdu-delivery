@@ -141,7 +141,7 @@ Each of these lets a host add something of its own without SQLFlow knowing what 
    `RequestLineageRecompute`, `SweepOrphanFileNodes`, `RunFileByName`, `RepoSourceLocalPath` and
    `RepoSourceSyncProgress`. They are SQLFlow's own, in SQLFlow's schema.
 4. Carried to `B:\SQLFlowV3` so far: every `sqlflow:` commit through `8efec63a` (2026-10-03, ending at SQLFlowV3
-   `b159841`), and `71da6c9`, `5d74a56` and `7b36f2d` (2026-10-04, as SQLFlowV3 `abffb87`, `7e1e041` and `b56e140`).
+   `b159841`), and `71da6c9`, `5d74a56` and `7b36f2d` (2026-10-04, as SQLFlowV3 `ff87404`, `4a0b257` and `6ae23bf`, on top of its merge `125286a`).
    `67148ad` and `07f2a15` have not been carried.
 
 When SQLFlow is pulled in again (`git subtree pull --prefix=sqlflow --squash B:/SQLFlowV3 main`), a conflict can only
