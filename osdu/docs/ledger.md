@@ -79,6 +79,7 @@ the identities its mapping declares when it is next staged.
 | `ClaimedTargetId` | The OSDU id the record claimed for its flow when it first queued a document, kept for good. Unique across the ledger: one OSDU record belongs to one flow. Null for a record that was only ever held. |
 | `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |
 | `Blocked` | Set when the record was held, failed or deleted and not released since. |
+| `ProblemHash` | While the record is blocked, held or failed: the problem that keeps it so ([Problems](#problems)), the hash of its last error with every part that names the record replaced, which every record refused for the same reason shares. Null for any other record, a removed one included. |
 | `LastDeliveredUtc`, `LastVerifiedUtc`, `LastVerifyOutcome` | Custody timestamps. |
 | `LeaseOwner` | The token of the lease that holds the record while a worker delivers it ([Leasing](#leasing)); the lease row says when it runs out. |
 | `LastSubmissionId`, `AttemptCount`, `NextAttemptUtc`, `LastError` | The pending work's progress; `LastError` is redacted. |
@@ -171,7 +172,7 @@ applies it ([Leasing](#leasing)).
 | `EventId` | Primary key, ever-increasing: the order the events were appended in. |
 | `LeaseToken`, `FlowId`, `DeliveryKey` | The lease it was appended under, and the record it concerns. |
 | `Kind`, `AtUtc` | `step` (a step completed; `StepJson` holds the steps so far) or `completion` (a try ended), and when. |
-| `Status`, `Promote`, `NothingSent`, `NextAttemptUtc`, `Error`, `TargetId`, `TargetVersion`, `TargetStateJson`, `PendingStepJson` | For a completion: how the try settles the record. |
+| `Status`, `Promote`, `NothingSent`, `NextAttemptUtc`, `Error`, `ProblemHash`, `TargetId`, `TargetVersion`, `TargetStateJson`, `PendingStepJson` | For a completion: how the try settles the record, and for one that holds or fails it, the problem its error names, read when the event is appended. |
 | `Claim*` | What the try was claimed with (submission, document, render context, fingerprint, origin, hashes), so a completion promotes what the try actually delivered even when newer work was queued meanwhile, and a step is kept only while the record still holds that document. |
 
 A try's attempt is written to `osdu.Attempt` in the transaction that appends its completion, so the record's history
@@ -301,6 +302,16 @@ the record that the schedule fired and found nothing.
 Record history is the attempts; run and intervention history is the activities. A record's page in the GUI
 shows both, plus its verify outcomes; a run's page links to what it did to each record through the run id. An idle run
 wrote nothing to any record, so a record's history never misses one.
+
+### `osdu.ActivityRecord`: the records a release reached
+
+An intervention made for one record names it on its activity (`DeliveryKey`). A release reaches many at once: the keys
+an operator ticked, every blocked record of a flow, or every record one problem keeps blocked, which can be a million.
+Each record it releases is named here, one row of `(PartitionId, FlowId, DeliveryKey, ActivityId)`, written by the
+statement that releases it, in its transaction, so a record is named exactly when it was released. A record's
+activities (`GET /records/{flowId}/{key}/activities`, its Timeline tab) are those that name it on their row and those
+that name it here, so its history shows every release that reached it, with who asked, when and for what. The rows are
+never pruned: like the activity they point at, they are the record's history.
 
 ### `osdu.SourceWatermark`: tier 0
 
@@ -456,12 +467,14 @@ until either the source row changes (its fingerprint moves, or its last-modified
 at) or an operator releases it. That is what "do not retry without intervention" means in practice: a re-run of the
 same data never re-attempts a known problem, while a corrected source row flows through on its own.
 
-A released record that still holds its rendered document goes back to pending in its submission, and the flow's next
-deliver run sends it, whatever that run itself plans: the row is what the record already queues, so a run whose plan
-finds nothing new for it still sends it. Once a run's own records are sent it takes the due records of up to ten
-completed or failed submissions and recomputes their totals. A `drain` run sends it at any time. A record released
-without a rendered document is stamped to be planned again instead, and the next run reads it from the ingestion
-tables by key.
+A release names the records it reaches by key, as every blocked record of the flow, or as every record one problem
+keeps blocked ([Problems](#problems)). A released record that still holds its rendered document goes back to pending in
+its submission, and the flow's next deliver run sends it, whatever that run itself plans: the row is what the record
+already queues, so a run whose plan finds nothing new for it still sends it. Once a run's own records are sent it takes
+the due records of up to ten completed or failed submissions and recomputes their totals. A `drain` run sends it at any
+time. A record released without a rendered document is stamped to be planned again instead, and the next run reads it
+from the ingestion tables by key; a run plans at most 5,000 such records before its own pass, and the flow's next runs
+plan the rest.
 
 Versions never go backwards. A row older than the version a record holds, delivered or queued, is skipped with an
 attempt (`skipped`, phase `stale`) naming both versions, and staging refuses work older than what the ledger holds,
@@ -490,6 +503,76 @@ releases it, the next plan creates it again; that is ownership, not an accident.
 at the version the ledger already holds. Its custody state is therefore still true and is not disturbed; the
 purge is written as a `purge-history` attempt and nothing else changes. Every removal, at every depth, names the
 scope and the operator on the attempt and in the activity trail.
+
+## Problems
+
+A blocked record says why in its last error, and an error names the record: the value it read, an OSDU id, a moment, a
+row, a file, the correlation id of the request OSDU refused. A million records held for one reason carry a million
+different errors. The ledger keeps, beside each blocked record, the **problem** its error names: the error with every
+part that names the record replaced by a placeholder (the **pattern**), hashed. Records refused for the same reason share
+a problem, so a flow with a million blocked records shows the handful of problems they share, and an operator fixes a
+cause, checks one record of its problem, and releases the problem's records together.
+
+**The pattern** is made in one place (`ProblemSignature`), from the redacted error as the record keeps it, on every path
+(the intake's holds, the worker's failures, the backfill, every read that names a group), so the same error is the
+same problem wherever it was written. What it replaces, in order:
+
+| Part | Becomes |
+| --- | --- |
+| The correlation id a refused request names, whatever the service spelled it with | `<id>` |
+| An OSDU kind (`osdu:wks:master-data--Wellbore:1.0.0`) | kept: it names what was refused, not which record |
+| A web address | its scheme, host and the words of its path, every other segment `<id>`, the query `<query>`; the service that refused stays |
+| Any other address (a lake, a seismic store) and a file path | `<path>` |
+| A moment (ISO 8601, a cache version's label, a time of day) | `<time>` |
+| A UUID or 32 hexadecimal characters | `<id>` |
+| An OSDU record id | `<osdu id>` |
+| A run of 16 or more hexadecimal characters | `<hash>` |
+| A value in single, back or typographic quotes, and an escaped value inside a quoted answer | `'<value>'` in its own quotes |
+| A number standing alone (a row, an index, a count, a status code) | `<n>`; a digit inside a word (`Tag4`, `v2`) stays |
+
+A double-quoted string is kept, because that is how a service's answer spells its reason and its message, and runs of
+whitespace collapse to one space. An error with nothing in it is the problem `no reason recorded`. The hash is the
+first eight bytes of the pattern's SHA-256, written as sixteen hexadecimal characters wherever a problem is named (the
+API, the CLI, a link). Two errors that differ in a part the rules keep are two problems: the rules split a problem rather
+than merge two, which is the safer way to be wrong when a whole problem is released at once. A change to the rules
+changes the problem of an error they reach, so it ships with a migration that clears `ProblemHash` on every blocked
+record, and the backfill sorts them again under the new rules.
+
+**Who writes it.** A problem is written by the write that blocks the record and cleared by every write that lets it go,
+so `ProblemHash` is set exactly while the record is blocked, held or failed:
+
+- the intake's hold (`MarkHeldAsync`) writes it with the error;
+- a worker's completion that holds or fails the record carries it on its event (`RecordEvent.ProblemHash`), computed when
+  the event is appended, and the lease applies it with the rest of the completion; a completion superseded by newer
+  work, or one that delivers, leaves none;
+- staging new work, a release and a removal clear it (a removed record is blocked, but by an operator, not a problem).
+
+**Records blocked before the ledger kept problems** have none. The filtered index `IX_Record_Unsorted` holds exactly
+the blocked, held or failed records without one, and the control plane's backfill (`RecordProblemBackfillService`)
+reads it 500 records at a time, a quarter of a second apart, and sorts each into its problem from its stored error,
+writing only while the record is still the blocked record that error was read from. A record sorted leaves the index,
+so the pass needs no cursor, resumes where it stopped after a restart, and costs one seek once the backlog is gone; it
+looks again every ten minutes for a completion an older node appended. Until a record is sorted, a flow's problems say
+how many of its blocked records are not sorted yet.
+
+**Reading problems.** A flow's problems (`GET /flows/{pipelineId}/problems`, the flow page's Problems tab,
+`sqlflow records problems`) are counted from the records through the filtered index
+`(PartitionId, FlowId, ProblemHash, UpdatedUtc) INCLUDE (Status, PendingSourceFileName) WHERE ProblemHash IS NOT NULL`,
+which holds the blocked records alone: per problem its records, held and failed, and when they last changed, the most
+records first, with how many problems and records there are in all, in one pass over the flow's range of the index. Each
+problem names its most recently changed record as its example, one seek each, and its pattern is read from the
+example's error. One problem's files (`GET /flows/{pipelineId}/problems/{problem}`) are counted from the file the index
+includes, and its records are the records listing narrowed to it (`problem=`), read newest first in the index's own
+order. Like the statistics, these are counts of the records and never kept beside them.
+
+**Releasing a problem** (`POST /flows/{pipelineId}/problems/{problem}/release`, `sqlflow records release --problem`)
+walks the problem's range of the index in its order, a page of 1,000 keys at a time, and releases each page in a
+statement of its own: a record still holding its rendered document goes back to pending, any other is asked to be
+planned again. A released record leaves the index, and the walk takes no record changed after the release began, so a
+run blocking records with the same problem meanwhile cannot keep it going: those stay blocked, since the problem was
+not fixed for them. It is recorded as a `release` activity naming the problem and the pattern the operator was shown,
+and each record it released is named under it ([`osdu.ActivityRecord`](#osduactivityrecord-the-records-a-release-reached)).
+A release of every blocked record walks the status index the same way, one custody state at a time.
 
 ## One source, several flows
 
@@ -532,8 +615,8 @@ delivers some rows to `dev` and others to `test` from the same instance, and a f
 Every element of the ledger is therefore one partition's, and the partition is part of every ledger table's key.
 
 - **Every ledger table leads with the partition.** `osdu.Record`, `RecordIdentity`, `Attempt`, `Submission`,
-  `WorkBatch`, `Lease`, `RecordEvent`, `SourceWatermark`, `Activity`, `Retrieval`, `AssertionRun` and `AssertionResult`
-  each carry `PartitionId`, and each
+  `WorkBatch`, `Lease`, `RecordEvent`, `SourceWatermark`, `Activity`, `ActivityRecord`, `Retrieval`, `AssertionRun` and
+  `AssertionResult` each carry `PartitionId`, and each
   primary key starts with it, so one partition's rows are one range of every clustered index and of every index that
   serves a listing. A partition's rows never interleave with another's, a partition's reads never touch another's pages,
   and a partition can later be moved to a filegroup or a table partition of its own without a key change.
@@ -646,8 +729,10 @@ SQL Server:
 - **No statement writes more than 1,000 records.** SQL Server turns the row locks a statement holds on one index into
   a lock on the whole table once they reach 5,000, and a lock on the record table would stop every node of every flow
   while it lasted. Staging copies a batch into a staging table once and writes it a thousand records to a transaction.
-  A batch's claim and hand-back, an operator's release or redelivery and a cache change's marking first read the keys
-  of the records they reach and then write them a thousand keys to a statement. Every index of the table ends with the
+  A batch's claim and hand-back, an operator's redelivery and a cache change's marking first read the keys of the
+  records they reach and then write them a thousand keys to a statement. A release of named records writes them a
+  thousand to a statement; a release of every blocked record or of a problem's records reads a page of a thousand keys
+  from the index that holds them and releases it before it reads the next. Every index of the table ends with the
   table's key, so such a statement finds each record with one seek and locks no record it does not write. A lease
   applies its events a thousand records to a transaction, a worker's append carries at most 500 events with their
   attempts, and pruning deletes 4,000 attempts to a statement.
@@ -694,6 +779,8 @@ do not are seeks on an id that is unique across partitions, where the partition 
 | `Record (PartitionId, FlowId, SourceFileName, SourceRowNumber)`, `(PartitionId, SourceFileName)` | "which records came from this file", inside one flow and across a partition |
 | `Record (PartitionId, FlowId, PlanRequestedUtc) WHERE PlanRequestedUtc IS NOT NULL` | the records the planner pages each run, so it stays as small as the backlog |
 | `Record (PartitionId, WaitingFor) WHERE WaitingFor IS NOT NULL` | the records waiting for an id, released when the record holding it lands |
+| `Record (PartitionId, FlowId, ProblemHash, UpdatedUtc) INCLUDE (Status, PendingSourceFileName) WHERE ProblemHash IS NOT NULL` | a flow's problems counted, a problem's records listed newest first and walked by its release, its files ([Problems](#problems)); as small as what is blocked |
+| `Record (PartitionId, FlowId) WHERE ProblemHash IS NULL AND Blocked = 1 AND Status IN ('held', 'failed')` (`IX_Record_Unsorted`) | the blocked records not sorted into a problem yet, which the backfill reads and the problems count; empty but for that backlog |
 | `Record (ClaimedTargetId) WHERE ClaimedTargetId IS NOT NULL`, unique, binary collation | one flow per OSDU id: the claim check staging runs, and the database's refusal of a second claim. An OSDU id names its partition, so it is unique without one |
 | `Record (CacheSetId, DeliveryKey, FlowId) WHERE CacheSetId IS NOT NULL` | a cache change's rollout, in key and then flow order from its cursor; a cache is one partition's, and so is a change to it |
 | `Record (LastSubmissionId, WorkBatch)`, `(LeaseOwner)` | a batch's records, the records one lease holds (its hand-back, and the expiry a listing shows); a submission and a lease token are unique across partitions |
@@ -703,6 +790,7 @@ do not are seeks on an id that is unique across partitions, where the partition 
 | `Lease (PartitionId, Token)` primary key, unique `(Token)`, `(PartitionId, FlowId, ExpiresUtc)`, `(SubmissionId, ExpiresUtc)` | a lease by token, the leases of a flow that ran out, for the recovery; the next expiry a run waits for, for a flow and for one submission |
 | `RecordEvent (PartitionId, EventId)` primary key, `(LeaseToken, FlowId, DeliveryKey, EventId)`, `(PartitionId, FlowId, AtUtc) INCLUDE (LeaseToken)` | one lease's events in record order, a slice at a time, for its checkpoint; a flow's old events, for the recovery of those whose lease is gone |
 | `Attempt (PartitionId, AttemptId)` primary key, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, PartitionId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order across every partition |
+| `ActivityRecord (PartitionId, FlowId, DeliveryKey, ActivityId)` primary key | the releases that reached one record, for its history |
 | `Activity (PartitionId, ActivityId)` primary key, unique `(ActivityId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(PartitionId, Kind, StartedUtc)`, `(PartitionId, Actor, StartedUtc)`, `(PartitionId, StartedUtc)`, `(PartitionId, Idle, StartedUtc)`, `(SubmissionId)`, `(RunId)` | an activity by id, the audit views and their filters in a partition, the trail without its idle runs and the count of them, one record's interventions, a submission's and a run's |
 | `Retrieval (PartitionId, RetrievalId)` primary key, unique `(RetrievalId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval by id, a retrieval flow's runs, the watermark chain (the last done run), the run's row |
 | `AssertionRun (PartitionId, AssertionRunId)` primary key, unique `(AssertionRunId)`, `(PartitionId, FlowId, StartedUtc)`, `(RunId)` | a report by number, an assertion flow's runs newest first, the platform run's report |
@@ -870,6 +958,13 @@ TextHash)`) and the indexes a lookup by attribute and value seeks; adds `Dimensi
 range of the dimension alone. The two tables are rebuilt, so it takes as long as they are large. It creates no
 `osdu.dim_...` table: builds do. Going back down drops every table a dimension names, gives each attribute row its name
 back, restores the earlier keys and indexes, and drops the new table and column.
+
+`RecordProblems` (module version 1.24.0) groups blocked records by problem ([Problems](#problems)). It adds
+`Record.ProblemHash` and `RecordEvent.ProblemHash`, both empty, so neither table is rewritten; builds the problem index
+over the record table, which holds nothing until records are sorted, and `IX_Record_Unsorted`, which holds every record
+blocked when it runs, for the control plane's backfill to sort; and creates `osdu.ActivityRecord`. The pattern is made
+in code, so no statement of the migration computes it. The two index builds read the record table, sized by its row
+count, and run while no host is up. Going back down drops the table, the indexes and both columns.
 
 `DimensionColumnNames` (module version 1.23.0) lets a dimension's table name its key's and its value's columns after
 what the dimension reads ([dimension-plan.md](dimension-plan.md), The table). It adds `Dimension.KeyColumn` and

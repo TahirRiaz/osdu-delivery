@@ -212,6 +212,12 @@ export interface DeliveryRecord {
   partition?: string | null;
   /** The OSDU ids the pending document refers to, each with the property that holds it. */
   references: DeliveryRecordReference[] | null;
+  /**
+   * While the record is blocked, held or failed: the problem keeping it so, which every record refused for the same reason
+   * shares (sixteen hexadecimal characters). Null otherwise, and until the ledger has sorted a record blocked before it kept
+   * problems.
+   */
+  problem?: string | null;
 }
 
 /** An OSDU id a record's pending document refers to, and the property of the record holding it. */
@@ -730,6 +736,55 @@ export interface DeliveryRunAccepted {
 
 export interface DeliveryReleaseResult {
   released: number;
+  /** The deliver run queued with the release, when one was asked for. */
+  runId?: string | null;
+}
+
+/**
+ * One problem keeping a flow's records blocked: the error its records share with every part that names a record (a value,
+ * an id, a moment, a number, a file) replaced by a placeholder such as `<value>`, how many records it keeps blocked, held
+ * and failed, when they last changed, and its most recently changed record, with that record's own error.
+ */
+export interface DeliveryProblem {
+  /** The problem's id: sixteen hexadecimal characters, what the records listing's `problem` filter takes. */
+  problem: string;
+  pattern: string;
+  records: number;
+  held: number;
+  failed: number;
+  /** When the record of the problem that changed longest ago last changed. */
+  oldestUtc: string;
+  /** When its most recently changed record last changed. */
+  newestUtc: string;
+  example: DeliveryRecord | null;
+}
+
+/** A flow's problems, the most records first, with how many there are in all and how many blocked records are not sorted yet. */
+export interface DeliveryProblemList {
+  problems: DeliveryProblem[];
+  totalProblems: number;
+  totalRecords: number;
+  /** Blocked records held or failed before the ledger kept problems, which the control plane sorts a page at a time. */
+  unsorted: number;
+}
+
+/** An ingestion file some of a problem's records came from; a null name for the records that name none. */
+export interface DeliveryProblemFile {
+  fileName: string | null;
+  records: number;
+}
+
+export interface DeliveryProblemDetail {
+  problem: DeliveryProblem;
+  /** The files its records came from, the most records first. */
+  files: DeliveryProblemFile[];
+}
+
+/** What a release of a problem's records did, and the deliver run it queued when asked to. */
+export interface DeliveryProblemReleaseResult {
+  problem: string;
+  released: number;
+  runId: string | null;
 }
 
 export interface DeliveryRedeliverResult {
@@ -764,6 +819,8 @@ export interface DeliveryRecordListQuery extends PageQuery {
   runId?: string;
   /** Only delivered records whose last verify found drift or a missing record. */
   drifted?: boolean;
+  /** Only the blocked records one problem keeps blocked, by its id. */
+  problem?: string;
 }
 
 /**
@@ -1359,6 +1416,8 @@ export interface DeliveryRecordFilter {
   deliveredBy?: string;
   runId?: string;
   drifted?: boolean;
+  /** The blocked records one problem keeps blocked, by its id. */
+  problem?: string;
 }
 
 /**
@@ -3162,7 +3221,18 @@ export const deliveryApi = {
   /** Probes the flow's target: is OSDU reachable with the flow's credentials, in the scope's partition? Answered at once. */
   probe: (pipelineId: string, scope?: DeliveryFlowScope) =>
     post<DeliveryProbeResult>(flowPath(pipelineId, "/probe", scope)),
-  release: (record: DeliveryRecordRef) => post<DeliveryReleaseResult>(`${recordApiPath(record)}/release`),
+  /** Releases one record; with `run`, also queues a deliver run scoped to it, which tries it again at once. */
+  release: (record: DeliveryRecordRef, run = false) =>
+    post<DeliveryReleaseResult>(`${recordApiPath(record)}/release`, run ? { run: true } : undefined),
+  /** The problems keeping one ledger's records blocked, the most records first. */
+  problems: (pipelineId: string, scope?: DeliveryFlowScope, max?: number) =>
+    get<DeliveryProblemList>(`/api/v1/delivery/flows/${pipelineId}/problems`, { ...scopeQuery(scope), ...(max === undefined ? {} : { max }) }),
+  /** One problem of a ledger, with the files its records came from. */
+  problem: (pipelineId: string, problem: string, scope?: DeliveryFlowScope) =>
+    get<DeliveryProblemDetail>(`/api/v1/delivery/flows/${pipelineId}/problems/${encodeURIComponent(problem)}`, scopeQuery(scope)),
+  /** Releases every record a problem keeps blocked; with `run`, also queues a deliver run of the flow. */
+  releaseProblem: (pipelineId: string, problem: string, run: boolean, scope?: DeliveryFlowScope) =>
+    post<DeliveryProblemReleaseResult>(flowPath(pipelineId, `/problems/${encodeURIComponent(problem)}/release`, scope), { run }),
   /** Marks the record for redelivery and (with run) queues the deliver run that sends it. */
   redeliver: (record: DeliveryRecordRef, scope: "all" | "metadata" | "payload" = "all", run = true) =>
     post<DeliveryRedeliverResult>(`${recordApiPath(record)}/redeliver`, { scope, run }),

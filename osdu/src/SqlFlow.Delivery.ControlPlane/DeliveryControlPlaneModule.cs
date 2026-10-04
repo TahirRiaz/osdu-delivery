@@ -99,6 +99,11 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         // since. Records staged from now on write their own rows as they are staged.
         services.AddHostedService<RecordIdentityBackfillService>();
 
+        // The records blocked before the ledger kept problems are sorted into theirs in the background, so the Problems
+        // view groups every blocked record, not only those blocked since. Records blocked from now on are sorted as they
+        // are blocked.
+        services.AddHostedService<RecordProblemBackfillService>();
+
         if (rollout.Enabled)
         {
             services.AddHostedService<CacheUpdateRolloutService>();

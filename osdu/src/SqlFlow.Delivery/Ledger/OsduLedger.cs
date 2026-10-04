@@ -664,6 +664,7 @@ public sealed partial class OsduLedger : ILedger
                 }
                 entity.Status = StatusText.Of(RecordStatus.Held);
                 entity.LastError = Truncate(record.LastError, 2000);
+                entity.ProblemHash = ProblemSignature.Of(entity.LastError);
                 entity.LastSubmissionId = record.LastSubmissionId;
                 entity.LeaseOwner = null;
                 entity.PendingDocumentRef = null;
@@ -1386,6 +1387,12 @@ public sealed partial class OsduLedger : ILedger
             rows = rows.Where(r => r.LastVerifyOutcome == "drifted" || r.LastVerifyOutcome == "missing");
         }
 
+        if (query.Problem is { } problem)
+        {
+            // The problem index holds the blocked records alone; naming its filter lets the server read it.
+            rows = rows.Where(r => r.ProblemHash != null && r.ProblemHash == problem);
+        }
+
         if (query.EverDelivered is { } everDelivered)
         {
             rows = everDelivered ? rows.Where(r => r.LastDeliveredUtc != null) : rows.Where(r => r.LastDeliveredUtc == null);
@@ -1728,68 +1735,90 @@ public sealed partial class OsduLedger : ILedger
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
-    public async Task<int> ReleaseAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default)
+    public Task<int> ReleaseAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default)
+        => ReleaseAsync(flowId, keys is null ? ReleaseSelection.EveryBlocked : ReleaseSelection.Named(keys), null, nowUtc, ct);
+
+    public async Task<int> ReleaseAsync(Guid flowId, ReleaseSelection selection, long? activityId, DateTime nowUtc, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(selection);
+        ArgumentOutOfRangeException.ThrowIfLessThan(WriteSlice, 1);
         if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
         {
             return 0;
         }
 
         await using var db = Open();
-        var held = StatusText.Of(RecordStatus.Held);
-        var failed = StatusText.Of(RecordStatus.Failed);
-        var deleted = StatusText.Of(RecordStatus.Deleted);
-        var pending = StatusText.Of(RecordStatus.Pending);
-        var blocked = db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.Blocked && (r.Status == held || r.Status == failed || r.Status == deleted));
-        if (keys is not null)
+
+        // Named records are released as named, a slice to a statement; a waiting one among them is sent without waiting.
+        if (selection.Keys is { } named)
         {
-            var ids = keys.Select(k => k.Value).ToArray();
-            blocked = blocked.Where(r => ids.Contains(r.DeliveryKey));
+            var released = 0;
+            foreach (var slice in named.Select(k => k.Value).Chunk(WriteSlice))
+            {
+                ct.ThrowIfCancellationRequested();
+                released += await RetryDeadlockAsync(
+                    () => SqlServerLedgerBulk.ReleaseSliceAsync(db, partition, flowId, slice, waiting: true, activityId, ReleasedNote, nowUtc, ct), ct).ConfigureAwait(false);
+            }
+
+            return released;
         }
 
-        // A release of a whole flow is a slice at a time like any other.
-        // Records that still hold their rendered document go straight back to the worker.
-        var requeued = await WriteEachAsync(
-            blocked.Where(r => r.PendingDocumentRef != null),
-            slice => slice.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.Status, pending)
-                .SetProperty(r => r.Blocked, false)
-                .SetProperty(r => r.AttemptCount, 0)
-                .SetProperty(r => r.NextAttemptUtc, (DateTime?)null)
-                .SetProperty(r => r.LastError, (string?)null)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-            ct).ConfigureAwait(false);
-
-        // The others are unblocked and asked to be planned again: the flow's next run reads their rows by key.
-        var unblocked = await WriteEachAsync(
-            blocked.Where(r => r.PendingDocumentRef == null),
-            slice => slice.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.Blocked, false)
-                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                .SetProperty(r => r.LastError, "released; the flow's next run plans it again from its ingestion rows")
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-            ct).ConfigureAwait(false);
-
-        // A waiting record an operator names is sent as it is: without its references it waits for nothing on its next
-        // claim. A release of the whole flow is for what is blocked, and leaves the waits to end on their own.
-        var unwaited = 0;
-        if (keys is not null)
+        // A problem's records are walked through the problem index; every blocked record through the status index, a
+        // custody state at a time. A release of the whole flow is for what is blocked, and leaves the waits to end on
+        // their own.
+        if (selection.Problem is { } problem)
         {
-            var ids = keys.Select(k => k.Value).ToArray();
-            var waiting = StatusText.Of(RecordStatus.Waiting);
-            unwaited = await WriteEachAsync(
-                db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.Status == waiting && ids.Contains(r.DeliveryKey)),
-                slice => slice.ExecuteUpdateAsync(s => s
-                    .SetProperty(r => r.Status, pending)
-                    .SetProperty(r => r.WaitingFor, (string?)null)
-                    .SetProperty(r => r.PendingReferences, (string?)null)
-                    .SetProperty(r => r.NextAttemptUtc, (DateTime?)null)
-                    .SetProperty(r => r.LastError, (string?)null)
-                    .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-                ct).ConfigureAwait(false);
+            return await ReleaseWalkAsync(db, partition, flowId, problem, null, activityId, nowUtc, ct).ConfigureAwait(false);
         }
 
-        return requeued + unblocked + unwaited;
+        var total = 0;
+        foreach (var status in BlockedStatuses)
+        {
+            total += await ReleaseWalkAsync(db, partition, flowId, null, status, activityId, nowUtc, ct).ConfigureAwait(false);
+        }
+
+        return total;
+    }
+
+    /// <summary>What the ledger says of a record a release unblocked without a rendered document to send.</summary>
+    private const string ReleasedNote = "released; the flow's next run plans it again from its ingestion rows";
+
+    /// <summary>The custody states a blocked record is in: what a release of every blocked record walks.</summary>
+    private static readonly string[] BlockedStatuses =
+        [StatusText.Of(RecordStatus.Held), StatusText.Of(RecordStatus.Failed), StatusText.Of(RecordStatus.Deleted)];
+
+    /// <summary>
+    /// Releases the records one problem keeps blocked, or the blocked records in one custody state, a page of keys at a time
+    /// in the order an index holds them: each page is read, then released in a statement of its own, so neither the read
+    /// nor the write ever holds more than a slice of records however many the walk reaches. The walk takes no record
+    /// changed after <paramref name="nowUtc"/>, the moment the release began, so a run blocking records meanwhile does not
+    /// keep it going.
+    /// </summary>
+    private async Task<int> ReleaseWalkAsync(OsduDbContext db, short partition, Guid flowId, long? problem, string? status, long? activityId, DateTime nowUtc, CancellationToken ct)
+    {
+        var released = 0;
+        var after = SqlServerLedgerBulk.WalkPosition.Start;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var position = after;
+            var page = await RetryDeadlockAsync(
+                () => SqlServerLedgerBulk.ReleasePageAsync(db, partition, flowId, problem, status, position, nowUtc, WriteSlice, ct), ct).ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                return released;
+            }
+
+            var keys = page.Select(p => p.DeliveryKey).ToList();
+            released += await RetryDeadlockAsync(
+                () => SqlServerLedgerBulk.ReleaseSliceAsync(db, partition, flowId, keys, waiting: false, activityId, ReleasedNote, nowUtc, ct), ct).ConfigureAwait(false);
+            if (page.Count < WriteSlice)
+            {
+                return released;
+            }
+
+            after = page[^1];
+        }
     }
 
     public Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
@@ -1922,6 +1951,8 @@ public sealed partial class OsduLedger : ILedger
 
         entity.Status = StatusText.Of(RecordStatus.Deleted);
         entity.Blocked = true;
+        // Removed by an operator rather than kept back by a problem: nothing about it is a problem to fix.
+        entity.ProblemHash = null;
         // The unchanged source keeps the record blocked; a source change or a release plans it again. Under a
         // last-modified flow a record that never carried a moment is held at the removal itself, so only a row
         // modified after it was taken out brings it back.
@@ -2878,7 +2909,7 @@ public sealed partial class OsduLedger : ILedger
     /// <summary>One page of activities <paramref name="query"/> selects in <paramref name="partition"/> (every one for null), newest first, without their logs.</summary>
     private Task<List<DeliveryActivity>> ActivityPageAsync(ActivityQuery query, short? partition, int skip, int take, CancellationToken ct)
         => ReadAsync(
-            db => FilterActivities(db.DeliveryActivities, query, partition)
+            db => FilterActivities(db, query, partition)
                 .OrderByDescending(a => a.StartedUtc)
                 .ThenByDescending(a => a.ActivityId)
                 .Skip(skip)
@@ -2914,7 +2945,7 @@ public sealed partial class OsduLedger : ILedger
             return 0;
         }
 
-        return await ReadAsync(db => FilterActivities(db.DeliveryActivities, query, scope.PartitionId).CountAsync(ct), ct).ConfigureAwait(false);
+        return await ReadAsync(db => FilterActivities(db, query, scope.PartitionId).CountAsync(ct), ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -2943,8 +2974,9 @@ public sealed partial class OsduLedger : ILedger
     /// <summary>The partition an activity listing reads, or null for every partition.</summary>
     private sealed record ActivityScope(short? PartitionId);
 
-    private static IQueryable<DeliveryActivity> FilterActivities(IQueryable<DeliveryActivity> rows, ActivityQuery query, short? partition)
+    private static IQueryable<DeliveryActivity> FilterActivities(OsduDbContext db, ActivityQuery query, short? partition)
     {
+        var rows = db.DeliveryActivities.AsQueryable();
         if (partition is { } within)
         {
             rows = rows.Where(a => a.PartitionId == within);
@@ -2957,7 +2989,21 @@ public sealed partial class OsduLedger : ILedger
 
         if (query.DeliveryKey is { } key)
         {
-            rows = rows.Where(a => a.DeliveryKey == key);
+            if (partition is { } ledgerPartition && query.FlowId is { } ledger)
+            {
+                // A record's requests: one made for the record alone names it on its own row, and one made for many
+                // records names it among the records it reached, a seek of the record's key there and of each activity's
+                // id here. The two never meet, so the record's requests are both together, each once.
+                var reached = db.DeliveryActivityRecords
+                    .Where(l => l.PartitionId == ledgerPartition && l.FlowId == ledger && l.DeliveryKey == key)
+                    .Select(l => l.ActivityId);
+                rows = rows.Where(a => a.DeliveryKey == key)
+                    .Concat(rows.Where(a => (a.DeliveryKey == null || a.DeliveryKey != key) && reached.Contains(a.ActivityId)));
+            }
+            else
+            {
+                rows = rows.Where(a => a.DeliveryKey == key);
+            }
         }
 
         if (query.SubmissionId is { } submissionId)
@@ -3219,6 +3265,7 @@ public sealed partial class OsduLedger : ILedger
         PendingReferences = RecordReferences.Decode(r.PendingReferences),
         WaitingFor = r.WaitingFor,
         Blocked = r.Blocked,
+        ProblemHash = r.ProblemHash,
         CacheSetId = r.CacheSetId,
         PlanRequestedUtc = r.PlanRequestedUtc,
         CreatedUtc = r.CreatedUtc,

@@ -127,7 +127,7 @@ public sealed record DeliveryRecordDto(
     string? PendingSourceFileName, long? PendingSourceRowNumber, DateTime? PendingSourceUpdatedUtc,
     string? SourceKeyJson, DateTime? PlanRequestedUtc,
     string? WaitingFor = null, IReadOnlyList<DeliveryRecordReferenceDto>? References = null, DateTime? SourceInsertedUtc = null,
-    string? Partition = null);
+    string? Partition = null, string? Problem = null);
 
 /// <summary>An OSDU id a record's pending document refers to, and the property of the record holding it.</summary>
 public sealed record DeliveryRecordReferenceDto(string Id, string Property);
@@ -335,7 +335,15 @@ public sealed record ComputeTaskAccepted(Guid TaskId, string Status);
 
 public sealed record DeliveryReleaseRequest(IReadOnlyList<Guid>? Keys);
 
-public sealed record DeliveryReleaseResult(int Released);
+/// <summary>How many records a release released, and the run it queued when asked to.</summary>
+public sealed record DeliveryReleaseResult(int Released, Guid? RunId = null);
+
+/// <summary>
+/// A release of one record. <c>Run</c> also queues a deliver run scoped to it, read under the parameter values it was last
+/// planned with, so the record is tried again at once: how an operator checks, on one record, that a problem's cause is
+/// fixed before releasing every record the problem keeps blocked.
+/// </summary>
+public sealed record DeliveryRecordReleaseRequest(bool Run = false, string? Pool = null);
 
 /// <summary>
 /// Redeliver: <c>scope</c> is the part to send again, <c>all</c> by default, <c>record</c>, or <c>files</c> or <c>bulk</c>
@@ -362,8 +370,12 @@ public sealed record DeliveryTargetDto(
 /// records a submission last planned; <c>DeliveredBy</c> names the records a submission delivered, which stay its
 /// however many submissions touch them afterwards: the set "the batch we ran" means.
 /// </summary>
+/// <summary>
+/// A record listing's filter, as a listing, a removal and a sync name it. <c>Problem</c> keeps the blocked records one
+/// problem keeps blocked: the sixteen characters the flow's problems listing gives it.
+/// </summary>
 public sealed record DeliveryRecordFilterDto(
-    string? Status, string? Search, string? Mode, Guid? SubmissionId, Guid? RunId, bool Drifted = false, Guid? DeliveredBy = null);
+    string? Status, string? Search, string? Mode, Guid? SubmissionId, Guid? RunId, bool Drifted = false, Guid? DeliveredBy = null, string? Problem = null);
 
 /// <summary>
 /// A removal of one or many records. <c>scope</c> is record, history or everything. The records are named either
@@ -463,6 +475,9 @@ public static class DeliveryEndpoints
         delivery.MapGet("/mappings/{mappingId:guid}", GetMappingAsync).WithName("GetDeliveryMapping");
         DeliveryValueCheckEndpoints.MapReads(delivery);
 
+        // What keeps a flow's records blocked, grouped by problem, and one problem with the files its records came from.
+        DeliveryProblemEndpoints.MapReads(delivery);
+
         // The report of assertion flows: boards, runs, history and the report of a run in every format.
         DeliveryAssertionEndpoints.MapReads(delivery);
 
@@ -502,6 +517,7 @@ public static class DeliveryEndpoints
         delivery.MapPost("/flows/{pipelineId:guid}/preview", PreviewAsync).WithName("PreviewDeliveryFlowRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/scope-values", ScopeValuesAsync).WithName("ListDeliveryFlowScopeValues");
         DeliveryValueCheckEndpoints.MapWrites(delivery);
+        DeliveryProblemEndpoints.MapWrites(delivery);
         delivery.MapPost("/flows/{pipelineId:guid}/osdu/read", ReadTargetAsync).WithName("ReadDeliveryOsduRecord");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
@@ -742,16 +758,16 @@ public static class DeliveryEndpoints
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
-        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, Guid? deliveredBy, int? page, int? pageSize,
+        Guid pipelineId, string? search, string? mode, string? status, Guid? submissionId, Guid? runId, bool? drifted, Guid? deliveredBy, string? problem, int? page, int? pageSize,
         [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger, CancellationToken ct)
     {
-        var (flow, problem) = await ResolveKeptAsync(db, documents, partitions, ledger, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        var (flow, unresolved) = await ResolveKeptAsync(db, documents, partitions, ledger, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
         {
-            return problem!;
+            return unresolved!;
         }
 
-        var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, search, mode, submissionId, runId, drifted == true, deliveredBy));
+        var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(status, search, mode, submissionId, runId, drifted == true, deliveredBy, problem));
         if (query is null)
         {
             return invalid!;
@@ -796,9 +812,23 @@ public static class DeliveryEndpoints
             status = parsed;
         }
 
+        long? problem = null;
+        if (!string.IsNullOrWhiteSpace(filter.Problem))
+        {
+            if (!ProblemSignature.TryParse(filter.Problem.Trim().ToLowerInvariant(), out var parsed))
+            {
+                return (null, TypedResults.Problem(
+                    detail: $"problem '{filter.Problem}' is not a problem: a problem is the {ProblemSignature.TextLength} characters the flow's problems listing gives it.",
+                    statusCode: StatusCodes.Status400BadRequest, title: "Invalid request"));
+            }
+
+            problem = parsed;
+        }
+
         return (new RecordQuery
         {
             Status = status,
+            Problem = problem,
             Search = string.IsNullOrWhiteSpace(filter.Search) ? null : filter.Search.Trim(),
             Mode = string.Equals(filter.Mode, "contains", StringComparison.OrdinalIgnoreCase) ? SearchMode.Contains : SearchMode.Prefix,
             SubmissionId = filter.SubmissionId,
@@ -1608,9 +1638,9 @@ public static class DeliveryEndpoints
         return TypedResults.Ok(new DeliveryReleaseResult(released));
     }
 
-    private static async Task<Results<Ok<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseRecordAsync(
-        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine, DeliveryConfigStore config, ILedger ledger, ClaimsPrincipal user,
-        CancellationToken ct)
+    private static async Task<Results<Ok<DeliveryReleaseResult>, Accepted<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseRecordAsync(
+        Guid flowId, Guid key, DeliveryRecordReleaseRequest? request, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine,
+        DeliveryConfigStore config, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
         if (flow is null || record is null)
@@ -1621,7 +1651,22 @@ public static class DeliveryEndpoints
         using var runtime = FlowRuntime.ForTarget(await ConfiguredAsync(engine, config, flow, ct).ConfigureAwait(false), flow.Flow);
         runtime.Actor = RequestActor.Label(user);
         var released = await runtime.ReleaseAsync([record.DeliveryKey], ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryReleaseResult(released));
+        if (request is not { Run: true })
+        {
+            return TypedResults.Ok(new DeliveryReleaseResult(released));
+        }
+
+        // The release is recorded under the caller's name here; the run reads the record by the key tuple the ledger stored,
+        // under the parameter values its last plan ran with, and sends what it renders now.
+        var last = record.LastSubmissionId is { } lastId ? await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) : null;
+        var parameters = new RunParameters
+        {
+            Operation = DeliveryOperations.Deliver,
+            Values = SubmissionValues(last?.ParametersJson),
+            Payload = new DeliveryRunPayload { RecordKeys = [key], Interface = flow.Flow.Interface }.ToJson(),
+        };
+        var runId = await EnqueueRunAsync(db, dispatcher, flow, parameters, request.Pool, user, ct).ConfigureAwait(false);
+        return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryReleaseResult(released, runId));
     }
 
     private static async Task<Results<Ok<DeliveryRedeliverResult>, Accepted<DeliveryRedeliverResult>, ProblemHttpResult>> RedeliverAsync(
@@ -1708,7 +1753,7 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>The flow parameter values a submission was opened with; none when it recorded none or is unknown.</summary>
-    private static IReadOnlyDictionary<string, string> SubmissionValues(string? parametersJson)
+    internal static IReadOnlyDictionary<string, string> SubmissionValues(string? parametersJson)
     {
         if (string.IsNullOrWhiteSpace(parametersJson))
         {
@@ -2656,7 +2701,7 @@ public static class DeliveryEndpoints
     /// ledger the request was about, since one that names none would settle to the registry's default and act on another
     /// partition's ledger.
     /// </summary>
-    private static Task<Guid> EnqueueRunAsync(
+    internal static Task<Guid> EnqueueRunAsync(
         CatalogDbContext db, IRunDispatcher dispatcher, FlowContext flow, RunParameters parameters, string? pool, ClaimsPrincipal user, CancellationToken ct)
     {
         var bound = flow.Flow.Partition is { } partition
@@ -2768,7 +2813,7 @@ public static class DeliveryEndpoints
         b.SubmissionId, b.Index, b.Location, b.RecordCount, b.Status.ToString().ToLowerInvariant(), b.LeaseOwner, b.LeaseExpiresUtc, b.RunId,
         b.CreatedUtc, b.StartedUtc, b.CompletedUtc, b.Delivered, b.Held, b.Failed, b.Retrying, b.Error, b.Waiting);
 
-    private static DeliveryRecordDto ToDto(RecordState r) => new(
+    internal static DeliveryRecordDto ToDto(RecordState r) => new(
         r.DeliveryKey.Value, r.FlowId, r.SourceKey, r.Label, r.MappingName, r.RenderContext, r.SourceFingerprint, r.SourceModifiedUtc, r.MetadataHash, r.PayloadHash, r.PayloadModifiedUtc,
         r.TargetId, r.TargetVersion, r.Status.ToString().ToLowerInvariant(), r.LastDeliveredUtc, r.LastVerifiedUtc,
         r.LastVerifyOutcome?.ToString().ToLowerInvariant(), r.LeaseOwner, r.LeaseExpiresUtc, r.LastSubmissionId, r.AttemptCount, r.NextAttemptUtc,
@@ -2784,7 +2829,9 @@ public static class DeliveryEndpoints
         // When the row first reached the ingestion table, which later changes never move.
         r.SourceInsertedUtc,
         // The partition the record's ledger is kept under, whichever way its flow names it.
-        r.Partition);
+        r.Partition,
+        // While it is blocked, held or failed: the problem keeping it so, which every record refused for the same reason shares.
+        r.ProblemHash is { } problem ? ProblemSignature.Format(problem) : null);
 
     private static DeliveryAttemptDto ToDto(AttemptRecord a) => new(
         a.AttemptId, a.DeliveryKey.Value, a.SubmissionId, a.RunId, a.Worker, a.StartedUtc, a.CompletedUtc, a.Outcome.ToString().ToLowerInvariant(),

@@ -13,6 +13,22 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Blocked records are grouped by the problem that keeps them blocked.** A flow's page has a **Problems** tab: a
+  million held or failed records read as the handful of problems they share, each its error with the parts each record
+  says its own way (a value, an OSDU id, a moment, a number, a file, a correlation id) as placeholders, its records held
+  and failed, when they last changed, the files they came from, and an example record with its own error. **Check**
+  opens the example on its Render tab, which sends nothing; **Try** releases the example alone and runs it at once;
+  **Records** opens the Records tab narrowed to the problem; **Release** releases every record of the problem together,
+  a thousand to a statement, with a deliver run straight after when asked. The ledger keeps each blocked record's
+  problem beside it (`Record.ProblemHash`, module version 1.24.0, migration `RecordProblems`), written by the hold or the
+  failure that blocks it and cleared by whatever lets it go, and counts problems from a filtered index that holds the
+  blocked records alone; the control plane sorts the records blocked before it kept problems in the background. A
+  release of many records names each record it released under its activity (`osdu.ActivityRecord`), so every record's
+  timeline shows the release that reached it, a whole flow's or a problem's included. `GET /delivery/flows/{id}/problems`,
+  `GET .../problems/{problem}`, `POST .../problems/{problem}/release`, the records listing's `problem` filter, `run` on a
+  record's release, and `sqlflow records problems` and `records release --problem` answer it
+  ([osdu/docs/ledger.md](osdu/docs/ledger.md), Problems).
+
 - **The explorer shows the query that finds any part of a record.** Beside every value and section of a record, a search
   button shows the Lucene query that finds the records holding exactly it, with Copy and Search: a value by its whole
   value (a text by its `keyword`, inside `nested(...)` in a nested list), an item of a nested list by all its values

@@ -415,6 +415,13 @@ public sealed record RecordState
     public bool Blocked { get; init; }
 
     /// <summary>
+    /// While the record is blocked, held or failed: the problem that keeps it so (<see cref="ProblemSignature"/>), which
+    /// every record refused for the same reason shares; null otherwise, and until the ledger has sorted a record blocked
+    /// before it kept problems. Written by the ledger from the record's error, never by a caller.
+    /// </summary>
+    public long? ProblemHash { get; init; }
+
+    /// <summary>
     /// The cache values this record was built from, as the id of the set it shares with every record that read the
     /// same values. A plan compares it against the gated sets to know whether an unapproved cache change is holding
     /// this record back.
@@ -975,6 +982,81 @@ public enum SearchMode
     Contains,
 }
 
+/// <summary>
+/// What a release reaches: the records named by key, the records one problem keeps blocked, or every blocked record of
+/// the flow.
+/// </summary>
+public sealed record ReleaseSelection
+{
+    private ReleaseSelection(IReadOnlyList<DeliveryKey>? keys, long? problem)
+    {
+        Keys = keys;
+        Problem = problem;
+    }
+
+    /// <summary>Every held, failed and deleted record of the flow that is blocked.</summary>
+    public static ReleaseSelection EveryBlocked { get; } = new(null, null);
+
+    /// <summary>The records named; a waiting one among them is sent without waiting.</summary>
+    public IReadOnlyList<DeliveryKey>? Keys { get; }
+
+    /// <summary>The problem whose records are released (<see cref="ProblemSignature"/>).</summary>
+    public long? Problem { get; }
+
+    /// <summary>The records named by key.</summary>
+    public static ReleaseSelection Named(IEnumerable<DeliveryKey> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        return new ReleaseSelection(keys.Distinct().ToList(), null);
+    }
+
+    /// <summary>The records one problem keeps blocked.</summary>
+    public static ReleaseSelection OfProblem(long problem) => new(null, problem);
+}
+
+/// <summary>
+/// One problem keeping records of a ledger blocked (<see cref="ProblemSignature"/>): what it says, and how many records it
+/// keeps blocked, counted from the records.
+/// </summary>
+public sealed record ProblemGroup
+{
+    public required long Problem { get; init; }
+
+    /// <summary>The error with every part that names a record replaced: what the problem's records have in common.</summary>
+    public required string Pattern { get; init; }
+
+    /// <summary>The records it keeps blocked: the held and the failed together.</summary>
+    public required long Records { get; init; }
+
+    /// <summary>Of those, the ones held: a data problem, or a refusal that is not retried.</summary>
+    public long Held { get; init; }
+
+    /// <summary>Of those, the ones failed: the retries ran out.</summary>
+    public long Failed { get; init; }
+
+    /// <summary>When the record of the problem that changed longest ago last changed.</summary>
+    public DateTime OldestUtc { get; init; }
+
+    /// <summary>When its most recently changed record last changed.</summary>
+    public DateTime NewestUtc { get; init; }
+
+    /// <summary>Its most recently changed record, with the error as that record carries it.</summary>
+    public RecordState? Example { get; init; }
+}
+
+/// <summary>A ledger's problems, the largest first, with what the page leaves out.</summary>
+/// <param name="Problems">The problems listed.</param>
+/// <param name="TotalProblems">How many problems keep the ledger's records blocked, listed or not.</param>
+/// <param name="TotalRecords">How many records they keep blocked.</param>
+/// <param name="Unsorted">
+/// Blocked records the ledger has not sorted into a problem yet: held or failed before it kept problems, which the
+/// control plane's backfill sorts a page at a time.
+/// </param>
+public sealed record ProblemListing(IReadOnlyList<ProblemGroup> Problems, long TotalProblems, long TotalRecords, long Unsorted);
+
+/// <summary>An ingestion file some records of one problem were left at, and how many; a null name for the records that name none.</summary>
+public sealed record ProblemFile(string? FileName, long Records);
+
 /// <summary>A record listing: filter, search, sort and page.</summary>
 public sealed record RecordQuery
 {
@@ -1008,6 +1090,9 @@ public sealed record RecordQuery
 
     /// <summary>Only delivered records whose last verify found drift or a missing record.</summary>
     public bool Drifted { get; init; }
+
+    /// <summary>Only the blocked records one problem keeps blocked (<see cref="ProblemSignature"/>), read from the problem index.</summary>
+    public long? Problem { get; init; }
 
     /// <summary>
     /// Filters on whether the ledger has ever recorded a delivery for the record. A record is given its OSDU id
@@ -1076,6 +1161,10 @@ public sealed record ActivityQuery
 
     public Guid? FlowId { get; init; }
 
+    /// <summary>
+    /// The activities about one record: those made for it alone and, with <see cref="FlowId"/>, those made for many records
+    /// that reached it (a release of a whole flow or of a problem's records), which name it among the records they changed.
+    /// </summary>
     public Guid? DeliveryKey { get; init; }
 
     public Guid? SubmissionId { get; init; }
@@ -1671,6 +1760,35 @@ public interface ILedger
     /// a release of the whole flow leaves waiting records to their wait.
     /// </summary>
     Task<int> ReleaseAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Releases the records <paramref name="selection"/> names, as the release by keys above does: a record still holding
+    /// its rendered document goes back to pending, any other is unblocked and asked to be planned again, and a waiting
+    /// record named by key is sent without waiting. No statement writes more than a slice of records, however many the
+    /// selection reaches. A release of every blocked record, or of the records a problem keeps blocked, reaches the records
+    /// blocked when it began and never one blocked while it runs, so a run holding records again meanwhile cannot keep it
+    /// going. With <paramref name="activityId"/>, the statement that releases a record names it under that intervention
+    /// (<c>osdu.ActivityRecord</c>), so the record's own history shows the release, who asked and when, however many
+    /// records it reached. Returns how many records it released.
+    /// </summary>
+    Task<int> ReleaseAsync(Guid flowId, ReleaseSelection selection, long? activityId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// The problems keeping the flow's records blocked (<see cref="ProblemSignature"/>), the most records first and at most
+    /// <paramref name="max"/> of them, each with its held and failed records, its files, when its records last changed and
+    /// its most recently changed record as the example; with how many problems and records there are in all, and how many
+    /// blocked records the ledger has not sorted into problems yet. Counted from the records, through the problem index alone.
+    /// </summary>
+    Task<ProblemListing> ListProblemsAsync(Guid flowId, int max, CancellationToken ct = default);
+
+    /// <summary>One problem of the flow, counted as <see cref="ListProblemsAsync"/> counts it; null when no record has it.</summary>
+    Task<ProblemGroup?> GetProblemAsync(Guid flowId, long problem, CancellationToken ct = default);
+
+    /// <summary>
+    /// The ingestion files the records one problem keeps blocked came from, the most records first and at most
+    /// <paramref name="max"/>: the file of the version each record was left at.
+    /// </summary>
+    Task<IReadOnlyList<ProblemFile>> ListProblemFilesAsync(Guid flowId, long problem, int max, CancellationToken ct = default);
 
     /// <summary>
     /// Forgets what OSDU holds for the records (the whole record, the metadata document or the payload) and asks the

@@ -243,6 +243,13 @@ public sealed class DeliveryRecord
     public bool Blocked { get; set; }
 
     /// <summary>
+    /// While the record is blocked, held or failed: the problem that keeps it so, as the hash of its last error with every
+    /// part that names the record replaced (a value, an id, a moment, a number), which every record refused for the same
+    /// reason shares. Null for any other record, so the index that groups blocked records by problem holds them alone.
+    /// </summary>
+    public long? ProblemHash { get; set; }
+
+    /// <summary>
     /// While the record is waiting: the OSDU id of the record it waits for, which another record of the ledger holds and
     /// has not delivered. The record goes back to pending when that one lands.
     /// </summary>
@@ -453,6 +460,9 @@ public sealed class DeliveryRecordEvent
 
     public string? Error { get; set; }
 
+    /// <summary>A completion that holds or fails the record: the problem its error names, which the record keeps while it is blocked.</summary>
+    public long? ProblemHash { get; set; }
+
     public string? TargetId { get; set; }
 
     public long? TargetVersion { get; set; }
@@ -562,6 +572,25 @@ public sealed class DeliveryActivity
     /// it left out; an intervention is never idle.
     /// </summary>
     public bool Idle { get; set; }
+}
+
+/// <summary>
+/// One record an intervention changed, written in the statement that changed it. An intervention made for one record names
+/// it on its <see cref="DeliveryActivity"/>; one made for many (a release of a whole flow, or of every record a problem
+/// keeps blocked) names each record here, so a record's history holds every request that reached it, with who asked and
+/// when, however many records the request reached.
+/// </summary>
+public sealed class DeliveryActivityRecord
+{
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public Guid DeliveryKey { get; set; }
+
+    /// <summary>The intervention, as the audit trail numbers it.</summary>
+    public long ActivityId { get; set; }
 }
 
 /// <summary>A mapping document as the sync found it in a repository: the read model behind the mappings page.</summary>
@@ -1863,6 +1892,12 @@ public static class DeliveryModel
     /// </summary>
     public const int MaxIdentityTokenLength = 200;
 
+    /// <summary>
+    /// The filtered index of the blocked records not sorted into a problem yet, named because a statement reaches it by
+    /// name and repeats its filter: the problem backfill's.
+    /// </summary>
+    public const string UnsortedProblemIndex = "IX_Record_Unsorted";
+
     /// <param name="modelBuilder">The model being built.</param>
     public static void Configure(ModelBuilder modelBuilder)
     {
@@ -2002,6 +2037,19 @@ public static class DeliveryModel
             // The records waiting for an id, released when the record holding that id lands in the same partition: the
             // filter keeps the index as small as what is waiting, so the release every settle runs costs a seek.
             e.HasIndex(r => new { r.PartitionId, r.WaitingFor }).HasFilter("[WaitingFor] IS NOT NULL");
+
+            // The blocked records by the problem that keeps them so: a flow's problems counted with their held and failed
+            // records, their newest and oldest, and their files; a problem's records listed newest first and released. The
+            // filter keeps the index as small as what is blocked, however many records the ledger holds.
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.ProblemHash, r.UpdatedUtc })
+                .IncludeProperties(r => new { r.Status, r.PendingSourceFileName })
+                .HasFilter("[ProblemHash] IS NOT NULL");
+
+            // The blocked records not sorted into a problem yet: held or failed before the ledger kept problems, or by a
+            // completion an older build appended. The control plane's backfill reads and sorts them from here, so the index
+            // is empty but for that backlog. A query reaches it only by repeating the filter, which the backfill names.
+            e.HasIndex(r => new { r.PartitionId, r.FlowId }, UnsortedProblemIndex)
+                .HasFilter("[ProblemHash] IS NULL AND [Blocked]=(1) AND ([Status] IN (N'held', N'failed'))");
         });
 
         modelBuilder.Entity<DeliveryRecordIdentity>(e =>
@@ -2131,6 +2179,13 @@ public static class DeliveryModel
             // The trail as it opens, without the idle runs, and the count of those it leaves out: a partition whose schedules
             // fire every hour holds mostly idle runs, so both are a seek rather than a walk past them.
             e.HasIndex(a => new { a.PartitionId, a.Idle, a.StartedUtc });
+        });
+
+        modelBuilder.Entity<DeliveryActivityRecord>(e =>
+        {
+            e.ToTable("ActivityRecord", SchemaName);
+            // A record's requests are one seek of its key, in the order the trail numbered them.
+            e.HasKey(a => new { a.PartitionId, a.FlowId, a.DeliveryKey, a.ActivityId });
         });
 
         modelBuilder.Entity<DeliveryRetrieval>(e =>

@@ -746,6 +746,44 @@ function scopeOf(activity: DeliveryActivity, parameters: Record<string, unknown>
   return activity.deliveryKey !== null ? 1 : null;
 }
 
+/**
+ * A release that named no record and reached this one among others: a release of every blocked record, or of every record
+ * one problem kept blocked. The ledger names each record such a release changed, which is how it is on this record's
+ * timeline at all; its summary says how many it released once it is done, and a problem's release names the problem's
+ * pattern.
+ */
+interface Reach {
+  title: string;
+  count: number | null;
+  pattern: string | null;
+}
+
+function reachOf(activity: DeliveryActivity, parameters: Record<string, unknown> | null): Reach | null {
+  const keys = parameters?.keys;
+  if (activity.kind !== "release" || activity.deliveryKey !== null || (Array.isArray(keys) && keys.length > 0)) {
+    return null;
+  }
+
+  const released = /^released (\d+) record/.exec(activity.summary ?? "")?.[1];
+  const count = released === undefined ? null : Number(released);
+  const records = count === null ? "the records" : `${count.toLocaleString()} record${count === 1 ? "" : "s"}`;
+  if (typeof parameters?.problem === "string") {
+    return {
+      title: `Release asked for ${records} one problem kept blocked, this one among them`,
+      count,
+      pattern: typeof parameters.pattern === "string" ? parameters.pattern : null,
+    };
+  }
+
+  return {
+    title: count === null
+      ? "Release asked for every blocked record, this one among them"
+      : `Release asked for every blocked record, ${records} in all, this one among them`,
+    count,
+    pattern: null,
+  };
+}
+
 /** What a redelivery re-sends, from the scope and parts it was asked with. */
 function redeliveryOf(parameters: Record<string, unknown> | null): string | null {
   const parts = parameters?.parts;
@@ -829,7 +867,8 @@ function verifiedVersion(record: DeliveryRecord): number | null {
  */
 function activityEntry(activity: DeliveryActivity, record: DeliveryRecord, result: boolean): Entry {
   const parameters = parametersOf(activity);
-  const scope = scopeOf(activity, parameters);
+  const reach = reachOf(activity, parameters);
+  const scope = scopeOf(activity, parameters) ?? reach?.count ?? null;
   const request = REQUESTS[activity.kind];
   const who = actorName(activity.actor);
   const failed = activity.outcome === "failed";
@@ -871,7 +910,9 @@ function activityEntry(activity: DeliveryActivity, record: DeliveryRecord, resul
     };
   }
 
-  const title = request === undefined ? activity.kind : scope !== null && scope > 1 ? request.many(scope) : request.one;
+  const title = reach !== null
+    ? reach.title
+    : request === undefined ? activity.kind : scope !== null && scope > 1 ? request.many(scope) : request.one;
   return {
     ...entryDefaults(),
     id: `activity-${activity.activityId}`,
@@ -883,7 +924,9 @@ function activityEntry(activity: DeliveryActivity, record: DeliveryRecord, resul
     actor: activity.actor,
     scope,
     facts: [
-      activity.kind === "redeliver" ? redeliveryOf(parameters) : !failed && activity.summary,
+      reach !== null
+        ? reach.pattern !== null && <span key="p" className="break-words">{`kept blocked by: ${reach.pattern}`}</span>
+        : activity.kind === "redeliver" ? redeliveryOf(parameters) : !failed && activity.summary,
       many,
       <RunRef key="r" runId={activity.runId} />,
       <SubmissionRef key="s" submissionId={activity.submissionId} />,

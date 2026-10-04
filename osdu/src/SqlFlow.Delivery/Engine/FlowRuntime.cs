@@ -640,12 +640,31 @@ public sealed class FlowRuntime : IDisposable
 
     /// <summary>Releases held, failed or deleted records (all of them when <paramref name="keys"/> is null).</summary>
     public Task<int> ReleaseAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
-        => TrackAsync("release", new { keys = keys?.Select(k => k.ToString()).ToList() }, keys is { Count: 1 } ? keys[0] : null, async () =>
+        => TrackAsync("release", new { keys = keys?.Select(k => k.ToString()).ToList() }, keys is { Count: 1 } ? keys[0] : null, async activity =>
         {
-            var released = await RequireLedger().ReleaseAsync(Flow.Id, keys, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            await EmitAsync("record.released", keys, $"released by {Actor}", ct).ConfigureAwait(false);
+            var selection = keys is null ? ReleaseSelection.EveryBlocked : ReleaseSelection.Named(keys);
+            var released = await RequireLedger().ReleaseAsync(Flow.Id, selection, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            await EmitAsync("record.released", keys, $"released by {Actor}", "all blocked records", ct).ConfigureAwait(false);
             return (released, $"released {released} record(s)", (Guid?)null, false);
         }, ct);
+
+    /// <summary>
+    /// Releases every record one problem keeps blocked (docs/ledger.md, Problems), after its cause was fixed: the records
+    /// blocked by it when the release begins, however many, and none blocked while it runs. The activity names the problem
+    /// and its pattern, and every record it releases is named under the activity, so each record's history shows the
+    /// release. <paramref name="pattern"/> is what the operator was shown, recorded as they saw it.
+    /// </summary>
+    public Task<int> ReleaseProblemAsync(long problem, string pattern, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        var named = ProblemSignature.Format(problem);
+        return TrackAsync("release", new { problem = named, pattern }, null, async activity =>
+        {
+            var released = await RequireLedger().ReleaseAsync(Flow.Id, ReleaseSelection.OfProblem(problem), activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            await EmitAsync("record.released", null, $"released by {Actor}", $"the records problem {named} kept blocked", ct).ConfigureAwait(false);
+            return (released, $"released {released} record(s) problem {named} kept blocked: {pattern}", (Guid?)null, false);
+        }, ct);
+    }
 
     /// <summary>
     /// Marks records for redelivery (design.md section 7.6: forget what OSDU holds so the next plan re-sends), and asks
@@ -1171,12 +1190,19 @@ public sealed class FlowRuntime : IDisposable
     /// summary, the submission it worked on, and whether it changed nothing), or settled as failed or cancelled. Only a run
     /// can be idle; an intervention (sync, release, redeliver, delete) always says false, so the trail always shows it.
     /// </summary>
-    private async Task<T> TrackAsync<T>(string kind, object? parameters, DeliveryKey? key, Func<Task<(T Result, string Summary, Guid? SubmissionId, bool Idle)>> action, CancellationToken ct)
+    private Task<T> TrackAsync<T>(string kind, object? parameters, DeliveryKey? key, Func<Task<(T Result, string Summary, Guid? SubmissionId, bool Idle)>> action, CancellationToken ct)
+        => TrackAsync(kind, parameters, key, _ => action(), ct);
+
+    /// <summary>
+    /// As the overload above, handing the action the id of the activity that records it (null with no ledger), so an
+    /// intervention that changes many records can name each one under it.
+    /// </summary>
+    private async Task<T> TrackAsync<T>(string kind, object? parameters, DeliveryKey? key, Func<long?, Task<(T Result, string Summary, Guid? SubmissionId, bool Idle)>> action, CancellationToken ct)
     {
         var ledger = _context.Ledger;
         if (ledger is null)
         {
-            return (await action().ConfigureAwait(false)).Result;
+            return (await action(null).ConfigureAwait(false)).Result;
         }
 
         // Every operation registers its ledger before it writes a row of it, the activity that records it included.
@@ -1196,7 +1222,7 @@ public sealed class FlowRuntime : IDisposable
 
         try
         {
-            var (result, summary, submissionId, idle) = await action().ConfigureAwait(false);
+            var (result, summary, submissionId, idle) = await action(activity.ActivityId).ConfigureAwait(false);
             await CompleteActivityAsync(ledger, activity.ActivityId, "completed", summary, submissionId, idle).ConfigureAwait(false);
             return result;
         }
@@ -1256,11 +1282,18 @@ public sealed class FlowRuntime : IDisposable
         await ledger.CompleteActivityAsync(activityId, outcome, summary, log, _context.Time.GetUtcNow().UtcDateTime, submissionId, idle, CancellationToken.None).ConfigureAwait(false);
     }
 
-    private async Task EmitAsync(string kind, IReadOnlyList<DeliveryKey>? keys, string detail, CancellationToken ct)
+    private Task EmitAsync(string kind, IReadOnlyList<DeliveryKey>? keys, string detail, CancellationToken ct)
+        => EmitAsync(kind, keys, detail, "all blocked records", ct);
+
+    /// <summary>
+    /// Tells the listeners what an intervention did: one event per record it named, or with no keys one event for the flow,
+    /// its detail saying which records <paramref name="reached"/> describes.
+    /// </summary>
+    private async Task EmitAsync(string kind, IReadOnlyList<DeliveryKey>? keys, string detail, string reached, CancellationToken ct)
     {
         if (keys is null)
         {
-            await _context.Listener.OnEventAsync(new DeliveryEvent { AtUtc = _context.Time.GetUtcNow().UtcDateTime, FlowId = Flow.Id, FlowName = Flow.Label, Interface = Flow.Interface, Kind = kind, Worker = Actor, Detail = detail + " (all blocked records)" }, ct).ConfigureAwait(false);
+            await _context.Listener.OnEventAsync(new DeliveryEvent { AtUtc = _context.Time.GetUtcNow().UtcDateTime, FlowId = Flow.Id, FlowName = Flow.Label, Interface = Flow.Interface, Kind = kind, Worker = Actor, Detail = $"{detail} ({reached})" }, ct).ConfigureAwait(false);
             return;
         }
 
