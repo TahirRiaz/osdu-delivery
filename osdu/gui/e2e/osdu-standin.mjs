@@ -9,8 +9,10 @@
 // platform, so no flow reaches it. Holding a record again keeps a version of it, so a record can have a history. The
 // explorer's searches are answered over the same records: the kinds they are of, a page of them by type, a phrase, the
 // start of an id or the records that name one, and the dimension builder's: the records holding any of several values,
-// every record but those, and a property's values grouped commonest first. Everything else answers 404, so a spec that
-// tried to send a record would fail loudly rather than reach a real OSDU.
+// every record but those, and a property's values grouped commonest first. Storage's batch read answers for the same
+// records, as the explorer's checks read them, and the Schema service answers for the schemas a spec holds through
+// /__e2e/schemas, as a check of records against their kind's schema reads them. Everything else answers 404, so a spec
+// that tried to send a record would fail loudly rather than reach a real OSDU.
 //
 // Started by playwright.config.ts beside the control plane, on SQLFLOW_E2E_OSDU_PORT (5301 by default).
 import { createServer } from "node:http";
@@ -313,6 +315,32 @@ const RECORD_VERSIONS = /^\/api\/storage\/v2\/records\/versions\/([^/]+)$/;
 /** A record at one version (GET /api/storage/v2/records/{id}/{version}); only the version held answers. */
 const RECORD_AT_VERSION = /^\/api\/storage\/v2\/records\/([^/]+)\/(\d+)$/;
 
+/** A schema read from the Schema service by its id (GET /api/schema-service/v1/schema/{id}). */
+const SCHEMA_READ = /^\/api\/schema-service\/v1\/schema\/([^/]+)$/;
+
+/** The schemas a spec asked the Schema service to hold, by id. */
+const schemas = new Map();
+
+/**
+ * Storage's batch read (POST /api/storage/v2/query/records): the records it holds among the ids asked, at their latest,
+ * and the ids it holds nothing under named under invalidRecords, as storage answers.
+ */
+function readMany(body) {
+  const ids = Array.isArray(body.records) ? body.records.filter((id) => typeof id === "string") : [];
+  const records = [];
+  const invalidRecords = [];
+  for (const id of ids) {
+    const record = readRecord(id);
+    if (record === null) {
+      invalidRecords.push(id);
+    } else {
+      records.push(record);
+    }
+  }
+
+  return { records, invalidRecords, retryRecords: [] };
+}
+
 /** The id a storage path names, decoded; null when it cannot be. */
 function decodeId(encoded) {
   try {
@@ -355,6 +383,51 @@ const server = createServer((request, response) => {
         .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the record: ${error instanceof Error ? error.message : String(error)}` }));
       return;
     }
+  }
+
+  if (path === "/__e2e/schemas") {
+    if (request.method === "DELETE") {
+      schemas.clear();
+      send(response, 200, { held: 0 });
+      return;
+    }
+
+    if (request.method === "PUT") {
+      read(request)
+        .then((text) => {
+          const body = JSON.parse(text);
+          if (body === null || typeof body !== "object" || typeof body.id !== "string" || body.id === ""
+            || body.schema === null || typeof body.schema !== "object" || Array.isArray(body.schema)) {
+            send(response, 400, { message: "A schema to hold is a JSON object with an id and the schema as an object." });
+            return;
+          }
+
+          schemas.set(body.id, body.schema);
+          send(response, 200, { id: body.id, held: schemas.size });
+        })
+        .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the schema: ${error instanceof Error ? error.message : String(error)}` }));
+      return;
+    }
+  }
+
+  const schemaRead = request.method === "GET" ? SCHEMA_READ.exec(path) : null;
+  if (schemaRead !== null) {
+    const id = decodeId(schemaRead[1]);
+    const schema = id === null ? undefined : schemas.get(id);
+    if (schema === undefined) {
+      send(response, 404, { code: 404, reason: "Schema not found", message: `The e2e OSDU stand-in holds no schema ${id ?? path}.` });
+    } else {
+      send(response, 200, schema);
+    }
+
+    return;
+  }
+
+  if (request.method === "POST" && path === "/api/storage/v2/query/records") {
+    read(request)
+      .then((text) => send(response, 200, readMany(JSON.parse(text))))
+      .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the batch: ${error instanceof Error ? error.message : String(error)}` }));
+    return;
   }
 
   const versions = request.method === "GET" ? RECORD_VERSIONS.exec(path) : null;
@@ -421,7 +494,7 @@ const server = createServer((request, response) => {
     return;
   }
 
-  send(response, 404, { message: `The e2e OSDU stand-in answers a token, the search service and record reads, not ${request.method} ${path}.` });
+  send(response, 404, { message: `The e2e OSDU stand-in answers a token, the search service, record reads and the schemas it holds, not ${request.method} ${path}.` });
 });
 
 server.listen(port, "127.0.0.1", () => {

@@ -1,13 +1,14 @@
-import { useEffect, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, RefreshCw, SearchCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IconAction } from "@/components/IconAction";
-import { explorerApi, type ExplorerHit, type ExplorerPage, type ExplorerRead } from "../../../api/explorer";
+import { explorerApi, type ExplorerHit, type ExplorerPage, type ExplorerRead, type ExplorerValidation } from "../../../api/explorer";
 import { idParts, recordNameOf } from "../osduRecordModel";
 import type { InspectorField } from "../OsduRecordInspector";
 import { OsduRecordPanel } from "../OsduRecordView";
 import { ExplorerProblem, ExplorerErrorText } from "./ExplorerProblem";
+import { ExplorerValidationView, ValidationFieldMark } from "./ExplorerValidation";
 import { ScopeCrumbs } from "./ExplorerResults";
 import { counted, kindParts, rememberRecord, useExplorerRead, type ExplorerScope } from "./explorerModel";
 
@@ -155,6 +156,10 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
   });
   const read: ExplorerRead | null = answered.data ?? null;
 
+  // The last check of the record, kept so its fields carry the marks of the problems it found while the record is in view.
+  const [validated, setValidated] = useState<ExplorerValidation | null>(null);
+  const keepValidated = useCallback((result: ExplorerValidation | null) => setValidated(result), []);
+
   useEffect(() => {
     if (read?.found && read.record) {
       rememberRecord({ id: read.targetId, name: recordNameOf(read.record), kind: typeof read.record.kind === "string" ? read.record.kind : null, partition }, read.readUtc);
@@ -214,7 +219,26 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
             place,
             mentions: (mentioned, open) => <Mentions partition={partition} id={mentioned} onOpen={open} onBrowse={onBrowseQuery} />,
             notFound: (missing) => <NearIds partition={partition} id={missing} onOpen={onOpenId} />,
-            fieldActions,
+            validation: (checked, shownVersion, openPath) => (
+              <ExplorerValidationView
+                partition={partition}
+                id={checked}
+                version={shownVersion}
+                onOpenPath={openPath}
+                onResult={checked === id ? keepValidated : undefined}
+              />
+            ),
+            fieldActions: (field) => {
+              // A mark only on the version the check read: another version in view has other values.
+              const shown = field.trail[field.level]?.record;
+              const sameVersion = validated !== null && shown !== null && shown !== undefined && (validated.version === null || shown.version === validated.version);
+              return (
+                <span className="inline-flex items-center gap-1">
+                  <ValidationFieldMark result={sameVersion && validated.targetId === id ? validated : null} field={field} />
+                  {fieldActions?.(field)}
+                </span>
+              );
+            },
           }}
           fill
         />

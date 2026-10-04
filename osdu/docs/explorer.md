@@ -30,7 +30,9 @@ Whatever route the flow delivers by, the explorer reads the platform's own servi
 types, records and groups, and the storage service for a record and its versions (`GET /api/storage/v2/records/{id}`,
 `/records/versions/{id}` and `/records/{id}/{version}`; a storage flow's own `protocolOptions.verifyPath` where it names
 one). The read of a record is the record page's own read-back (`ReadRecordOperation.ReadBackAsync`) over the storage
-protocol, so both pages read a record the same way.
+protocol, so both pages read a record the same way. A check of records against their schemas ([Validate](#validate))
+reads the Schema service as well (`GET /api/schema-service/v1/schema/{id}`), and looks the records they refer to up in
+storage's batch read (`POST /api/storage/v2/query/records`, or the flow's `protocolOptions.verifyBatchPath`).
 
 ## Browsing
 
@@ -107,6 +109,7 @@ before it:
 
 - every view of the inspector: the full document, the system fields, access and legal, the content branch by branch
   as fields, tables or JSON, and the linked records, each opened after it on the trail;
+- **Validation**, under the outline's Checks: the record checked against the schema of its kind ([Validate](#validate));
 - **Mentioned by**: the records whose values name this one (`"<id>" AND NOT id:"<id>"` over every property), the first
   hundred listed with their count by type, each opened on the trail, and all of them one click from a search of their own;
 - **versions**: the picker reads the record as it was at any version OSDU keeps, and **Compare** puts any two side by
@@ -118,6 +121,59 @@ before it:
 
 Every record opened is remembered in the browser (the last twenty, nowhere else), under **Recent** and on the welcome,
 and so is every type browsed (the last twelve).
+
+## Validate
+
+The explorer checks what OSDU holds against what OSDU expects of it: a record, or the records a search finds, against
+the schema of their kind. The check is the one every validation of the delivery system makes
+([validation-plan.md](validation-plan.md)), the gate before a document is sent among them, so a record the explorer
+calls invalid breaks the same rule a document would be held for under `target.validation: { mode: enforce }`
+([documents.md](documents.md)).
+
+**Validation**, under the record's Checks, checks the version in view. What it is checked against is the reader's to
+pick:
+
+- **OSDU schema** (the default): what the partition's Schema service holds for the record's kind. Every schema it refers
+  to by id (`osdu:wks:AbstractCommonResources:1.0.0`, with or without a fragment into it) is read too and bundled, each
+  once, at most 200 for a kind. A reference the reader cannot follow (a web address, a schema the service does not hold,
+  the bound reached) is named, and the values it describes are counted as not checked rather than passed;
+- **Saved template**: a template saved in the delivery system, the kind's newest or a version picked from those saved.
+  It is the one thing of the delivery system's own the explorer reads, and only when the reader picks it.
+
+The answer is the verdict a delivered record carries in its history:
+
+- the outcome, with the schema and how much was checked: **valid**, **invalid** (with the number of problems), or
+  **unverified** when a part could not be checked (a pattern neither ECMAScript nor .NET reads, a reference not followed,
+  a bound reached) and nothing else is wrong. The tooltip beside it says which schema, from where, how many rules were
+  applied, and what the schema states that no check asserts;
+- **Problems**: each one a row with where it is, the rule (`type`, `pattern`, `enum`, `required`, `relationship`, ...),
+  and what is wrong with the value; the place opens that element of the record. Each field of the record a problem sits
+  in, or sits inside, carries a mark whose tooltip lists them;
+- **Not checked**: the parts the check could not judge, and why;
+- **References not found**: the ids the record names that storage holds nothing under, each with where it names it. The
+  references are looked up in storage alone, all at once: what OSDU holds is the answer, never the ledger or the cache.
+
+A record storage does not hold (at that version) says so. A kind the Schema service holds no schema of, or a saved
+template the kind does not have, is not checked; the pane says why and, where a template of the kind is saved, offers
+to check against it. A Schema service that refuses to answer (403, or a failure of its own) leaves the record not
+checked, with the service's words, redacted, as the reason.
+
+### Validate these records
+
+The shield in the list's toolbar checks the records the search finds, as it stands (the text, the place, the values
+narrowed to), against the schemas of their kinds: the first 1,000 the search returns, read from storage in batches.
+It answers:
+
+- how many records the search matches and how many were read, and how many came to each outcome; a record whose kind no
+  schema could be had for is counted apart, with why;
+- **Rules broken most often**: each rule at each place, the number of records that break it, and one of them, with what
+  is wrong there; the record opens in the explorer. The place reads a list's items as one (`data.VerticalMeasurements[]`),
+  so a rule broken in every item of many records is one row;
+- **Records**: each record read, with its outcome and its first problem; a record opens in the explorer.
+
+A search matching more records than a check reads says so: the counts are of the first ones. A whole kind is checked by
+an assertion flow's `conforms` test ([documents.md](documents.md#assertion-flow)), which reads up to a million records. The ids the
+search found that storage did not return (deleted since, or not the caller's to read) are counted as such.
 
 ## The query of an element
 
@@ -233,6 +289,8 @@ partition for ten), so going back to a type or a page already read shows it at o
 | `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters` (`path`, `index` text, keyword, number, boolean or date, `value`; at most 12); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`) to group by. |
 | `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold, read from one of them. |
 | `POST /api/v1/delivery/explorer/read?partition=` | operate | One record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
+| `POST /api/v1/delivery/explorer/validate?partition=` | operate | One record checked against the schema of its kind ([Validate](#validate)). Body: `targetId`, `version` (its latest when left out), `schema` (`osdu`, the default, for the Schema service's; `saved` for a saved template), `templateVersion` (with `saved`; the kind's newest when left out). Answers the `targetId`, the `version` checked, whether storage holds the record (`found`), its `kind`, the `schema` used (`kind`, `version`, `source` schema-service or template, the schema ids `read`, the references left `unresolved`, `notes`), the `verdict` as a record's history holds it, or why nothing was checked (`problem`), and the template versions saved for the kind (`savedVersions`, newest first). |
+| `POST /api/v1/delivery/explorer/validate-list?partition=` | operate | The records a search finds checked against their schemas ([Validate these records](#validate-these-records)). Body: `search` (as `/explorer/search` takes it; its page and grouping are not used), `max` (1 to 1,000, the default), `schema` (`osdu` or `saved`, each kind's newest). Answers `matched`, `asked`, `read`, the ids storage did not return (`notFound`), the counts `valid`, `invalid`, `unverified` and `notChecked`, the `rules` broken (`at`, `rule`, `records`, `problems`, an example's `exampleId`, `examplePath`, `exampleMessage`, `exampleValue`; at most 50), each record (`id`, `kind`, `outcome`, `problems`, `unverified`, its `first` problem), the `schemas` used, the kinds `unavailable` with why, `cut` when the search matches more than was read, and `notes`. |
 | `POST /api/v1/delivery/explorer/element-queries` | operate | The Lucene query that finds the records holding exactly an element of a record ([The query of an element](#the-query-of-an-element)). Body: `kind` (the record's), `path` (as the record inspector names it, a list's items by their place: `data.GeoContexts[1].GeoTypeID`), `section` (true for an object, a list or an item), `value` (a value's: a text, a number, a boolean or null), `values` (a section's, at most 48: each `path` and `value`). Answers the queries, the exact one first (`purpose` exact, words or exists, `query`, `says`), how the index holds the element (`field`, `reading`), the saved `template` read, why the query is a guess (`guess`), why none can be written (`problem`), and `notes`. Read from the saved templates alone. |
 | `GET /api/v1/delivery/explorer/dimension/candidates?kind=` | operate | The keys the saved template of a `kind` (wildcards per segment) suggests for a dimension ([Building a dimension](#building-a-dimension)), the likeliest first: `path`, the entity types it `names`, whether it is `repeated` in a record, and the template's `title` and `description`; with the `template` read, or why nothing is suggested (`missing`). Read from the saved templates alone. |
 | `POST /api/v1/delivery/explorer/dimension/keys?partition=` | operate | The commonest keys of a drafted dimension's path, which its example steps through. Body: `kind` (wildcards per segment), `query` (as long as a search's text), `path` (a property path, no filter). Answers the records the kind (and the query) holds, the keys with their records (up to 25, `moreKeys` when there are more), how the path is indexed (`keyFieldGuessed` when no saved template says, read as text), notes, and the service's words when it refused the query. |
@@ -244,5 +302,7 @@ an id that is not one) is refused with 400 before anything is read, and a partit
 OSDU refuses or fails answers 502, and one with no answer within 60 seconds 504, each with the reason, redacted. A
 compose answers `200` with whatever is wrong with the draft among its `issues`, and an example that cannot be made (no
 flow reaches the partition, OSDU refuses) as its `exampleProblem`; only a missing draft, or a part longer than 4,096
-characters or a list longer than 64 entries, is refused with 400. The MCP server offers none of these routes:
+characters or a list longer than 64 entries, is refused with 400. A check answers `200` with a record it could not
+check and why (no schema of its kind, a template not saved); a `schema` other than `osdu` or `saved`, a template
+version longer than 64 characters, or a `max` outside 1 to 1,000 is refused with 400. The MCP server offers none of these routes:
 it answers from metadata alone, and the explorer reads OSDU's data.

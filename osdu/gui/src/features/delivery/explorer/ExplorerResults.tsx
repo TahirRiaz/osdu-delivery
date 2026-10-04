@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ArrowDownWideNarrow, ChevronRight, Info, Loader2, Pencil, RefreshCw, SearchCode, SearchX, X } from "lucide-react";
+import { ArrowDownWideNarrow, ChevronRight, Info, Loader2, Pencil, RefreshCw, SearchCode, SearchX, ShieldCheck, X } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,7 @@ import { RecordName } from "../RecordName";
 import { ExplorerGroupBy } from "./ExplorerGroupBy";
 import { ExplorerGrid, type GridColumn } from "./ExplorerGrid";
 import { ExplorerProblem } from "./ExplorerProblem";
+import { ExplorerValidateDialog } from "./ExplorerValidation";
 import { ReadingBar } from "./ReadingBar";
 import { counted, fieldLabel, kindParts, SORT_LABELS, type ExplorerScope } from "./explorerModel";
 
@@ -156,6 +157,7 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
   });
 
   const first = pages.data?.pages[0]?.answer;
+  const [validating, setValidating] = useState(false);
   // A record can move between two pages while they are read (the index changes under the search); it is listed once.
   const hits = useMemo(() => {
     const byId = new Map<string, ExplorerHit>();
@@ -333,6 +335,10 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
         <div className="ml-auto flex items-center gap-1">
           {sortMenu}
           <ExplorerGroupBy partition={partition} base={request} onFilter={(filter) => onFilters([...request.filters.filter((f) => f.path !== filter.path || f.value !== filter.value), filter])} />
+          <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" title="Check these records against the schemas of their kinds" onClick={() => setValidating(true)} data-testid="explorer-validate-records">
+            <ShieldCheck />
+            Validate
+          </Button>
           <IconAction label="Read again from OSDU" icon={<RefreshCw />} variant="ghost" className="size-8" onClick={() => void pages.refetch()} data-testid="explorer-refresh" />
         </div>
       </div>
@@ -359,6 +365,16 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
         </div>
       )}
       {body}
+      <ExplorerValidateDialog
+        partition={partition}
+        request={request}
+        open={validating}
+        onOpenChange={setValidating}
+        onOpenRecord={(id) => {
+          setValidating(false);
+          onOpen({ id, kind: null, version: null, name: null, nameField: null, createTime: null, createUser: null, modifyTime: null, modifyUser: null });
+        }}
+      />
       <span className="sr-only" aria-live="polite">{first === undefined ? "" : counted(first.total, "record")}</span>
     </div>
   );

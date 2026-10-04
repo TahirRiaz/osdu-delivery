@@ -130,6 +130,26 @@ public sealed class ValidationVerdictTests
     }
 
     [Fact]
+    public void A_verdict_reads_back_from_the_object_it_was_written_to_as_from_text()
+    {
+        var answers = new Dictionary<string, ReferenceAnswer>(StringComparer.Ordinal)
+        {
+            ["dev:master-data--Well:W-1"] = new(ReferenceState.InOsdu),
+            ["dev:reference-data--MeasurementType:KB"] = new(ReferenceState.Missing, "OSDU's storage service holds no such record"),
+        };
+        var verdict = Verdict(Record(r => DataOf(r)["Status"] = "Planned"), answers);
+
+        // In memory the counts are integers of the width they were written with; read from text they are whatever the
+        // parser makes of them. Both read back alike.
+        foreach (var read in new[] { ValidationVerdict.FromJson(verdict.ToJson())!, ValidationVerdict.FromJson(JsonNode.Parse(verdict.ToJson().ToJsonString()))! })
+        {
+            Assert.Equal(verdict.ProblemCount, read.ProblemCount);
+            Assert.Equal(verdict.Rules, read.Rules);
+            Assert.Equal((3, 1, 1, 1), (read.References.Total, read.References.InOsdu, read.References.Missing, read.References.NotChecked));
+        }
+    }
+
+    [Fact]
     public void A_verdict_of_any_size_fits_its_bound_on_an_attempt_and_says_it_was_shortened()
     {
         var items = new JsonArray(Enumerable.Range(0, 400).Select(i => (JsonNode?)new JsonObject { ["TypeID"] = new string('x', 500) + i }).ToArray());

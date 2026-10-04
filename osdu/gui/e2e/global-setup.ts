@@ -26,8 +26,9 @@ import { E2E, databaseOf } from "../playwright.config";
  * the GUI call a project, so the Repos page shows one project per source. The cache folder holds everything static: the
  * cache flows, the lookup tables' files in `cache/data`, and the pre and ingestion flows that load those files.
  *
- * Templates are not repository content. They are catalog objects, captured from OSDU's schema service through the
- * Templates page, so the seed spec saves the bundled schemas in `osdu/samples/templates` through the API instead. Cache
+ * Templates are not repository content. They are catalog objects, saved through the Templates page from a release of
+ * the OSDU data definitions or an imported schema file, so the seed spec saves the bundled schemas in
+ * `osdu/samples/templates` through the API instead. Cache
  * versions are catalog objects too, so the seed spec imports the sample records as the cache's first version, and then
  * refreshes the lookups cache flow, whose dictionary and ingestion table types need no OSDU, as a node would.
  *

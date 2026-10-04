@@ -314,6 +314,11 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
             return dspdm;
         }
 
+        if (SchemaServiceRoute(method, path) is { } schema)
+        {
+            return schema;
+        }
+
         if (path == "/api/search/v2/query_with_cursor" || path == "/api/search/v2/query")
         {
             var query = JsonNode.Parse(body!)!;

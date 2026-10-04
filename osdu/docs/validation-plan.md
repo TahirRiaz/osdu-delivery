@@ -17,8 +17,8 @@ Line numbers below are at `b105e42`. Other change sets edit the same files, so g
 | Stage | State |
 | --- | --- |
 | 1. The module | Done: `Validation/SchemaRules`, `SchemaWalk`, `RecordValidator`, `ValidationVerdict`, `ReferenceResolver`, `ValidationTally`; Check values and the `conforms` assertion run on it |
-| 2. The explorer validates | Next |
-| 3. How well what OSDU holds conforms | With stage 2: the explorer's list counts by rule and path |
+| 2. The explorer validates | Done: `Engine/Search/SchemaServiceReader`, `ExplorerChecks`, the `validate` and `validate-list` routes, the inspector's Validation and Validate these records; the GUI e2e `24-explorer-validation.spec.ts` against the OSDU stand-in |
+| 3. How well what OSDU holds conforms | Explorer part done: the list counts by rule and place with an example, and says how to check a whole kind; the `conforms` counts by rule are next |
 | 4. The route rules | Decided: they stay at their call sites (see Decisions) |
 | 5. The flow key, the gate and the ledger | Done: `target.validation`, `ValidationGate`, migration `RecordValidation` (module 1.25.0) |
 | 6. The verdict where people look | After stage 2 |
@@ -193,7 +193,7 @@ Each row is a test of the stage that implements it.
 
 ## Stage 1: the module
 
-**Changes**
+What changes:
 
 - `Validation/RecordValidator` takes a document, a compiled schema and the route's rules, and returns the verdict. It
   walks the whole document (the root, `data` and everything under it) with the rules `TemplateValueRules` applies
@@ -207,7 +207,7 @@ Each row is a test of the stage that implements it.
 - `TemplateValueRules.Check` becomes the per-variable entry of the same walk, so `ValueTally` (Check values) is
   unchanged for its callers. `ConformsEvaluator` calls `RecordValidator` instead of its own walk.
 
-**Tests**
+The tests that close it:
 
 - One test per keyword and outcome: `type`, `format` (each known format), `pattern`, `enum`, `const`, the lengths,
   the bounds, `multipleOf`, the item counts, `uniqueItems`, `required` at every depth, `additionalProperties`,
@@ -221,7 +221,7 @@ Each row is a test of the stage that implements it.
 
 ## Stage 2: the explorer validates
 
-**Changes**
+What changes:
 
 - A read of the Schema service (`GET /schema/{id}` of its OpenAPI description), with the schemas it refers to followed
   and bundled. The description does not say whether references come resolved; the first approved live check settles it
@@ -238,7 +238,7 @@ Each row is a test of the stage that implements it.
 - The explorer reads only OSDU for this (the record, the Schema service, storage), unless the reader picks a saved
   template, which the explorer already reads for its element queries.
 
-**Tests**
+The tests that close it:
 
 - Endpoint tests against fake OSDU services: a valid record, an invalid one, a version, a record OSDU does not hold, a
   kind the Schema service does not know, a schema that refers to others, a reference cycle, a reference storage does
@@ -248,14 +248,14 @@ Each row is a test of the stage that implements it.
 
 ## Stage 3: how well what OSDU holds conforms
 
-**Changes**
+What changes:
 
 - The `conforms` assertion's result gains counts by rule and path, with the values behind them and example records, as
   Check values gives for the ingestion rows. Its `maxRecords` (up to 1,000,000) and `sample` keep their meaning.
 - The explorer's list validation says, when the list is cut at its cap, how to check the whole kind with an assertion
   flow.
 
-**Tests**
+The tests that close it:
 
 - An assertion run over fake records breaking several rules gives the counts by rule and path; a sample says it is one;
   the result stays within its size bound however many records fail.
@@ -270,7 +270,7 @@ carries their reason as its error and issue, as before.
 
 ## Stage 5: the flow key, the gate and the ledger
 
-**Changes**
+What changes:
 
 - `target.validation` (`mode`, `unverified`) in `TargetDefinition`, read by `DeliveryDocumentLoader` wherever
   `target.verifyReferences` is read (a flow and a source's routes), with unknown values refused at load, the census
@@ -292,7 +292,7 @@ carries their reason as its error and issue, as before.
 - The run's progress lines count the verdicts (`ValidationTally` on the run's `RunTrace`), and each drain ends with one
   line per template it validated against: counts by outcome, holds, acceptances and the five rules broken most often.
 
-**Tests**
+The tests that close it:
 
 - SQL Server suites: the migration applies on a database at the previous version and refuses when out of order;
   counts by outcome come from the ledger alone.
@@ -304,7 +304,7 @@ carries their reason as its error and issue, as before.
 
 ## Stage 6: the verdict where people look
 
-**Changes**
+What changes:
 
 - The record page's journey (`RecordJourney.tsx`) shows each attempt's verdict, and a link opens the record in the
   explorer with Validate run, one way, as the record pages already link there.
@@ -316,7 +316,7 @@ carries their reason as its error and issue, as before.
   [operations.md](operations.md) (a troubleshooting row for validation holds and their release),
   [explorer.md](explorer.md) (Validate and the API rows), the census and the CHANGELOG.
 
-**Tests**
+The tests that close it:
 
 - GUI tests against a mocked API for the journey, the flow counts and the preview, both themes.
 - CLI tests for the verdict in text and JSON.

@@ -31,6 +31,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   per template naming the rules broken most often. Check values and the `conforms` assertion run on the same module
   ([osdu/docs/documents.md](osdu/docs/documents.md), Validation before a record is sent;
   [osdu/docs/validation-plan.md](osdu/docs/validation-plan.md)).
+- **The explorer checks what OSDU holds against what OSDU expects.** A record's **Validation**, under its Checks, checks
+  the version in view against the schema the partition's Schema service holds for its kind (`GET
+  /api/schema-service/v1/schema/{id}`, every schema it refers to read and bundled, at most 200 for a kind), or a saved
+  template the reader picks, with the module the gate uses: the outcome and the schema used, each problem with its rule,
+  opening its element, a mark on each field a problem sits in, what could not be checked, and the references storage
+  holds nothing under, looked up in one batch. A kind with no schema says so and offers a saved template. The shield in
+  the list's toolbar checks the first 1,000 records a search finds: their outcomes, the rules broken most often with
+  how many records break each and an example, and each record with its first problem. `POST
+  /delivery/explorer/validate` and `.../validate-list` answer it ([osdu/docs/explorer.md](osdu/docs/explorer.md),
+  Validate).
 
 - **Blocked records are grouped by the issue that keeps them blocked.** A flow's page has an **Issues** tab: a
   million held or failed records read as the handful of issues they share, each its error with the parts each record
@@ -910,10 +920,6 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
-- The explorer's list says how many records it holds again, and reads its next pages as it is scrolled: a search's
-  answer leaves out a refusal it does not have, and the list took the missing refusal for one, so it showed no count
-  and stopped at its first hundred records. A count of changes (two versions compared, a cache's or a dimension's history)
-  reads as text the way it is drawn, "1 changed", rather than "1changed".
 - A value check no longer passes over a `null` inside a value it checks: `null` breaks a property whose schema names
   types without `null`. A schema reference the template's bundle does not hold no longer fails a value check; the part
   it describes is reported as not checked. Two `allOf` branches that both constrain a property (two patterns, two bounds)

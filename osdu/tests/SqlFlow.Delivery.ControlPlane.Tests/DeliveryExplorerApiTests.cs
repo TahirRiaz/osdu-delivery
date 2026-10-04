@@ -129,6 +129,38 @@ public sealed class DeliveryExplorerApiTests
             var fields = await RanAsync(client, token, $"/api/v1/delivery/explorer/fields?partition={named}", new { kind = "osdu:wks:master-data--Wellbore:1.1.0" });
             Assert.Equal((ExploreOperation.FieldsAction, "osdu:wks:master-data--Wellbore:1.1.0"), (fields.Argument(ExploreOperation.ActionArgument), fields.Argument(ExploreOperation.KindArgument)));
 
+            // A record is checked against what the Schema service holds by default, or a saved template's version asked for.
+            var validated = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate?partition={named}", new { targetId = "dev:master-data--Wellbore:NO-33:", version = 7L });
+            Assert.Equal(
+                (ExploreOperation.ValidateAction, "dev:master-data--Wellbore:NO-33", "7", (string?)null, (string?)null),
+                (validated.Argument(ExploreOperation.ActionArgument), validated.Argument("targetId"), validated.Argument("version"),
+                    validated.Argument(ExploreOperation.SchemaArgument), validated.Argument(ExploreOperation.TemplateVersionArgument)));
+            var againstSaved = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate?partition={named}", new { targetId = "dev:master-data--Wellbore:NO-33", schema = " Saved ", templateVersion = " 9f3c41d07a2b88e1 " });
+            Assert.Equal(("saved", "9f3c41d07a2b88e1"), (againstSaved.Argument(ExploreOperation.SchemaArgument), againstSaved.Argument(ExploreOperation.TemplateVersionArgument)));
+
+            // A check of a search reads from the first record whatever page the search was on, up to the most asked.
+            var listed = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate-list?partition={named}", new
+            {
+                search = new { text = "NO 33", kind = "*:*:master-data--Wellbore:*", offset = 300, limit = 50, facet = new { path = "data.FacilityTypeID" } },
+                max = 250,
+            });
+            Assert.Equal((ExploreOperation.ValidateListAction, "250"), (listed.Argument(ExploreOperation.ActionArgument), listed.Argument(ExploreOperation.MaxArgument)));
+            var checkedSearch = ExplorerSearch.Parse(listed.Argument(ExploreOperation.SearchArgument));
+            Assert.Equal(("NO 33", "*:*:master-data--Wellbore:*", 0, ExplorerSearch.DefaultLimit), (checkedSearch.Text, checkedSearch.Kind, checkedSearch.Offset, checkedSearch.Limit));
+            Assert.Null(checkedSearch.Facet);
+            var everything = await RanAsync(client, token, $"/api/v1/delivery/explorer/validate-list?partition={named}", new { });
+            Assert.Equal(ExplorerChecks.MaxRecords.ToString(CultureInfo.InvariantCulture), everything.Argument(ExploreOperation.MaxArgument));
+
+            var validate400 = $"/api/v1/delivery/explorer/validate?partition={named}";
+            await RefusedAsync(client, token, validate400, new { targetId = "dev:master-data--Wellbore:NO-33", schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
+            await RefusedAsync(client, token, validate400, new { targetId = "NO 33/9-C-28 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
+            await RefusedAsync(client, token, validate400, new { targetId = "dev:master-data--Wellbore:NO-33", schema = "saved", templateVersion = new string('v', 65) }, HttpStatusCode.BadRequest, "saved template version");
+            var list400 = $"/api/v1/delivery/explorer/validate-list?partition={named}";
+            await RefusedAsync(client, token, list400, new { max = 1001 }, HttpStatusCode.BadRequest, "A check reads 1 to 1000 records");
+            await RefusedAsync(client, token, list400, new { max = 0 }, HttpStatusCode.BadRequest, "A check reads 1 to 1000 records");
+            await RefusedAsync(client, token, list400, new { search = new { kind = "osdu:wks" } }, HttpStatusCode.BadRequest, "is not a kind");
+            await RefusedAsync(client, token, list400, new { schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
+
             // A read takes a reference as a document holds it, and a version beside it; a flow whose partition is its header's
             // is told no partition, since its header already names it.
             var read = await RanAsync(client, token, "/api/v1/delivery/explorer/read", new { targetId = $" {headed}:master-data--Wellbore:NO-33: ", version = 1712345678901234L }, headed);

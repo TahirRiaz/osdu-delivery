@@ -4,6 +4,7 @@
 
 import { get, post } from "@/api/client";
 import type { DeliveryDimension, DeliveryDimensionAttribute, DeliveryDimensionYaml, DeliveryOsduRead, DimensionBlueprint } from "./delivery";
+import type { ValidationVerdict } from "./validation";
 
 /** How the explorer reaches a partition: through which flow's connection, or why nothing does. */
 export interface ExplorerConnection {
@@ -135,7 +136,134 @@ export const explorerApi = {
   /** One record from the storage service, at its latest or at one version. */
   read: (partition: string | null, targetId: string, version?: number) =>
     post<DeliveryOsduRead>(`/api/v1/delivery/explorer/read${partitionQuery(partition)}`, version === undefined ? { targetId } : { targetId, version }),
+  /** One record checked against the schema of its kind: the Schema service's, or a saved template's. */
+  validate: async (partition: string | null, request: ExplorerValidateRequest) => {
+    const answered = await post<ExplorerAnswer<ExplorerValidation>>(`/api/v1/delivery/explorer/validate${partitionQuery(partition)}`, request);
+    return { ...answered, answer: validationOf(answered.answer) };
+  },
+  /** The records a search finds, up to 1,000, checked against their schemas and counted by the rules they break. */
+  validateList: async (partition: string | null, request: ExplorerValidateListRequest) => {
+    const answered = await post<ExplorerAnswer<ExplorerListValidation>>(`/api/v1/delivery/explorer/validate-list${partitionQuery(partition)}`, request);
+    return { ...answered, answer: listValidationOf(answered.answer) };
+  },
 };
+
+// A task's answer leaves a property out when it is null, so the parts of a check that can be null are read as null when
+// they are absent, and the lists as empty: every view of a check then reads one shape.
+
+function validationOf(answer: ExplorerValidation): ExplorerValidation {
+  return {
+    ...answer,
+    version: answer.version ?? null,
+    kind: answer.kind ?? null,
+    schema: answer.schema ?? null,
+    verdict: answer.verdict ?? null,
+    problem: answer.problem ?? null,
+    savedVersions: answer.savedVersions ?? [],
+  };
+}
+
+function listValidationOf(answer: ExplorerListValidation): ExplorerListValidation {
+  return {
+    ...answer,
+    query: answer.query ?? null,
+    notFound: answer.notFound ?? [],
+    rules: answer.rules ?? [],
+    records: (answer.records ?? []).map((record) => ({ ...record, kind: record.kind ?? null, first: record.first ?? null })),
+    schemas: answer.schemas ?? [],
+    unavailable: answer.unavailable ?? [],
+    notes: answer.notes ?? [],
+  };
+}
+
+// ---- Validation (osdu/docs/explorer.md, Validate) ----
+
+/** Which schema a record is checked against: what the partition's Schema service holds, or a saved template. */
+export type ExplorerSchemaChoice = "osdu" | "saved";
+
+export interface ExplorerValidateRequest {
+  targetId: string;
+  version?: number;
+  schema?: ExplorerSchemaChoice;
+  /** With `saved`, the template version; the kind's newest when left out. */
+  templateVersion?: string;
+}
+
+/** The schema a record was checked against, where it came from, and what reading it could not resolve. */
+export interface ExplorerSchema {
+  kind: string;
+  version: string;
+  source: "template" | "schema-service";
+  read: string[];
+  unresolved: string[];
+  notes: string[];
+}
+
+/** A record checked against a schema: the schema and the verdict, or why nothing was checked. */
+export interface ExplorerValidation {
+  targetId: string;
+  version: number | null;
+  found: boolean;
+  kind: string | null;
+  schema: ExplorerSchema | null;
+  verdict: ValidationVerdict | null;
+  problem: string | null;
+  /** The template versions saved for the kind, newest first, to check against instead. */
+  savedVersions: string[];
+}
+
+export interface ExplorerValidateListRequest {
+  search: ExplorerSearchRequest;
+  /** The most records read and checked, 1 to 1,000. */
+  max?: number;
+  schema?: ExplorerSchemaChoice;
+}
+
+/** A rule the records of a list break: how many records, how many times, and one example. */
+export interface ExplorerRuleCount {
+  at: string;
+  rule: string;
+  records: number;
+  problems: number;
+  exampleId: string;
+  examplePath: string;
+  exampleMessage: string;
+  exampleValue: string;
+}
+
+export interface ExplorerRecordVerdict {
+  id: string;
+  kind: string | null;
+  outcome: "valid" | "invalid" | "unverified" | "notValidated";
+  problems: number;
+  unverified: number;
+  /** The first problem (or part not checked), where and why. */
+  first: string | null;
+}
+
+/** The records a search finds checked against their schemas, up to a bound, counted by outcome and rule. */
+export interface ExplorerListValidation {
+  reading: ExplorerReading;
+  query: string | null;
+  kind: string;
+  matched: number;
+  asked: number;
+  read: number;
+  notFound: string[];
+  valid: number;
+  invalid: number;
+  unverified: number;
+  notChecked: number;
+  rules: ExplorerRuleCount[];
+  records: ExplorerRecordVerdict[];
+  schemas: ExplorerSchema[];
+  unavailable: { kind: string; why: string; records: number }[];
+  cut: boolean;
+  notes: string[];
+}
+
+/** The most records one check of a search reads. */
+export const EXPLORER_MAX_CHECKED = 1000;
 
 /** A record read by the explorer: what a record page's read-back answers, read from the storage service. */
 export type ExplorerRead = DeliveryOsduRead;

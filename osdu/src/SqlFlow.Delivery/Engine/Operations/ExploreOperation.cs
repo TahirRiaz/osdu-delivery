@@ -25,6 +25,8 @@ namespace SqlFlow.Delivery.Engine.Operations;
 /// <item><description><c>read</c>: one record from the storage service by its <c>targetId</c>, at its latest or at a <c>version</c>, with its version list.</description></item>
 /// <item><description><c>dimension-keys</c>: the commonest keys of a drafted dimension's path, which the builder's example steps through (<see cref="DimensionSampler.KeysAsync"/>), asked by the <c>keys</c> long argument.</description></item>
 /// <item><description><c>dimension-example</c>: one key of a drafted dimension made into its row as a build makes it (<see cref="DimensionSampler.ExampleAsync"/>): the dimension's item as YAML (<c>item</c>), the <c>key</c>, and how the key and each collected path are indexed (<c>fields</c>).</description></item>
+/// <item><description><c>validate</c>: one record (<c>targetId</c>, at its latest or a <c>version</c>) checked against the schema of its kind, the Schema service's or a saved template's (<c>schema</c>, <c>templateVersion</c>), with the records it refers to looked up in storage (<see cref="ExplorerChecks.RecordAsync"/>).</description></item>
+/// <item><description><c>validate-list</c>: the records a <c>search</c> finds, up to <c>max</c>, checked the same way and counted by rule (<see cref="ExplorerChecks.ListAsync"/>).</description></item>
 /// </list>
 /// Every read goes to the platform's own services (search and storage, openapi v2), whatever route the flow delivers by.
 /// </summary>
@@ -59,9 +61,20 @@ public sealed class ExploreOperation : DeliveryOperation
     public const string ReadAction = "read";
     public const string DimensionKeysAction = "dimension-keys";
     public const string DimensionExampleAction = "dimension-example";
+    public const string ValidateAction = "validate";
+    public const string ValidateListAction = "validate-list";
+
+    /// <summary>The task argument naming the schema a check reads: <c>osdu</c> (the Schema service's, the default) or <c>saved</c>.</summary>
+    public const string SchemaArgument = "schema";
+
+    /// <summary>The task argument naming the saved template version a check reads; the kind's newest when left out.</summary>
+    public const string TemplateVersionArgument = "templateVersion";
+
+    /// <summary>The task argument naming how many records a check of a search reads at most.</summary>
+    public const string MaxArgument = "max";
 
     /// <summary>Every read the task can name.</summary>
-    public static readonly IReadOnlyList<string> Actions = [TypesAction, SearchAction, FieldsAction, ReadAction, DimensionKeysAction, DimensionExampleAction];
+    public static readonly IReadOnlyList<string> Actions = [TypesAction, SearchAction, FieldsAction, ReadAction, DimensionKeysAction, DimensionExampleAction, ValidateAction, ValidateListAction];
 
     /// <summary>How the dimension builder's requests and answers are written: the web's conventions, as the API writes them.</summary>
     public static JsonSerializerOptions BuilderJson { get; } = ReadOnly(new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -111,6 +124,11 @@ public sealed class ExploreOperation : DeliveryOperation
         using var correlation = OsduCorrelation.Begin();
         object answer = action switch
         {
+            ValidateAction => await Checks(context, flow, client).RecordAsync(
+                TargetId.WithoutVersion(payload.RequireArgument("targetId").Trim()), ReadRecordOperation.VersionOf(payload), SchemaSourceOf(payload),
+                payload.Argument(TemplateVersionArgument), ct).ConfigureAwait(false),
+            ValidateListAction => await Checks(context, flow, client).ListAsync(
+                explorer, ExplorerSearch.Parse(payload.Argument(SearchArgument)), MaxOf(payload), SchemaSourceOf(payload), ct).ConfigureAwait(false),
             TypesAction => await explorer.TypesAsync(ExplorerSearch.Parse(payload.Argument(SearchArgument)), ct).ConfigureAwait(false),
             SearchAction => await explorer.SearchAsync(ExplorerSearch.Parse(payload.Argument(SearchArgument)), ct).ConfigureAwait(false),
             DimensionKeysAction => await Sampler(client, context).KeysAsync(KeysOf(payload, partition), ct).ConfigureAwait(false),
@@ -126,6 +144,41 @@ public sealed class ExploreOperation : DeliveryOperation
             answeredUtc = context.Time.GetUtcNow().UtcDateTime,
             answer,
         };
+    }
+
+    /// <summary>The explorer's checks through the connection, reading storage where the explorer reads it, and the saved templates the engine keeps.</summary>
+    private static ExplorerChecks Checks(EngineContext context, FlowDefinition flow, OsduHttpClient client)
+        => new(
+            client,
+            new OsduRecordProtocol(client, new ProtocolOptions { VerifyPath = ReadPathOf(flow) }, context.Time),
+            flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath,
+            context.Templates,
+            context.Time);
+
+    /// <summary>The schema a check reads, as the task names it: <c>osdu</c> (the default) or <c>saved</c>.</summary>
+    internal static ExplorerSchemaSource SchemaSourceOf(ComputeTaskPayload payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return payload.Argument(SchemaArgument)?.Trim().ToLowerInvariant() switch
+        {
+            null or "" or "osdu" => ExplorerSchemaSource.Osdu,
+            "saved" => ExplorerSchemaSource.Saved,
+            var other => throw new SqlFlowException($"'{other}' is not a schema a record is checked against: osdu or saved."),
+        };
+    }
+
+    /// <summary>How many records a check of a search reads, as the task names it: 1 to <see cref="ExplorerChecks.MaxRecords"/>, the most when left out.</summary>
+    internal static int MaxOf(ComputeTaskPayload payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        if (payload.Argument(MaxArgument) is not { } text)
+        {
+            return ExplorerChecks.MaxRecords;
+        }
+
+        return int.TryParse(text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var max) && max is >= 1 and <= ExplorerChecks.MaxRecords
+            ? max
+            : throw new SqlFlowException($"'{text}' is not how many records a check reads: 1 to {ExplorerChecks.MaxRecords}.");
     }
 
     private static DimensionSampler Sampler(OsduHttpClient client, EngineContext context)

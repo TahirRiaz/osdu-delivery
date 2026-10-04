@@ -59,6 +59,7 @@ const RECORD = "record";
 const ACCESS = "access";
 const LINKS = "links";
 const MENTIONS = "mentions";
+const VALIDATION = "validation";
 
 const VIEW_NAMES: Record<string, string> = {
   [DOCUMENT]: "Full document",
@@ -66,6 +67,7 @@ const VIEW_NAMES: Record<string, string> = {
   [ACCESS]: "Access & legal",
   [LINKS]: "Linked records",
   [MENTIONS]: "Mentioned by",
+  [VALIDATION]: "Validation",
 };
 
 /** How a branch of the record is shown: one level as fields (or a table of items), or the whole branch as JSON. */
@@ -127,6 +129,11 @@ export interface InspectorExtras {
   mentions?: (id: string, open: (id: string) => void) => ReactNode;
   /** What to offer where OSDU holds no record under an id: the records whose ids are near it. */
   notFound?: (id: string) => ReactNode;
+  /**
+   * The record checked against its schema, as a view under the outline's Checks: given the record's id, the version in view
+   * (null for its latest), and a way to open an element of the record by its path.
+   */
+  validation?: (id: string, version: number | null, open: (path: string) => void) => ReactNode;
   /**
    * What a page shows beside each value and each section of a record on the trail, in the fields and the JSON views (the
    * query of an element, the dimension builder's picks); a section is a node of kind `object` or `array`.
@@ -876,7 +883,7 @@ function outlineRowFor(model: RecordModel, path: string): string {
  * back to the record it was opened from. A picked version replaces the record in place, with the outline and the place
  * in it kept.
  */
-function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack, readVersion, opening, actions, place, mentions, fieldActions }: {
+function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack, readVersion, opening, actions, place, mentions, validation, fieldActions }: {
   /** The read of the record at its latest. */
   read: DeliveryOsduRead & { record: Record<string, unknown> };
   level: number;
@@ -894,6 +901,8 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
   place?: ReactNode;
   /** The records that mention this one, given a way to open one of them on the trail; absent where a page cannot list them. */
   mentions?: (open: (id: string) => void) => ReactNode;
+  /** The record in view checked against its schema, given its version (null for the latest) and a way to open an element; absent where a page cannot check it. */
+  validation?: (version: number | null, open: (path: string) => void) => ReactNode;
   /** What a page shows beside each value and section of the record as shown (the version picked, or its latest). */
   fieldActions?: (node: RecordNode, record: Record<string, unknown>) => ReactNode;
 }) {
@@ -960,6 +969,18 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
 
       remember(next);
     }
+  };
+  // An element a check names: its branch opened as fields, the value's own branch for a value; the envelope's views for a
+  // value of the record itself, its access and legal.
+  const openPath = (path: string) => {
+    const target = model.byPath.get(path);
+    if (target === undefined || (target.kind === "leaf" && target.parent === "")) {
+      select(path.startsWith("acl") || path.startsWith("legal") ? ACCESS : RECORD);
+      return;
+    }
+
+    setMode("fields");
+    select(target.kind === "leaf" ? target.parent : target.path);
   };
   const goFromDocument = (path: string) => {
     if (model.byPath.has(path)) {
@@ -1123,6 +1144,12 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
             <OutlineGroup label="References" />
             <OutlineRow depth={0} selected={selected === LINKS} onSelect={() => select(LINKS)} label={VIEW_NAMES[LINKS]} detail={`${model.references.length}`} testId="osdu-outline-links" />
             {mentions !== undefined && <OutlineRow depth={0} selected={selected === MENTIONS} onSelect={() => select(MENTIONS)} label={VIEW_NAMES[MENTIONS]} testId="osdu-outline-mentions" />}
+            {validation !== undefined && (
+              <>
+                <OutlineGroup label="Checks" />
+                <OutlineRow depth={0} selected={selected === VALIDATION} onSelect={() => select(VALIDATION)} label={VIEW_NAMES[VALIDATION]} testId="osdu-outline-validation" />
+              </>
+            )}
           </div>
           <div className="flex items-center gap-1 border-t p-1">
             <IconAction label="Unfold every branch" icon={<ChevronsUpDown />} variant="ghost" className="size-7" onClick={() => remember(branchPaths(model.sections))} data-testid="osdu-tree-expand" />
@@ -1143,6 +1170,8 @@ function RecordInspector({ read, level, back, ledgerVersion, onOpenLink, onBack,
                   ? <LinksView model={model} ownId={read.targetId} onOpenLink={onOpenLink} opening={opening} onSelect={select} />
                   : selected === MENTIONS && mentions !== undefined
                   ? mentions((id) => onOpenLink?.(id, null))
+                  : selected === VALIDATION && validation !== undefined
+                  ? validation(showingPicked ? shownVersion : null, openPath)
                   : node === undefined
                     ? <EmptyState title="Nothing selected" description="Pick a branch of the record on the left." />
                     : mode === "json"
@@ -1222,6 +1251,7 @@ export function OsduRecordInspector({ entries, ledgerVersion, opening, onOpenLin
             actions={actions}
             place={level === 0 ? extras?.place : undefined}
             mentions={extras?.mentions === undefined || onOpenLink === undefined ? undefined : (open) => extras.mentions!(read.targetId, open)}
+            validation={extras?.validation === undefined ? undefined : (version, open) => extras.validation!(read.targetId, version, open)}
             fieldActions={extras?.fieldActions === undefined ? undefined : (leaf, shown) => extras.fieldActions!({
               level,
               node: leaf,

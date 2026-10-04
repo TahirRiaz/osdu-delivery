@@ -385,6 +385,8 @@ public sealed record ValidationVerdict
     private static string? Text(JsonObject json, string name)
         => json[name] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
+    /// <summary>A whole number a verdict holds, whether it was parsed from text or built in memory from any integer type.</summary>
     private static long Number(JsonObject json, string name)
-        => json[name] is JsonValue value && value.GetValueKind() == JsonValueKind.Number && value.TryGetValue<long>(out var number) ? number : 0;
+        => json[name] is JsonValue value && value.GetValueKind() == JsonValueKind.Number
+            && long.TryParse(value.ToJsonString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) ? number : 0;
 }
