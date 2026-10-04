@@ -564,7 +564,7 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
           </ToggleGroup>
           {choice === "None" && (
             <p className="text-xs text-muted-foreground">
-              {isProperty ? "A property the item does not fill is left out of it, and a list is written empty." : "A variable without an entry is left out of the record, and a list is written empty."}
+              {isProperty ? "A property the item does not fill is left out of it." : "A variable without an entry is left out of the record."}
               {variable.required && !isProperty && " The template requires this one, so the check reports it until it is filled."}
             </p>
           )}
@@ -1082,7 +1082,7 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
           <Section
             title="When it applies"
             hint={choice === "Repeat"
-              ? "A condition on the dataset row that decides for the whole array. When it is false, the array is written empty. A value it cannot test, such as text where it compares a number, holds the record with the reason."
+              ? "A condition on the dataset row that decides for the whole array. When it is false, the array is left out. A value it cannot test, such as text where it compares a number, holds the record with the reason."
               : isItem
                 ? "A condition such as not empty(wellbore_uwi). When it is false, the item adds nothing to the list for that row. A value it cannot test holds the record with the reason."
                 : "A condition such as depth_coding = \"REGULAR\", not empty(unit), or depth > 0 and status in [\"A\", \"B\"]. When it is false, the variable is left out for that row. A value it cannot test, such as text where it compares a number, holds the record with the reason."}

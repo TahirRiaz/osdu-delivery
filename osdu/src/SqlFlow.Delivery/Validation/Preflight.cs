@@ -1158,75 +1158,22 @@ public static partial class Preflight
                 continue;
             }
 
-            renders.Add(Compared(fixture, result, renderer));
+            renders.Add(Compared(fixture, result));
         }
 
         return renders;
     }
 
-    /// <summary>
-    /// A fixture's render beside the record it expects, read the way the engine writes a record: canonical, with every list
-    /// its template declares and the record leaves out written empty (<see cref="MappingRenderer.CompleteLists"/>), so a
-    /// fixture written without those lists expects the record that renders with them.
-    /// </summary>
-    private static FixtureRender Compared(MappingFixture fixture, RenderResult result, MappingRenderer renderer)
+    /// <summary>A fixture's render beside the record it expects, read canonically as the gate compares them.</summary>
+    private static FixtureRender Compared(MappingFixture fixture, RenderResult result)
     {
-        JsonNode? expected;
         try
         {
-            expected = CanonicalJson.Normalize(JsonNode.Parse(fixture.Expected));
+            return new FixtureRender(fixture, result, null) { Expected = CanonicalJson.Normalize(JsonNode.Parse(fixture.Expected)) };
         }
         catch (JsonException ex)
         {
             return new FixtureRender(fixture, result, null) { ExpectedProblem = ex.Message };
-        }
-
-        if (expected is JsonObject record)
-        {
-            renderer.CompleteLists(record);
-        }
-
-        return new FixtureRender(fixture, result, null) { Expected = expected, Writable = Writable(result, renderer) };
-    }
-
-    /// <summary>
-    /// The record <c>sqlflow fixtures update</c> writes for <paramref name="result"/>: without the empty lists the engine
-    /// writes, which the comparison reads back in, so a fixture keeps to what its mapping fills. When an empty list is one the
-    /// engine would not write back (a list the template requires items of, or one it does not declare), the record is
-    /// written whole.
-    /// </summary>
-    private static JsonObject Writable(RenderResult result, MappingRenderer renderer)
-    {
-        var trimmed = (JsonObject)result.Document.DeepClone();
-        WithoutEmptyLists(trimmed);
-        var restored = (JsonObject)trimmed.DeepClone();
-        renderer.CompleteLists(restored);
-        return string.Equals(CanonicalJson.ToString(restored), result.Canonical, StringComparison.Ordinal) ? trimmed : result.Document;
-    }
-
-    private static void WithoutEmptyLists(JsonNode? node)
-    {
-        switch (node)
-        {
-            case JsonObject value:
-                foreach (var name in value.Where(p => p.Value is JsonArray { Count: 0 }).Select(p => p.Key).ToList())
-                {
-                    value.Remove(name);
-                }
-
-                foreach (var (_, child) in value)
-                {
-                    WithoutEmptyLists(child);
-                }
-
-                break;
-            case JsonArray items:
-                foreach (var item in items)
-                {
-                    WithoutEmptyLists(item);
-                }
-
-                break;
         }
     }
 
@@ -1314,20 +1261,13 @@ public static partial class Preflight
 public sealed record FixtureRender(MappingFixture Fixture, RenderResult? Result, string? Problem)
 {
     /// <summary>
-    /// The record the fixture expects, beside a result: canonical, with every list its template declares and the record
-    /// leaves out written empty, as a render writes one. Null without a result, or when <see cref="ExpectedProblem"/> says
-    /// its expected JSON cannot be read.
+    /// The record the fixture expects, beside a result, canonical. Null without a result, or when
+    /// <see cref="ExpectedProblem"/> says its expected JSON cannot be read.
     /// </summary>
     public JsonNode? Expected { get; init; }
 
     /// <summary>Why the fixture's expected JSON cannot be read, or null.</summary>
     public string? ExpectedProblem { get; init; }
-
-    /// <summary>
-    /// The record <c>sqlflow fixtures update</c> writes as the fixture's expected record, beside a result: the render without
-    /// the empty lists the engine writes, unless one of them is a list the engine would not write back.
-    /// </summary>
-    public JsonObject? Writable { get; init; }
 }
 
 public enum IssueSeverity

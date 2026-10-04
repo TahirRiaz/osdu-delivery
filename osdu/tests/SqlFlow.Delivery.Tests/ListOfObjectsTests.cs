@@ -196,19 +196,18 @@ public sealed class ListOfObjectsTests
     [Fact]
     public void Each_item_is_the_object_its_properties_give_computed_from_the_row()
     {
-        // Each item carries the lists its variable declares and nothing fills (Links, Reviewers) empty, as every record does.
         var mapping = Mapping(Assurance);
 
         Assert.Equal(
-            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Certified}}","Comment":"Set by the conversion","Links":[],"Reviewers":[]}]"""),
+            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Certified}}","Comment":"Set by the conversion"}]"""),
             Assurances(Rendered(mapping, ("log_source", "STAT_COMP"))));
         Assert.Equal(
-            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Unevaluated}}","Comment":"Set by the conversion","Links":[],"Reviewers":[]}]"""),
+            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Unevaluated}}","Comment":"Set by the conversion"}]"""),
             Assurances(Rendered(mapping, ("log_source", "RECALL"))));
 
         // A blank source is not "stat_", so the failsafe holds for it too.
         Assert.Equal(
-            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Unevaluated}}","Comment":"Set by the conversion","Links":[],"Reviewers":[]}]"""),
+            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Unevaluated}}","Comment":"Set by the conversion"}]"""),
             Assurances(Rendered(mapping, ("log_source", null))));
     }
 
@@ -231,12 +230,12 @@ public sealed class ListOfObjectsTests
             """);
 
         Assert.Equal(
-            Canonical("""[{"Score":3,"Detail":{"Note":"checked","Level":2},"Reviewers":["reviewer@x","second@x"],"$Odd":"kept","Links":[]},{"Comment":"fixed","Score":7,"Links":[],"Reviewers":[]}]"""),
+            Canonical("""[{"Score":3,"Detail":{"Note":"checked","Level":2},"Reviewers":["reviewer@x","second@x"],"$Odd":"kept"},{"Comment":"fixed","Score":7}]"""),
             Assurances(Rendered(mapping, ("score", "3"), ("note", "checked"), ("reviewer", "second@x"))));
 
         // An optional value that is empty leaves its property out of the item; the rest of the item stays.
         Assert.Equal(
-            Canonical("""[{"Score":3,"Detail":{"Note":"checked","Level":2},"Reviewers":["reviewer@x"],"$Odd":"kept","Links":[]},{"Comment":"fixed","Score":7,"Links":[],"Reviewers":[]}]"""),
+            Canonical("""[{"Score":3,"Detail":{"Note":"checked","Level":2},"Reviewers":["reviewer@x"],"$Odd":"kept"},{"Comment":"fixed","Score":7}]"""),
             Assurances(Rendered(mapping, ("score", "3"), ("note", "checked"), ("reviewer", " "))));
 
         // A value its variable's type cannot take holds the record, naming the variable inside the items.
@@ -246,7 +245,7 @@ public sealed class ListOfObjectsTests
     }
 
     [Fact]
-    public void An_item_none_of_whose_properties_applies_adds_nothing_and_a_list_left_with_none_is_written_empty()
+    public void An_item_none_of_whose_properties_applies_adds_nothing_and_a_list_left_with_none_is_left_out()
     {
         var mapping = Mapping("""
             TechnicalAssurances:
@@ -258,9 +257,9 @@ public sealed class ListOfObjectsTests
                   $required: false
             """);
 
-        Assert.Equal(Canonical("""[{"Comment":"reviewed","Links":[],"Reviewers":[]},{"Comment":"late","Links":[],"Reviewers":[]}]"""), Assurances(Rendered(mapping, ("status", "reviewed"), ("remark", "late"))));
-        Assert.Equal(Canonical("""[{"Comment":"late","Links":[],"Reviewers":[]}]"""), Assurances(Rendered(mapping, ("status", "DRAFT"), ("remark", "late"))));
-        Assert.Equal("[]", Assurances(Rendered(mapping, ("status", "DRAFT"), ("remark", null))));
+        Assert.Equal(Canonical("""[{"Comment":"reviewed"},{"Comment":"late"}]"""), Assurances(Rendered(mapping, ("status", "reviewed"), ("remark", "late"))));
+        Assert.Equal(Canonical("""[{"Comment":"late"}]"""), Assurances(Rendered(mapping, ("status", "DRAFT"), ("remark", "late"))));
+        Assert.Null(Assurances(Rendered(mapping, ("status", "DRAFT"), ("remark", null))));
     }
 
     [Fact]
@@ -273,7 +272,7 @@ public sealed class ListOfObjectsTests
               - Comment: { $from: third }
             """);
 
-        Assert.Equal(Canonical("""[{"Comment":"a","Links":[],"Reviewers":[]},{"Comment":"b","Links":[],"Reviewers":[]}]"""), Assurances(Rendered(mapping, ("first", "a"), ("second", "b"), ("third", "a"))));
+        Assert.Equal(Canonical("""[{"Comment":"a"},{"Comment":"b"}]"""), Assurances(Rendered(mapping, ("first", "a"), ("second", "b"), ("third", "a"))));
     }
 
     [Fact]
@@ -308,7 +307,7 @@ public sealed class ListOfObjectsTests
         // ref reads the entity type from the relationship of the property it fills, which the list itself has none of.
         var result = Rendered(mapping, ("assurance", " Certified "), ("unit", "ft"));
         Assert.Equal(
-            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Certified}}","UnitID":"dev:reference-data--UnitOfMeasure:ft:","Links":[],"Reviewers":[]}]"""),
+            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Certified}}","UnitID":"dev:reference-data--UnitOfMeasure:ft:"}]"""),
             Assurances(result));
         Assert.Contains(result.CacheUsages, u => u.TypeName == "UnitOfMeasure");
         var choice = Assert.Single(result.Choices);
@@ -316,7 +315,7 @@ public sealed class ListOfObjectsTests
 
         // The coalesce falls to its second alternative when the first finds nothing.
         Assert.Equal(
-            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Certified}}","UnitID":"dev:reference-data--UnitOfMeasure:m:","Links":[],"Reviewers":[]}]"""),
+            Canonical($$"""[{"TechnicalAssuranceTypeID":"{{Certified}}","UnitID":"dev:reference-data--UnitOfMeasure:m:"}]"""),
             Assurances(Rendered(mapping, ("assurance", "Certified"), ("unit", "yards"))));
 
         // A code the cache does not hold is a miss on that property, which holds the record.
@@ -341,7 +340,7 @@ public sealed class ListOfObjectsTests
             """);
 
         Assert.Equal(["UnitOfMeasure"], mapping.CacheTypesRead());
-        Assert.Equal(Canonical("""[{"UnitID":"dev:reference-data--UnitOfMeasure:m:","Links":[],"Reviewers":[]}]"""), Assurances(Rendered(mapping, ("unit", "m"))));
+        Assert.Equal(Canonical("""[{"UnitID":"dev:reference-data--UnitOfMeasure:m:"}]"""), Assurances(Rendered(mapping, ("unit", "m"))));
     }
 
     [Theory]
@@ -582,7 +581,7 @@ public sealed class ListOfObjectsTests
         Assert.Equal(2, items.Count);
         Assert.StartsWith("<string from iif(startsWith(log_source, \"stat_\"), \"Certified\", \"Unevaluated\")", items[0]!["TechnicalAssuranceTypeID"]!.GetValue<string>(), StringComparison.Ordinal);
         Assert.Equal("Set by the conversion", items[0]!["Comment"]!.GetValue<string>());
-        Assert.Equal("""{"Comment":"fixed","Reviewers":[],"Links":[]}""", items[1]!.ToJsonString());
+        Assert.Equal("""{"Comment":"fixed"}""", items[1]!.ToJsonString());
     }
 
     [Fact]

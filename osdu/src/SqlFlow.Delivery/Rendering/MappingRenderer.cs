@@ -24,7 +24,7 @@ public sealed class MappingRenderer
     private readonly ReferenceSnapshot _references;
     private readonly RenderContext _context;
     private readonly IReadOnlyList<string> _requiredData;
-    private readonly ListValues? _lists;
+    private readonly ListValues _lists;
     private readonly IReadOnlyList<MappingEntry> _recordEntries;
     private readonly IReadOnlyList<(MappingEntry Repeater, IReadOnlyList<MappingEntry> Items)> _repeaters;
     private readonly IReadOnlyList<string>? _owned;
@@ -105,8 +105,7 @@ public sealed class MappingRenderer
         }
 
         _requiredData = schema.RequiredAt("data");
-        // A DSPDM business object row is a row of single values, which DSPDM refuses a list for, and never reaches Storage.
-        _lists = DspdmKinds.Is(mapping.Kind) ? null : new ListValues(schema);
+        _lists = new ListValues(schema);
         _recordEntries = mapping.Entries.Where(e => !e.IsRepeater && !e.Target.IsRepeated).ToList();
         _repeaters = mapping.Entries.Where(e => e.IsRepeater).Select(r => (r, (IReadOnlyList<MappingEntry>)mapping.ItemEntries(r).ToList())).ToList();
         // A ref resolves by the variable its node fills and the entity type it names: every alternative of a $coalesce node
@@ -397,17 +396,6 @@ public sealed class MappingRenderer
 
     internal SchemaSnapshot Schema => _schema;
 
-    /// <summary>
-    /// Completes the lists of <paramref name="record"/> as a render completes the record it assembles (<see cref="ListValues"/>):
-    /// a fixture's expected record is read this way, so one written without the empty lists expects the record that renders
-    /// with them.
-    /// </summary>
-    internal void CompleteLists(JsonObject record)
-    {
-        ArgumentNullException.ThrowIfNull(record);
-        _lists?.Complete(record);
-    }
-
     internal string DataPartition => _context.DataPartition;
 
     internal string? ParameterValue(string name)
@@ -500,9 +488,9 @@ public sealed class MappingRenderer
     /// <summary>
     /// Writes every entry's value into <paramref name="document"/>: the list of attributes a DSPDM business object row owns
     /// (<see cref="DspdmKinds.OwnedProperty"/>), the record's own entries at their targets, then each repeater's array with one
-    /// item per row, then the lists of the template completed (<see cref="ListValues"/>: an empty list for each one nothing
-    /// filled, no null item its items do not allow), then the check that the data the schema requires is there. What a value cannot be written for is added
-    /// to <paramref name="holds"/>. The one assembly a render, an inspection and a shape share.
+    /// item per row, then the null items its lists' items do not allow dropped (<see cref="ListValues"/>), then the check that
+    /// the data the schema requires is there. What a value cannot be written for is added to <paramref name="holds"/>. The one
+    /// assembly a render, an inspection and a shape share.
     /// </summary>
     /// <param name="document">The record being written.</param>
     /// <param name="values">Where the values come from: a source record's rows, or a shape's placeholders.</param>
@@ -648,8 +636,8 @@ public sealed class MappingRenderer
             }
         }
 
-        // A list is never left out, and holds no null its items do not allow, so OSDU never holds a null where it takes none.
-        _lists?.Complete(document, selection.IsAll ? null : selection.Covers);
+        // A list holds no null its items do not allow, so OSDU never holds a null where it takes none.
+        _lists.RemoveNullItems(document, selection.IsAll ? null : selection.Covers);
 
         if (document["data"] is JsonObject data)
         {
@@ -810,7 +798,7 @@ public sealed class MappingRenderer
         {
             var when = repeater.AppliesWhen is { } condition ? $", only when {condition}" : string.Empty;
             var where = repeater.RowFilter is { } filter ? $" where {filter}" : string.Empty;
-            var none = repeater.Required ? "a record without any is held" : "written empty when there are none";
+            var none = repeater.Required ? "a record without any is held" : "left out when there are none";
             notes.Add($"{repeater.Target.Text}: one item per row of {repeater.Source}{where}{when}; {none}");
             return [null];
         }

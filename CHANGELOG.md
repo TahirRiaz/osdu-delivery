@@ -960,21 +960,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   schema whole. A check's messages say "the schema" rather than "the template", whichever schema the record was checked
   against. The e2e suite's control plane reads the OSDU data definitions from the stand-in and no longer from the public
   repository at start.
-- **A list is never left out of a record, so OSDU never holds a null where it takes one.** A mapping that left `meta`
-  unfilled rendered a record without it, and Storage, whose own record model holds `meta`, kept it as `"meta": null`,
-  which the Schema service refuses for a kind that takes a list there (the explorer's Validation read "null where the
-  template takes a list" on such WellLogs). The engine now writes every list the template declares and nothing fills as
-  an empty list, in every object the record holds (the record, its `data`, an object inside them, each item of a list of
-  objects), for every mapping and with nothing written in it: an optional `$forEach` with no rows, or a list none of
-  whose items gives a value, is written empty too, and a null item is dropped from a list whose items take no null (a
-  list read whole from the cache may hold one). A value of any other type with no value is still left out, never null
-  and never an empty text, a zero, `false` or `{}`, each of which would be a value of its own. An object the record
-  does not hold is not made for its lists, a list the template requires items of (`minItems`) is left out, a value of a
-  choice of forms (`oneOf`, `anyOf`) is not looked into, and a DSPDM row gets none. A fixture's expected record is read the same way, so the fixtures already written
-  pass as they stand, and `sqlflow fixtures update` writes a record without those lists. A record rendered from now on
-  carries them, and is sent again the next time it is rendered; one already in OSDU keeps what it holds until then,
-  which a redelivery of its scope brings forward ([osdu/docs/documents.md](osdu/docs/documents.md), What the record
-  contains).
+- **A list a record holds carries no null item its template does not allow.** A null item is dropped from a list whose
+  items take no null (a list read whole from the cache may hold one), in every object the record holds (the record, its
+  `data`, an object inside them, each item of a list of objects); a value of a choice of forms (`oneOf`, `anyOf`) is not
+  looked into. A list the mapping does not fill is left out, as any other value with no value is: Storage keeps a
+  record's `data` as it is sent, and the `"meta": null` it reads back for a record sent without `meta` is read as absent
+  by the explorer and the `conforms` assertion (the fix above). For a while every list the template declares and nothing
+  filled was written as an empty list, which filled records with lists their mappings never asked for; a record rendered
+  then is sent once more without them the next time it is rendered, and one rendered before it renders as it did
+  ([osdu/docs/documents.md](osdu/docs/documents.md), What the record contains).
 
 - A value check no longer passes over a `null` inside a value it checks: `null` breaks a property whose schema names
   types without `null`. A schema reference the template's bundle does not hold no longer fails a value check; the part

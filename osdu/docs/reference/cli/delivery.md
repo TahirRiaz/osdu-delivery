@@ -124,8 +124,7 @@ search answers it declares and never the platform. Templates and caches live in 
 
 Only the lines of the `expected` blocks that change are written; the rest of the file, its comments and its layout stay
 as they were. A written record reads the way the sample fixtures do: `id` and `kind`, then the properties in the order
-the mapping's record tree writes them, an object or a list of plain values on one line when it fits, and without the
-empty lists the engine writes for what nothing fills, which the comparison reads back in. The file is written
+the mapping's record tree writes them, an object or a list of plain values on one line when it fits. The file is written
 through a temporary file beside it and read back as a mapping first, so an interrupted run leaves it as it was.
 
 | Fixture | What happens |
