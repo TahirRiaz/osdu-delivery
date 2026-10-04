@@ -73,6 +73,9 @@ internal sealed record WalkLimits
 
     /// <summary>The property paths (<c>data.Datasets</c>) a route fills when it sends the record, left unjudged.</summary>
     public IReadOnlySet<string> RouteFilled { get; init; } = new HashSet<string>(StringComparer.Ordinal);
+
+    /// <summary>The property paths whose value is read as absent: left unjudged, and missing where the schema requires them.</summary>
+    public IReadOnlySet<string> Absent { get; init; } = new HashSet<string>(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -242,7 +245,7 @@ internal sealed class SchemaWalk
 
         foreach (var keyword in rules.UncheckedKeywords)
         {
-            NotChecked(place, keyword, $"the template's '{keyword}' here is not checked", value);
+            NotChecked(place, keyword, $"the schema's '{keyword}' here is not checked", value);
         }
 
         if (value is null)
@@ -261,7 +264,7 @@ internal sealed class SchemaWalk
             Found.Rules++;
             if (!rules.Types.Any(type => IsType(value, type)))
             {
-                Problem(place, "type", $"{Describe(value)} where the template takes {string.Join(" or ", rules.Types.Select(Article))}", value);
+                Problem(place, "type", $"{Describe(value)} where the schema takes {string.Join(" or ", rules.Types.Select(Article))}", value);
                 return;
             }
         }
@@ -271,7 +274,7 @@ internal sealed class SchemaWalk
             Found.Rules++;
             if (!JsonNode.DeepEquals(constant, value))
             {
-                Problem(place, "const", $"{Describe(value)} is not {Quote(constant)}, the one value the template allows", value);
+                Problem(place, "const", $"{Describe(value)} is not {Quote(constant)}, the one value the schema allows", value);
             }
         }
 
@@ -282,7 +285,7 @@ internal sealed class SchemaWalk
             {
                 var listed = string.Join(", ", allowed.Take(8).Select(Quote))
                     + (allowed.Count > 8 ? string.Create(CultureInfo.InvariantCulture, $" and {allowed.Count - 8} more") : string.Empty);
-                Problem(place, "enum", string.Create(CultureInfo.InvariantCulture, $"{Describe(value)} is not one of the {allowed.Count} values the template allows ({listed})"), value);
+                Problem(place, "enum", string.Create(CultureInfo.InvariantCulture, $"{Describe(value)} is not one of the {allowed.Count} values the schema allows ({listed})"), value);
             }
         }
 
@@ -314,7 +317,7 @@ internal sealed class SchemaWalk
         Found.Rules++;
         if (!rules.AllowsNull && rules.Types.Count > 0)
         {
-            Problem(place, "type", $"null where the template takes {string.Join(" or ", rules.Types.Select(Article))}", null);
+            Problem(place, "type", $"null where the schema takes {string.Join(" or ", rules.Types.Select(Article))}", null);
         }
     }
 
@@ -354,7 +357,7 @@ internal sealed class SchemaWalk
             if (matched is null)
             {
                 var why = first is { Problems.Count: > 0 } ? $": {first.Problems[0].Message}" : string.Empty;
-                Problem(place, "anyOf", string.Create(CultureInfo.InvariantCulture, $"{Describe(value)} matches none of the {forms.Count} forms the template allows{why}"), value);
+                Problem(place, "anyOf", string.Create(CultureInfo.InvariantCulture, $"{Describe(value)} matches none of the {forms.Count} forms the schema allows{why}"), value);
                 return false;
             }
 
@@ -370,11 +373,11 @@ internal sealed class SchemaWalk
         {
             Found.Rules++;
             var at = place.Property(name, inItem);
-            if (!obj.ContainsKey(name) && !_limits.RouteFilled.Contains(at.At))
+            if ((!obj.ContainsKey(name) || _limits.Absent.Contains(at.At)) && !_limits.RouteFilled.Contains(at.At))
             {
                 // A whole record checked from its root is named as the record; anything else is the value at its place.
                 var subject = !_limits.PrefixMessages && place.Path.Length == 0 ? "the record" : "the value";
-                Problem(at, "required", $"{Prefix(place)}{subject} has no {name}, which the template requires", obj);
+                Problem(at, "required", $"{Prefix(place)}{subject} has no {name}, which the schema requires", obj);
             }
         }
 
@@ -386,7 +389,7 @@ internal sealed class SchemaWalk
             }
 
             var at = place.Property(name, inItem);
-            if (_limits.RouteFilled.Contains(at.At))
+            if (_limits.RouteFilled.Contains(at.At) || _limits.Absent.Contains(at.At))
             {
                 continue;
             }
@@ -402,7 +405,7 @@ internal sealed class SchemaWalk
             else if (rules.AdditionalForbidden)
             {
                 Found.Rules++;
-                Problem(at, "additionalProperties", $"{Prefix(place)}the value has {name}, which the template does not describe and allows no other property", child);
+                Problem(at, "additionalProperties", $"{Prefix(place)}the value has {name}, which the schema does not describe and allows no other property", child);
             }
         }
     }
@@ -414,7 +417,7 @@ internal sealed class SchemaWalk
             Found.Rules++;
             if (list.Count < fewest)
             {
-                Problem(place, "minItems", string.Create(CultureInfo.InvariantCulture, $"{Prefix(place)}the list holds {list.Count} item(s), fewer than the {fewest} the template requires"), list);
+                Problem(place, "minItems", string.Create(CultureInfo.InvariantCulture, $"{Prefix(place)}the list holds {list.Count} item(s), fewer than the {fewest} the schema requires"), list);
             }
         }
 
@@ -423,7 +426,7 @@ internal sealed class SchemaWalk
             Found.Rules++;
             if (list.Count > most)
             {
-                Problem(place, "maxItems", string.Create(CultureInfo.InvariantCulture, $"{Prefix(place)}the list holds {list.Count} items, more than the {most} the template allows"), list);
+                Problem(place, "maxItems", string.Create(CultureInfo.InvariantCulture, $"{Prefix(place)}the list holds {list.Count} items, more than the {most} the schema allows"), list);
             }
         }
 
@@ -435,7 +438,7 @@ internal sealed class SchemaWalk
             {
                 if (!seen.Add(CanonicalJson.ToString(item)))
                 {
-                    Problem(place, "uniqueItems", $"{Prefix(place)}{Quote(item)} is in the list more than once, and the template takes each item once", item);
+                    Problem(place, "uniqueItems", $"{Prefix(place)}{Quote(item)} is in the list more than once, and the schema takes each item once", item);
                     break;
                 }
             }
@@ -479,13 +482,13 @@ internal sealed class SchemaWalk
             var trimmed = text.Trim();
             if (IdValues.EntityType(trimmed) is not { } entityType)
             {
-                Problem(place, "relationship", $"{Prefix(place)}{Quote(value)} is not an OSDU id, and the template points the variable to {string.Join(" or ", rules.Relationships)}", value);
+                Problem(place, "relationship", $"{Prefix(place)}{Quote(value)} is not an OSDU id, and the schema points the property to {string.Join(" or ", rules.Relationships)}", value);
                 return;
             }
 
             if (!IdValues.Allows(rules.Relationships, entityType))
             {
-                Problem(place, "relationship", $"{Prefix(place)}{Quote(value)} is the id of a {entityType} record, and the template points the variable to {string.Join(" or ", rules.Relationships)}", value);
+                Problem(place, "relationship", $"{Prefix(place)}{Quote(value)} is the id of a {entityType} record, and the schema points the property to {string.Join(" or ", rules.Relationships)}", value);
                 return;
             }
 
@@ -506,8 +509,8 @@ internal sealed class SchemaWalk
                 if (!regex.IsMatch(text))
                 {
                     Problem(place, "pattern", related
-                        ? $"{Prefix(place)}{Quote(value)} does not match the pattern of the ids the template takes, {pattern.Text}"
-                        : $"{Prefix(place)}{Quote(value)} does not match the pattern the template gives, {pattern.Text}", value);
+                        ? $"{Prefix(place)}{Quote(value)} does not match the pattern of the ids the schema takes, {pattern.Text}"
+                        : $"{Prefix(place)}{Quote(value)} does not match the pattern the schema gives, {pattern.Text}", value);
                 }
             }
             catch (RegexMatchTimeoutException)
@@ -532,7 +535,7 @@ internal sealed class SchemaWalk
                 Found.Rules++;
                 if (length < shortest)
                 {
-                    Problem(place, "minLength", string.Create(CultureInfo.InvariantCulture, $"{Prefix(place)}{Quote(value)} is {length} character(s) long, shorter than the {shortest} the template requires"), value);
+                    Problem(place, "minLength", string.Create(CultureInfo.InvariantCulture, $"{Prefix(place)}{Quote(value)} is {length} character(s) long, shorter than the {shortest} the schema requires"), value);
                 }
             }
 
@@ -541,7 +544,7 @@ internal sealed class SchemaWalk
                 Found.Rules++;
                 if (length > longest)
                 {
-                    Problem(place, "maxLength", string.Create(CultureInfo.InvariantCulture, $"{Prefix(place)}the text is {length} characters long, longer than the {longest} the template allows"), value);
+                    Problem(place, "maxLength", string.Create(CultureInfo.InvariantCulture, $"{Prefix(place)}the text is {length} characters long, longer than the {longest} the schema allows"), value);
                 }
             }
         }
@@ -574,7 +577,7 @@ internal sealed class SchemaWalk
             Found.Rules++;
             if (number < minimum)
             {
-                Problem(place, "minimum", $"{Prefix(place)}{text} is below the minimum of {Format(minimum)} the template gives", scalar);
+                Problem(place, "minimum", $"{Prefix(place)}{text} is below the minimum of {Format(minimum)} the schema gives", scalar);
             }
         }
 
@@ -583,7 +586,7 @@ internal sealed class SchemaWalk
             Found.Rules++;
             if (number > maximum)
             {
-                Problem(place, "maximum", $"{Prefix(place)}{text} is above the maximum of {Format(maximum)} the template gives", scalar);
+                Problem(place, "maximum", $"{Prefix(place)}{text} is above the maximum of {Format(maximum)} the schema gives", scalar);
             }
         }
 
@@ -592,7 +595,7 @@ internal sealed class SchemaWalk
             Found.Rules++;
             if (number <= above)
             {
-                Problem(place, "exclusiveMinimum", $"{Prefix(place)}{text} is not above {Format(above)}, which the template requires", scalar);
+                Problem(place, "exclusiveMinimum", $"{Prefix(place)}{text} is not above {Format(above)}, which the schema requires", scalar);
             }
         }
 
@@ -601,7 +604,7 @@ internal sealed class SchemaWalk
             Found.Rules++;
             if (number >= below)
             {
-                Problem(place, "exclusiveMaximum", $"{Prefix(place)}{text} is not below {Format(below)}, which the template requires", scalar);
+                Problem(place, "exclusiveMaximum", $"{Prefix(place)}{text} is not below {Format(below)}, which the schema requires", scalar);
             }
         }
 
@@ -613,7 +616,7 @@ internal sealed class SchemaWalk
                 Found.Rules++;
                 if (exact is { } value && decimal.Remainder(value, step.Step) != 0)
                 {
-                    Problem(place, "multipleOf", $"{Prefix(place)}{text} is not a multiple of {step.Text}, which the template requires", scalar);
+                    Problem(place, "multipleOf", $"{Prefix(place)}{text} is not a multiple of {step.Text}, which the schema requires", scalar);
                 }
             }
         }
@@ -636,7 +639,7 @@ internal sealed class SchemaWalk
                 Found.Rules++;
                 if (number < low || number > high)
                 {
-                    Problem(place, "format", $"{Prefix(place)}{text} is outside the range of an {format} integer, which the template takes", scalar);
+                    Problem(place, "format", $"{Prefix(place)}{text} is outside the range of an {format} integer, which the schema takes", scalar);
                 }
             }
         }

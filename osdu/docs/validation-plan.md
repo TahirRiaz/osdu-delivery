@@ -21,7 +21,8 @@ Line numbers below are at `b105e42`. Other change sets edit the same files, so g
 | 3. How well what OSDU holds conforms | Explorer part done: the list counts by rule and place with an example, and says how to check a whole kind; the `conforms` counts by rule are next |
 | 4. The route rules | Decided: they stay at their call sites (see Decisions) |
 | 5. The flow key, the gate and the ledger | Done: `target.validation`, `ValidationGate`, migration `RecordValidation` (module 1.25.0) |
-| 6. The verdict where people look | After stage 2 |
+| 2b. Guidance | Done: `Validation/ValidationGuide` (found, takes, fix, the schema's words), the data definitions' example records (`IOfficialExamples`, `OsduDataDefinitions.ExampleAsync`), a stored record's empty optional blocks read as absent (`RecordForm.Stored`); shown in the explorer |
+| 6. The verdict where people look | Next: the record journey shows each attempt's verdict with the same guidance, worked out from the template version the verdict names |
 
 ## Why
 
@@ -142,6 +143,40 @@ module        the version of the rules, so verdicts from different releases can 
 A problem names the path as the record inspector does (`data.VerticalMeasurements[2].VerticalCRSID` for one item,
 `[]` when it groups items), the JSON Schema keyword it breaks (or `relationship` for `x-osdu-relationship`), and the
 value clipped to 200 characters and redacted as every stored error is.
+
+The messages say "the schema" whichever schema the record was checked against: a saved template or the Schema service's.
+
+## Guidance
+
+A verdict says what is wrong; guidance says what to do about it. `ValidationGuide.Of(rules, verdict, record, example)`
+turns each finding into a guide, in the verdict's order:
+
+- **found**: the value at the finding's path in the record (`null`, a quoted text, the size of a list or an object), or
+  `absent` for a required property; the finding's own value when the record is not at hand;
+- **expected** (`ValueExpectation`, by the place the finding names, `[]` added for each item of a list): what the schema
+  says there in words (its `title` and `description`, the words written beside a `$ref` first, since OSDU documents a
+  property there and JSON Schema draft-07 ignores them), the rules it holds the value to (types, whether the object
+  holding it requires it, patterns, the values allowed, formats, bounds, entity types, the properties of an object, what
+  each item is, the forms of a choice), its `example` and `examples`, and **OSDU's example**: the value at the same place
+  in the example record the OSDU data definitions publish for the kind, the first item of each list taken; and one line,
+  the `summary`, saying all of it;
+- **advice**: how to meet the rule, one per rule: leave an optional property out rather than null, the value to add, the
+  pattern and an example, the values allowed, the constant, the form a format takes, the range, the number without
+  quotes, a single value or a list, the properties an object allows and where one's own belongs, the id of a record
+  rather than its name, the record to deliver first. A part not checked says there is nothing to change in the record for
+  it.
+
+The guidance is worked out when it is shown, from the schema the check read: a verdict stores none of it, so the ledger
+keeps one verdict per attempt at the size it has, and a template version, which never changes, gives the same guidance
+whenever a page asks. The data definitions' examples (`Examples/<group>/<entity>.<version>.json`) are read through the
+copy of the data definitions the Templates page keeps (`OsduDataDefinitions.ExampleAsync`): from the newest release, once
+per kind version, kept beside the release on disk, a kind the release publishes none for remembered too. A host that
+keeps no copy (a node) quotes the schema alone, and so does every check when the repository cannot be reached; the
+guidance then says why it quotes no example.
+
+A record read back from storage (`RecordForm.Stored`: the explorer and the `conforms` assertion) can hold `ancestry`,
+`meta` or `tags` null or empty, which is how a record with none can read; such a block is read as absent and the verdict
+notes it. A document the gate checks before sending (`RecordForm.Sent`) is held to the schema whole.
 
 ## Edge cases
 
@@ -344,6 +379,9 @@ None runs before it is approved. Each id is logged in `.sqlflow/live-e2e/actions
 - `TemplateValueRules` skips `null` values, which a stored record can carry (stage 1).
 - `SchemaSnapshot.EffectiveOf` merges and deep-copies a node's `allOf` branches on every call (stage 1).
 - The `conforms` assertion answers pass or fail with examples, not counts by rule (stage 3).
+- A stored record's `meta: null` read as a problem in the explorer, which its writer cannot fix through its data (2b).
+- An operation's answer leaves out every null property, so the explorer list's `refusal === null` was never true: it
+  showed no count and read no second page (fixed in `96d8af2`).
 
 ## Not in this plan
 

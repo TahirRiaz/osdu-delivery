@@ -124,7 +124,7 @@ export function ExplorerValidationView({ partition, id, version, onOpenPath, onR
           </AlertDescription>
         </Alert>
       )}
-      {answer?.verdict && <ValidationVerdictView verdict={answer.verdict} onOpenPath={onOpenPath} />}
+      {answer?.verdict && <ValidationVerdictView verdict={answer.verdict} guidance={answer.guidance} onOpenPath={onOpenPath} />}
     </div>
   );
 }
@@ -139,12 +139,18 @@ export function ValidationFieldMark({ result, field }: { result: ExplorerValidat
   }
 
   const section = field.node.kind === "object" || field.node.kind === "array";
-  const found = problemsAt(result?.verdict?.problems ?? [], field.node.path, section);
+  const problems = result?.verdict?.problems ?? [];
+  const found = problemsAt(problems, field.node.path, section);
   if (found.length === 0) {
     return null;
   }
 
-  const body = found.slice(0, 8).map((p) => `${whereOf(p)} (${p.rule}): ${p.message}`).join("\n\n")
+  // Each problem with how to fix it, where the check said; the guidance lists one guide per problem, in the verdict's order.
+  const advice = (problem: (typeof problems)[number]) => {
+    const guide = result?.guidance?.problems[problems.indexOf(problem)];
+    return guide !== undefined && guide.path === problem.path && guide.advice !== null ? `\nFix: ${guide.advice}` : "";
+  };
+  const body = found.slice(0, 8).map((p) => `${whereOf(p)} (${p.rule}): ${p.message}${advice(p)}`).join("\n\n")
     + (found.length > 8 ? `\n\nand ${found.length - 8} more` : "");
   return (
     <RichTooltip title={`${found.length} problem${found.length === 1 ? "" : "s"} the schema finds here`} body={body}>
@@ -221,11 +227,25 @@ export function ExplorerValidateDialog({ partition, request, open, onOpenChange,
                       <span className="min-w-0 truncate font-mono text-[11px]" title={rule.at || "the record"}>{rule.at || "the record"}</span>
                       <span className="font-mono text-[11px] text-muted-foreground">{rule.rule}</span>
                       <span className="whitespace-nowrap text-right font-mono tabular-nums" title={`${rule.problems.toLocaleString("en-US")} problem(s) in all`}>{counted(rule.records, "record")}</span>
-                      <span className="min-w-0">
-                        <span className="break-words">{rule.exampleMessage}</span>
-                        <button type="button" className="ml-2 text-primary hover:underline" onClick={() => onOpenRecord(rule.exampleId)} title={rule.exampleId} data-testid="explorer-validate-list-example">
-                          {idParts(rule.exampleId).unique}
-                        </button>
+                      <span className="flex min-w-0 flex-col gap-0.5">
+                        <span>
+                          <span className="break-words">{rule.exampleMessage}</span>
+                          <button type="button" className="ml-2 text-primary hover:underline" onClick={() => onOpenRecord(rule.exampleId)} title={rule.exampleId} data-testid="explorer-validate-list-example">
+                            {idParts(rule.exampleId).unique}
+                          </button>
+                        </span>
+                        {rule.expected !== null && (
+                          <span className="text-muted-foreground" data-testid="explorer-validate-list-expected">
+                            {"Takes "}
+                            <span className="text-foreground">{rule.expected}</span>
+                          </span>
+                        )}
+                        {rule.advice !== null && (
+                          <span data-testid="explorer-validate-list-advice">
+                            <span className="font-medium">{"Fix: "}</span>
+                            {rule.advice}
+                          </span>
+                        )}
                       </span>
                     </div>
                   ))}

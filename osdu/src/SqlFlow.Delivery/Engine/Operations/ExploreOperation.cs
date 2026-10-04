@@ -146,14 +146,15 @@ public sealed class ExploreOperation : DeliveryOperation
         };
     }
 
-    /// <summary>The explorer's checks through the connection, reading storage where the explorer reads it, and the saved templates the engine keeps.</summary>
+    /// <summary>The explorer's checks through the connection, reading storage where the explorer reads it, the saved templates the engine keeps, and the data definitions' example records where the host keeps them.</summary>
     private static ExplorerChecks Checks(EngineContext context, FlowDefinition flow, OsduHttpClient client)
         => new(
             client,
             new OsduRecordProtocol(client, new ProtocolOptions { VerifyPath = ReadPathOf(flow) }, context.Time),
             flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath,
             context.Templates,
-            context.Time);
+            context.Time,
+            examples: context.Examples);
 
     /// <summary>The schema a check reads, as the task names it: <c>osdu</c> (the default) or <c>saved</c>.</summary>
     internal static ExplorerSchemaSource SchemaSourceOf(ComputeTaskPayload payload)

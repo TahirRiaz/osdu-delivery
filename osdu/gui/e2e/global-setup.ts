@@ -52,6 +52,9 @@ export default function globalSetup(): void {
   const sourceDir = join(repoDir, SOURCE);
 
   rmSync(repoDir, { recursive: true, force: true });
+
+  // The control plane's copy of the stand-in's data definitions starts empty, so what a spec holds there is what is read.
+  rmSync(E2E.dataDefinitions.cacheDirectory, { recursive: true, force: true });
   mkdirSync(join(sourceDir, "flows"), { recursive: true });
   mkdirSync(join(sourceDir, "cache"), { recursive: true });
 

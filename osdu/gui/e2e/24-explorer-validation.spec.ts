@@ -6,8 +6,9 @@ import { expect, test } from "./helpers";
 // counted by the rules they break.
 //
 // Nothing here reaches an OSDU: the stand-in holds, for as long as the spec runs, the schema of its wellbores' kind, the
-// schema that one refers to by id (so the check reads and bundles both), and one wellbore of the spec's own, whose name
-// breaks the pattern and whose well is held nowhere. Nothing is delivered and nothing is written.
+// schema that one refers to by id (so the check reads and bundles both), one wellbore of the spec's own, whose name breaks
+// the pattern, whose well is held nowhere and whose meta is null as a record with none can read, and the example record
+// the data definitions publish for the kind, which the guidance quotes. Nothing is delivered and nothing is written.
 
 const PARTITION = E2E.osdu.OSDU_DATA_PARTITION;
 
@@ -23,6 +24,12 @@ const OWN = `${PARTITION}:master-data--Wellbore:E2E-VALIDATE-1`;
 /** The well the spec's wellbore names, which the stand-in does not hold. */
 const MISSING_WELL = `${PARTITION}:master-data--Well:E2E-NO-SUCH-WELL`;
 
+/** The example record the data definitions publish for the kind, where the guidance finds how OSDU writes each value. */
+const EXAMPLE = {
+  path: "Examples/master-data/Wellbore.1.1.0.json",
+  record: { kind: KIND, data: { FacilityName: "NO 15/9-F-1 A", WellID: "namespace:master-data--Well:NO-15-9-F-1:" } },
+};
+
 /** The wellbore's schema as the Schema service answers it: the facility's by reference, and the well a wellbore names. */
 const WELLBORE_SCHEMA = {
   $schema: "http://json-schema.org/draft-07/schema#",
@@ -31,6 +38,7 @@ const WELLBORE_SCHEMA = {
   required: ["kind", "acl", "legal"],
   properties: {
     kind: { type: "string" },
+    meta: { type: "array", items: { type: "object" } },
     data: {
       allOf: [
         { $ref: FACILITY },
@@ -66,12 +74,15 @@ test.describe.serial("explorer validation", () => {
         expect(held.ok()).toBe(true);
       }
 
+      expect((await standIn.put(`${E2E.osdu.OSDU_URL}/__e2e/examples`, { data: EXAMPLE })).ok()).toBe(true);
+
       const record = await standIn.put(`${E2E.osdu.OSDU_URL}/__e2e/records`, {
         data: {
           id: OWN,
           kind: KIND,
           acl: { viewers: [E2E.osdu.OSDU_ACL_VIEWER], owners: [E2E.osdu.OSDU_ACL_OWNER] },
           legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["NO"], status: "compliant" },
+          meta: null,
           data: { FacilityName: "E2E validate", WellID: `${MISSING_WELL}:` },
           createUser: "e2e-stand-in",
           createTime: "2026-10-04T00:00:00.000Z",
@@ -89,6 +100,7 @@ test.describe.serial("explorer validation", () => {
     try {
       await standIn.delete(`${E2E.osdu.OSDU_URL}/__e2e/records`);
       await standIn.delete(`${E2E.osdu.OSDU_URL}/__e2e/schemas`);
+      await standIn.delete(`${E2E.osdu.OSDU_URL}/__e2e/examples`);
     } finally {
       await standIn.dispose();
     }
@@ -116,6 +128,21 @@ test.describe.serial("explorer validation", () => {
     await expect(verdict.getByTestId("validation-missing-id")).toContainText("E2E-NO-SUCH-WELL");
     await expect(verdict.getByTestId("validation-missing-id")).toContainText("data.WellID");
 
+    // Each problem says what was found, what the schema takes there, and how to fix it, with OSDU's own example quoted.
+    await expect(name.getByTestId("validation-problem-found")).toHaveText("'E2E validate'");
+    await expect(name.getByTestId("validation-problem-expected")).toHaveText("text matching ^NO");
+    await expect(name.getByTestId("validation-problem-advice")).toContainText("Change FacilityName so it matches ^NO . For example: NO 15/9-F-1 A");
+    await expect(problems.filter({ hasText: "data.WellID" }).getByTestId("validation-problem-advice")).toContainText("Deliver the record");
+    await name.getByTestId("validation-problem-details-toggle").click();
+    await expect(name.getByTestId("validation-problem-details-osdu-example")).toHaveText("NO 15/9-F-1 A");
+    await expect(name.getByTestId("validation-problem-details-pattern-0")).toHaveText("^NO ");
+    await expect(verdict.getByTestId("validation-example-source")).toContainText("release v0.30.0");
+
+    // Its meta is null, which is how a stored record with no meta can read: it is read as absent, and the check says so.
+    await verdict.getByTestId("validation-explained").hover();
+    await expect(adminPage.getByRole("tooltip")).toContainText("meta is null");
+    await adminPage.mouse.move(0, 0);
+
     // A problem opens its element as fields, where each field a problem sits in carries a mark that says what is wrong.
     await name.getByTestId("validation-problem-open").click();
     await expect(record.locator('[data-testid="explorer-element-query"][data-path="data.FacilityName"]')).toBeVisible();
@@ -123,6 +150,7 @@ test.describe.serial("explorer validation", () => {
     await expect(marks).toHaveCount(2);
     await marks.first().hover();
     await expect(adminPage.getByRole("tooltip")).toContainText("data.FacilityName (pattern)");
+    await expect(adminPage.getByRole("tooltip")).toContainText("Fix: Change FacilityName so it matches ^NO");
 
     // No template of the kind is saved, so a check against a saved one says so rather than passing the record.
     await record.getByTestId("osdu-outline-validation").click();
@@ -155,6 +183,11 @@ test.describe.serial("explorer validation", () => {
     await expect(rules.first()).toContainText("data.FacilityName");
     await expect(rules.first()).toContainText("pattern");
     await expect(rules.first()).toContainText("3 records");
+    await expect(rules.first().getByTestId("explorer-validate-list-expected")).toContainText("text matching ^NO");
+    await expect(rules.first().getByTestId("explorer-validate-list-advice")).toContainText("Change FacilityName so it matches ^NO . For example: NO 15/9-F-1 A");
+
+    // The spec's own wellbore holds meta null: counted as read as absent, not as a problem.
+    await expect(list.getByTestId("explorer-validate-list-note").filter({ hasText: "meta null or empty" })).toContainText("1 record(s)");
 
     // Each record with its outcome; the spec's own opens in the explorer.
     const records = list.getByTestId("explorer-validate-list-record");

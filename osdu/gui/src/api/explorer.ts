@@ -4,7 +4,7 @@
 
 import { get, post } from "@/api/client";
 import type { DeliveryDimension, DeliveryDimensionAttribute, DeliveryDimensionYaml, DeliveryOsduRead, DimensionBlueprint } from "./delivery";
-import type { ValidationVerdict } from "./validation";
+import { guidanceOf, type ValidationGuidance, type ValidationVerdict } from "./validation";
 
 /** How the explorer reaches a partition: through which flow's connection, or why nothing does. */
 export interface ExplorerConnection {
@@ -160,6 +160,7 @@ function validationOf(answer: ExplorerValidation): ExplorerValidation {
     verdict: answer.verdict ?? null,
     problem: answer.problem ?? null,
     savedVersions: answer.savedVersions ?? [],
+    guidance: guidanceOf(answer.guidance),
   };
 }
 
@@ -168,7 +169,7 @@ function listValidationOf(answer: ExplorerListValidation): ExplorerListValidatio
     ...answer,
     query: answer.query ?? null,
     notFound: answer.notFound ?? [],
-    rules: answer.rules ?? [],
+    rules: (answer.rules ?? []).map((rule) => ({ ...rule, expected: rule.expected ?? null, advice: rule.advice ?? null })),
     records: (answer.records ?? []).map((record) => ({ ...record, kind: record.kind ?? null, first: record.first ?? null })),
     schemas: answer.schemas ?? [],
     unavailable: answer.unavailable ?? [],
@@ -210,6 +211,8 @@ export interface ExplorerValidation {
   problem: string | null;
   /** The template versions saved for the kind, newest first, to check against instead. */
   savedVersions: string[];
+  /** What each finding of the verdict comes to for the person fixing it. */
+  guidance: ValidationGuidance | null;
 }
 
 export interface ExplorerValidateListRequest {
@@ -229,6 +232,10 @@ export interface ExplorerRuleCount {
   examplePath: string;
   exampleMessage: string;
   exampleValue: string;
+  /** What the schema expects where the rule is, in one line. */
+  expected: string | null;
+  /** How to make the example meet the rule. */
+  advice: string | null;
 }
 
 export interface ExplorerRecordVerdict {

@@ -322,6 +322,80 @@ public sealed class OsduDataDefinitionsTests : IDisposable
         Assert.Contains("leads outside the data definitions", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task An_example_record_is_read_from_the_newest_release_once_and_kept_beside_it_for_the_next_instance()
+    {
+        var repository = new Repository();
+        repository.Examples["Examples/master-data/Wellbore.1.3.0.json"] = """
+            { "kind": "osdu:wks:master-data--Wellbore:1.3.0", "data": { "FacilityName": "Example FacilityName" } }
+            """;
+        using var http = repository.Client();
+        var definitions = Definitions(http, Timeout.InfiniteTimeSpan);
+
+        var example = await definitions.ExampleAsync(WellboreKind);
+
+        Assert.NotNull(example);
+        Assert.Equal((WellboreKind, "v0.30.0", "Examples/master-data/Wellbore.1.3.0.json"), (example.Kind, example.Release, example.Path));
+        Assert.Equal("https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Examples/master-data/Wellbore.1.3.0.json", example.WebUrl.AbsoluteUri);
+        Assert.Equal("Example FacilityName", example.Record["data"]!["FacilityName"]!.GetValue<string>());
+
+        // The file is named whole in one path segment, its slashes escaped, at the release's commit, as GitLab's API takes it.
+        Assert.Equal([("Examples%2Fmaster-data%2FWellbore.1.3.0.json", ReleaseCommit)], repository.ExampleReads);
+
+        // Asked again, the instance answers from what it read; a new instance over the same copy answers from disk.
+        Assert.NotNull(await definitions.ExampleAsync(WellboreKind));
+        repository.ExamplesFail = true;
+        var restarted = Definitions(http, Timeout.InfiniteTimeSpan);
+        Assert.Equal("Example FacilityName", (await restarted.ExampleAsync(WellboreKind))!.Record["data"]!["FacilityName"]!.GetValue<string>());
+        Assert.Single(repository.ExampleReads);
+    }
+
+    [Fact]
+    public async Task A_kind_the_release_publishes_no_example_of_has_none_and_that_is_remembered_on_disk()
+    {
+        var repository = new Repository();
+        using var http = repository.Client();
+        var definitions = Definitions(http, Timeout.InfiniteTimeSpan);
+
+        Assert.Null(await definitions.ExampleAsync("osdu:wks:master-data--Well:1.2.0"));
+        Assert.Single(repository.ExampleReads);
+
+        // Neither this instance nor the next asks the repository again for a file it said it does not hold.
+        Assert.Null(await definitions.ExampleAsync("osdu:wks:master-data--Well:1.2.0"));
+        Assert.Null(await Definitions(http, Timeout.InfiniteTimeSpan).ExampleAsync("osdu:wks:master-data--Well:1.2.0"));
+        Assert.Single(repository.ExampleReads);
+    }
+
+    [Fact]
+    public async Task A_repository_that_cannot_give_an_example_throws_and_keeps_nothing_so_the_next_ask_tries_again()
+    {
+        var repository = new Repository { ExamplesFail = true };
+        repository.Examples["Examples/master-data/Wellbore.1.3.0.json"] = """{ "kind": "osdu:wks:master-data--Wellbore:1.3.0" }""";
+        using var http = repository.Client();
+        var definitions = Definitions(http, Timeout.InfiniteTimeSpan);
+
+        var failure = await Assert.ThrowsAsync<DataDefinitionsException>(() => definitions.ExampleAsync(WellboreKind));
+        Assert.False(failure.NotFound);
+        Assert.Contains("answered 503", failure.Message, StringComparison.Ordinal);
+
+        repository.ExamplesFail = false;
+        Assert.NotNull(await definitions.ExampleAsync(WellboreKind));
+    }
+
+    [Theory]
+    [InlineData("osdu:wks:work-product-component--WellLog:1.4.0", "Examples/work-product-component/WellLog.1.4.0.json")]
+    [InlineData("osdu:wks:reference-data--UnitOfMeasure:1.0.0", "Examples/reference-data/UnitOfMeasure.1.0.0.json")]
+    [InlineData("acme:wks:master-data--Wellbore:1.3.0", null)]
+    [InlineData("osdu:wks:Wellbore:1.3.0", null)]
+    [InlineData("osdu:wks:master-data--:1.3.0", null)]
+    [InlineData("osdu:wks:master-data--../escape:1.3.0", null)]
+    [InlineData("osdu:wks:master-data--Well bore:1.3.0", null)]
+    [InlineData("osdu:wks:master-data--Wellbore:1.x.0", null)]
+    [InlineData("osdu:wks:master-data--Wellbore", null)]
+    [InlineData("osdu:wks:master-data--Wellbore:1.3.0:extra", null)]
+    public void Only_an_OSDU_kind_whose_parts_are_plain_names_an_example_file(string kind, string? path)
+        => Assert.Equal(path, OsduDataDefinitions.ExamplePath(kind));
+
     private OsduDataDefinitions Definitions(HttpClient http, TimeSpan freshness, TimeProvider? time = null, string? cache = null)
         => new(() => http, OsduDataDefinitions.DefaultApiUrl, OsduDataDefinitions.DefaultWebUrl, cache ?? _cache, freshness, TimeSpan.FromMinutes(1), time ?? new TestClock());
 
@@ -337,6 +411,14 @@ public sealed class OsduDataDefinitionsTests : IDisposable
         public int TagPages { get; private set; }
 
         public List<string> Archives { get; } = [];
+
+        /// <summary>The example records the repository publishes, by their path, as its Examples folder holds them.</summary>
+        public Dictionary<string, string> Examples { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Each example file asked for: its path as the request named it, still escaped, and the commit it was asked at.</summary>
+        public List<(string Path, string Ref)> ExampleReads { get; } = [];
+
+        public bool ExamplesFail { get; set; }
 
         public HttpClient Client() => new(new Handler(this), disposeHandler: true);
 
@@ -369,6 +451,23 @@ public sealed class OsduDataDefinitionsTests : IDisposable
                     [ { "name": "v0.30.0", "commit": { "id": "{{ReleaseCommit}}", "committed_date": "2026-07-17T14:55:57.000+08:00" } },
                       { "name": "v0.28.3.1", "commit": { "id": "{{OlderCommit}}" } } ]
                     """);
+            }
+
+            const string Files = "/repository/files/";
+            var files = path.IndexOf(Files, StringComparison.Ordinal);
+            if (files >= 0 && path.EndsWith("/raw", StringComparison.Ordinal))
+            {
+                if (ExamplesFail)
+                {
+                    return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("""{ "message": "maintenance" }""") };
+                }
+
+                var escaped = path[(files + Files.Length)..^"/raw".Length];
+                var reference = query.TrimStart('?').Split('&').Select(part => part.Split('=', 2)).Where(part => part[0] == "ref").Select(part => part[1]).Single();
+                ExampleReads.Add((escaped, reference));
+                return reference == ReleaseCommit && Examples.TryGetValue(Uri.UnescapeDataString(escaped), out var json)
+                    ? Json(json)
+                    : new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("""{ "message": "404 File Not Found" }""") };
             }
 
             if (path.EndsWith("/repository/archive.tar.gz", StringComparison.Ordinal) && query.Contains("path=Generated", StringComparison.Ordinal))

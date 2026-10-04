@@ -41,6 +41,19 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   how many records break each and an example, and each record with its first problem. `POST
   /delivery/explorer/validate` and `.../validate-list` answer it ([osdu/docs/explorer.md](osdu/docs/explorer.md),
   Validate).
+- **Every problem a check finds says what was found, what the schema takes there and how to fix it.** One module turns a
+  verdict into guidance (`osdu/src/SqlFlow.Delivery/Validation/ValidationGuide.cs`): the value found (or `absent`), one line
+  saying what a value there is, the fix for each rule (leave an optional property out rather than null, the values an
+  enumeration allows, the form of a date, the id of a record rather than its name, where a property of one's own goes,
+  the record to deliver first), and on request what the schema says of the place in its own words: title, description
+  (the words written beside a reference first, as OSDU documents a property), patterns, allowed values, bounds, entity
+  types, items, properties and examples. The schema's own words are compiled with its rules and kept within bounds. Each
+  place also quotes the value OSDU's example record holds there: the record the OSDU data definitions publish for the kind
+  (`Examples/<group>/<entity>.<version>.json`), read from the newest release the first time it is quoted and kept beside
+  the release in the Templates page's local copy, a kind with none remembered too; a repository that cannot be reached
+  is said, and the guidance quotes the schema alone. The explorer shows it under each problem, in each field mark's
+  tooltip and on each rule Validate these records counts; its answers carry it as `guidance` and each rule's `expected`
+  and `advice` ([osdu/docs/explorer.md](osdu/docs/explorer.md), Guidance).
 
 - **Blocked records are grouped by the issue that keeps them blocked.** A flow's page has an **Issues** tab: a
   million held or failed records read as the handful of issues they share, each its error with the parts each record
@@ -920,6 +933,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- A record the explorer checks, as storage holds it, no longer breaks its schema for holding `meta`, `ancestry` or `tags`
+  null or empty, which is how a record with none can read: the block is read as absent, and the verdict notes it. The
+  `conforms` assertion reads a stored record the same way; a document the gate checks before sending is still held to the
+  schema whole. A check's messages say "the schema" rather than "the template", whichever schema the record was checked
+  against. The e2e suite's control plane reads the OSDU data definitions from the stand-in and no longer from the public
+  repository at start.
 - A value check no longer passes over a `null` inside a value it checks: `null` breaks a property whose schema names
   types without `null`. A schema reference the template's bundle does not hold no longer fails a value check; the part
   it describes is reported as not checked. Two `allOf` branches that both constrain a property (two patterns, two bounds)

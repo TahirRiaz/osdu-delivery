@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 // Run through `npm run e2e`, which passes `--tsconfig tsconfig.node.json`. Without it Playwright applies tsconfig.json,
@@ -107,6 +108,14 @@ export const E2E = {
     OSDU_LEGAL_TAG: "dev-reference-data-default",
     SQLFLOW_DELIVERY_ALLOW_LOOPBACK: "true",
   },
+  // The OSDU data definitions the control plane reads (the Templates page, and the example records a check's guidance
+  // quotes) are the stand-in's as well, kept in a local copy of the suite's own that the global setup clears, so no run
+  // reaches the public repository and no run reads what an earlier one kept.
+  dataDefinitions: {
+    apiUrl: `http://127.0.0.1:${osduPort}/__e2e/data-definitions/`,
+    webUrl: `http://127.0.0.1:${osduPort}/__e2e/data-definitions-web/`,
+    cacheDirectory: resolve(import.meta.dirname, "e2e", ".fixtures", "data-definitions"),
+  },
 } as const;
 
 export default defineConfig({
@@ -173,6 +182,11 @@ export default defineConfig({
         OSDU_DATA_DB: E2E.dataDb,
         // Where the sample flows deliver: the stand-in platform, whose search a plan asks for the wellbores it renders.
         ...E2E.osdu,
+        // The data definitions the stand-in publishes, never the public repository, and nothing read from it at start.
+        Osdu__SchemaRepository__ApiUrl: E2E.dataDefinitions.apiUrl,
+        Osdu__SchemaRepository__WebUrl: E2E.dataDefinitions.webUrl,
+        Osdu__SchemaRepository__CacheDirectory: E2E.dataDefinitions.cacheDirectory,
+        Osdu__SchemaRepository__WarmOnStart: "false",
         ControlPlane__Jwt__SigningKey: "e2e-signing-key-0123456789abcdef-0123456789abcdef-PADDING",
         ControlPlane__Jwt__BootstrapSecret: E2E.bootstrapSecret,
         // The suite provisions a fresh, dedicated test catalog, so it opts into database creation explicitly.

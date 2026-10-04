@@ -971,7 +971,7 @@ internal sealed class ConformsEvaluator(int index, ConformsAssertion assertion, 
 
         // The record is checked whole by the check every validation shares; a part it could not check is not a failure here,
         // as an assertion states what the record breaks, not what could not be looked at.
-        var findings = RecordValidator.Check(obj, SchemaRules.Of(schema));
+        var findings = RecordValidator.Check(obj, SchemaRules.Of(schema), form: RecordForm.Stored);
         var problems = findings.Problems.ToList();
         var count = findings.ProblemCount;
         if (obj["kind"] is JsonValue kind && kind.TryGetValue<string>(out var text) && !string.Equals(text, scope.Test.Kind, StringComparison.OrdinalIgnoreCase))

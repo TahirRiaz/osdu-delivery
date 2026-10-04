@@ -57,6 +57,134 @@ export interface ValidationVerdict {
   shortened?: boolean;
 }
 
+/**
+ * What the schema expects of the value at one place of a record (osdu/docs/validation-plan.md, Guidance): its words, its
+ * rules, its examples, and the value OSDU's own example record holds there.
+ */
+export interface ValueExpectation {
+  /** The place, as a finding names it, with `[]` at the end for each item of the list there. */
+  at: string;
+  title: string | null;
+  description: string | null;
+  /** One line saying what a value here is. */
+  summary: string;
+  /** The JSON types a value may be, `null` among them when the schema allows it. */
+  types: string[];
+  /** Whether the object holding the value requires it. */
+  required: boolean;
+  patterns: string[];
+  /** The values allowed, text unquoted; `allowedCount` says how many there are in all. */
+  allowed: string[];
+  allowedCount: number;
+  formats: string[];
+  minLength: number | null;
+  maxLength: number | null;
+  minItems: number | null;
+  maxItems: number | null;
+  minimum: number | null;
+  maximum: number | null;
+  exclusiveMinimum: number | null;
+  exclusiveMaximum: number | null;
+  multipleOf: string[];
+  uniqueItems: boolean;
+  /** The entity types an OSDU id written here may be of. */
+  entityTypes: string[];
+  /** For an object: the properties the schema names (`propertyCount` in all), and those it requires. */
+  properties: string[];
+  propertyCount: number;
+  requiredProperties: string[];
+  onlyNamedProperties: boolean;
+  /** For a list: what each item is, in words. */
+  items: string | null;
+  /** How many forms a oneOf or anyOf here allows. */
+  forms: number;
+  /** The examples the schema gives. */
+  examples: string[];
+  /** The value the OSDU data definitions' example record holds here. */
+  osduExample: string | null;
+}
+
+/** What one finding comes to for the person fixing it. */
+export interface FindingGuide {
+  path: string;
+  rule: string;
+  /** The key of what the schema expects there, in `expectations`; null when the schema describes nothing there. */
+  expected: string | null;
+  /** The value found, in words: `null`, `absent`, `'NO 33/9'`, `a list of 3 items`. */
+  found: string;
+  /** How to make the value meet the schema. */
+  advice: string | null;
+}
+
+/** What a verdict comes to for the person fixing the record, one guide per finding in the verdict's order. */
+export interface ValidationGuidance {
+  expectations: Record<string, ValueExpectation>;
+  problems: FindingGuide[];
+  unverified: FindingGuide[];
+  /** The OSDU data definitions' example record the expectations quote. */
+  example: { release: string; path: string; webUrl: string } | null;
+  /** Why no example of the data definitions is quoted, when one was looked for. */
+  exampleNote: string | null;
+}
+
+/** A guidance as read from an answer, every part a task's answer may leave out read as null or empty. */
+export function guidanceOf(raw: Partial<ValidationGuidance> | null | undefined): ValidationGuidance | null {
+  if (raw === null || raw === undefined || typeof raw !== "object") {
+    return null;
+  }
+
+  const guide = (g: Partial<FindingGuide>): FindingGuide => ({
+    path: g.path ?? "",
+    rule: g.rule ?? "",
+    expected: g.expected ?? null,
+    found: g.found ?? "",
+    advice: g.advice ?? null,
+  });
+  const expectations: Record<string, ValueExpectation> = {};
+  for (const [key, e] of Object.entries(raw.expectations ?? {})) {
+    const value = e as Partial<ValueExpectation>;
+    expectations[key] = {
+      at: value.at ?? key,
+      title: value.title ?? null,
+      description: value.description ?? null,
+      summary: value.summary ?? "",
+      types: value.types ?? [],
+      required: value.required ?? false,
+      patterns: value.patterns ?? [],
+      allowed: value.allowed ?? [],
+      allowedCount: value.allowedCount ?? 0,
+      formats: value.formats ?? [],
+      minLength: value.minLength ?? null,
+      maxLength: value.maxLength ?? null,
+      minItems: value.minItems ?? null,
+      maxItems: value.maxItems ?? null,
+      minimum: value.minimum ?? null,
+      maximum: value.maximum ?? null,
+      exclusiveMinimum: value.exclusiveMinimum ?? null,
+      exclusiveMaximum: value.exclusiveMaximum ?? null,
+      multipleOf: value.multipleOf ?? [],
+      uniqueItems: value.uniqueItems ?? false,
+      entityTypes: value.entityTypes ?? [],
+      properties: value.properties ?? [],
+      propertyCount: value.propertyCount ?? 0,
+      requiredProperties: value.requiredProperties ?? [],
+      onlyNamedProperties: value.onlyNamedProperties ?? false,
+      items: value.items ?? null,
+      forms: value.forms ?? 0,
+      examples: value.examples ?? [],
+      osduExample: value.osduExample ?? null,
+    };
+  }
+
+  return {
+    expectations,
+    problems: (raw.problems ?? []).map(guide),
+    unverified: (raw.unverified ?? []).map(guide),
+    example: raw.example ?? null,
+    exampleNote: raw.exampleNote ?? null,
+  };
+}
+
 /** The verdict an attempt's result carries, or null for an attempt that carries none. */
 export function verdictOf(resultJson: string | null | undefined): ValidationVerdict | null {
   if (resultJson === null || resultJson === undefined || resultJson === "") {

@@ -1,7 +1,21 @@
 using System.Globalization;
 using System.Text.Json.Nodes;
+using SqlFlow.Delivery.Engine.Protocols;
 
 namespace SqlFlow.Delivery.Validation;
+
+/// <summary>Which form of a record a check reads: a document as it will be sent, or a record as OSDU's storage holds it.</summary>
+public enum RecordForm
+{
+    /// <summary>A document the delivery system wrote and will send: every value in it is the system's own, and judged.</summary>
+    Sent,
+
+    /// <summary>
+    /// A record read back from storage: its <c>ancestry</c>, <c>meta</c> or <c>tags</c> held null or empty is how a record
+    /// with none can come back (<see cref="OwnedContent.OptionalBlocks"/>), and is read as absent rather than judged.
+    /// </summary>
+    Stored,
+}
 
 /// <summary>
 /// The bounds a check of a whole record keeps to, so a record of any size is checked in bounded time and answered in a
@@ -59,6 +73,12 @@ public sealed record RecordFindings
 
     /// <summary>How many values were walked.</summary>
     public long Values { get; init; }
+
+    /// <summary>What the check did with the record that a reader should know: a block of a stored record read as absent.</summary>
+    public IReadOnlyList<string> Notes { get; init; } = [];
+
+    /// <summary>The blocks of a stored record held null or empty and read as absent (<see cref="RecordForm.Stored"/>).</summary>
+    public IReadOnlyList<string> ReadAsAbsent { get; init; } = [];
 }
 
 /// <summary>
@@ -78,10 +98,13 @@ public static class RecordValidator
     /// <param name="rules">The rules of the record's template.</param>
     /// <param name="routeFilled">The property paths (<c>data.Datasets</c>) the route fills when it sends the record.</param>
     /// <param name="limits">The bounds of the check; <see cref="ValidationLimits.Default"/> when null.</param>
-    public static RecordFindings Check(JsonNode? record, SchemaRules rules, IReadOnlySet<string>? routeFilled = null, ValidationLimits? limits = null)
+    /// <param name="form">Whether the record is a document to send (the default) or a record storage holds.</param>
+    public static RecordFindings Check(
+        JsonNode? record, SchemaRules rules, IReadOnlySet<string>? routeFilled = null, ValidationLimits? limits = null, RecordForm form = RecordForm.Sent)
     {
         ArgumentNullException.ThrowIfNull(rules);
         limits ??= ValidationLimits.Default;
+        var (absent, notes) = form == RecordForm.Stored ? EmptyBlocks(record) : (new HashSet<string>(StringComparer.Ordinal), []);
         var walk = new WalkLimits
         {
             MaxListed = limits.MaxProblemsListed,
@@ -92,6 +115,7 @@ public static class RecordValidator
             Budget = limits.Budget,
             MaxReferences = limits.MaxReferences,
             RouteFilled = routeFilled ?? new HashSet<string>(StringComparer.Ordinal),
+            Absent = absent,
         };
 
         try
@@ -107,6 +131,8 @@ public static class RecordValidator
                 ReferencesCut = found.ReferencesCut,
                 Rules = found.Rules,
                 Values = found.Values,
+                Notes = notes,
+                ReadAsAbsent = [.. OwnedContent.OptionalBlocks.Where(absent.Contains)],
             };
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -120,7 +146,32 @@ public static class RecordValidator
                 Unverified = [new SchemaFinding(string.Empty, string.Empty, "error", why, string.Empty)],
                 UnverifiedCount = 1,
                 References = [],
+                Notes = notes,
+                ReadAsAbsent = [.. OwnedContent.OptionalBlocks.Where(absent.Contains)],
             };
         }
+    }
+
+    /// <summary>The optional blocks a stored record holds empty, read as absent, and a note naming each.</summary>
+    private static (HashSet<string> Absent, List<string> Notes) EmptyBlocks(JsonNode? record)
+    {
+        var absent = new HashSet<string>(StringComparer.Ordinal);
+        var notes = new List<string>();
+        if (record is not JsonObject obj)
+        {
+            return (absent, notes);
+        }
+
+        foreach (var name in OwnedContent.OptionalBlocks)
+        {
+            if (obj.TryGetPropertyValue(name, out var block) && OwnedContent.IsEmpty(block))
+            {
+                absent.Add(name);
+                var held = block is null ? "null" : block is JsonArray ? "an empty list" : "empty";
+                notes.Add($"{name} is {held}, which is how a stored record with no {name} can read, so it is read as absent");
+            }
+        }
+
+        return (absent, notes);
     }
 }

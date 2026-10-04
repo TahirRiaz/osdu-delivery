@@ -52,8 +52,42 @@ public sealed class ExplorerValidationTests : IDisposable
             => throw new NotSupportedException("The explorer only reads saved templates.");
     }
 
-    private ExplorerChecks Checks(ITemplateStore? templates = null)
-        => new(_client, new OsduRecordProtocol(_client, new ProtocolOptions(), _clock), OsduRecordProtocol.DefaultVerifyBatchPath, templates, _clock);
+    /// <summary>The data definitions' example records, as a host that keeps a copy of them answers; each kind asked is noted.</summary>
+    private sealed class Examples(Func<string, OfficialExample?> answer) : IOfficialExamples
+    {
+        public List<string> Asked { get; } = [];
+
+        public Task<OfficialExample?> ExampleAsync(string kind, CancellationToken ct = default)
+        {
+            Asked.Add(kind);
+            return Task.FromResult(answer(kind));
+        }
+    }
+
+    /// <summary>The fixture's kind as one of OSDU's own, whose example the data definitions publish.</summary>
+    private const string OsduKind = "osdu:wks:master-data--Thing:1.0.0";
+
+    private static OfficialExample ExampleOf(string kind) => new(
+        kind,
+        "v0.30.0",
+        "Examples/master-data/Thing.1.0.0.json",
+        new Uri("https://community.opengroup.org/osdu/data/data-definitions/-/blob/v0.30.0/Examples/master-data/Thing.1.0.0.json"),
+        JsonNode.Parse("""{ "kind": "osdu:wks:master-data--Thing:1.0.0", "data": { "Status": "Active", "Code": "EX-1" } }""")!.AsObject());
+
+    private ExplorerChecks Checks(ITemplateStore? templates = null, IOfficialExamples? examples = null)
+        => new(_client, new OsduRecordProtocol(_client, new ProtocolOptions(), _clock), OsduRecordProtocol.DefaultVerifyBatchPath, templates, _clock, examples: examples);
+
+    /// <summary>The fixture's record stored under OSDU's own kind, with its schema in the Schema service under that kind.</summary>
+    private string StoredAsOsdu(Action<JsonObject> change)
+    {
+        var id = Stored(r =>
+        {
+            r["kind"] = OsduKind;
+            change(r);
+        });
+        _platform.Schemas[OsduKind] = JsonNode.Parse(SchemaJson)!.AsObject();
+        return id;
+    }
 
     private SchemaServiceReader Reader() => new(_client, _clock);
 
@@ -328,6 +362,89 @@ public sealed class ExplorerValidationTests : IDisposable
         Assert.Equal(2, list.Asked);
         Assert.Equal(1, list.Read);
         Assert.Single(list.NotFound);
+    }
+
+    [Fact]
+    public async Task Each_problem_comes_with_what_was_found_what_the_schema_takes_there_and_how_to_fix_it_quoting_OSDUs_example()
+    {
+        var id = StoredAsOsdu(r => { DataOf(r)["Status"] = "Planned"; DataOf(r)["Code"] = "x"; });
+        var examples = new Examples(ExampleOf);
+
+        var answer = await Checks(examples: examples).RecordAsync(id, null, ExplorerSchemaSource.Osdu, null);
+
+        var verdict = VerdictOf(answer);
+        var guidance = answer.Guidance!;
+        Assert.Equal(verdict.Problems.Select(p => (p.Path, p.Rule)), guidance.Problems.Select(g => (g.Path, g.Rule)));
+        var status = Assert.Single(guidance.Problems, g => g.Path == "data.Status");
+        Assert.Equal("'Planned'", status.Found);
+        Assert.Equal("Use one of the values the schema allows: Active, Retired.", status.Advice);
+        var expected = guidance.Expectations[status.Expected!];
+        Assert.Equal("one of 2 values", expected.Summary);
+        Assert.Equal("Active", expected.OsduExample);
+        var code = Assert.Single(guidance.Problems, g => g.Path == "data.Code");
+        Assert.Equal("Change Code so it matches ^[A-Z]{2}-[0-9]+$. For example: EX-1", code.Advice);
+        Assert.Equal("Examples/master-data/Thing.1.0.0.json", guidance.Example!.Path);
+        Assert.Null(guidance.ExampleNote);
+        Assert.Equal([OsduKind], examples.Asked);
+    }
+
+    [Fact]
+    public async Task A_valid_record_asks_for_no_example_and_a_kind_not_of_OSDU_has_none_to_look_for()
+    {
+        var examples = new Examples(ExampleOf);
+        var valid = await Checks(examples: examples).RecordAsync(StoredAsOsdu(_ => { }), null, ExplorerSchemaSource.Osdu, null);
+        Assert.Equal(ValidationOutcome.Valid, VerdictOf(valid).Outcome);
+        Assert.Empty(valid.Guidance!.Problems);
+        Assert.Empty(examples.Asked);
+
+        // The fixture's own kind is not one of OSDU's: its problems are guided by the schema alone, and nothing is said of an example.
+        var other = await Checks(examples: examples).RecordAsync(Stored(r => DataOf(r)["Status"] = "Planned"), null, ExplorerSchemaSource.Osdu, null);
+        Assert.NotNull(Assert.Single(other.Guidance!.Problems, g => g.Rule == "enum").Advice);
+        Assert.Null(other.Guidance.Example);
+        Assert.Null(other.Guidance.ExampleNote);
+        Assert.Empty(examples.Asked);
+    }
+
+    [Fact]
+    public async Task An_example_the_data_definitions_do_not_publish_or_cannot_give_is_said_and_the_problems_are_guided_all_the_same()
+    {
+        var none = await Checks(examples: new Examples(_ => null)).RecordAsync(StoredAsOsdu(r => DataOf(r)["Status"] = "Planned"), null, ExplorerSchemaSource.Osdu, null);
+        Assert.Equal($"The OSDU data definitions publish no example record of {OsduKind}.", none.Guidance!.ExampleNote);
+        Assert.NotNull(Assert.Single(none.Guidance.Problems, g => g.Rule == "enum").Advice);
+
+        var unreachable = new Examples(_ => throw new DataDefinitionsException("The OSDU data definitions at https://example.org/ did not answer in time for Examples/x.", notFound: false));
+        var failed = await Checks(examples: unreachable).RecordAsync(StoredAsOsdu(r => DataOf(r)["Status"] = "Planned"), null, ExplorerSchemaSource.Osdu, null);
+        Assert.StartsWith($"OSDU's example record of {OsduKind} could not be read: The OSDU data definitions at https://example.org/ did not answer in time", failed.Guidance!.ExampleNote, StringComparison.Ordinal);
+        Assert.Null(failed.Guidance.Example);
+        Assert.NotNull(Assert.Single(failed.Guidance.Problems, g => g.Rule == "enum").Advice);
+    }
+
+    [Fact]
+    public async Task A_stored_record_holding_meta_null_has_no_meta_rather_than_a_problem_and_the_check_says_so()
+    {
+        var id = Stored(r => r["meta"] = null);
+
+        var answer = await Checks().RecordAsync(id, null, ExplorerSchemaSource.Osdu, null);
+
+        var verdict = VerdictOf(answer);
+        Assert.Equal(ValidationOutcome.Valid, verdict.Outcome);
+        Assert.Contains(verdict.Notes, n => n.StartsWith("meta is null", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task The_rules_a_list_breaks_say_what_the_schema_takes_and_how_to_fix_their_example_and_empty_blocks_are_counted()
+    {
+        Stored(r => r["meta"] = null);
+        _platform.Put(Record(r => { r["id"] = "dev:master-data--Thing:T-2"; DataOf(r)["Status"] = "Planned"; }));
+        _platform.Search = (_, _) => ["dev:master-data--Thing:T-1", "dev:master-data--Thing:T-2"];
+
+        var list = await Checks().ListAsync(new RecordExplorer(_client, "dev", NullLogger.Instance), new ExplorerSearch(), ExplorerChecks.MaxRecords, ExplorerSchemaSource.Osdu);
+
+        var status = Assert.Single(list.Rules);
+        Assert.Equal("one of 2 values", status.Expected);
+        Assert.Equal("Use one of the values the schema allows: Active, Retired.", status.Advice);
+        Assert.Contains("1 record(s) hold meta null or empty, which is how a stored record with no meta can read, so it was read as absent.", list.Notes);
+        Assert.Equal((1L, 1L), (list.Valid, list.Invalid));
     }
 
     public void Dispose()

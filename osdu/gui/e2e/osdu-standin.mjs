@@ -11,8 +11,10 @@
 // start of an id or the records that name one, and the dimension builder's: the records holding any of several values,
 // every record but those, and a property's values grouped commonest first. Storage's batch read answers for the same
 // records, as the explorer's checks read them, and the Schema service answers for the schemas a spec holds through
-// /__e2e/schemas, as a check of records against their kind's schema reads them. Everything else answers 404, so a spec
-// that tried to send a record would fail loudly rather than reach a real OSDU.
+// /__e2e/schemas, as a check of records against their kind's schema reads them. The OSDU data definitions are here too,
+// under /__e2e/data-definitions: one release tag, and the example records a spec holds through /__e2e/examples, which a
+// check's guidance quotes. Everything else answers 404, so a spec that tried to send a record would fail loudly rather
+// than reach a real OSDU.
 //
 // Started by playwright.config.ts beside the control plane, on SQLFLOW_E2E_OSDU_PORT (5301 by default).
 import { createServer } from "node:http";
@@ -321,6 +323,21 @@ const SCHEMA_READ = /^\/api\/schema-service\/v1\/schema\/([^/]+)$/;
 /** The schemas a spec asked the Schema service to hold, by id. */
 const schemas = new Map();
 
+/** Where the control plane reads the OSDU data definitions here: the GitLab API of the repository, as its paths go. */
+const DATA_DEFINITIONS = "/__e2e/data-definitions/";
+
+/**
+ * The one release the stand-in's data definitions have. Its commit is new each time the stand-in starts, so a control
+ * plane's local copy never holds an example an earlier run held.
+ */
+const RELEASE = {
+  name: "v0.30.0",
+  commit: [...crypto.getRandomValues(new Uint8Array(20))].map((b) => b.toString(16).padStart(2, "0")).join(""),
+};
+
+/** The example records a spec asked the data definitions to publish, by their path (Examples/<group>/<entity>.<version>.json). */
+const examples = new Map();
+
 /**
  * Storage's batch read (POST /api/storage/v2/query/records): the records it holds among the ids asked, at their latest,
  * and the ids it holds nothing under named under invalidRecords, as storage answers.
@@ -408,6 +425,51 @@ const server = createServer((request, response) => {
         .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the schema: ${error instanceof Error ? error.message : String(error)}` }));
       return;
     }
+  }
+
+  if (path === "/__e2e/examples") {
+    if (request.method === "DELETE") {
+      examples.clear();
+      send(response, 200, { held: 0 });
+      return;
+    }
+
+    if (request.method === "PUT") {
+      read(request)
+        .then((text) => {
+          const body = JSON.parse(text);
+          if (body === null || typeof body !== "object" || typeof body.path !== "string" || !body.path.startsWith("Examples/")
+            || body.record === null || typeof body.record !== "object" || Array.isArray(body.record)) {
+            send(response, 400, { message: "An example to publish is a JSON object with its path under Examples/ and the record as an object." });
+            return;
+          }
+
+          examples.set(body.path, body.record);
+          send(response, 200, { path: body.path, held: examples.size });
+        })
+        .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the example: ${error instanceof Error ? error.message : String(error)}` }));
+      return;
+    }
+  }
+
+  if (request.method === "GET" && path.startsWith(DATA_DEFINITIONS)) {
+    const asked = path.slice(DATA_DEFINITIONS.length);
+    if (asked === "repository/tags") {
+      // One page: no X-Next-Page, so the list ends here.
+      send(response, 200, [{ name: RELEASE.name, commit: { id: RELEASE.commit, committed_date: "2026-07-17T14:55:57.000+08:00" } }]);
+      return;
+    }
+
+    const file = /^repository\/files\/([^/]+)\/raw$/.exec(asked);
+    const ref = new URL(request.url ?? "/", "http://stand-in").searchParams.get("ref");
+    const example = file === null || ref !== RELEASE.commit ? undefined : examples.get(decodeId(file[1]) ?? "");
+    if (example !== undefined) {
+      send(response, 200, example);
+    } else {
+      send(response, 404, { message: "404 File Not Found" });
+    }
+
+    return;
   }
 
   const schemaRead = request.method === "GET" ? SCHEMA_READ.exec(path) : null;

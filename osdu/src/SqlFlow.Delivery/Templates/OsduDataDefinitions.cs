@@ -11,6 +11,7 @@ using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Snapshots;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Templates;
 
@@ -95,7 +96,7 @@ public sealed class DataDefinitionsException : DeliveryException
 /// a kind's schema is the file under <c>Generated</c> that declares the kind, bundled with every file it refers to exactly
 /// as a local checkout bundles (<see cref="TemplateSources.FromDirectoryAsync"/>).
 /// </summary>
-public sealed class OsduDataDefinitions
+public sealed class OsduDataDefinitions : IOfficialExamples
 {
     /// <summary>The named HTTP client a host registers for the repository.</summary>
     public const string HttpClientName = "osdu-data-definitions";
@@ -105,6 +106,9 @@ public sealed class OsduDataDefinitions
 
     /// <summary>The release's index: every kind it publishes, with its status.</summary>
     public const string IndexFile = "SchemaStatus.json";
+
+    /// <summary>The folder of the repository that holds an example record of each kind version, laid out by group.</summary>
+    public const string ExamplesRoot = "Examples";
 
     /// <summary>The largest page of the tag list read.</summary>
     private const int MaxListBytes = 4 * 1024 * 1024;
@@ -123,6 +127,11 @@ public sealed class OsduDataDefinitions
 
     private const int MaxCachedFiles = 8192;
 
+    private const int MaxCachedExamples = 1024;
+
+    /// <summary>How long reading one example record may take: it is read while a person waits for a check.</summary>
+    private static readonly TimeSpan ExampleTimeout = TimeSpan.FromSeconds(20);
+
     /// <summary>How long one page of the tag list may take.</summary>
     private static readonly TimeSpan ListTimeout = TimeSpan.FromMinutes(2);
 
@@ -140,6 +149,7 @@ public sealed class OsduDataDefinitions
     private readonly ConcurrentDictionary<string, ReleaseSchemas> _indexes = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, string> _files = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, Lazy<Task>> _downloads = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, OfficialExample?> _examples = new(StringComparer.Ordinal);
     private ReleaseList? _releases;
 
     /// <param name="client">The HTTP client for a request; the caller owns its lifetime.</param>
@@ -411,6 +421,142 @@ public sealed class OsduDataDefinitions
         var text = await ReadFileAsync(read.Index.Release, path, ct).ConfigureAwait(false);
         var status = read.Index.Schemas.FirstOrDefault(s => string.Equals(s.Kind, wanted, StringComparison.Ordinal))?.Status;
         return new DataDefinitionsPublishedFile(read.Index.Release, path, status, text);
+    }
+
+    /// <summary>
+    /// The example record the newest release publishes for <paramref name="kind"/> (<see cref="ExamplesRoot"/>, as
+    /// <c>Examples/work-product-component/WellLog.1.4.0.json</c>), or null when it publishes none or the kind is not one
+    /// of OSDU's. Each example is read from the repository once and kept beside the release in the local copy, and a
+    /// release that publishes none for a kind is remembered there too. A repository that cannot be reached throws.
+    /// </summary>
+    public async Task<OfficialExample?> ExampleAsync(string kind, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(kind);
+        var wanted = kind.Trim();
+        if (ExamplePath(wanted) is not { } path)
+        {
+            return null;
+        }
+
+        var release = await ReleaseAsync(null, ct).ConfigureAwait(false);
+        var key = release.Commit + ":" + path;
+        if (_examples.TryGetValue(key, out var known))
+        {
+            return known;
+        }
+
+        var example = await ReadExampleAsync(release, wanted, path, ct).ConfigureAwait(false);
+        if (_examples.Count >= MaxCachedExamples)
+        {
+            _examples.Clear();
+        }
+
+        _examples[key] = example;
+        return example;
+    }
+
+    /// <summary>
+    /// Where the data definitions keep the example record of an <c>osdu</c> kind: <c>Examples/{group}/{entity}.{version}.json</c>,
+    /// the group and entity read from the kind's entity type (<c>work-product-component--WellLog</c>). Null for a kind of
+    /// another authority, or one whose parts could not name a file of the repository.
+    /// </summary>
+    public static string? ExamplePath(string kind)
+    {
+        ArgumentNullException.ThrowIfNull(kind);
+        var parts = kind.Split(':');
+        if (parts.Length != 4 || !string.Equals(parts[0], "osdu", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var type = parts[2];
+        var dash = type.IndexOf("--", StringComparison.Ordinal);
+        if (dash <= 0 || dash + 2 >= type.Length)
+        {
+            return null;
+        }
+
+        var group = type[..dash];
+        var entity = type[(dash + 2)..];
+        static bool Plain(string part) => part.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
+        if (!Plain(group) || !Plain(entity) || VersionNumbers(parts[3]) is null)
+        {
+            return null;
+        }
+
+        var path = $"{ExamplesRoot}/{group}/{entity}.{parts[3]}.json";
+        return IsTreePath(path) ? path : null;
+    }
+
+    private async Task<OfficialExample?> ReadExampleAsync(DataDefinitionsRelease release, string kind, string path, CancellationToken ct)
+    {
+        var what = $"{path} at {release.Name}";
+        var file = Path.Combine(ReleaseDirectory(release), path.Replace('/', Path.DirectorySeparatorChar));
+        var none = file + ".none";
+        if (File.Exists(none))
+        {
+            return null;
+        }
+
+        string text;
+        if (File.Exists(file))
+        {
+            try
+            {
+                if (new FileInfo(file).Length > MaxListBytes)
+                {
+                    throw ListTooLarge(what);
+                }
+
+                text = (await File.ReadAllTextAsync(file, ct).ConfigureAwait(false)).TrimStart('\uFEFF');
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new DataDefinitionsException($"{what} could not be read from the local copy at {CacheDirectory}: {ex.Message}", notFound: false, ex);
+            }
+        }
+        else
+        {
+            try
+            {
+                (text, _) = await GetListPageAsync(
+                    $"repository/files/{Uri.EscapeDataString(path)}/raw?ref={Uri.EscapeDataString(release.Commit)}", what, ct, ExampleTimeout).ConfigureAwait(false);
+            }
+            catch (DataDefinitionsException ex) when (ex.NotFound)
+            {
+                await KeepAsync(none, string.Empty, ct).ConfigureAwait(false);
+                return null;
+            }
+
+            await KeepAsync(file, text, ct).ConfigureAwait(false);
+        }
+
+        return Parse(text, what) is JsonObject record
+            ? new OfficialExample(kind, release.Name, path, new Uri(WebUrl, $"-/blob/{Uri.EscapeDataString(release.Name)}/{path}"), record)
+            : throw new DataDefinitionsException($"{what} is not a JSON object.", notFound: false);
+    }
+
+    /// <summary>
+    /// Writes a file of the local copy whole or not at all. A copy that cannot be written is read from the repository again
+    /// next time, which is all a failed write costs, so it is not an error of the read that asked for it.
+    /// </summary>
+    private static async Task KeepAsync(string file, string text, CancellationToken ct)
+    {
+        var temporary = file + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            await File.WriteAllTextAsync(temporary, text, ct).ConfigureAwait(false);
+            File.Move(temporary, file, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Not kept: the next read asks the repository again (see the summary).
+        }
+        finally
+        {
+            DeleteQuietly(temporary);
+        }
     }
 
     private async Task<IReadOnlyList<DataDefinitionsRelease>> ReleasesAsync(bool reread, CancellationToken ct)
@@ -804,10 +950,10 @@ public sealed class OsduDataDefinitions
         }
     }
 
-    private async Task<(string Text, string? NextPage)> GetListPageAsync(string relative, string what, CancellationToken ct)
+    private async Task<(string Text, string? NextPage)> GetListPageAsync(string relative, string what, CancellationToken ct, TimeSpan? limit = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(ListTimeout);
+        timeout.CancelAfter(limit ?? ListTimeout);
         using var response = await SendAsync(new Uri(_api, relative), what, timeout.Token, ct).ConfigureAwait(false);
         var next = response.Headers.TryGetValues("X-Next-Page", out var values) ? values.FirstOrDefault() : null;
         if (response.Content.Headers.ContentLength is > MaxListBytes)
@@ -899,7 +1045,7 @@ public sealed class OsduDataDefinitions
         => !path.StartsWith('/') && !path.Contains('\\') && path.Split('/').All(segment => segment is not ("" or "." or ".."));
 
     private static DataDefinitionsException ListTooLarge(string what)
-        => new(string.Create(CultureInfo.InvariantCulture, $"The OSDU data definitions answered {what} with more than {MaxListBytes / 1024 / 1024} MB, more than a tag list holds."), notFound: false);
+        => new(string.Create(CultureInfo.InvariantCulture, $"The OSDU data definitions answered {what} with more than {MaxListBytes / 1024 / 1024} MB, more than it should hold."), notFound: false);
 
     /// <summary>Removes a staging folder or a temporary file this instance made; one it cannot remove yet is left for the operating system's temp cleanup.</summary>
     private static void DeleteQuietly(string path)

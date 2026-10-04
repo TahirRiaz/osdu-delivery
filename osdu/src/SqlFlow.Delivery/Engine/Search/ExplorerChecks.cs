@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Http;
@@ -53,10 +54,18 @@ public sealed record ExplorerValidation
 
     /// <summary>The template versions saved for the record's kind, newest first.</summary>
     public IReadOnlyList<string> SavedVersions { get; init; } = [];
+
+    /// <summary>What each finding of the verdict comes to for the person fixing it (<see cref="ValidationGuide"/>); null when the record was not checked.</summary>
+    public ValidationGuidance? Guidance { get; init; }
 }
 
-/// <summary>A rule the records of a list break, how many records break it, and one example.</summary>
-public sealed record ExplorerRuleCount(string At, string Rule, long Records, long Problems, string ExampleId, string ExamplePath, string ExampleMessage, string ExampleValue);
+/// <summary>
+/// A rule the records of a list break, how many records break it, and one example: where it is, what is wrong, what the
+/// schema expects there (<paramref name="Expected"/>, in one line) and how to meet it (<paramref name="Advice"/>).
+/// </summary>
+public sealed record ExplorerRuleCount(
+    string At, string Rule, long Records, long Problems, string ExampleId, string ExamplePath, string ExampleMessage, string ExampleValue,
+    string? Expected = null, string? Advice = null);
 
 /// <summary>One record of a list and what checking it came to.</summary>
 public sealed record ExplorerRecordVerdict(string Id, string? Kind, string Outcome, long Problems, long Unverified, string? First);
@@ -135,9 +144,20 @@ public sealed class ExplorerChecks
     private readonly ITemplateStore? _templates;
     private readonly TimeProvider _time;
     private readonly ValidationLimits _limits;
+    private readonly IOfficialExamples? _examples;
     private readonly Dictionary<string, (SchemaSnapshot? Schema, ExplorerSchema? Described, string? Why)> _schemas = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, (OfficialExample? Example, string? Note)> _exampleOf = new(StringComparer.Ordinal);
 
-    public ExplorerChecks(OsduHttpClient client, OsduRecordProtocol storage, string batchPath, ITemplateStore? templates, TimeProvider time, ValidationLimits? limits = null)
+    /// <param name="client">The connection OSDU is read through.</param>
+    /// <param name="storage">The storage protocol a record is read back with, as the explorer reads one.</param>
+    /// <param name="batchPath">Storage's batch read, which the records of a list and the ids a record refers to are read through.</param>
+    /// <param name="templates">The saved templates, read when a reader picks one; null where none can be read.</param>
+    /// <param name="time">The clock a verdict is stamped with.</param>
+    /// <param name="limits">The bounds a check of one record keeps to; <see cref="ValidationLimits.Default"/> when null.</param>
+    /// <param name="examples">Where the OSDU data definitions' example records are read, which guidance quotes; null where none is kept.</param>
+    public ExplorerChecks(
+        OsduHttpClient client, OsduRecordProtocol storage, string batchPath, ITemplateStore? templates, TimeProvider time, ValidationLimits? limits = null,
+        IOfficialExamples? examples = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(storage);
@@ -149,6 +169,7 @@ public sealed class ExplorerChecks
         _templates = templates;
         _time = time;
         _limits = limits ?? ValidationLimits.Default;
+        _examples = examples;
     }
 
     /// <summary>Checks the record <paramref name="targetId"/>, at its latest or at <paramref name="version"/>.</summary>
@@ -186,9 +207,10 @@ public sealed class ExplorerChecks
         }
 
         var rules = SchemaRules.Of(schema);
-        var findings = RecordValidator.Check(record, rules, limits: _limits);
+        var findings = RecordValidator.Check(record, rules, limits: _limits, form: RecordForm.Stored);
         var answers = await References().ResolveAsync(findings.References, ct).ConfigureAwait(false);
         var verdict = ValidationVerdict.Of(findings, rules, described!.Source, answers, _time.GetUtcNow().UtcDateTime);
+        var (example, exampleNote) = verdict.Problems.Count + verdict.Unverified.Count > 0 ? await ExampleOfAsync(kind, ct).ConfigureAwait(false) : (null, null);
         return new ExplorerValidation
         {
             TargetId = targetId,
@@ -198,6 +220,7 @@ public sealed class ExplorerChecks
             Schema = described,
             Verdict = verdict.ToJson(),
             SavedVersions = saved,
+            Guidance = ValidationGuide.Of(rules, verdict, record, example, exampleNote),
         };
     }
 
@@ -272,7 +295,7 @@ public sealed class ExplorerChecks
             }
 
             var rules = SchemaRules.Of(schema);
-            var findings = RecordValidator.Check(record, rules, limits: _limits);
+            var findings = RecordValidator.Check(record, rules, limits: _limits, form: RecordForm.Stored);
             asked.AddRange(findings.References);
             checkedRecords.Add(new Checked(id, kind, findings, rules));
         }
@@ -280,7 +303,8 @@ public sealed class ExplorerChecks
         var answers = await References().ResolveAsync(asked, ct).ConfigureAwait(false);
         var now = _time.GetUtcNow().UtcDateTime;
         long valid = 0, invalid = 0, unverified = 0, notChecked = 0;
-        var broken = new Dictionary<(string At, string Rule), (long Records, long Problems, SchemaFinding Example, string Id)>();
+        var broken = new Dictionary<(string At, string Rule), (long Records, long Problems, SchemaFinding Example, string Id, string Kind, SchemaRules Rules)>();
+        var absentBlocks = new Dictionary<string, long>(StringComparer.Ordinal);
         var verdicts = new List<ExplorerRecordVerdict>(checkedRecords.Count);
         foreach (var (id, kind, findings, recordRules) in checkedRecords)
         {
@@ -292,6 +316,11 @@ public sealed class ExplorerChecks
             }
 
             var verdict = ValidationVerdict.Of(findings, recordRules, _schemas[Key(kind!, source, null)].Described!.Source, answers, now);
+            foreach (var block in findings.ReadAsAbsent)
+            {
+                absentBlocks[block] = absentBlocks.GetValueOrDefault(block) + 1;
+            }
+
             switch (verdict.Outcome)
             {
                 case ValidationOutcome.Valid:
@@ -307,8 +336,8 @@ public sealed class ExplorerChecks
 
             foreach (var group in verdict.Problems.GroupBy(p => (p.At, p.Rule)))
             {
-                var held = broken.TryGetValue(group.Key, out var counted) ? counted : (0, 0, group.First(), id);
-                broken[group.Key] = (held.Records + 1, held.Problems + group.LongCount(), held.Example, held.Id);
+                var held = broken.TryGetValue(group.Key, out var counted) ? counted : (0, 0, group.First(), id, kind!, recordRules);
+                broken[group.Key] = (held.Records + 1, held.Problems + group.LongCount(), held.Example, held.Id, held.Kind, held.Rules);
             }
 
             var firstFound = verdict.Problems.Count > 0 ? verdict.Problems[0] : verdict.Unverified.Count > 0 ? verdict.Unverified[0] : null;
@@ -317,6 +346,21 @@ public sealed class ExplorerChecks
                 firstFound is null ? null : $"{ValidationVerdict.Where(firstFound)} {firstFound.Rule}: {firstFound.Message}"));
         }
 
+        // Each rule broken most often comes with what the schema expects where it is and how to meet it, worked out on its example.
+        var ruleCounts = new List<ExplorerRuleCount>();
+        foreach (var (key, count) in broken
+            .OrderByDescending(r => r.Value.Records).ThenBy(r => r.Key.At, StringComparer.Ordinal).ThenBy(r => r.Key.Rule, StringComparer.Ordinal)
+            .Take(MaxRules))
+        {
+            var (example, _) = await ExampleOfAsync(count.Kind, ct).ConfigureAwait(false);
+            var (guide, expected) = ValidationGuide.For(count.Rules, count.Example, records.GetValueOrDefault(count.Id), example);
+            ruleCounts.Add(new ExplorerRuleCount(
+                key.At, key.Rule, count.Records, count.Problems, count.Id, count.Example.Path, count.Example.Message, count.Example.Value, expected?.Summary, guide.Advice));
+        }
+
+        notes.AddRange(absentBlocks.Select(b => string.Create(
+            CultureInfo.InvariantCulture,
+            $"{b.Value:N0} record(s) hold {b.Key} null or empty, which is how a stored record with no {b.Key} can read, so it was read as absent.")));
         return new ExplorerListValidation
         {
             Reading = first?.Reading ?? "everything",
@@ -330,11 +374,7 @@ public sealed class ExplorerChecks
             Invalid = invalid,
             Unverified = unverified,
             NotChecked = notChecked,
-            Rules = broken
-                .OrderByDescending(r => r.Value.Records).ThenBy(r => r.Key.At, StringComparer.Ordinal).ThenBy(r => r.Key.Rule, StringComparer.Ordinal)
-                .Take(MaxRules)
-                .Select(r => new ExplorerRuleCount(r.Key.At, r.Key.Rule, r.Value.Records, r.Value.Problems, r.Value.Id, r.Value.Example.Path, r.Value.Example.Message, r.Value.Example.Value))
-                .ToList(),
+            Rules = ruleCounts,
             Records = verdicts,
             Schemas = _schemas.Values.Where(s => s.Described is not null).Select(s => s.Described!).DistinctBy(s => (s.Kind, s.Version)).ToList(),
             Unavailable = unavailable.Select(u => new ExplorerKindProblem(u.Key, u.Value.Why, u.Value.Records)).OrderByDescending(u => u.Records).ToList(),
@@ -352,6 +392,39 @@ public sealed class ExplorerChecks
     /// service's, or a saved template's (the version named, else the newest saved for the kind). Null, with why, when there
     /// is none.
     /// </summary>
+    /// <summary>
+    /// The OSDU data definitions' example record of <paramref name="kind"/>, read once per check, and why none is quoted when
+    /// one was looked for: the data definitions publish none for the kind, or could not be reached. A kind not of OSDU's
+    /// own has no example to look for, and says nothing.
+    /// </summary>
+    private async Task<(OfficialExample? Example, string? Note)> ExampleOfAsync(string kind, CancellationToken ct)
+    {
+        if (_examples is null || OsduDataDefinitions.ExamplePath(kind) is null)
+        {
+            return (null, null);
+        }
+
+        if (_exampleOf.TryGetValue(kind, out var known))
+        {
+            return known;
+        }
+
+        (OfficialExample?, string?) found;
+        try
+        {
+            var example = await _examples.ExampleAsync(kind, ct).ConfigureAwait(false);
+            found = (example, example is null ? $"The OSDU data definitions publish no example record of {kind}." : null);
+        }
+        catch (Exception ex) when (ex is DeliveryException or HttpRequestException or IOException or UnauthorizedAccessException or JsonException
+            || (ex is OperationCanceledException && !ct.IsCancellationRequested))
+        {
+            found = (null, $"OSDU's example record of {kind} could not be read: {HeaderRedaction.RedactMessage(ex.Message)}");
+        }
+
+        _exampleOf[kind] = found;
+        return found;
+    }
+
     private async Task<(SchemaSnapshot? Schema, ExplorerSchema? Described, string? Why)> SchemaAsync(string kind, ExplorerSchemaSource source, string? templateVersion, CancellationToken ct)
     {
         var key = Key(kind, source, templateVersion);

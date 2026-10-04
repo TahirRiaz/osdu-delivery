@@ -118,7 +118,7 @@ public sealed class RecordValidatorTests
     public void A_record_missing_a_property_its_root_requires_is_said_to_be_the_record_and_not_a_value()
     {
         var problem = Assert.Single(Check(Record(r => r.Remove("legal"))).Problems);
-        Assert.Equal("the record has no legal, which the template requires", problem.Message);
+        Assert.Equal("the record has no legal, which the schema requires", problem.Message);
         Assert.Equal("legal", ValidationVerdict.Where(problem));
     }
 
@@ -128,7 +128,7 @@ public sealed class RecordValidatorTests
         var problem = Assert.Single(Check(new JsonArray(1, 2)).Problems);
         Assert.Equal("type", problem.Rule);
         Assert.Equal("the record", ValidationVerdict.Where(problem));
-        Assert.Equal("a list of 2 where the template takes an object", problem.Message);
+        Assert.Equal("a list of 2 where the schema takes an object", problem.Message);
     }
 
     [Fact]
@@ -146,7 +146,7 @@ public sealed class RecordValidatorTests
     [Fact]
     public void Text_length_is_counted_in_characters_as_JSON_Schema_counts_them_not_in_UTF16_units()
     {
-        // Ten characters, of which five take two UTF-16 units each: within the ten the template allows.
+        // Ten characters, of which five take two UTF-16 units each: within the ten the schema allows.
         Assert.Empty(Check(Record(r => DataOf(r)["Name"] = "😀😀😀😀😀abcde")).Problems);
 
         var problem = Assert.Single(Check(Record(r => DataOf(r)["Name"] = "😀😀😀😀😀😀😀😀😀😀😀")).Problems);
@@ -349,7 +349,7 @@ public sealed class RecordValidatorTests
 
         Assert.Empty(RecordValidator.Check(new JsonObject { ["Any"] = null, ["Maybe"] = null }, rules).Problems);
         var problem = Assert.Single(RecordValidator.Check(new JsonObject { ["Must"] = null }, rules).Problems);
-        Assert.Equal("null where the template takes an integer", problem.Message);
+        Assert.Equal("null where the schema takes an integer", problem.Message);
     }
 
     [Fact]

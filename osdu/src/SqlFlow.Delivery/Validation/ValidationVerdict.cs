@@ -208,7 +208,7 @@ public sealed record ValidationVerdict
                 Cut = findings.ReferencesCut,
                 MissingListed = missingListed,
             },
-            Notes = rules?.Notes ?? [],
+            Notes = [.. findings.Notes, .. rules?.Notes ?? []],
             CheckedUtc = checkedUtc,
         };
     }

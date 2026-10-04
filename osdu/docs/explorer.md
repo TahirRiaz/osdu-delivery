@@ -147,8 +147,9 @@ The answer is the verdict a delivered record carries in its history:
   a bound reached) and nothing else is wrong. The tooltip beside it says which schema, from where, how many rules were
   applied, and what the schema states that no check asserts;
 - **Problems**: each one a row with where it is, the rule (`type`, `pattern`, `enum`, `required`, `relationship`, ...),
-  and what is wrong with the value; the place opens that element of the record. Each field of the record a problem sits
-  in, or sits inside, carries a mark whose tooltip lists them;
+  and what is wrong with the value; the place opens that element of the record. Under it, what the problem comes to for
+  the person fixing it ([Guidance](#guidance)): the value **found**, what the schema **takes** there, and the **fix**.
+  Each field of the record a problem sits in, or sits inside, carries a mark whose tooltip lists them, each with its fix;
 - **Not checked**: the parts the check could not judge, and why;
 - **References not found**: the ids the record names that storage holds nothing under, each with where it names it. The
   references are looked up in storage alone, all at once: what OSDU holds is the answer, never the ledger or the cache.
@@ -157,6 +158,36 @@ A record storage does not hold (at that version) says so. A kind the Schema serv
 template the kind does not have, is not checked; the pane says why and, where a template of the kind is saved, offers
 to check against it. A Schema service that refuses to answer (403, or a failure of its own) leaves the record not
 checked, with the service's words, redacted, as the reason.
+
+A record read back from storage can hold its `ancestry`, `meta` or `tags` null or empty, which is how a record with
+none of them can read whoever wrote it. The explorer reads such a block as absent rather than as a value that breaks the
+schema, and the tooltip beside the outcome says it did (`meta is null, ...`). A document the gate checks before sending
+is the system's own, and is held to the schema whole.
+
+### Guidance
+
+Each problem comes with what it takes to fix it, worked out from the schema the record was checked against:
+
+- **Found**: the value at the place, as the record holds it (`null`, `'E2E validate'`, `a list of 3 items`), or
+  `absent` for a property the schema requires;
+- **Takes**: what a value there is, in one line (`text matching ^NO `, `a list of objects (AbstractMetaItem)`, `the id
+  of a master-data--Well record`, `one of 12 values`), and whether it is required;
+- **Fix**: how to make the value meet the rule: leave an optional property out rather than null, the values an
+  enumeration allows, the form a date takes, the number without quotes, the id of a record rather than its name or
+  code, where a property of one's own belongs (`data.ExtensionProperties`), or that a record it refers to must be in
+  OSDU first;
+- **What the schema says here**, unfolded on request: the property's title and description in the schema's own words
+  (the words written beside a reference, as OSDU writes them, before those of what it refers to), what it takes, whether
+  it is required, its patterns, the values it allows, the entity types it points to, what each item or property is, the
+  schema's own examples, and **OSDU's example**: the value at that place in the example record the OSDU data
+  definitions publish for the kind (`Examples/<group>/<entity>.<version>.json`, the first item of each list taken).
+
+The example records are read from the data definitions the Templates page browses
+([mapping-templates.md](mapping-templates.md), Where templates come from): from the newest release, once per kind
+version, and kept beside the release in the control plane's local copy, as a release that publishes none for a kind is.
+A kind not of OSDU's own has none to look for; one the data definitions publish none for, or a repository that cannot
+be reached, is said under the verdict, and every problem is guided by the schema alone. A part not checked says there is
+nothing to change in the record for it. Validate these records gives the fix of each rule's example the same way.
 
 ### Validate these records
 
@@ -167,13 +198,15 @@ It answers:
 - how many records the search matches and how many were read, and how many came to each outcome; a record whose kind no
   schema could be had for is counted apart, with why;
 - **Rules broken most often**: each rule at each place, the number of records that break it, and one of them, with what
-  is wrong there; the record opens in the explorer. The place reads a list's items as one (`data.VerticalMeasurements[]`),
-  so a rule broken in every item of many records is one row;
+  is wrong there, what the schema takes there and the fix ([Guidance](#guidance)); the record opens in the explorer. The
+  place reads a list's items as one (`data.VerticalMeasurements[]`), so a rule broken in every item of many records is
+  one row;
 - **Records**: each record read, with its outcome and its first problem; a record opens in the explorer.
 
 A search matching more records than a check reads says so: the counts are of the first ones. A whole kind is checked by
 an assertion flow's `conforms` test ([documents.md](documents.md#assertion-flow)), which reads up to a million records. The ids the
-search found that storage did not return (deleted since, or not the caller's to read) are counted as such.
+search found that storage did not return (deleted since, or not the caller's to read) are counted as such, and so are
+the records holding an optional block null or empty, read as absent.
 
 ## The query of an element
 
@@ -289,8 +322,8 @@ partition for ten), so going back to a type or a page already read shows it at o
 | `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters` (`path`, `index` text, keyword, number, boolean or date, `value`; at most 12); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`) to group by. |
 | `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold, read from one of them. |
 | `POST /api/v1/delivery/explorer/read?partition=` | operate | One record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
-| `POST /api/v1/delivery/explorer/validate?partition=` | operate | One record checked against the schema of its kind ([Validate](#validate)). Body: `targetId`, `version` (its latest when left out), `schema` (`osdu`, the default, for the Schema service's; `saved` for a saved template), `templateVersion` (with `saved`; the kind's newest when left out). Answers the `targetId`, the `version` checked, whether storage holds the record (`found`), its `kind`, the `schema` used (`kind`, `version`, `source` schema-service or template, the schema ids `read`, the references left `unresolved`, `notes`), the `verdict` as a record's history holds it, or why nothing was checked (`problem`), and the template versions saved for the kind (`savedVersions`, newest first). |
-| `POST /api/v1/delivery/explorer/validate-list?partition=` | operate | The records a search finds checked against their schemas ([Validate these records](#validate-these-records)). Body: `search` (as `/explorer/search` takes it; its page and grouping are not used), `max` (1 to 1,000, the default), `schema` (`osdu` or `saved`, each kind's newest). Answers `matched`, `asked`, `read`, the ids storage did not return (`notFound`), the counts `valid`, `invalid`, `unverified` and `notChecked`, the `rules` broken (`at`, `rule`, `records`, `problems`, an example's `exampleId`, `examplePath`, `exampleMessage`, `exampleValue`; at most 50), each record (`id`, `kind`, `outcome`, `problems`, `unverified`, its `first` problem), the `schemas` used, the kinds `unavailable` with why, `cut` when the search matches more than was read, and `notes`. |
+| `POST /api/v1/delivery/explorer/validate?partition=` | operate | One record checked against the schema of its kind ([Validate](#validate)). Body: `targetId`, `version` (its latest when left out), `schema` (`osdu`, the default, for the Schema service's; `saved` for a saved template), `templateVersion` (with `saved`; the kind's newest when left out). Answers the `targetId`, the `version` checked, whether storage holds the record (`found`), its `kind`, the `schema` used (`kind`, `version`, `source` schema-service or template, the schema ids `read`, the references left `unresolved`, `notes`), the `verdict` as a record's history holds it, or why nothing was checked (`problem`), the template versions saved for the kind (`savedVersions`, newest first), and the `guidance`: one guide per problem and per part not checked, in the verdict's order (`path`, `rule`, the value `found`, the `advice`, and the key of what is `expected` there), the `expectations` by that key (`summary`, `title`, `description`, `types`, `required`, `patterns`, `allowed` and `allowedCount`, `formats`, the bounds, `entityTypes`, `properties`, `items`, `forms`, the schema's `examples`, `osduExample`), the data definitions' `example` quoted (`release`, `path`, `webUrl`), or the `exampleNote` saying why none is. |
+| `POST /api/v1/delivery/explorer/validate-list?partition=` | operate | The records a search finds checked against their schemas ([Validate these records](#validate-these-records)). Body: `search` (as `/explorer/search` takes it; its page and grouping are not used), `max` (1 to 1,000, the default), `schema` (`osdu` or `saved`, each kind's newest). Answers `matched`, `asked`, `read`, the ids storage did not return (`notFound`), the counts `valid`, `invalid`, `unverified` and `notChecked`, the `rules` broken (`at`, `rule`, `records`, `problems`, an example's `exampleId`, `examplePath`, `exampleMessage`, `exampleValue`, what the schema takes there as `expected`, and the `advice`; at most 50), each record (`id`, `kind`, `outcome`, `problems`, `unverified`, its `first` problem), the `schemas` used, the kinds `unavailable` with why, `cut` when the search matches more than was read, and `notes`. |
 | `POST /api/v1/delivery/explorer/element-queries` | operate | The Lucene query that finds the records holding exactly an element of a record ([The query of an element](#the-query-of-an-element)). Body: `kind` (the record's), `path` (as the record inspector names it, a list's items by their place: `data.GeoContexts[1].GeoTypeID`), `section` (true for an object, a list or an item), `value` (a value's: a text, a number, a boolean or null), `values` (a section's, at most 48: each `path` and `value`). Answers the queries, the exact one first (`purpose` exact, words or exists, `query`, `says`), how the index holds the element (`field`, `reading`), the saved `template` read, why the query is a guess (`guess`), why none can be written (`problem`), and `notes`. Read from the saved templates alone. |
 | `GET /api/v1/delivery/explorer/dimension/candidates?kind=` | operate | The keys the saved template of a `kind` (wildcards per segment) suggests for a dimension ([Building a dimension](#building-a-dimension)), the likeliest first: `path`, the entity types it `names`, whether it is `repeated` in a record, and the template's `title` and `description`; with the `template` read, or why nothing is suggested (`missing`). Read from the saved templates alone. |
 | `POST /api/v1/delivery/explorer/dimension/keys?partition=` | operate | The commonest keys of a drafted dimension's path, which its example steps through. Body: `kind` (wildcards per segment), `query` (as long as a search's text), `path` (a property path, no filter). Answers the records the kind (and the query) holds, the keys with their records (up to 25, `moreKeys` when there are more), how the path is indexed (`keyFieldGuessed` when no saved template says, read as text), notes, and the service's words when it refused the query. |

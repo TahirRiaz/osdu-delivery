@@ -17,6 +17,7 @@ using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Storage;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Validation;
 using SqlFlow.Execution;
 using SqlFlow.Yaml;
 
@@ -105,7 +106,10 @@ public static class DeliveryServices
             sp.GetService<DeliveryLedgerSource>()?.Cache(sp),
             sp.GetRequiredService<IRecordSearchFactory>(),
             Partitions: sp.GetService<DeliveryLedgerSource>()?.Partitions(sp),
-            Clients: sp.GetRequiredService<TargetClients>()));
+            Clients: sp.GetRequiredService<TargetClients>(),
+            // The OSDU data definitions' example records, which a check's guidance quotes; a host that keeps no copy of
+            // the data definitions (a node) registers none, and guidance there quotes the schema alone.
+            Examples: sp.GetService<IOfficialExamples>()));
 
         // Execution: the run executors behind the platform's document executor, the compute operations a node runs for the
         // control plane (a value check and a removal), and the operations the control plane runs itself.

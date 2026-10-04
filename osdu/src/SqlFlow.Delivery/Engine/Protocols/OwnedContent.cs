@@ -26,6 +26,12 @@ internal static class OwnedContent
 
     private static readonly string[] Envelope = ["id", "kind", "acl", "data", "ancestry", "meta", "tags"];
 
+    /// <summary>
+    /// The blocks of a record a client may leave out (openapi storage v2, Record: ancestry, meta and tags). A record read
+    /// back can carry one of them null or empty, whoever wrote it; either way the record has none.
+    /// </summary>
+    public static IReadOnlyList<string> OptionalBlocks { get; } = ["ancestry", "meta", "tags"];
+
     private static readonly string[] LegalLists = ["legaltags", "otherRelevantDataCountries"];
 
     /// <summary>
@@ -67,7 +73,7 @@ internal static class OwnedContent
 
                     projection[name] = kept;
                     break;
-                case var value when name is "ancestry" or "meta" or "tags" && IsEmpty(value):
+                case var value when OptionalBlocks.Contains(name) && IsEmpty(value):
                     break;
                 case var value:
                     projection[name] = value.DeepClone();
@@ -173,9 +179,11 @@ internal static class OwnedContent
             ? JsonMerge.ToValues(targetStateJson)
             : null;
 
-    private static bool IsEmpty(JsonNode node) => node switch
+    /// <summary>Whether <paramref name="node"/> holds nothing: null, an empty list, or an object whose every value holds nothing.</summary>
+    public static bool IsEmpty(JsonNode? node) => node switch
     {
-        JsonObject obj => obj.All(p => p.Value is null || IsEmpty(p.Value)),
+        null => true,
+        JsonObject obj => obj.All(p => IsEmpty(p.Value)),
         JsonArray array => array.Count == 0,
         _ => false,
     };

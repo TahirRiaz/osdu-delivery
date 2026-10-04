@@ -5,15 +5,23 @@ import { RichTooltip } from "@/components/RichTooltip";
 import { TruncatedText } from "@/components/TruncatedText";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { schemaSourceName, whereOf, type ValidationFinding, type ValidationVerdict } from "../../api/validation";
+import { schemaSourceName, whereOf, type FindingGuide, type ValidationFinding, type ValidationGuidance, type ValidationVerdict, type ValueExpectation } from "../../api/validation";
+import { FindingGuideLines, GuidanceSource } from "./ValidationGuideView";
 import { ValidationBadge } from "./ValidationMark";
 import { outcomeWord, referenceLine } from "./validationModel";
 
 /**
  * One finding as a row of its section's grid: where (opening it in the record, where the page can), the rule, what is wrong,
- * and the value. The rows share the section's columns, so the rules line up however long each one is.
+ * and the value; under it, when the check gave guidance, the value found, what the schema takes there and how to fix it.
+ * The rows share the section's columns, so the rules line up however long each one is.
  */
-function FindingRow({ finding, onOpenPath, testId }: { finding: ValidationFinding; onOpenPath?: (path: string) => void; testId: string }) {
+function FindingRow({ finding, guide, expected, onOpenPath, testId }: {
+  finding: ValidationFinding;
+  guide: FindingGuide | null;
+  expected: ValueExpectation | null;
+  onOpenPath?: (path: string) => void;
+  testId: string;
+}) {
   const where = whereOf(finding);
   return (
     <div className="col-span-full grid min-w-0 grid-cols-subgrid items-start gap-3 border-b px-3 py-1.5 text-[12px] last:border-b-0" data-testid={testId}>
@@ -27,14 +35,30 @@ function FindingRow({ finding, onOpenPath, testId }: { finding: ValidationFindin
       <Badge variant="outline" className="font-mono text-[11px] font-normal" title="The rule">{finding.rule}</Badge>
       <span className="min-w-0 break-words">
         {finding.message}
-        {finding.value !== "" && !finding.message.includes(finding.value) && (
+        {guide === null && finding.value !== "" && !finding.message.includes(finding.value) && (
           <span className="ml-1 text-muted-foreground">
             <TruncatedText text={finding.value} mono maxWidth={240} title="The value" />
           </span>
         )}
       </span>
+      {guide !== null && (
+        <div className="col-span-2 col-start-2 min-w-0">
+          <FindingGuideLines guide={guide} expected={expected} testId={testId} />
+        </div>
+      )}
     </div>
   );
+}
+
+/** The guide of the finding at an index of a list, when the guidance lists one for that same finding there. */
+function guideAt(guides: FindingGuide[] | undefined, finding: ValidationFinding, index: number): FindingGuide | null {
+  const guide = guides?.[index];
+  return guide !== undefined && guide.path === finding.path && guide.rule === finding.rule ? guide : null;
+}
+
+/** What the schema expects where a guide's finding is, when the guidance says. */
+function expectationOf(guidance: ValidationGuidance | null, guide: FindingGuide | null): ValueExpectation | null {
+  return guide === null || guide.expected === null ? null : guidance?.expectations[guide.expected] ?? null;
 }
 
 const findingColumns = "grid grid-cols-[minmax(0,1.3fr)_auto_minmax(0,2fr)]";
@@ -58,8 +82,10 @@ function Section({ title, count, listed, children, testId }: { title: string; co
  * the references not found, each where it is in the record. What the schema states that no check asserts is in the tooltip
  * of the summary, as explanations are on these pages.
  */
-export function ValidationVerdictView({ verdict, onOpenPath, className }: {
+export function ValidationVerdictView({ verdict, guidance = null, onOpenPath, className }: {
   verdict: ValidationVerdict;
+  /** What each finding comes to for the person fixing it; null where the page has none to show. */
+  guidance?: ValidationGuidance | null;
   /** Opens an element of the record by its path; absent where the page shows no record to open it in. */
   onOpenPath?: (path: string) => void;
   className?: string;
@@ -95,14 +121,38 @@ export function ValidationVerdictView({ verdict, onOpenPath, className }: {
       {verdict.problems.length > 0 && (
         <Section title="Problems" count={verdict.problemCount} listed={verdict.problems.length} testId="validation-problems">
           <div className={findingColumns}>
-            {verdict.problems.map((finding, index) => <FindingRow key={`${finding.path}:${finding.rule}:${index}`} finding={finding} onOpenPath={onOpenPath} testId="validation-problem" />)}
+            {verdict.problems.map((finding, index) => {
+              const guide = guideAt(guidance?.problems, finding, index);
+              return (
+                <FindingRow
+                  key={`${finding.path}:${finding.rule}:${index}`}
+                  finding={finding}
+                  guide={guide}
+                  expected={expectationOf(guidance, guide)}
+                  onOpenPath={onOpenPath}
+                  testId="validation-problem"
+                />
+              );
+            })}
           </div>
         </Section>
       )}
       {verdict.unverified.length > 0 && (
         <Section title="Not checked" count={verdict.unverifiedCount} listed={verdict.unverified.length} testId="validation-unverified">
           <div className={findingColumns}>
-            {verdict.unverified.map((finding, index) => <FindingRow key={`${finding.path}:${finding.rule}:${index}`} finding={finding} onOpenPath={onOpenPath} testId="validation-not-checked" />)}
+            {verdict.unverified.map((finding, index) => {
+              const guide = guideAt(guidance?.unverified, finding, index);
+              return (
+                <FindingRow
+                  key={`${finding.path}:${finding.rule}:${index}`}
+                  finding={finding}
+                  guide={guide}
+                  expected={expectationOf(guidance, guide)}
+                  onOpenPath={onOpenPath}
+                  testId="validation-not-checked"
+                />
+              );
+            })}
           </div>
         </Section>
       )}
@@ -119,6 +169,7 @@ export function ValidationVerdictView({ verdict, onOpenPath, className }: {
           ))}
         </Section>
       )}
+      {guidance !== null && <GuidanceSource guidance={guidance} />}
     </div>
   );
 }

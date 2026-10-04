@@ -120,7 +120,7 @@ public sealed class SchemaRules
 
         if (depth > MaxCompileDepth)
         {
-            return Unchecked(raw, string.Create(CultureInfo.InvariantCulture, $"the template nests references more than {MaxCompileDepth} deep here"));
+            return Unchecked(raw, string.Create(CultureInfo.InvariantCulture, $"the schema nests references more than {MaxCompileDepth} deep here"));
         }
 
         if (raw["$ref"] is JsonValue refValue && refValue.TryGetValue<string>(out var reference))
@@ -128,12 +128,12 @@ public sealed class SchemaRules
             // A reference stands for the schema it names; JSON Schema draft-07 ignores whatever sits beside it.
             if (Definition(reference) is not { } target)
             {
-                return Unchecked(raw, $"the template refers to '{reference}', which its bundle does not hold");
+                return Unchecked(raw, $"the schema refers to '{reference}', which its bundle does not hold");
             }
 
             if (ReferenceEquals(target, raw))
             {
-                return Unchecked(raw, $"the template's reference '{reference}' names itself");
+                return Unchecked(raw, $"the schema's reference '{reference}' names itself");
             }
 
             var resolved = Compile(target, depth + 1);
@@ -152,7 +152,7 @@ public sealed class SchemaRules
                 var compiled = Compile(branch, depth + 1);
                 if (compiled.Filling)
                 {
-                    node.Unchecked ??= "the template's allOf refers back to the schema it is part of";
+                    node.Unchecked ??= "the schema's allOf refers back to the schema it is part of";
                     _notes.Add(node.Unchecked);
                     continue;
                 }
@@ -175,6 +175,7 @@ public sealed class SchemaRules
     /// <summary>What <paramref name="raw"/> itself states, its <c>allOf</c> aside.</summary>
     private void Own(RuleNode node, JsonObject raw, int depth)
     {
+        node.Docs = SchemaDocs.Of(raw);
         switch (raw["type"])
         {
             case JsonValue single when single.TryGetValue<string>(out var type):
@@ -244,7 +245,7 @@ public sealed class SchemaRules
                 node.Items ??= Compile(items, depth + 1);
                 break;
             case JsonArray:
-                node.ItemsUnchecked = "the template gives the items of this list one schema each by position, which the checks do not apply";
+                node.ItemsUnchecked = "the schema gives the items of this list one schema each by position, which the checks do not apply";
                 _notes.Add(node.ItemsUnchecked);
                 break;
         }
@@ -256,6 +257,7 @@ public sealed class SchemaRules
                 if (child is JsonObject schema)
                 {
                     node.AddProperty(name, Compile(schema, depth + 1));
+                    node.AddPropertyDocs(name, SchemaDocs.Of(schema));
                 }
             }
         }
@@ -307,7 +309,7 @@ public sealed class SchemaRules
             if (raw.ContainsKey(keyword) && !node.UncheckedKeywords.Contains(keyword, StringComparer.Ordinal))
             {
                 node.UncheckedKeywords.Add(keyword);
-                _notes.Add($"the template's '{keyword}' is not checked");
+                _notes.Add($"the schema's '{keyword}' is not checked");
             }
         }
     }
@@ -360,6 +362,77 @@ public sealed record RulePattern(string Text, Regex? Regex);
 public sealed record RuleMultiple(string Text, decimal Step);
 
 /// <summary>
+/// What a schema says of a value in words, beside its rules: its <c>title</c>, its <c>description</c>, and the values its
+/// <c>example</c> and <c>examples</c> give, each bounded so a schema of any size compiles to a bounded set of words.
+/// </summary>
+public sealed record SchemaDocs(string? Title, string? Description, IReadOnlyList<string> Examples)
+{
+    /// <summary>The longest title kept.</summary>
+    public const int MaxTitle = 200;
+
+    /// <summary>The longest description kept.</summary>
+    public const int MaxDescription = 1_000;
+
+    /// <summary>The most examples kept.</summary>
+    public const int MaxExamples = 3;
+
+    /// <summary>The longest example kept.</summary>
+    public const int MaxExample = 200;
+
+    public static SchemaDocs None { get; } = new(null, null, []);
+
+    /// <summary>The words <paramref name="raw"/> states of itself.</summary>
+    public static SchemaDocs Of(JsonObject raw)
+    {
+        ArgumentNullException.ThrowIfNull(raw);
+        var examples = new List<string>();
+        if (raw.TryGetPropertyValue("example", out var example))
+        {
+            Add(examples, example);
+        }
+
+        if (raw["examples"] is JsonArray many)
+        {
+            foreach (var item in many)
+            {
+                Add(examples, item);
+            }
+        }
+
+        var docs = new SchemaDocs(Words(raw["title"], MaxTitle), Words(raw["description"], MaxDescription), examples);
+        return docs.Title is null && docs.Description is null && docs.Examples.Count == 0 ? None : docs;
+    }
+
+    /// <summary>These words, with what <paramref name="other"/> says filling what these leave unsaid.</summary>
+    public SchemaDocs Or(SchemaDocs other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+        return ReferenceEquals(other, None) ? this : ReferenceEquals(this, None) ? other
+            : new SchemaDocs(Title ?? other.Title, Description ?? other.Description, Examples.Count > 0 ? Examples : other.Examples);
+    }
+
+    private static void Add(List<string> examples, JsonNode? example)
+    {
+        if (examples.Count >= MaxExamples)
+        {
+            return;
+        }
+
+        var text = example is JsonValue value && value.GetValueKind() == JsonValueKind.String ? value.GetValue<string>() : example?.ToJsonString() ?? "null";
+        text = Clip(text, MaxExample);
+        if (text.Length > 0 && !examples.Contains(text, StringComparer.Ordinal))
+        {
+            examples.Add(text);
+        }
+    }
+
+    private static string? Words(JsonNode? node, int longest)
+        => node is JsonValue value && value.GetValueKind() == JsonValueKind.String && value.GetValue<string>().Trim() is { Length: > 0 } text ? Clip(text, longest) : null;
+
+    private static string Clip(string text, int longest) => text.Length <= longest ? text : text[..longest] + "...";
+}
+
+/// <summary>
 /// The rules one schema node states, with every <c>$ref</c> followed and every <c>allOf</c> branch combined
 /// (<see cref="SchemaRules"/>). Built while its schema compiles and read-only afterwards, so any number of checks share it.
 /// </summary>
@@ -368,6 +441,7 @@ public sealed class RuleNode
     private static readonly RuleNode AnyValue = new();
 
     private readonly Dictionary<string, RuleNode> _properties = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, SchemaDocs> _propertyDocs = new(StringComparer.Ordinal);
     private readonly List<string> _required = [];
 
     internal RuleNode()
@@ -376,6 +450,9 @@ public sealed class RuleNode
 
     /// <summary>Why nothing at this node can be checked, or null when it can.</summary>
     public string? Unchecked { get; internal set; }
+
+    /// <summary>What the schema says of a value here in words: its title, description and examples.</summary>
+    public SchemaDocs Docs { get; internal set; } = SchemaDocs.None;
 
     /// <summary>The JSON types a value may be, <c>null</c> aside; empty allows any.</summary>
     public IReadOnlyList<string> Types { get; internal set; } = [];
@@ -476,6 +553,22 @@ public sealed class RuleNode
         }
     }
 
+    /// <summary>
+    /// What the schema says in words of the property <paramref name="name"/> where an object here names it: the words
+    /// written beside the property, which OSDU writes beside a <c>$ref</c> as well, else what the property's schema says of
+    /// itself. Null when the object names no such property.
+    /// </summary>
+    public SchemaDocs? PropertyDocs(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var beside = _propertyDocs.GetValueOrDefault(name);
+        var own = _properties.GetValueOrDefault(name)?.Docs;
+        return beside is null ? own : own is null ? beside : beside.Or(own);
+    }
+
+    internal void AddPropertyDocs(string name, SchemaDocs docs)
+        => _propertyDocs[name] = _propertyDocs.TryGetValue(name, out var held) ? held.Or(docs) : docs;
+
     internal void AddRequired(string name)
     {
         if (!_required.Contains(name, StringComparer.Ordinal))
@@ -490,6 +583,12 @@ public sealed class RuleNode
         if (other.Unchecked is { } why)
         {
             Unchecked ??= why;
+        }
+
+        Docs = Docs.Or(other.Docs);
+        foreach (var (name, docs) in other._propertyDocs)
+        {
+            AddPropertyDocs(name, docs);
         }
 
         if (other.TypeDeclared)
@@ -583,7 +682,7 @@ public sealed class RuleNode
         }
 
         // Branches that agree on no type leave none a value can have; the first branch's types stand, so a check still
-        // names what the template asks for rather than accepting anything.
+        // names what the schema asks for rather than accepting anything.
         return both.Count == 0 ? left.ToList() : both.Distinct(StringComparer.Ordinal).ToList();
     }
 

@@ -232,7 +232,7 @@ public sealed class AssertionRunTests : IDisposable
         var conforms = Of(wellbores, "conforms");
         Assert.Equal(TestOutcomes.Failed, conforms.Outcome);
         Assert.Equal("warning", conforms.Severity);
-        Assert.Contains("legal: the record has no legal, which the template requires", Assert.Single(conforms.Examples).Reason);
+        Assert.Contains("legal: the record has no legal, which the schema requires", Assert.Single(conforms.Examples).Reason);
 
         Assert.Equal(TestOutcomes.Passed, Of(wellbores, "recordSet").Outcome);
         Assert.Equal(TestOutcomes.Passed, Of(wellbores, "field", 2).Outcome);

@@ -13,6 +13,7 @@ using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Hosting;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.ControlPlane;
 
@@ -84,6 +85,9 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
             TimeSpan.FromMinutes(repository.RefreshMinutes),
             TimeSpan.FromMinutes(repository.DownloadTimeoutMinutes),
             provider.GetRequiredService<TimeProvider>()));
+
+        // Their example records are what a check's guidance quotes as OSDU's own way of writing a value.
+        services.Services.AddSingleton<IOfficialExamples>(provider => provider.GetRequiredService<OsduDataDefinitions>());
 
         if (repository.WarmOnStart)
         {

@@ -30,12 +30,14 @@ template:
   (`osdu:wks:dataset--GenericDataset:1.0.0` and its four siblings) live under `manifest/`. The control
   plane keeps a local copy of the repository on disk: the first time a release is read, its whole `Generated` folder is
   downloaded as one archive and unpacked, and every file of it is read from disk from then on, across restarts. The
-  release list is kept beside it, read again when it is older than `ControlPlane:SchemaRepository:RefreshMinutes` (a
+  release list is kept beside it, read again when it is older than `Osdu:SchemaRepository:RefreshMinutes` (a
   day) and whenever someone presses **Sync with the repository**, which also downloads the release in view when it is
   not on disk; the page says when the list was last read, and marks the releases on disk. The newest release is
   downloaded when the control plane starts. The schemas are public, so no flow, credential or node is involved.
-  `ControlPlane:SchemaRepository` points it at a mirror (`ApiUrl`, `WebUrl`) when community.opengroup.org is out of
-  reach, and `CacheDirectory` moves the local copy.
+  `Osdu:SchemaRepository` points it at a mirror (`ApiUrl`, `WebUrl`) when community.opengroup.org is out of
+  reach, and `CacheDirectory` moves the local copy. The example record the newest release publishes for a kind
+  (`Examples/<group>/<entity>.<version>.json`) is read the first time a check's guidance quotes it, and kept beside the
+  release in the same copy ([explorer.md](explorer.md#guidance)).
 - **Look at a schema.** Open a kind to see it laid out as a template: every variable with its type, requiredness,
   relationships, unit context and OSDU's description. The control plane reads the kind's file under `Generated` at the
   commit the release tag names, with every file it refers to, and bundles them; nothing is stored yet. The kind links
