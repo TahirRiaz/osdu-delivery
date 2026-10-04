@@ -71,7 +71,7 @@ public sealed class ValueChecker
         }
 
         var selection = Select(request.Targets, mapping, resolved.Schema);
-        var header = await _runtime.Planner.OpenAsync(flow, resolved, _runtime.Parameters, SourceSelection.Full(), gate: false, stored: null, ct).ConfigureAwait(false);
+        var header = await _runtime.Planner.OpenAsync(flow, resolved, _runtime.Parameters, SourceSelection.Full(), gate: false, stored: null, ct: ct).ConfigureAwait(false);
         var tally = new ValueTally(mapping, resolved.Schema, selection, request, _limits, each);
         var parallelism = flow.Reliability.EffectiveRenderParallelism;
         var rounds = Planner.SearchRounds(mapping);

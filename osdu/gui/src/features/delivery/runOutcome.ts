@@ -78,6 +78,8 @@ export interface RunRequest {
   submissionId: string | null;
   recordKeys: string[];
   redeliver: string | null;
+  /** Whether the run brings records up to date: renders them again and sends only what renders differently. */
+  rerender: boolean;
   /** The key slices of the submission a fan-out intake member plans. */
   slices: number[];
   /** The tests an assertion run was asked to run, by name and by tag; both empty when it ran every test. */
@@ -98,10 +100,65 @@ export function runRequest(run: RunDetail): RunRequest {
       ? payload.recordKeys.filter((key): key is string => typeof key === "string")
       : [],
     redeliver: typeof payload.redeliver === "string" ? payload.redeliver : null,
+    rerender: payload.rerender === true,
     slices: Array.isArray(payload.slices)
       ? payload.slices.filter((slice): slice is number => typeof slice === "number" && Number.isInteger(slice))
       : [],
     tests: names(payload.tests),
     tags: names(payload.tags),
+  };
+}
+
+/** One record a plan would send, as its outcome names it. */
+export interface PlanSample {
+  key: string;
+  label: string | null;
+  sourceKey: string;
+  action: string;
+  reason: string;
+  metadata: boolean;
+  payload: boolean;
+}
+
+/** What a plan run said a delivery would do: how many it read, would send (the record, its payload), leave, hold, and the first it would send. */
+export interface PlanPreview {
+  records: number;
+  deliveries: number;
+  metadata: number;
+  payload: number;
+  unchanged: number;
+  held: number;
+  blocked: number;
+  other: number;
+  sample: PlanSample[];
+}
+
+/** The outcome of a plan run, read from its result; null before it finished, or for a run that is not a plan. */
+export function planPreview(run: RunDetail): PlanPreview | null {
+  const result = runResult(run);
+  if (result === null || result.operation !== "plan") {
+    return null;
+  }
+
+  const number = (field: string) => count(result, field) ?? 0;
+  const sample = Array.isArray(result.sample) ? result.sample.filter(isRecord).map((entry): PlanSample => ({
+    key: typeof entry.key === "string" ? entry.key : "",
+    label: typeof entry.label === "string" ? entry.label : null,
+    sourceKey: typeof entry.sourceKey === "string" ? entry.sourceKey : "",
+    action: typeof entry.action === "string" ? entry.action : "",
+    reason: typeof entry.reason === "string" ? entry.reason : "",
+    metadata: entry.metadata === true,
+    payload: entry.payload === true,
+  })).filter((entry) => entry.key !== "") : [];
+  return {
+    records: number("records"),
+    deliveries: number("deliveries"),
+    metadata: number("metadata"),
+    payload: number("payload"),
+    unchanged: number("skips"),
+    held: number("holds"),
+    blocked: number("blocked"),
+    other: number("awaitingApproval") + number("stale") + number("untracked"),
+    sample,
   };
 }

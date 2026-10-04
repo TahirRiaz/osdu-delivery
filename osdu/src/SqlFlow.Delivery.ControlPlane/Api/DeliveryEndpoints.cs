@@ -47,7 +47,7 @@ public sealed record DeliveryFlowStatsDto(
     Guid PipelineId, string FlowName, Guid FlowId, long Total, long Pending, long Delivering, long Delivered, long Held, long Failed,
     long Deleted, long Drifted, long DeliveredLast24h, DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, long Submissions,
     DeliverySubmissionDto? LastSubmission, string? Interface = null, int Interfaces = 1, long Waiting = 0, string? Partition = null,
-    IReadOnlyList<string>? Partitions = null, string? HeaderPartition = null);
+    IReadOnlyList<string>? Partitions = null, string? HeaderPartition = null, IReadOnlyList<string>? RedeliverParts = null);
 
 /// <summary>
 /// One interface of a delivery flow (docs/interfaces-design.md): its ledger identity, how it is delivered and why, the
@@ -397,6 +397,40 @@ public sealed record DeliveryRemovalRequest(
 /// </summary>
 public sealed record DeliverySyncRequest(IReadOnlyList<Guid>? Keys, DeliveryRecordFilterDto? Filter, int? Expected);
 
+/// <summary>
+/// A redelivery of many of a flow's records: those <c>Keys</c> names, every one <c>Filter</c> matches (resolved when it is
+/// asked for, and refused when it no longer matches the <c>Expected</c> count the operator was shown), or, with neither,
+/// every record the flow has delivered. <c>Scope</c> is the part to send again, as the flow's route sends it (all when it
+/// names none). The records are marked under the caller's name, and with <c>Run</c> a deliver run is queued that plans
+/// and sends them; without it the flow's next run does.
+/// </summary>
+public sealed record DeliveryFlowRedeliverRequest(
+    string? Scope, IReadOnlyList<Guid>? Keys, DeliveryRecordFilterDto? Filter, int? Expected, bool Run = true, string? Pool = null);
+
+/// <summary>
+/// A request to bring many of a flow's records up to date: rendered again under the rules of now and sent only where they
+/// render differently. The records are named as a redelivery of many names them (<see cref="DeliveryFlowRedeliverRequest"/>):
+/// by <c>Keys</c>, by <c>Filter</c> with the <c>Expected</c> count, or with neither every record the flow has delivered.
+/// </summary>
+public sealed record DeliveryRerenderRequest(IReadOnlyList<Guid>? Keys, DeliveryRecordFilterDto? Filter, int? Expected, bool Run = true, string? Pool = null);
+
+/// <summary>How many records were asked to be brought up to date, and the deliver run that brings them, when one was queued.</summary>
+public sealed record DeliveryRerenderResult(int Marked, Guid? RunId);
+
+/// <summary>
+/// The plan run that says what bringing a selection up to date would send: the run to watch, how many delivered records of
+/// the selection it checks (at most <see cref="DeliveryRerender.PreviewRecords"/>), and how many the selection holds, with
+/// whether that count stopped at the listing's bound.
+/// </summary>
+public sealed record DeliveryRerenderPreviewAccepted(Guid RunId, int Checked, long Selected, bool SelectedCapped);
+
+/// <summary>The bounds of bringing records up to date from the API.</summary>
+public static class DeliveryRerender
+{
+    /// <summary>The most records a preview checks: a plan run is scoped to at most this many records.</summary>
+    public const int PreviewRecords = DeliveryRunPayload.MaxRecordKeys;
+}
+
 /// <summary>A removal was queued on a node: the task to watch, and how many records it will act on.</summary>
 public sealed record DeliveryRemovalAccepted(Guid TaskId, string Status, string Scope, int Records);
 
@@ -508,6 +542,9 @@ public static class DeliveryEndpoints
 
         // The records ride in the body, so the route reads a larger body than the default and no larger than that.
         delivery.MapPost("/flows/{pipelineId:guid}/release", ReleaseFlowAsync).WithName("ReleaseDeliveryFlowRecords");
+        delivery.MapPost("/flows/{pipelineId:guid}/redeliver", RedeliverFlowAsync).WithName("RedeliverDeliveryFlowRecords");
+        delivery.MapPost("/flows/{pipelineId:guid}/rerender", RerenderFlowAsync).WithName("BringDeliveryFlowRecordsUpToDate");
+        delivery.MapPost("/flows/{pipelineId:guid}/rerender/preview", PreviewRerenderAsync).WithName("PreviewBringingDeliveryFlowRecordsUpToDate");
         delivery.MapPost("/flows/{pipelineId:guid}/probe", ProbeAsync).WithName("ProbeDeliveryTarget");
         delivery.MapPost("/cache/tags/decide", DecideUpdateTagsAsync).WithName("DecideDeliveryUpdateTags");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/release", ReleaseRecordAsync).WithName("ReleaseDeliveryRecord");
@@ -758,7 +795,8 @@ public static class DeliveryEndpoints
             stats.Sum(s => s.Stats.Waiting),
             partitions.Count == 1 ? partitions[0] : null,
             partitions.Count > 0 ? partitions : null,
-            headerPartition);
+            headerPartition,
+            one is null ? null : RedeliverScopes.For(one));
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
@@ -1648,6 +1686,266 @@ public static class DeliveryEndpoints
         var latest = await ledger.ListSubmissionsAsync(flow.FlowId, 1, null, ct).ConfigureAwait(false);
         var runId = await EnqueueRunAsync(db, dispatcher, flow, DeliverRun(flow, latest.Count > 0 ? latest[0].ParametersJson : null), request.Pool, user, ct).ConfigureAwait(false);
         return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryReleaseResult(released, runId));
+    }
+
+    /// <summary>
+    /// Redelivers many of a flow's records: sends again what the scope names whatever their hashes say. Named records (by
+    /// keys or by filter) are marked here under the caller's name and a deliver run is queued that sends them, as a release
+    /// of many is; every delivered record is asked of a deliver run, whose node marks and sends them in one recorded run.
+    /// The run reads under the parameter values the flow's last submission ran with, as a scheduled run of it would.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryRedeliverResult>, Accepted<DeliveryRedeliverResult>, ProblemHttpResult>> RedeliverFlowAsync(
+        Guid pipelineId, DeliveryFlowRedeliverRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, EngineContext engine,
+        DeliveryConfigStore config, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        var part = string.IsNullOrWhiteSpace(request?.Scope) ? RedeliverScopes.All : request.Scope.Trim().ToLowerInvariant();
+        RedeliverSelection selection;
+        try
+        {
+            selection = RedeliverScopes.Of(part, flow.Flow);
+        }
+        catch (DeliveryException ex)
+        {
+            return Invalid($"scope: {ex.Message}");
+        }
+
+        var (keys, unselected) = await SelectedAsync(flow, request?.Keys, request?.Filter, request?.Expected, Intervention.Redelivery, ledger, ct).ConfigureAwait(false);
+        if (unselected is not null)
+        {
+            return unselected;
+        }
+
+        var latest = await ledger.ListSubmissionsAsync(flow.FlowId, 1, null, ct).ConfigureAwait(false);
+        var values = latest.Count > 0 ? latest[0].ParametersJson : null;
+        if (keys is null && request is not { Run: false })
+        {
+            // Every delivered record: the node marks them in the run that sends them, however many the flow holds.
+            var all = await EnqueueRunAsync(db, dispatcher, flow, new RunParameters
+            {
+                Operation = DeliveryOperations.Deliver,
+                Values = SubmissionValues(values),
+                Payload = new DeliveryRunPayload { Redeliver = part, Interface = flow.Flow.Interface }.ToJson(),
+            }, request?.Pool, user, ct).ConfigureAwait(false);
+            return TypedResults.Accepted($"/api/v1/runs/{all}", new DeliveryRedeliverResult(0, all));
+        }
+
+        using var runtime = FlowRuntime.ForTarget(await ConfiguredAsync(engine, config, flow, ct).ConfigureAwait(false), flow.Flow);
+        runtime.Actor = RequestActor.Label(user);
+        var marked = await runtime.RedeliverAsync(keys, selection, ct).ConfigureAwait(false);
+        if (request is { Run: false })
+        {
+            return TypedResults.Ok(new DeliveryRedeliverResult(marked, null));
+        }
+
+        var runId = await EnqueueRunAsync(db, dispatcher, flow, DeliverRun(flow, values), request?.Pool, user, ct).ConfigureAwait(false);
+        return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRedeliverResult(marked, runId));
+    }
+
+    /// <summary>
+    /// Brings many of a flow's records up to date: renders them again under the rules of now and sends only a part that
+    /// renders differently, since their delivered hashes stay (docs/operations.md, Redelivering records). Named records
+    /// are asked here under the caller's name and a deliver run is queued that plans them; every delivered record is asked
+    /// of a deliver run, whose node asks and plans them in one recorded run. A record OSDU does not hold is left as it is.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryRerenderResult>, Accepted<DeliveryRerenderResult>, ProblemHttpResult>> RerenderFlowAsync(
+        Guid pipelineId, DeliveryRerenderRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, EngineContext engine,
+        DeliveryConfigStore config, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        var (keys, unselected) = await SelectedAsync(flow, request?.Keys, request?.Filter, request?.Expected, Intervention.Rerender, ledger, ct).ConfigureAwait(false);
+        if (unselected is not null)
+        {
+            return unselected;
+        }
+
+        var latest = await ledger.ListSubmissionsAsync(flow.FlowId, 1, null, ct).ConfigureAwait(false);
+        var values = latest.Count > 0 ? latest[0].ParametersJson : null;
+        if (keys is null && request is not { Run: false })
+        {
+            var all = await EnqueueRunAsync(db, dispatcher, flow, new RunParameters
+            {
+                Operation = DeliveryOperations.Deliver,
+                Values = SubmissionValues(values),
+                Payload = new DeliveryRunPayload { Rerender = true, Interface = flow.Flow.Interface }.ToJson(),
+            }, request?.Pool, user, ct).ConfigureAwait(false);
+            return TypedResults.Accepted($"/api/v1/runs/{all}", new DeliveryRerenderResult(0, all));
+        }
+
+        using var runtime = FlowRuntime.ForTarget(await ConfiguredAsync(engine, config, flow, ct).ConfigureAwait(false), flow.Flow);
+        runtime.Actor = RequestActor.Label(user);
+        var marked = await runtime.BringUpToDateAsync(keys, ct).ConfigureAwait(false);
+        if (request is { Run: false })
+        {
+            return TypedResults.Ok(new DeliveryRerenderResult(marked, null));
+        }
+
+        var runId = await EnqueueRunAsync(db, dispatcher, flow, DeliverRun(flow, values), request?.Pool, user, ct).ConfigureAwait(false);
+        return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRerenderResult(marked, runId));
+    }
+
+    /// <summary>
+    /// Says what bringing a selection up to date would send, sending nothing: a plan run over the selection's delivered
+    /// records (at most <see cref="DeliveryRerender.PreviewRecords"/> of them), each rendered under the rules of now and
+    /// decided by its hashes. The run's outcome counts what would go (the record, its payload) and names the first records.
+    /// </summary>
+    private static async Task<Results<Accepted<DeliveryRerenderPreviewAccepted>, ProblemHttpResult>> PreviewRerenderAsync(
+        Guid pipelineId, DeliveryRerenderRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
+        ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        long selected;
+        bool capped;
+        IReadOnlyList<DeliveryKey> candidates;
+        if (request?.Keys is not { Count: > 0 } && request?.Filter is null)
+        {
+            // Every record the flow has delivered: the first of them, in the listing's order, stand for the rest.
+            var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(RecordStatus.Delivered.ToString().ToLowerInvariant(), null, null, null, null));
+            if (query is null)
+            {
+                return invalid!;
+            }
+
+            BoundedCount count;
+            try
+            {
+                count = await ledger.CountAsync(flow.FlowId, query, RecordListing.CountLimit, ct).ConfigureAwait(false);
+            }
+            catch (RecordQueryTooBroadException ex)
+            {
+                return TooBroad(ex.Message);
+            }
+
+            (selected, capped) = (count.Count, !count.Exact);
+            candidates = await ledger.ListKeysAsync(flow.FlowId, query, DeliveryRerender.PreviewRecords, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            var (keys, unselected) = await SelectedAsync(flow, request.Keys, request.Filter, request.Expected, Intervention.Rerender, ledger, ct).ConfigureAwait(false);
+            if (unselected is not null)
+            {
+                return unselected;
+            }
+
+            (selected, capped) = (keys!.Count, false);
+            candidates = keys.Take(DeliveryRerender.PreviewRecords).ToList();
+        }
+
+        // Only a record OSDU holds is brought up to date, and a plan reads a record by the key tuple the ledger stored.
+        var records = await ledger.GetRecordsAsync(flow.FlowId, candidates, ct).ConfigureAwait(false);
+        var checkable = candidates
+            .Where(k => records.TryGetValue(k, out var r) && r.Status == RecordStatus.Delivered && r.TargetId is not null && r.SourceKeyJson is not null)
+            .Select(k => k.Value)
+            .ToList();
+        if (checkable.Count == 0)
+        {
+            return TypedResults.Problem(
+                detail: "None of the selected records is one OSDU holds with the source key it was built from, so there is nothing to bring up to date.",
+                statusCode: StatusCodes.Status409Conflict, title: "Nothing to check");
+        }
+
+        var latest = await ledger.ListSubmissionsAsync(flow.FlowId, 1, null, ct).ConfigureAwait(false);
+        var runId = await EnqueueRunAsync(db, dispatcher, flow, new RunParameters
+        {
+            Operation = DeliveryOperations.Plan,
+            Values = SubmissionValues(latest.Count > 0 ? latest[0].ParametersJson : null),
+            Payload = new DeliveryRunPayload { RecordKeys = checkable, Rerender = true, Interface = flow.Flow.Interface }.ToJson(),
+        }, null, user, ct).ConfigureAwait(false);
+        return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryRerenderPreviewAccepted(runId, checkable.Count, selected, capped));
+    }
+
+    /// <summary>What a many-record intervention is called in what it answers.</summary>
+    private sealed record Intervention(string Noun, string Verb)
+    {
+        public static Intervention Redelivery { get; } = new("A redelivery", "redeliver");
+
+        public static Intervention Rerender { get; } = new("A request to bring records up to date", "bring up to date");
+    }
+
+    /// <summary>
+    /// The records a many-record intervention names: those <paramref name="keys"/> lists, or every one <paramref name="filter"/>
+    /// matches, refused when it no longer matches the <paramref name="expected"/> count the operator was shown, at most
+    /// <see cref="RemovalLimits.MaxSelection"/> either way. With neither, null keys: every record the intervention reaches.
+    /// </summary>
+    private static async Task<(List<DeliveryKey>? Keys, ProblemHttpResult? Problem)> SelectedAsync(
+        FlowContext flow, IReadOnlyList<Guid>? keys, DeliveryRecordFilterDto? filter, int? expected, Intervention intervention, ILedger ledger, CancellationToken ct)
+    {
+        if (keys is { Count: > 0 })
+        {
+            if (filter is not null)
+            {
+                return (null, Invalid($"{intervention.Noun} names its records either by keys or by filter, not both."));
+            }
+
+            var named = keys.Distinct().Select(k => new DeliveryKey(k)).ToList();
+            if (named.Count > RemovalLimits.MaxSelection)
+            {
+                return (null, TypedResults.Problem(
+                    detail: $"{intervention.Noun} names at most {RemovalLimits.MaxSelection} records; {named.Count} were selected. Ask it of every record of the flow, or narrow the selection.",
+                    statusCode: StatusCodes.Status400BadRequest, title: "Too many records"));
+            }
+
+            return (named, null);
+        }
+
+        if (filter is null)
+        {
+            return (null, null);
+        }
+
+        var (query, invalid) = BuildQuery(filter);
+        if (query is null)
+        {
+            return (null, invalid!);
+        }
+
+        BoundedCount matched;
+        try
+        {
+            matched = await ledger.CountAsync(flow.FlowId, query, RemovalLimits.MaxSelection + 1, ct).ConfigureAwait(false);
+        }
+        catch (RecordQueryTooBroadException ex)
+        {
+            return (null, TooBroad(ex.Message));
+        }
+
+        if (!matched.Exact || matched.Count > RemovalLimits.MaxSelection)
+        {
+            return (null, TypedResults.Problem(
+                detail: $"The filter matches more than {RemovalLimits.MaxSelection} records as far as the listing counts; ask it of every record of the flow, or narrow the filter.",
+                statusCode: StatusCodes.Status409Conflict, title: "Too many records"));
+        }
+
+        if (matched.Count == 0)
+        {
+            return (null, TypedResults.Problem(
+                detail: $"The filter matches no records, so there is nothing to {intervention.Verb}.",
+                statusCode: StatusCodes.Status409Conflict, title: "Nothing selected"));
+        }
+
+        if (expected is { } shown && shown != matched.Count)
+        {
+            return (null, TypedResults.Problem(
+                detail: $"The filter matched {shown} records when it was shown and matches {matched.Count} now. Nothing was asked; check the list and ask again.",
+                statusCode: StatusCodes.Status409Conflict, title: "The selection changed"));
+        }
+
+        return ([.. await ledger.ListKeysAsync(flow.FlowId, query, RemovalLimits.MaxSelection, ct).ConfigureAwait(false)], null);
     }
 
     /// <summary>

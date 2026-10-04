@@ -110,7 +110,7 @@ public sealed class RecordPreviewer
         }
 
         var selection = named is null ? SourceSelection.Full() : SourceSelection.ForKeys(named.Candidates);
-        var header = await _runtime.Planner.OpenAsync(flow, resolved, _runtime.Parameters, selection, gate: false, stored: null, ct).ConfigureAwait(false);
+        var header = await _runtime.Planner.OpenAsync(flow, resolved, _runtime.Parameters, selection, gate: false, stored: null, ct: ct).ConfigureAwait(false);
         var issues = header.Issues.Select(i => i.ToString()).ToList();
         if (named is null)
         {

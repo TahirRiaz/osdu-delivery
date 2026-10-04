@@ -74,7 +74,7 @@ the identities its mapping declares when it is next staged.
 | `SourceFileName`, `SourceRowNumber`, `SourceUpdatedUtc` | Where the version OSDU holds came from: the ingestion row's `FileName_DW`, `RowNumber_DW` and `UpdatedDate_DW`. |
 | `PendingSourceFileName`, `PendingSourceRowNumber`, `PendingSourceUpdatedUtc` | The same for the queued version, or for the state a held, failed or deleted record was left in. |
 | `SourceInsertedUtc` | When the ingestion table first inserted the record's row (`InsertedDate_DW`), which later changes never move: the row's arrival, as the last plan that read it saw it. Null while the table does not carry the column, or until a plan reads the row. |
-| `PlanRequestedUtc` | Set when the ledger asks for the record to be planned again (a redeliver of named records or of every delivered record, a release with no pending document, a cache rollout); the next run pages these records and plans them as a keys selection, and planning clears it. |
+| `PlanRequestedUtc` | Set when the ledger asks for the record to be planned again (a redeliver of named records or of every delivered record, a request to bring records up to date, a release with no pending document, a cache rollout); the next run pages these records and plans them as a keys selection, and planning clears it. |
 | `TargetId`, `TargetVersion` | The OSDU id and the last known version (the drift handle). |
 | `ClaimedTargetId` | The OSDU id the record claimed for its flow when it first queued a document, kept for good. Unique across the ledger: one OSDU record belongs to one flow. Null for a record that was only ever held. |
 | `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |
@@ -287,7 +287,7 @@ until its next build or the first read of its table.
 ### `osdu.Activity`: the audit trail of runs and interventions
 
 One row per operator or scheduler action. The runs are `deliver`, `intake` and `drain` (a fan-out member's share),
-`verify`, and the scheduled reachability `probe`; the interventions are `sync`, `release`, `redeliver` and `delete`,
+`verify`, and the scheduled reachability `probe`; the interventions are `sync`, `release`, `redeliver`, `rerender` and `delete`,
 and an admin's `remove-dimension` (a dimension its flow no longer declares, removed with everything kept of it).
 Each carries the actor (`schedule:<name>` for a run a schedule fired, the requesting user or `manual:<user>` for a run
 started by hand, `user:<name>` for an intervention from the GUI or the API, `cli:<user>` from a workstation,
@@ -510,6 +510,15 @@ in parts, a redelivery of `files`, `bulk` or `workflow` names that part on the d
 queues a deliver run scoped to the record, which reads it from the ingestion tables by key, so the redelivery happens
 at once and is recorded under the user who asked. It never bypasses the render: the document sent is always the one
 the pinned mapping produces from the current source rows.
+
+**Bringing records up to date** (the `rerender` intervention, [operations](operations.md#redelivering-records)) keeps
+the hashes of what OSDU holds and forgets instead the source version the record was last planned under: its
+fingerprint and modified time, of the delivered version and of any queued work. It stamps the record to be planned
+again, so whichever run meets it next, a scheduled one included, cannot pass it as unchanged without rendering it, and
+the hashes decide what is sent: only a part that renders differently goes. A plan that finds the record unchanged
+writes the source version back with its skip. It reaches only records OSDU holds (delivered, with an id); a named
+record in any other state is left as it is. An intervention that names more than 100 records records how many in its
+parameters, and the ledger names each one under it (`osdu.ActivityRecord`).
 
 **Removal** takes the record out of OSDU through the flow's protocol, to one of three depths (see
 [operations](operations.md#removing-records-from-osdu)). `record` and `everything` write a `delete` attempt,

@@ -108,7 +108,7 @@ const SOURCES: &[Source] = &[
         doc_type: "guide",
         path: "osdu/docs/operations.md",
         summary: "Running OSDU Delivery: the GUI page by page, the API, the runbook for failures and held records, metrics, and day-to-day procedures.",
-        keywords: &["operations", "runbook", "gui", "api", "held", "failed", "redeliver", "release", "verify", "drift", "metrics", "cache page", "records page"],
+        keywords: &["operations", "runbook", "gui", "api", "held", "failed", "redeliver", "rerender", "bring up to date", "release", "verify", "drift", "metrics", "cache page", "records page"],
         verbs: false,
         text: osdu_doc!("operations.md"),
     },
@@ -198,7 +198,7 @@ const SOURCES: &[Source] = &[
         doc_type: "cli-command",
         path: "osdu/docs/reference/cli/delivery.md",
         summary: "sqlflow check, preview, values, fixtures, cache, template, assertions and dimensions, and the operation, values and payload a run of an OSDU flow takes.",
-        keywords: &["cli", "check", "preview", "values", "fixtures", "cache", "template", "assertions", "dimensions", "run", "operation", "payload", "recordKeys", "redeliver", "force"],
+        keywords: &["cli", "check", "preview", "values", "fixtures", "cache", "template", "assertions", "dimensions", "run", "operation", "payload", "recordKeys", "redeliver", "rerender", "force"],
         verbs: true,
         text: osdu_doc!("reference/cli/delivery.md"),
     },
@@ -622,6 +622,7 @@ mod tests {
     /// neither this list nor the index fails the test below, so a new page is a decision rather than an omission.
     const NOT_INDEXED: &[(&str, &str)] = &[
         ("osdu/docs/cache-lookups-plan.md", "a plan for work in progress, not a description of what the product does"),
+        ("osdu/docs/validation-plan.md", "a plan for work in progress, not a description of what the product does; documents.md says what validation does"),
         ("osdu/docs/osdu-testing.md", "how the project tests against a live OSDU: internal procedure, not product reference"),
         ("osdu/docs/test-matrix.md", "the project's own test coverage matrix"),
         ("osdu/docs/reference/README.md", "the index of the reference folder; its pages are indexed themselves"),

@@ -722,15 +722,67 @@ public sealed class FlowRuntime : IDisposable
     public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey>? keys, RedeliverSelection selection, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(selection);
-        return TrackAsync("redeliver", new { keys = keys?.Select(k => k.ToString()).ToList(), scope = selection.Scope.ToString(), parts = selection.Parts }, keys is { Count: 1 } ? keys[0] : null, async activity =>
+        return TrackAsync("redeliver", Named(keys, new { scope = selection.Scope.ToString(), parts = selection.Parts }), keys is { Count: 1 } ? keys[0] : null, async activity =>
         {
             var marked = await RequireLedger().ForceRedeliverAsync(Flow.Id, keys, selection, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            await EmitAsync("record.redeliver", keys, $"redelivery of {selection} requested by {Actor}", ct).ConfigureAwait(false);
+            await EmitNamedAsync("record.redeliver", keys, $"redelivery of {selection} requested by {Actor}", ct).ConfigureAwait(false);
             return (marked, keys is null
                 ? $"marked every delivered record, {marked} in all, for redelivery of {selection}"
                 : $"marked {marked} record(s) for redelivery of {selection}", (Guid?)null, false);
         }, ct);
     }
+
+    /// <summary>
+    /// Asks records OSDU holds to be brought up to date (docs/operations.md, Redelivering records): rendered again by the
+    /// next plan that meets them, whichever run that is, and sent only where they render differently, since their delivered
+    /// hashes stay. Null keys means every record the flow has delivered; a named record OSDU does not hold is left as it is.
+    /// Returns how many were marked.
+    /// </summary>
+    public Task<int> BringUpToDateAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
+        => TrackAsync("rerender", Named(keys, null), keys is { Count: 1 } ? keys[0] : null, async activity =>
+        {
+            var marked = await RequireLedger().RequestRenderAsync(Flow.Id, keys, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            await EmitNamedAsync("record.rerender", keys, $"bringing up to date requested by {Actor}", ct).ConfigureAwait(false);
+            return (marked, keys is null
+                ? $"asked every delivered record, {marked} in all, to be brought up to date"
+                : $"asked {marked} of {keys.Count} record(s) to be brought up to date; a record OSDU does not hold is left as it is", (Guid?)null, false);
+        }, ct);
+
+    /// <summary>
+    /// The most records an intervention names one by one, in its activity and in its events. Beyond it the activity says how
+    /// many it asked for and one event speaks for the flow, while the ledger still names every record under the activity.
+    /// </summary>
+    internal const int NamedPerIntervention = 100;
+
+    /// <summary>What an intervention on <paramref name="keys"/> records as its parameters: the keys, or how many when they are many, with <paramref name="extra"/> beside them.</summary>
+    private static Dictionary<string, object?> Named(IReadOnlyList<DeliveryKey>? keys, object? extra)
+    {
+        var parameters = new Dictionary<string, object?>(StringComparer.Ordinal);
+        if (keys is null || keys.Count <= NamedPerIntervention)
+        {
+            parameters["keys"] = keys?.Select(k => k.ToString()).ToList();
+        }
+        else
+        {
+            parameters["count"] = keys.Count;
+        }
+
+        if (extra is not null)
+        {
+            foreach (var property in JsonSerializer.SerializeToElement(extra).EnumerateObject())
+            {
+                parameters[property.Name] = property.Value;
+            }
+        }
+
+        return parameters;
+    }
+
+    /// <summary>Tells the listeners what an intervention on <paramref name="keys"/> asked for: an event per record while they are few, else one for the flow.</summary>
+    private Task EmitNamedAsync(string kind, IReadOnlyList<DeliveryKey>? keys, string detail, CancellationToken ct)
+        => keys is { Count: <= NamedPerIntervention }
+            ? EmitAsync(kind, keys, detail, ct)
+            : EmitAsync(kind, null, detail, keys is null ? "every delivered record" : $"{keys.Count} records", ct);
 
     /// <summary>
     /// How many of the records the ledger asked to be planned again one pass of a deliver run reads by key

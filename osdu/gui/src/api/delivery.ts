@@ -60,6 +60,11 @@ export interface DeliveryFlowStats {
    * request's partition: such a flow takes none.
    */
   headerPartition?: string | null;
+  /**
+   * The parts of a record the flow's route can send again (all, record, and the files, bulk data or workflow run it sends,
+   * with metadata and payload as their older names), for a card of one ledger; absent for a card that adds up several.
+   */
+  redeliverParts?: string[] | null;
 }
 
 /** One submission as the ledger received it and what became of it. */
@@ -1448,6 +1453,40 @@ export interface DeliverySyncRequest {
   keys?: string[];
   filter?: DeliveryRecordFilter;
   expected?: number;
+}
+
+/**
+ * Which of a flow's records a many-record intervention acts on: those `keys` names, every one `filter` matches (refused when
+ * it no longer matches the `expected` count the operator was shown), or with neither every record the flow has delivered.
+ * With `run` (the default) a deliver run is queued that acts on them; without it the flow's next run does.
+ */
+export interface DeliveryManyRecords {
+  keys?: string[];
+  filter?: DeliveryRecordFilter;
+  expected?: number;
+  run?: boolean;
+}
+
+/** A redelivery of many records: `scope` is the part to send again whatever the hashes say, all when it names none. */
+export interface DeliveryFlowRedeliverRequest extends DeliveryManyRecords {
+  scope?: string;
+}
+
+/** How many records were asked to be brought up to date, and the deliver run that brings them when one was queued. */
+export interface DeliveryRerenderResult {
+  marked: number;
+  runId?: string | null;
+}
+
+/**
+ * The plan run that says what bringing a selection up to date would send: the run to watch, how many delivered records of
+ * the selection it checks, and how many the selection holds (`selectedCapped` when the count stopped at the listing's bound).
+ */
+export interface DeliveryRerenderPreview {
+  runId: string;
+  checked: number;
+  selected: number;
+  selectedCapped: boolean;
 }
 
 /**
@@ -3240,6 +3279,15 @@ export const deliveryApi = {
    */
   releaseFlow: (pipelineId: string, keys?: string[], scope?: DeliveryFlowScope, run = false) =>
     post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", scope), { keys: keys ?? null, run }),
+  /** Sends many records again whatever their hashes say: the part `scope` names, of the records the request names. */
+  redeliverFlow: (pipelineId: string, request: DeliveryFlowRedeliverRequest, scope?: DeliveryFlowScope) =>
+    post<DeliveryRedeliverResult>(flowPath(pipelineId, "/redeliver", scope), request),
+  /** Brings many records up to date: renders them again and sends only what renders differently. */
+  rerenderFlow: (pipelineId: string, request: DeliveryManyRecords, scope?: DeliveryFlowScope) =>
+    post<DeliveryRerenderResult>(flowPath(pipelineId, "/rerender", scope), request),
+  /** Queues the plan run that says what bringing the records the request names up to date would send, sending nothing. */
+  previewRerender: (pipelineId: string, request: DeliveryManyRecords, scope?: DeliveryFlowScope) =>
+    post<DeliveryRerenderPreview>(flowPath(pipelineId, "/rerender/preview", scope), request),
   /** Probes the flow's target: is OSDU reachable with the flow's credentials, in the scope's partition? Answered at once. */
   probe: (pipelineId: string, scope?: DeliveryFlowScope) =>
     post<DeliveryProbeResult>(flowPath(pipelineId, "/probe", scope)),
@@ -3255,9 +3303,6 @@ export const deliveryApi = {
   /** Releases every record an issue keeps blocked; with `run`, also queues a deliver run of the flow. */
   releaseIssue: (pipelineId: string, issue: string, run: boolean, scope?: DeliveryFlowScope) =>
     post<DeliveryIssueReleaseResult>(flowPath(pipelineId, `/issues/${encodeURIComponent(issue)}/release`, scope), { run }),
-  /** Marks the record for redelivery and (with run) queues the deliver run that sends it. */
-  redeliver: (record: DeliveryRecordRef, scope: "all" | "metadata" | "payload" = "all", run = true) =>
-    post<DeliveryRedeliverResult>(`${recordApiPath(record)}/redeliver`, { scope, run }),
   /** Queues a verify run scoped to this record. */
   verify: (record: DeliveryRecordRef) => post<DeliveryRunAccepted>(`${recordApiPath(record)}/verify`),
   /**

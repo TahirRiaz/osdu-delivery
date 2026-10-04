@@ -743,6 +743,12 @@ function scopeOf(activity: DeliveryActivity, parameters: Record<string, unknown>
     return keys.length;
   }
 
+  // An intervention on many records names how many rather than each one; the ledger names every record it reached.
+  const count = parameters?.count;
+  if (typeof count === "number" && Number.isFinite(count) && count > 0) {
+    return count;
+  }
+
   return activity.deliveryKey !== null ? 1 : null;
 }
 
@@ -760,7 +766,8 @@ interface Reach {
 
 function reachOf(activity: DeliveryActivity, parameters: Record<string, unknown> | null): Reach | null {
   const keys = parameters?.keys;
-  if ((activity.kind !== "release" && activity.kind !== "redeliver") || activity.deliveryKey !== null || (Array.isArray(keys) && keys.length > 0)) {
+  if ((activity.kind !== "release" && activity.kind !== "redeliver" && activity.kind !== "rerender")
+    || activity.deliveryKey !== null || (Array.isArray(keys) && keys.length > 0) || typeof parameters?.count === "number") {
     return null;
   }
 
@@ -768,6 +775,16 @@ function reachOf(activity: DeliveryActivity, parameters: Record<string, unknown>
   const reached = /^released (\d+) record|, (\d+) in all,/.exec(activity.summary ?? "");
   const said = reached?.[1] ?? reached?.[2];
   const count = said === undefined ? null : Number(said);
+  if (activity.kind === "rerender") {
+    return {
+      title: count === null
+        ? "Bringing up to date asked for every delivered record, this one among them"
+        : `Bringing up to date asked for every delivered record, ${count.toLocaleString()} in all, this one among them`,
+      count,
+      pattern: null,
+    };
+  }
+
   if (activity.kind === "redeliver") {
     return {
       title: count === null
@@ -819,6 +836,11 @@ function redeliveryOf(parameters: Record<string, unknown> | null): string | null
 /** The request each kind of intervention makes, and the button on a record's page that makes it for that record alone. */
 const REQUESTS: Partial<Record<string, { one: string; many: (count: number) => string; button: string }>> = {
   redeliver: { one: "Redelivery of this record asked", many: (count) => `Redelivery asked for ${count} records, this one among them`, button: "Redeliver" },
+  rerender: {
+    one: "Bringing this record up to date asked",
+    many: (count) => `Bringing ${count} records up to date asked, this one among them`,
+    button: "Bring up to date",
+  },
   release: { one: "Release of this record asked", many: (count) => `Release asked for ${count} records, this one among them`, button: "Release" },
   delete: { one: "Removal of this record asked", many: (count) => `Removal asked for ${count} records, this one among them`, button: "Remove" },
   verify: { one: "Verify of this record asked", many: (count) => `Verify asked for ${count} records, this one among them`, button: "Verify" },
@@ -939,7 +961,9 @@ function activityEntry(activity: DeliveryActivity, record: DeliveryRecord, resul
     facts: [
       reach?.pattern != null
         ? <span key="p" className="break-words">{`kept blocked by: ${reach.pattern}`}</span>
-        : activity.kind === "redeliver" ? redeliveryOf(parameters) : reach === null && !failed && activity.summary,
+        : activity.kind === "redeliver" ? redeliveryOf(parameters)
+          : activity.kind === "rerender" ? "rendered again, and sent only where it renders differently"
+            : reach === null && !failed && activity.summary,
       many,
       <RunRef key="r" runId={activity.runId} />,
       <SubmissionRef key="s" submissionId={activity.submissionId} />,

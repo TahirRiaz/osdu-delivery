@@ -13,6 +13,25 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Records are redelivered from the Records tab, and brought up to date rather than sent blindly.** The selection bar
+  offers **Redeliver** for the ticked records or every record the filter matches, the overview for every delivered record
+  of the interface, and a record's own page for that record, through one dialog with two ways side by side. **Bring up to
+  date** renders the records again with the mapping, template, cache and engine of now and sends only what comes out
+  different, each part (the document, the payload) decided by its own hash; it first asks a plan run what it would send
+  and shows how many of the records it checked would be sent and with which part, how many render the same, how many
+  would be held, and the first ones by name. **Send again** sends the part the route offers (everything, the record, its
+  files, bulk data or workflow run) whatever the hashes say, which OSDU keeps as a new version. The request to bring a
+  record up to date is the record's own: it keeps the delivered hashes and forgets the source version the record was
+  planned under, so whichever run meets it renders it, a scheduled one included, and a plan that finds it unchanged writes
+  that version back. It reaches only records OSDU holds, and is a `rerender` activity on the history of every record it
+  reached. A deliver run takes it as the payload's `rerender`, for named records or every delivered one, and a plan run
+  renders every record it reads with it; the trigger dialog's **Send again** offers it as **What renders differently**.
+  The API answers it at `POST /flows/{pipelineId}/rerender` and `.../rerender/preview`, sends records again at
+  `POST /flows/{pipelineId}/redeliver`, each naming records by keys, by a filter with the count shown, or as every
+  delivered record, and lists the route's parts under the stats' `redeliverParts`. A plan's outcome counts the records it
+  would send with their document and with their payload, and names the first 20. An intervention naming more than 100
+  records records how many rather than each key, and raises one event for the flow
+  ([osdu/docs/operations.md](osdu/docs/operations.md), Redelivering records).
 - **Every document is validated before it is sent, and its verdict is recorded.** One module judges a record against its
   template (`osdu/src/SqlFlow.Delivery/Validation`): each template version is compiled once into the rules it states
   (types, formats, patterns, enumerations, constants, lengths, bounds, item counts, uniqueness, required properties at

@@ -23,6 +23,7 @@ import { settle } from "./answers";
 import { RecordRenderTab, type RenderResults } from "./RecordRenderTab";
 import { RecordSituation } from "./RecordSituation";
 import { RecordSourceTab } from "./RecordSourceTab";
+import { RedeliverDialog } from "./RedeliverDialog";
 import { RemovalDialog } from "./RemovalDialog";
 import { TaskResultCard } from "./TaskResultCard";
 import { isTerminalTask, useComputeTask } from "./useComputeTask";
@@ -75,7 +76,8 @@ export default function DeliveryRecordPage() {
 function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [confirm, setConfirm] = useState<"redeliver" | "send-now" | null>(null);
+  const [confirm, setConfirm] = useState<"send-now" | null>(null);
+  const [redeliverOpen, setRedeliverOpen] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   // The removal a node runs for this record, shown under the header whatever tab is open, since it changes the record.
   const [removal, setRemoval] = useState<{ taskId: string; label: string } | null>(null);
@@ -145,17 +147,6 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     },
     onError: fail,
   });
-  const redeliver = useMutation({
-    mutationFn: () => deliveryApi.redeliver(ref, "all", true),
-    onSuccess: (result) => {
-      setConfirm(null);
-      toast.success("Redelivery run queued.");
-      if (result.runId) {
-        navigate(`/runs/${result.runId}`);
-      }
-    },
-    onError: (error) => { setConfirm(null); fail(error); },
-  });
   const release = useMutation({
     mutationFn: () => deliveryApi.release(ref),
     onSuccess: (result) => {
@@ -207,7 +198,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
   }
 
   const record = detail.record;
-  const busy = verify.isPending || sync.isPending || redeliver.isPending || release.isPending || osdu.pending || readSource.isPending
+  const busy = verify.isPending || sync.isPending || release.isPending || osdu.pending || readSource.isPending
     || render.isPending;
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   // The record's ledger: the interface of its source and the partition it delivers to, which every view of it acts in.
@@ -240,7 +231,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               <ShieldCheck />
               Verify
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setConfirm("redeliver")} disabled={busy || detail.pipelineId === null} title="Render and send the record again from its current source row" data-testid="record-redeliver">
+            <Button variant="outline" size="sm" onClick={() => setRedeliverOpen(true)} disabled={busy || detail.pipelineId === null} title="Bring the record up to date from its current source row, or send it again" data-testid="record-redeliver">
               <RotateCcw />
               Redeliver
             </Button>
@@ -344,15 +335,25 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
         onConfirm={() => release.mutate()}
         onClose={() => setConfirm(null)}
       />
-      <ConfirmDialog
-        open={confirm === "redeliver"}
-        title="Redeliver record"
-        message="Queue a deliver run that renders and sends this record again from the current source, whatever was delivered before. The run is recorded under your name."
-        confirmLabel="Redeliver"
-        busy={redeliver.isPending}
-        onConfirm={() => redeliver.mutate()}
-        onClose={() => setConfirm(null)}
-      />
+      {detail.pipelineId !== null && redeliverOpen && (
+        <RedeliverDialog
+          open
+          onClose={() => setRedeliverOpen(false)}
+          pipelineId={detail.pipelineId}
+          flowId={ref.flowId}
+          flowScope={flowScope}
+          flowName={ledgerLabel(detail.flowName ?? "this flow", flowScope)}
+          selection={{ kind: "keys", keys: [deliveryKey] }}
+          singleLabel={record.label ?? record.sourceKey}
+          onDone={(outcome) => {
+            const what = outcome.mode === "uptodate" ? "Bringing the record up to date" : "Sending the record again";
+            toast.success(
+              outcome.runId ? `${what}: a deliver run is queued.` : `${what} is asked of the flow's next run.`,
+              outcome.runId ? { action: { label: "Open run", onClick: () => navigate(`/runs/${outcome.runId}`) } } : undefined);
+            refresh();
+          }}
+        />
+      )}
       {detail.pipelineId !== null && (
         <RemovalDialog
           open={removeOpen}

@@ -1878,6 +1878,55 @@ public sealed partial class OsduLedger : ILedger
         }
     }
 
+    public async Task<int> RequestRenderAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, long? activityId, DateTime nowUtc, CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(WriteSlice, 1);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return 0;
+        }
+
+        await using var db = Open();
+        if (keys is not null)
+        {
+            var marked = 0;
+            foreach (var slice in keys.Select(k => k.Value).Distinct().Chunk(WriteSlice))
+            {
+                ct.ThrowIfCancellationRequested();
+                marked += await RetryDeadlockAsync(
+                    () => SqlServerLedgerBulk.RenderSliceAsync(db, partition, flowId, slice, activityId, nowUtc, ct), ct).ConfigureAwait(false);
+            }
+
+            return marked;
+        }
+
+        // Every record OSDU holds of the flow, walked through the status index a page at a time as a redelivery of the whole
+        // flow is: a record marked carries the walk's moment as its update time and its request, so the walk passes it over.
+        var total = 0;
+        var after = SqlServerLedgerBulk.WalkPosition.Start;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var position = after;
+            var page = await RetryDeadlockAsync(
+                () => SqlServerLedgerBulk.DeliveredPageAsync(db, partition, flowId, position, nowUtc, WriteSlice, ct), ct).ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                return total;
+            }
+
+            var keysOfPage = page.Select(p => p.DeliveryKey).ToList();
+            total += await RetryDeadlockAsync(
+                () => SqlServerLedgerBulk.RenderSliceAsync(db, partition, flowId, keysOfPage, activityId, nowUtc, ct), ct).ConfigureAwait(false);
+            if (page.Count < WriteSlice)
+            {
+                return total;
+            }
+
+            after = page[^1];
+        }
+    }
+
     /// <summary>
     /// Marks the named records of one ledger for redelivery of <paramref name="scope"/>, <see cref="WriteSlice"/> to a
     /// statement, each naming the records it marked under <paramref name="activityId"/> when given: the one statement a

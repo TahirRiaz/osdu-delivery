@@ -59,6 +59,13 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
                   {`redeliver ${REDELIVER_LABELS[request.redeliver] ?? request.redeliver}${request.recordKeys.length === 0 ? " of every delivered record" : ""}`}
                 </Badge>
               )}
+              {request.rerender && (
+                <Badge variant="secondary" data-testid="run-rerender">
+                  {run.operation === "plan"
+                    ? "what bringing them up to date would send"
+                    : `bring up to date${request.recordKeys.length === 0 ? " every delivered record" : ""}`}
+                </Badge>
+              )}
               {request.slices.length > 0 && (
                 <Badge variant="secondary" className="font-mono" data-testid="run-slices">
                   {`${request.slices.length === 1 ? "slice" : "slices"} ${request.slices.join(", ")}`}

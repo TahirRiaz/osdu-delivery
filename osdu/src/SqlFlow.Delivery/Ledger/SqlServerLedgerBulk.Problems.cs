@@ -82,6 +82,36 @@ internal static partial class SqlServerLedgerBulk
         SELECT COUNT(*) FROM @marked;
         """;
 
+    // One slice of a request to bring records up to date, in one transaction with the rows that name what it marked. Each
+    // named record of one ledger that OSDU holds (delivered, with an id) keeps its delivered hashes, so a plan sends only a
+    // part that renders differently, and forgets the source version it was last planned under (fingerprint and modified
+    // time, of the delivered version and of queued work), so no plan passes it as unchanged without rendering it; a plan
+    // that finds it unchanged writes that version back. It is asked to be planned again, its request and update time set to
+    // the one moment a walk of every delivered record passes over. With an activity, each record marked is named under it.
+    private const string RenderSliceSql = $$"""
+        DECLARE @marked TABLE ([DeliveryKey] uniqueidentifier NOT NULL PRIMARY KEY);
+        UPDATE r SET
+            r.[SourceFingerprint] = NULL,
+            r.[PendingSourceFingerprint] = NULL,
+            r.[SourceModifiedUtc] = NULL,
+            r.[PendingSourceModifiedUtc] = NULL,
+            r.[PlanRequestedUtc] = @now,
+            r.[UpdatedUtc] = @now
+        OUTPUT inserted.[DeliveryKey] INTO @marked ([DeliveryKey])
+        FROM (SELECT DISTINCT CAST(k.[value] AS uniqueidentifier) AS [DeliveryKey] FROM OPENJSON(@keys) AS k) AS n
+        INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+            ON r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[DeliveryKey] = n.[DeliveryKey]
+        WHERE r.[Status] = N'delivered' AND r.[TargetId] IS NOT NULL;
+        IF @activityId IS NOT NULL
+            INSERT INTO [osdu].[ActivityRecord] ([PartitionId], [FlowId], [DeliveryKey], [ActivityId])
+            SELECT @partitionId, @flowId, x.[DeliveryKey], @activityId
+            FROM @marked AS x
+            WHERE NOT EXISTS (
+                SELECT 1 FROM [osdu].[ActivityRecord] AS a
+                WHERE a.[PartitionId] = @partitionId AND a.[FlowId] = @flowId AND a.[DeliveryKey] = x.[DeliveryKey] AND a.[ActivityId] = @activityId);
+        SELECT COUNT(*) FROM @marked;
+        """;
+
     // A page of the records OSDU holds of one ledger, in the status index's order, after the last of the page before. A
     // record this redelivery marked carries its moment as both its update time and its request, so the walk passes it over
     // when it meets it again at the end. No bound on the update time: the moments were written by the clocks of whichever
@@ -262,6 +292,23 @@ internal static partial class SqlServerLedgerBulk
             command.Parameters.Add(new SqlParameter("@delivered", SqlDbType.Bit) { Value = deliveredOnly });
             command.Parameters.Add(new SqlParameter("@activityId", SqlDbType.BigInt) { Value = activityId is { } id ? id : DBNull.Value });
             command.Parameters.Add(new SqlParameter("@note", SqlDbType.NVarChar, 2000) { Value = note });
+            command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
+            return Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
+        }, ct);
+
+    /// <summary>
+    /// Asks the named records of one ledger that OSDU holds to be rendered again in one transaction (see the statement),
+    /// naming each one marked under <paramref name="activityId"/> when given. Returns how many it marked.
+    /// </summary>
+    public static Task<int> RenderSliceAsync(
+        OsduDbContext db, short partitionId, Guid flowId, IReadOnlyList<Guid> keys, long? activityId, DateTime now, CancellationToken ct)
+        => InTransactionAsync(db, async (connection, transaction) =>
+        {
+            await using var command = Command(connection, transaction, RenderSliceSql, slice: null);
+            command.Parameters.Add(new SqlParameter("@keys", SqlDbType.NVarChar, -1) { Value = System.Text.Json.JsonSerializer.Serialize(keys) });
+            command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
+            command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+            command.Parameters.Add(new SqlParameter("@activityId", SqlDbType.BigInt) { Value = activityId is { } id ? id : DBNull.Value });
             command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
             return Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
         }, ct);

@@ -736,6 +736,43 @@ public class DeliverRunScopeTests
         Assert.True(DeliveryExecutor.ForcesReplan(new DeliveryRunPayload { Force = true }, reRunningSubmission: false));
         Assert.True(DeliveryExecutor.ForcesReplan(DeliveryRunPayload.None, reRunningSubmission: true));
         Assert.False(DeliveryExecutor.ForcesReplan(DeliveryRunPayload.None, reRunningSubmission: false));
+        Assert.True(DeliveryExecutor.ForcesReplan(new DeliveryRunPayload { Rerender = true }, reRunningSubmission: false));
+    }
+
+    [Fact]
+    public void Bringing_records_up_to_date_is_a_deliver_run_or_a_plan_of_one_and_never_a_forced_send()
+    {
+        // A deliver run brings named records, or every delivered one, up to date; a plan says what that would send.
+        var named = DeliveryRunPayload.Parse("""{"rerender":true,"recordKeys":["11111111-1111-1111-1111-111111111111"]}""");
+        named.Validate(DeliveryOperations.Deliver);
+        named.Validate(DeliveryOperations.Plan);
+        Assert.True(named.Rerender);
+        Assert.False(named.IsEmpty);
+        Assert.Equal("""{"recordKeys":["11111111-1111-1111-1111-111111111111"],"rerender":true}""", named.ToJson());
+        Assert.Equal(named.Rerender, DeliveryRunPayload.Parse(named.ToJson()).Rerender);
+        DeliveryRunPayload.Parse("""{"rerender":true}""").Validate(DeliveryOperations.Deliver);
+        Assert.False(DeliveryRunPayload.Parse("""{"rerender":false}""").Rerender);
+
+        // It decides by the hashes, so it never goes with a forced send, nor with a submission's run.
+        Assert.Contains(
+            "rerender sends what renders differently and redeliver sends whatever the hashes say",
+            Assert.Throws<SqlFlowException>(() => new DeliveryRunPayload { Rerender = true, Redeliver = RedeliverScopes.All }.Validate(DeliveryOperations.Deliver)).Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "a run on a submission delivers what that submission planned",
+            Assert.Throws<SqlFlowException>(() => new DeliveryRunPayload { Rerender = true, SubmissionId = Guid.NewGuid() }.Validate(DeliveryOperations.Deliver)).Message,
+            StringComparison.Ordinal);
+
+        // The operations that send nothing, or read rows rather than delivered records, refuse it by name.
+        foreach (var operation in new[] { DeliveryOperations.Intake, DeliveryOperations.Drain, DeliveryOperations.Verify, DeliveryOperations.Sync, DeliveryOperations.Replan })
+        {
+            Assert.Contains(
+                $"payload {DeliveryRunPayload.RerenderProperty} does not apply to the {operation} operation",
+                Assert.Throws<SqlFlowException>(() => new DeliveryRunPayload { Rerender = true }.Validate(operation)).Message,
+                StringComparison.Ordinal);
+        }
+
+        Assert.Contains("payload rerender must be true or false", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{"rerender":"yes"}""")).Message, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -116,6 +116,12 @@ public sealed record PlanHeader
 
     /// <summary>How many key slices this plan is cut into; 1 when it runs on one node.</summary>
     public int Slices { get; init; } = 1;
+
+    /// <summary>
+    /// Whether every record read is rendered, an unchanged one included, so its hashes rather than its source version
+    /// decide: what a plan that says what bringing records up to date would send asks for.
+    /// </summary>
+    public bool RenderEvery { get; init; }
 }
 
 /// <summary>Running totals of a plan, safe to add to from the parallel renderers.</summary>
@@ -129,10 +135,18 @@ public sealed class PlanSummary
     private long _holds;
     private long _blocked;
     private long _untracked;
+    private long _metadata;
+    private long _payload;
 
     public long Records => Interlocked.Read(ref _records);
 
     public long Deliveries => Interlocked.Read(ref _deliveries);
+
+    /// <summary>Of the deliveries, those that send the record's document.</summary>
+    public long Metadata => Interlocked.Read(ref _metadata);
+
+    /// <summary>Of the deliveries, those that send the record's payload (its files, bulk data or a part of them).</summary>
+    public long Payload => Interlocked.Read(ref _payload);
 
     /// <summary>Records skipped because nothing about them changed.</summary>
     public long Skips => Interlocked.Read(ref _skips);
@@ -185,6 +199,16 @@ public sealed class PlanSummary
                 if (entry.IsDelivery)
                 {
                     Interlocked.Increment(ref _deliveries);
+                }
+
+                if (entry.DeliverMetadata)
+                {
+                    Interlocked.Increment(ref _metadata);
+                }
+
+                if (entry.DeliverPayload)
+                {
+                    Interlocked.Increment(ref _payload);
                 }
 
                 break;
@@ -273,6 +297,7 @@ public sealed class Planner
     /// <param name="selection">Which records to read: an incremental window, everything, named keys, or a submission's.</param>
     /// <param name="gate">Apply the tier-0 whole-run gate; false plans the selection whatever the window holds.</param>
     /// <param name="stored">The window a submission already recorded, so every run of it reads the same rows.</param>
+    /// <param name="renderEvery">Render every record read, an unchanged one included (<see cref="PlanHeader.RenderEvery"/>).</param>
     /// <param name="ct">Cancellation.</param>
     public async Task<PlanHeader> OpenAsync(
         FlowDefinition flow,
@@ -281,6 +306,7 @@ public sealed class Planner
         SourceSelection selection,
         bool gate = true,
         SourceWindow? stored = null,
+        bool renderEvery = false,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
@@ -315,6 +341,7 @@ public sealed class Planner
             Parts = PayloadParts.Of(flow),
             GatedCacheSets = gatedSets,
             References = ReferenceReader.Of(Templates.OsduTemplate.From(resolved.Schema)),
+            RenderEvery = renderEvery,
         };
 
         foreach (var missing in source.MissingKeys)
@@ -495,7 +522,7 @@ public sealed class Planner
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
-        var header = await OpenAsync(flow, resolved, parameters, selection, gate: !force, stored: null, ct).ConfigureAwait(false);
+        var header = await OpenAsync(flow, resolved, parameters, selection, gate: !force, stored: null, ct: ct).ConfigureAwait(false);
         var summary = new PlanSummary();
         var entries = new List<PlanEntry>();
         await foreach (var entry in EntriesAsync(header, null, flow.Reliability.EffectiveRenderParallelism, summary, ct).ConfigureAwait(false))
@@ -705,7 +732,7 @@ public sealed class Planner
                 }
             }
 
-            if (ChangeDetector.CanSkipWithoutRender(ChangeDetector.Expected(state), source, payloadHash, context, flow.Change))
+            if (!header.RenderEvery && ChangeDetector.CanSkipWithoutRender(ChangeDetector.Expected(state), source, payloadHash, context, flow.Change))
             {
                 entries.Add(basis with
                 {

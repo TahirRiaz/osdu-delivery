@@ -704,6 +704,80 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task Bringing_records_up_to_date_renders_them_again_and_sends_only_what_renders_differently()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+
+            // One record OSDU holds as an older render did: what an engine or rule change leaves behind, which no source
+            // change reaches. An ordinary run passes it as unchanged without rendering it.
+            var stale = SampleEstate.Key(0).Value;
+            var fresh = SampleEstate.Key(1);
+            await using (var db = _db.CreateDbContext())
+            {
+                await db.DeliveryRecords.Where(r => r.DeliveryKey == stale).ExecuteUpdateAsync(set => set.SetProperty(r => r.MetadataHash, "rendered-by-older-rules"));
+            }
+
+            var before = (await ledger.GetRecordAsync(runtime.Flow.Id, fresh))!;
+
+            // A plan that renders every record says what bringing them up to date would send, and sends and asks nothing.
+            async Task<PlanSummary> PlanAsync(bool renderEvery)
+            {
+                var header = await runtime.Planner.OpenAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, SourceSelection.Full(), gate: false, stored: null, renderEvery: renderEvery);
+                var summary = new PlanSummary();
+                await foreach (var _ in runtime.Planner.EntriesAsync(header, null, 1, summary, CancellationToken.None))
+                {
+                }
+
+                return summary;
+            }
+
+            var passed = await PlanAsync(renderEvery: false);
+            Assert.Equal((0L, (long)LogCount), (passed.Deliveries, passed.Skips));
+            var rendered = await PlanAsync(renderEvery: true);
+            Assert.Equal((1L, 1L, 0L, (long)LogCount - 1), (rendered.Deliveries, rendered.Metadata, rendered.Payload, rendered.Skips));
+            Assert.Empty(protocol.Deliveries);
+            Assert.Empty(await ledger.ListPlanRequestedAsync(runtime.Flow.Id, null, 10));
+
+            // Asked of every delivered record: each keeps its delivered hashes and forgets the source version it was
+            // planned under, so whichever run meets it renders it. A key the ledger does not hold is left as it is.
+            Assert.Equal(1, await runtime.BringUpToDateAsync([fresh, DeliveryKey.Derive("nowhere", ["none"])]));
+            _clock.Advance(TimeSpan.FromSeconds(1));
+            Assert.Equal(LogCount, await runtime.BringUpToDateAsync(null));
+            var asked = (await ledger.GetRecordAsync(runtime.Flow.Id, fresh))!;
+            Assert.Equal((before.MetadataHash, before.PayloadHash, (string?)null), (asked.MetadataHash, asked.PayloadHash, asked.SourceFingerprint));
+            Assert.NotNull(asked.PlanRequestedUtc);
+
+            // An ordinary run's passes over the requests send the one record that renders differently, its document alone.
+            var passes = await DeliveryExecutor.DeliverRequestedAsync(
+                runtime, SourceSelection.Full(), DeliveryRunPayload.None, Samples.Logger<DeliveryExecutor>(), CancellationToken.None);
+            Assert.Equal((long)LogCount, passes.Read);
+            var sent = Assert.Single(protocol.Deliveries);
+            Assert.Equal(stale, sent.Key.Value);
+            Assert.True(sent.DeliverMetadata);
+            Assert.False(sent.DeliverPayload);
+            Assert.Empty(await ledger.ListPlanRequestedAsync(runtime.Flow.Id, null, 10));
+
+            // A record that rendered the same keeps what it had, its source version written back by the plan that passed it.
+            var after = (await ledger.GetRecordAsync(runtime.Flow.Id, fresh))!;
+            Assert.Equal((before.MetadataHash, before.SourceFingerprint, before.TargetVersion), (after.MetadataHash, after.SourceFingerprint, after.TargetVersion));
+
+            // Up to date now: asked again, nothing renders differently, and nothing is sent.
+            protocol.Deliveries.Clear();
+            _clock.Advance(TimeSpan.FromSeconds(1));
+            Assert.Equal(LogCount, await runtime.BringUpToDateAsync(null));
+            var again = await DeliveryExecutor.DeliverRequestedAsync(
+                runtime, SourceSelection.Full(), DeliveryRunPayload.None, Samples.Logger<DeliveryExecutor>(), CancellationToken.None);
+            Assert.Equal((long)LogCount, again.Read);
+            Assert.Empty(protocol.Deliveries);
+        }
+    }
+
+    [Fact]
     public async Task A_record_a_pass_cannot_plan_keeps_its_request_and_does_not_hold_the_run_up()
     {
         var tables = await EstateAsync();

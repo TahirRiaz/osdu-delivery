@@ -26,8 +26,11 @@ const DEFAULT_OPERATION: Record<string, string> = {
 
 type RedeliverScope = "all" | "metadata" | "payload" | "record" | "files" | "bulk" | "workflow";
 
-/** What a deliver run sends: what changed, or a part of its records again whatever their hashes say. */
-type SendAgain = "changed" | RedeliverScope;
+/**
+ * What a deliver run sends: what changed; what renders differently once its records are rendered again (bringing them up
+ * to date); or a part of its records again whatever their hashes say.
+ */
+type SendAgain = "changed" | "uptodate" | RedeliverScope;
 
 const REDELIVER_SCOPES: readonly { value: RedeliverScope; label: string }[] = [
   { value: "all", label: "Metadata and payload" },
@@ -44,6 +47,8 @@ const PART_LABELS: Partial<Record<RedeliverScope, string>> = {
 };
 
 const SEND_CHANGED: { value: SendAgain; label: string } = { value: "changed", label: "Nothing: send only what changed" };
+
+const SEND_UPTODATE: { value: SendAgain; label: string } = { value: "uptodate", label: "What renders differently (bring up to date)" };
 
 
 /** The run value naming the partition a run of a flow that works in partitions targets (docs/partitions-design.md section 3). */
@@ -128,7 +133,7 @@ function listed(names: readonly string[]): string {
 }
 
 /** The payload keys these fields own; anything else the run being repeated carried goes with it unchanged. */
-const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver", "interface", "interfaces"]);
+const OWNED_KEYS = new Set(["force", "submissionId", "recordKeys", "redeliver", "rerender", "interface", "interfaces"]);
 
 const FORCE_HINTS: Record<string, string> = {
   delivery: "Look at every record even when no source row changed, re-plan a completed submission, verify records verified recently. A record that renders and hashes as it was delivered is still not sent: Send again does that.",
@@ -195,7 +200,7 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
       : ""
   ));
   const [redeliver, setRedeliver] = useState<SendAgain>(
-    () => (isRedeliverScope(initialPayload?.redeliver) ? initialPayload.redeliver : "changed"),
+    () => (initialPayload?.rerender === true ? "uptodate" : isRedeliverScope(initialPayload?.redeliver) ? initialPayload.redeliver : "changed"),
   );
   const [repeatedPart] = useState<RedeliverScope | null>(
     () => (isRedeliverScope(initialPayload?.redeliver) && PART_LABELS[initialPayload.redeliver] !== undefined ? initialPayload.redeliver : null),
@@ -225,12 +230,12 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
   const takesForce = !(deliveryKind && (effectiveOperation === "drain" || effectiveOperation === "sync"));
   const recordKeys = useMemo(() => lines(recordKeysText), [recordKeysText]);
   const takesRedeliver = deliveryKind && effectiveOperation === "deliver";
-  // Records named by key are always sent again, so naming them makes "only what changed" everything.
+  // Records named by key are always sent again or brought up to date, so naming them makes "only what changed" everything.
   const sendAgain: SendAgain = recordKeys.length > 0 && redeliver === "changed" ? "all" : redeliver;
   const sendAgainOptions = useMemo(() => {
     const part = repeatedPart === null ? undefined : PART_LABELS[repeatedPart];
     const scopes = repeatedPart !== null && part !== undefined ? [...REDELIVER_SCOPES, { value: repeatedPart, label: part }] : REDELIVER_SCOPES;
-    return recordKeys.length > 0 ? scopes : [SEND_CHANGED, ...scopes];
+    return recordKeys.length > 0 ? [SEND_UPTODATE, ...scopes] : [SEND_CHANGED, SEND_UPTODATE, ...scopes];
   }, [recordKeys.length, repeatedPart]);
   const takesInterfaces = deliveryKind && effectiveOperation !== null;
   const interfaceNames = useMemo(() => lines(interfacesText), [interfacesText]);
@@ -295,7 +300,9 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
       payload.recordKeys = recordKeys;
     }
 
-    if (takesRedeliver && sendAgain !== "changed") {
+    if (takesRedeliver && sendAgain === "uptodate") {
+      payload.rerender = true;
+    } else if (takesRedeliver && sendAgain !== "changed") {
       payload.redeliver = sendAgain;
     }
 
@@ -356,7 +363,7 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
       {takesRedeliver && (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${idPrefix}-redeliver`}>Send again</Label>
-          <Select value={sendAgain} onValueChange={(value) => { if (value === "changed" || isRedeliverScope(value)) { setRedeliver(value); } }}>
+          <Select value={sendAgain} onValueChange={(value) => { if (value === "changed" || value === "uptodate" || isRedeliverScope(value)) { setRedeliver(value); } }}>
             <SelectTrigger id={`${idPrefix}-redeliver`} size="sm" className="h-8 w-full" data-testid="trigger-redeliver">
               <SelectValue />
             </SelectTrigger>
@@ -367,11 +374,15 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground" data-testid="trigger-redeliver-hint">
-            {recordKeys.length > 0
-              ? "What of the records named below is sent again, changed or not: the record and its payload files, or one of them."
-              : sendAgain === "changed"
-                ? "Only records whose rendering or payload changed are sent."
-                : `Every record this flow has delivered${partition !== null ? ` in ${partition}` : ""} is sent again, changed or not: a new version of each in OSDU. The run plans them all, ${PLANNED_PER_PASS.toLocaleString()} to a pass.`}
+            {sendAgain === "uptodate"
+              ? recordKeys.length > 0
+                ? "The records named below are rendered again with the mapping, template, cache and engine of now, and sent only where they come out different. The rest stay as OSDU holds them."
+                : `Every record this flow has delivered${partition !== null ? ` in ${partition}` : ""} is rendered again with the mapping, template, cache and engine of now, and only what comes out different is sent; the rest stay as OSDU holds them. The run renders them all, ${PLANNED_PER_PASS.toLocaleString()} to a pass. A record's Redeliver, or the Records tab's, says beforehand what would be sent.`
+              : recordKeys.length > 0
+                ? "What of the records named below is sent again, changed or not: the record and its payload files, or one of them."
+                : sendAgain === "changed"
+                  ? "Only records whose rendering or payload changed are sent."
+                  : `Every record this flow has delivered${partition !== null ? ` in ${partition}` : ""} is sent again, changed or not: a new version of each in OSDU. The run plans them all, ${PLANNED_PER_PASS.toLocaleString()} to a pass.`}
           </p>
         </div>
       )}
@@ -453,7 +464,9 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
               ? "Delivery keys to check; empty verifies the flow's delivered records."
               : effectiveOperation === "sync"
                 ? "Delivery keys whose rows to read from the ingestion tables (at most 1,000); empty syncs every record."
-                : "Delivery keys to send again, changed or not; empty leaves it to Send again, over every record the flow has delivered."}
+                : sendAgain === "uptodate"
+                  ? "Delivery keys to bring up to date; empty brings every record the flow has delivered up to date."
+                  : "Delivery keys to send again, changed or not; empty leaves it to Send again, over every record the flow has delivered."}
           </p>
         </div>
       )}

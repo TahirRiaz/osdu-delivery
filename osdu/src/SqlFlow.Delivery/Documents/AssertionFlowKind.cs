@@ -72,7 +72,7 @@ public sealed class AssertionFlowKind : IFlowDocumentKind
         ArgumentNullException.ThrowIfNull(parameters);
         DeliveryOperations.RefuseBuiltInOverrides(parameters, AssertionFlowDefinition.FlowTypeName, "a test reads what OSDU holds now; name the tests to run in the payload.");
         var payload = DeliveryRunPayload.Parse(parameters);
-        if (payload.Force || payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Slices.Count > 0
+        if (payload.Force || payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Rerender || payload.Slices.Count > 0
             || payload.Interface is not null || payload.Interfaces.Count > 0 || payload.SelectsDimensions)
         {
             throw new SqlFlowException(

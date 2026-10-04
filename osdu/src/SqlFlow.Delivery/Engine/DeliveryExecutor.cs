@@ -327,7 +327,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         {
             runtime.SubmissionId = payload.SubmissionId;
             runtime.Slices = payload.Slices.Count > 0 ? payload.Slices : null;
-            selection = await SelectionAsync(context, flow, runtime.Parameters, runtime.Mapping.Context, operation, submission, keys, log, ct).ConfigureAwait(false);
+            selection = await SelectionAsync(context, flow, runtime.Parameters, runtime.Mapping.Context, operation, submission, keys, payload.Rerender, log, ct).ConfigureAwait(false);
             runtime.Selection = selection;
         }
 
@@ -338,7 +338,14 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         {
             case DeliveryOperations.Deliver:
             case DeliveryOperations.Replan:
-                if (keys.Count > 0 || payload.Redeliver is not null)
+                if (payload.Rerender)
+                {
+                    // Bringing records up to date: ask the named records, or without names every record the flow has
+                    // delivered, to be rendered again; the plan sends only what renders differently.
+                    var asked = await runtime.BringUpToDateAsync(keys.Count > 0 ? keys : null, ct).ConfigureAwait(false);
+                    LogRerender(log, asked, keys.Count > 0 ? keys.Count : null);
+                }
+                else if (keys.Count > 0 || payload.Redeliver is not null)
                 {
                     // A redelivery: forget what OSDU holds for the named records, or without names for every record the
                     // flow has delivered (all of it, or the part the run names), then let the plan re-send them.
@@ -365,7 +372,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                 return DrainOutcome.From(drained, payload.SubmissionId);
 
             case DeliveryOperations.Plan:
-                return await PlanAsync(runtime, force, source, selection, log, ct).ConfigureAwait(false);
+                return await PlanAsync(runtime, force, payload.Rerender, source, selection, log, ct).ConfigureAwait(false);
 
             case DeliveryOperations.Sync:
                 var synced = await runtime.SyncAsync(keys.Count == 0 ? null : keys, ct).ConfigureAwait(false);
@@ -385,13 +392,14 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
     /// <summary>
     /// Which records this run reads. A run on a submission reads the rows that submission recorded, a record-scoped run
-    /// reads those records by their stored key tuples, a replan reads the whole scope, and an ordinary run reads what
+    /// reads those records by their stored key tuples, a replan and a plan that renders every record read the whole scope,
+    /// and an ordinary run reads what
     /// changed since the scope's watermark, less the flow's overlap, or the whole scope when the mapping, the template or
     /// the parameters it renders with moved since that watermark was written.
     /// </summary>
     private static async Task<SourceSelection> SelectionAsync(
         EngineContext context, FlowDefinition flow, IReadOnlyDictionary<string, string> values, Delivery.Snapshots.RenderContext rendering, string operation,
-        SubmissionState? submission, IReadOnlyList<DeliveryKey> keys, ILogger log, CancellationToken ct)
+        SubmissionState? submission, IReadOnlyList<DeliveryKey> keys, bool rerender, ILogger log, CancellationToken ct)
     {
         if (submission is not null)
         {
@@ -423,7 +431,7 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             return SourceSelection.ForKeys(tuples);
         }
 
-        if (operation == DeliveryOperations.Replan)
+        if (operation == DeliveryOperations.Replan || (operation == DeliveryOperations.Plan && rerender))
         {
             return SourceSelection.Full();
         }
@@ -542,13 +550,14 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
     /// <summary>
     /// Whether a run re-plans past the gates that skip a whole read: the tier-0 window gate and an already completed
-    /// submission. A forced run, a submission re-run and a run scoped to record keys all do. The scoped run has to, or
-    /// its marks are never seen. Forcing lifts only those two gates; each record's own hashes still decide what is sent.
+    /// submission. A forced run, a submission re-run, a run scoped to record keys and a run that brings records up to date
+    /// all do. The scoped run and the one bringing records up to date have to, or their marks are never seen. Forcing lifts
+    /// only those two gates; each record's own hashes still decide what is sent.
     /// </summary>
     public static bool ForcesReplan(DeliveryRunPayload payload, bool reRunningSubmission)
     {
         ArgumentNullException.ThrowIfNull(payload);
-        return payload.Force || reRunningSubmission || payload.RecordKeys.Count > 0;
+        return payload.Force || reRunningSubmission || payload.RecordKeys.Count > 0 || payload.Rerender;
     }
 
     /// <summary>
@@ -562,17 +571,23 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     }
 
     /// <summary>A plan run streams its records, writes the first entries to its trace and counts the rest.</summary>
-    private static async Task<PlanOutcome> PlanAsync(FlowRuntime runtime, bool force, string source, SourceSelection selection, ILogger log, CancellationToken ct)
+    private static async Task<PlanOutcome> PlanAsync(FlowRuntime runtime, bool force, bool rerender, string source, SourceSelection selection, ILogger log, CancellationToken ct)
     {
         var planner = runtime.Planner;
-        var header = await planner.OpenAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, selection, gate: !force, stored: null, ct).ConfigureAwait(false);
+        var header = await planner.OpenAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, selection, gate: !force, stored: null, renderEvery: rerender, ct: ct).ConfigureAwait(false);
         var summary = new PlanSummary();
+        var sample = new List<PlanSampleEntry>(PlanSampled);
         long shown = 0;
         await foreach (var entry in planner.EntriesAsync(header, null, runtime.Flow.Reliability.EffectiveRenderParallelism, summary, ct).ConfigureAwait(false))
         {
             if (shown++ < PlanEntriesLogged)
             {
                 log.LogInformation(RunTrace.Bounded, "{Entry}", PlanFormatting.Describe(entry));
+            }
+
+            if (entry.Key is { } key && entry.IsDelivery && sample.Count < PlanSampled)
+            {
+                sample.Add(new PlanSampleEntry(key.Value, entry.Label, entry.SourceKey, entry.Action.ToString(), entry.Reason, entry.DeliverMetadata, entry.DeliverPayload));
             }
         }
 
@@ -590,8 +605,17 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         LogOutcome(log, header.SkippedWholeRun ? $"plan: whole run skipped, {header.SkipReason}" : $"plan: {summary}");
         return new PlanOutcome(
             DeliveryOperations.Plan, source, selection.Describe(), summary.Records, summary.Deliveries, summary.Skips, summary.AwaitingApproval,
-            summary.Stale, summary.Holds, summary.Blocked, summary.Untracked, header.Slices, header.SkippedWholeRun, header.SkipReason, issues);
+            summary.Stale, summary.Holds, summary.Blocked, summary.Untracked, header.Slices, header.SkippedWholeRun, header.SkipReason, issues)
+        {
+            Metadata = summary.Metadata,
+            Payload = summary.Payload,
+            RenderedEvery = rerender,
+            Sample = sample,
+        };
     }
+
+    /// <summary>How many of the records a plan would send its outcome names, so a reader sees which ones without the run's log.</summary>
+    internal const int PlanSampled = 20;
 
     /// <summary>The flow parameter values a submission recorded as JSON; none when it recorded none.</summary>
     internal static IReadOnlyDictionary<string, string> ParseValues(string? json)
@@ -659,6 +683,22 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
             log.LogInformation(
                 "marked every record the flow has delivered, {Marked} in all, for redelivery; this run plans them by key, {PerPass} to a pass",
                 marked, RequestedPerPass);
+        }
+    }
+
+    private static void LogRerender(ILogger log, int asked, int? requested)
+    {
+        if (requested is { } named)
+        {
+            log.LogInformation(
+                "asked {Asked} of {Requested} record(s) to be brought up to date (a record OSDU does not hold is left as it is); each is rendered again and sent only where it renders differently",
+                asked, named);
+        }
+        else
+        {
+            log.LogInformation(
+                "asked every record the flow has delivered, {Asked} in all, to be brought up to date; this run renders them again by key, {PerPass} to a pass, and sends only what renders differently",
+                asked, RequestedPerPass);
         }
     }
 
@@ -766,7 +806,23 @@ public sealed record PlanOutcome(
     int Slices,
     bool SkippedWholeRun,
     string? SkipReason,
-    IReadOnlyList<string> Issues);
+    IReadOnlyList<string> Issues)
+{
+    /// <summary>Of the deliveries, those that would send the record's document.</summary>
+    public long Metadata { get; init; }
+
+    /// <summary>Of the deliveries, those that would send the record's payload.</summary>
+    public long Payload { get; init; }
+
+    /// <summary>Whether every record read was rendered, an unchanged one included: a plan of what bringing records up to date would send.</summary>
+    public bool RenderedEvery { get; init; }
+
+    /// <summary>The first records the plan would send, at most <see cref="DeliveryExecutor.PlanSampled"/>.</summary>
+    public IReadOnlyList<PlanSampleEntry> Sample { get; init; } = [];
+}
+
+/// <summary>One record a plan would send: its key, how a reader knows it, what it would send and why.</summary>
+public sealed record PlanSampleEntry(Guid Key, string? Label, string SourceKey, string Action, string Reason, bool Metadata, bool Payload);
 
 /// <summary>The <c>result</c> of an intake run (a whole read, or a fan-out member's share of its key slices).</summary>
 public sealed record IntakeOutcome(

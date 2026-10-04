@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Radar, RefreshCw, Trash2, Unlock } from "lucide-react";
+import { Loader2, Radar, RefreshCcw, RefreshCw, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,12 +31,16 @@ import { OutsidePartition } from "./PartitionNotice";
 import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./RecordCells";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
+import { RedeliverDialog, type RedeliverSelection } from "./RedeliverDialog";
 import { PLANNED_PER_PASS, ReleaseDialog } from "./ReleaseDialog";
 import { failureText } from "./answers";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 import { shortId } from "./idTail";
 
 const ALL = "all";
+
+/** The flow id a card that adds several ledgers up carries: no one ledger, so no record of it can be linked to. */
+const EMPTY_ID = "00000000-0000-0000-0000-000000000000";
 
 /** The URL filters that name records of one ledger, which the view of another interface or partition drops. */
 const SCOPED_TO_LEDGER = ["submission", "delivered", "run", "issue"] as const;
@@ -110,6 +114,8 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const [matchedCapped, setMatchedCapped] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removalTaskId, setRemovalTaskId] = useState<string | null>(null);
+  // The records a redelivery was opened for: the selection, the filtered listing, or every delivered record.
+  const [redeliverFor, setRedeliverFor] = useState<RedeliverSelection | null>(null);
 
   const filter = useMemo<DeliveryRecordFilter>(() => ({
     search: search.trim() === "" ? undefined : search.trim(),
@@ -270,6 +276,19 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                       <Unlock />
                       Release blocked ({blocked})
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setRedeliverFor({ kind: "all", delivered: s.delivered })}
+                      disabled={!canSync || s.delivered === 0}
+                      title={canSync
+                        ? "Bring every delivered record up to date, sending only what renders differently, or send records again"
+                        : "Pick an interface first: a redelivery acts on one ledger"}
+                      data-testid="delivery-redeliver-all"
+                    >
+                      <RefreshCcw />
+                      Redeliver
+                    </Button>
                     <Button variant="outline" size="sm" onClick={() => syncSource.mutate(undefined)} disabled={!canSync || syncSource.isPending} title={syncTitle} data-testid="delivery-sync-all">
                       <RefreshCw />
                       Sync timelines
@@ -416,6 +435,18 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                   variant="outline"
                   size="sm"
                   className="ml-auto h-7"
+                  onClick={() => setRedeliverFor(redeliverSelectionFor(allMatching, filter, matched, selected, s?.delivered ?? matched))}
+                  disabled={!canSync}
+                  title="Bring the selected records up to date, sending only what renders differently, or send them again."
+                  data-testid="delivery-redeliver-selected"
+                >
+                  <RefreshCcw />
+                  Redeliver
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7"
                   onClick={() => syncSource.mutate(syncRequestFor(allMatching, filter, matched, selected))}
                   disabled={!canSync || syncSource.isPending}
                   title="Read the selected records' rows from the ingestion table and consolidate the ledger with them. Nothing is sent."
@@ -452,6 +483,28 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 <CodeView value={removalJson} language="json" height={260} data-testid="delivery-removal-json" />
               )}
             </Card>
+          )}
+          {redeliverFor !== null && (
+            <RedeliverDialog
+              open
+              onClose={() => setRedeliverFor(null)}
+              pipelineId={pipelineId}
+              flowId={s?.flowId && s.flowId !== EMPTY_ID ? s.flowId : null}
+              flowScope={scope}
+              flowName={ledgerName}
+              selection={redeliverFor}
+              onDone={(outcome) => {
+                clearSelection();
+                const what = outcome.mode === "uptodate" ? "brought up to date" : "sent again";
+                const asked = redeliverFor.kind === "all" && outcome.marked === 0
+                  ? `Every delivered record will be ${what}`
+                  : `${outcome.marked.toLocaleString()} record${outcome.marked === 1 ? "" : "s"} will be ${what}`;
+                toast.success(
+                  outcome.runId ? `${asked} by a deliver run.` : `${asked} by the flow's next run.`,
+                  outcome.runId ? { action: { label: "Open run", onClick: () => navigate(`/runs/${outcome.runId}`) } } : undefined);
+                void queryClient.invalidateQueries({ queryKey: ["delivery"] });
+              }}
+            />
           )}
           <RemovalDialog
             open={removeOpen}
@@ -512,6 +565,21 @@ function syncRequestFor(
 
   const narrowed = Object.values(filter).some((value) => value !== undefined);
   return narrowed ? { filter, expected: matched } : undefined;
+}
+
+/**
+ * The records a redelivery acts on: the ticked ones, the filtered listing with the count it showed, or, for every record
+ * matching no filter at all, every record the flow has delivered (the others are left as they are by either way).
+ */
+function redeliverSelectionFor(
+  allMatching: boolean, filter: DeliveryRecordFilter, matched: number, selected: ReadonlySet<string>, delivered: number,
+): RedeliverSelection {
+  if (!allMatching) {
+    return { kind: "keys", keys: [...selected] };
+  }
+
+  const narrowed = Object.values(filter).some((value) => value !== undefined);
+  return narrowed ? { kind: "filter", filter, expected: matched } : { kind: "all", delivered };
 }
 
 function selectionFor(

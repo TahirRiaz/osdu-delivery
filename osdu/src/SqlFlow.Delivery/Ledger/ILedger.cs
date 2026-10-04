@@ -1858,6 +1858,17 @@ public interface ILedger
     Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverSelection selection, long? activityId, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
+    /// Asks records OSDU holds to be brought up to date: rendered again by the next plan that meets them, and sent only where
+    /// they render differently. The named records, or with null keys every record the flow has delivered, a slice at a time;
+    /// a named record OSDU does not hold is left as it is. Unlike a redelivery, nothing of what OSDU holds is forgotten: the
+    /// delivered hashes stay, and decide what is sent. The source version a record was last planned under is cleared, so no
+    /// plan passes it as unchanged without rendering it, whichever run meets it first; a plan that finds it unchanged writes
+    /// that version back. Every record marked is named under the intervention <paramref name="activityId"/>. Returns how
+    /// many were marked.
+    /// </summary>
+    Task<int> RequestRenderAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, long? activityId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
     /// Records what a removal did to a set of the flow's records, in one round trip. <see cref="RemovalScope.Record"/> and
     /// <see cref="RemovalScope.Everything"/> take the record out of OSDU, so the ledger marks it deleted and
     /// blocked and forgets the hashes; <see cref="RemovalScope.History"/> leaves the record live, so its custody

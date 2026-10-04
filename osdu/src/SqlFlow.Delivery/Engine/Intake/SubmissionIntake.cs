@@ -171,7 +171,7 @@ public sealed class SubmissionIntake
         var described = existing is null ? null : SourceWindowDescription.Parse(existing.SourceWindowJson);
         var selection = described is null ? request.Selection : described.ToSelection();
         var header = await _planner.OpenAsync(
-            flow, resolved, parameters, selection, gate: !force && existing is null, stored: described?.Window(), ct).ConfigureAwait(false);
+            flow, resolved, parameters, selection, gate: !force && existing is null, stored: described?.Window(), ct: ct).ConfigureAwait(false);
 
         SubmissionState submission;
         var created = false;

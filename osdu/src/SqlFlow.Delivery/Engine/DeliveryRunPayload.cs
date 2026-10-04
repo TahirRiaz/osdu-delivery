@@ -226,6 +226,8 @@ public sealed record DeliveryRunPayload
 
     public const string RedeliverProperty = "redeliver";
 
+    public const string RerenderProperty = "rerender";
+
     public const string SlicesProperty = "slices";
 
     public const string InterfaceProperty = "interface";
@@ -251,7 +253,7 @@ public sealed record DeliveryRunPayload
     public const int MaxSelected = AssertionFlowDefinition.MaxTests;
 
     private static readonly string[] Properties =
-        [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty, PartitionReferencesProperty,
+        [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty, PartitionReferencesProperty,
             TestsProperty, TagsProperty, DimensionsProperty];
 
     public static DeliveryRunPayload None { get; } = new();
@@ -274,6 +276,15 @@ public sealed record DeliveryRunPayload
     /// everything of named records, and nothing of a run without keys.
     /// </summary>
     public string? Redeliver { get; init; }
+
+    /// <summary>
+    /// Brings records up to date: renders them again under the rules of now and lets each record's hashes decide what is
+    /// sent, so only a part that renders differently goes, where <see cref="Redeliver"/> sends whatever the hashes say. A
+    /// deliver run asks it of the records <see cref="RecordKeys"/> names, or without keys of every record the flow has
+    /// delivered, as a request the ledger keeps until a run plans each record. A plan run renders every record it reads
+    /// (those keys, or every row of the scope) without passing an unchanged one, and so says what a delivery would send.
+    /// </summary>
+    public bool Rerender { get; init; }
 
     /// <summary>The key slices of <see cref="SubmissionId"/> an intake member plans.</summary>
     public IReadOnlyList<int> Slices { get; init; } = [];
@@ -322,7 +333,7 @@ public sealed record DeliveryRunPayload
 
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
-        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
+        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
             && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests && !SelectsDimensions;
 
     /// <summary>
@@ -330,7 +341,7 @@ public sealed record DeliveryRunPayload
     /// a kind that names no submission, record, slice, test or dimension may hold.
     /// </summary>
     public bool CarriesOnlyConfiguration
-        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
+        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
             && !SelectsTests && !SelectsDimensions;
 
     /// <summary>
@@ -399,6 +410,7 @@ public sealed record DeliveryRunPayload
             SubmissionId = root[SubmissionIdProperty] is null ? null : Id(root[SubmissionIdProperty], SubmissionIdProperty),
             RecordKeys = Keys(root[RecordKeysProperty]),
             Redeliver = root[RedeliverProperty] is null ? null : Text(root[RedeliverProperty], RedeliverProperty),
+            Rerender = Boolean(root, RerenderProperty),
             Slices = SliceList(root[SlicesProperty]),
             Interface = root[InterfaceProperty] is null ? null : Text(root[InterfaceProperty], InterfaceProperty),
             Interfaces = Names(root[InterfacesProperty]),
@@ -501,36 +513,45 @@ public sealed record DeliveryRunPayload
             case DeliveryOperations.Deliver:
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 Refuse(Redeliver is not null && SubmissionId is not null, RedeliverProperty, operation, "a run on a submission delivers what that submission planned");
+                Refuse(Rerender && SubmissionId is not null, RerenderProperty, operation, "a run on a submission delivers what that submission planned");
+                Refuse(Rerender && Redeliver is not null, RerenderProperty, operation,
+                    "rerender sends what renders differently and redeliver sends whatever the hashes say; name one");
                 break;
             case DeliveryOperations.Plan:
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a plan sends nothing");
+                Refuse(Rerender && SubmissionId is not null, RerenderProperty, operation, "a plan of a submission reads the rows that submission recorded");
                 break;
             case DeliveryOperations.Intake:
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "an intake sends nothing");
+                Refuse(Rerender, RerenderProperty, operation, "an intake sends nothing; bring records up to date with a deliver run");
                 Refuse(Slices.Count > 0 && SubmissionId is null, SlicesProperty, operation, "slices are cut from the submission their coordinating run registered, which submissionId names");
                 break;
             case DeliveryOperations.Drain:
                 Refuse(Force, ForceProperty, operation, "a drain plans nothing to force");
                 Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a drain delivers the batches a submission planned");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a drain delivers what was planned");
+                Refuse(Rerender, RerenderProperty, operation, "a drain delivers what was planned");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 break;
             case DeliveryOperations.Verify:
                 Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a verify reads the ledger's delivered records, not a submission");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a verify sends nothing");
+                Refuse(Rerender, RerenderProperty, operation, "a verify sends nothing");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 break;
             case DeliveryOperations.Sync:
                 Refuse(Force, ForceProperty, operation, "a sync passes no gate: it reads every row it is given");
                 Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a sync reads the rows of the ledger's records, not a submission's");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a sync sends nothing");
+                Refuse(Rerender, RerenderProperty, operation, "a sync sends nothing");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 break;
             case DeliveryOperations.Replan:
                 Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a replan reads every row of the scope under a submission of its own");
                 Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a replan reads every row of the scope; scope a deliver run to records instead");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "a replan decides by each record's hashes");
+                Refuse(Rerender, RerenderProperty, operation, "a replan reads the rows of the scope; bring delivered records up to date with a deliver run");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 break;
             default:
@@ -565,6 +586,11 @@ public sealed record DeliveryRunPayload
         if (Redeliver is { } redeliver)
         {
             root[RedeliverProperty] = redeliver;
+        }
+
+        if (Rerender)
+        {
+            root[RerenderProperty] = true;
         }
 
         if (Slices.Count > 0)
