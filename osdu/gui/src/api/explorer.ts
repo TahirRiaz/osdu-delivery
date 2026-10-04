@@ -72,7 +72,8 @@ export interface ExplorerPage {
   facetPath: string | null;
   facet: ExplorerBucket[] | null;
   notes: string[];
-  refusal: string | null;
+  /** The search service's words when it refused the query; left out of the answer when it did not, as every null is. */
+  refusal?: string | null;
 }
 
 export interface ExplorerTypes {
@@ -83,7 +84,8 @@ export interface ExplorerTypes {
   /** What the kinds add up to: less than the total when the service named fewer groups than there are. */
   listed: number;
   notes: string[];
-  refusal: string | null;
+  /** The search service's words when it refused the query; left out of the answer when it did not, as every null is. */
+  refusal?: string | null;
 }
 
 export interface ExplorerFieldInfo {
@@ -257,8 +259,8 @@ export interface DimensionKeys {
   keyField: DimensionFieldWire | null;
   keyFieldGuessed: boolean;
   notes: string[];
-  /** The search service's own words when it refused the query. */
-  refusal: string | null;
+  /** The search service's own words when it refused the query; left out of the answer when it did not. */
+  refusal?: string | null;
 }
 
 export interface DimensionKeysRequest {

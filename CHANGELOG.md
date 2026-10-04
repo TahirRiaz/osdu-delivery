@@ -910,6 +910,10 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Fixed
 
+- The explorer's list says how many records it holds again, and reads its next pages as it is scrolled: a search's
+  answer leaves out a refusal it does not have, and the list took the missing refusal for one, so it showed no count
+  and stopped at its first hundred records. A count of changes (two versions compared, a cache's or a dimension's history)
+  reads as text the way it is drawn, "1 changed", rather than "1changed".
 - A value check no longer passes over a `null` inside a value it checks: `null` breaks a property whose schema names
   types without `null`. A schema reference the template's bundle does not hold no longer fails a value check; the part
   it describes is reported as not checked. Two `allOf` branches that both constrain a property (two patterns, two bounds)

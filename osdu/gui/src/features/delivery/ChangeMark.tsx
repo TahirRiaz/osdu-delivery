@@ -51,6 +51,8 @@ export function ChangeCount({ change, count, className }: { change: string; coun
     <span className={cn("inline-flex items-center gap-1 whitespace-nowrap text-[12px]", className)} data-change={change}>
       <ChangeGlyph change={change} />
       <span className="font-mono tabular-nums">{count.toLocaleString()}</span>
+      {/* A space a flex row does not draw, so the count reads "3 changed" as text, to a screen reader and a search. */}
+      {" "}
       <span className="text-muted-foreground">{change}</span>
     </span>
   );

@@ -147,7 +147,7 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
     initialPageParam: 0,
     getNextPageParam: (last) => {
       const next = last.answer.offset + EXPLORER_PAGE;
-      return last.answer.refusal === null && last.answer.hits.length > 0 && next < Math.min(last.answer.total, EXPLORER_WINDOW) ? next : undefined;
+      return !last.answer.refusal && last.answer.hits.length > 0 && next < Math.min(last.answer.total, EXPLORER_WINDOW) ? next : undefined;
     },
     staleTime: 60_000,
     gcTime: 10 * 60_000,
@@ -318,7 +318,7 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
         <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground" data-testid="explorer-count">
           {pages.isPending || (pages.isFetching && !pages.isFetchingNextPage)
             ? <><Loader2 className="size-3.5 animate-spin" />Searching</>
-            : first !== undefined && first.refusal === null && (
+            : first !== undefined && !first.refusal && (
               <>
                 <span className="font-mono tabular-nums text-foreground">{counted(first.total, "record")}</span>
                 {reading !== undefined && <span>{reading}</span>}
