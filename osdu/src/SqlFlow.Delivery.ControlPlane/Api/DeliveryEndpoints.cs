@@ -1801,7 +1801,7 @@ public static class DeliveryEndpoints
     /// </summary>
     private static async Task<Results<Accepted<DeliveryRerenderPreviewAccepted>, ProblemHttpResult>> PreviewRerenderAsync(
         Guid pipelineId, DeliveryRerenderRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+        ILedger ledger, IRunDispatcher dispatcher, TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
@@ -1814,24 +1814,16 @@ public static class DeliveryEndpoints
         IReadOnlyList<DeliveryKey> candidates;
         if (request?.Keys is not { Count: > 0 } && request?.Filter is null)
         {
-            // Every record the flow has delivered: the first of them, in the listing's order, stand for the rest.
+            // Every record the flow has delivered: the ledger's own count of them, however many, and the first of them in the
+            // listing's order to stand for the rest.
             var (query, invalid) = BuildQuery(new DeliveryRecordFilterDto(RecordStatus.Delivered.ToString().ToLowerInvariant(), null, null, null, null));
             if (query is null)
             {
                 return invalid!;
             }
 
-            BoundedCount count;
-            try
-            {
-                count = await ledger.CountAsync(flow.FlowId, query, RecordListing.CountLimit, ct).ConfigureAwait(false);
-            }
-            catch (RecordQueryTooBroadException ex)
-            {
-                return TooBroad(ex.Message);
-            }
-
-            (selected, capped) = (count.Count, !count.Exact);
+            var stats = await ledger.StatsAsync(flow.FlowId, clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            (selected, capped) = (stats.Delivered, false);
             candidates = await ledger.ListKeysAsync(flow.FlowId, query, DeliveryRerender.PreviewRecords, ct).ConfigureAwait(false);
         }
         else

@@ -17,10 +17,12 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   offers **Redeliver** for the ticked records or every record the filter matches, the overview for every delivered record
   of the interface, and a record's own page for that record, through one dialog with two ways side by side. **Bring up to
   date** renders the records again with the mapping, template, cache and engine of now and sends only what comes out
-  different, each part (the document, the payload) decided by its own hash; it first asks a plan run what it would send
-  and shows how many of the records it checked would be sent and with which part, how many render the same, how many
-  would be held, and the first ones by name. **Send again** sends the part the route offers (everything, the record, its
-  files, bulk data or workflow run) whatever the hashes say, which OSDU keeps as a new version. The request to bring a
+  different, each part (the document, the payload) decided by its own hash. It first asks a plan run what it would send,
+  bounded whatever the selection holds (all of a selection of 1,000 or fewer, else a sample of its first 1,000), and
+  answers in counts and shares: how many would be sent, with a new document, a new payload or both, how many render the
+  same, how many would be held, and for a sample what that comes to for the whole selection; a few records are named on
+  request. **Send again** sends the part the route offers (everything, the record, its files, bulk data or workflow run)
+  whatever the hashes say, which OSDU keeps as a new version. The two are a choice, marked as one. The request to bring a
   record up to date is the record's own: it keeps the delivered hashes and forgets the source version the record was
   planned under, so whichever run meets it renders it, a scheduled one included, and a plan that finds it unchanged writes
   that version back. It reaches only records OSDU holds, and is a `rerender` activity on the history of every record it

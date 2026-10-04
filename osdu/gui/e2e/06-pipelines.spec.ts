@@ -66,7 +66,8 @@ test.describe.serial("pipelines", () => {
     await expect(adminPage.getByTestId("redeliver-selection")).toContainText("One record");
 
     // Bringing it up to date is offered first, and its check says why there is nothing to check: OSDU holds none of it.
-    await expect(adminPage.getByTestId("redeliver-mode-uptodate")).toHaveAttribute("aria-pressed", "true");
+    await expect(adminPage.getByTestId("redeliver-mode-uptodate")).toHaveAttribute("aria-checked", "true");
+    await expect(adminPage.getByTestId("redeliver-mode-again")).toHaveAttribute("aria-checked", "false");
     await expect(adminPage.getByTestId("redeliver-preview-error")).toContainText("nothing to bring up to date", { timeout: 30_000 });
 
     // Sending again offers the parts the flow's route sends: a ddms route sends the record and its bulk data.
@@ -75,6 +76,8 @@ test.describe.serial("pipelines", () => {
     await expect(adminPage.getByTestId("redeliver-part-bulk")).toBeVisible();
     await expect(adminPage.getByTestId("redeliver-part-files")).toHaveCount(0);
     await expect(adminPage.getByTestId("redeliver-confirm")).toHaveText(/Send again/);
+    await expect(adminPage.getByTestId("redeliver-mode-again")).toHaveAttribute("aria-checked", "true");
+    await expect(adminPage.getByTestId("redeliver-again-warning")).toContainText("whether it changed or not");
 
     await adminPage.getByTestId("redeliver-cancel").click();
     await expect(dialog).toHaveCount(0);

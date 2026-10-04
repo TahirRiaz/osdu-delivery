@@ -1,7 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Loader2, RefreshCcw, Send } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, RefreshCcw, Send } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -76,6 +76,21 @@ function selectionLine(selection: RedeliverSelection, flowName: string, singleLa
 const TERMINAL = new Set(["succeeded", "failed", "cancelled", "skipped"]);
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count.toLocaleString()} ${count === 1 ? one : many}`;
+
+/** How many records a selection names, as far as the page knows before the API resolves it. */
+function selectionCount(selection: RedeliverSelection): number {
+  switch (selection.kind) {
+    case "keys":
+      return selection.keys.length;
+    case "filter":
+      return selection.expected;
+    case "all":
+      return selection.delivered;
+  }
+}
+
+/** How many records a deliver run reads by key in one pass (DeliveryExecutor.RequestedPerPass). */
+const PER_PASS = 5000;
 
 /**
  * The one redelivery surface, for a record, a selection, a filtered listing or a whole flow. Its two ways are side by side
@@ -158,6 +173,7 @@ export function RedeliverDialog({ open, onClose, pipelineId, flowId, flowScope, 
   const busy = act.isPending;
   const chosenPart = offered.includes(part) ? part : offered[0] ?? "all";
 
+  const count = selectionCount(selection);
   return (
     <AlertDialog
       open={open}
@@ -176,33 +192,43 @@ export function RedeliverDialog({ open, onClose, pipelineId, flowId, flowScope, 
           <AlertDialogDescription data-testid="redeliver-selection">{selectionLine(selection, flowName, singleLabel)}</AlertDialogDescription>
         </AlertDialogHeader>
 
-        <fieldset className="flex flex-col gap-2" disabled={busy}>
-          <legend className="sr-only">How to redeliver</legend>
-          <ModeButton
-            active={mode === "uptodate"}
-            onClick={() => setMode("uptodate")}
+        {/* The two ways are choices side by side; what the chosen one does in detail is laid out under them. */}
+        <div role="radiogroup" aria-label="How to redeliver" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <ModeChoice
+            checked={mode === "uptodate"}
+            disabled={busy}
+            onSelect={() => setMode("uptodate")}
             title="Bring up to date"
             note="recommended"
-            effect="Renders each record again with the mapping, template, cache and engine of now, and sends only what comes out different. A record that renders the same stays as OSDU holds it."
+            effect="Renders each record again with the mapping, template, cache and engine of now, and sends only what comes out different."
             testId="redeliver-mode-uptodate"
-          >
-            <PreviewPanel
-              loading={preview.isPending}
-              error={preview.error}
-              accepted={preview.data}
-              run={planRun.data}
-              flowId={flowId}
-            />
-          </ModeButton>
-          <ModeButton
-            active={mode === "again"}
-            onClick={() => setMode("again")}
+          />
+          <ModeChoice
+            checked={mode === "again"}
+            disabled={busy}
+            onSelect={() => setMode("again")}
             title="Send again"
-            effect="Sends the chosen part of every record again, changed or not. OSDU keeps a new version of each: for records OSDU lost, or that someone changed there."
+            effect="Sends the part you choose of every record, changed or not. OSDU keeps a new version of each."
             testId="redeliver-mode-again"
-          >
-            {mode === "again" && (
-              <div className="mt-1 flex w-full flex-col gap-1.5" role="radiogroup" aria-label="What to send again">
+          />
+        </div>
+
+        {mode === "uptodate"
+          ? (
+            <section className="rounded-md border border-border p-3" aria-label="What bringing them up to date would send">
+              <PreviewPanel
+                loading={preview.isPending}
+                error={preview.error}
+                accepted={preview.data}
+                run={planRun.data}
+                flowId={flowId}
+              />
+            </section>
+          )
+          : (
+            <section className="flex flex-col gap-1.5 rounded-md border border-border p-3" aria-label="What to send again">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">What to send again</span>
+              <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="What to send again">
                 {parts.isPending && <Skeleton className="h-10 w-full rounded-md" />}
                 {!parts.isPending && offered.map((name) => {
                   const label = PART_LABELS[name] ?? { title: name, effect: "" };
@@ -213,27 +239,42 @@ export function RedeliverDialog({ open, onClose, pipelineId, flowId, flowScope, 
                       type="button"
                       role="radio"
                       aria-checked={active}
-                      onClick={(event) => { event.stopPropagation(); setPart(name); }}
+                      disabled={busy}
+                      onClick={() => setPart(name)}
                       className={cn(
-                        "flex w-full flex-col items-start rounded-md border px-2.5 py-1.5 text-left transition-colors",
+                        "flex w-full items-start gap-2.5 rounded-md border px-2.5 py-1.5 text-left transition-colors",
                         active ? "border-primary bg-primary/5" : "border-border hover:bg-accent/50",
                       )}
                       data-testid={`redeliver-part-${name}`}
                     >
-                      <span className="text-[13px] font-medium">{label.title}</span>
-                      {label.effect !== "" && <span className="text-[12px] text-muted-foreground">{label.effect}</span>}
+                      <RadioMark checked={active} />
+                      <span className="flex flex-col">
+                        <span className="text-[13px] font-medium">{label.title}</span>
+                        {label.effect !== "" && <span className="text-[12px] text-muted-foreground">{label.effect}</span>}
+                      </span>
                     </button>
                   );
                 })}
               </div>
-            )}
-          </ModeButton>
-        </fieldset>
+              <p className="text-[12px] text-muted-foreground" data-testid="redeliver-again-warning">
+                {count === 1
+                  ? "The record is written again whether it changed or not."
+                  : `Every one of the ${count.toLocaleString()} records is written again whether it changed or not.`}
+              </p>
+            </section>
+          )}
 
-        <Label className="flex items-center gap-2 text-[13px] font-normal" title="The run plans the records a pass of 5,000 at a time and sends what each pass decides. Without it, the flow's next run does.">
-          <Checkbox checked={run} onCheckedChange={(next) => setRun(next === true)} disabled={busy} data-testid="redeliver-run" />
-          Queue a deliver run now
-        </Label>
+        <div className="flex flex-col gap-1">
+          <Label className="flex items-center gap-2 text-[13px] font-normal">
+            <Checkbox checked={run} onCheckedChange={(next) => setRun(next === true)} disabled={busy} data-testid="redeliver-run" />
+            Queue a deliver run now
+          </Label>
+          <p className="pl-6 text-[12px] text-muted-foreground">
+            {run
+              ? `The run takes the records ${PER_PASS.toLocaleString()} to a pass${mode === "uptodate" ? ", renders each and sends only what changed" : ""}; its page shows how far it is.`
+              : "Without a run, the flow's next run takes them, a scheduled one included."}
+          </p>
+        </div>
 
         <AlertDialogFooter>
           <Button variant="ghost" size="sm" onClick={onClose} disabled={busy} data-testid="redeliver-cancel">
@@ -254,44 +295,70 @@ export function RedeliverDialog({ open, onClose, pipelineId, flowId, flowScope, 
   );
 }
 
-function ModeButton({ active, onClick, title, note, effect, testId, children }: {
-  active: boolean;
-  onClick: () => void;
+/** The mark of a choice: a ring, filled while it is the one chosen. */
+function RadioMark({ checked }: { checked: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border",
+        checked ? "border-primary" : "border-muted-foreground/50",
+      )}
+    >
+      {checked && <span className="size-2 rounded-full bg-primary" />}
+    </span>
+  );
+}
+
+function ModeChoice({ checked, disabled, onSelect, title, note, effect, testId }: {
+  checked: boolean;
+  disabled: boolean;
+  onSelect: () => void;
   title: string;
   note?: string;
   effect: string;
   testId: string;
-  children?: ReactNode;
 }) {
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      aria-pressed={active}
-      onClick={onClick}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onClick();
-        }
-      }}
+    <button
+      type="button"
+      role="radio"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={onSelect}
       className={cn(
-        "flex w-full cursor-pointer flex-col items-start gap-1 rounded-md border p-2.5 text-left transition-colors",
-        active ? "border-primary bg-primary/5" : "border-border hover:bg-accent/50",
+        "flex w-full items-start gap-2.5 rounded-md border p-2.5 text-left transition-colors",
+        checked ? "border-primary bg-primary/5" : "border-border hover:bg-accent/50",
       )}
       data-testid={testId}
     >
-      <span className="flex items-center gap-2">
-        <span className="text-[13px] font-medium">{title}</span>
-        {note !== undefined && <span className="text-[11px] text-muted-foreground">{note}</span>}
+      <RadioMark checked={checked} />
+      <span className="flex flex-col gap-1">
+        <span className="flex items-center gap-2">
+          <span className="text-[13px] font-medium">{title}</span>
+          {note !== undefined && <span className="text-[11px] text-muted-foreground">{note}</span>}
+        </span>
+        <span className="text-[12px] text-muted-foreground">{effect}</span>
       </span>
-      <span className="text-[13px] text-muted-foreground">{effect}</span>
-      {children}
-    </div>
+    </button>
   );
 }
 
-/** What the plan run found: how many of the checked records would be sent and which part, how many stay, and the first ones. */
+/** A share of what was checked, as a whole percentage; less than one but more than none reads as under 1%. */
+function share(part: number, whole: number): string {
+  if (whole <= 0 || part <= 0) {
+    return "";
+  }
+
+  const percent = (part / whole) * 100;
+  return percent < 1 ? "under 1%" : `${Math.round(percent)}%`;
+}
+
+/**
+ * What the plan run found, laid out for a selection of any size: of the records it checked (all of a small selection, a
+ * sample of a large one), how many would be sent and with which part, how many render the same, how many would be held,
+ * and, for a sample, what that comes to for the whole selection. Records are named only as a few examples, on request.
+ */
 function PreviewPanel({ loading, error, accepted, run, flowId }: {
   loading: boolean;
   error: unknown;
@@ -299,32 +366,36 @@ function PreviewPanel({ loading, error, accepted, run, flowId }: {
   run: RunDetail | undefined;
   flowId: string | null;
 }) {
+  const [examples, setExamples] = useState(false);
+
   if (error !== null && error !== undefined) {
     return (
-      <div className="mt-1 w-full" data-testid="redeliver-preview-error">
+      <div className="w-full" data-testid="redeliver-preview-error">
         {isApiError(error) ? <CorrelationError error={error} /> : <p className="text-[13px] text-destructive">{String(error)}</p>}
       </div>
     );
   }
 
   if (loading || accepted === undefined) {
-    return <Skeleton className="mt-1 h-12 w-full rounded-md" />;
+    return <Skeleton className="h-12 w-full rounded-md" />;
   }
 
   const runLink = (
-    <RouterLink to={`/runs/${accepted.runId}`} className="font-mono text-primary underline-offset-2 hover:underline" onClick={(event) => event.stopPropagation()}>
+    <RouterLink to={`/runs/${accepted.runId}`} className="font-mono text-primary underline-offset-2 hover:underline">
       {shortId(accepted.runId)}
     </RouterLink>
   );
-  const of = accepted.checked < accepted.selected
-    ? ` of ${accepted.selectedCapped ? "more than " : ""}${accepted.selected.toLocaleString()}`
-    : "";
+  const sampled = accepted.checked < accepted.selected;
+  const selected = `${accepted.selectedCapped ? "more than " : ""}${accepted.selected.toLocaleString()}`;
+  const what = sampled
+    ? `a sample of ${accepted.checked.toLocaleString()} of the ${selected} selected records`
+    : plural(accepted.checked, "delivered record");
 
   if (run === undefined || !TERMINAL.has(run.status)) {
     return (
-      <p className="mt-1 flex items-center gap-2 text-[13px] text-muted-foreground" data-testid="redeliver-preview-running">
-        <Loader2 className="size-3.5 animate-spin" />
-        Checking {plural(accepted.checked, "delivered record")}{of} without sending anything (plan run {runLink}).
+      <p className="flex items-center gap-2 text-[13px] text-muted-foreground" data-testid="redeliver-preview-running">
+        <Loader2 className="size-3.5 shrink-0 animate-spin" />
+        <span>Rendering {what} again to see which would change. Nothing is sent until you confirm (plan run {runLink}).</span>
       </p>
     );
   }
@@ -332,55 +403,82 @@ function PreviewPanel({ loading, error, accepted, run, flowId }: {
   const outcome: PlanPreview | null = run.status === "succeeded" ? planPreview(run) : null;
   if (outcome === null) {
     return (
-      <p className="mt-1 text-[13px] text-destructive" data-testid="redeliver-preview-failed">
+      <p className="text-[13px] text-destructive" data-testid="redeliver-preview-failed">
         The check did not finish{run.error ? `: ${run.error}` : "."} See plan run {runLink}. Bringing the records up to date still works; it only cannot say beforehand what it sends.
       </p>
     );
   }
 
-  // One record says what of it changed; several say how many of them each part goes for.
-  const parts = outcome.deliveries === 1
-    ? [outcome.metadata > 0 && outcome.payload > 0 ? "with a new document and payload" : outcome.metadata > 0 ? "with a new document" : "with a new payload"]
-    : [
-      outcome.metadata > 0 && `${outcome.metadata.toLocaleString()} with a new document`,
-      outcome.payload > 0 && `${outcome.payload.toLocaleString()} with a new payload`,
-    ].filter((text): text is string => typeof text === "string");
+  const read = Math.max(outcome.records, 1);
+  const held = outcome.held + outcome.blocked;
+  const both = Math.max(0, outcome.metadata + outcome.payload - outcome.deliveries);
+  const rows: { label: string; value: number; sub?: boolean; testId: string }[] = [
+    { label: "Would be sent", value: outcome.deliveries, testId: "redeliver-preview-sends" },
+    ...(outcome.deliveries > 0 && outcome.metadata - both > 0 ? [{ label: "a new document", value: outcome.metadata - both, sub: true, testId: "redeliver-preview-document" }] : []),
+    ...(outcome.deliveries > 0 && outcome.payload - both > 0 ? [{ label: "a new payload", value: outcome.payload - both, sub: true, testId: "redeliver-preview-payload" }] : []),
+    ...(both > 0 ? [{ label: "a new document and payload", value: both, sub: true, testId: "redeliver-preview-both" }] : []),
+    { label: "Render the same, left as they are", value: outcome.unchanged, testId: "redeliver-preview-unchanged" },
+    ...(held > 0 ? [{ label: "Would be held", value: held, testId: "redeliver-preview-held" }] : []),
+    ...(outcome.other > 0 ? [{ label: "Waiting for approval, or older than OSDU holds", value: outcome.other, testId: "redeliver-preview-other" }] : []),
+  ];
+  const estimate = sampled && outcome.records > 0 ? Math.round((outcome.deliveries / outcome.records) * accepted.selected) : null;
+
   return (
-    <div className="mt-1 flex w-full flex-col gap-1.5 text-[13px]" data-testid="redeliver-preview">
-      <p>
-        Checked {plural(accepted.checked, "delivered record")}{of} (plan run {runLink}):{" "}
-        <span className="font-medium" data-testid="redeliver-preview-sends">
-          {outcome.deliveries === 0 ? "none renders differently, so nothing would be sent" : `${outcome.deliveries.toLocaleString()} would be sent`}
-        </span>
-        {outcome.deliveries > 0 && parts.length > 0 && ` (${parts.join(", ")})`}
-        {outcome.deliveries > 0 && outcome.unchanged > 0 && `; ${outcome.unchanged.toLocaleString()} ${outcome.unchanged === 1 ? "renders the same and stays as it is" : "render the same and stay as they are"}`}
-        {outcome.held + outcome.blocked > 0 && `; ${(outcome.held + outcome.blocked).toLocaleString()} would be held`}
-        .
+    <div className="flex w-full flex-col gap-2 text-[13px]" data-testid="redeliver-preview">
+      <p className="text-muted-foreground">
+        Rendered {what} again, sending nothing (plan run {runLink}):
       </p>
-      {accepted.checked < accepted.selected && (
-        <p className="text-[12px] text-muted-foreground">
-          The first {accepted.checked.toLocaleString()} stand for the rest: bringing them up to date renders every one and decides each on its own.
+      <dl className="grid grid-cols-[1fr_auto_auto] items-baseline gap-x-4 gap-y-1">
+        {rows.map((row) => (
+          <div key={row.testId} className="contents" data-testid={row.testId}>
+            <dt className={cn(row.sub ? "pl-4 text-muted-foreground" : "font-medium")}>{row.sub ? `with ${row.label}` : row.label}</dt>
+            <dd className={cn("text-right tabular-nums", row.value === 0 && "text-muted-foreground")}>{row.value.toLocaleString()}</dd>
+            <dd className="w-16 text-right tabular-nums text-muted-foreground">{row.sub ? "" : share(row.value, read)}</dd>
+          </div>
+        ))}
+      </dl>
+      {estimate !== null && (
+        <p data-testid="redeliver-preview-estimate">
+          {outcome.deliveries === 0
+            ? `None of the sample renders differently, so few if any of the ${selected} would be sent.`
+            : `For all ${selected} selected, that is about ${estimate.toLocaleString()} to send.`}
+          <span className="text-muted-foreground"> Bringing them up to date renders every one and decides each on its own.</span>
         </p>
       )}
+      {!sampled && outcome.deliveries === 0 && (
+        <p className="text-muted-foreground">None renders differently, so bringing them up to date would send nothing.</p>
+      )}
       {outcome.sample.length > 0 && (
-        <ul className="flex flex-col gap-0.5 text-[12px]" data-testid="redeliver-preview-sample">
-          {outcome.sample.slice(0, 5).map((entry) => (
-            <li key={entry.key} className="flex min-w-0 items-baseline gap-2">
-              {flowId === null
-                ? <span className="truncate">{entry.label ?? entry.sourceKey}</span>
-                : (
-                  <RouterLink
-                    to={deliveryRecordRoute({ flowId, deliveryKey: entry.key })}
-                    className="truncate underline-offset-2 hover:underline"
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    {entry.label ?? entry.sourceKey}
-                  </RouterLink>
-                )}
-              <span className="shrink-0 text-muted-foreground">{entry.reason}</span>
-            </li>
-          ))}
-        </ul>
+        <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={() => setExamples((shown) => !shown)}
+            className="flex items-center gap-1 self-start text-[12px] text-muted-foreground hover:text-foreground"
+            aria-expanded={examples}
+            data-testid="redeliver-preview-examples-toggle"
+          >
+            {examples ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+            {examples ? "Hide examples" : `Show ${Math.min(outcome.sample.length, 5)} of the records it would send`}
+          </button>
+          {examples && (
+            <ul className="flex flex-col gap-0.5 pl-4 text-[12px]" data-testid="redeliver-preview-sample">
+              {outcome.sample.slice(0, 5).map((entry) => (
+                <li key={entry.key} className="flex min-w-0 items-baseline gap-2">
+                  {flowId === null
+                    ? <span className="min-w-0 truncate">{entry.label ?? entry.sourceKey}</span>
+                    : (
+                      <RouterLink to={deliveryRecordRoute({ flowId, deliveryKey: entry.key })} className="min-w-0 truncate underline-offset-2 hover:underline">
+                        {entry.label ?? entry.sourceKey}
+                      </RouterLink>
+                    )}
+                  <span className="shrink-0 text-muted-foreground">
+                    {entry.metadata && entry.payload ? "document and payload" : entry.metadata ? "document" : "payload"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );
