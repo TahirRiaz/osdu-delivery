@@ -28,6 +28,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   `GET .../problems/{problem}`, `POST .../problems/{problem}/release`, the records listing's `problem` filter, `run` on a
   record's release, and `sqlflow records problems` and `records release --problem` answer it
   ([osdu/docs/ledger.md](osdu/docs/ledger.md), Problems).
+- **A set error is released whole.** Each problem says whether it is a **set error** (every record carries the same
+  error, the mistake made once in the dataset, a cache entry, the mapping or a legal tag) or **row errors** (each record
+  names its own row's value), read from the values its records' errors name; the Problems tab writes a set error's value
+  in place and shows five samples spread from a problem's newest to its oldest record, each with Check and Try. A deliver
+  run now plans every record a release or a redelivery asked to be planned again, 5,000 to a pass and as many passes as
+  there are, instead of 5,000 a run, and sends what every settled submission still holds, not ten submissions' worth;
+  so a release of a million records with a run is planned and sent by that run. A redelivery of many records names each
+  record under its activity as a release does, and the Delivery tab's Release blocked can queue the run too
+  (`run` on `POST /delivery/flows/{id}/release`).
 
 - **The explorer shows the query that finds any part of a record.** Beside every value and section of a record, a search
   button shows the Lucene query that finds the records holding exactly it, with Copy and Search: a value by its whole

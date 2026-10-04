@@ -48,14 +48,60 @@ internal static partial class SqlServerLedgerBulk
         SELECT COUNT(*) FROM @released;
         """;
 
+    // One slice of a redelivery, in one transaction with the rows that name what it marked. Each named record of one ledger
+    // (with @delivered, each that OSDU holds: delivered, with an id) forgets what OSDU holds of the part @scope names
+    // (metadata, payload or all; a payload sent in parts keeps @marker on its delivered hash, naming the parts to send) and
+    // its fingerprints, and is asked to be planned again. A record still blocked by a problem keeps its error, which is
+    // what its problem was read from. With an activity, each record marked is named under it.
+    private const string RedeliverSliceSql = $$"""
+        DECLARE @marked TABLE ([DeliveryKey] uniqueidentifier NOT NULL PRIMARY KEY);
+        UPDATE r SET
+            r.[MetadataHash] = CASE WHEN @scope = N'payload' THEN r.[MetadataHash] ELSE NULL END,
+            r.[PayloadHash] = CASE WHEN @scope = N'metadata' THEN r.[PayloadHash] WHEN @scope = N'payload' THEN @marker ELSE NULL END,
+            r.[PayloadModifiedUtc] = CASE WHEN @scope = N'metadata' THEN r.[PayloadModifiedUtc] ELSE NULL END,
+            r.[SourceFingerprint] = NULL,
+            r.[PendingSourceFingerprint] = NULL,
+            r.[PlanRequestedUtc] = @now,
+            r.[LastError] = CASE WHEN r.[ProblemHash] IS NOT NULL THEN r.[LastError] ELSE @note END,
+            r.[UpdatedUtc] = @now
+        OUTPUT inserted.[DeliveryKey] INTO @marked ([DeliveryKey])
+        FROM (SELECT DISTINCT CAST(k.[value] AS uniqueidentifier) AS [DeliveryKey] FROM OPENJSON(@keys) AS k) AS n
+        INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
+            ON r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[DeliveryKey] = n.[DeliveryKey]
+        WHERE @delivered = 0 OR (r.[Status] = N'delivered' AND r.[TargetId] IS NOT NULL);
+        IF @activityId IS NOT NULL
+            INSERT INTO [osdu].[ActivityRecord] ([PartitionId], [FlowId], [DeliveryKey], [ActivityId])
+            SELECT @partitionId, @flowId, x.[DeliveryKey], @activityId
+            FROM @marked AS x
+            WHERE NOT EXISTS (
+                SELECT 1 FROM [osdu].[ActivityRecord] AS a
+                WHERE a.[PartitionId] = @partitionId AND a.[FlowId] = @flowId AND a.[DeliveryKey] = x.[DeliveryKey] AND a.[ActivityId] = @activityId);
+        SELECT COUNT(*) FROM @marked;
+        """;
+
+    // A page of the records OSDU holds of one ledger, in the status index's order, after the last of the page before. A
+    // record this redelivery marked carries its moment as both its update time and its request, so the walk passes it over
+    // when it meets it again at the end. No bound on the update time: the moments were written by the clocks of whichever
+    // node or control plane wrote the record, which a bound read from this one's clock would cut at random.
+    private const string DeliveredPageSql = """
+        SELECT TOP (@slice) r.[UpdatedUtc], r.[DeliveryKey]
+        FROM [osdu].[Record] AS r
+        WHERE r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[Status] = N'delivered'
+          AND r.[UpdatedUtc] >= @afterUtc
+          AND NOT (r.[UpdatedUtc] = @afterUtc AND r.[DeliveryKey] <= @afterKey)
+          AND (r.[PlanRequestedUtc] IS NULL OR r.[PlanRequestedUtc] <> @now OR r.[UpdatedUtc] <> @now)
+        ORDER BY r.[UpdatedUtc], r.[DeliveryKey];
+        """;
+
     // A page of the records one problem keeps blocked, in the problem index's own order (its update time, then its key),
-    // after the last record of the page before and no later than the release began. A record the release takes leaves the
-    // index, and one blocked after the release began is past its end, so the walk ends however busy the flow is.
+    // after the last record of the page before. A record the release takes leaves the index and the walk only moves
+    // forward, so it ends; a record a run blocks with the same problem while the walk goes is reached too, since it is
+    // the problem's as much as the others.
     private const string ProblemPageSql = """
         SELECT TOP (@slice) r.[UpdatedUtc], r.[DeliveryKey]
         FROM [osdu].[Record] AS r
         WHERE r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[ProblemHash] IS NOT NULL AND r.[ProblemHash] = @problem
-          AND r.[UpdatedUtc] >= @afterUtc AND r.[UpdatedUtc] <= @asOf
+          AND r.[UpdatedUtc] >= @afterUtc
           AND NOT (r.[UpdatedUtc] = @afterUtc AND r.[DeliveryKey] <= @afterKey)
         ORDER BY r.[UpdatedUtc], r.[DeliveryKey];
         """;
@@ -66,7 +112,7 @@ internal static partial class SqlServerLedgerBulk
         SELECT TOP (@slice) r.[UpdatedUtc], r.[DeliveryKey]
         FROM [osdu].[Record] AS r
         WHERE r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[Status] = @status AND r.[Blocked] = 1
-          AND r.[UpdatedUtc] >= @afterUtc AND r.[UpdatedUtc] <= @asOf
+          AND r.[UpdatedUtc] >= @afterUtc
           AND NOT (r.[UpdatedUtc] = @afterUtc AND r.[DeliveryKey] <= @afterKey)
         ORDER BY r.[UpdatedUtc], r.[DeliveryKey];
         """;
@@ -104,15 +150,33 @@ internal static partial class SqlServerLedgerBulk
         GROUP BY r.[ProblemHash];
         """;
 
-    // The most recently changed record of each problem named: one seek of the end of each problem's range.
+    // The most recently changed record of each problem named, and the one changed longest ago: a seek of each end of each
+    // problem's range.
     private const string ProblemExamplesSql = """
-        SELECT e.[DeliveryKey]
+        SELECT p.[ProblemHash], n.[DeliveryKey], o.[DeliveryKey]
         FROM (SELECT DISTINCT CAST(j.[value] AS bigint) AS [ProblemHash] FROM OPENJSON(@problems) AS j) AS p
         CROSS APPLY (
             SELECT TOP (1) r.[DeliveryKey]
             FROM [osdu].[Record] AS r
             WHERE r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[ProblemHash] IS NOT NULL AND r.[ProblemHash] = p.[ProblemHash]
-            ORDER BY r.[UpdatedUtc] DESC, r.[DeliveryKey] DESC) AS e;
+            ORDER BY r.[UpdatedUtc] DESC, r.[DeliveryKey] DESC) AS n
+        CROSS APPLY (
+            SELECT TOP (1) r.[DeliveryKey]
+            FROM [osdu].[Record] AS r
+            WHERE r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[ProblemHash] IS NOT NULL AND r.[ProblemHash] = p.[ProblemHash]
+            ORDER BY r.[UpdatedUtc], r.[DeliveryKey]) AS o;
+        """;
+
+    // The records of one problem at the positions named, newest first, numbered in the problem index's own order: one pass
+    // over the problem's range of the index, as far as the last position.
+    private const string ProblemSamplesSql = """
+        SELECT x.[DeliveryKey]
+        FROM (
+            SELECT r.[DeliveryKey], ROW_NUMBER() OVER (ORDER BY r.[UpdatedUtc] DESC, r.[DeliveryKey] DESC) AS [Position]
+            FROM [osdu].[Record] AS r
+            WHERE r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[ProblemHash] IS NOT NULL AND r.[ProblemHash] = @problem) AS x
+        WHERE x.[Position] IN (SELECT CAST(j.[value] AS bigint) FROM OPENJSON(@positions) AS j)
+        ORDER BY x.[Position];
         """;
 
     // The files one problem's records were left at, from the file the problem index includes.
@@ -177,6 +241,61 @@ internal static partial class SqlServerLedgerBulk
             return Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
         }, ct);
 
+    /// <summary>
+    /// Marks the named records of one ledger for redelivery of <paramref name="scope"/> in one transaction (see the
+    /// statement), naming each one marked under <paramref name="activityId"/> when given. Returns how many it marked.
+    /// </summary>
+    public static Task<int> RedeliverSliceAsync(
+        OsduDbContext db, short partitionId, Guid flowId, IReadOnlyList<Guid> keys, string scope, string? marker, bool deliveredOnly, long? activityId, string note,
+        DateTime now, CancellationToken ct)
+        => InTransactionAsync(db, async (connection, transaction) =>
+        {
+            await using var command = Command(connection, transaction, RedeliverSliceSql, slice: null);
+            command.Parameters.Add(new SqlParameter("@keys", SqlDbType.NVarChar, -1) { Value = System.Text.Json.JsonSerializer.Serialize(keys) });
+            command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
+            command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+            command.Parameters.Add(new SqlParameter("@scope", SqlDbType.NVarChar, 16) { Value = scope });
+            command.Parameters.Add(new SqlParameter("@marker", SqlDbType.NVarChar, 64) { Value = marker is null ? DBNull.Value : marker });
+            command.Parameters.Add(new SqlParameter("@delivered", SqlDbType.Bit) { Value = deliveredOnly });
+            command.Parameters.Add(new SqlParameter("@activityId", SqlDbType.BigInt) { Value = activityId is { } id ? id : DBNull.Value });
+            command.Parameters.Add(new SqlParameter("@note", SqlDbType.NVarChar, 2000) { Value = note });
+            command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
+            return Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false), System.Globalization.CultureInfo.InvariantCulture);
+        }, ct);
+
+    /// <summary>
+    /// The next page of the records OSDU holds of one ledger after <paramref name="after"/>, at most <paramref name="slice"/>,
+    /// in the status index's order, passing over those the redelivery that began at <paramref name="now"/> marked: the walk
+    /// of a redelivery of every delivered record.
+    /// </summary>
+    public static async Task<IReadOnlyList<WalkPosition>> DeliveredPageAsync(
+        OsduDbContext db, short partitionId, Guid flowId, WalkPosition after, DateTime now, int slice, CancellationToken ct)
+    {
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            await using var command = Command(connection, null, DeliveredPageSql, slice);
+            command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
+            command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+            command.Parameters.Add(new SqlParameter("@afterUtc", SqlDbType.DateTime2) { Value = after.UpdatedUtc });
+            command.Parameters.Add(new SqlParameter("@afterKey", SqlDbType.UniqueIdentifier) { Value = after.DeliveryKey });
+            command.Parameters.Add(new SqlParameter("@now", SqlDbType.DateTime2) { Value = now });
+            var page = new List<WalkPosition>();
+            await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                page.Add(new WalkPosition(reader.GetDateTime(0), reader.GetGuid(1)));
+            }
+
+            return page;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
     /// <summary>A place in an index's order of update time, then key: where the next page of a walk starts after.</summary>
     public readonly record struct WalkPosition(DateTime UpdatedUtc, Guid DeliveryKey)
     {
@@ -186,11 +305,11 @@ internal static partial class SqlServerLedgerBulk
 
     /// <summary>
     /// The next page of a release's walk: the records <paramref name="problem"/> keeps blocked, or with no problem the
-    /// blocked records in <paramref name="status"/>, after <paramref name="after"/> and updated no later than
-    /// <paramref name="asOf"/>, at most <paramref name="slice"/>, in the index's order.
+    /// blocked records in <paramref name="status"/>, after <paramref name="after"/>, at most <paramref name="slice"/>, in the
+    /// index's order.
     /// </summary>
     public static async Task<IReadOnlyList<WalkPosition>> ReleasePageAsync(
-        OsduDbContext db, short partitionId, Guid flowId, long? problem, string? status, WalkPosition after, DateTime asOf, int slice, CancellationToken ct)
+        OsduDbContext db, short partitionId, Guid flowId, long? problem, string? status, WalkPosition after, int slice, CancellationToken ct)
     {
         if (problem is null == status is null)
         {
@@ -215,7 +334,6 @@ internal static partial class SqlServerLedgerBulk
 
             command.Parameters.Add(new SqlParameter("@afterUtc", SqlDbType.DateTime2) { Value = after.UpdatedUtc });
             command.Parameters.Add(new SqlParameter("@afterKey", SqlDbType.UniqueIdentifier) { Value = after.DeliveryKey });
-            command.Parameters.Add(new SqlParameter("@asOf", SqlDbType.DateTime2) { Value = asOf });
             var page = new List<WalkPosition>();
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
             while (await reader.ReadAsync(ct).ConfigureAwait(false))
@@ -279,8 +397,11 @@ internal static partial class SqlServerLedgerBulk
         }
     }
 
-    /// <summary>The key of the most recently changed record of each problem named.</summary>
-    public static async Task<IReadOnlyList<Guid>> ProblemExamplesAsync(OsduDbContext db, short partitionId, Guid flowId, IReadOnlyCollection<long> problems, CancellationToken ct)
+    /// <summary>A problem's most recently changed record and the one changed longest ago, by key.</summary>
+    public sealed record ProblemEnds(long Problem, Guid Newest, Guid Oldest);
+
+    /// <summary>The newest and the oldest record of each problem named.</summary>
+    public static async Task<IReadOnlyList<ProblemEnds>> ProblemExamplesAsync(OsduDbContext db, short partitionId, Guid flowId, IReadOnlyCollection<long> problems, CancellationToken ct)
     {
         if (problems.Count == 0)
         {
@@ -295,6 +416,39 @@ internal static partial class SqlServerLedgerBulk
             command.Parameters.Add(new SqlParameter("@problems", SqlDbType.NVarChar, -1) { Value = System.Text.Json.JsonSerializer.Serialize(problems) });
             command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
             command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+            var ends = new List<ProblemEnds>();
+            await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                ends.Add(new ProblemEnds(reader.GetInt64(0), reader.GetGuid(1), reader.GetGuid(2)));
+            }
+
+            return ends;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>The keys of one problem's records at <paramref name="positions"/> (1 the newest) of the problem index's order.</summary>
+    public static async Task<IReadOnlyList<Guid>> ProblemSamplesAsync(
+        OsduDbContext db, short partitionId, Guid flowId, long problem, IReadOnlyCollection<long> positions, CancellationToken ct)
+    {
+        if (positions.Count == 0)
+        {
+            return [];
+        }
+
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            await using var command = Command(connection, null, ProblemSamplesSql, slice: null);
+            command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
+            command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+            command.Parameters.Add(new SqlParameter("@problem", SqlDbType.BigInt) { Value = problem });
+            command.Parameters.Add(new SqlParameter("@positions", SqlDbType.NVarChar, -1) { Value = System.Text.Json.JsonSerializer.Serialize(positions) });
             return await GuidsAsync(command, ct).ConfigureAwait(false);
         }
         finally

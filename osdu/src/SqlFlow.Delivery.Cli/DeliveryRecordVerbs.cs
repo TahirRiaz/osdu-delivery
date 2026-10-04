@@ -31,6 +31,9 @@ internal static class DeliveryRecordVerbs
     /// <summary>Files named for one problem.</summary>
     private const int ProblemFiles = 20;
 
+    /// <summary>Records of one problem shown side by side, spread across it.</summary>
+    private const int ProblemSamples = 5;
+
     public static async Task<int> RecordsAsync(CliVerbContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -218,10 +221,20 @@ internal static class DeliveryRecordVerbs
                 ?? throw new FlowValidationException(
                     $"{label} has no record blocked by problem {ProblemSignature.Format(named)}; 'records problems' lists the problems it has.");
             var files = await ledger.ListProblemFilesAsync(flowId, named, ProblemFiles, ct).ConfigureAwait(false);
+            var samples = await ledger.ListProblemSamplesAsync(flowId, named, ProblemSamples, ct).ConfigureAwait(false);
+
+            // The samples know more of where the problem lies than the listing's newest and oldest record.
+            problem = problem with { Shape = ProblemSignature.ShapeOf(samples.Select(s => s.LastError).Append(problem.Example?.LastError)) };
             if (context.Json)
             {
                 var described = Described(problem);
                 described["files"] = new JsonArray(files.Select(f => (JsonNode)new JsonObject { ["fileName"] = f.FileName, ["records"] = f.Records }).ToArray());
+                described["samples"] = new JsonArray(samples.Select(s =>
+                {
+                    var sample = Described(s);
+                    sample["values"] = new JsonArray(ProblemSignature.Values(s.LastError).Select(v => (JsonNode)JsonValue.Create(v)!).ToArray());
+                    return (JsonNode)sample;
+                }).ToArray());
                 context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
                 {
                     ["flow"] = label,
@@ -236,6 +249,15 @@ internal static class DeliveryRecordVerbs
             foreach (var file in files)
             {
                 context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"        {file.Records,10}  {file.FileName ?? "(no file recorded)"}"));
+            }
+
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"      {samples.Count} sample(s) spread across it, newest first:"));
+            foreach (var sample in samples)
+            {
+                var values = ProblemSignature.Values(sample.LastError);
+                context.Out.WriteLine(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"        {sample.DeliveryKey.Value:N}  {sample.SourceKey}{(values.Count > 0 ? "  " + string.Join(", ", values.Select(v => $"'{v}'")) : string.Empty)}"));
             }
 
             return 0;
@@ -280,12 +302,15 @@ internal static class DeliveryRecordVerbs
         return 0;
     }
 
-    /// <summary>One problem as the terminal shows it: its id and counts, its pattern, and the example with its own error.</summary>
+    /// <summary>
+    /// One problem as the terminal shows it: its id, where it lies and its counts, its pattern, and the example with its own
+    /// error.
+    /// </summary>
     private static void WriteProblem(CliVerbContext context, ProblemGroup problem)
     {
         context.Out.WriteLine(string.Create(
             CultureInfo.InvariantCulture,
-            $"  {ProblemSignature.Format(problem.Problem)}  {problem.Records} record(s): {problem.Held} held, {problem.Failed} failed; last changed {problem.OldestUtc:u} to {problem.NewestUtc:u}"));
+            $"  {ProblemSignature.Format(problem.Problem)}  {Shape(problem.Shape)}, {problem.Records} record(s): {problem.Held} held, {problem.Failed} failed; last changed {problem.OldestUtc:u} to {problem.NewestUtc:u}"));
         context.Out.WriteLine("      " + One(problem.Pattern));
         if (problem.Example is { } example)
         {
@@ -411,9 +436,14 @@ internal static class DeliveryRecordVerbs
         ["problem"] = record.ProblemHash is { } problem ? ProblemSignature.Format(problem) : null,
     };
 
+    /// <summary>Where a problem lies, in the words the terminal and the JSON use.</summary>
+    private static string Shape(ProblemShape shape) => shape == ProblemShape.Rows ? "row errors" : "set error";
+
     private static JsonObject Described(ProblemGroup problem) => new()
     {
         ["problem"] = ProblemSignature.Format(problem.Problem),
+        ["shape"] = problem.Shape == ProblemShape.Rows ? "rows" : "set",
+        ["values"] = new JsonArray(problem.Values.Select(v => (JsonNode)JsonValue.Create(v)!).ToArray()),
         ["pattern"] = problem.Pattern,
         ["records"] = problem.Records,
         ["held"] = problem.Held,

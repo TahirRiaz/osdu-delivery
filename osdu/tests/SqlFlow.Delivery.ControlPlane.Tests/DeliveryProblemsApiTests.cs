@@ -110,6 +110,9 @@ public sealed class DeliveryProblemsApiTests
             Assert.Equal(missing, first.GetProperty("problem").GetString());
             Assert.Equal("osdu.data.WellboreID: '<value>' matches no cached Wellbore, and the entry is required", first.GetProperty("pattern").GetString());
             Assert.Equal((3L, 3L, 0L), (first.GetProperty("records").GetInt64(), first.GetProperty("held").GetInt64(), first.GetProperty("failed").GetInt64()));
+            // The wellbores the cache lacks name each its own row's value: row errors. The empty tag is the same everywhere.
+            Assert.Equal("rows", first.GetProperty("shape").GetString());
+            Assert.Equal("set", listing.GetProperty("problems")[1].GetProperty("shape").GetString());
             var example = first.GetProperty("example");
             Assert.Equal(missing, example.GetProperty("problem").GetString());
             Assert.Contains(example.GetProperty("deliveryKey").GetGuid(), wellbores.Select(w => w.DeliveryKey.Value));
@@ -119,6 +122,14 @@ public sealed class DeliveryProblemsApiTests
             Assert.Equal(
                 [("wells.csv", 2L), ("late.csv", 1L)],
                 detail.GetProperty("files").EnumerateArray().Select(f => (f.GetProperty("fileName").GetString(), f.GetProperty("records").GetInt64())).ToList());
+
+            // Samples spread across it, each with the value its row names, which differ: row errors.
+            var samples = detail.GetProperty("samples").EnumerateArray().ToList();
+            Assert.Equal(3, samples.Count);
+            Assert.Equal(
+                ["WB-1", "WB-2", "WB-3"],
+                samples.Select(x => Assert.Single(x.GetProperty("values").EnumerateArray().ToList()).GetString()).Order(StringComparer.Ordinal).ToList());
+            Assert.Equal("rows", detail.GetProperty("problem").GetProperty("shape").GetString());
             await StatusAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems/not-a-problem", HttpStatusCode.BadRequest);
             await StatusAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems/{new string('0', 16)}", HttpStatusCode.NotFound);
 
@@ -157,6 +168,16 @@ public sealed class DeliveryProblemsApiTests
             }
 
             Assert.Equal(0L, (await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/flows/{pipelineId:D}/problems")).GetProperty("totalRecords").GetInt64());
+
+            // Every blocked record of the flow released, with a deliver run queued to plan and send them all.
+            await ledger.MarkHeldAsync(flowId, [tag]);
+            var everything = await JsonAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/release", """{"run":true}""", HttpStatusCode.Accepted);
+            Assert.Equal(1, everything.GetProperty("released").GetInt32());
+            var flowRun = everything.GetProperty("runId").GetGuid();
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                Assert.Equal(pipelineId, (await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == flowRun)).PipelineId);
+            }
         }
         finally
         {

@@ -65,6 +65,74 @@ public static partial class ProblemSignature
         return collapsed.Length > MaxPatternLength ? collapsed[..MaxPatternLength] : collapsed;
     }
 
+    /// <summary>
+    /// The values an error names that its pattern replaces with <c>'&lt;value&gt;'</c>: what the record read from its row,
+    /// in the order the error names them, without their quotes. Two records of one problem naming the same values carry
+    /// the same error, as every record of a set the same mistake was made in does; records naming different values each
+    /// carry their own row's.
+    /// </summary>
+    public static IReadOnlyList<string> Values(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error))
+        {
+            return [];
+        }
+
+        var bounded = error.Length > MaxPatternLength ? error[..MaxPatternLength] : error;
+        var values = new List<string>();
+        foreach (Match match in Parts().Matches(bounded))
+        {
+            foreach (var name in ValueGroups)
+            {
+                var group = match.Groups[name];
+                if (group.Success)
+                {
+                    // The quotes the value stood in, one or two characters a side, are not the value.
+                    var quote = name == "escaped" ? 2 : 1;
+                    values.Add(group.Value[quote..^quote]);
+                    break;
+                }
+            }
+        }
+
+        return values;
+    }
+
+    /// <summary>
+    /// What errors of one problem say of where it lies: <see cref="ProblemShape.Set"/> when they name no value a record
+    /// read, or every one names the same values, so the same mistake is in every record; <see cref="ProblemShape.Rows"/>
+    /// when they name different values, each its own row's.
+    /// </summary>
+    public static ProblemShape ShapeOf(IEnumerable<string?> errors)
+    {
+        ArgumentNullException.ThrowIfNull(errors);
+        IReadOnlyList<string>? first = null;
+        foreach (var error in errors)
+        {
+            var values = Values(error);
+            if (first is null)
+            {
+                first = values;
+            }
+            else if (!first.SequenceEqual(values, StringComparer.Ordinal))
+            {
+                return ProblemShape.Rows;
+            }
+        }
+
+        return ProblemShape.Set;
+    }
+
+    /// <summary>Whether a pattern holds a value a record read from its row (<see cref="Values"/>).</summary>
+    public static bool NamesValues(string pattern)
+    {
+        ArgumentNullException.ThrowIfNull(pattern);
+        return pattern.Contains("<value>", StringComparison.Ordinal);
+    }
+
+    /// <summary>The groups of <see cref="Parts"/> that stand for a value the record read.</summary>
+    private static readonly string[] ValueGroups = ["single", "back", "curly", "escaped"];
+
     /// <summary>The hash of a pattern: the first eight bytes of its SHA-256, big-endian.</summary>
     public static long Hash(string pattern)
     {
@@ -217,4 +285,20 @@ public static partial class ProblemSignature
     /// <summary>A segment of a web address's path that says what is called: a word, never an id or a number.</summary>
     [GeneratedRegex("^[A-Za-z][A-Za-z0-9_.-]{0,63}$", RegexOptions.CultureInvariant)]
     private static partial Regex PathWord();
+}
+
+/// <summary>Where a problem lies, as the errors of its records say (<see cref="ProblemSignature.ShapeOf"/>).</summary>
+public enum ProblemShape
+{
+    /// <summary>
+    /// The same error in every record looked at: a set error, made once for the whole set (a dataset, a cache entry, a
+    /// mapping, a legal tag), fixed once, after which every record of the problem is released together.
+    /// </summary>
+    Set,
+
+    /// <summary>
+    /// The records name different values, each its own row's: row errors, fixed in the rows themselves; a corrected row is
+    /// planned again on its own.
+    /// </summary>
+    Rows,
 }

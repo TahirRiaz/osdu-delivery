@@ -19,11 +19,17 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 
 /// <summary>
 /// One problem keeping a flow's records blocked (docs/ledger.md, Problems): its id, the error its records share with every
-/// part that names a record replaced, how many records it keeps blocked (held and failed), when they last changed, and its
-/// most recently changed record as an example, with that record's own error.
+/// part that names a record replaced, how many records it keeps blocked (held and failed), when they last changed, its
+/// most recently changed record as an example, with that record's own error, and where it lies: <c>set</c> when its records
+/// carry the same error (no value of their own, or the same values in each), <c>rows</c> when they name values of their
+/// own rows. <c>Values</c> are the values the example names, which for a set error every record names.
 /// </summary>
 public sealed record DeliveryProblemDto(
-    string Problem, string Pattern, long Records, long Held, long Failed, DateTime OldestUtc, DateTime NewestUtc, DeliveryRecordDto? Example);
+    string Problem, string Pattern, long Records, long Held, long Failed, DateTime OldestUtc, DateTime NewestUtc, DeliveryRecordDto? Example,
+    string Shape, IReadOnlyList<string> Values);
+
+/// <summary>A record of a problem looked at closely, with the values its error names.</summary>
+public sealed record DeliveryProblemSampleDto(DeliveryRecordDto Record, IReadOnlyList<string> Values);
 
 /// <summary>
 /// A flow's problems, the most records first: the ones listed, how many there are and how many records they keep blocked in
@@ -34,8 +40,12 @@ public sealed record DeliveryProblemListDto(IReadOnlyList<DeliveryProblemDto> Pr
 /// <summary>An ingestion file some of a problem's records were left at, and how many; a null name for those naming none.</summary>
 public sealed record DeliveryProblemFileDto(string? FileName, long Records);
 
-/// <summary>One problem with the files its records came from, the most records first.</summary>
-public sealed record DeliveryProblemDetailDto(DeliveryProblemDto Problem, IReadOnlyList<DeliveryProblemFileDto> Files);
+/// <summary>
+/// One problem with the files its records came from, the most records first, and samples spread evenly across its records
+/// (its newest, its oldest and the ones between), which are what tell its shape: the problem's <c>Shape</c> here is the
+/// samples' word, which knows more than the listing's two records.
+/// </summary>
+public sealed record DeliveryProblemDetailDto(DeliveryProblemDto Problem, IReadOnlyList<DeliveryProblemFileDto> Files, IReadOnlyList<DeliveryProblemSampleDto> Samples);
 
 /// <summary>
 /// A release of every record a problem keeps blocked. <c>Run</c> also queues a deliver run of the flow, read under the
@@ -60,6 +70,9 @@ public static class DeliveryProblemEndpoints
 
     /// <summary>The files a problem names.</summary>
     private const int MaxFiles = 50;
+
+    /// <summary>The samples a problem names unless asked for another number.</summary>
+    private const int DefaultSamples = 5;
 
     public static void MapReads(RouteGroupBuilder delivery)
     {
@@ -89,9 +102,9 @@ public static class DeliveryProblemEndpoints
         return TypedResults.Ok(new DeliveryProblemListDto(listing.Problems.Select(ToDto).ToList(), listing.TotalProblems, listing.TotalRecords, listing.Unsorted));
     }
 
-    /// <summary>One problem of one interface's ledger, with the files its records came from.</summary>
+    /// <summary>One problem of one interface's ledger, with the files its records came from and samples spread across it.</summary>
     private static async Task<Results<Ok<DeliveryProblemDetailDto>, ProblemHttpResult>> GetProblemAsync(
-        Guid pipelineId, string problem, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition,
+        Guid pipelineId, string problem, int? samples, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition,
         CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger, CancellationToken ct)
     {
         if (Parse(problem) is not { } hash)
@@ -112,7 +125,12 @@ public static class DeliveryProblemEndpoints
         }
 
         var files = await ledger.ListProblemFilesAsync(flow.FlowId, hash, MaxFiles, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryProblemDetailDto(ToDto(group), files.Select(f => new DeliveryProblemFileDto(f.FileName, f.Records)).ToList()));
+        var sampled = await ledger.ListProblemSamplesAsync(flow.FlowId, hash, Math.Clamp(samples ?? DefaultSamples, 1, OsduLedger.MaxProblemSamples), ct).ConfigureAwait(false);
+        var shape = sampled.Count == 0 ? group.Shape : ProblemSignature.ShapeOf(sampled.Select(s => s.LastError).Append(group.Example?.LastError));
+        return TypedResults.Ok(new DeliveryProblemDetailDto(
+            ToDto(group with { Shape = shape }),
+            files.Select(f => new DeliveryProblemFileDto(f.FileName, f.Records)).ToList(),
+            sampled.Select(s => new DeliveryProblemSampleDto(DeliveryEndpoints.ToDto(s), ProblemSignature.Values(s.LastError))).ToList()));
     }
 
     /// <summary>
@@ -154,13 +172,7 @@ public static class DeliveryProblemEndpoints
         // The run reads under the parameter values the example was last planned with, as a record's own run does, so a flow
         // whose scope is a parameter reads the records in the scope they were planned in.
         var last = group.Example?.LastSubmissionId is { } lastId ? await ledger.GetSubmissionAsync(lastId, ct).ConfigureAwait(false) : null;
-        var parameters = new RunParameters
-        {
-            Operation = DeliveryOperations.Deliver,
-            Values = DeliveryEndpoints.SubmissionValues(last?.ParametersJson),
-            Payload = new DeliveryRunPayload { Interface = flow.Flow.Interface }.ToJson(),
-        };
-        var runId = await DeliveryEndpoints.EnqueueRunAsync(db, dispatcher, flow, parameters, request.Pool, user, ct).ConfigureAwait(false);
+        var runId = await DeliveryEndpoints.EnqueueRunAsync(db, dispatcher, flow, DeliveryEndpoints.DeliverRun(flow, last?.ParametersJson), request.Pool, user, ct).ConfigureAwait(false);
         return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryProblemReleaseResult(named, released, runId));
     }
 
@@ -180,5 +192,9 @@ public static class DeliveryProblemEndpoints
 
     private static DeliveryProblemDto ToDto(ProblemGroup group) => new(
         ProblemSignature.Format(group.Problem), group.Pattern, group.Records, group.Held, group.Failed, group.OldestUtc, group.NewestUtc,
-        group.Example is { } example ? DeliveryEndpoints.ToDto(example) : null);
+        group.Example is { } example ? DeliveryEndpoints.ToDto(example) : null,
+        ShapeName(group.Shape), group.Values);
+
+    /// <summary>A problem's shape as the API names it.</summary>
+    private static string ShapeName(ProblemShape shape) => shape == ProblemShape.Rows ? "rows" : "set";
 }

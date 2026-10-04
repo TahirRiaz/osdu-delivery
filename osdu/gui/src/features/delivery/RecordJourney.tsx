@@ -760,12 +760,24 @@ interface Reach {
 
 function reachOf(activity: DeliveryActivity, parameters: Record<string, unknown> | null): Reach | null {
   const keys = parameters?.keys;
-  if (activity.kind !== "release" || activity.deliveryKey !== null || (Array.isArray(keys) && keys.length > 0)) {
+  if ((activity.kind !== "release" && activity.kind !== "redeliver") || activity.deliveryKey !== null || (Array.isArray(keys) && keys.length > 0)) {
     return null;
   }
 
-  const released = /^released (\d+) record/.exec(activity.summary ?? "")?.[1];
-  const count = released === undefined ? null : Number(released);
+  // "released 1,204 record(s) ...", or "marked every delivered record, 1204 in all, for redelivery of ...".
+  const reached = /^released (\d+) record|, (\d+) in all,/.exec(activity.summary ?? "");
+  const said = reached?.[1] ?? reached?.[2];
+  const count = said === undefined ? null : Number(said);
+  if (activity.kind === "redeliver") {
+    return {
+      title: count === null
+        ? "Redelivery asked for every delivered record, this one among them"
+        : `Redelivery asked for every delivered record, ${count.toLocaleString()} in all, this one among them`,
+      count,
+      pattern: null,
+    };
+  }
+
   const records = count === null ? "the records" : `${count.toLocaleString()} record${count === 1 ? "" : "s"}`;
   if (typeof parameters?.problem === "string") {
     return {
@@ -924,9 +936,9 @@ function activityEntry(activity: DeliveryActivity, record: DeliveryRecord, resul
     actor: activity.actor,
     scope,
     facts: [
-      reach !== null
-        ? reach.pattern !== null && <span key="p" className="break-words">{`kept blocked by: ${reach.pattern}`}</span>
-        : activity.kind === "redeliver" ? redeliveryOf(parameters) : !failed && activity.summary,
+      reach?.pattern != null
+        ? <span key="p" className="break-words">{`kept blocked by: ${reach.pattern}`}</span>
+        : activity.kind === "redeliver" ? redeliveryOf(parameters) : reach === null && !failed && activity.summary,
       many,
       <RunRef key="r" runId={activity.runId} />,
       <SubmissionRef key="s" submissionId={activity.submissionId} />,

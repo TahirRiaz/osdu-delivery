@@ -757,6 +757,22 @@ export interface DeliveryProblem {
   /** When its most recently changed record last changed. */
   newestUtc: string;
   example: DeliveryRecord | null;
+  /**
+   * Where the problem lies: `set` when its records carry the same error (no value of their own, or the same values in
+   * each), the mistake made once for the whole set; `rows` when they name values of their own rows, each to be fixed in
+   * its row. The listing reads it from the newest and the oldest record; a problem's samples tell it more surely.
+   */
+  shape: DeliveryProblemShape;
+  /** The values the example's error names (what its row held); for a set error, the values every record names. */
+  values: string[];
+}
+
+export type DeliveryProblemShape = "set" | "rows";
+
+/** A record of a problem looked at closely, with the values its error names. */
+export interface DeliveryProblemSample {
+  record: DeliveryRecord;
+  values: string[];
 }
 
 /** A flow's problems, the most records first, with how many there are in all and how many blocked records are not sorted yet. */
@@ -775,9 +791,12 @@ export interface DeliveryProblemFile {
 }
 
 export interface DeliveryProblemDetail {
+  /** The problem, its shape as its samples tell it. */
   problem: DeliveryProblem;
   /** The files its records came from, the most records first. */
   files: DeliveryProblemFile[];
+  /** Records spread evenly across the problem: its newest, its oldest and the ones between. */
+  samples: DeliveryProblemSample[];
 }
 
 /** What a release of a problem's records did, and the deliver run it queued when asked to. */
@@ -3215,9 +3234,12 @@ export const deliveryApi = {
   /** What delivered records of a partition were built without, most records first, a page at a time. */
   cacheGaps: (query: PageQuery & { scope: string; type?: string; empty?: boolean }) =>
     get<PagedResult<DeliveryCacheGap>>("/api/v1/delivery/cache/gaps", query as unknown as QueryParams),
-  /** Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending. */
-  releaseFlow: (pipelineId: string, keys?: string[], scope?: DeliveryFlowScope) =>
-    post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", scope), { keys: keys ?? null }),
+  /**
+   * Releases the flow's held, failed and deleted records (all of them, or the given keys) back to pending; with `run`, also
+   * queues a deliver run of the flow, which plans every record released and sends what was queued.
+   */
+  releaseFlow: (pipelineId: string, keys?: string[], scope?: DeliveryFlowScope, run = false) =>
+    post<DeliveryReleaseResult>(flowPath(pipelineId, "/release", scope), { keys: keys ?? null, run }),
   /** Probes the flow's target: is OSDU reachable with the flow's credentials, in the scope's partition? Answered at once. */
   probe: (pipelineId: string, scope?: DeliveryFlowScope) =>
     post<DeliveryProbeResult>(flowPath(pipelineId, "/probe", scope)),

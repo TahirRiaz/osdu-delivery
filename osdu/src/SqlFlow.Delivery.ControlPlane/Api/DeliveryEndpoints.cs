@@ -333,7 +333,11 @@ public sealed record DeliveryRunAccepted(Guid RunId, string Status);
 /// <summary>A compute task was queued for a target-side operation (probe, read-back, delete).</summary>
 public sealed record ComputeTaskAccepted(Guid TaskId, string Status);
 
-public sealed record DeliveryReleaseRequest(IReadOnlyList<Guid>? Keys);
+/// <summary>
+/// A release of a flow's blocked records: those <c>Keys</c> names, or every one. <c>Run</c> also queues a deliver run of the
+/// flow under the parameter values its last submission ran with, which sends what the release queued and plans the rest.
+/// </summary>
+public sealed record DeliveryReleaseRequest(IReadOnlyList<Guid>? Keys, bool Run = false, string? Pool = null);
 
 /// <summary>How many records a release released, and the run it queued when asked to.</summary>
 public sealed record DeliveryReleaseResult(int Released, Guid? RunId = null);
@@ -1621,9 +1625,9 @@ public static class DeliveryEndpoints
 
     // ---- Interventions -------------------------------------------------------------------------------------------
 
-    private static async Task<Results<Ok<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseFlowAsync(
+    private static async Task<Results<Ok<DeliveryReleaseResult>, Accepted<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseFlowAsync(
         Guid pipelineId, DeliveryReleaseRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, EngineContext engine,
-        DeliveryConfigStore config, ClaimsPrincipal user, CancellationToken ct)
+        DeliveryConfigStore config, ILedger ledger, IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
     {
         var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
         if (flow is null)
@@ -1635,8 +1639,28 @@ public static class DeliveryEndpoints
         using var runtime = FlowRuntime.ForTarget(await ConfiguredAsync(engine, config, flow, ct).ConfigureAwait(false), flow.Flow);
         runtime.Actor = RequestActor.Label(user);
         var released = await runtime.ReleaseAsync(keys, ct).ConfigureAwait(false);
-        return TypedResults.Ok(new DeliveryReleaseResult(released));
+        if (request is not { Run: true })
+        {
+            return TypedResults.Ok(new DeliveryReleaseResult(released));
+        }
+
+        // The run reads under the parameter values the flow's last submission ran with, as a scheduled run of it would.
+        var latest = await ledger.ListSubmissionsAsync(flow.FlowId, 1, null, ct).ConfigureAwait(false);
+        var runId = await EnqueueRunAsync(db, dispatcher, flow, DeliverRun(flow, latest.Count > 0 ? latest[0].ParametersJson : null), request.Pool, user, ct).ConfigureAwait(false);
+        return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryReleaseResult(released, runId));
     }
+
+    /// <summary>
+    /// A deliver run of <paramref name="flow"/>'s interface under the parameter values <paramref name="parametersJson"/> names
+    /// (a submission's): what a release asks for when it asks for a run. The run plans every record the release asked to be
+    /// planned again, a pass at a time, and sends every record it queued.
+    /// </summary>
+    internal static RunParameters DeliverRun(FlowContext flow, string? parametersJson) => new()
+    {
+        Operation = DeliveryOperations.Deliver,
+        Values = SubmissionValues(parametersJson),
+        Payload = new DeliveryRunPayload { Interface = flow.Flow.Interface }.ToJson(),
+    };
 
     private static async Task<Results<Ok<DeliveryReleaseResult>, Accepted<DeliveryReleaseResult>, ProblemHttpResult>> ReleaseRecordAsync(
         Guid flowId, Guid key, DeliveryRecordReleaseRequest? request, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine,

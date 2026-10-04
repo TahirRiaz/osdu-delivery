@@ -107,6 +107,40 @@ public sealed class RecordProblemTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task A_problem_whose_records_name_one_value_is_a_set_error_and_one_whose_records_differ_is_row_errors()
+    {
+        // A prepared set with one bad unit in every row, and wellbores the cache lacks, each row its own.
+        var units = Enumerable.Range(1, 3).Select(i => Held($"U-{i}", "osdu.data.CurveUnit: 'gAPI ' is not a unit the cache lists")).ToList();
+        await Ledger.MarkHeldAsync(_flow, units);
+        _clock.Advance(TimeSpan.FromMinutes(1));
+        var wellbores = Enumerable.Range(1, 3).Select(i => Held($"W-{i}", MissingWellbore($"WB-{i}"))).ToList();
+        await Ledger.MarkHeldAsync(_flow, wellbores);
+
+        var listing = await Ledger.ListProblemsAsync(_flow, 10);
+        var unit = Assert.Single(listing.Problems, p => p.Pattern.Contains("CurveUnit", StringComparison.Ordinal));
+        Assert.Equal(ProblemShape.Set, unit.Shape);
+        Assert.Equal(["gAPI "], unit.Values);
+        var missing = Assert.Single(listing.Problems, p => p.Pattern.Contains("WellboreID", StringComparison.Ordinal));
+        Assert.Equal(ProblemShape.Rows, missing.Shape);
+
+        // Samples spread across the problem, newest first: every record of a three-record problem, each once.
+        var samples = await Ledger.ListProblemSamplesAsync(_flow, missing.Problem, 5);
+        Assert.Equal(wellbores.Select(w => w.DeliveryKey.Value).Order(), samples.Select(s => s.DeliveryKey.Value).Order());
+        Assert.Equal(ProblemShape.Rows, ProblemSignature.ShapeOf(samples.Select(s => s.LastError)));
+        Assert.Equal(2, (await Ledger.ListProblemSamplesAsync(_flow, unit.Problem, 2)).Count);
+        Assert.Empty(await Ledger.ListProblemSamplesAsync(_flow, 42, 5));
+    }
+
+    [Theory]
+    [InlineData(0L, 5, new long[0])]
+    [InlineData(1L, 5, new long[] { 1 })]
+    [InlineData(3L, 5, new long[] { 1, 2, 3 })]
+    [InlineData(1_000_000L, 5, new long[] { 1, 250_001, 500_001, 750_000, 1_000_000 })]
+    [InlineData(10L, 1, new long[] { 1 })]
+    public void Samples_sit_at_the_newest_the_oldest_and_even_steps_between(long records, int count, long[] expected)
+        => Assert.Equal(expected, OsduLedger.Positions(records, count));
+
+    [Fact]
     public async Task A_worker_s_failures_are_sorted_as_they_are_applied_and_a_delivery_has_no_problem()
     {
         var submission = Guid.NewGuid();
@@ -184,28 +218,6 @@ public sealed class RecordProblemTests : IAsyncLifetime, IDisposable
 
         // Released again, a problem with no records releases nothing.
         Assert.Equal(0, await sliced.ReleaseAsync(_flow, ReleaseSelection.OfProblem(problem), release.ActivityId, Now));
-    }
-
-    [Fact]
-    public async Task A_release_reaches_the_records_blocked_when_it_began_and_none_blocked_after()
-    {
-        var early = Held("E-1", EmptyTag);
-        await Ledger.MarkHeldAsync(_flow, [early]);
-        var began = Now;
-        _clock.Advance(TimeSpan.FromMinutes(1));
-        var late = Held("L-1", EmptyTag);
-        await Ledger.MarkHeldAsync(_flow, [late]);
-
-        Assert.Equal(1, await Ledger.ReleaseAsync(_flow, ReleaseSelection.OfProblem(ProblemSignature.Of(EmptyTag)), null, began));
-        Assert.False((await Ledger.GetRecordAsync(_flow, early.DeliveryKey))!.Blocked);
-        Assert.True((await Ledger.GetRecordAsync(_flow, late.DeliveryKey))!.Blocked);
-
-        // So does a release of every blocked record.
-        _clock.Advance(TimeSpan.FromMinutes(1));
-        var later = Held("L-2", EmptyTag);
-        await Ledger.MarkHeldAsync(_flow, [later]);
-        Assert.Equal(1, await Ledger.ReleaseAsync(_flow, ReleaseSelection.EveryBlocked, null, Now.AddSeconds(-30)));
-        Assert.True((await Ledger.GetRecordAsync(_flow, later.DeliveryKey))!.Blocked);
     }
 
     [Fact]

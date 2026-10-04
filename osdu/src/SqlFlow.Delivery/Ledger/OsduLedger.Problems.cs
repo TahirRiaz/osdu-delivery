@@ -15,6 +15,9 @@ public sealed partial class OsduLedger
     /// <summary>The most files one problem's listing names.</summary>
     public const int MaxProblemFiles = 200;
 
+    /// <summary>The most samples one problem names.</summary>
+    public const int MaxProblemSamples = 20;
+
     public async Task<ProblemListing> ListProblemsAsync(Guid flowId, int max, CancellationToken ct = default)
     {
         if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
@@ -35,7 +38,7 @@ public sealed partial class OsduLedger
 
         var name = await PartitionNameAsync(partition, ct).ConfigureAwait(false);
         var problems = counts
-            .Select(c => Group(c, examples.GetValueOrDefault(c.Problem), name))
+            .Select(c => Group(c, examples.TryGetValue(c.Problem, out var ends) ? ends : null, name))
             .OfType<ProblemGroup>()
             .ToList();
         var first = counts.Count > 0 ? counts[0] : null;
@@ -62,7 +65,7 @@ public sealed partial class OsduLedger
             return null;
         }
 
-        return Group(counts[0], examples.GetValueOrDefault(problem), await PartitionNameAsync(partition, ct).ConfigureAwait(false));
+        return Group(counts[0], examples.TryGetValue(problem, out var ends) ? ends : null, await PartitionNameAsync(partition, ct).ConfigureAwait(false));
     }
 
     public async Task<IReadOnlyList<ProblemFile>> ListProblemFilesAsync(Guid flowId, long problem, int max, CancellationToken ct = default)
@@ -99,44 +102,113 @@ public sealed partial class OsduLedger
         return (page.Count, written);
     }
 
-    /// <summary>The example record of each problem named: its most recently changed record, read whole.</summary>
-    private static async Task<IReadOnlyDictionary<long, RecordState>> ExamplesAsync(
-        Data.OsduDbContext db, short partition, Guid flowId, IReadOnlyCollection<long> problems, CancellationToken ct)
+    public async Task<IReadOnlyList<RecordState>> ListProblemSamplesAsync(Guid flowId, long problem, int count, CancellationToken ct = default)
     {
-        var keys = await SqlServerLedgerBulk.ProblemExamplesAsync(db, partition, flowId, problems, ct).ConfigureAwait(false);
-        if (keys.Count == 0)
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
         {
-            return new Dictionary<long, RecordState>();
+            return [];
         }
 
-        var rows = await db.DeliveryRecords.AsNoTracking()
-            .Where(r => r.PartitionId == partition && r.FlowId == flowId && keys.Contains(r.DeliveryKey))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var take = Math.Clamp(count, 1, MaxProblemSamples);
+        var samples = await ReadAsync(
+            async db =>
+            {
+                var counts = await SqlServerLedgerBulk.ProblemsAsync(db, partition, flowId, problem, 1, ct).ConfigureAwait(false);
+                if (counts.Count == 0)
+                {
+                    return [];
+                }
 
-        // A record whose problem moved on between the two reads is no example of the one it was found for.
-        return rows
-            .Where(r => r.ProblemHash is not null)
-            .GroupBy(r => r.ProblemHash!.Value)
-            .ToDictionary(g => g.Key, g => ToState(g.First()));
+                var keys = await SqlServerLedgerBulk.ProblemSamplesAsync(db, partition, flowId, problem, Positions(counts[0].Records, take), ct).ConfigureAwait(false);
+                var rows = await db.DeliveryRecords.AsNoTracking()
+                    .Where(r => r.PartitionId == partition && r.FlowId == flowId && keys.Contains(r.DeliveryKey))
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
+
+                // In the order the positions name them, newest first; a record whose problem moved on meanwhile is left out.
+                var order = keys.Select((key, index) => (key, index)).ToDictionary(k => k.key, k => k.index);
+                return rows.Where(r => r.ProblemHash == problem).OrderBy(r => order[r.DeliveryKey]).Select(ToState).ToList();
+            },
+            ct).ConfigureAwait(false);
+        var name = await PartitionNameAsync(partition, ct).ConfigureAwait(false);
+        return samples.Select(s => s with { Partition = name }).ToList();
     }
 
     /// <summary>
-    /// A problem as a listing names it: its counts, its example, and its pattern read from the example's error. A problem
-    /// whose records all moved on between the count and the example's read has no example, and is left out.
+    /// Where <paramref name="count"/> samples of <paramref name="records"/> sit in a problem's order, 1 the newest: the first,
+    /// the last and the ones between at even steps, each once.
     /// </summary>
-    private static ProblemGroup? Group(SqlServerLedgerBulk.ProblemCount count, RecordState? example, string? partition)
-        => example is null
+    internal static IReadOnlyList<long> Positions(long records, int count)
+    {
+        if (records <= 0 || count <= 0)
+        {
+            return [];
+        }
+
+        if (count == 1 || records == 1)
+        {
+            return [1];
+        }
+
+        var positions = new SortedSet<long>();
+        for (var i = 0; i < count; i++)
+        {
+            positions.Add(1 + (long)Math.Round(i * (records - 1) / (double)(count - 1), MidpointRounding.AwayFromZero));
+        }
+
+        return positions.ToList();
+    }
+
+    /// <summary>The newest and the oldest record of each problem named, read whole.</summary>
+    private static async Task<IReadOnlyDictionary<long, (RecordState Newest, RecordState Oldest)>> ExamplesAsync(
+        Data.OsduDbContext db, short partition, Guid flowId, IReadOnlyCollection<long> problems, CancellationToken ct)
+    {
+        var ends = await SqlServerLedgerBulk.ProblemExamplesAsync(db, partition, flowId, problems, ct).ConfigureAwait(false);
+        if (ends.Count == 0)
+        {
+            return new Dictionary<long, (RecordState, RecordState)>();
+        }
+
+        var keys = ends.SelectMany(e => new[] { e.Newest, e.Oldest }).Distinct().ToArray();
+        var rows = (await db.DeliveryRecords.AsNoTracking()
+            .Where(r => r.PartitionId == partition && r.FlowId == flowId && keys.Contains(r.DeliveryKey))
+            .ToListAsync(ct)
+            .ConfigureAwait(false))
+            .ToDictionary(r => r.DeliveryKey);
+
+        // A record whose problem moved on between the two reads is no example of the one it was found for.
+        var examples = new Dictionary<long, (RecordState, RecordState)>();
+        foreach (var end in ends)
+        {
+            if (rows.TryGetValue(end.Newest, out var newest) && newest.ProblemHash == end.Problem)
+            {
+                var oldest = rows.TryGetValue(end.Oldest, out var found) && found.ProblemHash == end.Problem ? found : newest;
+                examples[end.Problem] = (ToState(newest), ToState(oldest));
+            }
+        }
+
+        return examples;
+    }
+
+    /// <summary>
+    /// A problem as a listing names it: its counts, its example, its pattern read from the example's error, and its shape
+    /// as its newest and oldest records say. A problem whose records all moved on between the count and the example's read
+    /// has no example, and is left out.
+    /// </summary>
+    private static ProblemGroup? Group(SqlServerLedgerBulk.ProblemCount count, (RecordState Newest, RecordState Oldest)? ends, string? partition)
+        => ends is not { } found
             ? null
             : new ProblemGroup
             {
                 Problem = count.Problem,
-                Pattern = ProblemSignature.Pattern(example.LastError),
+                Pattern = ProblemSignature.Pattern(found.Newest.LastError),
                 Records = count.Records,
                 Held = count.Held,
                 Failed = count.Failed,
                 OldestUtc = count.OldestUtc,
                 NewestUtc = count.NewestUtc,
-                Example = example with { Partition = partition },
+                Example = found.Newest with { Partition = partition },
+                Shape = ProblemSignature.ShapeOf([found.Newest.LastError, found.Oldest.LastError]),
+                Values = ProblemSignature.Values(found.Newest.LastError),
             };
 }

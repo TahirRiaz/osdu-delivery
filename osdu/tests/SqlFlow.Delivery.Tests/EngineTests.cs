@@ -853,7 +853,7 @@ public class DeliverOutcomeTests
 
         var idle = DeliverOutcome.From(
             new RunResult(new IntakeResult(submission, null, IntakeCounts.Empty, AlreadyProcessed: true), WorkerSummary.Empty, submission),
-            DeliveryOperations.Deliver, Source, "incremental since 2026-09-01T06:00:00Z", null, 0);
+            DeliveryOperations.Deliver, Source, "incremental since 2026-09-01T06:00:00Z", RequestedPasses.None);
         Assert.Equal(0, idle.Planned);
         Assert.Equal(0, idle.Delivered);
         Assert.True(idle.NothingToDo);
@@ -862,7 +862,7 @@ public class DeliverOutcomeTests
 
         var two = DeliverOutcome.From(
             new RunResult(new IntakeResult(submission, null, new IntakeCounts(3, 2, 1, 0, 0, 0, 1), AlreadyProcessed: false), new WorkerSummary(2, 2, 0, 1, 0, 1), submission),
-            DeliveryOperations.Deliver, Source, "full", null, 0);
+            DeliveryOperations.Deliver, Source, "full", RequestedPasses.None);
         Assert.Equal(2, two.Planned);
         Assert.Equal(2, two.Delivered);
         Assert.Equal(1, two.SkippedUnchanged);
@@ -876,7 +876,7 @@ public class DeliverOutcomeTests
         var submission = Submission(planned: 5000, delivered: 4990);
         var root = DeliverOutcome.From(
             new RunResult(new IntakeResult(submission, null, new IntakeCounts(5000, 1250, 0, 0, 0, 0, 3), AlreadyProcessed: false), new WorkerSummary(40, 40, 0, 0, 0, 1), submission, IntakeMembers: 3, DrainMembers: 4),
-            DeliveryOperations.Deliver, Source, "full", null, 0);
+            DeliveryOperations.Deliver, Source, "full", RequestedPasses.None);
 
         Assert.Equal(5000, root.Planned);
         Assert.Equal(4990, root.Delivered);

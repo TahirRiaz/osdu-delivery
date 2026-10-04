@@ -42,8 +42,11 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
     /// <summary>How many plan entries a plan run writes to its trace before summarising the rest.</summary>
     public const int PlanEntriesLogged = 200;
 
-    /// <summary>The records the ledger asked to plan again that one deliver run takes in its key-scoped pass.</summary>
-    public const int RequestedPerRun = 5000;
+    /// <summary>
+    /// The records the ledger asked to plan again that one key-scoped pass of a deliver run reads; a run makes as many
+    /// passes as there are such records, so a release or a redelivery of every record is planned by the next run whole.
+    /// </summary>
+    public const int RequestedPerPass = 5000;
 
     private readonly IServiceProvider _provider;
 
@@ -343,9 +346,9 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                     LogRedeliver(log, marked, keys.Count > 0 ? keys.Count : null);
                 }
 
-                var (requestedSubmission, requestedRecords) = await DeliverRequestedAsync(runtime, selection, payload, log, ct).ConfigureAwait(false);
+                var requested = await DeliverRequestedAsync(runtime, selection, payload, log, ct).ConfigureAwait(false);
                 var run = await runtime.RunAsync(force, ct).ConfigureAwait(false);
-                var delivered = DeliverOutcome.From(run, operation, source, selection.Describe(), requestedSubmission, requestedRecords);
+                var delivered = DeliverOutcome.From(run, operation, source, selection.Describe(), requested);
                 LogOutcome(log, string.Create(
                     CultureInfo.InvariantCulture,
                     $"this run: {delivered.Planned} planned, {delivered.Delivered} delivered, {delivered.SkippedUnchanged + delivered.UnchangedAtPush} unchanged, {delivered.Held} held, {delivered.Failed} failed; submission {delivered.SubmissionId:D} {SubmissionIntake.Summarize(run.Submission)}"));
@@ -459,37 +462,82 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
 
     /// <summary>
     /// Delivers the records the ledger asked to plan again (a release, a redelivery, a cache rollout) before the run's
-    /// own pass. Their rows did not change, so an incremental read would not meet them; they are read by key, in a
-    /// submission of their own, and the run reports what that pass did beside its own counts.
+    /// own pass. Their rows did not change, so an incremental read would not meet them; they are read by key,
+    /// <see cref="FlowRuntime.RequestedPerPass"/> to a pass and each pass in a submission of its own, until every one has
+    /// been read: a release of every record a problem kept blocked is planned by this run whole, not a page of it. The walk
+    /// goes in key order and meets each record once, so one a pass could not plan (its row gone, or outside this run's
+    /// scope) keeps its request for a run that can, and never holds this one up. The run reports what the passes did beside
+    /// its own counts.
     /// </summary>
-    private static async Task<(Guid? Submission, long Records)> DeliverRequestedAsync(
+    internal static async Task<RequestedPasses> DeliverRequestedAsync(
         FlowRuntime runtime, SourceSelection selection, DeliveryRunPayload payload, ILogger log, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(runtime);
+        ArgumentNullException.ThrowIfNull(selection);
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(log);
         if (!selection.CoversScope || runtime.Context.Ledger is null || payload.RecordKeys.Count > 0)
         {
-            return (null, 0);
+            return RequestedPasses.None;
         }
 
-        var keys = await runtime.PlanRequestedKeysAsync(RequestedPerRun, ct).ConfigureAwait(false);
-        if (keys.Count == 0)
-        {
-            return (null, 0);
-        }
-
-        log.LogInformation("{Count} record(s) wait to be planned again; reading them by key before this run's own pass.", keys.Count);
-        runtime.Selection = SourceSelection.ForKeys(keys);
-        runtime.SubmissionId = null;
+        var passes = RequestedPasses.None;
+        var keyless = 0;
+        // The requests are walked forward in the order they were made and a planned record leaves them, so the walk ends;
+        // a request made while it goes (a release, a cache rollout marking a page) is met too. The moments are no bound:
+        // they were written by whichever control plane or node asked, whose clock is not this one's.
+        PlanRequestedRecord? after = null;
         try
         {
-            var run = await runtime.RunAsync(force: true, ct).ConfigureAwait(false);
-            log.LogInformation("The records asked for: {Summary} (submission {SubmissionId:D}).", SubmissionIntake.Summarize(run.Submission), run.Submission.SubmissionId);
-            return (run.Submission.SubmissionId, run.Submission.Planned);
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var page = await runtime.PlanRequestedKeysAsync(runtime.RequestedPerPass, after, ct).ConfigureAwait(false);
+                if (page.Last is null)
+                {
+                    break;
+                }
+
+                after = page.Last;
+                keyless += page.Keyless;
+                if (page.Keys.Count == 0)
+                {
+                    continue;
+                }
+
+                log.LogInformation(
+                    "Pass {Pass}: {Count} record(s) wait to be planned again; reading them by key before this run's own pass.",
+                    passes.Passes + 1, page.Keys.Count);
+                runtime.Selection = SourceSelection.ForKeys(page.Keys);
+                runtime.SubmissionId = null;
+                var run = await runtime.RunAsync(force: true, ct).ConfigureAwait(false);
+                log.LogInformation(
+                    "Pass {Pass}, the records asked for: {Summary} (submission {SubmissionId:D}).",
+                    passes.Passes + 1, SubmissionIntake.Summarize(run.Submission), run.Submission.SubmissionId);
+                passes = passes.Add(run.Submission.SubmissionId, page.Keys.Count, run.Submission.Planned);
+            }
         }
         finally
         {
             runtime.Selection = selection;
             runtime.SubmissionId = payload.SubmissionId;
         }
+
+        if (passes.Passes > 1)
+        {
+            log.LogInformation(
+                "Read {Read} record(s) asked to be planned again in {Passes} passes; {Planned} were planned.",
+                passes.Read, passes.Passes, passes.Planned);
+        }
+
+        if (keyless > 0)
+        {
+            log.LogWarning(
+                "{Count} record(s) wait to be planned again with no source key in the ledger; deliver the scope to plan them.",
+                keyless);
+        }
+
+        return passes;
     }
 
     /// <summary>
@@ -609,8 +657,8 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
         else
         {
             log.LogInformation(
-                "marked every record the flow has delivered, {Marked} in all, for redelivery; a run sends at most {PerRun} of them and the flow's next runs send the rest",
-                marked, RequestedPerRun);
+                "marked every record the flow has delivered, {Marked} in all, for redelivery; this run plans them by key, {PerPass} to a pass",
+                marked, RequestedPerPass);
         }
     }
 
@@ -654,7 +702,8 @@ public sealed record DeliverOutcome(
     long RequestedRecords,
     string? Error,
     SubmissionTotals Submission,
-    long Waiting = 0)
+    long Waiting = 0,
+    int RequestedPasses = 0)
 {
     /// <summary>
     /// The run's headline count as the platform reads it from the run artifact (<c>result.rowsLoaded</c>), which the
@@ -668,17 +717,32 @@ public sealed record DeliverOutcome(
     /// reports two, and one that found the submission already completed reports none, while a fan-out root reports the
     /// submission it covers. The submission's own totals come alongside.
     /// </summary>
-    public static DeliverOutcome From(RunResult run, string operation, string source, string selection, Guid? requestedSubmission, long requestedRecords)
+    public static DeliverOutcome From(RunResult run, string operation, string source, string selection, RequestedPasses requested)
     {
         ArgumentNullException.ThrowIfNull(run);
+        ArgumentNullException.ThrowIfNull(requested);
         var s = run.Submission;
         var totals = new SubmissionTotals(s.Planned, s.SkippedUnchanged, s.AwaitingApproval, s.SkippedStale, s.UnchangedAtPush, s.Blocked, s.Delivered, s.Held, s.Failed, s.BatchCount, s.Waiting);
         var own = run.Own;
         return new DeliverOutcome(
             operation, s.SubmissionId, source, selection, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
             own.Planned, own.SkippedUnchanged, own.AwaitingApproval, own.SkippedStale, own.UnchangedAtPush, own.Blocked, own.Delivered, own.Held, own.Failed, own.Retried, own.Batches,
-            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requestedSubmission, requestedRecords, s.Error, totals, own.Waiting);
+            run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requested.FirstSubmissionId, requested.Planned, s.Error, totals, own.Waiting,
+            requested.Passes);
     }
+}
+
+/// <summary>
+/// What a deliver run's key-scoped passes over the records the ledger asked to plan again did: how many passes, the
+/// submission of the first, how many records they read by key and how many of those they planned.
+/// </summary>
+public sealed record RequestedPasses(int Passes, Guid? FirstSubmissionId, long Read, long Planned)
+{
+    /// <summary>No pass: nothing was asked to be planned again, or the run does not read the whole scope.</summary>
+    public static RequestedPasses None { get; } = new(0, null, 0, 0);
+
+    /// <summary>These passes and one more, of <paramref name="submissionId"/>, which read and planned as many records as given.</summary>
+    public RequestedPasses Add(Guid submissionId, long read, long planned) => new(Passes + 1, FirstSubmissionId ?? submissionId, Read + read, Planned + planned);
 }
 
 /// <summary>A submission's counts across every run that has worked on it; <c>Waiting</c> counts its records still waiting for a record they refer to.</summary>

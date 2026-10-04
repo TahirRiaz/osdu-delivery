@@ -303,15 +303,17 @@ Record history is the attempts; run and intervention history is the activities. 
 shows both, plus its verify outcomes; a run's page links to what it did to each record through the run id. An idle run
 wrote nothing to any record, so a record's history never misses one.
 
-### `osdu.ActivityRecord`: the records a release reached
+### `osdu.ActivityRecord`: the records a release or a redelivery reached
 
-An intervention made for one record names it on its activity (`DeliveryKey`). A release reaches many at once: the keys
-an operator ticked, every blocked record of a flow, or every record one problem keeps blocked, which can be a million.
-Each record it releases is named here, one row of `(PartitionId, FlowId, DeliveryKey, ActivityId)`, written by the
-statement that releases it, in its transaction, so a record is named exactly when it was released. A record's
-activities (`GET /records/{flowId}/{key}/activities`, its Timeline tab) are those that name it on their row and those
-that name it here, so its history shows every release that reached it, with who asked, when and for what. The rows are
-never pruned: like the activity they point at, they are the record's history.
+An intervention made for one record names it on its activity (`DeliveryKey`). A release or a redelivery reaches many at
+once: the keys an operator ticked, every blocked or every delivered record of a flow, or every record one problem keeps
+blocked, which can be a million. Each record it changes is named here, one row of
+`(PartitionId, FlowId, DeliveryKey, ActivityId)`, written by the statement that changes it, in its transaction, so a
+record is named exactly when it was released or marked. A record's activities (`GET /records/{flowId}/{key}/activities`,
+its Timeline tab) are those that name it on their row and those that name it here, so its history shows every request
+that reached it, with who asked, when and for what. A cache change's rollout marks records under no activity: the change
+itself, on the cache page, is its record. The rows are never pruned: like the activity they point at, they are the
+record's history.
 
 ### `osdu.SourceWatermark`: tier 0
 
@@ -471,10 +473,13 @@ A release names the records it reaches by key, as every blocked record of the fl
 keeps blocked ([Problems](#problems)). A released record that still holds its rendered document goes back to pending in
 its submission, and the flow's next deliver run sends it, whatever that run itself plans: the row is what the record
 already queues, so a run whose plan finds nothing new for it still sends it. Once a run's own records are sent it takes
-the due records of up to ten completed or failed submissions and recomputes their totals. A `drain` run sends it at any
-time. A record released without a rendered document is stamped to be planned again instead, and the next run reads it
-from the ingestion tables by key; a run plans at most 5,000 such records before its own pass, and the flow's next runs
-plan the rest.
+the due records of every completed or failed submission, ten submissions at a time, each once, and recomputes their
+totals. A `drain` run sends it at any time. A record released without a rendered document is stamped to be planned again
+instead, and the next run reads it from the ingestion tables by key, every such record before its own pass: 5,000 to a
+pass (`RequestedPerPass`), each pass a submission of its own, as many passes as there are records, walking the requests
+in the order they were made so each is met once. A record a pass cannot plan (its row gone from the table, or outside
+the run's scope) keeps its request for the run that can, and does not hold this one up. So a release of a whole set,
+or a redelivery of every delivered record, is sent by the next run whole.
 
 Versions never go backwards. A row older than the version a record holds, delivered or queued, is skipped with an
 attempt (`skipped`, phase `stale`) naming both versions, and staging refuses work older than what the ledger holds,
@@ -565,14 +570,31 @@ example's error. One problem's files (`GET /flows/{pipelineId}/problems/{problem
 includes, and its records are the records listing narrowed to it (`problem=`), read newest first in the index's own
 order. Like the statistics, these are counts of the records and never kept beside them.
 
+**Set errors and row errors.** Most problems are **set errors**: a prepared dataset, a cache entry, the mapping or a
+legal tag is wrong for every record of a set, so every record carries the same error. Fixed once, they are released
+together. Some are **row errors**: a value missing or wrong in one row, which each row has to have fixed in the source,
+and a corrected row is planned again on its own. A problem tells them apart by the values its records' errors name
+(`ProblemSignature.Values`, the parts the pattern writes as `'<value>'`): when they name none, or every record names the
+same ones (the same bad unit in every row of a dataset), the problem is a set error; when records name different values,
+each its own row's, it is row errors. The listing reads it from each problem's newest and oldest record, one more seek
+each. **Samples** (`ListProblemSamplesAsync`, five unless asked for up to twenty) are the records at the newest, the
+oldest and even steps between of the problem's order, read in one pass over its range of the index, so records loaded
+at different times and from different files stand side by side; the problem's own page reads its shape from them, which
+can only turn a set error the two ends agreed on into row errors, never the reverse. They are what an operator checks
+before releasing a problem: each can be rendered as it would be now, which sends nothing, or released and tried alone.
+
 **Releasing a problem** (`POST /flows/{pipelineId}/problems/{problem}/release`, `sqlflow records release --problem`)
 walks the problem's range of the index in its order, a page of 1,000 keys at a time, and releases each page in a
 statement of its own: a record still holding its rendered document goes back to pending, any other is asked to be
-planned again. A released record leaves the index, and the walk takes no record changed after the release began, so a
-run blocking records with the same problem meanwhile cannot keep it going: those stay blocked, since the problem was
-not fixed for them. It is recorded as a `release` activity naming the problem and the pattern the operator was shown,
-and each record it released is named under it ([`osdu.ActivityRecord`](#osduactivityrecord-the-records-a-release-reached)).
-A release of every blocked record walks the status index the same way, one custody state at a time.
+planned again. A released record leaves the index and the walk only moves forward, so it ends; a record a run blocks
+with the same problem while it walks is released too. The walk is not bounded by the moment the release began, because
+the moments it would compare were written by the clocks of the nodes that held the records, not this one's. It is
+recorded as a `release` activity naming the problem and the pattern the operator was shown, and each record it released
+is named under it ([`osdu.ActivityRecord`](#osduactivityrecord-the-records-a-release-or-a-redelivery-reached)), and the
+deliver run asked for with it plans and sends every one of them. A release of every blocked record walks the status index
+the same way, one custody state at a time, and so does a redelivery of every delivered record, which passes over the
+records it marked itself. A redelivery leaves a record still blocked by a problem its error, which the problem was read
+from.
 
 ## One source, several flows
 
@@ -729,10 +751,10 @@ SQL Server:
 - **No statement writes more than 1,000 records.** SQL Server turns the row locks a statement holds on one index into
   a lock on the whole table once they reach 5,000, and a lock on the record table would stop every node of every flow
   while it lasted. Staging copies a batch into a staging table once and writes it a thousand records to a transaction.
-  A batch's claim and hand-back, an operator's redelivery and a cache change's marking first read the keys of the
-  records they reach and then write them a thousand keys to a statement. A release of named records writes them a
-  thousand to a statement; a release of every blocked record or of a problem's records reads a page of a thousand keys
-  from the index that holds them and releases it before it reads the next. Every index of the table ends with the
+  A batch's claim and hand-back and a cache change's marking first read the keys of the records they reach and then
+  write them a thousand keys to a statement. A release or a redelivery of named records writes them a thousand to a
+  statement; a release of every blocked record or of a problem's records, and a redelivery of every delivered record,
+  read a page of a thousand keys from the index that holds them and write it before they read the next. Every index of the table ends with the
   table's key, so such a statement finds each record with one seek and locks no record it does not write. A lease
   applies its events a thousand records to a transaction, a worker's append carries at most 500 events with their
   attempts, and pruning deletes 4,000 attempts to a statement.

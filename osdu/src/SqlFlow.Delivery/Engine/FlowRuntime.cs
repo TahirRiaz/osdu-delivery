@@ -158,11 +158,17 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>How long past a stopped run's lease a run waits before reclaiming it, so the lease has run out by then.</summary>
     private static readonly TimeSpan LeaseExpiryMargin = TimeSpan.FromSeconds(1);
 
-    /// <summary>Settled submissions whose released records one deliver run sends after its own.</summary>
-    private const int SettledSubmissionsPerRun = 10;
+    /// <summary>
+    /// Settled submissions a deliver run reads at a time when it sends the released records they still hold after its own;
+    /// it reads as many such pages as there are submissions to send.
+    /// </summary>
+    private const int SettledSubmissionsPerPage = 10;
 
-    /// <summary>The records waiting to be planned again without a source key that a run names; it counts the rest.</summary>
+    /// <summary>The records waiting to be planned again without a source key that a runtime names; it counts the rest.</summary>
     private const int KeylessNamed = 10;
+
+    /// <summary>How many keyless records this runtime has named so far.</summary>
+    private int _keylessNamed;
 
     private readonly EngineContext _context;
     private readonly ResolvedMapping? _mapping;
@@ -677,9 +683,9 @@ public sealed class FlowRuntime : IDisposable
     public Task<int> RedeliverAsync(IReadOnlyList<DeliveryKey>? keys, RedeliverSelection selection, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(selection);
-        return TrackAsync("redeliver", new { keys = keys?.Select(k => k.ToString()).ToList(), scope = selection.Scope.ToString(), parts = selection.Parts }, keys is { Count: 1 } ? keys[0] : null, async () =>
+        return TrackAsync("redeliver", new { keys = keys?.Select(k => k.ToString()).ToList(), scope = selection.Scope.ToString(), parts = selection.Parts }, keys is { Count: 1 } ? keys[0] : null, async activity =>
         {
-            var marked = await RequireLedger().ForceRedeliverAsync(Flow.Id, keys, selection, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+            var marked = await RequireLedger().ForceRedeliverAsync(Flow.Id, keys, selection, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
             await EmitAsync("record.redeliver", keys, $"redelivery of {selection} requested by {Actor}", ct).ConfigureAwait(false);
             return (marked, keys is null
                 ? $"marked every delivered record, {marked} in all, for redelivery of {selection}"
@@ -688,19 +694,30 @@ public sealed class FlowRuntime : IDisposable
     }
 
     /// <summary>
-    /// The record keys the ledger asked to be planned again, paged in key order: what a run turns into a key-scoped
-    /// selection so a release, a redelivery and a cache rollout reach the records they marked.
+    /// How many of the records the ledger asked to be planned again one pass of a deliver run reads by key
+    /// (<see cref="DeliveryExecutor.RequestedPerPass"/>); a run makes as many passes as there are such records. Tests lower it.
     /// </summary>
-    public async Task<IReadOnlyList<KeyTuple>> PlanRequestedKeysAsync(int max, CancellationToken ct = default)
+    internal int RequestedPerPass { get; set; } = DeliveryExecutor.RequestedPerPass;
+
+    /// <summary>
+    /// The next records the ledger asked to be planned again, after <paramref name="after"/> in the order they were asked
+    /// for, at most <paramref name="max"/>: what a run turns into a
+    /// key-scoped selection so a release, a redelivery and a cache rollout reach the records they marked. The page names the
+    /// last record it read, which the next page starts after, so a run walking every page meets each record once, even one a
+    /// pass could not plan (its row gone from the table, or out of the run's scope): that one keeps its request for the run
+    /// that can. A record with no source key cannot be read by key and is counted rather than read; the first few are named.
+    /// </summary>
+    public async Task<PlanRequestedPage> PlanRequestedKeysAsync(int max, PlanRequestedRecord? after, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(max, 1);
         var ledger = RequireLedger();
         var keys = new List<KeyTuple>();
         var keyless = 0;
-        DeliveryKey? after = null;
-        while (keys.Count < max)
+        var read = 0;
+        var last = after;
+        while (read < max)
         {
-            var page = await ledger.ListPlanRequestedAsync(Flow.Id, after, Math.Min(max - keys.Count, 500), ct).ConfigureAwait(false);
+            var page = await ledger.ListPlanRequestedAsync(Flow.Id, last, Math.Min(max - read, 500), ct).ConfigureAwait(false);
             if (page.Count == 0)
             {
                 break;
@@ -712,25 +729,23 @@ public sealed class FlowRuntime : IDisposable
                 {
                     keys.Add(KeyTuple.FromJson(json));
                 }
-                else if (keyless++ < KeylessNamed)
+                else
                 {
-                    _log.LogWarning(
-                        "Record {Key} waits to be planned again but the ledger holds no source key for it (it predates the ingestion source); deliver the scope to plan it.",
-                        record.DeliveryKey);
+                    keyless++;
+                    if (_keylessNamed++ < KeylessNamed)
+                    {
+                        _log.LogWarning(
+                            "Record {Key} waits to be planned again but the ledger holds no source key for it (it predates the ingestion source); deliver the scope to plan it.",
+                            record.DeliveryKey);
+                    }
                 }
             }
 
-            after = page[^1].DeliveryKey;
+            read += page.Count;
+            last = page[^1];
         }
 
-        if (keyless > KeylessNamed)
-        {
-            _log.LogWarning(
-                "{Count} more record(s) wait to be planned again with no source key in the ledger; deliver the scope to plan them.",
-                keyless - KeylessNamed);
-        }
-
-        return keys;
+        return new PlanRequestedPage(keys, read == 0 ? null : last, keyless);
     }
 
     /// <summary>
@@ -884,29 +899,40 @@ public sealed class FlowRuntime : IDisposable
     /// Sends what settled submissions of the flow still hold. A record released back to pending with its rendered document
     /// after its submission completed or failed belongs to no run: its own run is over, and a newer plan skips it because
     /// its row is what the record already queues. The run takes the due records of up to
-    /// <see cref="SettledSubmissionsPerRun"/> such submissions, passes over each until nothing of it is claimable (records
-    /// in backoff are not waited for) and recomputes the totals of each one it sent anything from.
+    /// due records of every such submission, <see cref="SettledSubmissionsPerPage"/> submissions at a time, passes over each
+    /// until nothing of it is claimable (records in backoff are not waited for) and recomputes the totals of each one it
+    /// sent anything from. A submission is passed over once per run: one still holding due records after its pass (a record
+    /// another lease held meanwhile) is the next run's, so the run ends however many submissions a release reached.
     /// </summary>
     private async Task<WorkerSummary> SendSettledLeftoversAsync(DeliveryWorker worker, Guid current, CancellationToken ct)
     {
         var ledger = RequireLedger();
-        var settled = await ledger.ListSettledSubmissionsWithDueWorkAsync(Flow.Id, current, _context.Time.GetUtcNow().UtcDateTime, SettledSubmissionsPerRun, ct).ConfigureAwait(false);
+        var visited = new HashSet<Guid> { current };
         var total = WorkerSummary.Empty;
-        foreach (var submissionId in settled)
+        while (true)
         {
-            var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
-            if (sent.Processed > 0 || sent.Waiting > 0)
+            ct.ThrowIfCancellationRequested();
+            var settled = await ledger.ListSettledSubmissionsWithDueWorkAsync(Flow.Id, visited, _context.Time.GetUtcNow().UtcDateTime, SettledSubmissionsPerPage, ct).ConfigureAwait(false);
+            if (settled.Count == 0)
             {
-                await Intake.CompleteAsync(submissionId, Flow.Id, ct).ConfigureAwait(false);
-                _log.LogInformation(
-                    "Sent {Count} record(s) that submission {SubmissionId} still held after it settled (released back to pending with their rendered documents).",
-                    sent.Processed, submissionId);
+                return total;
             }
 
-            total = total.Add(sent);
-        }
+            foreach (var submissionId in settled)
+            {
+                visited.Add(submissionId);
+                var sent = await PassUntilNothingClaimableAsync(worker, submissionId, ct).ConfigureAwait(false);
+                if (sent.Processed > 0 || sent.Waiting > 0)
+                {
+                    await Intake.CompleteAsync(submissionId, Flow.Id, ct).ConfigureAwait(false);
+                    _log.LogInformation(
+                        "Sent {Count} record(s) that submission {SubmissionId} still held after it settled (released back to pending with their rendered documents).",
+                        sent.Processed, submissionId);
+                }
 
-        return total;
+                total = total.Add(sent);
+            }
+        }
     }
 
     /// <summary>
@@ -1312,3 +1338,10 @@ public sealed class FlowRuntime : IDisposable
         _target.Dispose();
     }
 }
+
+/// <summary>
+/// A page of the records the ledger asked to be planned again: the key tuples of those that can be read by key, the last
+/// record the page read (null when there was none), which the next page starts after, and how many it read that carry no
+/// source key.
+/// </summary>
+public sealed record PlanRequestedPage(IReadOnlyList<KeyTuple> Keys, PlanRequestedRecord? Last, int Keyless);

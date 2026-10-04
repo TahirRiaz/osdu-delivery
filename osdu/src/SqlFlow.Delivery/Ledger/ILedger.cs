@@ -1042,6 +1042,15 @@ public sealed record ProblemGroup
 
     /// <summary>Its most recently changed record, with the error as that record carries it.</summary>
     public RecordState? Example { get; init; }
+
+    /// <summary>
+    /// Where the problem lies, as its newest and its oldest record say: a set error when they name the same values (or the
+    /// pattern names none), row errors when they name different ones. A problem's samples tell it more surely.
+    /// </summary>
+    public ProblemShape Shape { get; init; }
+
+    /// <summary>The values the example names (<see cref="ProblemSignature.Values"/>): for a set error, the values every record names.</summary>
+    public IReadOnlyList<string> Values { get; init; } = [];
 }
 
 /// <summary>A ledger's problems, the largest first, with what the page leaves out.</summary>
@@ -1541,10 +1550,11 @@ public interface ILedger
     Task MarkHeldAsync(Guid flowId, IEnumerable<RecordState> records, CancellationToken ct = default);
 
     /// <summary>
-    /// The records of a flow the ledger asked to be planned again, in delivery-key order after <paramref name="after"/>, at
-    /// most <paramref name="max"/>: what a run pages through to plan them as a key-scoped read.
+    /// The records of a flow the ledger asked to be planned again, in the order they were asked for (then by delivery key)
+    /// after <paramref name="after"/>, at most <paramref name="max"/>: what a run pages through to plan them as a key-scoped
+    /// read. Each page is a seek of the index that holds the requests alone, however many are waiting.
     /// </summary>
-    Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default);
+    Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, PlanRequestedRecord? after, int max, CancellationToken ct = default);
 
     /// <summary>Clears the request to plan records again for records a plan saw and left untouched (blocked ones).</summary>
     Task ClearPlanRequestedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, CancellationToken ct = default);
@@ -1619,12 +1629,13 @@ public interface ILedger
     Task<DateTime?> NextLeaseExpiryAsync(Guid flowId, Guid? submissionId, CancellationToken ct = default);
 
     /// <summary>
-    /// The completed or failed submissions of the flow, other than <paramref name="except"/>, that still hold records due
-    /// for delivery with their rendered documents: records released back to pending after their run was over, and the
-    /// records a stopped run handed back untried when it closed its submission as failed. At most <paramref name="max"/>.
-    /// It reads the flow's pending records, which a run leaves few of once its own are sent.
+    /// The completed or failed submissions of the flow, other than those <paramref name="except"/> names, that still hold
+    /// records due for delivery with their rendered documents: records released back to pending after their run was over,
+    /// and the records a stopped run handed back untried when it closed its submission as failed. At most
+    /// <paramref name="max"/>; a caller sending all of them asks again naming the ones it sent. It reads the flow's pending
+    /// records, which a run leaves few of once its own are sent.
     /// </summary>
-    Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default);
+    Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, IReadOnlyCollection<Guid> except, DateTime nowUtc, int max, CancellationToken ct = default);
 
     /// <summary>Registers a work batch the intake wrote (idempotent on submission and index).</summary>
     Task AddWorkBatchAsync(WorkBatchState batch, CancellationToken ct = default);
@@ -1765,9 +1776,9 @@ public interface ILedger
     /// Releases the records <paramref name="selection"/> names, as the release by keys above does: a record still holding
     /// its rendered document goes back to pending, any other is unblocked and asked to be planned again, and a waiting
     /// record named by key is sent without waiting. No statement writes more than a slice of records, however many the
-    /// selection reaches. A release of every blocked record, or of the records a problem keeps blocked, reaches the records
-    /// blocked when it began and never one blocked while it runs, so a run holding records again meanwhile cannot keep it
-    /// going. With <paramref name="activityId"/>, the statement that releases a record names it under that intervention
+    /// selection reaches. A release of every blocked record, or of the records a problem keeps blocked, walks an index
+    /// forward a page at a time and ends at its end; a record a run blocks with the same problem while it walks is
+    /// released too. With <paramref name="activityId"/>, the statement that releases a record names it under that intervention
     /// (<c>osdu.ActivityRecord</c>), so the record's own history shows the release, who asked and when, however many
     /// records it reached. Returns how many records it released.
     /// </summary>
@@ -1791,6 +1802,14 @@ public interface ILedger
     Task<IReadOnlyList<ProblemFile>> ListProblemFilesAsync(Guid flowId, long problem, int max, CancellationToken ct = default);
 
     /// <summary>
+    /// Records of one problem spread evenly across it, at most <paramref name="count"/>: its newest, its oldest and the ones
+    /// between at even steps of the problem index's order, so records loaded at different times, from different files,
+    /// stand side by side. What an operator checks before releasing the problem's records together, and what tells a set
+    /// error from row errors. Each sample is a seek of its own after one pass over the problem's range of the index.
+    /// </summary>
+    Task<IReadOnlyList<RecordState>> ListProblemSamplesAsync(Guid flowId, long problem, int count, CancellationToken ct = default);
+
+    /// <summary>
     /// Forgets what OSDU holds for the records (the whole record, the metadata document or the payload) and asks the
     /// flow's next run to plan them again. Null keys means every record the flow has delivered. Returns how many records
     /// were marked.
@@ -1805,6 +1824,14 @@ public interface ILedger
     /// (<see cref="Model.PayloadParts.RedeliverMarker"/>), where the plan reads them and the next payload delivery replaces them.
     /// </summary>
     Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// As the redelivery above, with every record it marks named under the intervention <paramref name="activityId"/>
+    /// (<c>osdu.ActivityRecord</c>), so each record's history shows the redelivery that reached it, who asked and when. A
+    /// redelivery of every delivered record walks them a page at a time, passing over those it marked. A record still
+    /// blocked by a problem keeps its error, which its problem was read from.
+    /// </summary>
+    Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverSelection selection, long? activityId, DateTime nowUtc, CancellationToken ct = default);
 
     /// <summary>
     /// Records what a removal did to a set of the flow's records, in one round trip. <see cref="RemovalScope.Record"/> and

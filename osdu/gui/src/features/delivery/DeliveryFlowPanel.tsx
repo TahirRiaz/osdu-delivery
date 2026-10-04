@@ -17,7 +17,6 @@ import {
   type DeliverySyncRequest,
 } from "../../api/delivery";
 import { CodeView } from "@/components/CodeView";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CorrelationError } from "@/components/CorrelationError";
 import { DataTable, type Column } from "@/components/DataTable";
 import { FilterBar } from "@/components/FilterBar";
@@ -32,6 +31,7 @@ import { OutsidePartition } from "./PartitionNotice";
 import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./RecordCells";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
+import { PLANNED_PER_PASS, ReleaseDialog } from "./ReleaseDialog";
 import { failureText } from "./answers";
 import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
 import { shortId } from "./idTail";
@@ -170,10 +170,13 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   // A probe asks the target's info endpoint under the flow's credentials and answers at once, reachable or not.
   const probeTarget = useMutation({ mutationFn: () => deliveryApi.probe(pipelineId, scope) });
   const releaseAll = useMutation({
-    mutationFn: () => deliveryApi.releaseFlow(pipelineId, undefined, scope),
+    mutationFn: (run: boolean) => deliveryApi.releaseFlow(pipelineId, undefined, scope, run),
     onSuccess: (result) => {
       setReleaseOpen(false);
-      toast.success(`Released ${result.released} record${result.released === 1 ? "" : "s"}.`);
+      const released = `Released ${result.released.toLocaleString()} record${result.released === 1 ? "" : "s"}`;
+      toast.success(
+        result.runId ? `${released}; a deliver run plans and sends them all.` : `${released}; the flow's next run plans and sends them all.`,
+        result.runId ? { action: { label: "Open run", onClick: () => navigate(`/runs/${result.runId}`) } } : undefined);
       void queryClient.invalidateQueries({ queryKey: ["delivery"] });
     },
     onError: (error) => {
@@ -477,13 +480,14 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
         />
       )}
 
-      <ConfirmDialog
+      <ReleaseDialog
         open={releaseOpen}
         title="Release blocked records"
-        message={`Release every held, failed and deleted record of ${ledgerName} back to pending? Records that still hold a rendered document are queued at once; the others are planned again on the next submission.`}
-        confirmLabel="Release"
+        message={`Every held, failed and deleted record of ${ledgerName} goes back to delivery, however many. Records that still hold a rendered document are sent as they are; the others are planned again from their rows, ${PLANNED_PER_PASS.toLocaleString()} to a pass, all of them by the next run. To release the records of one problem only, use the Problems tab.`}
+        confirmLabel={`Release ${blocked.toLocaleString()}`}
         busy={releaseAll.isPending}
-        onConfirm={() => releaseAll.mutate()}
+        testId="delivery-release-dialog"
+        onConfirm={(run) => releaseAll.mutate(run)}
         onClose={() => setReleaseOpen(false)}
       />
     </div>

@@ -676,6 +676,59 @@ public class EndToEndTests : IDisposable
     }
 
     [Fact]
+    public async Task A_run_plans_every_record_asked_for_again_in_passes_however_many_there_are()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+
+            // Every record asked for again, as a release of a whole problem or a redelivery of the flow asks: one run plans
+            // all of them, a pass of two at a time, rather than one pass and the rest left to later runs.
+            Assert.Equal(LogCount, await runtime.RedeliverAsync(null, RedeliverScope.All));
+            runtime.RequestedPerPass = 2;
+            var passes = await DeliveryExecutor.DeliverRequestedAsync(
+                runtime, SourceSelection.Full(), DeliveryRunPayload.None, Samples.Logger<DeliveryExecutor>(), CancellationToken.None);
+
+            Assert.Equal(((LogCount + 1) / 2, (long)LogCount, (long)LogCount), (passes.Passes, passes.Read, passes.Planned));
+            Assert.NotNull(passes.FirstSubmissionId);
+            Assert.Equal(LogCount, protocol.Deliveries.Count);
+            Assert.Empty(await ledger.ListPlanRequestedAsync(runtime.Flow.Id, null, 10));
+        }
+    }
+
+    [Fact]
+    public async Task A_record_a_pass_cannot_plan_keeps_its_request_and_does_not_hold_the_run_up()
+    {
+        var tables = await EstateAsync();
+        var (runtime, protocol, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            Assert.Equal(LogCount, (await RunAsync(runtime, protocol, ledger)).Work.Delivered);
+            protocol.Deliveries.Clear();
+            Assert.Equal(LogCount, await runtime.RedeliverAsync(null, RedeliverScope.All));
+
+            // One record's request names a key the tables hold no row for: every pass reads past it, once.
+            await using (var db = _db.CreateDbContext())
+            {
+                var gone = SampleEstate.Key(0).Value;
+                await db.DeliveryRecords.Where(r => r.DeliveryKey == gone)
+                    .ExecuteUpdateAsync(set => set.SetProperty(r => r.SourceKeyJson, "[\"NO_15_9\",\"L-9999\"]"));
+            }
+
+            runtime.RequestedPerPass = 2;
+            var passes = await DeliveryExecutor.DeliverRequestedAsync(
+                runtime, SourceSelection.Full(), DeliveryRunPayload.None, Samples.Logger<DeliveryExecutor>(), CancellationToken.None);
+
+            Assert.Equal(((long)LogCount, (long)(LogCount - 1)), (passes.Read, passes.Planned));
+            Assert.Equal(LogCount - 1, protocol.Deliveries.Count);
+            Assert.Equal(SampleEstate.Key(0), Assert.Single(await ledger.ListPlanRequestedAsync(runtime.Flow.Id, null, 10)).DeliveryKey);
+        }
+    }
+
+    [Fact]
     public async Task A_record_scoped_run_reads_only_the_rows_it_names_by_key()
     {
         var tables = await EstateAsync();

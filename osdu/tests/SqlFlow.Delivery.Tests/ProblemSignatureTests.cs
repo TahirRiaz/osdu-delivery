@@ -113,6 +113,31 @@ public class ProblemSignatureTests
         Assert.Equal("41e2687b3a09debf", ProblemSignature.Format(ProblemSignature.Hash(ProblemSignature.NoReason)));
     }
 
+    [Fact]
+    public void The_values_an_error_names_are_what_its_row_held_in_order_and_without_their_quotes()
+    {
+        Assert.Equal(
+            ["WB-1", "gAPI ", "31/02/2020"],
+            ProblemSignature.Values("a: 'WB-1' and `gAPI ` and \\\"31/02/2020\\\" and '' at 2026-10-02T10:00:00Z, row 3, the record's"));
+        Assert.Empty(ProblemSignature.Values("osdu.tags.Tag4: dataset.tag4 is empty, and the entry is required"));
+        Assert.Empty(ProblemSignature.Values(null));
+        Assert.True(ProblemSignature.NamesValues(ProblemSignature.Pattern("value 'x' is wrong")));
+        Assert.False(ProblemSignature.NamesValues(ProblemSignature.Pattern("value is wrong in row 4")));
+    }
+
+    [Fact]
+    public void A_problem_whose_records_name_the_same_values_or_none_is_a_set_error_and_one_whose_records_differ_is_row_errors()
+    {
+        // The same mistake in every record of a prepared set: no value of the record's own, or the same value everywhere.
+        Assert.Equal(ProblemShape.Set, ProblemSignature.ShapeOf(["osdu.tags.Tag4: dataset.tag4 is empty", "osdu.tags.Tag4: dataset.tag4 is empty"]));
+        Assert.Equal(ProblemShape.Set, ProblemSignature.ShapeOf(["unit 'gAPI ' at row 3", "unit 'gAPI ' at row 98"]));
+        Assert.Equal(ProblemShape.Set, ProblemSignature.ShapeOf(["refused (correlation-id a)", "refused (correlation-id b)"]));
+
+        // Each record its own row's value.
+        Assert.Equal(ProblemShape.Rows, ProblemSignature.ShapeOf(["'WB-1' matches no wellbore", "'WB-1' matches no wellbore", "'WB-2' matches no wellbore"]));
+        Assert.Equal(ProblemShape.Set, ProblemSignature.ShapeOf([]));
+    }
+
     [Theory]
     [InlineData(0L)]
     [InlineData(long.MaxValue)]

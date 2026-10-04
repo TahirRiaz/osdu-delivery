@@ -11,6 +11,7 @@ import { deliveryApi, type DeliveryFlowScope, type DeliveryParameter } from "../
 import { useActivePartition } from "./activePartition";
 import { lines, parseValues } from "./runValues";
 import { ScopeParameterFields } from "./ScopeParameterFields";
+import { PLANNED_PER_PASS } from "./ReleaseDialog";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** An interface's name: a letter, then letters, digits, '_' and '-' (SourceDefinition.IsInterfaceName). */
@@ -44,8 +45,6 @@ const PART_LABELS: Partial<Record<RedeliverScope, string>> = {
 
 const SEND_CHANGED: { value: SendAgain; label: string } = { value: "changed", label: "Nothing: send only what changed" };
 
-/** The records a run sends again at most before the flow's next runs take the rest (DeliveryExecutor.RequestedPerRun). */
-const SENT_AGAIN_PER_RUN = 5000;
 
 /** The run value naming the partition a run of a flow that works in partitions targets (docs/partitions-design.md section 3). */
 const PARTITION = "partition";
@@ -372,7 +371,7 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
               ? "What of the records named below is sent again, changed or not: the record and its payload files, or one of them."
               : sendAgain === "changed"
                 ? "Only records whose rendering or payload changed are sent."
-                : `Every record this flow has delivered${partition !== null ? ` in ${partition}` : ""} is sent again, changed or not: a new version of each in OSDU. A run sends at most ${SENT_AGAIN_PER_RUN.toLocaleString()} of them; the flow's next runs send the rest.`}
+                : `Every record this flow has delivered${partition !== null ? ` in ${partition}` : ""} is sent again, changed or not: a new version of each in OSDU. The run plans them all, ${PLANNED_PER_PASS.toLocaleString()} to a pass.`}
           </p>
         </div>
       )}

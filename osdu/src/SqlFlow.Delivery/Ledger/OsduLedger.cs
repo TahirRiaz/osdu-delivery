@@ -89,7 +89,7 @@ public sealed partial class OsduLedger : ILedger
     private async Task<SubmissionState> NamedAsync(DeliverySubmission entity, CancellationToken ct)
         => ToState(entity) with { Partition = await PartitionNameAsync(entity.PartitionId, ct).ConfigureAwait(false) };
 
-    public async Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, DeliveryKey? after, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<PlanRequestedRecord>> ListPlanRequestedAsync(Guid flowId, PlanRequestedRecord? after, int max, CancellationToken ct = default)
     {
         if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
         {
@@ -99,15 +99,20 @@ public sealed partial class OsduLedger : ILedger
         var rows = await ReadAsync(
             db =>
             {
+                // The order of the filtered index (PartitionId, FlowId, PlanRequestedUtc), whose key ends with the delivery
+                // key, so a page is a seek past the last one read.
                 var query = db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.PlanRequestedUtc != null);
+
                 if (after is { } cursor)
                 {
-                    var from = cursor.Value;
-                    query = query.Where(r => r.DeliveryKey.CompareTo(from) > 0);
+                    var at = cursor.RequestedUtc;
+                    var key = cursor.DeliveryKey.Value;
+                    query = query.Where(r => r.PlanRequestedUtc >= at && !(r.PlanRequestedUtc == at && r.DeliveryKey.CompareTo(key) <= 0));
                 }
 
                 return query
-                    .OrderBy(r => r.DeliveryKey)
+                    .OrderBy(r => r.PlanRequestedUtc)
+                    .ThenBy(r => r.DeliveryKey)
                     .Select(r => new { r.DeliveryKey, r.SourceKeyJson, r.PlanRequestedUtc })
                     .Take(Math.Clamp(max, 1, 10_000))
                     .ToListAsync(ct);
@@ -833,8 +838,9 @@ public sealed partial class OsduLedger : ILedger
             ct).ConfigureAwait(false);
     }
 
-    public async Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, Guid? except, DateTime nowUtc, int max, CancellationToken ct = default)
+    public async Task<IReadOnlyList<Guid>> ListSettledSubmissionsWithDueWorkAsync(Guid flowId, IReadOnlyCollection<Guid> except, DateTime nowUtc, int max, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(except);
         if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
         {
             return [];
@@ -846,8 +852,9 @@ public sealed partial class OsduLedger : ILedger
         return await ReadAsync(
             db =>
             {
+                var excluded = except.ToArray();
                 var settled = db.DeliverySubmissions
-                    .Where(s => s.PartitionId == partition && s.FlowId == flowId && (s.Status == completed || s.Status == failed) && (except == null || s.SubmissionId != except))
+                    .Where(s => s.PartitionId == partition && s.FlowId == flowId && (s.Status == completed || s.Status == failed) && !excluded.Contains(s.SubmissionId))
                     .Select(s => s.SubmissionId);
                 return db.DeliveryRecords
                     .Where(r => r.PartitionId == partition && r.FlowId == flowId
@@ -1790,9 +1797,8 @@ public sealed partial class OsduLedger : ILedger
     /// <summary>
     /// Releases the records one problem keeps blocked, or the blocked records in one custody state, a page of keys at a time
     /// in the order an index holds them: each page is read, then released in a statement of its own, so neither the read
-    /// nor the write ever holds more than a slice of records however many the walk reaches. The walk takes no record
-    /// changed after <paramref name="nowUtc"/>, the moment the release began, so a run blocking records meanwhile does not
-    /// keep it going.
+    /// nor the write ever holds more than a slice of records however many the walk reaches. A record released leaves what
+    /// is walked (the problem index, or the blocked records) and the walk only moves forward, so it ends.
     /// </summary>
     private async Task<int> ReleaseWalkAsync(OsduDbContext db, short partition, Guid flowId, long? problem, string? status, long? activityId, DateTime nowUtc, CancellationToken ct)
     {
@@ -1803,7 +1809,7 @@ public sealed partial class OsduLedger : ILedger
             ct.ThrowIfCancellationRequested();
             var position = after;
             var page = await RetryDeadlockAsync(
-                () => SqlServerLedgerBulk.ReleasePageAsync(db, partition, flowId, problem, status, position, nowUtc, WriteSlice, ct), ct).ConfigureAwait(false);
+                () => SqlServerLedgerBulk.ReleasePageAsync(db, partition, flowId, problem, status, position, WriteSlice, ct), ct).ConfigureAwait(false);
             if (page.Count == 0)
             {
                 return released;
@@ -1824,9 +1830,13 @@ public sealed partial class OsduLedger : ILedger
     public Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverScope scope, DateTime nowUtc, CancellationToken ct = default)
         => ForceRedeliverAsync(flowId, keys, new RedeliverSelection(scope, []), nowUtc, ct);
 
-    public async Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default)
+    public Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverSelection selection, DateTime nowUtc, CancellationToken ct = default)
+        => ForceRedeliverAsync(flowId, keys, selection, null, nowUtc, ct);
+
+    public async Task<int> ForceRedeliverAsync(Guid flowId, IEnumerable<DeliveryKey>? keys, RedeliverSelection selection, long? activityId, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(selection);
+        ArgumentOutOfRangeException.ThrowIfLessThan(WriteSlice, 1);
         if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
         {
             return 0;
@@ -1840,48 +1850,59 @@ public sealed partial class OsduLedger : ILedger
         var marker = selection is { Scope: RedeliverScope.Payload, Parts.Count: > 0 } ? PayloadParts.RedeliverMarker(selection.Parts) : null;
         if (keys is not null)
         {
-            return await WriteByKeyAsync(db.DeliveryRecords, keys.Select(k => new RecordKey(partition, flowId, k.Value)), rows => RedeliverAsync(rows, selection.Scope, marker, note, nowUtc, ct), ct).ConfigureAwait(false);
+            return await RedeliverKeysAsync(db, partition, flowId, keys.Select(k => k.Value), selection.Scope, marker, deliveredOnly: false, activityId, note, nowUtc, ct).ConfigureAwait(false);
         }
 
-        // Every record OSDU holds of the flow, a slice at a time as a release of the whole flow is.
-        var delivered = StatusText.Of(RecordStatus.Delivered);
-        return await WriteEachAsync(
-            db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && r.Status == delivered && r.TargetId != null),
-            rows => RedeliverAsync(rows, selection.Scope, marker, note, nowUtc, ct),
-            ct).ConfigureAwait(false);
+        // Every record OSDU holds of the flow, walked through the status index a page at a time as a release of the whole
+        // flow is, so neither the read nor the write ever holds more than a slice however many records the flow delivered.
+        var marked = 0;
+        var after = SqlServerLedgerBulk.WalkPosition.Start;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var position = after;
+            var page = await RetryDeadlockAsync(
+                () => SqlServerLedgerBulk.DeliveredPageAsync(db, partition, flowId, position, nowUtc, WriteSlice, ct), ct).ConfigureAwait(false);
+            if (page.Count == 0)
+            {
+                return marked;
+            }
+
+            marked += await RedeliverKeysAsync(db, partition, flowId, page.Select(p => p.DeliveryKey), selection.Scope, marker, deliveredOnly: true, activityId, note, nowUtc, ct).ConfigureAwait(false);
+            if (page.Count < WriteSlice)
+            {
+                return marked;
+            }
+
+            after = page[^1];
+        }
     }
 
-    private static Task<int> RedeliverAsync(IQueryable<DeliveryRecord> rows, RedeliverScope scope, string note, DateTime nowUtc, CancellationToken ct)
-        => RedeliverAsync(rows, scope, null, note, nowUtc, ct);
-
-    private static Task<int> RedeliverAsync(IQueryable<DeliveryRecord> rows, RedeliverScope scope, string? payloadMarker, string note, DateTime nowUtc, CancellationToken ct)
-        => scope switch
+    /// <summary>
+    /// Marks the named records of one ledger for redelivery of <paramref name="scope"/>, <see cref="WriteSlice"/> to a
+    /// statement, each naming the records it marked under <paramref name="activityId"/> when given: the one statement a
+    /// redelivery by name, a redelivery of the whole flow and a cache change's rollout all mark records with.
+    /// </summary>
+    private async Task<int> RedeliverKeysAsync(
+        OsduDbContext db, short partition, Guid flowId, IEnumerable<Guid> keys, RedeliverScope scope, string? marker, bool deliveredOnly, long? activityId,
+        string note, DateTime nowUtc, CancellationToken ct)
+    {
+        var named = scope switch
         {
-            RedeliverScope.Metadata => rows.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.MetadataHash, (string?)null)
-                .SetProperty(r => r.SourceFingerprint, (string?)null)
-                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
-                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                .SetProperty(r => r.LastError, note)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-            RedeliverScope.Payload => rows.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.PayloadHash, payloadMarker)
-                .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
-                .SetProperty(r => r.SourceFingerprint, (string?)null)
-                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
-                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                .SetProperty(r => r.LastError, note)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
-            _ => rows.ExecuteUpdateAsync(s => s
-                .SetProperty(r => r.MetadataHash, (string?)null)
-                .SetProperty(r => r.PayloadHash, (string?)null)
-                .SetProperty(r => r.PayloadModifiedUtc, (DateTime?)null)
-                .SetProperty(r => r.SourceFingerprint, (string?)null)
-                .SetProperty(r => r.PendingSourceFingerprint, (string?)null)
-                .SetProperty(r => r.PlanRequestedUtc, nowUtc)
-                .SetProperty(r => r.LastError, note)
-                .SetProperty(r => r.UpdatedUtc, nowUtc), ct),
+            RedeliverScope.Metadata => "metadata",
+            RedeliverScope.Payload => "payload",
+            _ => "all",
         };
+        var marked = 0;
+        foreach (var slice in keys.Distinct().Chunk(WriteSlice))
+        {
+            ct.ThrowIfCancellationRequested();
+            marked += await RetryDeadlockAsync(
+                () => SqlServerLedgerBulk.RedeliverSliceAsync(db, partition, flowId, slice, named, marker, deliveredOnly, activityId, note, nowUtc, ct), ct).ConfigureAwait(false);
+        }
+
+        return marked;
+    }
 
     public async Task MarkRemovedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default)
     {
@@ -2403,11 +2424,12 @@ public sealed partial class OsduLedger : ILedger
             // fingerprint is what makes the next plan render and send the document again, and the curves that
             // were uploaded with it stay where they are. This is the same marking a metadata redelivery makes.
             var note = $"redelivery of metadata requested by cache change {tag.TagId}";
-            await WriteByKeyAsync(
-                db.DeliveryRecords,
-                page.Select(r => new RecordKey(r.PartitionId, r.FlowId, r.DeliveryKey)),
-                rows => RedeliverAsync(rows, RedeliverScope.Metadata, note, nowUtc, ct),
-                ct).ConfigureAwait(false);
+            foreach (var ledger in page.GroupBy(r => (r.PartitionId, r.FlowId)))
+            {
+                await RedeliverKeysAsync(
+                    db, ledger.Key.PartitionId, ledger.Key.FlowId, ledger.Select(r => r.DeliveryKey), RedeliverScope.Metadata, null, deliveredOnly: false, null, note, nowUtc, ct)
+                    .ConfigureAwait(false);
+            }
 
             tag.Cursor = page[^1].DeliveryKey;
             tag.CursorFlowId = page[^1].FlowId;
