@@ -221,24 +221,19 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
             notFound: (missing) => <NearIds partition={partition} id={missing} onOpen={onOpenId} />,
             validation: (checked, shownVersion, openPath) => (
               <ExplorerValidationView
-                partition={partition}
+                source={{ key: ["partition", partition], validate: (asked) => explorerApi.validate(partition, asked) }}
                 id={checked}
                 version={shownVersion}
                 onOpenPath={openPath}
                 onResult={checked === id ? keepValidated : undefined}
               />
             ),
-            fieldActions: (field) => {
-              // A mark only on the version the check read: another version in view has other values.
-              const shown = field.trail[field.level]?.record;
-              const sameVersion = validated !== null && shown !== null && shown !== undefined && (validated.version === null || shown.version === validated.version);
-              return (
-                <span className="inline-flex items-center gap-1">
-                  <ValidationFieldMark result={sameVersion && validated.targetId === id ? validated : null} field={field} />
-                  {fieldActions?.(field)}
-                </span>
-              );
-            },
+            fieldActions: (field) => (
+              <span className="inline-flex items-center gap-1">
+                <ValidationFieldMark result={validated} id={id} field={field} />
+                {fieldActions?.(field)}
+              </span>
+            ),
           }}
           fill
         />

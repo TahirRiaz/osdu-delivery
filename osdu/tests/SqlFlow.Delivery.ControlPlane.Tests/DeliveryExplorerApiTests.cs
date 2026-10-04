@@ -22,7 +22,8 @@ namespace SqlFlow.ControlPlane.Tests;
 /// The explorer as the API serves it (osdu/docs/explorer.md): the connection each partition is read through, picked from the
 /// delivery flows that reach it (the storage route first, a flow whose partition is its header's by the partition it names),
 /// none for a partition no flow reaches; each read run by the control plane through that connection with what it reads, and
-/// nothing queued for a node; and every search the operation would refuse answered as a 400 before it runs. Nothing here
+/// nothing queued for a node; a record page's check of a record run the same way through the record's own flow, refused
+/// for a route that keeps no record in storage; and every search the operation would refuse answered as a 400 before it runs. Nothing here
 /// reaches an OSDU: the operations are stood in for (<see cref="RecordedOperations"/>), and what each was given is read back.
 /// </summary>
 [Trait("Category", "Integration")]
@@ -43,6 +44,7 @@ public sealed class DeliveryExplorerApiTests
         var ddms = Flow("explorer-a-" + suffix, $"partitions: [{named}]", "ddms", "protocolOptions: { ddmsRoot: /api/os-wellbore-ddms }");
         var storage = Flow("explorer-b-" + suffix, $"partitions: [{named}]", "storage");
         var header = Flow("explorer-c-" + suffix, null, "storage", $"headers: {{ data-partition-id: {headed} }}");
+        var dspdm = Flow("explorer-d-" + suffix, $"partitions: [{named}]", "dspdm");
         var now = DateTime.UtcNow;
 
         await using (var db = CatalogDatabase.Create(cs))
@@ -52,7 +54,7 @@ public sealed class DeliveryExplorerApiTests
                 Id = repoId, Name = "cp-explorer-" + suffix, RemoteUrl = "https://example/cp-explorer.git",
                 RootPath = Path.GetTempPath(), FirstSeenUtc = now, LastSyncUtc = now,
             });
-            foreach (var (name, yaml) in new[] { ddms, storage, header })
+            foreach (var (name, yaml) in new[] { ddms, storage, header, dspdm })
             {
                 db.Pipelines.Add(new CatalogPipeline
                 {
@@ -168,7 +170,24 @@ public sealed class DeliveryExplorerApiTests
             Assert.Equal(($"{headed}:master-data--Wellbore:NO-33", "1712345678901234"), (read.Argument("targetId"), read.Argument("version")));
             Assert.Null(read.Argument(DeliveryOperation.PartitionArgument));
 
-            var search400 = $"/api/v1/delivery/explorer/search?partition={named}";
+            // A record page checks a record it shows as the explorer checks one, read through the record's own flow and the
+            // partition its ledger names, whichever flow the explorer would pick there; a bad ask is refused as the explorer's is.
+            var onPage = $"/api/v1/delivery/flows/{CatalogIdentity.Pipeline(repoId, ddms.Name):D}/osdu/validate?partition={named}";
+            var pageChecked = await RanAsync(client, token, onPage, new { targetId = " dev:master-data--Wellbore:NO-33: ", version = 7L, schema = " Saved ", templateVersion = " 9f3c41d07a2b88e1 " });
+            Assert.Equal((ExploreOperation.OperationName, ddms.Name, named), (pageChecked.Operation, pageChecked.SourceRef, pageChecked.Argument(DeliveryOperation.PartitionArgument)));
+            Assert.Equal(
+                (ExploreOperation.ValidateAction, "dev:master-data--Wellbore:NO-33", "7", "saved", "9f3c41d07a2b88e1"),
+                (pageChecked.Argument(ExploreOperation.ActionArgument), pageChecked.Argument("targetId"), pageChecked.Argument("version"),
+                    pageChecked.Argument(ExploreOperation.SchemaArgument), pageChecked.Argument(ExploreOperation.TemplateVersionArgument)));
+            await RefusedAsync(client, token, onPage, new { targetId = "NO 33/9-C-28 B" }, HttpStatusCode.BadRequest, "is not an OSDU record id");
+            await RefusedAsync(client, token, onPage, new { targetId = "dev:master-data--Wellbore:NO-33", schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
+
+            // A flow whose route keeps no record in storage has none to check.
+            await RefusedAsync(
+                client, token, $"/api/v1/delivery/flows/{CatalogIdentity.Pipeline(repoId, dspdm.Name):D}/osdu/validate?partition={named}",
+                new { targetId = "dev:master-data--Wellbore:NO-33" }, HttpStatusCode.Conflict, "keeps no record in OSDU's storage service");
+
+            var search400 =$"/api/v1/delivery/explorer/search?partition={named}";
             await RefusedAsync(client, token, search400, new { kind = "osdu:wks" }, HttpStatusCode.BadRequest, "is not a kind");
             await RefusedAsync(client, token, search400, new { sort = "newest" }, HttpStatusCode.BadRequest, "is not an order");
             await RefusedAsync(client, token, search400, new { sort = "1" }, HttpStatusCode.BadRequest, "is not an order");
@@ -185,13 +204,13 @@ public sealed class DeliveryExplorerApiTests
 
             // Every read was answered in the request: nothing was queued for a node.
             await using var catalog = CatalogDatabase.Create(cs);
-            var flows = new[] { ddms.Name, storage.Name, header.Name };
+            var flows = new[] { ddms.Name, storage.Name, header.Name, dspdm.Name };
             Assert.False(await catalog.ComputeTasks.AnyAsync(t => flows.Contains(t.SourceRef)));
         }
         finally
         {
             await using var db = CatalogDatabase.Create(cs);
-            var names = new[] { ddms.Name, storage.Name, header.Name };
+            var names = new[] { ddms.Name, storage.Name, header.Name, dspdm.Name };
             await db.ComputeTasks.Where(t => names.Contains(t.SourceRef)).ExecuteDeleteAsync();
             await db.Pipelines.Where(p => p.RepoId == repoId).ExecuteDeleteAsync();
             await db.Repos.Where(r => r.Id == repoId).ExecuteDeleteAsync();

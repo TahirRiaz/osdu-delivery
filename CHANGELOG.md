@@ -13,6 +13,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A record page's OSDU tab checks the record it shows against the schema of its kind.** Its **Validation**, under the
+  record's Checks, is the explorer's: by default against what the partition's Schema service holds, or a saved template,
+  with the problems, what each value takes and how to fix it, the parts not checked, the references storage does not
+  hold, and the marks on the record's fields. The record is read through the route and credentials of its flow, as the tab
+  reads it, rather than through the connection the explorer picks for the partition, so a record of a flow that names no
+  partition is checked where it lives; a record the tab opens after it is checked the same way. A flow whose route keeps
+  no record in storage (dspdm, etp) has none to check, and the pane says so. The API answers it at
+  `POST /flows/{pipelineId}/osdu/validate`, beside `osdu/read`, with the body and answer of `/explorer/validate`
+  ([osdu/docs/explorer.md](osdu/docs/explorer.md#validate)).
 - **Records are redelivered from the Records tab, and brought up to date rather than sent blindly.** The selection bar
   offers **Redeliver** for the ticked records or every record the filter matches, the overview for every delivered record
   of the interface, and a record's own page for that record, through one dialog with two ways side by side. **Bring up to

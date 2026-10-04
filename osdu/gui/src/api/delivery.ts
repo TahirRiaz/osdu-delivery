@@ -2168,7 +2168,7 @@ const scopeQuery = (scope?: DeliveryFlowScope): Record<string, string> => ({
  * A flow-level path with the ledger the request is about. A source that delivers several interfaces, or a flow that names
  * several partitions, answers nothing without one, because its records, submissions, target and counts are per ledger.
  */
-const flowPath = (pipelineId: string, suffix: string, scope?: DeliveryFlowScope) => {
+export const flowPath = (pipelineId: string, suffix: string, scope?: DeliveryFlowScope) => {
   const query = new URLSearchParams(scopeQuery(scope)).toString();
   return `/api/v1/delivery/flows/${pipelineId}${suffix}${query === "" ? "" : `?${query}`}`;
 };

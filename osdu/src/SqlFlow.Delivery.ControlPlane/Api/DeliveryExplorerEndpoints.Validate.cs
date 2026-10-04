@@ -15,6 +15,7 @@ using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Protocols;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
@@ -37,6 +38,8 @@ public static partial class DeliveryExplorerEndpoints
     {
         delivery.MapPost("/explorer/validate", ValidateAsync).WithName("ExploreDeliveryOsduValidate");
         delivery.MapPost("/explorer/validate-list", ValidateListAsync).WithName("ExploreDeliveryOsduValidateList");
+        // A record page's check, beside the read by id a record page makes (/flows/{pipelineId}/osdu/read).
+        delivery.MapPost("/flows/{pipelineId:guid}/osdu/validate", ValidateTargetAsync).WithName("ValidateDeliveryOsduRecord");
     }
 
     /// <summary>
@@ -48,6 +51,55 @@ public static partial class DeliveryExplorerEndpoints
         DeliveryExplorerValidateRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
         ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
     {
+        if (ValidateArguments(body, out var arguments) is { } invalid)
+        {
+            return invalid;
+        }
+
+        return await QueueAsync(ExploreOperation.ValidateAction, arguments, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// One record checked as <see cref="ValidateAsync"/> checks it, read through the route and credentials of the flow named
+    /// (its interface and partition as a record page names them) rather than the connection the explorer picks for a
+    /// partition: a record page's OSDU tab checks the records it shows, which it reads through their flow. A flow whose route
+    /// has no platform endpoint (dspdm, etp) keeps no record in storage to check.
+    /// </summary>
+    private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ValidateTargetAsync(
+        Guid pipelineId, DeliveryExplorerValidateRequest? body, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition,
+        CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, DeliveryConfigStore config, DirectOperations direct,
+        ILoggerFactory loggers, ClaimsPrincipal user, CancellationToken ct)
+    {
+        if (ValidateArguments(body, out var arguments) is { } invalid)
+        {
+            return invalid;
+        }
+
+        var (flow, problem) = await DeliveryEndpoints.ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        if (Rank(flow.Flow.Target.Protocol) < 0)
+        {
+            return TypedResults.Problem(
+                detail: $"{flow.Flow.Label} delivers by the {DeliveryProtocols.Name(flow.Flow.Target.Protocol)} route, which keeps no record in OSDU's storage service to check against a schema.",
+                statusCode: StatusCodes.Status409Conflict,
+                title: "No record to check");
+        }
+
+        arguments[ExploreOperation.ActionArgument] = ExploreOperation.ValidateAction;
+        return await DirectOperationRunner.RunAsync(db, config, direct, flow, ExploreOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The task arguments of a check of one record (its id, version, schema and saved template version), or why the request
+    /// cannot be asked. Every check of one record reads its request this way.
+    /// </summary>
+    private static ProblemHttpResult? ValidateArguments(DeliveryExplorerValidateRequest? body, out Dictionary<string, string> arguments)
+    {
+        arguments = new Dictionary<string, string>(StringComparer.Ordinal);
         var read = new DeliveryReadRequest(body?.TargetId, body?.Version);
         if (DeliveryEndpoints.TargetProblem(read, out var asked) is { } invalid)
         {
@@ -64,7 +116,7 @@ public static partial class DeliveryExplorerEndpoints
             return DeliveryEndpoints.Invalid("Name the saved template version as the Templates page shows it.");
         }
 
-        var arguments = new Dictionary<string, string>(StringComparer.Ordinal) { ["targetId"] = TargetId.WithoutVersion(asked) };
+        arguments["targetId"] = TargetId.WithoutVersion(asked);
         DeliveryEndpoints.WithVersion(arguments, read);
         if (!string.IsNullOrWhiteSpace(body.Schema))
         {
@@ -76,7 +128,7 @@ public static partial class DeliveryExplorerEndpoints
             arguments[ExploreOperation.TemplateVersionArgument] = body.TemplateVersion.Trim();
         }
 
-        return await QueueAsync(ExploreOperation.ValidateAction, arguments, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct).ConfigureAwait(false);
+        return null;
     }
 
     /// <summary>
