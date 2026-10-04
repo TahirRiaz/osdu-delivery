@@ -973,6 +973,12 @@ Before any row is rendered (the preflight):
    modifier builds ids of an entity type the property points to, matching its pattern; a `ref` settles one type.
 10. Every fixture renders exactly as declared, against the search answers and the cached rows it declares.
 
+These checks judge the mapping before anything renders. Each rendered document is judged as well, immediately before it
+is sent, against every rule of its template and the records it refers to, and its verdict is recorded on its attempt
+and its record; the flow's `target.validation` says which verdicts hold it
+([documents.md](documents.md#validation-before-a-record-is-sent)). Check values runs the same rules over the ingestion
+rows of a flow's scope, and the `conforms` assertion over what OSDU holds.
+
 ## The mapping builder
 
 The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I write the mapping?":

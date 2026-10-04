@@ -828,6 +828,7 @@ do not ask; they send nothing.
 | Failed | the record-level retry budget (`reliability.retry.attempts`) is exhausted | `failed` (released like held) |
 | Waiting | the document refers to a record another record of the ledger holds and has not delivered (docs/interfaces-design.md section 7) | `waiting`; decided by the claim, so nothing is sent and no try is charged, and back to `pending` when that record lands |
 | Held | with `target.verifyReferences: storage`, the document refers to an id neither the ledger nor OSDU's storage service holds | `held`, naming the ids and the properties |
+| Held | the gate's verdict on the document: `invalid` under `target.validation.mode: enforce`, `unverified` under `target.validation.unverified: hold` ([documents.md](documents.md#validation-before-a-record-is-sent)) | `held` with the document kept, the error starting `validation:` and naming the rules; a release sends that document as it is |
 
 Inside one call the HTTP executor repeats a request only when repeating it is safe, the line the OSDU C# client
 draws in its `ReadRetryHandler`:

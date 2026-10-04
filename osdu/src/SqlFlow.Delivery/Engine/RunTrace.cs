@@ -2,6 +2,7 @@ using System.Globalization;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Engine;
 
@@ -104,6 +105,9 @@ public sealed class RunTrace
 
     /// <summary>How many problems this trace names.</summary>
     public int ProblemAllowance { get; }
+
+    /// <summary>What the gate before a record is sent found across the run, which its progress lines count.</summary>
+    public ValidationTally Validation { get; } = new();
 
     /// <summary>How many retries of a call this trace names.</summary>
     public int RetryAllowance { get; }
@@ -303,9 +307,10 @@ public sealed class RunTrace
         var sending = first is { } since && now > since ? now - since : TimeSpan.Zero;
         var rate = sending.TotalSeconds >= 1 ? settled / sending.TotalSeconds : 0d;
         var of = planned > 0 ? string.Create(CultureInfo.InvariantCulture, $" of {planned:N0} planned") : string.Empty;
+        var validated = Validation.Validated > 0 ? "; " + Validation.Brief() : string.Empty;
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"{settled:N0}{of} record(s) settled after {Elapsed(now - _started)} ({rate:N1} a second): {delivered:N0} delivered, {unchanged:N0} already in OSDU, {retrying:N0} to try again, {held:N0} held, {failed:N0} failed");
+            $"{settled:N0}{of} record(s) settled after {Elapsed(now - _started)} ({rate:N1} a second): {delivered:N0} delivered, {unchanged:N0} already in OSDU, {retrying:N0} to try again, {held:N0} held, {failed:N0} failed{validated}");
     }
 
     /// <summary>How long something took, as the trace says it: milliseconds under a second, seconds under two minutes, minutes above.</summary>

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Ledger;
 
@@ -48,6 +49,25 @@ public static class AttemptResult
         result["detail"] = detail;
         return result.ToJsonString();
     }
+
+    /// <summary>
+    /// <paramref name="resultJson"/> with the verdict the gate reached on the try's document added under <c>validation</c>
+    /// (docs/validation-plan.md), so every attempt says what its document was checked against and what the check found.
+    /// </summary>
+    public static string? WithValidation(string? resultJson, ValidationVerdict? verdict)
+    {
+        if (verdict is null)
+        {
+            return resultJson;
+        }
+
+        var result = ObjectOrEmpty(resultJson);
+        result["validation"] = verdict.ToJson();
+        return result.ToJsonString();
+    }
+
+    /// <summary>The verdict an attempt's result carries, or null for an attempt that carries none.</summary>
+    public static ValidationVerdict? Validation(string? resultJson) => ValidationVerdict.FromJson(Parse(resultJson)?["validation"]);
 
     private static JsonObject ObjectOrEmpty(string? json)
     {

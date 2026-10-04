@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -6,6 +5,7 @@ using System.Text.RegularExpressions;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Rendering;
 
@@ -15,10 +15,6 @@ namespace SqlFlow.Delivery.Rendering;
 /// </summary>
 internal static partial class IdValues
 {
-    private static readonly TimeSpan PatternTimeout = TimeSpan.FromSeconds(1);
-
-    // One entry per distinct schema pattern: a closed set, since patterns come from the templates a deployment holds.
-    private static readonly ConcurrentDictionary<string, Regex?> Patterns = new(StringComparer.Ordinal);
 
     /// <summary>
     /// A token's value as an id carries it: ASCII letters, digits, '_', '-', '.' and ':' as they stand (':' parts the
@@ -107,7 +103,7 @@ internal static partial class IdValues
         }
         catch (RegexMatchTimeoutException)
         {
-            return $"checking '{id}' against the pattern the template gives the variable, {patternText}, took longer than {PatternTimeout.TotalSeconds:0} second(s)";
+            return $"checking '{id}' against the pattern the template gives the variable, {patternText}, took longer than {SchemaPatterns.Timeout.TotalSeconds:0} second(s)";
         }
     }
 
@@ -119,32 +115,10 @@ internal static partial class IdValues
     }
 
     /// <summary>
-    /// The schema pattern as a regular expression, read the way JSON Schema reads it (ECMAScript, where <c>\w</c> is ASCII)
-    /// and, when it uses what that dialect lacks, as .NET reads it. Null when neither reads it, so only the id's shape is
-    /// checked; the preflight says so.
+    /// The schema pattern as a regular expression (<see cref="SchemaPatterns.Compile"/>). Null when neither dialect reads it,
+    /// so only the id's shape is checked; the preflight says so.
     /// </summary>
-    public static Regex? Pattern(string pattern)
-    {
-        ArgumentNullException.ThrowIfNull(pattern);
-        return Patterns.GetOrAdd(pattern, static text =>
-        {
-            try
-            {
-                return new Regex(text, RegexOptions.ECMAScript, PatternTimeout);
-            }
-            catch (ArgumentException)
-            {
-                try
-                {
-                    return new Regex(text, RegexOptions.CultureInvariant, PatternTimeout);
-                }
-                catch (ArgumentException)
-                {
-                    return null;
-                }
-            }
-        });
-    }
+    public static Regex? Pattern(string pattern) => SchemaPatterns.Compile(pattern);
 
     /// <summary>The entity types a property, or each item of a list of them, points to.</summary>
     public static IReadOnlyList<string> Relationships(SchemaProperty property)

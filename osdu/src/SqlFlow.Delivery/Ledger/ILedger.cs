@@ -422,6 +422,24 @@ public sealed record RecordState
     public long? ProblemHash { get; init; }
 
     /// <summary>
+    /// What the last check of the record's document against its schema came to, written by the gate before a record is
+    /// sent (<see cref="Validation.ValidationOutcomes"/>: valid, invalid, unverified); null until a document was checked.
+    /// </summary>
+    public string? ValidationOutcome { get; init; }
+
+    /// <summary>How many problems that check found.</summary>
+    public long? ValidationProblems { get; init; }
+
+    /// <summary>When that check was made.</summary>
+    public DateTime? ValidatedUtc { get; init; }
+
+    /// <summary>The metadata hash of the pending document an operator's release accepted as it is, whatever its verdict.</summary>
+    public string? AcceptedMetadataHash { get; init; }
+
+    /// <summary>Whether the pending document is the one an operator's release accepted.</summary>
+    public bool PendingAccepted => PendingMetadataHash is not null && string.Equals(PendingMetadataHash, AcceptedMetadataHash, StringComparison.Ordinal);
+
+    /// <summary>
     /// The cache values this record was built from, as the id of the set it shares with every record that read the
     /// same values. A plan compares it against the gated sets to know whether an unapproved cache change is holding
     /// this record back.
@@ -537,7 +555,13 @@ public sealed record RecordCompletion
     /// completion that carried no document.
     /// </summary>
     public ClaimedWork? Claimed { get; init; }
+
+    /// <summary>What the check of the try's document came to, which the record keeps; null for a try that checked none.</summary>
+    public RecordValidation? Validation { get; init; }
 }
+
+/// <summary>What a check of a record's document came to, as the record keeps it: the outcome, the problems, and when.</summary>
+public sealed record RecordValidation(string Outcome, long Problems, DateTime CheckedUtc);
 
 /// <summary>
 /// What a claimed record's pending work was: the submission and document reference that identify it (a reference is

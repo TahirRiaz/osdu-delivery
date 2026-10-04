@@ -151,7 +151,7 @@ internal static partial class EntryValues
     private static bool Resolves(string id, IdTemplate template, MappingEntry entry, MappingRenderer renderer, List<CacheUsage> usages, out string? missing)
     {
         missing = null;
-        if (Named(id) is not { } reference)
+        if (CachedReferences.Named(id) is not { } reference)
         {
             return true;
         }
@@ -184,24 +184,6 @@ internal static partial class EntryValues
         missing =
             $"{entry.Target.Text}: the id {template} gives {id}, and {CacheLabel(renderer.Context)} holds no such {reference.EntityType} record in {string.Join(", ", holding.Select(t => t.Name))}, so the reference would point at nothing";
         return false;
-    }
-
-    /// <summary>
-    /// The record an id names: parsed as a relationship is (<see cref="CachedReferences.Parse"/>), or, for a code that
-    /// carries colons of its own, the id without the colon a reference to the latest version ends in. Null when neither
-    /// tells the record apart from a version.
-    /// </summary>
-    private static CachedReference? Named(string id)
-    {
-        if (CachedReferences.Parse(id) is { } parsed)
-        {
-            return parsed;
-        }
-
-        var parts = id.Split(':');
-        return id.EndsWith(':') && parts.Length >= 4 && parts[1].Contains("--", StringComparison.Ordinal)
-            ? new CachedReference(id[..^1], parts[1])
-            : null;
     }
 
     /// <summary>

@@ -560,6 +560,61 @@ public sealed record FlowTarget
     /// docs/interfaces-design.md section 7).
     /// </summary>
     public ReferenceVerification VerifyReferences { get; init; } = ReferenceVerification.None;
+
+    /// <summary>
+    /// What the gate before a record is sent does with the record's verdict (<c>target.validation</c>, or an interface's
+    /// <c>validation</c>; docs/validation-plan.md): send it and record why, or hold it.
+    /// </summary>
+    public ValidationPolicy Validation { get; init; } = ValidationPolicy.Default;
+}
+
+/// <summary>
+/// What the gate before a record is sent does with what a check of the record against its schema found
+/// (<see cref="Validation.ValidationVerdict"/>). Every document whose metadata is sent is checked and its verdict recorded,
+/// whatever the policy; the policy decides only which verdicts hold the record.
+/// </summary>
+public sealed record ValidationPolicy
+{
+    public static ValidationPolicy Default { get; } = new();
+
+    /// <summary>What a record that breaks its schema does: sent and recorded (<c>report</c>, the default) or held (<c>enforce</c>).</summary>
+    public ValidationMode Mode { get; init; } = ValidationMode.Report;
+
+    /// <summary>What a record some part of which could not be checked does: sent (the default) or held.</summary>
+    public UnverifiedAction Unverified { get; init; } = UnverifiedAction.Send;
+
+    /// <summary>Whether a verdict of <paramref name="outcome"/> holds the record under this policy.</summary>
+    public bool Holds(Validation.ValidationOutcome outcome) => outcome switch
+    {
+        Validation.ValidationOutcome.Invalid => Mode == ValidationMode.Enforce,
+        Validation.ValidationOutcome.Unverified => Unverified == UnverifiedAction.Hold,
+        _ => false,
+    };
+
+    /// <summary>How a hold names the setting that made it, as the flow writes it.</summary>
+    public static string Setting(Validation.ValidationOutcome outcome) => outcome == Validation.ValidationOutcome.Unverified
+        ? "validation.unverified is hold"
+        : "validation.mode is enforce";
+}
+
+/// <summary>What the gate does with a record that breaks its schema.</summary>
+public enum ValidationMode
+{
+    /// <summary>The record is sent, and its verdict recorded on the attempt and the record.</summary>
+    Report,
+
+    /// <summary>The record is held with its document kept, under an issue naming the rules it breaks.</summary>
+    Enforce,
+}
+
+/// <summary>What the gate does with a record some part of which could not be checked.</summary>
+public enum UnverifiedAction
+{
+    /// <summary>The record is sent, and the parts not checked recorded.</summary>
+    Send,
+
+    /// <summary>The record is held with its document kept.</summary>
+    Hold,
 }
 
 /// <summary>What the OSDU ids a record refers to are checked against before the record is sent.</summary>

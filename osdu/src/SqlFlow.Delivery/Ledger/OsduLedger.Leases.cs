@@ -742,6 +742,9 @@ public sealed partial class OsduLedger
             // The problem is read from the error exactly as the record will keep it, so a record held here and one signed
             // later from its stored error have the same problem.
             ProblemHash = completion.Status is RecordStatus.Held or RecordStatus.Failed ? ProblemSignature.Of(Truncate(completion.Error, 2000)) : null,
+            ValidationOutcome = completion.Validation?.Outcome,
+            ValidationProblems = completion.Validation?.Problems,
+            ValidatedUtc = completion.Validation?.CheckedUtc,
             TargetId = completion.TargetId,
             TargetVersion = completion.TargetVersion,
             TargetStateJson = completion.TargetStateJson,

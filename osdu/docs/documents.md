@@ -161,6 +161,12 @@ target:
     datasetRetrievalPath: /api/dataset/v1/retrievalInstructions
     datasetSoftDeletePath: /api/dataset/v1/metadataRecord/{id}/softDelete
   verifyReferences: none           # none (the ledger alone) | storage (ask storage about the ids the ledger does not hold)
+  validation:                      # what the gate before a record is sent does with the record's verdict
+    mode: report                   # report (send it and record the verdict) | enforce (hold a record that breaks its schema)
+    unverified: send               # send | hold (hold a record some part of which could not be checked)
+  validation:                      # what the gate before a record is sent does with the record's verdict
+    mode: report                   # report (send it and record the verdict) | enforce (hold a record that breaks its schema)
+    unverified: send               # send | hold (hold a record some part of which could not be checked)
 
 reliability:
   concurrency: 8
@@ -195,6 +201,49 @@ mapping version, an edit to the mapping that can change a record, a template ver
 system property a mapping's searches rely on) renders the record again, and whether it is sent is still
 decided by the hash of the rendered document alone, so a new cache version that renders the same document sends nothing.
 A mapping, template or parameter change is picked up by the flow's next ordinary run, which reads its whole scope once.
+`target.validation` is operational too: changing it renders nothing again and redelivers nothing.
+
+### Validation before a record is sent
+
+Immediately before a try writes a record, the gate checks its document against the template of its kind at the version
+it was rendered for (the version its render context names, whatever the flow pins now), as the route will send it
+([validation-plan.md](validation-plan.md)). It applies every rule JSON Schema states that OSDU's schemas use: types,
+formats, patterns, enumerations, constants, lengths, bounds, item counts and uniqueness, required properties at every
+depth, properties an object does not allow, the forms a `oneOf` or `anyOf` allows (read as `anyOf`, since OSDU's forms
+overlap), and the entity types a relationship (`x-osdu-relationship`) allows. The records the document refers to are
+looked up once for each group of records sent together: in the ledger first, then in OSDU's storage service under
+`target.verifyReferences: storage`, else in the cache version the flow renders with, for the entity types it captures.
+A type the cache does not capture says nothing about whether a record exists, so such an id is counted as not checked.
+
+| Outcome | When |
+| --- | --- |
+| `valid` | every rule that applies was checked and met |
+| `invalid` | a rule is broken, or the document refers to a record the cache (or storage, when asked) does not hold |
+| `unverified` | no rule is broken and some part could not be checked: a pattern neither regular expression dialect reads, a match that ran out of time, a value deeper or a list longer than a check walks, the time a check may take spent, a reference the template's bundle does not hold, or no saved template of the kind at that version |
+| `notValidated` | the try sends the payload alone, so nothing of the document is sent or checked |
+
+| Setting | What the gate does |
+| --- | --- |
+| `mode: report` (the default) | sends every record, and records its verdict |
+| `mode: enforce` | holds an `invalid` record with its document kept, under an issue naming the rules it breaks |
+| `unverified: send` (the default) | sends an `unverified` record, and records what was not checked |
+| `unverified: hold` | holds an `unverified` record as `enforce` holds an invalid one |
+
+Every attempt of a try that wrote the record carries its verdict under `validation` in its result, and the record keeps
+the last outcome, how many problems it found and when ([ledger.md](ledger.md)). A record held by the gate keeps its
+document: releasing it accepts that document as it is, so the gate sends it whatever its verdict says and the verdict
+records that it was accepted; a document rendered differently later is judged again. Records broken the same way share
+one issue, since a hold names the rules by the property path every record shares and quotes the values. What the route
+fills when it sends a record (the dataset list of a route that registers files or datasets, the dataset properties the
+Dataset service fills, the data keys an update carries forward from the version OSDU holds, and the bulk link a DDMS
+manages) is not judged as it was rendered. A run's trace counts the verdicts in its progress lines, and each drain ends
+with one line per template naming the rules broken most often.
+
+In the interface form `target.validation` applies to every interface, and an interface's own `validation` block lays its
+keys over it. What the render itself holds a record for (a value that cannot be converted to its variable's type, a
+required `data` property rendered empty, a built id that breaks its pattern or relationship), what a route's own rules
+hold it for (the Wellbore DDMS's, External Data Services'), and what `target.verifyReferences: storage` holds it for are
+held in every mode, as they always were.
 
 ### The cache a flow renders with
 

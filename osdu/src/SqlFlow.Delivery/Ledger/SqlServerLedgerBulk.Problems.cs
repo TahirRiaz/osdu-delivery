@@ -18,13 +18,16 @@ internal static partial class SqlServerLedgerBulk
     // table's key. A record still holding its rendered document goes back to pending for the worker, its tries counted
     // afresh; any other blocked record is unblocked and asked to be planned again; a waiting record goes back to pending
     // without its references, so it is sent without waiting. Every right-hand side reads the row as it was. Released, a
-    // record has no problem any more. With an activity, each record released is named under it.
+    // record has no problem any more. A blocked record released with its rendered document accepts that document as it
+    // is: the gate before a record is sent sends it whatever its verdict says (docs/validation-plan.md), and a document
+    // rendered differently later is judged again. With an activity, each record released is named under it.
     private const string ReleaseSliceSql = $$"""
         DECLARE @released TABLE ([DeliveryKey] uniqueidentifier NOT NULL PRIMARY KEY);
         UPDATE r SET
             r.[Status] = CASE WHEN r.[Status] = N'waiting' OR r.[PendingDocumentRef] IS NOT NULL THEN N'pending' ELSE r.[Status] END,
             r.[Blocked] = 0,
             r.[ProblemHash] = NULL,
+            r.[AcceptedMetadataHash] = CASE WHEN r.[Status] <> N'waiting' AND r.[PendingDocumentRef] IS NOT NULL THEN r.[PendingMetadataHash] ELSE r.[AcceptedMetadataHash] END,
             r.[AttemptCount] = CASE WHEN r.[Status] <> N'waiting' AND r.[PendingDocumentRef] IS NOT NULL THEN 0 ELSE r.[AttemptCount] END,
             r.[NextAttemptUtc] = CASE WHEN r.[Status] = N'waiting' OR r.[PendingDocumentRef] IS NOT NULL THEN NULL ELSE r.[NextAttemptUtc] END,
             r.[PlanRequestedUtc] = CASE WHEN r.[Status] <> N'waiting' AND r.[PendingDocumentRef] IS NULL THEN @now ELSE r.[PlanRequestedUtc] END,

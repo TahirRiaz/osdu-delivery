@@ -236,6 +236,9 @@ internal static partial class SqlServerLedgerBulk
             [Status] = CASE WHEN x.[Superseded] = 1 THEN N'pending' ELSE s.[Status] END,
             [Blocked] = CASE WHEN x.[Superseded] = 1 THEN CAST(0 AS bit) WHEN s.[Status] IN (N'held', N'failed') THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END,
             [ProblemHash] = CASE WHEN x.[Superseded] = 0 AND s.[Status] IN (N'held', N'failed') THEN s.[ProblemHash] ELSE NULL END,
+            [ValidationOutcome] = COALESCE(s.[ValidationOutcome], r.[ValidationOutcome]),
+            [ValidationProblems] = CASE WHEN s.[ValidationOutcome] IS NULL THEN r.[ValidationProblems] ELSE s.[ValidationProblems] END,
+            [ValidatedUtc] = CASE WHEN s.[ValidationOutcome] IS NULL THEN r.[ValidatedUtc] ELSE s.[ValidatedUtc] END,
             [LeaseOwner] = NULL, [UpdatedUtc] = @now,
             [NextAttemptUtc] = CASE WHEN x.[Superseded] = 1 THEN NULL ELSE s.[NextAttemptUtc] END,
             [LastError] = CASE WHEN x.[Superseded] = 1 THEN NULL ELSE s.[Error] END,
@@ -850,6 +853,9 @@ internal static partial class SqlServerLedgerBulk
         table.Columns.Add("NextAttemptUtc", typeof(DateTime));
         table.Columns.Add("Error", typeof(string));
         table.Columns.Add("ProblemHash", typeof(long));
+        table.Columns.Add("ValidationOutcome", typeof(string));
+        table.Columns.Add("ValidationProblems", typeof(long));
+        table.Columns.Add("ValidatedUtc", typeof(DateTime));
         table.Columns.Add("TargetId", typeof(string));
         table.Columns.Add("TargetVersion", typeof(long));
         table.Columns.Add("TargetStateJson", typeof(string));
@@ -872,6 +878,7 @@ internal static partial class SqlServerLedgerBulk
             table.Rows.Add(
                 e.PartitionId, e.LeaseToken, e.FlowId, e.DeliveryKey, e.Kind, e.AtUtc, Value(e.StepJson),
                 Value(e.Status), e.Promote, e.NothingSent, Value(e.NextAttemptUtc), Value(e.Error), Value(e.ProblemHash),
+                Value(e.ValidationOutcome), Value(e.ValidationProblems), Value(e.ValidatedUtc),
                 Value(e.TargetId), Value(e.TargetVersion), Value(e.TargetStateJson), Value(e.PendingStepJson),
                 Value(e.ClaimSubmissionId), Value(e.ClaimDocumentRef), Value(e.ClaimRenderContext), Value(e.ClaimSourceFingerprint),
                 Value(e.ClaimSourceModifiedUtc), Value(e.ClaimSourceFileName), Value(e.ClaimSourceRowNumber), Value(e.ClaimSourceUpdatedUtc),

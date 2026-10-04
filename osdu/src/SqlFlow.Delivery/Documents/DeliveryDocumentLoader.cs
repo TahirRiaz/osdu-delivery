@@ -623,6 +623,7 @@ internal static partial class FlowMapper
                 Dspdm = MapDspdm(target.Dspdm, protocol, source),
                 Etp = MapEtp(target.Etp, protocol, source),
                 VerifyReferences = MapVerifyReferences(target.VerifyReferences, protocol, source),
+                Validation = MapValidation(target.Validation, paths, source),
             },
             Reliability = MapReliability(y.Reliability, source, paths),
             Verify = new FlowVerify { Reconcile = y.Verify?.Reconcile ?? false },
@@ -869,6 +870,9 @@ internal static partial class FlowMapper
 
                 // A DSPDM row refers to no storage record, so a dspdm interface has nothing for the storage check to read.
                 VerifyReferences = route.Protocol == DeliveryProtocol.Dspdm ? null : target.VerifyReferences,
+
+                // What the gate does with a verdict: the source's setting, with what the interface says laid over it.
+                Validation = YamlOverlay.Apply(target.Validation, i.Validation),
             },
             Reliability = YamlOverlay.Apply(y.Reliability, i.Reliability),
             Verify = YamlOverlay.Apply(y.Verify, i.Verify),
@@ -2501,6 +2505,25 @@ internal static partial class FlowMapper
             FanOut = r.FanOut ?? defaults.FanOut,
             FanOutMinRecords = r.FanOutMinRecords ?? defaults.FanOutMinRecords,
             RenderParallelism = r.RenderParallelism ?? defaults.RenderParallelism,
+        };
+    }
+
+    /// <summary>
+    /// What the gate before a record is sent does with the record's verdict (<c>target.validation</c>, or an interface's
+    /// <c>validation</c> laid over it): <c>mode</c> report (the default) or enforce, <c>unverified</c> send (the default) or
+    /// hold.
+    /// </summary>
+    private static ValidationPolicy MapValidation(ValidationYaml? declared, KeyPaths paths, string source)
+    {
+        if (declared is null)
+        {
+            return ValidationPolicy.Default;
+        }
+
+        return new ValidationPolicy
+        {
+            Mode = ParseEnum(declared.Mode?.Trim(), ValidationMode.Report, paths.Shared("target.validation.mode"), source),
+            Unverified = ParseEnum(declared.Unverified?.Trim(), UnverifiedAction.Send, paths.Shared("target.validation.unverified"), source),
         };
     }
 

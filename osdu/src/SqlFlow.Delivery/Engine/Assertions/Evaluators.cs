@@ -969,29 +969,18 @@ internal sealed class ConformsEvaluator(int index, ConformsAssertion assertion, 
             return;
         }
 
-        var problems = new List<ValueProblem>();
-        foreach (var required in schema.RequiredAt(string.Empty))
-        {
-            if (obj[required] is null)
-            {
-                problems.Add(new ValueProblem($"osdu.{required}", "required", $"required property '{required}' is missing", string.Empty));
-            }
-        }
-
-        foreach (var (name, value) in obj)
-        {
-            if (value is not null && TemplatePath.TryParse($"{TemplatePath.Prefix}.{name}", out var path, out _) && path is not null)
-            {
-                problems.AddRange(TemplateValueRules.Check(value, path, schema));
-            }
-        }
-
+        // The record is checked whole by the check every validation shares; a part it could not check is not a failure here,
+        // as an assertion states what the record breaks, not what could not be looked at.
+        var findings = RecordValidator.Check(obj, SchemaRules.Of(schema));
+        var problems = findings.Problems.ToList();
+        var count = findings.ProblemCount;
         if (obj["kind"] is JsonValue kind && kind.TryGetValue<string>(out var text) && !string.Equals(text, scope.Test.Kind, StringComparison.OrdinalIgnoreCase))
         {
-            problems.Add(new ValueProblem("osdu.kind", "const", $"is of kind {text}, not {scope.Test.Kind}", text));
+            problems.Add(new SchemaFinding("kind", "kind", "const", $"is of kind {text}, not {scope.Test.Kind}", text));
+            count++;
         }
 
-        if (problems.Count == 0)
+        if (count == 0)
         {
             _tally.Add(true, id, null, string.Empty);
             return;
@@ -999,8 +988,8 @@ internal sealed class ConformsEvaluator(int index, ConformsAssertion assertion, 
 
         var first = problems[0];
         _tally.Add(false, id, TestResults.Quote(first.Value),
-            string.Create(CultureInfo.InvariantCulture, $"{first.At.Replace(TemplatePath.Prefix + ".", string.Empty, StringComparison.Ordinal)}: {first.Message}")
-            + (problems.Count > 1 ? string.Create(CultureInfo.InvariantCulture, $" (and {problems.Count - 1} more)") : string.Empty));
+            $"{ValidationVerdict.Where(first with { At = first.Path.Length > 0 ? first.Path : first.At })}: {first.Message}"
+            + (count > 1 ? string.Create(CultureInfo.InvariantCulture, $" (and {count - 1} more)") : string.Empty));
     }
 
     public override Task<AssertionOutcome> CompleteAsync(TestScope scope, TestSubject subject, CancellationToken ct)

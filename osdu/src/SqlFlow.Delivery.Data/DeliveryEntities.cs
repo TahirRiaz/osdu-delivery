@@ -250,6 +250,25 @@ public sealed class DeliveryRecord
     public long? ProblemHash { get; set; }
 
     /// <summary>
+    /// What the last check of the record's document against its schema came to, when the gate before a record is sent
+    /// checked it: <c>valid</c>, <c>invalid</c> or <c>unverified</c>. Null until the gate has checked a document of the
+    /// record. A flow's records are counted by it (docs/validation-plan.md).
+    /// </summary>
+    public string? ValidationOutcome { get; set; }
+
+    /// <summary>How many problems that check found.</summary>
+    public long? ValidationProblems { get; set; }
+
+    /// <summary>When that check was made.</summary>
+    public DateTime? ValidatedUtc { get; set; }
+
+    /// <summary>
+    /// The metadata hash of the pending document an operator's release accepted as it is: the gate sends that document
+    /// whatever its verdict says. A document rendered differently has another hash and is judged again.
+    /// </summary>
+    public string? AcceptedMetadataHash { get; set; }
+
+    /// <summary>
     /// While the record is waiting: the OSDU id of the record it waits for, which another record of the ledger holds and
     /// has not delivered. The record goes back to pending when that one lands.
     /// </summary>
@@ -462,6 +481,15 @@ public sealed class DeliveryRecordEvent
 
     /// <summary>A completion that holds or fails the record: the problem its error names, which the record keeps while it is blocked.</summary>
     public long? ProblemHash { get; set; }
+
+    /// <summary>A completion of a try that checked its document: the outcome the record keeps; null leaves the record's as it was.</summary>
+    public string? ValidationOutcome { get; set; }
+
+    /// <summary>How many problems that check found.</summary>
+    public long? ValidationProblems { get; set; }
+
+    /// <summary>When that check was made.</summary>
+    public DateTime? ValidatedUtc { get; set; }
 
     public string? TargetId { get; set; }
 
@@ -1985,6 +2013,8 @@ public static class DeliveryModel
             e.Property(r => r.PendingPayloadHash).HasMaxLength(64);
             e.Property(r => r.PendingPayloadLocation).HasMaxLength(2000);
             e.Property(r => r.PendingDocumentRef).HasMaxLength(64);
+            e.Property(r => r.ValidationOutcome).HasMaxLength(16);
+            e.Property(r => r.AcceptedMetadataHash).HasMaxLength(64);
 
             // Worker and intake paths. The worker's reads (the claim, what is due next, the settled submissions with due
             // work) are answered from these two alone, for a flow and for one submission of it.
@@ -2050,6 +2080,11 @@ public static class DeliveryModel
             // is empty but for that backlog. A query reaches it only by repeating the filter, which the backfill names.
             e.HasIndex(r => new { r.PartitionId, r.FlowId }, UnsortedProblemIndex)
                 .HasFilter("[ProblemHash] IS NULL AND [Blocked]=(1) AND ([Status] IN (N'held', N'failed'))");
+
+            // A flow's records by what the last check of their documents came to: counted for the flow's page, and the
+            // invalid or unverified ones listed. The filter leaves out the records no check has reached.
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.ValidationOutcome, r.UpdatedUtc })
+                .HasFilter("[ValidationOutcome] IS NOT NULL");
         });
 
         modelBuilder.Entity<DeliveryRecordIdentity>(e =>
@@ -2136,6 +2171,7 @@ public static class DeliveryModel
             e.Property(v => v.Kind).HasMaxLength(16).IsRequired();
             e.Property(v => v.Status).HasMaxLength(16);
             e.Property(v => v.Error).HasMaxLength(2000);
+            e.Property(v => v.ValidationOutcome).HasMaxLength(16);
             e.Property(v => v.TargetId).HasMaxLength(500);
             e.Property(v => v.ClaimDocumentRef).HasMaxLength(64);
             e.Property(v => v.ClaimSourceFingerprint).HasMaxLength(200);

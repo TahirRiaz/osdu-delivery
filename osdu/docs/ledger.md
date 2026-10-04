@@ -80,6 +80,10 @@ the identities its mapping declares when it is next staged.
 | `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |
 | `Blocked` | Set when the record was held, failed or deleted and not released since. |
 | `ProblemHash` | While the record is blocked, held or failed: the issue that keeps it so ([Issues](#issues)), the hash of its last error with every part that names the record replaced, which every record refused for the same reason shares. Null for any other record, a removed one included. |
+| `ValidationOutcome`, `ValidationProblems`, `ValidatedUtc` | What the last check of the record's document against its schema came to (`valid`, `invalid`, `unverified`), how many problems it found and when ([documents.md](documents.md#validation-before-a-record-is-sent)). Written by the try that checked it; a try that sent the payload alone leaves them as they were. Null until a document of the record was checked. A filtered index counts a flow's records by outcome. |
+| `AcceptedMetadataHash` | The metadata hash of the pending document a release accepted as it is: the gate sends that document whatever its verdict says. A release of a blocked record that still holds its rendered document writes it. |
+| `ValidationOutcome`, `ValidationProblems`, `ValidatedUtc` | What the last check of the record's document against its schema came to (`valid`, `invalid`, `unverified`), how many problems it found and when ([documents.md](documents.md#validation-before-a-record-is-sent)). Written by the try that checked it; a try that sent the payload alone leaves them as they were. Null until a document of the record was checked. A filtered index counts a flow's records by outcome. |
+| `AcceptedMetadataHash` | The metadata hash of the pending document a release accepted as it is: the gate sends that document whatever its verdict says. A release of a blocked record that still holds its rendered document writes it. |
 | `LastDeliveredUtc`, `LastVerifiedUtc`, `LastVerifyOutcome` | Custody timestamps. |
 | `LeaseOwner` | The token of the lease that holds the record while a worker delivers it ([Leasing](#leasing)); the lease row says when it runs out. |
 | `LastSubmissionId`, `AttemptCount`, `NextAttemptUtc`, `LastError` | The pending work's progress; `LastError` is redacted. |
@@ -117,7 +121,10 @@ established, the version returned, the origin of the row it was built from (`Sou
 the redacted error (for a held or failed try only: a try that did not fail keeps its note, chunks sent or why nothing
 was sent or what a removal took, as `detail` in its result), the platform `RunId` the attempt happened in, the `WorkBatch` it was drained from, and
 `ResultJson`: every step the protocol took (name, timing, status, what the target returned, whether an earlier
-try had completed it) and the values returned. Render-time holds are written by the intake with worker
+try had completed it), the values returned, and under `validation` the verdict the gate reached on the try's document:
+its outcome, the template kind and content version it was checked against, how many rules it applied, the problems and
+the parts it could not check (listed up to a bound and counted exactly), what was found of the records it refers to,
+whether a release accepted it, and when ([documents.md](documents.md#validation-before-a-record-is-sent)). Render-time holds are written by the intake with worker
 `intake`; deletions by the actor who asked for them.
 
 The intake also writes the plan decisions that are changes of the record although nothing is sent, so the record's
@@ -173,6 +180,8 @@ applies it ([Leasing](#leasing)).
 | `LeaseToken`, `FlowId`, `DeliveryKey` | The lease it was appended under, and the record it concerns. |
 | `Kind`, `AtUtc` | `step` (a step completed; `StepJson` holds the steps so far) or `completion` (a try ended), and when. |
 | `Status`, `Promote`, `NothingSent`, `NextAttemptUtc`, `Error`, `ProblemHash`, `TargetId`, `TargetVersion`, `TargetStateJson`, `PendingStepJson` | For a completion: how the try settles the record, and for one that holds or fails it, the issue its error names, read when the event is appended. |
+| `ValidationOutcome`, `ValidationProblems`, `ValidatedUtc` | For a completion of a try that checked its document: what the check came to, which the record keeps. |
+| `ValidationOutcome`, `ValidationProblems`, `ValidatedUtc` | For a completion of a try that checked its document: what the check came to, which the record keeps. |
 | `Claim*` | What the try was claimed with (submission, document, render context, fingerprint, origin, hashes), so a completion promotes what the try actually delivered even when newer work was queued meanwhile, and a step is kept only while the record still holds that document. |
 
 A try's attempt is written to `osdu.Attempt` in the transaction that appends its completion, so the record's history
@@ -446,7 +455,7 @@ it.
                  intake                     worker
    (new/changed) ──────▶ pending ──claim──▶ delivering ──▶ delivered ◀── verify (drift → hashes cleared → next plan updates)
                             ▲                  │
-                            │ backoff          ├──▶ held    (data problem or non-retryable status; Blocked)
+                            │ backoff          ├──▶ held    (data problem, non-retryable status, or the gate's verdict; Blocked)
                             └──────────────────┤
                                                └──▶ failed  (retry budget exhausted; Blocked)
    operator removal ──▶ deleted (Blocked; OSDU no longer holds it) [scope record or everything]
@@ -463,6 +472,9 @@ references. An id no record of the ledger holds is not waited for, because it is
 one whose record was removed from OSDU, nor one of an interface the source's order says this one does not wait for.
 With `target.verifyReferences: storage` the ids the ledger does not hold are asked of storage before the record is
 sent, and a record naming one storage does not hold is held instead.
+
+A record the gate before sending holds for its verdict (`target.validation`) keeps its rendered document, so a release
+puts it back to pending with that document and accepts it as it is: the gate sends it whatever its verdict says, once.
 
 A **blocked** record (held, failed or deleted and not released) is skipped by every later plan as `blocked`
 until either the source row changes (its fingerprint moves, or its last-modified moment passes the one it was left

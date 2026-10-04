@@ -20,6 +20,7 @@ using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Storage;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Engine;
 
@@ -428,19 +429,56 @@ public sealed class FlowRuntime : IDisposable
             Trace = _context.Trace,
             Partition = _ledgerPartition,
             Waits = await WaitRulesAsync(ct).ConfigureAwait(false),
-            References = await ReferenceCheckAsync(ct).ConfigureAwait(false),
+            Gate = await GateAsync(ct).ConfigureAwait(false),
         };
 
-    /// <summary>The storage check a flow with <c>target.verifyReferences: storage</c> runs before it sends a record, or null.</summary>
-    private async Task<ReferenceCheck?> ReferenceCheckAsync(CancellationToken ct)
+    /// <summary>
+    /// The gate every document of the flow goes through before it is sent (<see cref="ValidationGate"/>): its policy is the
+    /// flow's <c>target.validation</c>; a document is checked against the template of its kind at the version it was rendered
+    /// for, the runtime's own when that is the one, else the saved version; and the records it refers to are looked up in the
+    /// ledger, then in OSDU's storage service under <c>target.verifyReferences: storage</c>, else in the cache the runtime
+    /// renders with.
+    /// </summary>
+    public async Task<ValidationGate> GateAsync(CancellationToken ct = default)
     {
-        if (Flow.Target.VerifyReferences != ReferenceVerification.Storage)
+        var ledger = RequireLedger();
+        var cache = _mapping?.References;
+        var label = _mapping?.Context is { } context
+            ? context.CacheScope is null ? $"cache version {context.CacheVersion}" : $"version {context.CacheVersion} of the cache of partition '{context.CacheScope}'"
+            : null;
+        ReferenceResolver references;
+        if (Flow.Target.VerifyReferences == ReferenceVerification.Storage)
+        {
+            var client = await _target.ClientAsync(ct).ConfigureAwait(false);
+            references = new ReferenceCheck(ledger, client, Flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath)
+                .Resolver(Flow.Id, cache, label);
+        }
+        else
+        {
+            references = new ReferenceResolver(cache, label, (ids, token) => ledger.HeldIdsAsync(Flow.Id, ids, token), osdu: null);
+        }
+
+        return new ValidationGate(Flow, SchemaOfAsync, references, _context.Time);
+    }
+
+    /// <summary>
+    /// The schema of <paramref name="kind"/> at <paramref name="version"/>: the runtime's own template when it is that one,
+    /// else the saved template version. Without a version, the runtime's own template of that kind. Null when neither holds it.
+    /// </summary>
+    private async Task<SchemaSnapshot?> SchemaOfAsync(string kind, string? version, CancellationToken ct)
+    {
+        if (_mapping?.Schema is { } own && string.Equals(own.Kind, kind, StringComparison.Ordinal)
+            && (version is null || string.Equals(own.Version, version, StringComparison.Ordinal)))
+        {
+            return own;
+        }
+
+        if (version is null || _context.Templates is not { } templates)
         {
             return null;
         }
 
-        var client = await _target.ClientAsync(ct).ConfigureAwait(false);
-        return new ReferenceCheck(RequireLedger(), client, Flow.Target.ProtocolOptions.VerifyBatchPath ?? OsduRecordProtocol.DefaultVerifyBatchPath);
+        return await templates.LoadAsync(new Templates.TemplateReference(kind, version), ct).ConfigureAwait(false);
     }
 
     /// <summary>

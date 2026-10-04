@@ -13,6 +13,7 @@ using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Storage;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Engine.Worker;
 
@@ -76,6 +77,9 @@ public sealed class DeliveryWorker
     private readonly string _workerId;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, Lazy<Task<SubmissionState>>> _submissions = new();
 
+    /// <summary>What the gate found during the current drain, said once when the drain ends.</summary>
+    private ValidationTally _drained = new();
+
     /// <summary>The platform run the worker drains for, stamped on every attempt it writes.</summary>
     public Guid? RunId { get; init; }
 
@@ -110,10 +114,12 @@ public sealed class DeliveryWorker
     public WaitRules Waits { get; init; } = WaitRules.WaitForAll;
 
     /// <summary>
-    /// The storage check of <c>target.verifyReferences: storage</c>, or null when the flow checks its references against
-    /// the ledger alone.
+    /// The gate every document goes through immediately before it is sent (<see cref="ValidationGate"/>): its verdict, the
+    /// records it holds under the flow's <c>target.validation</c>, and under <c>target.verifyReferences: storage</c> the
+    /// records whose references storage does not hold. Null sends every record unchecked, which only a worker built for a
+    /// test does; a flow's runtime always gives one.
     /// </summary>
-    public ReferenceCheck? References { get; init; }
+    public ValidationGate? Gate { get; init; }
 
     /// <summary>
     /// The data-partition-id the worker's ledger is kept under, which tags what it counts: the partition the ledger was
@@ -167,6 +173,23 @@ public sealed class DeliveryWorker
     /// worker holds are not waited for.
     /// </summary>
     public async Task<WorkerSummary> DrainAsync(Guid? submissionId, CancellationToken ct = default)
+    {
+        _drained = new ValidationTally();
+        try
+        {
+            return await DrainAllAsync(submissionId, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // What the gate found is said once, whatever ended the drain: a line per template, never a line per record.
+            foreach (var line in _drained.Lines())
+            {
+                _logger.LogInformation(RunTrace.Bounded, "{Validated}", line);
+            }
+        }
+    }
+
+    private async Task<WorkerSummary> DrainAllAsync(Guid? submissionId, CancellationToken ct)
     {
         var total = WorkerSummary.Empty;
         while (!ct.IsCancellationRequested)
@@ -779,9 +802,10 @@ public sealed class DeliveryWorker
         // it, so what happened can be followed into the services' own logs.
         using var correlation = OsduCorrelation.Begin();
         var outcomes = new DeliveryOutcome?[works.Count];
+        var verdicts = new ValidationVerdict?[works.Count];
         try
         {
-            await CheckReferencesAsync(works, outcomes, ct).ConfigureAwait(false);
+            await GateAsync(works, outcomes, verdicts, ct).ConfigureAwait(false);
             var sending = Enumerable.Range(0, works.Count).Where(i => outcomes[i] is null).ToList();
             if (sending.Count > 0)
             {
@@ -810,37 +834,31 @@ public sealed class DeliveryWorker
             var (index, state, work) = works[i];
             var latestSteps = reportedSteps.TryGetValue(state.DeliveryKey.Value, out var reported) ? reported : state.PendingStepJson;
             var outcome = outcomes[i]!;
-            var (completion, evt, summary) = Classify(state, batch, started, work, outcome, latestSteps, correlation.Id);
+            var (completion, evt, summary) = Classify(state, batch, started, work, outcome, latestSteps, correlation.Id, verdicts[i]);
             await record(index, completion, evt, summary, outcome.Failure, outcome.Steps).ConfigureAwait(false);
         }
     }
 
     /// <summary>
-    /// Settles, before anything is sent, the records whose documents refer to a record neither the ledger nor OSDU's
-    /// storage service holds, when the flow asks for that check: each is held with the ids it names. When the check itself
-    /// cannot be made, every record of the group is tried again later, as if its delivery had failed.
+    /// The gate before anything is sent (<see cref="ValidationGate"/>): each record's verdict, kept for its attempt, and the
+    /// records the gate holds, held with their documents kept so a release can send them as they are. When the records a
+    /// group refers to cannot be looked up, every record of the group is tried again later, as if its delivery had failed.
     /// </summary>
-    private async Task CheckReferencesAsync(List<(int Index, RecordState Record, DeliveryWork Work)> works, DeliveryOutcome?[] outcomes, CancellationToken ct)
+    private async Task GateAsync(List<(int Index, RecordState Record, DeliveryWork Work)> works, DeliveryOutcome?[] outcomes, ValidationVerdict?[] verdicts, CancellationToken ct)
     {
-        if (References is not { } check)
+        if (Gate is not { } gate)
         {
             return;
         }
 
-        var sendingDocuments = works.Where(w => w.Work.DeliverMetadata && w.Record.PendingReferences.Count > 0).ToList();
-        if (sendingDocuments.Count == 0)
-        {
-            return;
-        }
-
-        IReadOnlyDictionary<DeliveryKey, IReadOnlyList<RecordReference>> missing;
+        IReadOnlyList<GateDecision> decisions;
         try
         {
-            missing = await check.MissingAsync(sendingDocuments.Select(w => w.Record).ToList(), ct).ConfigureAwait(false);
+            decisions = await gate.DecideAsync(works.Select(w => (w.Record, w.Work.Document, w.Work.DeliverMetadata)).ToList(), ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
-            var failure = new DeliveryException($"the records this one refers to could not be looked up in OSDU's storage service before it was sent: {ex.Message}", ex);
+            var failure = new DeliveryException($"the records this one refers to could not be looked up before it was sent: {ex.Message}", ex);
             for (var i = 0; i < works.Count; i++)
             {
                 outcomes[i] = DeliveryOutcome.Failed(failure);
@@ -851,9 +869,19 @@ public sealed class DeliveryWorker
 
         for (var i = 0; i < works.Count; i++)
         {
-            if (missing.TryGetValue(works[i].Record.DeliveryKey, out var references))
+            var (decision, record) = (decisions[i], works[i].Record);
+            verdicts[i] = decision.Verdict;
+            var held = decision.Hold is not null;
+            if (decision.Hold is { } hold)
             {
-                outcomes[i] = DeliveryOutcome.Failed(new RecordHeldException(ReferenceCheck.Describe(references)));
+                outcomes[i] = DeliveryOutcome.Failed(new RecordHeldException(hold));
+            }
+
+            Trace?.Validation.Add(decision.Verdict, held);
+            _drained.Add(decision.Verdict, held);
+            if (decision.Verdict.Outcome != ValidationOutcome.NotValidated && Describes(record.DeliveryKey))
+            {
+                _logger.LogInformation("{Record} validated: {Verdict}.", RunTrace.Record(record.SourceKey, record.Label, record.DeliveryKey), decision.Verdict.Summary());
             }
         }
     }
@@ -977,9 +1005,10 @@ public sealed class DeliveryWorker
     }
 
     /// <summary>Turns a protocol outcome into the record's next state, its attempt and its event.</summary>
-    private (RecordCompletion Completion, DeliveryEvent Event, WorkerSummary Summary) Classify(RecordState record, WorkBatchState? batch, DateTime started, DeliveryWork work, DeliveryOutcome outcome, string? latestSteps, string correlationId)
+    private (RecordCompletion Completion, DeliveryEvent Event, WorkerSummary Summary) Classify(
+        RecordState record, WorkBatchState? batch, DateTime started, DeliveryWork work, DeliveryOutcome outcome, string? latestSteps, string correlationId, ValidationVerdict? verdict)
     {
-        var resultJson = ResultJson(outcome, work.CompletedSteps, latestSteps, correlationId);
+        var resultJson = AttemptResult.WithValidation(ResultJson(outcome, work.CompletedSteps, latestSteps, correlationId), verdict);
         record = record with { PendingStepJson = latestSteps };
         if (outcome.Succeeded)
         {
@@ -1059,8 +1088,14 @@ public sealed class DeliveryWorker
     {
         var completed = _time.GetUtcNow().UtcDateTime;
         var redacted = error is null ? null : HeaderRedaction.RedactMessage(error);
+
+        // The record keeps what the check of the try's document came to; a try that checked none leaves its last as it was.
+        var verdict = AttemptResult.Validation(resultJson);
         var completion = new RecordCompletion
         {
+            Validation = verdict is { Outcome: not ValidationOutcome.NotValidated }
+                ? new RecordValidation(ValidationOutcomes.Name(verdict.Outcome), verdict.ProblemCount, verdict.CheckedUtc)
+                : null,
             DeliveryKey = record.DeliveryKey,
             Status = status,
             Promote = promote,

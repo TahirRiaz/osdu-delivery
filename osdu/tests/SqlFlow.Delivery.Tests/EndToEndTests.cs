@@ -267,7 +267,11 @@ public class EndToEndTests : IDisposable
             var intake = await runtime.Intake.IntakeAsync(runtime.Flow, runtime.Mapping, runtime.Parameters, runtime.Request, force: false);
             var worker = new DeliveryWorker(
                 ledger, runtime.Context.Payloads, runtime.Context.Stores, protocol, runtime.Flow, _clock,
-                CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker") { MaxWait = null, References = check };
+                CompositeDeliveryListener.Empty, Samples.Logger<DeliveryWorker>(), "test-worker")
+            {
+                MaxWait = null,
+                Gate = new ValidationGate(runtime.Flow, (_, _, _) => Task.FromResult<SchemaSnapshot?>(runtime.Mapping.Schema), check.Resolver(runtime.Flow.Id), _clock),
+            };
             var held = await worker.DrainAsync(intake.Submission.SubmissionId);
 
             Assert.Equal(LogCount, held.Held);

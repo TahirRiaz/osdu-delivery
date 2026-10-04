@@ -13,6 +13,25 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Every document is validated before it is sent, and its verdict is recorded.** One module judges a record against its
+  template (`osdu/src/SqlFlow.Delivery/Validation`): each template version is compiled once into the rules it states
+  (types, formats, patterns, enumerations, constants, lengths, bounds, item counts, uniqueness, required properties at
+  every depth, properties an object does not allow, the forms of a `oneOf` or `anyOf`, and the entity types of a
+  relationship), its `allOf` branches combined so every branch holds, and a record is walked against them within bounds of
+  depth, items, values and time, what it could not check counted as such. The gate before a record is sent checks every
+  document a try writes against the template version it was rendered for, as its route will send it, and looks the
+  records it refers to up once per group: the ledger, then OSDU's storage service under `target.verifyReferences:
+  storage`, else the cache for the reference data it captures. Every attempt carries the verdict (valid, invalid,
+  unverified, or not validated for a payload-only send) under `validation` in its result, and the record keeps the last
+  outcome (`Record.ValidationOutcome`, `ValidationProblems`, `ValidatedUtc`; module version 1.25.0, migration
+  `RecordValidation`). `target.validation` (`mode: report` by default, or `enforce`; `unverified: send` by default, or
+  `hold`), and an interface's own `validation`, decide which verdicts hold a record: held with its document kept, under
+  an issue naming the rules it breaks; a release accepts the document as it is (`Record.AcceptedMetadataHash`), and the
+  gate sends it once whatever its verdict. A run's progress lines count the verdicts, and each drain ends with one line
+  per template naming the rules broken most often. Check values and the `conforms` assertion run on the same module
+  ([osdu/docs/documents.md](osdu/docs/documents.md), Validation before a record is sent;
+  [osdu/docs/validation-plan.md](osdu/docs/validation-plan.md)).
+
 - **Blocked records are grouped by the issue that keeps them blocked.** A flow's page has an **Issues** tab: a
   million held or failed records read as the handful of issues they share, each its error with the parts each record
   says its own way (a value, an OSDU id, a moment, a number, a file, a correlation id) as placeholders, its records held
@@ -890,6 +909,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   together with rows of its own, went with it.
 
 ### Fixed
+
+- A value check no longer passes over a `null` inside a value it checks: `null` breaks a property whose schema names
+  types without `null`. A schema reference the template's bundle does not hold no longer fails a value check; the part
+  it describes is reported as not checked. Two `allOf` branches that both constrain a property (two patterns, two bounds)
+  are both applied, where only the first was.
 
 - **A property of a list whose items are a choice of forms is searched as the platform indexes it.** A wellbore's
   `GeoContexts` holds one of several kinds of context (`oneOf`), and only the field's declares `FieldID`. The search

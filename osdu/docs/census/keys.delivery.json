@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 481,
+  "keyCount": 487,
   "keys": [
     {
       "path": "batch",
@@ -1113,6 +1113,34 @@
       "required": false,
       "description": "The date and time column the incremental window is taken on and a record's fingerprint is built from. SQLFlow's ingestion stamps it on insert, and on update only when the row's checksum changed. It cannot be opted out of. Set here, it overrides the source's value for this interface.",
       "default": "the source's value, else UpdatedDate_DW"
+    },
+    {
+      "path": "interfaces.<name>.validation",
+      "type": "object",
+      "required": false,
+      "description": "The source's `target.validation`, with this interface's keys laid over it key by key."
+    },
+    {
+      "path": "interfaces.<name>.validation.mode",
+      "type": "enum(report|enforce)",
+      "required": false,
+      "description": "What the gate before a record is sent does with a record that breaks the schema of its kind: `report` sends it and records its verdict on the attempt and the record; `enforce` holds it with its document kept, under an issue naming the rules it breaks, until it is released (which sends that document as it is) or its source row changes. Every document whose metadata is sent is checked either way. Set here, it overrides the source's value for this interface.",
+      "enumValues": [
+        "report",
+        "enforce"
+      ],
+      "default": "the source's value, else report"
+    },
+    {
+      "path": "interfaces.<name>.validation.unverified",
+      "type": "enum(send|hold)",
+      "required": false,
+      "description": "What the gate does with a record that breaks no rule and some part of which could not be checked (a pattern neither regular expression dialect reads, a list longer than a check walks, a reference the template's bundle does not hold): `send` sends it and records what was not checked; `hold` holds it, as `enforce` holds an invalid record. Set here, it overrides the source's value for this interface.",
+      "enumValues": [
+        "send",
+        "hold"
+      ],
+      "default": "the source's value, else send"
     },
     {
       "path": "interfaces.<name>.verify",
@@ -3006,6 +3034,34 @@
       "required": false,
       "description": "A workflow run still going after this many minutes fails the try, and the next try resumes polling it; at least 1.",
       "default": "60"
+    },
+    {
+      "path": "target.validation",
+      "type": "object",
+      "required": false,
+      "description": "What the gate before a record is sent does with the record's verdict: the record checked against the schema of its kind, and the records it refers to looked up in the ledger, the cache or OSDU (docs/validation-plan.md)."
+    },
+    {
+      "path": "target.validation.mode",
+      "type": "enum(report|enforce)",
+      "required": false,
+      "description": "What the gate before a record is sent does with a record that breaks the schema of its kind: `report` sends it and records its verdict on the attempt and the record; `enforce` holds it with its document kept, under an issue naming the rules it breaks, until it is released (which sends that document as it is) or its source row changes. Every document whose metadata is sent is checked either way.",
+      "enumValues": [
+        "report",
+        "enforce"
+      ],
+      "default": "report"
+    },
+    {
+      "path": "target.validation.unverified",
+      "type": "enum(send|hold)",
+      "required": false,
+      "description": "What the gate does with a record that breaks no rule and some part of which could not be checked (a pattern neither regular expression dialect reads, a list longer than a check walks, a reference the template's bundle does not hold): `send` sends it and records what was not checked; `hold` holds it, as `enforce` holds an invalid record.",
+      "enumValues": [
+        "send",
+        "hold"
+      ],
+      "default": "send"
     },
     {
       "path": "target.verifyReferences",

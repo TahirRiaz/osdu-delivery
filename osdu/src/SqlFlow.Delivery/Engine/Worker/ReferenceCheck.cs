@@ -2,14 +2,18 @@ using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Validation;
 
 namespace SqlFlow.Delivery.Engine.Worker;
 
 /// <summary>
 /// The check <c>target.verifyReferences: storage</c> asks for before a record is sent (docs/interfaces-design.md section
-/// 7). A record waits for the records the ledger holds and has not delivered; the ids no record of the ledger holds are
-/// looked up here in OSDU's storage service, and a record referring to one storage does not hold is not sent: a source
-/// that must not write dangling references holds it until the record it names exists.
+/// 7): the ids a record refers to are looked up in the ledger, and the ones no record of the ledger holds in OSDU's storage
+/// service. A record waits for the records the ledger holds and has not delivered; a record referring to one storage does
+/// not hold is not sent: a source that must not write dangling references holds it until the record it names exists. The
+/// lookup itself is the one every check of references makes (<see cref="ReferenceResolver"/>), which the gate before a
+/// record is sent asks through <see cref="Resolver"/>.
 /// </summary>
 public sealed class ReferenceCheck
 {
@@ -31,41 +35,39 @@ public sealed class ReferenceCheck
     }
 
     /// <summary>
+    /// The resolver of a flow's references: the ledger of <paramref name="flowId"/>'s partition, then storage. The cache is
+    /// given so a verdict can say what it holds, but storage, asked, decides for every id the ledger does not hold.
+    /// </summary>
+    public ReferenceResolver Resolver(Guid flowId, ReferenceSnapshot? cache = null, string? cacheLabel = null)
+        => new(
+            cache,
+            cacheLabel,
+            (ids, ct) => _ledger.HeldIdsAsync(flowId, ids, ct),
+            (ids, ct) => StoragePresence.PresentAsync(_client, _batchPath, ids, ct));
+
+    /// <summary>
     /// The references of <paramref name="records"/> that neither the ledger nor storage holds, by record; records whose
     /// references all resolve are left out. Throws when the ledger or storage cannot be read.
     /// </summary>
     public async Task<IReadOnlyDictionary<DeliveryKey, IReadOnlyList<RecordReference>>> MissingAsync(IReadOnlyList<RecordState> records, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(records);
-        var ids = records.SelectMany(r => r.PendingReferences).Select(r => r.Id).Distinct(StringComparer.Ordinal).ToList();
-        if (ids.Count == 0)
-        {
-            return new Dictionary<DeliveryKey, IReadOnlyList<RecordReference>>();
-        }
+        var missing = new Dictionary<DeliveryKey, IReadOnlyList<RecordReference>>();
 
         // The records are one ledger's, and an id is referred to within its partition: the ledger's partition holds it or none does.
-        var ledgers = records.Select(r => r.FlowId).Distinct().ToList();
-        var held = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var flowId in ledgers)
+        foreach (var flow in records.Where(r => r.PendingReferences.Count > 0).GroupBy(r => r.FlowId))
         {
-            held.UnionWith(await _ledger.HeldIdsAsync(flowId, ids, ct).ConfigureAwait(false));
-        }
-
-        var unknown = ids.Where(id => !held.Contains(id)).ToList();
-        if (unknown.Count == 0)
-        {
-            return new Dictionary<DeliveryKey, IReadOnlyList<RecordReference>>();
-        }
-
-        var present = await StoragePresence.PresentAsync(_client, _batchPath, unknown, ct).ConfigureAwait(false);
-        var absent = unknown.Where(id => !present.Contains(id)).ToHashSet(StringComparer.Ordinal);
-        var missing = new Dictionary<DeliveryKey, IReadOnlyList<RecordReference>>();
-        foreach (var record in records)
-        {
-            var names = record.PendingReferences.Where(r => absent.Contains(r.Id)).ToList();
-            if (names.Count > 0)
+            var references = flow.SelectMany(r => r.PendingReferences).Select(r => new FoundReference(r.Id, string.Empty, r.Property, r.Property)).ToList();
+            var answers = await Resolver(flow.Key).ResolveAsync(references, ct).ConfigureAwait(false);
+            foreach (var record in flow)
             {
-                missing[record.DeliveryKey] = names;
+                var names = record.PendingReferences
+                    .Where(r => answers.GetValueOrDefault(ReferenceResolver.Key(r.Id))?.State == ReferenceState.Missing)
+                    .ToList();
+                if (names.Count > 0)
+                {
+                    missing[record.DeliveryKey] = names;
+                }
             }
         }
 

@@ -100,6 +100,9 @@ internal sealed class InterfaceYaml
 
     /// <summary>How the workflow route delivers the interface.</summary>
     public WorkflowYaml? Workflow { get; set; }
+
+    /// <summary>The source's <c>target.validation</c>, with this interface's keys laid over it.</summary>
+    public ValidationYaml? Validation { get; set; }
 }
 
 /// <summary>The workflow route's declaration (<c>interfaces.&lt;name&gt;.workflow</c>, or <c>target.workflow</c> in the single form).</summary>
@@ -460,6 +463,22 @@ internal sealed class FlowTargetYaml
 
     /// <summary>What a record's references are checked against before it is sent: none (the ledger alone) or storage.</summary>
     public string? VerifyReferences { get; set; }
+
+    /// <summary>What the gate before a record is sent does with the record's verdict.</summary>
+    public ValidationYaml? Validation { get; set; }
+}
+
+/// <summary>
+/// What the gate before a record is sent does with the record's verdict (<c>target.validation</c>, or an interface's
+/// <c>validation</c> laid over it key by key).
+/// </summary>
+internal sealed class ValidationYaml
+{
+    /// <summary>report (the default): a record that breaks its schema is sent and its verdict recorded; enforce: it is held.</summary>
+    public string? Mode { get; set; }
+
+    /// <summary>send (the default): a record some part of which could not be checked is sent; hold: it is held.</summary>
+    public string? Unverified { get; set; }
 }
 
 /// <summary>The Reservoir DDMS behind the target (<c>target.etp</c>).</summary>

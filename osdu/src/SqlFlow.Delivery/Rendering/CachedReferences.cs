@@ -35,6 +35,26 @@ internal static partial class CachedReferences
         return Parse(trimmed) is { } reference && string.Equals(reference.Id, trimmed, StringComparison.Ordinal) ? trimmed + ":" : trimmed;
     }
 
+    /// <summary>
+    /// The record an id names: parsed as a relationship is (<see cref="Parse"/>), or, for a code that carries colons of its
+    /// own, the id without the colon a reference to the latest version ends in. Null when neither tells the record apart
+    /// from a version.
+    /// </summary>
+    public static CachedReference? Named(string id)
+    {
+        ArgumentNullException.ThrowIfNull(id);
+        if (Parse(id) is { } parsed)
+        {
+            return parsed;
+        }
+
+        var trimmed = id.Trim();
+        var parts = trimmed.Split(':');
+        return trimmed.EndsWith(':') && parts.Length >= 4 && parts[1].Contains("--", StringComparison.Ordinal)
+            ? new CachedReference(trimmed[..^1], parts[1])
+            : null;
+    }
+
     /// <summary>The types of the cache version that hold records of <paramref name="entityType"/>: where a record it names is looked for.</summary>
     public static IReadOnlyList<ReferenceType> Holding(ReferenceSnapshot references, string entityType)
     {
