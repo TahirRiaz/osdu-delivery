@@ -17,6 +17,7 @@ using SqlFlow.Delivery.Engine.Worker;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
+using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Templates;
 using SqlFlow.Execution;
@@ -100,7 +101,7 @@ public class SqlServerChainTests
                     continue;
                 }
 
-                AssertRendersTheFixture(runtime.Mapping.Mapping, entry, log.LogId);
+                AssertRendersTheFixture(runtime.Mapping.Renderer, entry, log.LogId);
                 compared++;
             }
 
@@ -938,13 +939,19 @@ public class SqlServerChainTests
     private static MappingFixture? Fixture(MappingDefinition mapping, string logId)
         => mapping.Fixtures.SingleOrDefault(f => f.Name.StartsWith(logId, StringComparison.Ordinal));
 
-    private static void AssertRendersTheFixture(MappingDefinition mapping, PlanEntry entry, string logId)
+    /// <summary>
+    /// Whether the plan rendered the record the mapping's fixture for the log pins, its expected record read as the preflight
+    /// reads it: with the lists the engine writes empty for what nothing fills.
+    /// </summary>
+    private static void AssertRendersTheFixture(MappingRenderer renderer, PlanEntry entry, string logId)
     {
-        var fixture = Fixture(mapping, logId)
+        var fixture = Fixture(renderer.Mapping, logId)
             ?? throw new InvalidOperationException($"The mapping pins no fixture for log '{logId}'.");
         Assert.NotNull(entry.Render);
         Assert.Empty(entry.Render!.Holds);
-        Assert.Equal(Canonical(JsonNode.Parse(fixture.Expected)), Canonical(entry.Render.Document));
+        var expected = JsonNode.Parse(fixture.Expected)!.AsObject();
+        renderer.CompleteLists(expected);
+        Assert.Equal(Canonical(expected), Canonical(entry.Render.Document));
     }
 
     /// <summary>One JSON document as a comparable text: object members in name order, array order left as it is.</summary>
