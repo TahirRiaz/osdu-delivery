@@ -4,23 +4,39 @@ import { expect, test } from "./helpers";
 
 // A record before it is sent, and a record as OSDU holds it. The Preview tab of a delivery flow renders one record on a
 // node exactly as a delivery would and sends nothing: the scope's first record, or the one a key names. A record's page
-// reads the record from OSDU through its flow's route, follows what it refers to, and compares what OSDU holds with what
-// a delivery would send now.
+// reads the record from OSDU through its flow's route, follows what it refers to, checks it against the schema of its
+// kind, and compares what OSDU holds with what a delivery would send now.
 //
 // Nothing here reaches an OSDU: the flows reach the e2e stand-in, which answers the wellbore searches a render makes and
-// the record reads, and holds the one well log this spec gives it for as long as the spec runs. The records the earlier
-// specs staged are the ones read here; nothing is delivered and nothing is written to the ledger.
+// the record reads, and holds the one well log this spec gives it, and a schema of its kind, for as long as the spec runs.
+// The records the earlier specs staged are the ones read here; nothing is delivered and nothing is written to the ledger.
 
 /** A Recall well log of the sample estate: its source key as the Records page shows it, and the wellbore it names. */
 const LOG_KEY = "recall:NORWAY_WELLDB/12359/1";
 const LOG_WELLBORE = "NO-33-9-C-28-B";
 
+/** The kind of the well log the stand-in holds. */
+const LOG_KIND = "osdu:wks:work-product-component--WellLog:1.4.0";
+
+/** What the stand-in's Schema service holds for the well log's kind while the spec runs: a name that starts with "Recall ". */
+const LOG_SCHEMA = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  "x-osdu-schema-source": LOG_KIND,
+  type: "object",
+  required: ["kind", "acl", "legal"],
+  properties: {
+    kind: { type: "string" },
+    data: { type: "object", properties: { Name: { type: "string", pattern: "^Recall " } } },
+  },
+};
+
 test.describe.serial("record preview and OSDU read", () => {
   test.afterAll(async ({ playwright }) => {
-    // The stand-in forgets the record this spec gave it, so a later spec meets the platform as the suite starts it.
+    // The stand-in forgets what this spec gave it, so a later spec meets the platform as the suite starts it.
     const standIn = await playwright.request.newContext();
     try {
       await standIn.delete(`${E2E.osdu.OSDU_URL}/__e2e/records`);
+      await standIn.delete(`${E2E.osdu.OSDU_URL}/__e2e/schemas`);
     } finally {
       await standIn.dispose();
     }
@@ -104,7 +120,7 @@ test.describe.serial("record preview and OSDU read", () => {
     const hold = await request.put(`${E2E.osdu.OSDU_URL}/__e2e/records`, {
       data: {
         id: targetId,
-        kind: "osdu:wks:work-product-component--WellLog:1.4.0",
+        kind: LOG_KIND,
         acl: { viewers: [E2E.osdu.OSDU_ACL_VIEWER], owners: [E2E.osdu.OSDU_ACL_OWNER] },
         legal: { legaltags: [E2E.osdu.OSDU_LEGAL_TAG], otherRelevantDataCountries: ["NO"], status: "compliant" },
         data: { Name: "held by the stand-in", WellboreID: `${partition}:master-data--Wellbore:${LOG_WELLBORE}:` },
@@ -162,6 +178,27 @@ test.describe.serial("record preview and OSDU read", () => {
     await linked.getByTestId("osdu-linked-close").click();
     await expect(linked).toHaveCount(0);
     await expect(adminPage.getByTestId("osdu-record-json")).toContainText("held by the stand-in");
+
+    // The record is checked against the schema of its kind as the explorer checks one, read through the same flow: the
+    // Schema service holds one whose name pattern the stand-in's copy breaks, so the check finds that, and the name
+    // carries the mark of it.
+    const held = await request.put(`${E2E.osdu.OSDU_URL}/__e2e/schemas`, { data: { id: LOG_KIND, schema: LOG_SCHEMA } });
+    expect(held.ok()).toBe(true);
+    await adminPage.getByTestId("osdu-outline-validation").click();
+    const verdict = adminPage.getByTestId("validation-verdict");
+    await expect(verdict).toHaveAttribute("data-outcome", "invalid", { timeout: 60_000 });
+    await expect(verdict).toContainText(LOG_KIND);
+    const problem = verdict.getByTestId("validation-problem");
+    await expect(problem).toHaveCount(1);
+    await expect(problem).toContainText("data.Name");
+    await expect(problem.getByTestId("validation-problem-found")).toHaveText("'held by the stand-in'");
+    await expect(problem.getByTestId("validation-problem-expected")).toHaveText("text matching ^Recall");
+    await problem.getByTestId("validation-problem-open").click();
+    const mark = adminPage.getByTestId("explorer-validation-mark").first();
+    await expect(mark).toBeVisible();
+    await mark.hover();
+    await expect(adminPage.getByRole("tooltip")).toContainText("data.Name (pattern)");
+    await adminPage.mouse.move(0, 0);
 
     // Render: the record's manifest built afresh from its source row, beside what OSDU holds (the stand-in's copy differs
     // in its name), with the mapping it was built with beside the one that built OSDU's copy, and what the next run would

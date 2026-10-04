@@ -3,7 +3,7 @@
 // Every read is answered by the control plane at once, through a connection it keeps open between reads.
 
 import { get, post } from "@/api/client";
-import type { DeliveryDimension, DeliveryDimensionAttribute, DeliveryDimensionYaml, DeliveryOsduRead, DimensionBlueprint } from "./delivery";
+import { flowPath, type DeliveryDimension, type DeliveryDimensionAttribute, type DeliveryDimensionYaml, type DeliveryFlowScope, type DeliveryOsduRead, type DimensionBlueprint } from "./delivery";
 import { guidanceOf, type ValidationGuidance, type ValidationVerdict } from "./validation";
 
 /** How the explorer reaches a partition: through which flow's connection, or why nothing does. */
@@ -139,6 +139,11 @@ export const explorerApi = {
   /** One record checked against the schema of its kind: the Schema service's, or a saved template's. */
   validate: async (partition: string | null, request: ExplorerValidateRequest) => {
     const answered = await post<ExplorerAnswer<ExplorerValidation>>(`/api/v1/delivery/explorer/validate${partitionQuery(partition)}`, request);
+    return { ...answered, answer: validationOf(answered.answer) };
+  },
+  /** One record checked as `validate` checks it, read through a flow's own route and credentials: what a record page shows. */
+  validateThroughFlow: async (pipelineId: string, scope: DeliveryFlowScope, request: ExplorerValidateRequest) => {
+    const answered = await post<ExplorerAnswer<ExplorerValidation>>(flowPath(pipelineId, "/osdu/validate", scope), request);
     return { ...answered, answer: validationOf(answered.answer) };
   },
   /** The records a search finds, up to 1,000, checked against their schemas and counted by the rules they break. */

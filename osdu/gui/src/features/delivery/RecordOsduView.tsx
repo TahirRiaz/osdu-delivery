@@ -1,16 +1,22 @@
+import { useCallback, useState } from "react";
 import { useHref, useNavigate } from "react-router-dom";
 import { AppWindow, BookOpenCheck, Telescope } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/EmptyState";
 import { IconAction } from "@/components/IconAction";
 import { deliveryApi, type DeliveryFlowScope, type DeliveryRecord, type DeliveryRecordRef } from "../../api/delivery";
+import { explorerApi, type ExplorerValidation } from "../../api/explorer";
+import { ExplorerValidationView, ValidationFieldMark } from "./explorer/ExplorerValidation";
+import type { InspectorExtras } from "./OsduRecordInspector";
 import { OsduRecordPanel } from "./OsduRecordView";
 import type { RecordOsduRead } from "./useRecordOsduRead";
 
 /**
  * A record as OSDU holds it, read through its flow's route, in the OSDU inspector: the read's controls, and
  * before any read what a read would show or why there is nothing to read. The record page's OSDU tab shows it under the
- * page's header, with a way to open it in a window of its own; that window shows it alone, filling the window.
+ * page's header, with a way to open it in a window of its own; that window shows it alone, filling the window. Its
+ * Validation view checks the record in view against the schema of its kind as the explorer checks one, read through the
+ * same flow, and the record's fields carry the marks of what the check found.
  */
 export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, canOperate, disabled, osdu, fill = false, popout = false }: {
   record: DeliveryRecord;
@@ -37,6 +43,27 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
   }
   const canActOnTarget = record.targetId !== null && record.status !== "deleted";
   const reading = osdu.pending;
+  const rootId = record.targetId ?? record.deliveryKey;
+
+  // The last check of the record, kept so its fields carry the marks of the problems it found while the record is in view.
+  const [validated, setValidated] = useState<ExplorerValidation | null>(null);
+  const keepValidated = useCallback((result: ExplorerValidation | null) => setValidated(result), []);
+  // A check reads OSDU as the tab's read does, so it takes the operate scope and the flow the record is read through.
+  const extras: InspectorExtras | undefined = pipelineId === null || !canOperate ? undefined : {
+    validation: (checked, shownVersion, openPath) => (
+      <ExplorerValidationView
+        source={{
+          key: ["flow", pipelineId, flowScope.interfaceName ?? null, flowScope.partition ?? null],
+          validate: (asked) => explorerApi.validateThroughFlow(pipelineId, flowScope, asked),
+        }}
+        id={checked}
+        version={shownVersion}
+        onOpenPath={openPath}
+        onResult={checked === rootId ? keepValidated : undefined}
+      />
+    ),
+    fieldActions: (field) => <ValidationFieldMark result={validated} id={rootId} field={field} />,
+  };
   // The read's controls: on their own above the empty state, and on the inspector's location bar once there is a read.
   const actions = (
     <>
@@ -96,10 +123,11 @@ export function RecordOsduView({ record, deliveryRef, pipelineId, flowScope, can
           key={osdu.askedAt}
           readLinked={pipelineId === null ? null : (id, version) => deliveryApi.readOsdu(pipelineId, id, flowScope, version)}
           root={{ read: osdu.read, error: osdu.error, pending: osdu.pending }}
-          targetId={record.targetId ?? record.deliveryKey}
+          targetId={rootId}
           readRootVersion={canActOnTarget && canOperate ? (version) => deliveryApi.read(deliveryRef, version) : undefined}
           ledgerVersion={record.targetVersion}
           actions={actions}
+          extras={extras}
           fill={fill}
         />
       )}

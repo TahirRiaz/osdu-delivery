@@ -8,7 +8,8 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
-  EXPLORER_MAX_CHECKED, explorerApi, type ExplorerListValidation, type ExplorerSchemaChoice, type ExplorerSearchRequest, type ExplorerValidation,
+  EXPLORER_MAX_CHECKED, explorerApi, type ExplorerAnswer, type ExplorerListValidation, type ExplorerSchemaChoice, type ExplorerSearchRequest,
+  type ExplorerValidateRequest, type ExplorerValidation,
 } from "../../../api/explorer";
 import { whereOf } from "../../../api/validation";
 import { idParts } from "../osduRecordModel";
@@ -58,13 +59,23 @@ function SchemaPicker({ choice, saved, onChoose }: { choice: SchemaChoice; saved
 }
 
 /**
- * A record of the explorer checked against the schema of its kind (osdu/docs/explorer.md, Validate): by default what the
- * partition's Schema service holds, which is what OSDU expects of the record; or a template saved in OSDU Delivery. The
- * problems open their element in the record. What was read to make the schema, and what could not be resolved, is in the
- * tooltip beside the schema. The answer is handed up, so the record's fields can carry its marks.
+ * Where a check reads the record it checks: through the connection the explorer picks for a partition, or through the route
+ * and credentials of the flow a record page reads the record by. `key` tells one source's answers from another's.
  */
-export function ExplorerValidationView({ partition, id, version, onOpenPath, onResult }: {
-  partition: string | null;
+export interface ValidationSource {
+  key: readonly unknown[];
+  validate: (request: ExplorerValidateRequest) => Promise<ExplorerAnswer<ExplorerValidation>>;
+}
+
+/**
+ * A record OSDU holds checked against the schema of its kind (osdu/docs/explorer.md, Validate), in the explorer or on a
+ * record page's OSDU tab: by default what the partition's Schema service holds, which is what OSDU expects of the record;
+ * or a template saved in OSDU Delivery. The problems open their element in the record. What was read to make the schema,
+ * and what could not be resolved, is in the tooltip beside the schema. The answer is handed up, so the record's fields can
+ * carry its marks.
+ */
+export function ExplorerValidationView({ source, id, version, onOpenPath, onResult }: {
+  source: ValidationSource;
   id: string;
   /** The version in view; null for the latest. */
   version: number | null;
@@ -73,8 +84,8 @@ export function ExplorerValidationView({ partition, id, version, onOpenPath, onR
 }) {
   const [choice, setChoice] = useState<SchemaChoice>({ schema: "osdu" });
   const read = useExplorerRead<ExplorerValidation>(
-    ["validate", partition, id, version, choice.schema, choice.templateVersion ?? null],
-    () => explorerApi.validate(partition, { targetId: id, version: version ?? undefined, schema: choice.schema, templateVersion: choice.templateVersion }),
+    ["validate", ...source.key, id, version, choice.schema, choice.templateVersion ?? null],
+    () => source.validate({ targetId: id, version: version ?? undefined, schema: choice.schema, templateVersion: choice.templateVersion }),
   );
   const answer = read.data?.answer;
   useEffect(() => onResult?.(answer ?? null), [answer, onResult]);
@@ -130,16 +141,22 @@ export function ExplorerValidationView({ partition, id, version, onOpenPath, onR
 }
 
 /**
- * The mark a field of the record carries when the last check found a problem at it, or inside it for a section: the glyph,
- * and what is wrong in its tooltip.
+ * The mark a field of the record `id` carries when the last check of it found a problem at the field, or inside it for a
+ * section: the glyph, and what is wrong in its tooltip. Only the version the check read carries marks, since another
+ * version in view holds other values.
  */
-export function ValidationFieldMark({ result, field }: { result: ExplorerValidation | null; field: InspectorField }) {
-  if (field.level !== 0) {
+export function ValidationFieldMark({ result, id, field }: { result: ExplorerValidation | null; id: string; field: InspectorField }) {
+  if (field.level !== 0 || result === null || result.targetId !== id) {
+    return null;
+  }
+
+  const shown = field.trail[field.level]?.record;
+  if (shown === null || shown === undefined || (result.version !== null && shown.version !== result.version)) {
     return null;
   }
 
   const section = field.node.kind === "object" || field.node.kind === "array";
-  const problems = result?.verdict?.problems ?? [];
+  const problems = result.verdict?.problems ?? [];
   const found = problemsAt(problems, field.node.path, section);
   if (found.length === 0) {
     return null;
@@ -147,7 +164,7 @@ export function ValidationFieldMark({ result, field }: { result: ExplorerValidat
 
   // Each problem with how to fix it, where the check said; the guidance lists one guide per problem, in the verdict's order.
   const advice = (problem: (typeof problems)[number]) => {
-    const guide = result?.guidance?.problems[problems.indexOf(problem)];
+    const guide = result.guidance?.problems[problems.indexOf(problem)];
     return guide !== undefined && guide.path === problem.path && guide.advice !== null ? `\nFix: ${guide.advice}` : "";
   };
   const body = found.slice(0, 8).map((p) => `${whereOf(p)} (${p.rule}): ${p.message}${advice(p)}`).join("\n\n")

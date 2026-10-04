@@ -1192,7 +1192,7 @@ async fn no_tool_of_the_server_reads_or_removes_what_osdu_holds() {
     // And no source of this crate names the routes behind them.
     let sources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tools");
     let data_routes = [
-        "/read\"", "/source\"", "/preview", "/scope-values", "/check-values", "/osdu/read", "/cache/items", "/cache/diff",
+        "/read\"", "/source\"", "/preview", "/scope-values", "/check-values", "/osdu/read", "/osdu/validate", "/cache/items", "/cache/diff",
         "/cache/gaps", "/values", "/keys\"", "/table\"", "/export", "/dimensions/search", "/filter\"", "records/remove", "/delete\"",
         "/ledger/prune", "/explorer/",
     ];

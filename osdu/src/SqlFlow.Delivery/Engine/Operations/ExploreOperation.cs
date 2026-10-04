@@ -16,8 +16,8 @@ namespace SqlFlow.Delivery.Engine.Operations;
 
 /// <summary>
 /// <c>delivery-explore</c>: the explorer's reads of what an OSDU partition holds, through the connection (endpoint, credentials
-/// and partition) of the flow the control plane picked for that partition, and nothing else of the flow: no ledger, mapping
-/// or cache is read. The payload's <c>action</c> says which read:
+/// and partition) of the flow the control plane picked for that partition, or of a record's own flow for the check a record
+/// page makes, and nothing else of the flow: no ledger, mapping or cache is read. The payload's <c>action</c> says which read:
 /// <list type="bullet">
 /// <item><description><c>types</c>: the kinds of the records a search finds, with their counts (<c>search</c>).</description></item>
 /// <item><description><c>search</c>: one page of the records a search finds (<c>search</c>).</description></item>
