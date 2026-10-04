@@ -15,8 +15,9 @@ internal static class RunArtifacts
 {
     /// <summary>
     /// The per-run event plumbing: the run log at the asked-for level (echoed live when the host wants it), the
-    /// collector that keeps every event for the artifact and forwards it to the host's live sink, and the bridge the
-    /// engine logs through so one call reaches both.
+    /// collector that keeps every event for the artifact and forwards it to the host's live sink (built by the platform,
+    /// so a node run's trace opens with the commit and folder it executes, as every built-in kind's does), and the
+    /// bridge the engine logs through so one call reaches both.
     /// </summary>
     public static (RunLogger RunLogger, RunEventCollector Events, RunLogEventBridge Sink) BuildEventPlumbing(
         DocumentExecutionOptions options, string flowName)
@@ -24,7 +25,7 @@ internal static class RunArtifacts
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
         var runLogger = new RunLogger(options.LogLevel, options.Echo);
-        var events = new RunEventCollector(options.EventSink);
+        var events = options.CreateEventCollector();
         return (runLogger, events, new RunLogEventBridge(runLogger, events, options.RunId, flowName));
     }
 
