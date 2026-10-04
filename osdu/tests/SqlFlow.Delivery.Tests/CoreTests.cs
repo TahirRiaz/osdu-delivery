@@ -351,7 +351,7 @@ public class MappingRendererTests
     }
 
     [Fact]
-    public void A_repeater_without_rows_holds_when_required_and_is_left_out_when_optional()
+    public void A_repeater_without_rows_holds_when_required_and_is_written_empty_when_optional()
     {
         const string Curves = """
             Curves:
@@ -365,7 +365,7 @@ public class MappingRendererTests
 
         var optional = Renderer(Curves + "\n  $required: false").Render(Record(curves: false));
         Assert.False(optional.IsHeld);
-        Assert.Null(optional.Document["data"]!["Curves"]);
+        Assert.Empty(Assert.IsType<JsonArray>(optional.Document["data"]!["Curves"]));
     }
 
     [Fact]
@@ -783,6 +783,102 @@ public class MappingRendererTests
 
         // A document that differs is what moves the hash.
         Assert.NotEqual(a.MetadataHash, Renderer().Render(Record(depth: "13.5")).MetadataHash);
+    }
+
+    [Fact]
+    public void A_list_nothing_fills_is_written_empty_wherever_the_record_holds_the_object_the_template_declares_it_in()
+    {
+        // Seen live: Storage held a WellLog sent without meta as "meta": null, which the Schema service refuses, since the
+        // kind takes a list there. OSDU takes no null for a list, so a record never leaves one out.
+        var root = TestSchema.Build().Root.DeepClone().AsObject();
+        root["properties"]!["meta"] = JsonNode.Parse("""{ "type": "array", "items": { "type": "object" } }""");
+        var data = root["properties"]!["data"]!["allOf"]![1]!["properties"]!.AsObject();
+        data["Nested"]!["properties"]!["Codes"] = JsonNode.Parse("""{ "type": "array", "items": { "type": "string" } }""");
+        data["Curves"]!["items"]!["properties"]!["Notes"] = JsonNode.Parse("""{ "type": "array", "items": { "type": "string" } }""");
+        data["Absent"] = JsonNode.Parse("""{ "type": "object", "properties": { "Inside": { "type": "array", "items": { "type": "string" } } } }""");
+        data["AtLeastOne"] = JsonNode.Parse("""{ "type": "array", "minItems": 1, "items": { "type": "string" } }""");
+        data["Mixed"] = JsonNode.Parse("""{ "type": "array", "items": { "type": ["string", "null"] } }""");
+        var schema = new SchemaSnapshot(TestSchema.Kind, root, DateTimeOffset.UnixEpoch);
+        MappingDefinition Mapping(string data = "", string record = "", string fixtures = "") => new DeliveryDocumentLoader().ParseMapping(
+            TestSchema.MappingDocument(data, fixtures, record: record).Replace(TestSchema.Build().Version, schema.Version, StringComparison.Ordinal), "thing.yaml");
+        MappingRenderer Over(MappingDefinition mapping) => new(mapping, schema, TestSchema.References(), TestSchema.Context() with { SchemaSnapshotVersion = schema.Version });
+        const string Filled = """
+            Nested:
+              Inner: { $from: name }
+            Curves:
+              $forEach: curves
+              $item:
+                CurveID: { $from: curve_id }
+            """;
+
+        var result = Over(Mapping(Filled)).Render(Record());
+        Assert.False(result.IsHeld, string.Join("; ", result.Holds));
+        var document = result.Document;
+        Assert.Empty(Assert.IsType<JsonArray>(document["meta"]));
+        Assert.Empty(Assert.IsType<JsonArray>(document["data"]!["Aliases"]));
+        Assert.Empty(Assert.IsType<JsonArray>(document["data"]!["Days"]));
+        Assert.Empty(Assert.IsType<JsonArray>(document["data"]!["Nested"]!["Codes"]));
+        Assert.All(document["data"]!["Curves"]!.AsArray(), curve => Assert.Empty(Assert.IsType<JsonArray>(curve!["Notes"])));
+
+        // An object the record does not hold is not made for its lists, and a list that needs items is left out.
+        Assert.False(document["data"]!.AsObject().ContainsKey("Absent"));
+        Assert.False(document["data"]!.AsObject().ContainsKey("AtLeastOne"));
+        Assert.Empty(RecordValidator.Check(document, SchemaRules.Of(schema)).Problems);
+
+        // A repeater with no rows writes its list empty, and a list the mapping fills is the one the record carries.
+        var noCurves = Over(Mapping(Filled)).Render(Record(curves: false));
+        Assert.Empty(Assert.IsType<JsonArray>(noCurves.Document["data"]!["Curves"]));
+        var written = Over(Mapping(record: """
+            meta:
+              - kind: Unit
+                name: metre
+            """)).Render(Record());
+        Assert.Equal("metre", Assert.Single(written.Document["meta"]!.AsArray())!["name"]!.GetValue<string>());
+
+        // The shape shows the lists a record carries, and an inspection of one variable writes only the lists it covers.
+        Assert.Empty(Assert.IsType<JsonArray>(MappingRenderer.Shape(Mapping(Filled), schema, TestSchema.Context().Parameters).Document["data"]!["Aliases"]));
+        Assert.True(TemplatePath.TryParse("osdu.data.Aliases", out var aliases, out _));
+        var inspected = Over(Mapping(Filled)).Inspect(Record(), EntrySelection.Of([aliases!])).Document;
+        Assert.Empty(Assert.IsType<JsonArray>(inspected["data"]!["Aliases"]));
+        Assert.False(inspected.ContainsKey("meta"));
+
+        // A null item, as a list read whole from the cache may hold, is dropped where the template's items take no null and
+        // kept where they take one; nothing else of the record is touched.
+        var nulls = TestSchema.Doc("""{"data":{"Name":null,"Aliases":["a",null,"b"],"Mixed":["a",null],"Curves":[{"CurveID":"GR","Notes":[null]},null]}}""");
+        Over(Mapping()).CompleteLists(nulls);
+        Assert.Equal(["a", "b"], nulls["data"]!["Aliases"]!.AsArray().Select(a => a!.GetValue<string>()));
+        Assert.Equal(2, nulls["data"]!["Mixed"]!.AsArray().Count);
+        Assert.Empty(Assert.Single(nulls["data"]!["Curves"]!.AsArray())!["Notes"]!.AsArray());
+        Assert.True(nulls["data"]!.AsObject().ContainsKey("Name"));
+
+        // A fixture written without the lists expects the record that renders with them, and fixtures update leaves them out.
+        var key = DeliveryKey.Derive("test", ["well-1"]).Value.ToString("N");
+        var fixture = Mapping(fixtures: $$$"""
+            fixtures:
+              - name: without lists
+                row: { name: well-1, depth: "12.5" }
+                expected: |
+                  {"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"well-1","Depth":12.5}}
+            """);
+        var render = Assert.Single(Preflight.RenderFixtures(fixture, Over(fixture)));
+        Assert.Equal(render.Result!.Canonical, CanonicalJson.ToString(render.Expected));
+        Assert.False(render.Writable!.ContainsKey("meta"));
+        Assert.False(render.Writable["data"]!.AsObject().ContainsKey("Aliases"));
+    }
+
+    [Fact]
+    public void A_dspdm_row_is_not_given_lists_since_it_is_a_row_of_single_values()
+    {
+        var root = TestSchema.Build().Root.DeepClone().AsObject();
+        var schema = new SchemaSnapshot("acme:dspdm:thing:1.0.0", root, DateTimeOffset.UnixEpoch);
+        var mapping = new DeliveryDocumentLoader().ParseMapping(
+            TestSchema.MappingDocument(record: string.Empty)
+                .Replace(TestSchema.Kind, "acme:dspdm:thing:1.0.0", StringComparison.Ordinal)
+                .Replace(TestSchema.Build().Version, schema.Version, StringComparison.Ordinal)
+                .Replace(TestSchema.Indented(TestSchema.Envelope, 2), string.Empty, StringComparison.Ordinal),
+            "thing.yaml");
+        var result = new MappingRenderer(mapping, schema, TestSchema.References(), TestSchema.Context() with { SchemaSnapshotVersion = schema.Version }).Render(Record());
+        Assert.False(result.Document["data"]!.AsObject().ContainsKey("Aliases"));
     }
 
     [Fact]

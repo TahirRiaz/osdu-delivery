@@ -205,7 +205,7 @@ export function MappingBuilderVariables({ rows, issues, onOpen, onUseCache }: Ma
       <div className="flex flex-wrap items-baseline gap-2">
         <h2 className="text-[13px] font-medium">Variables</h2>
         <span className="text-xs text-muted-foreground" data-testid="mapping-builder-variables-count">
-          {filled} of {rows.length} have an entry{writtenAbove > 0 ? `, and ${writtenAbove} more are written by an entry above them` : ""}. A variable nothing writes is left out of the record.
+          {filled} of {rows.length} have an entry{writtenAbove > 0 ? `, and ${writtenAbove} more are written by an entry above them` : ""}. A variable nothing writes is left out of the record, and a list is written empty.
         </span>
       </div>
       <FilterBar>

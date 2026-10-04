@@ -93,13 +93,13 @@ public static class FixtureRewriter
                 continue;
             }
 
-            if (Same(fixture.Expected, result.Canonical))
+            if (renders[i].Expected is { } expected && string.Equals(CanonicalJson.ToString(expected), result.Canonical, StringComparison.Ordinal))
             {
                 outcomes.Add(new FixtureOutcome(fixture.Name, FixtureOutcomeKind.Unchanged));
                 continue;
             }
 
-            if (Edit(items[i], lines, Written(result.Document, order), out var edit) is { } reason)
+            if (Edit(items[i], lines, Written(renders[i].Writable ?? result.Document, order), out var edit) is { } reason)
             {
                 outcomes.Add(new FixtureOutcome(fixture.Name, FixtureOutcomeKind.Skipped, reason));
                 continue;
@@ -220,18 +220,6 @@ public static class FixtureRewriter
     private static string Scalar(JsonNode? node) => node is null ? "null" : node.ToJsonString(ValueOptions);
 
     /// <summary>Whether the expected text already reads as the rendered record, compared canonically as the gate compares them.</summary>
-    private static bool Same(string expected, string canonical)
-    {
-        try
-        {
-            return string.Equals(CanonicalJson.ToString(CanonicalJson.Normalize(JsonNode.Parse(expected))), canonical, StringComparison.Ordinal);
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-    }
-
     /// <summary>The mapping nodes of the document's fixtures, in order.</summary>
     private static List<YamlNode> FixtureItems(string yaml, string where)
     {

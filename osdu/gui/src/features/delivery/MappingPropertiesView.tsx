@@ -159,7 +159,7 @@ export function MappingPropertiesView({ yaml, path, contentHash }: MappingProper
       <p className="text-xs text-muted-foreground" data-testid="delivery-mapping-properties-count">
         {parsed.isSuccess && draft === null
           ? "The document does not parse, so the properties it fills cannot be listed."
-          : `${shown.length} of ${rows.length} properties. A property of the template the mapping does not list is left out of the record.`}
+          : `${shown.length} of ${rows.length} properties. A property of the template the mapping does not list is left out of the record, and a list is written empty.`}
       </p>
 
       <DataTable

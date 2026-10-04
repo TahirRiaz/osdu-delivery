@@ -9,7 +9,8 @@ OSDU publishes a schema for every kind. OSDU Delivery turns that schema into a *
 variable for every property, owned by the system and stored in the catalog database. A person never edits a
 template. What a person writes is a **mapping**: a YAML document that says, for each template variable they want
 filled, where its value comes from. A value comes from the incoming dataset, from the metadata cache, or is a static
-value. Every variable the mapping does not fill is left out of the record.
+value. Every variable the mapping does not fill is left out of the record, but for a list, which the engine writes
+empty: OSDU takes no null where a schema declares a list ([documents.md](documents.md#what-the-record-contains)).
 
 ## Templates
 
@@ -542,7 +543,7 @@ TechnicalAssurances:
 The list is the object each item gives, in the order the items are written, an object two items give alike written
 once. An item is the object its properties give: a property that gives no value (an optional node with nothing to read,
 a `$when` that does not hold) is left out of it, an item none of whose properties gives a value adds nothing, and a list
-none of whose items gives one is left out of the record. A property that holds holds the record, as it would anywhere,
+none of whose items gives one is written empty. A property that holds holds the record, as it would anywhere,
 naming the variable inside the items (`osdu.data.TechnicalAssurances[].Comment: dataset.remark is empty, and the entry is
 required`). An item written as the literal it is (`- TechnicalAssuranceTypeID: "...:Unevaluated:"`) is carried by every
 record, as the items of a literal list are.
@@ -750,7 +751,7 @@ $expr: '"Run " & log_run'
 | The cache has several matching records | Record held | Record held |
 | No record on the platform matches a search, on any line | Record held | Property left out |
 | Several records on the platform match, the query is refused, or a value could not be searched for and nothing was found | Record held | Record held |
-| A `$forEach` node's child dataset has no rows, or none its `$where` keeps | Record held | Property left out |
+| A `$forEach` node's child dataset has no rows, or none its `$where` keeps | Record held | List written empty |
 | `$when` is false | Property left out | Property left out |
 | An expression meets a value it cannot work with | Record held | Record held |
 
@@ -761,7 +762,9 @@ $expr: '"Run " & log_run'
 The engine starts from nothing, writes `id` and `kind`, then writes each property's value at its place in the record.
 Types come from the template: `"1000"` becomes the number `1000` where the schema says number. A value that cannot take
 the schema's type holds the record. A property the mapping does not write, a node that does not apply, and an optional
-node with no value are all left out, and so is an object or array left with nothing in it.
+node with no value are all left out, and so is an object left with nothing in it. A list is never left out: every list
+the template declares in an object the record holds and nothing fills is written empty, since OSDU takes no null where a
+schema declares a list ([documents.md](documents.md#what-the-record-contains)).
 
 ### The record shape
 
@@ -837,7 +840,8 @@ Each row says how the document reaches its variable.
 
 - **Filled** is a literal, or a required node that always applies: the record carries it on every row.
 - **Sometimes** is a node that may leave it out, `$required: false` or a `$when` that only holds on some rows.
-- **Not filled** is a variable no node fills, and nothing fills anything it holds. It is left out of the record.
+- **Not filled** is a variable no node fills, and nothing fills anything it holds. It is left out of the record, but
+  for a list, which the record carries empty.
 
 **An object is only as good as the weakest thing it promises.** It takes the worst state among the variables it holds
 that the mapping fills or the schema requires: one property the schema requires and nothing fills makes the object
