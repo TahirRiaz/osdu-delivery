@@ -140,7 +140,8 @@ test.describe.serial("record preview and OSDU read", () => {
     await adminPage.getByTestId("osdu-outline-document").click();
     await expect(adminPage.getByTestId("osdu-json")).toContainText("e2e-stand-in");
     // The record's content is where its name leads, so the location ends on the record rather than naming `data`.
-    await adminPage.getByTestId("osdu-json").getByTestId("osdu-json-key").filter({ hasText: "data" }).first().click();
+    // Exactly the "data" key: a text filter is a substring, any case, which legal's otherRelevantDataCountries matches first.
+    await adminPage.getByTestId("osdu-json").getByTestId("osdu-json-key").filter({ hasText: /^"data"$/ }).click();
     await expect(adminPage.getByTestId("osdu-crumb-record")).toHaveAttribute("aria-current", "location");
     await expect(adminPage.getByTestId("osdu-trail")).not.toContainText("Full document");
     await adminPage.getByTestId("osdu-mode-fields").click();
@@ -153,13 +154,9 @@ test.describe.serial("record preview and OSDU read", () => {
     await expect(explorer.getByTestId("record-tabs")).toHaveCount(0);
     await explorer.close();
 
-    // The versions OSDU keeps of it ride with the read: the stand-in keeps one, which is the latest and the one in
-    // view, so the picker names it as such and offers nothing older.
-    const versions = adminPage.getByTestId("osdu-record-versions");
-    await expect(versions.getByTestId("osdu-record-version")).toContainText("latest");
-    await versions.getByTestId("osdu-record-version").click();
-    await expect(adminPage.getByTestId("osdu-version")).toHaveCount(1);
-    await adminPage.keyboard.press("Escape");
+    // The well logs travel by a DDMS route, whose read keeps no list of a record's versions, so the location bar says so
+    // rather than offering versions to pick.
+    await expect(adminPage.getByTestId("osdu-no-history")).toHaveText("no version list");
 
     // The wellbore it refers to is a link where it stands in the record, read in turn through the same flow's route,
     // and takes the inspector's place after it on the trail; closing it steps back to the log.
