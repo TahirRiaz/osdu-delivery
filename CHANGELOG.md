@@ -653,7 +653,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   search from it leaving the type picked for every type. Each search shows in the field whose place it searches: a search
   of every type moves into the type's field when a type is then picked, and back when every type is. Both fields read
   what is typed as the header's did (an id opens its record, the start of one, any text, a Lucene query), and the
-  address carries the search as before ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching)).
+  address carries the search as before. Clearing a field clears its search, not only the text: the cross, Escape, or
+  Enter on the field emptied (its hint says **clear**) lists every record of the type again, or of every type from the
+  header, where the cross used to empty the field and leave the records narrowed, the search coming back the next time
+  the field was drawn. **Edit** on the query sent puts it in the field that shows the search with the cursor at its end,
+  and a search sent leaves the cursor in the field ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching)).
 - **A person's reads of a flow are answered at once, by the control plane.** A probe of a flow's target, a record read
   back from OSDU or read by id, its rows read from the ingestion tables, a preview, a scope's values and every explorer
   read used to be queued as a compute task for a node and polled; the control plane now runs the same operation in its

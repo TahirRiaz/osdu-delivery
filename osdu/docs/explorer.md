@@ -85,8 +85,10 @@ records, in line with the filter, searches inside it ("Search Wellbore by id, na
 field whose place it searches: a search of every type moves into the type's field when a type is then picked, and back
 to the header when **All types** or the partition is picked again. Searching from the header while a type is picked
 searches every type, the values narrowed to kept; Enter on its empty field there asks nothing, so the type keeps its
-search. Both fields read what is typed the same way. Enter reads it, and a hint at the end of the field says what Enter
-will do:
+search. Clearing a field clears the search it shows, not only what it holds: its cross, Escape, or Enter on the field
+emptied (the hint then says **clear**) lists every record of the type again, or of every type from the header. A search
+sent leaves the cursor in the field. Both fields read what is typed the same way. Enter reads it, and a hint at the end
+of the field says what Enter will do:
 
 | Typed | Read as | Query |
 | --- | --- | --- |
@@ -107,8 +109,9 @@ page would say OSDU holds nothing.
 
 Under the place, every list says what it is read by, exactly as the explorer sends it to the search service: the
 `kind` and the Lucene `query` (none where the list is every record of the kind). The search box, the place and the values
-narrowed to all make it, so it is the expression to reuse: copied as written or as a search request, or taken into the
-search box as a Lucene query (**Edit**) to be changed there, the place kept.
+narrowed to all make it, so it is the expression to reuse: copied as written or as a search request, or taken as a
+Lucene query (**Edit**) into the field that shows the search (the type's, or the header's for every type) with the
+cursor at its end, to be changed there, the place kept.
 
 ## A record
 

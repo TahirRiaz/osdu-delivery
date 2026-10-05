@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { Braces, CornerDownLeft, History, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,9 +14,12 @@ import { forgetRecentRecords, kindParts, recentRecords, type RecentRecord } from
  * type or a kind picked, which searches inside it. What is typed is read when Enter is pressed: a whole record id opens
  * that record, and anything else searches the records, as an id, the start of one, or words found anywhere in a record.
  * The braces switch it to a Lucene query, sent as written. A hint at the end of the field says what Enter will do, so the
- * reader is never surprised; Escape clears it. The field starts from the search in the address, so going back restores it.
+ * reader is never surprised. The cross and Escape clear the field and the search it shows, as Enter does on the field
+ * emptied, so the records are whole again. The field shows the search in the address, so going back restores it, and a
+ * search sent leaves the cursor where it was. Asked to (`focusRequest`), it takes the cursor to the end of what it shows,
+ * so a query the page put there is edited at once.
  */
-export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, onOpenId, dense = false, className, testId }: {
+export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, onOpenId, dense = false, focusRequest = 0, className, testId }: {
   text: string;
   lucene: boolean;
   placeholder: string;
@@ -26,29 +29,66 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
   onOpenId: (id: string) => void;
   /** As tall as the filter over the types, so the two fields over the two lists line up. */
   dense?: boolean;
+  /** Raised by the page to put the cursor in the field, at the end of what it shows; the value it starts with does not. */
+  focusRequest?: number;
   className?: string;
   /** Base testid; the input, the hint, the clear button and the braces add `-input`, `-hint`, `-clear` and `-lucene`. */
   testId: string;
 }) {
   const [draft, setDraft] = useState(text);
   const [asLucene, setAsLucene] = useState(lucene);
+  // A new search in the address (one sent, Back, a query to edit) replaces what the field holds; the field stays the same
+  // element, so the cursor stays in it.
+  const [shown, setShown] = useState({ text, lucene });
+  if (shown.text !== text || shown.lucene !== lucene) {
+    setShown({ text, lucene });
+    setDraft(text);
+    setAsLucene(lucene);
+  }
+
+  const input = useRef<HTMLInputElement>(null);
+  const focused = useRef(focusRequest);
+  useEffect(() => {
+    if (focusRequest === focused.current) {
+      return;
+    }
+
+    focused.current = focusRequest;
+    const field = input.current;
+    if (field !== null) {
+      field.focus();
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
+  }, [focusRequest]);
   const typed = draft.trim();
   const opens = !asLucene && isRecordReference(typed);
-  const hint = typed === "" ? null : opens ? "open" : asLucene ? "query" : "search";
+  // The search the field shows is still the list's until it is cleared: an emptied field says Enter clears it.
+  const searched = text !== "";
+  const hint = typed === "" ? (searched ? "clear" : null) : opens ? "open" : asLucene ? "query" : "search";
+
+  // Clearing clears the search as well as the field; a field holding no search has only its draft to drop. The cursor
+  // stays in the field, for the next search.
+  const clear = () => {
+    setDraft("");
+    input.current?.focus();
+    if (searched) {
+      onSearch("", false);
+    }
+  };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (opens) {
       onOpenId(typed);
-    } else {
+    } else if (typed !== "" || searched) {
       onSearch(typed, asLucene);
     }
   };
 
   const keyed = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Escape" && draft !== "") {
+    if (event.key === "Escape" && (draft !== "" || searched)) {
       event.preventDefault();
-      setDraft("");
+      clear();
     }
   };
 
@@ -56,6 +96,7 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
     <form role="search" aria-label={label} onSubmit={submit} className={cn("relative flex min-w-0 items-center", className)} data-testid={testId}>
       <Search className="pointer-events-none absolute left-3 size-4 text-muted-foreground" />
       <Input
+        ref={input}
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={keyed}
@@ -74,7 +115,7 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
           </span>
         )}
         {draft !== "" && (
-          <button type="button" onClick={() => setDraft("")} aria-label="Clear the search" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground" data-testid={`${testId}-clear`}>
+          <button type="button" onClick={clear} aria-label="Clear the search" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground" data-testid={`${testId}-clear`}>
             <X className="size-4" />
           </button>
         )}

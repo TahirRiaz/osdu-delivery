@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Layers, TableProperties, Telescope, Unplug } from "lucide-react";
@@ -103,6 +103,9 @@ export default function ExplorerPage() {
   // A group, a type or a kind picked: its records have a search box of their own, which searches inside it and shows the
   // search, while the header's searches every type.
   const picked = asksRecords && scope.level !== "all";
+  // Edit puts the query sent in the field that shows the search, with the cursor at its end; each field is asked apart.
+  const [editInHeader, setEditInHeader] = useState(0);
+  const [editInPlace, setEditInPlace] = useState(0);
   const versionParam = Number(params.get("v") ?? "");
   const recordVersion = Number.isSafeInteger(versionParam) && versionParam > 0 ? versionParam : null;
 
@@ -181,20 +184,25 @@ export default function ExplorerPage() {
         </RichTooltip>
       )}
       <ExplorerSearchBar
-        key={picked ? "every-type" : `${text}|${lucene ? 1 : 0}`}
         text={picked ? "" : text}
         lucene={picked ? false : lucene}
         placeholder={picked ? "Search every type by id, name or any text" : "Search by id, name or any text"}
         label="Search OSDU"
         onSearch={(typed, asLucene) => {
-          // From a place picked, an empty field asks nothing: the place keeps its own search.
-          if (picked && typed === "") {
+          if (typed === "") {
+            // A search of every type cleared lists every record of every type; a place picked keeps its own search,
+            // which its own field clears.
+            if (!picked) {
+              navigate({ q: null, lq: null, kind: kindParam ?? ALL_KINDS, id: null, v: null });
+            }
+
             return;
           }
 
           navigate({ q: typed, lq: asLucene ? "1" : null, kind: picked ? ALL_KINDS : kindParam, id: null, v: null });
         }}
         onOpenId={openId}
+        focusRequest={editInHeader}
         className="min-w-[280px] max-w-[760px] flex-1"
         testId="explorer-search"
       />
@@ -265,7 +273,6 @@ export default function ExplorerPage() {
               {picked && (
                 <div className="border-b p-2">
                   <ExplorerSearchBar
-                    key={`${text}|${lucene ? 1 : 0}`}
                     text={text}
                     lucene={lucene}
                     placeholder={`Search ${scopeLabel(scope)} by id, name or any text`}
@@ -273,6 +280,7 @@ export default function ExplorerPage() {
                     onSearch={(typed, asLucene) => navigate({ q: typed, lq: asLucene ? "1" : null, id: null, v: null })}
                     onOpenId={openId}
                     dense
+                    focusRequest={editInPlace}
                     testId="explorer-within"
                   />
                 </div>
@@ -288,7 +296,15 @@ export default function ExplorerPage() {
                     onFilters={(next: ExplorerFilter[]) => navigate({ f: filtersText(next) })}
                     onSort={(next: ExplorerSort) => navigate({ sort: next === "relevance" ? null : next }, true)}
                     onSearchEverywhere={() => navigate({ kind: ALL_KINDS })}
-                    onEditQuery={(query) => navigate({ q: query, lq: "1", f: null, id: null, v: null })}
+                    onEditQuery={(query) => {
+                      if (picked) {
+                        setEditInPlace((asked) => asked + 1);
+                      } else {
+                        setEditInHeader((asked) => asked + 1);
+                      }
+
+                      navigate({ q: query, lq: "1", f: null, id: null, v: null });
+                    }}
                   />
                 )
                 : (

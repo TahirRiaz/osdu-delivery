@@ -98,11 +98,27 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-filter")).toContainText("NO 33/9-C-28 B");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
 
-    // The value narrowed to is a clause of the query sent, which Edit takes into the type's search field as Lucene.
+    // The value narrowed to is a clause of the query sent, which Edit takes into the type's search field as Lucene, the
+    // cursor at its end, so it is edited at once.
     await expect(adminPage.getByTestId("explorer-sent-query")).toContainText('data.FacilityName.keyword:"NO 33/9-C-28 B"');
     await adminPage.getByTestId("explorer-sent-edit").click();
-    await expect(adminPage.getByTestId("explorer-within-input")).toHaveValue(/data\.FacilityName\.keyword:"NO 33\/9-C-28 B"/);
+    const within = adminPage.getByTestId("explorer-within-input");
+    await expect(within).toHaveValue(/data\.FacilityName\.keyword:"NO 33\/9-C-28 B"/);
+    await expect(within).toBeFocused();
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+
+    // The cross clears the search, not only the field: every record of the type again.
+    await adminPage.getByTestId("explorer-within-clear").click();
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
+    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("every record of the kind");
+    await expect(within).toHaveValue("");
+
+    // Escape clears a search the same way.
+    await within.fill("NO 33/9-C-28");
+    await within.press("Enter");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
+    await within.press("Escape");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
 
     // The header's field searches every type: the type's field goes, and the search shows in the header.
     await adminPage.getByTestId("explorer-search-input").fill("NO 33/9-C-28 B");
@@ -110,6 +126,12 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:*:*", { timeout: 60_000 });
     await expect(adminPage.getByTestId("explorer-within")).toHaveCount(0);
     await expect(adminPage.getByTestId("explorer-search-input")).toHaveValue("NO 33/9-C-28 B");
+
+    // Cleared, it lists every record of every type, rather than going back to the welcome.
+    await adminPage.getByTestId("explorer-search-clear").click();
+    await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("every record of the kind", { timeout: 60_000 });
+    await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:*:*");
+    await expect(adminPage.getByTestId("explorer-welcome")).toHaveCount(0);
   });
 
   test("reads a record under its place, follows what mentions it, and compares two versions of that", async ({ adminPage }) => {
