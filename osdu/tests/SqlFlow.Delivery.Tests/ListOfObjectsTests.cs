@@ -245,7 +245,7 @@ public sealed class ListOfObjectsTests
     }
 
     [Fact]
-    public void An_item_none_of_whose_properties_applies_adds_nothing_and_a_list_left_with_none_is_left_out()
+    public void An_item_none_of_whose_properties_applies_adds_nothing_and_a_list_the_mapping_defines_left_with_none_is_written_empty()
     {
         var mapping = Mapping("""
             TechnicalAssurances:
@@ -259,7 +259,7 @@ public sealed class ListOfObjectsTests
 
         Assert.Equal(Canonical("""[{"Comment":"reviewed"},{"Comment":"late"}]"""), Assurances(Rendered(mapping, ("status", "reviewed"), ("remark", "late"))));
         Assert.Equal(Canonical("""[{"Comment":"late"}]"""), Assurances(Rendered(mapping, ("status", "DRAFT"), ("remark", "late"))));
-        Assert.Null(Assurances(Rendered(mapping, ("status", "DRAFT"), ("remark", null))));
+        Assert.Equal("[]", Assurances(Rendered(mapping, ("status", "DRAFT"), ("remark", null))));
     }
 
     [Fact]

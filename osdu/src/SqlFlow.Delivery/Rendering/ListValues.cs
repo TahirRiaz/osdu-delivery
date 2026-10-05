@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
@@ -10,10 +11,12 @@ namespace SqlFlow.Delivery.Rendering;
 /// OSDU takes no null where a schema does not allow one, and the engine never writes one: a value with no value is left out
 /// of the record, and an item of a list that is null (a list read whole from the cache may hold one) is dropped where the
 /// template's items take no null. Every object the record holds that its template describes is looked into (the record
-/// itself, its data, an object inside them, an item of a list of objects). A list the record leaves out stays out, as any
-/// other value does: Storage keeps a record's data as it is sent, so an absent list never reads back as null, and an empty
-/// one would only add to the record. A value that takes one of several forms (<c>oneOf</c>, <c>anyOf</c>) is not looked
-/// into, since which form it takes is the value's own.
+/// itself, its data, an object inside them, an item of a list of objects). Which lists the record carries empty the mapping
+/// decides (<see cref="MappingRenderer.WritesList"/>): a list it defines and nothing fills for the row; one it does not
+/// define stays out, which Storage keeps as absent in a record's data. A list of the record's own outside its data (<c>meta</c> in OSDU's schemas) is a field of Storage's record, which
+/// Storage holds as null when it is left out and the record's schema refuses there, so nothing filling it writes it empty.
+/// A value that takes one of several forms (<c>oneOf</c>, <c>anyOf</c>) is not looked into, since which form it takes is
+/// the value's own.
 /// </summary>
 /// <remarks>
 /// What each object of the template declares is worked out once per schema path and kept, so a render walks only the
@@ -23,12 +26,52 @@ internal sealed class ListValues
 {
     private readonly SchemaSnapshot _schema;
     private readonly ConcurrentDictionary<string, Level> _levels = new(StringComparer.Ordinal);
+    private readonly IReadOnlyList<string> _recordLists;
 
-    public ListValues(SchemaSnapshot schema)
+    /// <param name="schema">The template the record fills.</param>
+    /// <param name="recordLists">
+    /// Whether the record's own lists are written empty when nothing fills them: false for a row that never reaches
+    /// Storage (a DSPDM business object row).
+    /// </param>
+    public ListValues(SchemaSnapshot schema, bool recordLists = true)
     {
         ArgumentNullException.ThrowIfNull(schema);
         _schema = schema;
+        _recordLists = recordLists ? RecordLists(schema) : [];
     }
+
+    /// <summary>The lists of the record's own the template declares outside its data, which may be empty (no <c>minItems</c>).</summary>
+    public IReadOnlyList<string> Names => _recordLists;
+
+    /// <summary>
+    /// Writes an empty list for each list of the record's own (<see cref="Names"/>) that <paramref name="record"/> leaves
+    /// out or holds null, where <paramref name="covers"/> answers true for its template path (<c>osdu.meta</c>); null covers
+    /// every one. What a mapping fills is left as it is.
+    /// </summary>
+    public void WriteRecordLists(JsonObject record, Func<string, bool>? covers = null)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        foreach (var name in _recordLists)
+        {
+            if (record[name] is null && (covers is null || covers($"{TemplatePath.Prefix}.{name}")))
+            {
+                record[name] = new JsonArray();
+            }
+        }
+    }
+
+    private static List<string> RecordLists(SchemaSnapshot schema)
+        => schema.PropertiesAt(string.Empty)
+            .Where(name => name != "data" && schema.Resolve(name) is { Type: SchemaType.Array } property && MinItems(property.Schema) == 0)
+            .ToList();
+
+    /// <summary>How many items the schema requires a list to hold, 0 when it says nothing a reader can take as a count.</summary>
+    private static long MinItems(JsonObject schema)
+        => schema["minItems"] is JsonValue value
+            && decimal.TryParse(value.ToJsonString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var count)
+            && count > 0
+                ? (long)decimal.Ceiling(count)
+                : 0;
 
     /// <summary>
     /// Drops the null items of each list of <paramref name="record"/> whose template items take no null, where

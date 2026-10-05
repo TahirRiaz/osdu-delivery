@@ -9,7 +9,9 @@ OSDU publishes a schema for every kind. OSDU Delivery turns that schema into a *
 variable for every property, owned by the system and stored in the catalog database. A person never edits a
 template. What a person writes is a **mapping**: a YAML document that says, for each template variable they want
 filled, where its value comes from. A value comes from the incoming dataset, from the metadata cache, or is a static
-value. Every variable the mapping does not fill is left out of the record.
+value. Every variable the mapping does not fill is left out of the record. A list the mapping defines and that gives
+nothing for a row is written empty, and so is the record's own `meta`, which Storage would read back as null
+([documents.md](documents.md#what-the-record-contains)).
 
 ## Templates
 
@@ -542,7 +544,7 @@ TechnicalAssurances:
 The list is the object each item gives, in the order the items are written, an object two items give alike written
 once. An item is the object its properties give: a property that gives no value (an optional node with nothing to read,
 a `$when` that does not hold) is left out of it, an item none of whose properties gives a value adds nothing, and a list
-none of whose items gives one is left out of the record. A property that holds holds the record, as it would anywhere,
+none of whose items gives one is written empty, since the mapping defines it. A property that holds holds the record, as it would anywhere,
 naming the variable inside the items (`osdu.data.TechnicalAssurances[].Comment: dataset.remark is empty, and the entry is
 required`). An item written as the literal it is (`- TechnicalAssuranceTypeID: "...:Unevaluated:"`) is carried by every
 record, as the items of a literal list are.
@@ -750,7 +752,7 @@ $expr: '"Run " & log_run'
 | The cache has several matching records | Record held | Record held |
 | No record on the platform matches a search, on any line | Record held | Property left out |
 | Several records on the platform match, the query is refused, or a value could not be searched for and nothing was found | Record held | Record held |
-| A `$forEach` node's child dataset has no rows, or none its `$where` keeps | Record held | Property left out |
+| A `$forEach` node's child dataset has no rows, or none its `$where` keeps | Record held | List written empty |
 | `$when` is false | Property left out | Property left out |
 | An expression meets a value it cannot work with | Record held | Record held |
 

@@ -93,13 +93,13 @@ public static class FixtureRewriter
                 continue;
             }
 
-            if (renders[i].Expected is { } expected && string.Equals(CanonicalJson.ToString(expected), result.Canonical, StringComparison.Ordinal))
+            if (renders[i].Expected is { } expected && string.Equals(CanonicalJson.ToString(expected), CanonicalJson.ToString(renders[i].Writable), StringComparison.Ordinal))
             {
                 outcomes.Add(new FixtureOutcome(fixture.Name, FixtureOutcomeKind.Unchanged));
                 continue;
             }
 
-            if (Edit(items[i], lines, Written(result.Document, order), out var edit) is { } reason)
+            if (Edit(items[i], lines, Written(renders[i].Writable ?? result.Document, order), out var edit) is { } reason)
             {
                 outcomes.Add(new FixtureOutcome(fixture.Name, FixtureOutcomeKind.Skipped, reason));
                 continue;

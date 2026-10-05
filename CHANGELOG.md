@@ -972,12 +972,18 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 - **A list a record holds carries no null item its template does not allow.** A null item is dropped from a list whose
   items take no null (a list read whole from the cache may hold one), in every object the record holds (the record, its
   `data`, an object inside them, each item of a list of objects); a value of a choice of forms (`oneOf`, `anyOf`) is not
-  looked into. A list the mapping does not fill is left out, as any other value with no value is: Storage keeps a
-  record's `data` as it is sent, and the `"meta": null` it reads back for a record sent without `meta` is read as absent
-  by the explorer and the `conforms` assertion (the fix above). For a while every list the template declares and nothing
-  filled was written as an empty list, which filled records with lists their mappings never asked for; a record rendered
-  then is sent once more without them the next time it is rendered, and one rendered before it renders as it did
-  ([osdu/docs/documents.md](osdu/docs/documents.md), What the record contains).
+  looked into ([osdu/docs/documents.md](osdu/docs/documents.md), What the record contains).
+- **The mapping decides which lists a record carries empty, and `meta` is never left for Storage to hold as null.** A
+  list the mapping defines (a `$forEach`, a list of values, a list of objects, or a node whose variable is a list) that
+  gives nothing for the row is written empty, at any depth: in the record, in an object the record writes, and in each
+  item of a list of objects that defines it and is written; an optional `$forEach` with no rows, or whose `$when` does
+  not hold, writes `[]`. A list the mapping does not define is left out, as Storage keeps it, and no object is made to
+  hold an empty list. The record's own `meta`, a field of Storage's record that Storage reads back as null when it is
+  left out and the schema refuses, is written `[]` whenever nothing fills it. For a while every list the template
+  declares was written empty, mapping or not, and then none was, which left `meta` null in OSDU again; a WellLog of the
+  recall estate now renders with `"meta": []` and no other empty list, and is sent once more the next time it is
+  rendered. A fixture compares an empty list and one left out alike, so fixtures stand as written, and `fixtures update`
+  writes a record without the empty lists. A DSPDM row is given no empty list.
 
 - A value check no longer passes over a `null` inside a value it checks: `null` breaks a property whose schema names
   types without `null`. A schema reference the template's bundle does not hold no longer fails a value check; the part

@@ -25,6 +25,8 @@ public sealed class MappingRenderer
     private readonly RenderContext _context;
     private readonly IReadOnlyList<string> _requiredData;
     private readonly ListValues _lists;
+    private readonly bool _writesLists;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _listTargets = new(StringComparer.Ordinal);
     private readonly IReadOnlyList<MappingEntry> _recordEntries;
     private readonly IReadOnlyList<(MappingEntry Repeater, IReadOnlyList<MappingEntry> Items)> _repeaters;
     private readonly IReadOnlyList<string>? _owned;
@@ -105,7 +107,9 @@ public sealed class MappingRenderer
         }
 
         _requiredData = schema.RequiredAt("data");
-        _lists = new ListValues(schema);
+        // A DSPDM business object row is a row of single values that never reaches Storage: it is given no empty list.
+        _writesLists = !DspdmKinds.Is(mapping.Kind);
+        _lists = new ListValues(schema, recordLists: _writesLists);
         _recordEntries = mapping.Entries.Where(e => !e.IsRepeater && !e.Target.IsRepeated).ToList();
         _repeaters = mapping.Entries.Where(e => e.IsRepeater).Select(r => (r, (IReadOnlyList<MappingEntry>)mapping.ItemEntries(r).ToList())).ToList();
         // A ref resolves by the variable its node fills and the entity type it names: every alternative of a $coalesce node
@@ -396,6 +400,16 @@ public sealed class MappingRenderer
 
     internal SchemaSnapshot Schema => _schema;
 
+    /// <summary>
+    /// Whether <paramref name="entry"/> of the mapping fills a list of the template: a list the record carries empty when the
+    /// entry gives nothing for the row (docs: documents.md, What the record contains). Never for a DSPDM row.
+    /// </summary>
+    internal bool WritesList(MappingEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        return _writesLists && _listTargets.GetOrAdd(entry.Target.SchemaPath, path => _schema.Resolve(path)?.Type == SchemaType.Array);
+    }
+
     internal string DataPartition => _context.DataPartition;
 
     internal string? ParameterValue(string name)
@@ -488,7 +502,8 @@ public sealed class MappingRenderer
     /// <summary>
     /// Writes every entry's value into <paramref name="document"/>: the list of attributes a DSPDM business object row owns
     /// (<see cref="DspdmKinds.OwnedProperty"/>), the record's own entries at their targets, then each repeater's array with one
-    /// item per row, then the null items its lists' items do not allow dropped (<see cref="ListValues"/>), then the check that
+    /// item per row, then an empty list for each list the mapping defines and nothing fills for the row, the null items its
+    /// lists' items do not allow dropped and the record's own lists written (<see cref="ListValues"/>), then the check that
     /// the data the schema requires is there. What a value cannot be written for is added to <paramref name="holds"/>. The one
     /// assembly a render, an inspection and a shape share.
     /// </summary>
@@ -507,6 +522,10 @@ public sealed class MappingRenderer
         }
 
         var selection = trail?.Selection ?? EntrySelection.All;
+
+        // The lists the mapping defines that give nothing for the row, written empty once every value is in place, so an
+        // empty list never makes the object that holds it.
+        var empty = new List<IReadOnlyList<string>>();
         foreach (var entry in _recordEntries)
         {
             if (!selection.Includes(entry.Target.Text))
@@ -520,6 +539,10 @@ public sealed class MappingRenderer
             if (value is not null)
             {
                 SetPath(document, entry.Target.Segments.Select(s => s.Name).ToList(), value);
+            }
+            else if (holds.Count == held && values.Asked.Count == asked && WritesList(entry))
+            {
+                empty.Add(entry.Target.Segments.Select(s => s.Name).ToList());
             }
 
             trail?.Add(Outcome(entry, null, null, value, applied, holds, held, values, asked));
@@ -558,6 +581,11 @@ public sealed class MappingRenderer
                     NoItem(trail, selected, $"{repeater.Target.Text} writes no item for the row: {string.Join("; ", why)}");
                 }
 
+                if (whole && own.Count == 0 && _writesLists)
+                {
+                    empty.Add(repeater.Target.Segments.Select(s => s.Name).ToList());
+                }
+
                 continue;
             }
 
@@ -576,6 +604,7 @@ public sealed class MappingRenderer
 
                 kept++;
                 var item = new JsonObject();
+                var emptyInItem = new List<MappingEntry>();
                 foreach (var entry in selected)
                 {
                     var held = holds.Count;
@@ -585,12 +614,22 @@ public sealed class MappingRenderer
                     {
                         SetPath(item, entry.Target.WithinItem, value);
                     }
+                    else if (holds.Count == held && values.Asked.Count == asked && WritesList(entry))
+                    {
+                        emptyInItem.Add(entry);
+                    }
 
                     trail?.Add(Outcome(entry, ordinal, row, value, applied, holds, held, values, asked));
                 }
 
+                // An item none of whose properties gives a value adds nothing; one that does carries its empty lists too.
                 if (item.Count > 0)
                 {
+                    foreach (var entry in emptyInItem)
+                    {
+                        SetEmptyList(item, entry.Target.WithinItem);
+                    }
+
                     array.Add(item);
                 }
             }
@@ -615,6 +654,10 @@ public sealed class MappingRenderer
                 holds.Add(none);
                 own.Add(none);
             }
+            else if (whole && own.Count == 0 && _writesLists)
+            {
+                empty.Add(repeater.Target.Segments.Select(s => s.Name).ToList());
+            }
 
             if (trail is null)
             {
@@ -636,8 +679,16 @@ public sealed class MappingRenderer
             }
         }
 
-        // A list holds no null its items do not allow, so OSDU never holds a null where it takes none.
+        // A list the mapping defines and nothing fills for the row is written empty where the object that holds it is
+        // written; a list it does not define is left out. A list holds no null its items do not allow, and a list of the
+        // record's own (meta) nothing fills is written empty, since Storage holds a left-out one as null.
+        foreach (var segments in empty)
+        {
+            SetEmptyList(document, segments);
+        }
+
         _lists.RemoveNullItems(document, selection.IsAll ? null : selection.Covers);
+        _lists.WriteRecordLists(document, selection.IsAll ? null : selection.Covers);
 
         if (document["data"] is JsonObject data)
         {
@@ -719,6 +770,30 @@ public sealed class MappingRenderer
         }
 
         return unique;
+    }
+
+    /// <summary>
+    /// Writes an empty list at the property the names lead to below <paramref name="root"/>, where the object that holds it
+    /// is written and holds nothing there yet. No object is made for it: a list in an object the record does not hold stays
+    /// out with the object.
+    /// </summary>
+    internal static void SetEmptyList(JsonObject root, IReadOnlyList<string> segments)
+    {
+        var current = root;
+        for (var i = 0; i < segments.Count - 1; i++)
+        {
+            if (current[segments[i]] is not JsonObject next)
+            {
+                return;
+            }
+
+            current = next;
+        }
+
+        if (current[segments[^1]] is null)
+        {
+            current[segments[^1]] = new JsonArray();
+        }
     }
 
     /// <summary>Writes <paramref name="value"/> at the property the names lead to below <paramref name="root"/>, making the objects on the way.</summary>

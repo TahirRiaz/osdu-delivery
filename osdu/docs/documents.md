@@ -2281,7 +2281,7 @@ refused with the expression to write instead.
 | The cache has several matching records | Record held | Record held |
 | A `date` or `number` modifier cannot read the value | Record held | Record held |
 | A value cannot take the property's type (`NaN` or `Infinity`, a fraction for an integer, a value out of range) | Record held | Record held |
-| A `$forEach` node's child dataset has no rows with values, or none its `$where` keeps | Record held | Property left out |
+| A `$forEach` node's child dataset has no rows with values, or none its `$where` keeps | Record held | List written empty |
 | `$when` is false | Property left out | Property left out |
 | An expression meets a value it cannot work with | Record held | Record held |
 
@@ -2296,17 +2296,21 @@ and the properties OSDU sets (`version`, `createTime`, `createUser`, `modifyTime
 template decides the type: text becomes a number, an integer or a boolean where the schema says so, a single value
 written to a list of values becomes a list of one, and a value that cannot take the type holds the record with a reason
 naming the variable. A property the mapping does not write, a node that does not apply and an optional node with no
-value are left out; an array item that received no value is left out of its array, and an array with no items is left
-out.
+value are left out, but for a list (below); an array item that received no value is left out of its array.
 
-A record never carries a null where its template takes none, and carries nothing the mapping does not fill. A value
-with no value is left out, never written as null, nor as an empty text, a zero, `false`, `{}` or `[]`. A list is left
-out like any other value: Storage keeps a record's `data` as it is sent, so a list left out never reads back as null.
-Storage does read a record's `meta`, `ancestry` and `tags` back as null when the record leaves them out, whoever wrote
-it, and the explorer and the `conforms` assertion read them as absent ([explorer.md](explorer.md)). A null item is
-dropped from a list whose items take no null (a list read whole from the cache may hold one), in every object the
-record holds (the record, its `data`, an object inside them, each item of a list of objects); a value that takes one of
-several forms (`oneOf`, `anyOf`) is not looked into, since which form it takes is the value's own.
+A record never carries a null where its template takes none, and the mapping decides what it carries. A text, number,
+integer, boolean or object with no value is left out, never written as null, nor as an empty text, a zero, `false` or
+`{}`, each of which would be a value of its own. A list the mapping defines (a `$forEach`, a list of values, a list of
+objects, or a node whose variable is a list) that gives nothing for the row, empty or not applying, is written empty
+(`"Curves": []`), at any depth: in the record, in an object the record writes, and in each item of a list of objects
+that defines it and is written. A list the mapping does not define is left out, as Storage keeps it in a record's `data`;
+no object is made to hold an empty list, and an item none of whose properties gives a value is still left out of its
+list. A list of the record's own outside `data` (`meta` in OSDU's schemas) is a field of Storage's record, which Storage
+reads back as null when it is left out and the record's schema refuses there, so the record carries it empty
+(`"meta": []`) whenever nothing fills it. A null item is dropped from a list whose items take no null (a list read whole
+from the cache may hold one), in every object the record holds; a value that takes one of several forms (`oneOf`,
+`anyOf`) is not looked into, since which form it takes is the value's own. A DSPDM row, a row of single values that never
+reaches Storage, is given no empty list.
 
 A property the schema requires in `data` that renders empty holds the record, and so does a record key with an
 empty column.
@@ -2329,7 +2333,7 @@ does not fill as they are ([protocols.md](protocols.md#osdudspdm-the-dspdm-route
 | `searches` | What the platform is assumed to answer to each search the render asks: `{ search, field, value, id }`, without `id` for no record. |
 | `row` | The dataset's row, column by column. |
 | `datasets` | The rows of each child dataset, by child dataset name. |
-| `expected` | The exact record, as JSON, compared canonically. `sqlflow fixtures update` writes it from what the fixture renders ([reference/cli/delivery.md](reference/cli/delivery.md)). |
+| `expected` | The exact record, as JSON, compared canonically, an empty list and one left out alike, so a fixture is written without the lists the engine writes empty. `sqlflow fixtures update` writes it from what the fixture renders ([reference/cli/delivery.md](reference/cli/delivery.md)). |
 
 A fixture is captured against the cache of one partition, and renders against that partition's cache wherever the mapping
 runs: the partition its `dataPartition` names (its own, or the one `fixtureDefaults.parameters` gives every fixture). A

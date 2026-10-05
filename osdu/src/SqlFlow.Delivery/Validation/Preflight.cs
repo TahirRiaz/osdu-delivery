@@ -1164,16 +1164,56 @@ public static partial class Preflight
         return renders;
     }
 
-    /// <summary>A fixture's render beside the record it expects, read canonically as the gate compares them.</summary>
+    /// <summary>A fixture's render beside the record it expects, each read as a fixture compares them (<see cref="Comparable"/>).</summary>
     private static FixtureRender Compared(MappingFixture fixture, RenderResult result)
     {
+        var writable = (JsonObject)Comparable(result.Document)!;
         try
         {
-            return new FixtureRender(fixture, result, null) { Expected = CanonicalJson.Normalize(JsonNode.Parse(fixture.Expected)) };
+            return new FixtureRender(fixture, result, null) { Expected = Comparable(JsonNode.Parse(fixture.Expected)), Writable = writable };
         }
         catch (JsonException ex)
         {
-            return new FixtureRender(fixture, result, null) { ExpectedProblem = ex.Message };
+            return new FixtureRender(fixture, result, null) { ExpectedProblem = ex.Message, Writable = writable };
+        }
+    }
+
+    /// <summary>
+    /// A record as a fixture compares it: canonical, and without the lists it holds empty at any depth, so an empty list and
+    /// one left out compare alike. The engine writes a list the mapping defines and nothing fills empty, and the record's
+    /// own <c>meta</c> (docs: documents.md, What the record contains); a fixture written without them expects the record that
+    /// renders with them, and <c>sqlflow fixtures update</c> writes a record without them.
+    /// </summary>
+    public static JsonNode? Comparable(JsonNode? record)
+    {
+        var normal = CanonicalJson.Normalize(record);
+        WithoutEmptyLists(normal);
+        return normal;
+    }
+
+    private static void WithoutEmptyLists(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject value:
+                foreach (var name in value.Where(p => p.Value is JsonArray { Count: 0 }).Select(p => p.Key).ToList())
+                {
+                    value.Remove(name);
+                }
+
+                foreach (var (_, child) in value)
+                {
+                    WithoutEmptyLists(child);
+                }
+
+                break;
+            case JsonArray items:
+                foreach (var item in items)
+                {
+                    WithoutEmptyLists(item);
+                }
+
+                break;
         }
     }
 
@@ -1234,9 +1274,9 @@ public static partial class Preflight
 
             var expected = render.Expected;
             var expectedText = CanonicalJson.ToString(expected);
-            if (!string.Equals(result.Canonical, expectedText, StringComparison.Ordinal))
+            if (!string.Equals(CanonicalJson.ToString(render.Writable), expectedText, StringComparison.Ordinal))
             {
-                var diff = Planning.DocumentDiff.Compute(expected, result.Document);
+                var diff = Planning.DocumentDiff.Compute(expected, render.Writable);
                 var holds = result.Holds.Count > 0 ? Environment.NewLine + "    holds: " + string.Join("; ", result.Holds) : string.Empty;
                 issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' rendered a different document:{Environment.NewLine}{diff.Indent("    ")}{holds}"));
             }
@@ -1268,6 +1308,12 @@ public sealed record FixtureRender(MappingFixture Fixture, RenderResult? Result,
 
     /// <summary>Why the fixture's expected JSON cannot be read, or null.</summary>
     public string? ExpectedProblem { get; init; }
+
+    /// <summary>
+    /// The render as a fixture compares it (<see cref="Preflight.Comparable"/>), beside a result: what the expected record is
+    /// compared with, and what <c>sqlflow fixtures update</c> writes as it.
+    /// </summary>
+    public JsonObject? Writable { get; init; }
 }
 
 public enum IssueSeverity

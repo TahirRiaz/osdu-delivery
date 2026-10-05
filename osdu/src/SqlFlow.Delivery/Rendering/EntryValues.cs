@@ -1019,22 +1019,40 @@ internal static partial class EntryValues
 
     /// <summary>
     /// The value of an item of a list of objects: the object its properties give, each written at its place in the item as
-    /// the record's own properties are, or null when none of them gives one, which leaves the item out of the list. A
-    /// property that holds holds the record, as it would anywhere in it.
+    /// the record's own properties are, or null when none of them gives one, which leaves the item out of the list. A list
+    /// the item defines and that gives nothing is written empty in an item that is written. A property that holds holds the
+    /// record, as it would anywhere in it.
     /// </summary>
     private static JsonNode? Assembled(
         MappingEntry entry, SourceRow root, SourceRow? item, MappingRenderer renderer, List<string> holds, List<CacheUsage> usages, RenderTrail searched)
     {
         var written = new JsonObject();
+        List<MappingEntry>? empty = null;
         foreach (var property in entry.Properties)
         {
+            var held = holds.Count;
+            var waiting = searched.Unanswered.Count;
             if (Evaluate(property, root, item, renderer, holds, usages, searched) is { } value)
             {
                 MappingRenderer.SetPath(written, property.Target.WithinItem, value);
             }
+            else if (holds.Count == held && searched.Unanswered.Count == waiting && renderer.WritesList(property))
+            {
+                (empty ??= []).Add(property);
+            }
         }
 
-        return written.Count > 0 ? written : null;
+        if (written.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (var property in empty ?? [])
+        {
+            MappingRenderer.SetEmptyList(written, property.Target.WithinItem);
+        }
+
+        return written;
     }
 
     /// <summary>

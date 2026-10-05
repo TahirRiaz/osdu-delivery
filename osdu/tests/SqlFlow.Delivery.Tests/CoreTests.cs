@@ -351,7 +351,7 @@ public class MappingRendererTests
     }
 
     [Fact]
-    public void A_repeater_without_rows_holds_when_required_and_is_left_out_when_optional()
+    public void A_repeater_without_rows_holds_when_required_and_is_written_empty_when_optional()
     {
         const string Curves = """
             Curves:
@@ -365,7 +365,7 @@ public class MappingRendererTests
 
         var optional = Renderer(Curves + "\n  $required: false").Render(Record(curves: false));
         Assert.False(optional.IsHeld);
-        Assert.Null(optional.Document["data"]!["Curves"]);
+        Assert.Empty(Assert.IsType<JsonArray>(optional.Document["data"]!["Curves"]));
     }
 
     [Fact]
@@ -786,10 +786,12 @@ public class MappingRendererTests
     }
 
     [Fact]
-    public void A_list_nothing_fills_is_left_out_and_a_null_item_is_dropped_where_the_items_take_no_null()
+    public void A_list_the_mapping_defines_is_written_empty_when_nothing_fills_it_and_one_it_does_not_define_is_left_out()
     {
-        // Storage keeps a record's data as it is sent, so a list left out never reads back as null there, and the checks of a
-        // stored record read the meta, ancestry or tags Storage holds null as absent. An empty list would only add to the record.
+        // The mapping decides which lists the record carries empty: a list it defines that gives nothing for the row, at any
+        // depth; a list it does not define is left out, which Storage keeps as absent in a record's data. The record's own
+        // meta is a field of Storage's record, which Storage holds as null when left out and the schema refuses, so it is
+        // written empty whatever the mapping says.
         var root = TestSchema.Build().Root.DeepClone().AsObject();
         root["properties"]!["meta"] = JsonNode.Parse("""{ "type": "array", "items": { "type": "object" } }""");
         var data = root["properties"]!["data"]!["allOf"]![1]!["properties"]!.AsObject();
@@ -797,35 +799,96 @@ public class MappingRendererTests
         data["Curves"]!["items"]!["properties"]!["Notes"] = JsonNode.Parse("""{ "type": "array", "items": { "type": "string" } }""");
         data["Mixed"] = JsonNode.Parse("""{ "type": "array", "items": { "type": ["string", "null"] } }""");
         var schema = new SchemaSnapshot(TestSchema.Kind, root, DateTimeOffset.UnixEpoch);
-        MappingDefinition Mapping(string data = "", string record = "") => new DeliveryDocumentLoader().ParseMapping(
-            TestSchema.MappingDocument(data, record: record).Replace(TestSchema.Build().Version, schema.Version, StringComparison.Ordinal), "thing.yaml");
+        MappingDefinition Mapping(string data = "", string record = "", string fixtures = "") => new DeliveryDocumentLoader().ParseMapping(
+            TestSchema.MappingDocument(data, fixtures, record: record).Replace(TestSchema.Build().Version, schema.Version, StringComparison.Ordinal), "thing.yaml");
         MappingRenderer Over(MappingDefinition mapping) => new(mapping, schema, TestSchema.References(), TestSchema.Context() with { SchemaSnapshotVersion = schema.Version });
-        const string Filled = """
+        static SourceRow Row(params (string Column, string? Value)[] values) => SourceRow.FromStrings(values.ToDictionary(v => v.Column, v => v.Value));
+        SourceRecord Rows(bool curves = true) => new()
+        {
+            Row = Row(("name", "well-1"), ("depth", "12.5"), ("alias", null), ("codes", null)),
+            Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["curves"] = curves ? [Row(("curve_id", "GR"), ("note", null)), Row(("curve_id", "RHOB"), ("note", "checked"))] : [],
+            },
+        };
+        const string Defines = """
+            Aliases: { $from: alias, $required: false }
             Nested:
               Inner: { $from: name }
+              Codes: { $from: codes, $required: false }
             Curves:
               $forEach: curves
+              $required: false
               $item:
                 CurveID: { $from: curve_id }
+                Notes: { $from: note, $required: false }
             """;
 
-        var result = Over(Mapping(Filled)).Render(Record());
+        var result = Over(Mapping(Defines)).Render(Rows());
         Assert.False(result.IsHeld, string.Join("; ", result.Holds));
         var document = result.Document;
-        Assert.False(document.ContainsKey("meta"));
-        Assert.False(document["data"]!.AsObject().ContainsKey("Aliases"));
-        Assert.False(document["data"]!.AsObject().ContainsKey("Days"));
-        Assert.False(document["data"]!["Nested"]!.AsObject().ContainsKey("Codes"));
-        Assert.All(document["data"]!["Curves"]!.AsArray(), curve => Assert.False(curve!.AsObject().ContainsKey("Notes")));
+        var body = document["data"]!.AsObject();
+        Assert.Empty(Assert.IsType<JsonArray>(document["meta"]));
+        Assert.Empty(Assert.IsType<JsonArray>(body["Aliases"]));
+        Assert.Empty(Assert.IsType<JsonArray>(body["Nested"]!["Codes"]));
+        var curves = body["Curves"]!.AsArray();
+        Assert.Empty(Assert.IsType<JsonArray>(curves[0]!["Notes"]));
+        Assert.Equal("checked", Assert.Single(curves[1]!["Notes"]!.AsArray())!.GetValue<string>());
+        Assert.False(body.ContainsKey("Days"));
+        Assert.False(body.ContainsKey("Mixed"));
         Assert.Empty(RecordValidator.Check(document, SchemaRules.Of(schema)).Problems);
 
-        // A list the mapping fills is the one the record carries.
+        // A $forEach with no rows, or whose $when does not hold, writes its list empty; a required one holds the record.
+        Assert.Empty(Assert.IsType<JsonArray>(Over(Mapping(Defines)).Render(Rows(curves: false)).Document["data"]!["Curves"]));
+        var whenNot = Over(Mapping(Defines.Replace("$required: false\n  $item:", "$required: false\n  $when: name = \"other\"\n  $item:", StringComparison.Ordinal))).Render(Rows());
+        Assert.Empty(Assert.IsType<JsonArray>(whenNot.Document["data"]!["Curves"]));
+
+        // A list in an object the record does not hold stays out with it: no object is made for an empty list.
+        var noObject = Over(Mapping("""
+            Nested:
+              Codes: { $from: codes, $required: false }
+            """)).Render(Rows());
+        Assert.False(noObject.Document["data"]!.AsObject().ContainsKey("Nested"));
+
+        // Each item of a literal list of objects carries the lists it defines; one that does not define a list has none.
+        var literal = Over(Mapping("""
+            Curves:
+              - CurveID: A
+                Notes: { $from: alias, $required: false }
+              - CurveID: B
+            """)).Render(Rows());
+        var items = literal.Document["data"]!["Curves"]!.AsArray();
+        Assert.Empty(Assert.IsType<JsonArray>(items[0]!["Notes"]));
+        Assert.False(items[1]!.AsObject().ContainsKey("Notes"));
+
+        // A list the mapping fills is the one the record carries, and a template without a list of the record's own gets none.
         var written = Over(Mapping(record: """
             meta:
               - kind: Unit
                 name: metre
-            """)).Render(Record());
+            """)).Render(Rows());
         Assert.Equal("metre", Assert.Single(written.Document["meta"]!.AsArray())!["name"]!.GetValue<string>());
+        Assert.False(Renderer().Render(Record()).Document.ContainsKey("meta"));
+        Assert.Equal(["meta"], new ListValues(schema).Names);
+        Assert.Empty(new ListValues(schema, recordLists: false).Names);
+
+        // A fixture written without the empty lists expects the record that renders with them, and is written without them.
+        var key = DeliveryKey.Derive("test", ["well-1"]).Value.ToString("N");
+        var withFixture = Mapping(Defines, fixtures: $$$"""
+            fixtures:
+              - name: without the empty lists
+                row: { name: well-1, depth: "12.5", alias: "", codes: "" }
+                datasets:
+                  curves:
+                    - { curve_id: GR, note: "" }
+                expected: |
+                  {"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"well-1","Depth":12.5,"Nested":{"Inner":"well-1"},"Curves":[{"CurveID":"GR"}]}}
+            """);
+        var fixture = Assert.Single(Preflight.RenderFixtures(withFixture, Over(withFixture)));
+        Assert.Null(fixture.Problem);
+        Assert.Empty(Assert.IsType<JsonArray>(fixture.Result!.Document["data"]!["Aliases"]));
+        Assert.Equal(CanonicalJson.ToString(fixture.Writable), CanonicalJson.ToString(fixture.Expected));
+        Assert.False(fixture.Writable!.ContainsKey("meta"));
 
         // A null item, as a list read whole from the cache may hold, is dropped where the template's items take no null and
         // kept where they take one; nothing else of the record is touched.

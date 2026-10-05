@@ -19,6 +19,7 @@ using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Templates;
+using SqlFlow.Delivery.Validation;
 using SqlFlow.Execution;
 using SqlFlow.Lineage.Collection;
 using SqlFlow.Lineage.Graph;
@@ -938,13 +939,17 @@ public class SqlServerChainTests
     private static MappingFixture? Fixture(MappingDefinition mapping, string logId)
         => mapping.Fixtures.SingleOrDefault(f => f.Name.StartsWith(logId, StringComparison.Ordinal));
 
+    /// <summary>
+    /// Whether the plan rendered the record the mapping's fixture for the log pins, each read as the preflight compares a
+    /// fixture: an empty list and one left out alike.
+    /// </summary>
     private static void AssertRendersTheFixture(MappingDefinition mapping, PlanEntry entry, string logId)
     {
         var fixture = Fixture(mapping, logId)
             ?? throw new InvalidOperationException($"The mapping pins no fixture for log '{logId}'.");
         Assert.NotNull(entry.Render);
         Assert.Empty(entry.Render!.Holds);
-        Assert.Equal(Canonical(JsonNode.Parse(fixture.Expected)), Canonical(entry.Render.Document));
+        Assert.Equal(Canonical(Preflight.Comparable(JsonNode.Parse(fixture.Expected))), Canonical(Preflight.Comparable(entry.Render.Document)));
     }
 
     /// <summary>One JSON document as a comparable text: object members in name order, array order left as it is.</summary>
