@@ -19,7 +19,7 @@ import { forgetRecentRecords, kindParts, recentRecords, type RecentRecord } from
  * search sent leaves the cursor where it was. Asked to (`focusRequest`), it takes the cursor to the end of what it shows,
  * so a query the page put there is edited at once.
  */
-export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, onOpenId, dense = false, focusRequest = 0, className, testId }: {
+export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, onOpenId, shortcut = false, focusRequest = 0, className, testId }: {
   text: string;
   lucene: boolean;
   placeholder: string;
@@ -27,8 +27,8 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
   label: string;
   onSearch: (text: string, lucene: boolean) => void;
   onOpenId: (id: string) => void;
-  /** As tall as the filter over the types, so the two fields over the two lists line up. */
-  dense?: boolean;
+  /** Whether `/` is the page's way into this field, shown at its end while it is empty and the cursor elsewhere. */
+  shortcut?: boolean;
   /** Raised by the page to put the cursor in the field, at the end of what it shows; the value it starts with does not. */
   focusRequest?: number;
   className?: string;
@@ -100,13 +100,22 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={keyed}
-        placeholder={asLucene ? "A Lucene query: data.FacilityName:\"NO 33*\" AND kind:*Wellbore*" : placeholder}
+        placeholder={asLucene ? "A Lucene query: createTime:[2024-01-01 TO *] AND kind:*Wellbore*" : placeholder}
         aria-label={label}
         spellCheck={false}
         autoComplete="off"
-        className={cn(dense ? "h-8" : "h-9", "bg-secondary/70 pl-9 pr-36 text-[13px] dark:bg-input/60", asLucene && "font-mono text-[12px]")}
+        className={cn("peer h-8 bg-secondary/70 pl-9 pr-36 text-[13px] dark:bg-input/60", asLucene && "font-mono text-[12px]")}
         data-testid={`${testId}-input`}
       />
+      {shortcut && draft === "" && (
+        <kbd
+          className="pointer-events-none absolute right-9 flex h-5 min-w-5 items-center justify-center rounded border bg-background/60 px-1 font-mono text-[11px] text-muted-foreground peer-focus:hidden"
+          title="Press / to search"
+          data-testid={`${testId}-shortcut`}
+        >
+          /
+        </kbd>
+      )}
       <div className="absolute right-1.5 flex items-center gap-1">
         {hint !== null && (
           <span className="pointer-events-none flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground" data-testid={`${testId}-hint`}>
@@ -123,7 +132,7 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
           type="button"
           variant={asLucene ? "secondary" : "ghost"}
           size="icon"
-          className={cn(dense ? "size-6" : "size-7", asLucene && "text-primary")}
+          className={cn("size-6", asLucene && "text-primary")}
           aria-pressed={asLucene}
           aria-label="Write a Lucene query"
           title={asLucene ? "Searching with a Lucene query, sent as written. Click to search by id, name or text." : "Write a Lucene query: field:value, AND, OR, quotes and wildcards, sent as written."}
@@ -152,7 +161,7 @@ export function ExplorerRecent({ onOpen }: { onOpen: (record: RecentRecord) => v
   return (
     <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) { setRecords(recentRecords()); } }}>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-9 gap-1.5 px-2.5 text-[13px]" title="The records opened last" data-testid="explorer-recent">
+        <Button variant="outline" size="sm" className="gap-1.5 px-2.5 text-[13px]" title="The records opened last" data-testid="explorer-recent">
           <History />
           Recent
         </Button>

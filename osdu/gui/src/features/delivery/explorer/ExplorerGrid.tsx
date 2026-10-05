@@ -27,7 +27,7 @@ export interface GridColumn<T> {
  * the grid never scrolls sideways. A row opens on a click or on Enter; the arrow keys, Page Up and Down, Home and End move
  * through the rows, and the row the keys are on is kept in view. Scrolling near the end asks for the next page.
  */
-export function ExplorerGrid<T>({ rows, columns, rowKey, onOpen, onNearEnd, footer, label, testId }: {
+export function ExplorerGrid<T>({ rows, columns, rowKey, onOpen, onNearEnd, footer, label, testId, rowTestId = `${testId}-row` }: {
   rows: T[];
   columns: GridColumn<T>[];
   rowKey: (row: T) => string;
@@ -38,6 +38,8 @@ export function ExplorerGrid<T>({ rows, columns, rowKey, onOpen, onNearEnd, foot
   footer?: ReactNode;
   label: string;
   testId: string;
+  /** Each row's testid; the grid's own with `-row` by default. */
+  rowTestId?: string;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const [view, setView] = useState({ top: 0, height: 600 });
@@ -144,7 +146,7 @@ export function ExplorerGrid<T>({ rows, columns, rowKey, onOpen, onNearEnd, foot
                 cursor === index && "bg-accent/70 shadow-[inset_2px_0_0_var(--primary)]",
               )}
               style={{ top: index * ROW, height: ROW, gridTemplateColumns: template }}
-              data-testid={`${testId}-row`}
+              data-testid={rowTestId}
             >
               {columns.map((column) => (
                 <div key={column.id} role="gridcell" className={cn("flex min-w-0 items-center", column.align === "right" && "justify-end")}>

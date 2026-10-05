@@ -36,9 +36,14 @@ storage's batch read (`POST /api/storage/v2/query/records`, or the flow's `proto
 
 ## Browsing
 
-The page opens on a welcome that reads nothing from OSDU, so it shows at once however large the partition: the search
-field, the records opened lately and the types browsed lately (both kept in the browser), what the field takes, and
-**Browse types**. OSDU is read only once the reader asks: Browse types reads the types alone and waits for one to be
+The page opens on a welcome that reads nothing from OSDU, so it shows at once however large the partition. It fills the
+window as the browse view does: **Recently opened**, the records opened lately as the grid the records of a type use
+(arrow keys and Enter open one, the id copies on hover, **Clear** forgets them), and beside it **Types**, with **Browse
+every type** and the types browsed lately, over **Search syntax**, what the search field takes with an example of each.
+Both lists are kept in the browser. Each group of types has its glyph (master data, reference data, work product
+components, datasets), the same in these lists and in the list of types. `/` anywhere on the page but in a field puts
+the cursor in the search that is the list's (the type's when one is picked, else the header's), and the field shows the
+key while it is empty. OSDU is read only once the reader asks: Browse types reads the types alone and waits for one to be
 picked, a type picked reads its records, a search reads what it finds, and a record opened reads that record and
 nothing behind it. While a read is under way, a slim bar sweeps along the top of the pane it will fill, and what is
 already shown stays readable.

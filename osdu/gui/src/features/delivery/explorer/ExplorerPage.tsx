@@ -106,6 +106,27 @@ export default function ExplorerPage() {
   // Edit puts the query sent in the field that shows the search, with the cursor at its end; each field is asked apart.
   const [editInHeader, setEditInHeader] = useState(0);
   const [editInPlace, setEditInPlace] = useState(0);
+
+  // `/` anywhere on the page but in a field puts the cursor in the search that is the list's: the place's when one is
+  // picked, else the header's.
+  useEffect(() => {
+    const keyed = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing = target !== null && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+      if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey || typing || recordId !== null) {
+        return;
+      }
+
+      event.preventDefault();
+      if (picked) {
+        setEditInPlace((asked) => asked + 1);
+      } else {
+        setEditInHeader((asked) => asked + 1);
+      }
+    };
+    window.addEventListener("keydown", keyed);
+    return () => window.removeEventListener("keydown", keyed);
+  }, [picked, recordId]);
   const versionParam = Number(params.get("v") ?? "");
   const recordVersion = Number.isSafeInteger(versionParam) && versionParam > 0 ? versionParam : null;
 
@@ -202,6 +223,7 @@ export default function ExplorerPage() {
           navigate({ q: typed, lq: asLucene ? "1" : null, kind: picked ? ALL_KINDS : kindParam, id: null, v: null });
         }}
         onOpenId={openId}
+        shortcut={!picked && recordId === null}
         focusRequest={editInHeader}
         className="min-w-[280px] max-w-[760px] flex-1"
         testId="explorer-search"
@@ -246,12 +268,14 @@ export default function ExplorerPage() {
     content = (
       <>
         {!browsing && recordId === null && (
-          <ExplorerWelcome
-            partition={connection.data.partition}
-            onBrowseTypes={() => navigate({ view: "types" })}
-            onOpenRecent={openRecent}
-            onOpenType={(type) => goScope(type.scope)}
-          />
+          <WindowFrame testId="explorer-welcome-frame">
+            <ExplorerWelcome
+              partition={connection.data.partition}
+              onBrowseTypes={() => navigate({ view: "types" })}
+              onOpenRecent={openRecent}
+              onOpenType={(type) => goScope(type.scope)}
+            />
+          </WindowFrame>
         )}
         {/* The records stay as they were left while a record is open, so going back finds the list where it was. */}
         {browsing && (
@@ -279,7 +303,7 @@ export default function ExplorerPage() {
                     label={`Search ${scopeLabel(scope)}`}
                     onSearch={(typed, asLucene) => navigate({ q: typed, lq: asLucene ? "1" : null, id: null, v: null })}
                     onOpenId={openId}
-                    dense
+                    shortcut
                     focusRequest={editInPlace}
                     testId="explorer-within"
                   />

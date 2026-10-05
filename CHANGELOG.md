@@ -646,6 +646,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The explorer's welcome is a workbench view.** It fills the window as the browse view does, where it was a narrow
+  column in a large card: **Recently opened** lists the records opened lately as the records grid (name, type and
+  version, the id cut from the start with a copy, when it was opened; the arrow keys and Enter open one, **Clear**
+  forgets them), and beside it **Types** offers **Browse every type** and the types browsed lately, over a **Search
+  syntax** panel whose examples any partition answers. Each group of types has a glyph, the same in the welcome and in
+  the list of types. `/` puts the cursor in the search that is the list's, and the header's controls are all 32px high
+  ([osdu/docs/explorer.md](osdu/docs/explorer.md#browsing)).
 - **The explorer searches inside the type picked from a field over its records.** Once a group, a type or a kind is
   picked, a search field stands over its records, in line with the filter over the types ("Search Wellbore by id, name
   or any text"), so a type found in the list is searched where its records are rather than from the field the page

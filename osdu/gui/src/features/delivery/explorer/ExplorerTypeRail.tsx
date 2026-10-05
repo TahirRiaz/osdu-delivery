@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight, Layers } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SearchInput } from "@/components/SearchInput";
 import { cn } from "@/lib/utils";
 import type { ExplorerTypes } from "../../../api/explorer";
+import { GroupGlyph } from "./ExplorerGlyphs";
 import { sameScope, typeTree, type ExplorerScope, type GroupNode } from "./explorerModel";
 import { ReadingBar } from "./ReadingBar";
 
@@ -21,9 +22,10 @@ function Count({ value, quiet = false }: { value: number; quiet?: boolean }) {
   );
 }
 
-/** One row of the rail: a caret where it folds, the name, the count; the whole row picks what it names. */
-function Row({ depth, label, title, count, selected, open, onToggle, onSelect, mono = false, testId }: {
+/** One row of the rail: a caret where it folds, a glyph where it has one, the name, the count; the whole row picks what it names. */
+function Row({ depth, icon, label, title, count, selected, open, onToggle, onSelect, mono = false, testId }: {
   depth: number;
+  icon?: ReactNode;
   label: string;
   title?: string;
   count: number;
@@ -54,7 +56,8 @@ function Row({ depth, label, title, count, selected, open, onToggle, onSelect, m
           </button>
         )
         : <span className="size-5 shrink-0" aria-hidden />}
-      <button type="button" className="flex h-full min-w-0 flex-1 items-center text-left" onClick={onSelect} title={title ?? label} aria-current={selected ? "true" : undefined}>
+      <button type="button" className="flex h-full min-w-0 flex-1 items-center gap-1.5 text-left" onClick={onSelect} title={title ?? label} aria-current={selected ? "true" : undefined}>
+        {icon}
         <span className={cn("min-w-0 truncate", mono && "font-mono text-[11px]")}>{label}</span>
         <Count value={count} quiet={!selected} />
       </button>
@@ -136,6 +139,7 @@ export function ExplorerTypeRail({ types, loading, error, scope, onScope }: {
                 <div key={group.group}>
                   <Row
                     depth={0}
+                    icon={<GroupGlyph group={group.group} className="size-3.5" />}
                     label={group.group}
                     count={group.count}
                     selected={picked(groupScope)}
