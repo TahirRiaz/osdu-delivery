@@ -151,7 +151,104 @@ export const explorerApi = {
     const answered = await post<ExplorerAnswer<ExplorerListValidation>>(`/api/v1/delivery/explorer/validate-list${partitionQuery(partition)}`, request);
     return { ...answered, answer: listValidationOf(answered.answer) };
   },
+  /**
+   * The types whose schemas name records of a type, from the partition's schemas, read once and kept by the control
+   * plane; `refresh` reads them again. While they are read, the answer says where the reading stands.
+   */
+  referencedBy: async (partition: string | null, request: ExplorerReferencesRequest) => {
+    const answered = await post<ExplorerAnswer<ExplorerReferences>>(`/api/v1/delivery/explorer/referenced-by${partitionQuery(partition)}`, request);
+    return { ...answered, answer: referencesOf(answered.answer) };
+  },
 };
+
+/** The type whose referring types are asked for: `group--Type`, or a kind naming one. */
+export interface ExplorerReferencesRequest {
+  type: string;
+  /** Reads the partition's schemas again first: those added since, and those in development. */
+  refresh?: boolean;
+}
+
+/** A place a kind's records name the type asked about. */
+export interface ExplorerReferencePlace {
+  /** The property path, a list's items by `[]`: `data.VerticalMeasurements[].VerticalMeasurementUnitOfMeasureID`. */
+  at: string;
+  /** The schema marks no `x-osdu-relationship` there; the type is read from the pattern an id there must match. */
+  byPattern: boolean;
+}
+
+/** One kind whose schema names the type asked about. */
+export interface ExplorerReferringKind {
+  kind: string;
+  version: string;
+  /** PUBLISHED, DEVELOPMENT or OBSOLETE. */
+  status: string;
+  places: ExplorerReferencePlace[];
+  morePlaces: number;
+  /** Its schema holds a reference that was not followed, behind which another place may be. */
+  partial: boolean;
+}
+
+/** A kind of a referring type whose schema names the type asked about nowhere. */
+export interface ExplorerKindVersion {
+  kind: string;
+  version: string;
+  status: string;
+  partial: boolean;
+}
+
+/** A type with a kind whose records name the type asked about: the kinds that do, and those that do not. */
+export interface ExplorerReferringType {
+  entityType: string;
+  kinds: ExplorerReferringKind[];
+  without: ExplorerKindVersion[];
+}
+
+/** Where the reading of the partition's schemas stands while it runs. */
+export interface ExplorerReferencesProgress {
+  startedUtc: string;
+  /** Still listing the schemas, before any is read. */
+  listing: boolean;
+  listed: number;
+  toRead: number;
+  read: number;
+  failed: number;
+}
+
+/** The types whose records name records of a type, as the partition's schemas declare them. */
+export interface ExplorerReferences {
+  entityType: string;
+  /** reading: the schemas are being read (what was read before answers meanwhile); ready; failed: see `problem`. */
+  state: "reading" | "ready" | "failed";
+  /** When the reading answered from was made; null before the first one is. */
+  readUtc: string | null;
+  /** How many schemas the service listed, and how many kinds were read, in that reading. */
+  listed: number;
+  kinds: number;
+  progress: ExplorerReferencesProgress | null;
+  problem: string | null;
+  types: ExplorerReferringType[];
+  /** Types with a place naming any record of the type's group, which may be one of the type. */
+  anyOfGroup: ExplorerReferringType[];
+  unread: { kind: string; why: string }[];
+  unreadCount: number;
+  notes: string[];
+}
+
+function referencesOf(answer: ExplorerReferences): ExplorerReferences {
+  return {
+    ...answer,
+    readUtc: answer.readUtc ?? null,
+    listed: answer.listed ?? 0,
+    kinds: answer.kinds ?? 0,
+    progress: answer.progress ?? null,
+    problem: answer.problem ?? null,
+    types: answer.types ?? [],
+    anyOfGroup: answer.anyOfGroup ?? [],
+    unread: answer.unread ?? [],
+    unreadCount: answer.unreadCount ?? 0,
+    notes: answer.notes ?? [],
+  };
+}
 
 // A task's answer leaves a property out when it is null, so the parts of a check that can be null are read as null when
 // they are absent, and the lists as empty: every view of a check then reads one shape.

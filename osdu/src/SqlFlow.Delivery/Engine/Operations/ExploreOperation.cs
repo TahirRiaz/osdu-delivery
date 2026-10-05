@@ -11,6 +11,7 @@ using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Search;
+using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Engine.Operations;
 
@@ -27,8 +28,9 @@ namespace SqlFlow.Delivery.Engine.Operations;
 /// <item><description><c>dimension-example</c>: one key of a drafted dimension made into its row as a build makes it (<see cref="DimensionSampler.ExampleAsync"/>): the dimension's item as YAML (<c>item</c>), the <c>key</c>, and how the key and each collected path are indexed (<c>fields</c>).</description></item>
 /// <item><description><c>validate</c>: one record (<c>targetId</c>, at its latest or a <c>version</c>) checked against the schema of its kind, the Schema service's or a saved template's (<c>schema</c>, <c>templateVersion</c>), with the records it refers to looked up in storage (<see cref="ExplorerChecks.RecordAsync"/>).</description></item>
 /// <item><description><c>validate-list</c>: the records a <c>search</c> finds, up to <c>max</c>, checked the same way and counted by rule (<see cref="ExplorerChecks.ListAsync"/>).</description></item>
+/// <item><description><c>referenced-by</c>: the types whose schemas name records of a <c>type</c> (<see cref="ExplorerReferences"/>), answered from what the partition's Schema service holds, read once and kept (<see cref="PartitionSchemaIndex"/>); <c>refresh</c> reads it again.</description></item>
 /// </list>
-/// Every read goes to the platform's own services (search and storage, openapi v2), whatever route the flow delivers by.
+/// Every read goes to the platform's own services (search, storage and schema), whatever route the flow delivers by.
 /// </summary>
 public sealed class ExploreOperation : DeliveryOperation
 {
@@ -63,6 +65,19 @@ public sealed class ExploreOperation : DeliveryOperation
     public const string DimensionExampleAction = "dimension-example";
     public const string ValidateAction = "validate";
     public const string ValidateListAction = "validate-list";
+    public const string ReferencedByAction = "referenced-by";
+
+    /// <summary>The task argument naming the type whose referring types are asked for: a type, or a kind naming one.</summary>
+    public const string TypeArgument = "type";
+
+    /// <summary>The task argument that, as <c>true</c>, starts a pass reading the partition's schemas again.</summary>
+    public const string RefreshArgument = "refresh";
+
+    /// <summary>
+    /// How long an ask of the types referring to a type waits on a pass reading the partition's schemas before it answers
+    /// with where the pass stands; the pass goes on, and the next ask joins it.
+    /// </summary>
+    public static readonly TimeSpan ReferencesWait = TimeSpan.FromSeconds(5);
 
     /// <summary>The task argument naming the schema a check reads: <c>osdu</c> (the Schema service's, the default) or <c>saved</c>.</summary>
     public const string SchemaArgument = "schema";
@@ -74,7 +89,7 @@ public sealed class ExploreOperation : DeliveryOperation
     public const string MaxArgument = "max";
 
     /// <summary>Every read the task can name.</summary>
-    public static readonly IReadOnlyList<string> Actions = [TypesAction, SearchAction, FieldsAction, ReadAction, DimensionKeysAction, DimensionExampleAction, ValidateAction, ValidateListAction];
+    public static readonly IReadOnlyList<string> Actions = [TypesAction, SearchAction, FieldsAction, ReadAction, DimensionKeysAction, DimensionExampleAction, ValidateAction, ValidateListAction, ReferencedByAction];
 
     /// <summary>How the dimension builder's requests and answers are written: the web's conventions, as the API writes them.</summary>
     public static JsonSerializerOptions BuilderJson { get; } = ReadOnly(new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -133,6 +148,7 @@ public sealed class ExploreOperation : DeliveryOperation
             SearchAction => await explorer.SearchAsync(ExplorerSearch.Parse(payload.Argument(SearchArgument)), ct).ConfigureAwait(false),
             DimensionKeysAction => await Sampler(client, context).KeysAsync(KeysOf(payload, partition), ct).ConfigureAwait(false),
             DimensionExampleAction => await ExampleAsync(context, Sampler(client, context), payload, partition, ct).ConfigureAwait(false),
+            ReferencedByAction => await ReferencedByAsync(context, flow, client, partition, payload, ct).ConfigureAwait(false),
             _ => await explorer.FieldsAsync(payload.RequireArgument(KindArgument), ct).ConfigureAwait(false),
         };
 
@@ -155,6 +171,52 @@ public sealed class ExploreOperation : DeliveryOperation
             context.Templates,
             context.Time,
             examples: context.Examples);
+
+    /// <summary>
+    /// The types whose schemas name records of the payload's type, from the index of the partition's schemas the engine
+    /// keeps, which a pass fills through a connection of its own to the flow's target. An ask waits on a pass under way for
+    /// <see cref="ReferencesWait"/>, then answers with where it stands. A host that keeps no index reads every schema for
+    /// the ask, and answers once they are read.
+    /// </summary>
+    private async Task<ExplorerReferences> ReferencedByAsync(
+        EngineContext context, FlowDefinition flow, OsduHttpClient client, string? partition, ComputeTaskPayload payload, CancellationToken ct)
+    {
+        var asked = payload.RequireArgument(TypeArgument);
+        var entityType = ExplorerReferences.EntityTypeOf(asked) ?? throw new SqlFlowException(ExplorerReferences.TypeProblem(asked));
+        var refresh = string.Equals(payload.Argument(RefreshArgument)?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+        using var own = context.SchemaIndexes is null ? new PartitionSchemaIndexes(context.Time, context.Loggers) : null;
+        var index = (context.SchemaIndexes ?? own!).For(client.Endpoint, partition ?? client.Header(CacheScope.PartitionHeader));
+        if (index.Ensure(token => SchemaConnectionAsync(context, flow, token), refresh) is { } pass)
+        {
+            try
+            {
+                await (own is null ? pass.WaitAsync(ReferencesWait, ct) : pass.WaitAsync(ct)).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // The pass goes on; the answer says where it stands.
+            }
+        }
+
+        return ExplorerReferences.Of(entityType, index.View());
+    }
+
+    /// <summary>A connection to the flow's target of the pass's own, held until the pass ends: the one the engine keeps for the target, or one of its own.</summary>
+    private async Task<SchemaIndexConnection> SchemaConnectionAsync(EngineContext context, FlowDefinition flow, CancellationToken ct)
+    {
+        var lease = _transport is null && context.Clients is { } clients
+            ? await clients.OpenAsync(context, flow, ct).ConfigureAwait(false)
+            : TargetClients.OneOff(context, flow, _transport, _allowLoopback);
+        try
+        {
+            return new SchemaIndexConnection(await lease.ClientAsync(ct).ConfigureAwait(false), lease);
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
+    }
 
     /// <summary>The schema a check reads, as the task names it: <c>osdu</c> (the default) or <c>saved</c>.</summary>
     internal static ExplorerSchemaSource SchemaSourceOf(ComputeTaskPayload payload)

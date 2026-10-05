@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ArrowDownWideNarrow, ChevronRight, Info, Loader2, Pencil, RefreshCw, SearchCode, SearchX, ShieldCheck, X } from "lucide-react";
+import { ArrowDownWideNarrow, ChevronRight, Info, Loader2, Pencil, RefreshCw, SearchCode, SearchX, ShieldCheck, Waypoints, X } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +23,7 @@ import { RecordName } from "../RecordName";
 import { ExplorerGroupBy } from "./ExplorerGroupBy";
 import { ExplorerGrid, type GridColumn } from "./ExplorerGrid";
 import { ExplorerProblem } from "./ExplorerProblem";
+import { ExplorerReferencesDialog } from "./ExplorerReferences";
 import { ExplorerValidateDialog } from "./ExplorerValidation";
 import { ReadingBar } from "./ReadingBar";
 import { counted, fieldLabel, kindParts, SORT_LABELS, type ExplorerScope } from "./explorerModel";
@@ -70,6 +71,16 @@ function SentQuery({ kind, query, onEdit }: { kind: string; query: string | null
       </span>
     </div>
   );
+}
+
+/** The type a place is of, when it is one type or a kind of one: what Referenced by asks about; null for a group or every type. */
+function placeType(scope: ExplorerScope): string | null {
+  if (scope.level === "type") {
+    return scope.entityType;
+  }
+
+  const entityType = scope.level === "kind" ? kindParts(scope.kind).entityType : "";
+  return /^[\w.-]+--[\w.-]+$/.test(entityType) ? entityType : null;
 }
 
 /** One step of the place in view: the partition, a group, a type or a kind, the last the current one. */
@@ -158,6 +169,8 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
 
   const first = pages.data?.pages[0]?.answer;
   const [validating, setValidating] = useState(false);
+  const [referencing, setReferencing] = useState(false);
+  const referencedType = placeType(scope);
   // A record can move between two pages while they are read (the index changes under the search); it is listed once.
   const hits = useMemo(() => {
     const byId = new Map<string, ExplorerHit>();
@@ -335,6 +348,19 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
         <div className="ml-auto flex items-center gap-1">
           {sortMenu}
           <ExplorerGroupBy partition={partition} base={request} onFilter={(filter) => onFilters([...request.filters.filter((f) => f.path !== filter.path || f.value !== filter.value), filter])} />
+          {referencedType !== null && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 px-2.5 text-[13px]"
+              title={`The types whose schemas have a property naming ${kindParts(`*:*:${referencedType}:*`).type} records, and in which versions`}
+              onClick={() => setReferencing(true)}
+              data-testid="explorer-referenced-by"
+            >
+              <Waypoints />
+              Referenced by
+            </Button>
+          )}
           <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" title="Check these records against the schemas of their kinds" onClick={() => setValidating(true)} data-testid="explorer-validate-records">
             <ShieldCheck />
             Validate
@@ -365,6 +391,15 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
         </div>
       )}
       {body}
+      {referencedType !== null && (
+        <ExplorerReferencesDialog
+          partition={partition}
+          entityType={referencedType}
+          open={referencing}
+          onOpenChange={setReferencing}
+          onScope={onScope}
+        />
+      )}
       <ExplorerValidateDialog
         partition={partition}
         request={request}

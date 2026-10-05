@@ -120,6 +120,7 @@ public static partial class DeliveryExplorerEndpoints
         MapElementQueryEndpoints(delivery);
         MapDimensionBuilderEndpoints(delivery);
         MapValidateEndpoints(delivery);
+        MapReferenceEndpoints(delivery);
         return delivery;
     }
 

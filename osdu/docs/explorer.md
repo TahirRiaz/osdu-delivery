@@ -32,7 +32,9 @@ types, records and groups, and the storage service for a record and its versions
 one). The read of a record is the record page's own read-back (`ReadRecordOperation.ReadBackAsync`) over the storage
 protocol, so both pages read a record the same way. A check of records against their schemas ([Validate](#validate))
 reads the Schema service as well (`GET /api/schema-service/v1/schema/{id}`), and looks the records they refer to up in
-storage's batch read (`POST /api/storage/v2/query/records`, or the flow's `protocolOptions.verifyBatchPath`).
+storage's batch read (`POST /api/storage/v2/query/records`, or the flow's `protocolOptions.verifyBatchPath`). The types
+that refer to a type ([Referenced by](#referenced-by)) are read from the Schema service's listing
+(`GET /api/schema-service/v1/schema`) and the schemas it lists.
 
 ## Browsing
 
@@ -231,6 +233,52 @@ an assertion flow's `conforms` test ([documents.md](documents.md#assertion-flow)
 search found that storage did not return (deleted since, or not the caller's to read) are counted as such, and so are
 the records holding an optional block null or empty, read as absent.
 
+## Referenced by
+
+**Referenced by**, in the list's toolbar when one type or one kind of it is picked, lists the types whose records name
+records of that type: every kind the partition's Schema service holds with a property that refers to it, the versions
+that do and those that do not, and where. It answers where a type is used across the partition's schemas: the users of
+a code list before it changes, the kinds a master record is named from, the version a reference was added in.
+
+- **What counts.** A property marked with `x-osdu-relationship` naming the type, wherever it sits: in `data`, in `meta`
+  (`meta[].unitOfMeasureID`), inside a list (`data.VerticalMeasurements[].VerticalMeasurementUnitOfMeasureID`), inside
+  an abstract schema the kind is made of, or in one form of a choice (`oneOf`, `anyOf`), found through the rules a check
+  reads (`SchemaRules`). Where a schema marks no relationship, an id pattern naming the type counts too
+  (`^[\w\-\.]+:reference-data\-\-UnitOfMeasure:...`), marked **by pattern**: OSDU's own schemas always write both, and a
+  partition's own may write the pattern alone. The record's own `id` is never one. A reference names a type, never a
+  version of it, so the answer holds for every version of the type picked; a kind picked asks about its type.
+- **The answer.** The types by group (master data, work products, datasets, reference data), each with every version
+  the partition holds of it as a chip: solid where its schema names the type, dashed where it does not, with the
+  authority and source where a type's versions span several (`eq:custom 1.0.0`), a mark on a version in development or
+  obsolete, and one on a version whose schema refers to a schema that could not be followed, behind which a place is not
+  seen. Under it each property path, with the versions holding it where not all do (`in 1.1.0 to 1.5.0`). A type opens
+  its records, a version the records of that kind. Properties that name any record of the type's group
+  (`{"GroupType": "dataset"}`) are listed apart and folded, since a value there may be one of the type.
+- **Where it is used.** The records of each kind are counted by the aggregation the list of types reads, and **Only
+  types with records** keeps the versions the partition holds records of, and the types with such a version naming the
+  type: where the type is used, not only where it may be. It is offered when the search service counted every kind.
+- **A long answer.** A filter finds a type, a kind or a property path; a long list (a unit of measure is named by nearly
+  every kind) is drawn sixty types at a time as it is scrolled.
+
+**How it is read.** The Schema service cannot be asked which schemas refer to a type: its listing
+(`GET /api/schema-service/v1/schema`) names schemas without their content. So the control plane reads them once and
+keeps what each one names (`PartitionSchemaIndex`): one reading for each Schema service and partition, shared by every
+reader, sixteen partitions at most. A pass lists every status (`PUBLISHED`, `DEVELOPMENT`, `OBSOLETE`) and scope
+(`INTERNAL`, `SHARED`), a hundred at a time, then reads the schema of every kind (`GET /schema/{id}`) eight at a time,
+bundled with the schemas it refers to as [Validate](#validate) bundles one; each of those is read once in a pass however
+many kinds refer to it, and an abstract schema no kind refers to is never read. A pass runs on its own, through a
+connection of its own: an ask waits a few seconds for it, then answers with where it stands (listing, or kinds read of
+the kinds to read), and the dialog asks again until it is done; closing the dialog leaves it running.
+
+A pass after the first reads only what may have changed: the kinds added since and those in development, since a
+published or obsolete schema never changes; a kind no longer listed is dropped. A pass starts when nothing has been
+read, when the reader asks for one (the refresh button), and when the reading is older than twelve hours; the reading it
+replaces answers meanwhile. A kind whose schema cannot be read is listed with why, and the pass goes on; a pass that
+fails fifty reads, more than it answered, stops, since the service is failing rather than one schema. A listing the
+service refuses as asked (400) is noted, and any other refusal fails the pass. A pass that fails says why, keeps the
+last reading, and runs again when asked, or after two minutes. The log has one line for each pass, never one for each
+schema. A host that keeps no index (a node, the CLI) reads every schema for the ask, and answers once they are read.
+
 ## The query of an element
 
 Beside every value and every section of a record (each row of the fields view, each item of a list's table, each line of
@@ -348,6 +396,7 @@ partition for ten), so going back to a type or a page already read shows it at o
 | `POST /api/v1/delivery/explorer/validate?partition=` | operate | One record checked against the schema of its kind ([Validate](#validate)). Body: `targetId`, `version` (its latest when left out), `schema` (`osdu`, the default, for the Schema service's; `saved` for a saved template), `templateVersion` (with `saved`; the kind's newest when left out). Answers the `targetId`, the `version` checked, whether storage holds the record (`found`), its `kind`, the `schema` used (`kind`, `version`, `source` schema-service or template, the schema ids `read`, the references left `unresolved`, `notes`), the `verdict` as a record's history holds it, or why nothing was checked (`problem`), the template versions saved for the kind (`savedVersions`, newest first), and the `guidance`: one guide per problem and per part not checked, in the verdict's order (`path`, `rule`, the value `found`, the `advice`, and the key of what is `expected` there), the `expectations` by that key (`summary`, `title`, `description`, `types`, `required`, `patterns`, `allowed` and `allowedCount`, `formats`, the bounds, `entityTypes`, `properties`, `items`, `forms`, the schema's `examples`, `osduExample`), the data definitions' `example` quoted (`release`, `path`, `webUrl`), or the `exampleNote` saying why none is. |
 | `POST /api/v1/delivery/flows/{pipelineId}/osdu/validate?interface=&partition=` | operate | The same check of one record, read through the flow's own route and credentials as a record page reads it (`interface` and `partition` naming the ledger, as every route of a flow's records does). Body and answer as `/explorer/validate`. A flow whose route keeps no record in storage (dspdm, etp) is refused with 409. |
 | `POST /api/v1/delivery/explorer/validate-list?partition=` | operate | The records a search finds checked against their schemas ([Validate these records](#validate-these-records)). Body: `search` (as `/explorer/search` takes it; its page and grouping are not used), `max` (1 to 1,000, the default), `schema` (`osdu` or `saved`, each kind's newest). Answers `matched`, `asked`, `read`, the ids storage did not return (`notFound`), the counts `valid`, `invalid`, `unverified` and `notChecked`, the `rules` broken (`at`, `rule`, `records`, `problems`, an example's `exampleId`, `examplePath`, `exampleMessage`, `exampleValue`, what the schema takes there as `expected`, and the `advice`; at most 50), each record (`id`, `kind`, `outcome`, `problems`, `unverified`, its `first` problem), the `schemas` used, the kinds `unavailable` with why, `cut` when the search matches more than was read, and `notes`. |
+| `POST /api/v1/delivery/explorer/referenced-by?partition=` | operate | The types whose schemas name records of a type ([Referenced by](#referenced-by)). Body: `type` (a type, `reference-data--UnitOfMeasure`, or a kind naming one), `refresh` (true to read the partition's schemas again first). Answers the `entityType`, the `state` (`reading`, `ready`, or `failed` with the `problem`), the reading answered from (`readUtc`, the schemas `listed`, the `kinds` read), the pass under way (`progress`: `startedUtc`, `listing`, `listed`, `toRead`, `read`, `failed`), the `types` and those naming any record of the type's group (`anyOfGroup`), each with its `entityType`, the `kinds` naming it (`kind`, `version`, `status`, `places` with `at` and `byPattern`, `morePlaces`, `partial`) and those that do not (`without`), the kinds not read (`unread`, each `kind` and `why`, and `unreadCount`), and `notes`. |
 | `POST /api/v1/delivery/explorer/element-queries` | operate | The Lucene query that finds the records holding exactly an element of a record ([The query of an element](#the-query-of-an-element)). Body: `kind` (the record's), `path` (as the record inspector names it, a list's items by their place: `data.GeoContexts[1].GeoTypeID`), `section` (true for an object, a list or an item), `value` (a value's: a text, a number, a boolean or null), `values` (a section's, at most 48: each `path` and `value`). Answers the queries, the exact one first (`purpose` exact, words or exists, `query`, `says`), how the index holds the element (`field`, `reading`), the saved `template` read, why the query is a guess (`guess`), why none can be written (`problem`), and `notes`. Read from the saved templates alone. |
 | `GET /api/v1/delivery/explorer/dimension/candidates?kind=` | operate | The keys the saved template of a `kind` (wildcards per segment) suggests for a dimension ([Building a dimension](#building-a-dimension)), the likeliest first: `path`, the entity types it `names`, whether it is `repeated` in a record, and the template's `title` and `description`; with the `template` read, or why nothing is suggested (`missing`). Read from the saved templates alone. |
 | `POST /api/v1/delivery/explorer/dimension/keys?partition=` | operate | The commonest keys of a drafted dimension's path, which its example steps through. Body: `kind` (wildcards per segment), `query` (as long as a search's text), `path` (a property path, no filter). Answers the records the kind (and the query) holds, the keys with their records (up to 25, `moreKeys` when there are more), how the path is indexed (`keyFieldGuessed` when no saved template says, read as text), notes, and the service's words when it refused the query. |
@@ -361,5 +410,7 @@ compose answers `200` with whatever is wrong with the draft among its `issues`, 
 flow reaches the partition, OSDU refuses) as its `exampleProblem`; only a missing draft, or a part longer than 4,096
 characters or a list longer than 64 entries, is refused with 400. A check answers `200` with a record it could not
 check and why (no schema of its kind, a template not saved); a `schema` other than `osdu` or `saved`, a template
-version longer than 64 characters, or a `max` outside 1 to 1,000 is refused with 400. The MCP server offers none of these routes:
+version longer than 64 characters, or a `max` outside 1 to 1,000 is refused with 400. Referenced by answers `200` while
+the partition's schemas are read, with where the reading stands, and when the reading failed, with why; a `type` that
+names no type is refused with 400. The MCP server offers none of these routes:
 it answers from metadata alone, and the explorer reads OSDU's data.

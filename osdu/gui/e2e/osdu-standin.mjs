@@ -11,7 +11,8 @@
 // start of an id or the records that name one, and the dimension builder's: the records holding any of several values,
 // every record but those, and a property's values grouped commonest first. Storage's batch read answers for the same
 // records, as the explorer's checks read them, and the Schema service answers for the schemas a spec holds through
-// /__e2e/schemas, as a check of records against their kind's schema reads them. The OSDU data definitions are here too,
+// /__e2e/schemas, as a check of records against their kind's schema reads them, and lists them a status and scope at a
+// time, as the explorer's Referenced by reads every schema of a partition. The OSDU data definitions are here too,
 // under /__e2e/data-definitions: one release tag, and the example records a spec holds through /__e2e/examples, which a
 // check's guidance quotes. Everything else answers 404, so a spec that tried to send a record would fail loudly rather
 // than reach a real OSDU.
@@ -320,8 +321,49 @@ const RECORD_AT_VERSION = /^\/api\/storage\/v2\/records\/([^/]+)\/(\d+)$/;
 /** A schema read from the Schema service by its id (GET /api/schema-service/v1/schema/{id}). */
 const SCHEMA_READ = /^\/api\/schema-service\/v1\/schema\/([^/]+)$/;
 
+/** The Schema service's listing of the schemas it holds (GET /api/schema-service/v1/schema). */
+const SCHEMA_LIST = "/api/schema-service/v1/schema";
+
 /** The schemas a spec asked the Schema service to hold, by id. */
 const schemas = new Map();
+
+/** The status and scope each held schema is listed in, by id: published and shared unless the spec said otherwise. */
+const schemaInfos = new Map();
+
+/**
+ * One page of the Schema service's listing (openapi schema_service, getSchemaInfoList): the schemas held in the status
+ * and scope asked (published and internal when the listing names neither, as the specification defaults them), in id
+ * order, a page of `limit` from `offset`.
+ */
+function listSchemas(query) {
+  const status = (query.get("status") ?? "PUBLISHED").toUpperCase();
+  const scope = (query.get("scope") ?? "INTERNAL").toUpperCase();
+  const offset = Number(query.get("offset") ?? 0);
+  const limit = Number(query.get("limit") ?? 100);
+  const listed = [...schemas.keys()]
+    .filter((id) => {
+      const info = schemaInfos.get(id) ?? { status: "PUBLISHED", scope: "SHARED" };
+      return info.status === status && info.scope === scope;
+    })
+    .sort();
+  const page = listed.slice(offset, offset + limit);
+  return {
+    schemaInfos: page.map((id) => {
+      const [authority, source, entityType, version] = id.split(":");
+      const [major, minor, patch] = (version ?? "0.0.0").split(".").map(Number);
+      return {
+        schemaIdentity: { authority, source, entityType, schemaVersionMajor: major, schemaVersionMinor: minor, schemaVersionPatch: patch, id },
+        createdBy: "e2e-stand-in",
+        dateCreated: "2026-07-17T00:00:00Z",
+        status,
+        scope,
+      };
+    }),
+    offset,
+    count: page.length,
+    totalCount: listed.length,
+  };
+}
 
 /** Where the control plane reads the OSDU data definitions here: the GitLab API of the repository, as its paths go. */
 const DATA_DEFINITIONS = "/__e2e/data-definitions/";
@@ -405,6 +447,7 @@ const server = createServer((request, response) => {
   if (path === "/__e2e/schemas") {
     if (request.method === "DELETE") {
       schemas.clear();
+      schemaInfos.clear();
       send(response, 200, { held: 0 });
       return;
     }
@@ -419,7 +462,16 @@ const server = createServer((request, response) => {
             return;
           }
 
+          if (!/^[\w.-]+:[\w.-]+:[\w.-]+:\d+\.\d+\.\d+$/.test(body.id)) {
+            send(response, 400, { message: `A schema's id is authority:source:entityType:major.minor.patch, not ${body.id}.` });
+            return;
+          }
+
           schemas.set(body.id, body.schema);
+          schemaInfos.set(body.id, {
+            status: typeof body.status === "string" ? body.status.toUpperCase() : "PUBLISHED",
+            scope: typeof body.scope === "string" ? body.scope.toUpperCase() : "SHARED",
+          });
           send(response, 200, { id: body.id, held: schemas.size });
         })
         .catch((error) => send(response, 400, { message: `The e2e OSDU stand-in could not read the schema: ${error instanceof Error ? error.message : String(error)}` }));
@@ -469,6 +521,11 @@ const server = createServer((request, response) => {
       send(response, 404, { message: "404 File Not Found" });
     }
 
+    return;
+  }
+
+  if (request.method === "GET" && path === SCHEMA_LIST) {
+    send(response, 200, listSchemas(new URL(request.url ?? "/", "http://stand-in").searchParams));
     return;
   }
 

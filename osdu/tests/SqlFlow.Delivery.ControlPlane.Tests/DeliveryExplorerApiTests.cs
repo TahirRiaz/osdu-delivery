@@ -163,6 +163,22 @@ public sealed class DeliveryExplorerApiTests
             await RefusedAsync(client, token, list400, new { search = new { kind = "osdu:wks" } }, HttpStatusCode.BadRequest, "is not a kind");
             await RefusedAsync(client, token, list400, new { schema = "remote" }, HttpStatusCode.BadRequest, "is not a schema a record is checked against");
 
+            // The types referring to a type are asked of the type a kind names, whatever its version, and the partition's
+            // schemas are read again only when asked.
+            var referring = await RanAsync(client, token, $"/api/v1/delivery/explorer/referenced-by?partition={named}", new { type = " osdu:wks:reference-data--UnitOfMeasure:1.0.0 " });
+            Assert.Equal(
+                (ExploreOperation.OperationName, storage.Name, named),
+                (referring.Operation, referring.SourceRef, referring.Argument(DeliveryOperation.PartitionArgument)));
+            Assert.Equal(
+                (ExploreOperation.ReferencedByAction, "reference-data--UnitOfMeasure", (string?)null),
+                (referring.Argument(ExploreOperation.ActionArgument), referring.Argument(ExploreOperation.TypeArgument), referring.Argument(ExploreOperation.RefreshArgument)));
+            var refreshed = await RanAsync(client, token, $"/api/v1/delivery/explorer/referenced-by?partition={named}", new { type = "master-data--Wellbore", refresh = true });
+            Assert.Equal(("master-data--Wellbore", "true"), (refreshed.Argument(ExploreOperation.TypeArgument), refreshed.Argument(ExploreOperation.RefreshArgument)));
+            var referenced400 = $"/api/v1/delivery/explorer/referenced-by?partition={named}";
+            await RefusedAsync(client, token, referenced400, new { type = "UnitOfMeasure" }, HttpStatusCode.BadRequest, "is not a type");
+            await RefusedAsync(client, token, referenced400, new { type = "*:*:reference-data--*:*" }, HttpStatusCode.BadRequest, "is not a type");
+            await RefusedAsync(client, token, referenced400, new { }, HttpStatusCode.BadRequest, "Name the type");
+
             // A read takes a reference as a document holds it, and a version beside it; a flow whose partition is its header's
             // is told no partition, since its header already names it.
             var read = await RanAsync(client, token, "/api/v1/delivery/explorer/read", new { targetId = $" {headed}:master-data--Wellbore:NO-33: ", version = 1712345678901234L }, headed);

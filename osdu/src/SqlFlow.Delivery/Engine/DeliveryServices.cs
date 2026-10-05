@@ -12,6 +12,7 @@ using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Listeners;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Source;
@@ -89,6 +90,9 @@ public static class DeliveryServices
         // The connections to OSDU a person's reads keep between calls (a record read back, a probe, the explorer).
         services.TryAddSingleton(sp => new TargetClients(sp.GetRequiredService<TimeProvider>()));
 
+        // What each partition's Schema service holds, read once and kept, which the explorer's Referenced by answers from.
+        services.TryAddSingleton(sp => new PartitionSchemaIndexes(sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ILoggerFactory>()));
+
         services.AddSingleton(sp => new EngineContext(
             sp.GetRequiredService<DeliveryDocumentLoader>(),
             sp.GetRequiredService<IIngestionSourceFactory>(),
@@ -109,7 +113,8 @@ public static class DeliveryServices
             Clients: sp.GetRequiredService<TargetClients>(),
             // The OSDU data definitions' example records, which a check's guidance quotes; a host that keeps no copy of
             // the data definitions (a node) registers none, and guidance there quotes the schema alone.
-            Examples: sp.GetService<IOfficialExamples>()));
+            Examples: sp.GetService<IOfficialExamples>(),
+            SchemaIndexes: sp.GetRequiredService<PartitionSchemaIndexes>()));
 
         // Execution: the run executors behind the platform's document executor, the compute operations a node runs for the
         // control plane (a value check and a removal), and the operations the control plane runs itself.
