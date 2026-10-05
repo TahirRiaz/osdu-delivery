@@ -54,8 +54,10 @@ function WindowFrame({ hidden = false, children, testId }: { hidden?: boolean; c
  * The explorer (osdu/docs/explorer.md): a browser of what an OSDU partition holds, read live from OSDU. It opens on a
  * welcome that reads nothing from OSDU: the search box, the records and types opened lately in this browser, and the types
  * of the partition one click away. Once asked, the types of the partition the title bar names stand beside its records; a
- * type, a group or a kind narrows them, the search box takes an id (which opens the record), the start of one, a name, any
- * text or a Lucene query, and a property's values group and narrow them further. A record opens in the record inspector, under the place it sits in, with
+ * type, a group or a kind narrows them, and a property's values group and narrow them further. The search box in the
+ * header searches every type, and a type, a group or a kind picked has a search box of its own over its records, which
+ * searches inside it; each takes an id (which opens the record), the start of one, a name, any text or a Lucene query,
+ * and the search shows in the box whose place it searches. A record opens in the record inspector, under the place it sits in, with
  * its versions, its links and the records that mention it. Everything is in the address (the search, the place, the values,
  * the order and the record open), so a link, Back and a refresh land on the same view; the records already read are kept,
  * so going back is immediate. Nothing here reads what the delivery system keeps.
@@ -98,6 +100,9 @@ export default function ExplorerPage() {
   // Until then nothing is read from OSDU.
   const asksRecords = text !== "" || kindParam !== null || filters.length > 0;
   const browsing = asksRecords || params.get("view") === "types";
+  // A group, a type or a kind picked: its records have a search box of their own, which searches inside it and shows the
+  // search, while the header's searches every type.
+  const picked = asksRecords && scope.level !== "all";
   const versionParam = Number(params.get("v") ?? "");
   const recordVersion = Number.isSafeInteger(versionParam) && versionParam > 0 ? versionParam : null;
 
@@ -176,13 +181,22 @@ export default function ExplorerPage() {
         </RichTooltip>
       )}
       <ExplorerSearchBar
-        key={`${text}|${lucene ? 1 : 0}`}
-        text={text}
-        lucene={lucene}
-        placeholder={scope.level === "all" ? "Search by id, name or any text" : `Search ${scopeLabel(scope)} by id, name or any text`}
-        onSearch={(typed, asLucene) => navigate({ q: typed, lq: asLucene ? "1" : null, id: null, v: null })}
+        key={picked ? "every-type" : `${text}|${lucene ? 1 : 0}`}
+        text={picked ? "" : text}
+        lucene={picked ? false : lucene}
+        placeholder={picked ? "Search every type by id, name or any text" : "Search by id, name or any text"}
+        label="Search OSDU"
+        onSearch={(typed, asLucene) => {
+          // From a place picked, an empty field asks nothing: the place keeps its own search.
+          if (picked && typed === "") {
+            return;
+          }
+
+          navigate({ q: typed, lq: asLucene ? "1" : null, kind: picked ? ALL_KINDS : kindParam, id: null, v: null });
+        }}
         onOpenId={openId}
         className="min-w-[280px] max-w-[760px] flex-1"
+        testId="explorer-search"
       />
       {(browsing || recordId !== null) && <ExplorerRecent onOpen={openRecent} />}
       {reachable && build.draft === null && (
@@ -247,6 +261,22 @@ export default function ExplorerPage() {
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel className="flex min-h-0 flex-col">
+              {/* Over the records of the place picked, in line with the filter over the types. */}
+              {picked && (
+                <div className="border-b p-2">
+                  <ExplorerSearchBar
+                    key={`${text}|${lucene ? 1 : 0}`}
+                    text={text}
+                    lucene={lucene}
+                    placeholder={`Search ${scopeLabel(scope)} by id, name or any text`}
+                    label={`Search ${scopeLabel(scope)}`}
+                    onSearch={(typed, asLucene) => navigate({ q: typed, lq: asLucene ? "1" : null, id: null, v: null })}
+                    onOpenId={openId}
+                    dense
+                    testId="explorer-within"
+                  />
+                </div>
+              )}
               {asksRecords
                 ? (
                   <ExplorerResults

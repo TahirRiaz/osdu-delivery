@@ -646,6 +646,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **The explorer searches inside the type picked from a field over its records.** Once a group, a type or a kind is
+  picked, a search field stands over its records, in line with the filter over the types ("Search Wellbore by id, name
+  or any text"), so a type found in the list is searched where its records are rather than from the field the page
+  opened with. The field in the page's header now searches every type ("Search every type by id, name or any text"), a
+  search from it leaving the type picked for every type. Each search shows in the field whose place it searches: a search
+  of every type moves into the type's field when a type is then picked, and back when every type is. Both fields read
+  what is typed as the header's did (an id opens its record, the start of one, any text, a Lucene query), and the
+  address carries the search as before ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching)).
 - **A person's reads of a flow are answered at once, by the control plane.** A probe of a flow's target, a record read
   back from OSDU or read by id, its rows read from the ingestion tables, a preview, a scope's values and every explorer
   read used to be queued as a compute task for a node and polled; the control plane now runs the same operation in its

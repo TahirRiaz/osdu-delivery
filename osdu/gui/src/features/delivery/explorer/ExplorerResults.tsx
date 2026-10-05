@@ -311,7 +311,7 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col" data-testid="explorer-results">
+    <div className="relative flex min-h-0 flex-1 flex-col" data-testid="explorer-results">
       {pages.isFetching && <ReadingBar label="Reading the records from OSDU" />}
       <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-b px-3 py-1.5">
         <nav className="flex min-w-0 flex-wrap items-center gap-1 text-[13px]" aria-label="Where the records are" data-testid="explorer-place">

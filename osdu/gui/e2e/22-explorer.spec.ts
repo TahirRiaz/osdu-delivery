@@ -58,6 +58,7 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-types")).toHaveCount(0);
     await adminPage.getByTestId("explorer-browse-types").click();
     await expect(adminPage.getByTestId("explorer-pick-type")).toBeVisible();
+    await expect(adminPage.getByTestId("explorer-within")).toHaveCount(0);
 
     // The kinds the partition holds, counted by one aggregation: its wellbores and the log this spec holds.
     const types = adminPage.getByTestId("explorer-types");
@@ -76,14 +77,19 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:master-data--Wellbore:*");
     await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("every record of the kind");
 
-    // A name finds the records holding it, within the type picked.
-    await adminPage.getByTestId("explorer-search-input").fill("NO 33/9-C-28");
-    await expect(adminPage.getByTestId("explorer-search-hint")).toContainText("search");
-    await adminPage.getByTestId("explorer-search-input").press("Enter");
+    // A name typed in the field over the records finds those holding it, within the type picked; the header's field
+    // searches every type, and leaves the search to the type's.
+    await expect(adminPage.getByTestId("explorer-within-input")).toHaveAttribute("placeholder", "Search Wellbore by id, name or any text");
+    await expect(adminPage.getByTestId("explorer-search-input")).toHaveAttribute("placeholder", "Search every type by id, name or any text");
+    await adminPage.getByTestId("explorer-within-input").fill("NO 33/9-C-28");
+    await expect(adminPage.getByTestId("explorer-within-hint")).toContainText("search");
+    await adminPage.getByTestId("explorer-within-input").press("Enter");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
     await expect(grid).toContainText("NO 33/9-C-28 A");
     await expect(grid).toContainText("NO 33/9-C-28 B");
+    await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:master-data--Wellbore:*");
     await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("NO 33/9-C-28");
+    await expect(adminPage.getByTestId("explorer-search-input")).toHaveValue("");
 
     // A property's values group the records, and a value narrows them to it.
     await adminPage.getByTestId("explorer-group-by").click();
@@ -92,11 +98,18 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-filter")).toContainText("NO 33/9-C-28 B");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
 
-    // The value narrowed to is a clause of the query sent, which Edit takes into the search box as Lucene.
+    // The value narrowed to is a clause of the query sent, which Edit takes into the type's search field as Lucene.
     await expect(adminPage.getByTestId("explorer-sent-query")).toContainText('data.FacilityName.keyword:"NO 33/9-C-28 B"');
     await adminPage.getByTestId("explorer-sent-edit").click();
-    await expect(adminPage.getByTestId("explorer-search-input")).toHaveValue(/data\.FacilityName\.keyword:"NO 33\/9-C-28 B"/);
+    await expect(adminPage.getByTestId("explorer-within-input")).toHaveValue(/data\.FacilityName\.keyword:"NO 33\/9-C-28 B"/);
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+
+    // The header's field searches every type: the type's field goes, and the search shows in the header.
+    await adminPage.getByTestId("explorer-search-input").fill("NO 33/9-C-28 B");
+    await adminPage.getByTestId("explorer-search-input").press("Enter");
+    await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:*:*", { timeout: 60_000 });
+    await expect(adminPage.getByTestId("explorer-within")).toHaveCount(0);
+    await expect(adminPage.getByTestId("explorer-search-input")).toHaveValue("NO 33/9-C-28 B");
   });
 
   test("reads a record under its place, follows what mentions it, and compares two versions of that", async ({ adminPage }) => {

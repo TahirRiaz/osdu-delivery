@@ -10,18 +10,25 @@ import { idParts } from "../osduRecordModel";
 import { forgetRecentRecords, kindParts, recentRecords, type RecentRecord } from "./explorerModel";
 
 /**
- * The explorer's one search field. What is typed is read when Enter is pressed: a whole record id opens that record, and
- * anything else searches the records in the place picked, as an id, the start of one, or words found anywhere in a record.
+ * A search field of the explorer: the page's own, which searches every type, and the one over the records of a group, a
+ * type or a kind picked, which searches inside it. What is typed is read when Enter is pressed: a whole record id opens
+ * that record, and anything else searches the records, as an id, the start of one, or words found anywhere in a record.
  * The braces switch it to a Lucene query, sent as written. A hint at the end of the field says what Enter will do, so the
  * reader is never surprised; Escape clears it. The field starts from the search in the address, so going back restores it.
  */
-export function ExplorerSearchBar({ text, lucene, placeholder, onSearch, onOpenId, className }: {
+export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, onOpenId, dense = false, className, testId }: {
   text: string;
   lucene: boolean;
   placeholder: string;
+  /** The field's accessible name, which tells the page's field from the one over the records. */
+  label: string;
   onSearch: (text: string, lucene: boolean) => void;
   onOpenId: (id: string) => void;
+  /** As tall as the filter over the types, so the two fields over the two lists line up. */
+  dense?: boolean;
   className?: string;
+  /** Base testid; the input, the hint, the clear button and the braces add `-input`, `-hint`, `-clear` and `-lucene`. */
+  testId: string;
 }) {
   const [draft, setDraft] = useState(text);
   const [asLucene, setAsLucene] = useState(lucene);
@@ -46,28 +53,28 @@ export function ExplorerSearchBar({ text, lucene, placeholder, onSearch, onOpenI
   };
 
   return (
-    <form role="search" onSubmit={submit} className={cn("relative flex min-w-0 items-center", className)} data-testid="explorer-search">
+    <form role="search" aria-label={label} onSubmit={submit} className={cn("relative flex min-w-0 items-center", className)} data-testid={testId}>
       <Search className="pointer-events-none absolute left-3 size-4 text-muted-foreground" />
       <Input
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={keyed}
         placeholder={asLucene ? "A Lucene query: data.FacilityName:\"NO 33*\" AND kind:*Wellbore*" : placeholder}
-        aria-label="Search OSDU"
+        aria-label={label}
         spellCheck={false}
         autoComplete="off"
-        className={cn("h-9 bg-secondary/70 pl-9 pr-36 text-[13px] dark:bg-input/60", asLucene && "font-mono text-[12px]")}
-        data-testid="explorer-search-input"
+        className={cn(dense ? "h-8" : "h-9", "bg-secondary/70 pl-9 pr-36 text-[13px] dark:bg-input/60", asLucene && "font-mono text-[12px]")}
+        data-testid={`${testId}-input`}
       />
       <div className="absolute right-1.5 flex items-center gap-1">
         {hint !== null && (
-          <span className="pointer-events-none flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground" data-testid="explorer-search-hint">
+          <span className="pointer-events-none flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground" data-testid={`${testId}-hint`}>
             <CornerDownLeft className="size-3" />
             {hint}
           </span>
         )}
         {draft !== "" && (
-          <button type="button" onClick={() => setDraft("")} aria-label="Clear the search" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground" data-testid="explorer-search-clear">
+          <button type="button" onClick={() => setDraft("")} aria-label="Clear the search" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground" data-testid={`${testId}-clear`}>
             <X className="size-4" />
           </button>
         )}
@@ -75,12 +82,12 @@ export function ExplorerSearchBar({ text, lucene, placeholder, onSearch, onOpenI
           type="button"
           variant={asLucene ? "secondary" : "ghost"}
           size="icon"
-          className={cn("size-7", asLucene && "text-primary")}
+          className={cn(dense ? "size-6" : "size-7", asLucene && "text-primary")}
           aria-pressed={asLucene}
           aria-label="Write a Lucene query"
           title={asLucene ? "Searching with a Lucene query, sent as written. Click to search by id, name or text." : "Write a Lucene query: field:value, AND, OR, quotes and wildcards, sent as written."}
           onClick={() => setAsLucene((was) => !was)}
-          data-testid="explorer-search-lucene"
+          data-testid={`${testId}-lucene`}
         >
           <Braces />
         </Button>

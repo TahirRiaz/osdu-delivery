@@ -58,7 +58,9 @@ Once asked, the records of the place picked stand beside the kinds of the partit
   every type is in view, its id cut from the start so the end that tells ids apart stays visible (a copy on hover), and
   when it last changed. The grid fits its panel and scrolls inside it under a fixed header; only the rows in view are
   drawn, so ten thousand rows scroll as lightly as a hundred. Rows load a hundred at a time as the grid is scrolled. The
-  arrow keys, Page Up and Down, Home and End move through the rows, and Enter opens one.
+  arrow keys, Page Up and Down, Home and End move through the rows, and Enter opens one. The records of a group, a type
+  or a kind have a search field of their own over them, in line with the filter over the types, which searches inside
+  it ([Searching](#searching)).
 - **The place.** One line over the grid says where the records are (the partition, the group, the type, the kind, each a
   step back), how many there are (the index's exact count, `trackTotalCount`), how the search was read, and what the
   service made the explorer do (an order it would not sort by, a clause it refused), with the query sent one copy away.
@@ -77,7 +79,14 @@ every page is one query of the index.
 
 ## Searching
 
-One field takes what the reader holds. Enter reads it, and a hint at the end of the field says what Enter will do:
+Each search field searches the list it stands over. The field in the page's header searches every type (and opens an
+id); the filter over the types finds a type in the list; and once a group, a type or a kind is picked, a field over its
+records, in line with the filter, searches inside it ("Search Wellbore by id, name or any text"). The search shows in the
+field whose place it searches: a search of every type moves into the type's field when a type is then picked, and back
+to the header when **All types** or the partition is picked again. Searching from the header while a type is picked
+searches every type, the values narrowed to kept; Enter on its empty field there asks nothing, so the type keeps its
+search. Both fields read what is typed the same way. Enter reads it, and a hint at the end of the field says what Enter
+will do:
 
 | Typed | Read as | Query |
 | --- | --- | --- |
