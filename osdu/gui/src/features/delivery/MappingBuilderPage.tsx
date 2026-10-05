@@ -641,7 +641,7 @@ export default function MappingBuilderPage() {
                 <Input
                   id="mapping-builder-label"
                   className="h-8 font-mono"
-                  placeholder="{wellbore_uwi} / {log_source}"
+                  placeholder="{name} ({id})"
                   value={draft.label ?? ""}
                   onChange={(event) => {
                     const value = event.target.value;

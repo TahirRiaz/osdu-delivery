@@ -244,7 +244,7 @@ function ReplaceEditor({
               value={modifier.table ?? ""}
               options={tableOptions}
               onChange={(value) => onChange({ table: value, match: null, field: null })}
-              placeholder="RecallUnits"
+              placeholder="the table"
               testId={`${testId}-table-${index}`}
             />
           </div>

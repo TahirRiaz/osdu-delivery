@@ -719,12 +719,12 @@ function EntryForm({ target, draft, variables, cacheTypes, issues, onSave, onClo
           <Section
             title="Expression"
             hint={repeater === null
-              ? "Computed from the dataset row: a column by its name, a parameter as $param.<name>, text in quotes. Such as coalesce(log_name, log_source), upper(trim(unit)) or iif(depth > 1000, \"deep\", \"shallow\"). Work heavier than this belongs in the ingestion SQL."
-              : `Inside ${repeater}, a name reads the item's row of ${repeaterChild ?? "the child dataset"}, and $dataset.<column> the dataset row. Such as coalesce(curve_unit, $dataset.depth_unit).`}
+              ? "Computed from the dataset row: a column by its name, a parameter as $param.<name>, text in quotes. Such as coalesce(name, alias), upper(trim(unit)) or iif(depth > 1000, \"deep\", \"shallow\"). Work heavier than this belongs in the ingestion SQL."
+              : `Inside ${repeater}, a name reads the item's row of ${repeaterChild ?? "the child dataset"}, and $dataset.<column> the dataset row. Such as coalesce(unit, $dataset.default_unit).`}
           >
             <Textarea
               className="min-h-16 font-mono text-[12px]"
-              placeholder={repeater === null ? "coalesce(log_name, log_source)" : "coalesce(curve_unit, $dataset.depth_unit)"}
+              placeholder={repeater === null ? "coalesce(name, alias)" : "coalesce(unit, $dataset.default_unit)"}
               value={expression}
               onChange={(event) => setExpression(event.target.value)}
               data-testid="mapping-builder-entry-expression"

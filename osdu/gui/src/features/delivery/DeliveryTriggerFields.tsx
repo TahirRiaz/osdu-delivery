@@ -417,7 +417,7 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
           <Textarea
             id={`${idPrefix}-values`}
             className="min-h-16 font-mono text-[12px]"
-            placeholder={"logSource=north\nregion=NO"}
+            placeholder={"country=NO\nregion=north"}
             value={valuesText}
             onChange={(event) => setValuesText(event.target.value)}
             data-testid="trigger-values"

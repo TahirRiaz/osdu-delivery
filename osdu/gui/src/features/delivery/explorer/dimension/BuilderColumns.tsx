@@ -365,7 +365,7 @@ function MoreSettings({ draft, recordKind, onChange, problemOf }: {
             value={draft.query ?? ""}
             onChange={(event) => onChange({ ...draft, query: event.target.value === "" ? null : event.target.value })}
             className="h-7 font-mono text-[12px]"
-            placeholder='a query, such as data.Source:"Recall"; {partition} is the partition built in'
+            placeholder="a query, such as createTime:[2024-01-01 TO *]; {partition} is the partition built in"
             data-testid="builder-query"
           />
           {problemOf("query") !== null && <p className="text-[11.5px] text-destructive">{problemOf("query")}</p>}

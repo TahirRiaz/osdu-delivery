@@ -416,7 +416,7 @@ export function DimensionSearchBuilder({ entries, kind, onKind, picks, onPicks, 
               id="search-builder-within"
               value={typedWithin}
               onChange={(event) => setTypedWithin(event.target.value)}
-              placeholder='data.LogSource:"STAT_COMP"'
+              placeholder="createTime:[2024-01-01 TO *]"
               className="h-8 font-mono text-[12px]"
               data-testid="search-builder-within"
             />
