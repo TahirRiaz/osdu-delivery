@@ -46,8 +46,9 @@ public sealed class SearchDistinctSource : IDistinctValueSource
         ArgumentNullException.ThrowIfNull(slice);
         var query = Query(slice, extra: null) with { ReturnedFields = ["id", Field.Path] };
 
-        // A record the cursor hands back twice is the same record: counted once, as the aggregation counts it.
-        await foreach (var page in _search.PagesAsync(query, OsduSearch.MaxPage, deduplicate: true, ct).ConfigureAwait(false))
+        // The reader hands each record out once, so a record the cursor returns twice is counted once, as the aggregation
+        // counts it; and it hands out every record of the slice or fails the read, so no slice is counted short.
+        await foreach (var page in _search.PagesAsync(query, OsduSearch.MaxPage, ct).ConfigureAwait(false))
         {
             var units = new List<DistinctUnit>(page.Hits.Count);
             foreach (var hit in page.Hits)

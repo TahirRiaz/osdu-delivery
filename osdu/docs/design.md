@@ -1088,12 +1088,42 @@ concurrently up to the flow's concurrency; pages within a kind are sequential be
 cursor is.
 
 An empty page ends a cursor. The search service hands back a cursor for the page after
-the last one as well, so ending only on a null cursor is how a walk pages forever, and a
-cursor that comes back unchanged is the same page again. A walk that stops before the
-end (a failure, a cancellation) releases the cursor
-(`DELETE /api/search/v2/query_with_cursor/{cursor}`) rather than leaving the search
-context to expire. A cache refresh (section 6.2) pages the same way for the same
-reasons.
+the last one as well, so ending only on a null cursor is how a walk pages forever. A
+deployment may also hand back the same cursor for every page while the context behind it
+advances (Azure Data Manager for Energy did on 2026-09-18), so a repeated cursor says
+nothing; three pages in a row that bring no record new to the walk end it as going in
+circles.
+
+Every cursor walk in the module (a retrieval, a cache refresh of section 6.2, a dimension's
+scans and passes, an assertion's records, a workflow route's search for what its runs
+wrote) goes through one reader, which hands each record out once and hands out every
+record the search matches or fails. A walk never ends short without saying so:
+
+- A cursor names a search context the service moves on each time it answers a page, so a
+  page asked for again with the same cursor is the page after it, and the page whose
+  answer was lost is gone. A page after the first is therefore sent once. It is repeated
+  only after a status saying the service refused it unread: 401, with a renewed token, and
+  408, 425 and 429, after the wait the flow's retry policy allows. Any other failure (a
+  timeout, a dropped connection, an answer cut off or not JSON, a hit without an id, any
+  other status) ends the walk. The first page opens a context of its own and is retried
+  like any read.
+- A walk that reaches the end is checked against the exact total its first page names
+  (`trackTotalCount`). When the first page names none, or names the 10,000 an uncounted
+  total stops at, the exact count is asked of `POST /api/search/v2/query` instead. A walk
+  that returned fewer distinct records than that is short.
+- A walk that failed or came back short is made once more, from the first page with a new
+  cursor, and hands out only the records the first walk did not. When the second walk
+  fails or comes back short as well, the read ends in an error naming what each walk came
+  to, and the run fails: a cache refresh writes no version, so the partition's cache keeps
+  the one it had; a dimension build writes nothing, so the dimension keeps its last build;
+  a retrieval closes failed without its manifest.
+- A record is known by its id, so a narrowed search always returns the id, and the reader
+  remembers what it handed out as a 128-bit digest of each id rather than the id itself,
+  a few tens of bytes a record however long the ids.
+- A context the service still holds when a walk ends for any reason (the empty page after
+  the last, a failure, a walk going in circles, a caller stopping early, a cancellation)
+  is released (`DELETE /api/search/v2/query_with_cursor/{cursor}`) rather than left to
+  expire, since a service holds only so many at once.
 
 The index holds a projection of each record. When the flow needs the whole record it sets
 `fetchRecords`, and every page's ids are read back from storage a hundred at a time

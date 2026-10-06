@@ -1545,7 +1545,10 @@ scheduled fire and a run asking for `deliver` all refresh. `plan` counts what ea
 nothing. A cache flow takes no submission, record or slice scope; only its parameter values.
 
 A refresh sweeps every declared type in full through the search cursor, because a cache holding only the last hour's
-changes cannot answer a lookup, and keeps for every hit each path the partition's cache keeps for the type: the paths
+changes cannot answer a lookup. A type is read whole or the refresh fails: a sweep that loses a page or comes back with
+fewer records than the search matches is read once more from its first page, and when that sweep fails too the refresh
+fails before anything is written, so the partition's cache keeps the version it had ([design.md](design.md) section
+15.1). A refresh keeps for every hit each path the partition's cache keeps for the type: the paths
 this flow declares, and those any other synced cache flow of the partition declares for a type of the same name. It
 then merges the capture into the partition's cache and writes the next version, labelled from the capture instant
 (`20260908T212727Z`, with the sequence appended when two captures of the partition share a second, as in

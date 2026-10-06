@@ -1016,6 +1016,104 @@ public sealed class DimensionRunTests : IDisposable
     }
 
     [Fact]
+    public async Task A_page_lost_during_the_pass_is_read_again_and_every_record_is_still_counted_once()
+    {
+        // The same pass over 9,000 logs in two ranges, with the answer to one range's second page lost after its cursor moved
+        // on: asked again with that cursor, the service would answer with the page after it, and the thousand logs of the
+        // lost page would be counted nowhere. The range is read again from its first page, and every log counts once.
+        var expected = new Dictionary<(string Key, string Source), long>();
+        for (var log = 0; log < 9_000; log++)
+        {
+            var wellbore = $"dev:master-data--Wellbore:W{log % 300:D3}:";
+            var source = $"S{(log * 7) % 600:D3}";
+            _platform.Add($"dev:work-product-component--WellLog:{log}", WellLog, new JsonObject { ["WellboreID"] = wellbore, ["Source"] = source });
+            expected[(wellbore, source)] = expected.GetValueOrDefault((wellbore, source)) + 1;
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                attributes:
+                  Source: { collect: data.Source }
+            """);
+        var lost = 0;
+        _platform.Lose = body => IsPassPage(body, continuing: true) && Interlocked.CompareExchange(ref lost, 1, 0) == 0;
+
+        var outcome = await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal((1, 0), (outcome.Built, outcome.Failed));
+        var wellbores = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var keys = await ledger.ListDimensionValuesAsync(wellbores.DimensionId, new DimensionValueQuery(null, null, false, false, null, 1000));
+        Assert.Equal(
+            expected.OrderBy(e => e.Key.Key, StringComparer.Ordinal).ThenBy(e => e.Key.Source, StringComparer.Ordinal).Select(e => (e.Key.Key, e.Key.Source, (long?)e.Value)).ToList(),
+            keys.SelectMany(k => k.Attributes.Select(a => (k.Original, a.Value, a.Records)))
+                .OrderBy(e => e.Original, StringComparer.Ordinal).ThenBy(e => e.Value, StringComparer.Ordinal).ToList());
+        Assert.Equal(9_000L, keys.Sum(k => k.Attributes.Sum(a => a.Records ?? 0)));
+
+        // Two ranges and the range read again: three first pages, and the lost page's cursor was never asked again.
+        var pages = _platform.Calls.Where(c => IsPassPage(c.Body, continuing: null)).Select(c => JsonNode.Parse(c.Body!)!.AsObject()).ToList();
+        Assert.Equal(3, pages.Count(p => p["cursor"] is null));
+        Assert.Equal(1, lost);
+        OsduContracts.AssertConform(_platform.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task A_pass_that_cannot_be_read_whole_fails_the_build_and_the_dimension_keeps_the_build_it_had()
+    {
+        for (var log = 0; log < 9_000; log++)
+        {
+            _platform.Add(
+                $"dev:work-product-component--WellLog:{log}", WellLog,
+                new JsonObject { ["WellboreID"] = $"dev:master-data--Wellbore:W{log % 300:D3}:", ["Source"] = $"S{(log * 7) % 600:D3}" });
+        }
+
+        var (runner, ledger, flow) = await RunnerAsync(Head + """
+            dimensions:
+              - name: Wellbore
+                kind: "osdu:wks:work-product-component--WellLog:*"
+                path: data.WellboreID
+                attributes:
+                  Source: { collect: data.Source }
+            """);
+        await runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None);
+        var built = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        var before = (await ledger.ListDimensionValuesAsync(built.DimensionId, new DimensionValueQuery(null, null, false, false, null, 1000)))
+            .SelectMany(k => k.Attributes.Select(a => (k.Original, a.Value, a.Records))).ToList();
+
+        // Every page after the first of the pass is lost: each range's read and its second read both fail.
+        _platform.Lose = body => IsPassPage(body, continuing: true);
+        var failed = await Assert.ThrowsAsync<DimensionBuildsFailedException>(() => runner.BuildAsync([], Guid.NewGuid(), "tests", CancellationToken.None));
+
+        Assert.Contains("could not be read whole in 2 reads", failed.Outcome.Dimensions[0].Error, StringComparison.Ordinal);
+        var kept = (await ledger.FindDimensionAsync(flow.LedgerId, "Wellbore"))!;
+        Assert.Equal(built.Members, kept.Members);
+        Assert.Equal(
+            before,
+            (await ledger.ListDimensionValuesAsync(kept.DimensionId, new DimensionValueQuery(null, null, false, false, null, 1000)))
+                .SelectMany(k => k.Attributes.Select(a => (k.Original, a.Value, a.Records))).ToList());
+        var runs = await ledger.ListDimensionRunsAsync(kept.DimensionId, 2);
+        Assert.Equal([DimensionRunStatus.Failed, DimensionRunStatus.Completed], runs.Select(r => r.Status));
+    }
+
+    /// <summary>
+    /// Whether a request body is a page of the pass over the logs (a cursor search returning the key and the source), and,
+    /// when <paramref name="continuing"/> says, one asked with a cursor or without one.
+    /// </summary>
+    private static bool IsPassPage(string? body, bool? continuing)
+    {
+        if (string.IsNullOrEmpty(body) || JsonNode.Parse(body) is not JsonObject request || request["returnedFields"] is not JsonArray fields)
+        {
+            return false;
+        }
+
+        var returned = fields.Select(f => f!.GetValue<string>()).ToList();
+        return returned.Contains("data.WellboreID") && returned.Contains("data.Source")
+            && (continuing is null || continuing == (request["cursor"] is not null));
+    }
+
+    [Fact]
     public async Task A_build_asks_the_platform_several_things_at_a_time_and_never_more_than_the_flow_allows()
     {
         // Wellbores with a name and a country, and logs of many sources: keys read in ranges, labels a thousand ids a

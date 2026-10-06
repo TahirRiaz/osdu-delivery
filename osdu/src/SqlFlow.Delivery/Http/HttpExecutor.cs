@@ -2,7 +2,8 @@
 // src/SqlFlow.Acquire/Runtime/HttpExecutor.cs. Changes: namespace, exception types, the charset normalisation and
 // code-page provider were dropped (OSDU speaks UTF-8 JSON), and SendAsync exposes the response headers for
 // non-JSON bodies; redirects are followed here, each hop checked by the URL guard; every attempt and every retry is
-// reported to an optional observer. The request-factory contract is unchanged: a fresh request per attempt (and per
+// reported to an optional observer; a request that may not be repeated can still be repeated after a status saying the
+// service refused it unread (repeatRefused). The request-factory contract is unchanged: a fresh request per attempt (and per
 // redirect), so a StreamContent over a re-opened blob stream retries correctly (design.md section 12.4).
 using System.Net;
 using System.Net.Http.Headers;
@@ -88,11 +89,17 @@ public sealed class HttpExecutor
     /// Whether the request may be repeated. Null takes it from the method; true marks a POST or PATCH the service
     /// treats as safe to repeat; false forbids repeating even an idempotent method.
     /// </param>
+    /// <param name="repeatRefused">
+    /// Repeats a request that may not be repeated otherwise after a status saying the service refused it without acting on
+    /// it (<see cref="RefusedUnread"/>), as the retry policy allows: a search cursor's page, which the service answers only
+    /// once, is still the next page after such a refusal. A transport failure, or any other status, still ends the request.
+    /// </param>
     /// <param name="ct">Cancels the send, including the backoff wait between attempts.</param>
     public async Task<HttpFetchResult> SendAsync(
         Func<HttpRequestMessage> requestFactory,
         IReadOnlySet<int>? allowStatuses = null,
         bool? idempotent = null,
+        bool repeatRefused = false,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(requestFactory);
@@ -150,7 +157,8 @@ public sealed class HttpExecutor
                     return new HttpFetchResult(status, body, response.Headers, response.Content.Headers);
                 }
 
-                var decision = _retry.Next(decisionAttempt, status, response.Headers);
+                // A refusal made before the service acted leaves the request as safe to send as it was before it went.
+                var decision = _retry.Next(repeatRefused && RefusedUnread(code) ? attempt : decisionAttempt, status, response.Headers);
                 if (!decision.ShouldRetry)
                 {
                     var preview = await PreviewAsync(response, ct).ConfigureAwait(false);
@@ -362,6 +370,13 @@ public sealed class HttpExecutor
     }
 
     /// <summary>RFC 9110 section 9.2.2: the methods whose repetition has the same effect as sending them once.</summary>
+    /// <summary>
+    /// Whether a status says the service refused the request without acting on it: 408 (it gave up waiting for the request,
+    /// RFC 9110 section 15.5.9), 425 (it would not risk acting on a request that might be replayed, RFC 8470 section 5.2)
+    /// and 429 (too many requests, RFC 6585 section 4).
+    /// </summary>
+    internal static bool RefusedUnread(int code) => code is 408 or 425 or 429;
+
     internal static bool IsIdempotent(HttpMethod method)
         => method == HttpMethod.Get || method == HttpMethod.Head || method == HttpMethod.Put
             || method == HttpMethod.Delete || method == HttpMethod.Options || method == HttpMethod.Trace;

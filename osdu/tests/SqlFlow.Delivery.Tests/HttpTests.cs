@@ -232,6 +232,60 @@ public class HttpExecutorTests
         Assert.Single(handler.Calls);
     }
 
+    [Theory]
+    [InlineData(408)]
+    [InlineData(425)]
+    [InlineData(429)]
+    public async Task A_request_not_safe_to_repeat_is_repeated_after_a_refusal_made_unread_when_the_caller_asks(int status)
+    {
+        // A search cursor's page: the service answers it once, so a failure that may have reached the service is not followed
+        // by the same request; a refusal made before the service acted leaves it as safe to send as it was before it went.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/api/search/v2/query_with_cursor", hit => FakeHttpHandler.Json(hit == 0 ? (HttpStatusCode)status : HttpStatusCode.OK, "{}"));
+        using var runtime = Runtime(handler);
+        var result = await runtime.Data.SendAsync(Page, idempotent: false, repeatRefused: true);
+        Assert.Equal(HttpStatusCode.OK, result.Status);
+        Assert.Equal(2, handler.Calls.Count);
+        Assert.Equal(handler.Calls[0].Body, handler.Calls[1].Body);
+    }
+
+    [Theory]
+    [InlineData(500)]
+    [InlineData(502)]
+    [InlineData(503)]
+    [InlineData(504)]
+    public async Task A_request_not_safe_to_repeat_is_sent_once_after_any_other_status_though_refusals_are_repeated(int status)
+    {
+        // These say nothing about whether the service acted: a gateway may give up on a search the service then answered.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/api/search/v2/query_with_cursor", (HttpStatusCode)status, "{}");
+        using var runtime = Runtime(handler);
+        var ex = await Assert.ThrowsAsync<OsduStatusException>(() => runtime.Data.SendAsync(Page, idempotent: false, repeatRefused: true));
+        Assert.Equal(status, ex.StatusCode);
+        Assert.Single(handler.Calls);
+    }
+
+    [Fact]
+    public async Task A_transport_failure_is_not_repeated_though_refusals_are()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/api/search/v2/query_with_cursor", _ => throw new HttpRequestException("connection reset"));
+        using var runtime = Runtime(handler);
+        await Assert.ThrowsAsync<DeliveryException>(() => runtime.Data.SendAsync(Page, idempotent: false, repeatRefused: true));
+        Assert.Single(handler.Calls);
+    }
+
+    [Fact]
+    public async Task A_refusal_made_unread_is_not_repeated_for_a_request_not_safe_to_repeat_unless_the_caller_asks()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/api/search/v2/query_with_cursor", HttpStatusCode.TooManyRequests, "{}");
+        using var runtime = Runtime(handler);
+        var ex = await Assert.ThrowsAsync<OsduStatusException>(() => runtime.Data.SendAsync(Page, idempotent: false));
+        Assert.Equal(429, ex.StatusCode);
+        Assert.Single(handler.Calls);
+    }
+
+    /// <summary>A search cursor's next page, as the reader sends it.</summary>
+    private static HttpRequestMessage Page()
+        => new(HttpMethod.Post, "http://localhost/api/search/v2/query_with_cursor") { Content = new StringContent("{\"kind\":\"osdu:*:*:*\",\"cursor\":\"c1\"}", Encoding.UTF8, "application/json") };
+
     [Fact]
     public async Task A_transport_failure_on_a_read_is_repeated()
     {

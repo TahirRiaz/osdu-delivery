@@ -1,5 +1,10 @@
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -74,7 +79,10 @@ public sealed class OsduSearchPage
         Returned = returned;
     }
 
-    /// <summary>The page's hits: every one, or those not seen on an earlier page when the search deduplicates.</summary>
+    /// <summary>
+    /// The page's records not handed out before: a record an earlier page returned, or a read before this one, is left out,
+    /// so the pages of a search hand out each record once.
+    /// </summary>
     public IReadOnlyList<JsonElement> Hits { get; }
 
     /// <summary>The records the query matches, as the first page reports it; null on later pages.</summary>
@@ -107,8 +115,9 @@ public sealed record OsduSearchAnswer(long Total, IReadOnlyList<JsonObject> Hits
 /// <summary>
 /// The OSDU search service as the module reads it (openapi search v2): the exact count of what a query matches, the distinct
 /// values of a field with their counts, one page of hits, and every hit paged through a cursor. One implementation serves
-/// every reader: a retrieval's pages and an assertion's reads go through the same requests, the same cursor handling and
-/// the same release of a cursor abandoned part way through.
+/// every reader: a retrieval's pages, a dimension's scans, a cache capture, an assertion's reads and a workflow route's
+/// search go through the same requests, the same cursor handling, the same check that a read is whole and the same release
+/// of a cursor a read leaves open.
 /// </summary>
 public sealed class OsduSearch
 {
@@ -116,11 +125,18 @@ public sealed class OsduSearch
     public const int MaxPage = 1000;
 
     /// <summary>
-    /// Pages in a row that bring nothing new before a deduplicating read takes the search as finished. A deployment may hand
-    /// back the same cursor for every page while the context behind it advances (Azure Data Manager for Energy did on
-    /// 2026-09-18), so a page with nothing new, not a repeated cursor, is what says a read is going in circles.
+    /// Pages in a row that bring no record new to the read before the read takes the service as going in circles and ends.
+    /// A deployment may hand back the same cursor for every page while the context behind it advances (Azure Data Manager
+    /// for Energy did on 2026-09-18), so a page with nothing new, not a repeated cursor, is what says a read is circling;
+    /// whether a read that ended so is whole is then for the count to say.
     /// </summary>
     public const int BarrenPages = 3;
+
+    /// <summary>
+    /// The reads one cursor search is given: the first, and one more when the first failed part way or came back with fewer
+    /// records than the search matches. A search two reads cannot read whole fails, rather than hand on part of what it matches.
+    /// </summary>
+    public const int MaxReads = 2;
 
     private readonly OsduHttpClient _client;
     private readonly string _queryPath;
@@ -252,73 +268,188 @@ public sealed class OsduSearch
     private static readonly IReadOnlySet<int> Refusals = new HashSet<int> { 400 };
 
     /// <summary>
-    /// Every hit the query matches, a page at a time (openapi search v2, POST /query_with_cursor): the first page asks for
-    /// the total, the next ones follow the cursor, and the read ends on an empty page or when the service hands back no
-    /// cursor. With <paramref name="deduplicate"/>, a hit whose id an earlier page returned is left out, and
-    /// <see cref="BarrenPages"/> pages in a row with nothing new end the read. A page's hits are valid until the next page is
-    /// asked for. A read stopped part way through (an exception, or the caller leaving the loop) releases its cursor.
+    /// Every record the query matches, a page at a time, through the search cursor (openapi search v2, POST
+    /// /query_with_cursor): each record handed out once, and every record or an exception, never a read that ends short.
+    /// A page's hits are valid until the next page is asked for.
     /// </summary>
-    public async IAsyncEnumerable<OsduSearchPage> PagesAsync(
-        OsduSearchQuery query, int pageSize, bool deduplicate, [EnumeratorCancellation] CancellationToken ct)
+    /// <remarks>
+    /// <para>
+    /// A cursor names a search context the service moves on each time it answers a page, so a page asked for again with the
+    /// same cursor is the page after it, and the one whose answer was lost is gone. A page after the first is therefore sent
+    /// once. It is repeated only after a status that says the service refused it unread (401, when the token is renewed;
+    /// 408, 425 and 429, after the wait the flow's retry policy allows), since then the context has not moved. Any other
+    /// failure (a timeout, a dropped connection, an answer cut off or not JSON, any other status) ends the read. The first
+    /// page opens a context of its own and is repeated like any read: a context a lost answer opened is never read and
+    /// expires.
+    /// </para>
+    /// <para>
+    /// A read that reaches the end is checked against what the search matches: the first page asks for the exact total, and
+    /// a read that returned fewer distinct records than that is short. When the first page names no total, or names the
+    /// 10,000 an uncounted total stops at, the exact count is asked of the plain search (POST /query, trackTotalCount)
+    /// instead. A read that failed or came back short is made again from the first page with a new cursor, once
+    /// (<see cref="MaxReads"/>); when that one fails or comes back short as well, the enumeration ends in a
+    /// <see cref="DeliveryException"/> naming what each read came to, and nothing built from the pages may be taken as
+    /// whole.
+    /// </para>
+    /// <para>
+    /// The pages of a second read hand out only the records the first did not, so a caller meets no record twice and misses
+    /// none. A record deleted between the two reads was handed out by the first and stays with the caller, as it would had
+    /// it been deleted just after the read. A record is known by its id, so a narrowed search always returns the id, and a
+    /// hit without one ends the read as an answer the service got wrong. <see cref="BarrenPages"/> pages in a row that bring
+    /// no record new to the read end it, since a service handing back records it already returned is going in circles; the
+    /// check against the total then says whether the read was whole. A context the service still holds when a read ends
+    /// for any reason (the empty page after the last, a failure, a read going in circles, the caller leaving the loop, an
+    /// exception) is released (DELETE /query_with_cursor/{cursor}); only a read the service ended by naming no cursor
+    /// leaves nothing to release.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="DeliveryException">No read of <see cref="MaxReads"/> returned every record the search matches.</exception>
+    public async IAsyncEnumerable<OsduSearchPage> PagesAsync(OsduSearchQuery query, int pageSize, [EnumeratorCancellation] CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(query);
         var url = _client.Url(_cursorPath);
         var limit = Math.Clamp(pageSize, 1, MaxPage);
-        var seen = deduplicate ? new HashSet<string>(StringComparer.Ordinal) : null;
-        string? cursor = null;
-        var finished = false;
-        var barren = 0;
-        try
+        var asked = WithId(query);
+        var seen = new SeenIds();
+        var first = true;
+        var reads = new List<string>(MaxReads);
+        for (var read = 1; ; read++)
         {
-            while (true)
+            var state = new CursorRead();
+            CursorAnswer? answer = null;
+            string? failure = null;
+            try
             {
-                ct.ThrowIfCancellationRequested();
-                var body = query.Body(limit);
-                if (cursor is null)
+                while (true)
                 {
-                    body["trackTotalCount"] = true;
+                    ct.ThrowIfCancellationRequested();
+                    answer?.Dispose();
+                    answer = null;
+                    var continuing = state.Cursor is not null;
+                    var body = asked.Body(limit);
+                    if (continuing)
+                    {
+                        body["cursor"] = state.Cursor;
+                    }
+                    else
+                    {
+                        body["trackTotalCount"] = true;
+                    }
+
+                    answer = continuing
+                        ? await NextPageAsync(url, body, ct).ConfigureAwait(false)
+                        : await FirstPageAsync(url, body, ct).ConfigureAwait(false);
+                    if (answer.Failure is { } failed)
+                    {
+                        failure = string.Create(CultureInfo.InvariantCulture, $"page {state.Pages + 1} failed: {failed}");
+                        break;
+                    }
+
+                    state.Pages++;
+                    if (!continuing)
+                    {
+                        state.Total = answer.Total;
+                    }
+
+                    // The cursor the service named last is the context it holds; none means it holds none.
+                    state.Cursor = answer.Cursor;
+
+                    // Every hit is checked before any is marked as handed out: a page that fails part way must leave no
+                    // record marked that the caller never received, or the next read would pass it over.
+                    foreach (var hit in answer.Hits)
+                    {
+                        if (string.IsNullOrWhiteSpace(IdOf(hit)))
+                        {
+                            failure = string.Create(CultureInfo.InvariantCulture,
+                                $"page {state.Pages} returned {(hit.ValueKind == JsonValueKind.Object ? "a record without an id" : "a hit that is not a record")}, so the read cannot tell which record it is");
+                            break;
+                        }
+                    }
+
+                    if (failure is not null)
+                    {
+                        break;
+                    }
+
+                    var kept = new List<JsonElement>(answer.Hits.Count);
+                    var fresh = 0;
+                    foreach (var hit in answer.Hits)
+                    {
+                        switch (seen.Mark(IdOf(hit)!, read))
+                        {
+                            case SeenIds.Met.Never:
+                                kept.Add(hit);
+                                fresh++;
+                                break;
+                            case SeenIds.Met.EarlierRead:
+                                fresh++;
+                                break;
+                            case SeenIds.Met.ThisRead:
+                                break;
+                        }
+                    }
+
+                    state.Distinct += fresh;
+                    yield return new OsduSearchPage(kept, first ? state.Total : null, answer.Hits.Count);
+                    first = false;
+                    if (answer.Hits.Count == 0 || state.Cursor is null)
+                    {
+                        break;
+                    }
+
+                    state.Barren = fresh == 0 ? state.Barren + 1 : 0;
+                    if (state.Barren >= BarrenPages)
+                    {
+                        state.Circling = true;
+                        break;
+                    }
                 }
-                else
+            }
+            finally
+            {
+                answer?.Dispose();
+                if (state.Cursor is not null)
                 {
-                    body["cursor"] = cursor;
+                    await CloseCursorAsync(state.Cursor).ConfigureAwait(false);
+                }
+            }
+
+            if (failure is null)
+            {
+                if (state.Circling)
+                {
+                    _logger.LogInformation(
+                        "search of {Kind}: {Pages} page(s) in a row brought no record new to read {Read}, so the read ends there after {Total} page(s).",
+                        query.Kind, BarrenPages, read, state.Pages);
                 }
 
-                var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
-                using var document = JsonDocument.Parse(result.Body);
-                var root = document.RootElement;
-                long? total = cursor is null && root.TryGetProperty("totalCount", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt64(out var t)
-                    ? t
-                    : null;
-                var hits = root.TryGetProperty("results", out var array) && array.ValueKind == JsonValueKind.Array ? array.EnumerateArray().ToList() : [];
-                var kept = seen is null ? hits : hits.Where(h => IdOf(h) is not { } id || seen.Add(id)).ToList();
-                cursor = root.TryGetProperty("cursor", out var next) && next.ValueKind == JsonValueKind.String ? next.GetString() : null;
-                if (hits.Count == 0 || string.IsNullOrEmpty(cursor))
+                var expected = await ExpectedAsync(asked, state.Total, ct).ConfigureAwait(false);
+                if (state.Distinct >= expected)
                 {
-                    finished = true;
-                }
+                    if (read > 1)
+                    {
+                        _logger.LogInformation(
+                            "search of {Kind}: read {Read} returned all {Expected} record(s) the search matches, in {Pages} page(s).",
+                            query.Kind, read, expected, state.Pages);
+                    }
 
-                yield return new OsduSearchPage(kept, total, hits.Count);
-                if (finished)
-                {
                     yield break;
                 }
 
-                barren = seen is not null && kept.Count == 0 ? barren + 1 : 0;
-                if (barren >= BarrenPages)
-                {
-                    _logger.LogWarning(
-                        "search of {Kind}: {Pages} page(s) in a row brought no record not already read; the read ends there.",
-                        query.Kind, barren);
-                    yield break;
-                }
+                failure = string.Create(CultureInfo.InvariantCulture,
+                    $"it returned {state.Distinct} of the {expected} record(s) the search matches in {state.Pages} page(s){(state.Circling ? $", the last {BarrenPages} bringing no record it had not returned" : string.Empty)}");
             }
-        }
-        finally
-        {
-            if (!finished && cursor is not null)
+
+            reads.Add(string.Create(CultureInfo.InvariantCulture, $"read {read}: {failure}"));
+            if (read >= MaxReads)
             {
-                await CloseCursorAsync(cursor).ConfigureAwait(false);
+                throw new DeliveryException(string.Create(CultureInfo.InvariantCulture,
+                    $"The search of kind {query.Kind}{Shown(asked.Query)} could not be read whole in {MaxReads} reads ({string.Join("; ", reads)}). What was read is part of what the search matches, so it is not used as the whole."));
             }
+
+            _logger.LogWarning(
+                "search of {Kind}: read {Read} of {Reads}: {Failure}. The search is read again from its first page, and only the records not yet handed on are passed on.",
+                query.Kind, read, MaxReads, failure);
         }
     }
 
@@ -326,10 +457,93 @@ public sealed class OsduSearch
     public static string? IdOf(JsonElement hit)
         => hit.ValueKind == JsonValueKind.Object && hit.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String ? id.GetString() : null;
 
+    /// <summary>How long a query an error quotes may be.</summary>
+    private const int QueryPreview = 200;
+
+    /// <summary>The query as an error names it, cut short when long; nothing for a search of every record of the kind.</summary>
+    private static string Shown(string? query)
+        => string.IsNullOrWhiteSpace(query)
+            ? string.Empty
+            : $" for '{(query.Length <= QueryPreview ? query : query[..QueryPreview] + "...")}'";
+
+    /// <summary>The query with the id among the fields a narrowed search returns, since a read knows its records by id.</summary>
+    private static OsduSearchQuery WithId(OsduSearchQuery query)
+        => query.ReturnedFields.Count == 0 || query.ReturnedFields.Contains("id", StringComparer.Ordinal)
+            ? query
+            : query with { ReturnedFields = [.. query.ReturnedFields, "id"] };
+
     /// <summary>
-    /// Releases a search context a read stopped part way through (openapi search v2, DELETE /query_with_cursor/{cursor}), so
-    /// an abandoned read does not hold index resources until it expires. The read's own outcome is what its caller reports;
-    /// failing to close is logged and nothing more.
+    /// The first page of a read, which opens a context of its own: repeated like any read after a failure the retry policy
+    /// takes as passing, since a context a lost answer opened is never read and expires. A failure that outlasts the policy
+    /// ends the search, as a second read would begin with the same request; an answer that is not one ends this read.
+    /// </summary>
+    private async Task<CursorAnswer> FirstPageAsync(Uri url, JsonObject body, CancellationToken ct)
+    {
+        var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
+        return CursorAnswer.Of(result, url);
+    }
+
+    /// <summary>
+    /// A page after the first: sent once, and repeated only after a status saying the service refused it unread, since a
+    /// context the service answered has moved on whether or not the answer arrived. Any other failure is this read's.
+    /// </summary>
+    private async Task<CursorAnswer> NextPageAsync(Uri url, JsonObject body, CancellationToken ct)
+    {
+        try
+        {
+            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: false, repeatRefused: true).ConfigureAwait(false);
+            return CursorAnswer.Of(result, url);
+        }
+        catch (Exception ex) when ((ex is SqlFlowException or HttpRequestException or IOException) && !ct.IsCancellationRequested)
+        {
+            return CursorAnswer.Failed(HeaderRedaction.RedactMessage(ex.Message));
+        }
+    }
+
+    /// <summary>
+    /// How many records a whole read returns: the exact total the first page named, or, when it named none or named the
+    /// 10,000 an uncounted total stops at, the exact count of the plain search.
+    /// </summary>
+    private async Task<long> ExpectedAsync(OsduSearchQuery query, long? reported, CancellationToken ct)
+    {
+        if (reported is { } total && total != MaxWindow)
+        {
+            return total;
+        }
+
+        var counted = await CountAsync(query with { ReturnedFields = ["id"] }, ct).ConfigureAwait(false);
+        _logger.LogDebug(
+            "search of {Kind}: the cursor named {Reported} as the total, so the records were counted: {Counted}.",
+            query.Kind, reported?.ToString(CultureInfo.InvariantCulture) ?? "nothing", counted);
+        return counted;
+    }
+
+    /// <summary>Where one read of a cursor search stands.</summary>
+    private sealed class CursorRead
+    {
+        /// <summary>The context the service holds for the read, as its last answer named it; null when it holds none.</summary>
+        public string? Cursor { get; set; }
+
+        /// <summary>The exact total the first page named; null when it named none.</summary>
+        public long? Total { get; set; }
+
+        /// <summary>The distinct records the read returned, those an earlier read returned too included.</summary>
+        public long Distinct { get; set; }
+
+        /// <summary>The pages the service answered.</summary>
+        public int Pages { get; set; }
+
+        /// <summary>Pages in a row that brought no record new to the read.</summary>
+        public int Barren { get; set; }
+
+        /// <summary>Whether the read ended because <see cref="BarrenPages"/> pages in a row brought nothing new.</summary>
+        public bool Circling { get; set; }
+    }
+
+    /// <summary>
+    /// Releases a search context a read leaves open (openapi search v2, DELETE /query_with_cursor/{cursor}), so it does not
+    /// hold index resources until it expires; a service holds only so many at once. The read's own outcome is what its
+    /// caller reports; failing to close is logged and nothing more.
     /// </summary>
     private async Task CloseCursorAsync(string cursor)
     {
@@ -347,6 +561,156 @@ public sealed class OsduSearch
     /// <summary>A date and time as a Lucene range bound takes it, or <c>*</c> for an open end.</summary>
     public static string LuceneTime(DateTime? value)
         => value is { } v ? v.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture) : "*";
+}
+
+/// <summary>
+/// One page of a cursor search as the service answered it (openapi search v2, <c>CursorQueryResponse</c>), or why the answer
+/// cannot be read as one. The hits belong to the answer's document and are valid until it is disposed.
+/// </summary>
+internal sealed class CursorAnswer : IDisposable
+{
+    private readonly JsonDocument? _document;
+
+    private CursorAnswer(JsonDocument? document, IReadOnlyList<JsonElement> hits, long? total, string? cursor, string? failure)
+    {
+        _document = document;
+        Hits = hits;
+        Total = total;
+        Cursor = cursor;
+        Failure = failure;
+    }
+
+    /// <summary>The page's hits, as the service returned them.</summary>
+    public IReadOnlyList<JsonElement> Hits { get; }
+
+    /// <summary>The records the query matches, when the answer names a count; null otherwise.</summary>
+    public long? Total { get; }
+
+    /// <summary>The context that serves the next page; null when the service names none, which says the read is done.</summary>
+    public string? Cursor { get; }
+
+    /// <summary>Why the answer is no page, redacted; null for a page.</summary>
+    public string? Failure { get; }
+
+    /// <summary>An answer that is no page, for the reason given.</summary>
+    public static CursorAnswer Failed(string why) => new(null, [], null, null, why);
+
+    /// <summary>
+    /// The page a service's answer holds. An answer without results, or with null for them, is a page without hits, which
+    /// ends a read and leaves the count to say whether it was whole; an answer that is not a JSON object, or whose results
+    /// are something other than a list, is no page.
+    /// </summary>
+    public static CursorAnswer Of(HttpFetchResult result, Uri url)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(url);
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(result.Body);
+        }
+        catch (JsonException ex)
+        {
+            return Failed($"{url.AbsolutePath} answered with a body that is not JSON ({ex.Message})");
+        }
+
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            document.Dispose();
+            return Failed($"{url.AbsolutePath} answered with JSON that is not an object");
+        }
+
+        IReadOnlyList<JsonElement> hits = [];
+        if (root.TryGetProperty("results", out var results) && results.ValueKind != JsonValueKind.Null)
+        {
+            if (results.ValueKind != JsonValueKind.Array)
+            {
+                document.Dispose();
+                return Failed($"{url.AbsolutePath} answered with results that are not a list");
+            }
+
+            hits = results.EnumerateArray().ToList();
+        }
+
+        long? total = root.TryGetProperty("totalCount", out var count) && count.ValueKind == JsonValueKind.Number && count.TryGetInt64(out var t) && t >= 0
+            ? t
+            : null;
+        var cursor = root.TryGetProperty("cursor", out var next) && next.ValueKind == JsonValueKind.String && next.GetString() is { Length: > 0 } named
+            ? named
+            : null;
+        return new CursorAnswer(document, hits, total, cursor, null);
+    }
+
+    public void Dispose() => _document?.Dispose();
+}
+
+/// <summary>
+/// The records a cursor search has handed out, each with the read that met it last. A record is kept by a 128-bit digest of
+/// its id (the first 16 bytes of its SHA-256) rather than by the id itself, so a search of millions of records holds a few
+/// tens of bytes for each rather than the hundreds an id string costs. Two ids sharing a digest is a chance below one in
+/// 10^22 among a hundred million records, far below the failures a read guards against.
+/// </summary>
+internal sealed class SeenIds
+{
+    /// <summary>The longest id digested without renting a buffer.</summary>
+    private const int StackBytes = 512;
+
+    private readonly Dictionary<UInt128, int> _lastRead = [];
+
+    /// <summary>When a record was met before.</summary>
+    public enum Met
+    {
+        /// <summary>Never: the record is new to the search.</summary>
+        Never,
+
+        /// <summary>By an earlier read only: handed out already, and new to this read.</summary>
+        EarlierRead,
+
+        /// <summary>By this read already: the service returned it twice.</summary>
+        ThisRead,
+    }
+
+    /// <summary>Marks <paramref name="id"/> as met by <paramref name="read"/>, and says when it was met before.</summary>
+    public Met Mark(string id, int read)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(id);
+        ref var last = ref CollectionsMarshal.GetValueRefOrAddDefault(_lastRead, Digest(id), out var known);
+        if (!known)
+        {
+            last = read;
+            return Met.Never;
+        }
+
+        if (last == read)
+        {
+            return Met.ThisRead;
+        }
+
+        last = read;
+        return Met.EarlierRead;
+    }
+
+    private static UInt128 Digest(string id)
+    {
+        var most = Encoding.UTF8.GetMaxByteCount(id.Length);
+        byte[]? rented = null;
+        try
+        {
+            Span<byte> bytes = most <= StackBytes ? stackalloc byte[StackBytes] : (rented = ArrayPool<byte>.Shared.Rent(most));
+            var length = Encoding.UTF8.GetBytes(id, bytes);
+            Span<byte> hash = stackalloc byte[SHA256.HashSizeInBytes];
+            SHA256.HashData(bytes[..length], hash);
+            return BinaryPrimitives.ReadUInt128LittleEndian(hash);
+        }
+        finally
+        {
+            if (rented is not null)
+            {
+                ArrayPool<byte>.Shared.Return(rented);
+            }
+        }
+    }
 }
 
 /// <summary>What one storage read returned: the records it holds, and the ids it does not hand over.</summary>

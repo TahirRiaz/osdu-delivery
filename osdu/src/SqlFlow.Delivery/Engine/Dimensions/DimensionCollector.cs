@@ -217,8 +217,9 @@ internal sealed class DimensionCollector(OsduSearch search, ILogger log, int agg
                     ReturnedFields = fields,
                 };
 
-                // A record the cursor hands back twice is the same record: counted once, as an aggregation counts it.
-                await foreach (var page in search.PagesAsync(request, OsduSearch.MaxPage, deduplicate: true, token).ConfigureAwait(false))
+                // The reader hands each record out once, so a record the cursor returns twice is counted once, as an aggregation
+                // counts it; and it hands out every record of the range or fails the build, so no range is counted short.
+                await foreach (var page in search.PagesAsync(request, OsduSearch.MaxPage, token).ConfigureAwait(false))
                 {
                     var counted = new List<(string Key, string Value, string? Text)>(page.Hits.Count);
                     foreach (var hit in page.Hits)

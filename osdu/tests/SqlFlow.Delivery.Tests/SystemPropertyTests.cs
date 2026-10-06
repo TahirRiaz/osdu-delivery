@@ -295,7 +295,7 @@ public sealed class SystemPropertyTests : IDisposable
     public async Task A_capture_reads_the_platforms_settings_and_a_service_that_cannot_answer_does_not_fail_it()
     {
         var handler = new FakeHttpHandler()
-            .On(HttpMethod.Post, "/query_with_cursor", HttpStatusCode.OK, """{"results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}""")
+            .On(HttpMethod.Post, "/query_with_cursor", HttpStatusCode.OK, """{"results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}],"totalCount":1}""")
             .On(HttpMethod.Get, "/api/indexer/v2/info", HttpStatusCode.OK, """
                 {"artifactId":"indexer","featureFlagStates":[
                   {"name":"featureFlag.keywordLower.enabled","enabled":true,"partition":"dev","source":"dataPartition"},

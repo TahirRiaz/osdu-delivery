@@ -48,6 +48,12 @@ internal sealed class FakeDimensionPlatform : HttpMessageHandler
     /// <summary>Answers a request with this status instead, when it says so.</summary>
     public Func<string?, HttpStatusCode?>? Fail { get; set; }
 
+    /// <summary>
+    /// Loses the answer to a cursor page when it says so: the cursor moves on as the page is read, and the answer is a 503,
+    /// as from a gateway that gave up on a page the service went on to answer.
+    /// </summary>
+    public Func<string?, bool>? Lose { get; set; }
+
     public JsonObject Add(string id, string kind, JsonObject data, string[]? legalTags = null, JsonObject? tags = null)
     {
         var record = new JsonObject
@@ -113,7 +119,10 @@ internal sealed class FakeDimensionPlatform : HttpMessageHandler
 
             if (request.Method == HttpMethod.Post && path.EndsWith("/api/search/v2/query_with_cursor", StringComparison.Ordinal))
             {
-                return Ok(Cursor(json!));
+                var page = Cursor(json!);
+                return Lose?.Invoke(body) == true
+                    ? FakeHttpHandler.Json(HttpStatusCode.ServiceUnavailable, """{"code":503,"reason":"Service Unavailable","message":"the gateway gave up"}""")
+                    : Ok(page);
             }
 
             if (request.Method == HttpMethod.Delete && path.Contains("/api/search/v2/query_with_cursor/", StringComparison.Ordinal))

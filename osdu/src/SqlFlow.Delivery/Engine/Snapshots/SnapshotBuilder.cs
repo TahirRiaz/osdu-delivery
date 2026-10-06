@@ -6,6 +6,7 @@ using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Engine.Snapshots;
@@ -233,18 +234,25 @@ public sealed partial class SnapshotBuilder
     }
 }
 
-/// <summary>Pages one type out of the OSDU search index and caches the declared paths of every hit.</summary>
+/// <summary>Reads one type out of the OSDU search index, whole, and caches the declared paths of every record.</summary>
 public sealed partial class SnapshotBuilder
 {
-    private const int SearchPageSize = 1000;
-
-    /// <summary>Pages in a row that bring nothing new before a capture takes the type as finished.</summary>
-    private const int BarrenPages = 3;
+    private const int SearchPageSize = OsduSearch.MaxPage;
 
     /// <summary>The cursor search the capture pages through (openapi search v2, POST /query_with_cursor).</summary>
     private const string SearchPath = "/api/search/v2/query_with_cursor";
 
-    /// <summary>Captures one reference type: every hit of its search kind, projected onto the paths it declares.</summary>
+    /// <summary>The plain search that counts a type whose cursor names no exact total (openapi search v2, POST /query).</summary>
+    private const string QueryPath = "/api/search/v2/query";
+
+    /// <summary>
+    /// Captures one reference type: every record of its search kind, projected onto the paths it declares. The records are
+    /// read through the shared cursor reader (<see cref="OsduSearch.PagesAsync"/>), which hands each one out once and every
+    /// one of them or fails, reading a type again once when its first read fails part way or comes back short. A type that
+    /// cannot be read whole fails the capture, and with it the refresh, before anything is written, so the partition's
+    /// cache keeps the version it had rather than one missing records.
+    /// </summary>
+    /// <exception cref="DeliveryException">The type could not be read whole.</exception>
     public async Task<ReferenceType> CaptureTypeAsync(OsduConnection osdu, ReferenceTypeSpec typeSpec, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(osdu);
@@ -254,99 +262,34 @@ public sealed partial class SnapshotBuilder
         var items = new Dictionary<string, ReferenceItem>(StringComparer.Ordinal);
         // One pool for the capture: a value many records hold (the field a thousand wellbores lie in) is kept once.
         var pool = new StringPool();
-        var repeated = 0;
-        var barren = 0;
         var coverage = typeSpec.Fields.ToDictionary(f => f.Name, _ => 0, StringComparer.OrdinalIgnoreCase);
-        string? cursor = null;
-        var finished = false;
-        try
+        var search = new OsduSearch(osdu.Client, QueryPath, SearchPath, _logger);
+        var query = new OsduSearchQuery
         {
-            while (true)
+            Kind = typeSpec.Kind ?? throw new DeliveryException($"Reference type {typeSpec.Name} names no kind, so there is nothing to search for it."),
+            Query = typeSpec.Query,
+            ReturnedFields = typeSpec.Fields.Select(f => f.Path).Prepend("id").ToList(),
+        };
+        await foreach (var page in search.PagesAsync(query, SearchPageSize, ct).ConfigureAwait(false))
+        {
+            foreach (var hit in page.Hits)
             {
-                ct.ThrowIfCancellationRequested();
-                var body = new JsonObject
+                // The reader hands out only records with an id, each once: a hit that is neither is a fault of the reader,
+                // which no capture may cache around.
+                var record = JsonNode.Parse(hit.GetRawText()) as JsonObject
+                    ?? throw new DeliveryException($"Reference type {typeSpec.Name}: the search of kind {typeSpec.Kind} handed on a hit that is not a record.");
+                var item = Project(record, typeSpec.Fields, pool)
+                    ?? throw new DeliveryException($"Reference type {typeSpec.Name}: the search of kind {typeSpec.Kind} handed on a record without an id.");
+                if (!items.TryAdd(item.Id, item))
                 {
-                    ["kind"] = typeSpec.Kind,
-                    ["query"] = typeSpec.Query,
-                    ["limit"] = SearchPageSize,
-                    ["returnedFields"] = new JsonArray(typeSpec.Fields
-                        .Select(f => (JsonNode)JsonValue.Create(f.Path))
-                        .Prepend(JsonValue.Create("id"))
-                        .ToArray()),
-                };
-                if (cursor is not null)
-                {
-                    body["cursor"] = cursor;
+                    throw new DeliveryException($"Reference type {typeSpec.Name}: the search of kind {typeSpec.Kind} handed on record {item.Id} twice.");
                 }
 
-                var page = await osdu.PostJsonAsync(SearchPath, body, ct).ConfigureAwait(false);
-                var results = page["results"] as JsonArray;
-                var inPage = results?.Count ?? 0;
-                var added = 0;
-                if (results is not null)
+                foreach (var name in item.Fields.Keys)
                 {
-                    foreach (var hit in results.OfType<JsonObject>())
-                    {
-                        if (Project(hit, typeSpec.Fields, pool) is not { } item)
-                        {
-                            continue;
-                        }
-
-                        // A record the index hands back twice across pages is the same record: it is cached once, and
-                        // counted once towards what each path covered.
-                        if (!items.TryAdd(item.Id, item))
-                        {
-                            repeated++;
-                            continue;
-                        }
-
-                        added++;
-
-                        foreach (var name in item.Fields.Keys)
-                        {
-                            coverage[name]++;
-                        }
-                    }
-                }
-
-                cursor = page["cursor"] is JsonValue value && value.TryGetValue<string>(out var next) ? next : null;
-
-                // The search service hands back a cursor for the page after the last one too, and that page is
-                // empty; ending only on a null cursor would page forever. An empty page is the end.
-                if (inPage == 0 || string.IsNullOrEmpty(cursor))
-                {
-                    finished = true;
-                    break;
-                }
-
-                // The cursor itself says nothing about progress: a deployment may hand back the same handle for every
-                // page while the context behind it advances, which is what Elasticsearch's scroll does and what Azure
-                // Data Manager for Energy answered on 2026-09-18. What says the capture is going in circles is a page
-                // that brings nothing new, so that is what ends it: a few of those in a row and the type is done, with
-                // the cursor closed on the way out.
-                barren = added == 0 ? barren + 1 : 0;
-                if (barren >= BarrenPages)
-                {
-                    _logger.LogWarning(
-                        "Reference type {Type}: the search returned {Pages} page(s) of kind {Kind} in a row with nothing new after {Count} item(s); the capture ends there.",
-                        typeSpec.Name, barren, typeSpec.Kind, items.Count);
-                    break;
+                    coverage[name]++;
                 }
             }
-        }
-        finally
-        {
-            if (!finished && cursor is not null)
-            {
-                await CloseCursorAsync(osdu, cursor).ConfigureAwait(false);
-            }
-        }
-
-        if (repeated > 0)
-        {
-            _logger.LogWarning(
-                "Reference type {Type}: the search returned {Repeated} record(s) of kind {Kind} more than once; each is cached once.",
-                typeSpec.Name, repeated, typeSpec.Kind);
         }
 
         if (items.Count == 0)
@@ -371,23 +314,6 @@ public sealed partial class SnapshotBuilder
             "Captured {Count} {Type} item(s) with {Fields}.",
             items.Count, typeSpec.Name, string.Join(", ", typeSpec.Fields.Select(f => $"{f.Name}={coverage[f.Name]}")));
         return new ReferenceType(typeSpec.Name, typeSpec.EntityType, items.Values.OrderBy(i => i.Id, StringComparer.Ordinal));
-    }
-
-    /// <summary>
-    /// Releases the search context a capture stopped part way through (openapi search v2,
-    /// DELETE /query_with_cursor/{cursor}), so an abandoned scroll does not hold index resources until it expires.
-    /// The capture's own failure is what the caller sees; failing to close is logged and nothing more.
-    /// </summary>
-    private async Task CloseCursorAsync(OsduConnection osdu, string cursor)
-    {
-        try
-        {
-            await osdu.DeleteAsync(SearchPath + "/" + Http.UrlPath.EscapeSegment(cursor), CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
-        {
-            _logger.LogWarning("Could not close the search cursor after the capture stopped: {Message}", HeaderRedaction.RedactMessage(ex.Message));
-        }
     }
 
     /// <summary>Projects one search hit onto the declared paths, keeping whatever shape each path yields.</summary>
@@ -419,8 +345,6 @@ public sealed partial class SnapshotBuilder
 public sealed class OsduConnection : IDisposable
 {
     private readonly HttpRuntime _http;
-    private readonly TargetAuth _auth;
-    private readonly IReadOnlyDictionary<string, string> _headers;
 
     private OsduConnection(
         string endpoint,
@@ -433,9 +357,8 @@ public sealed class OsduConnection : IDisposable
         IHttpObserver? observer)
     {
         Endpoint = endpoint;
-        _auth = auth;
-        _headers = headers;
         _http = new HttpRuntime(reliability, secrets, handler: handler, allowLoopback: allowLoopback, observer: observer);
+        Client = new Protocols.OsduHttpClient(_http, endpoint, auth, headers);
     }
 
     /// <summary>
@@ -484,65 +407,31 @@ public sealed class OsduConnection : IDisposable
 
     public string Endpoint { get; }
 
+    /// <summary>
+    /// The connection as the protocols' client, over the same transport, auth and headers: what the shared search reader
+    /// sends through, so a capture pages its types exactly as every other reader of the search service does.
+    /// </summary>
+    public Protocols.OsduHttpClient Client { get; }
+
+    /// <summary>A GET of a service's JSON object, under the flow's auth and headers.</summary>
     public async Task<JsonObject> GetJsonAsync(string path, CancellationToken ct)
     {
-        var url = new Uri(Endpoint + "/" + path.TrimStart('/'));
-        var result = await SendAsync(auth => _http.Data.SendAsync(() => Build(HttpMethod.Get, url, auth, null), ct: ct), ct).ConfigureAwait(false);
+        var url = Url(path);
+        var result = await Client.SendJsonAsync(HttpMethod.Get, url, null, null, ct).ConfigureAwait(false);
         return JsonNode.Parse(result.Body) as JsonObject ?? throw new DeliveryException($"{url} did not return a JSON object.");
     }
 
+    /// <summary>A POST of a search, a read the service answers alike however often it is asked, so it is repeated like any read.</summary>
     public async Task<JsonObject> PostJsonAsync(string path, JsonObject body, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(body);
-        var url = new Uri(Endpoint + "/" + path.TrimStart('/'));
-        var bytes = CanonicalJson.ToBytes(body);
-        // Only ever a search: a read, safe to repeat.
-        var result = await SendAsync(auth => _http.Data.SendAsync(() => Build(HttpMethod.Post, url, auth, bytes), ct: ct, idempotent: true), ct).ConfigureAwait(false);
+        var url = Url(path);
+        var result = await Client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
         return JsonNode.Parse(result.Body) as JsonObject ?? throw new DeliveryException($"{url} did not return a JSON object.");
     }
 
-    /// <summary>A DELETE whose body is not read, for releasing a server-side resource such as a search cursor.</summary>
-    public async Task DeleteAsync(string path, CancellationToken ct)
-    {
-        var url = new Uri(Endpoint + "/" + path.TrimStart('/'));
-        await SendAsync(auth => _http.Data.SendAsync(() => Build(HttpMethod.Delete, url, auth, null), new HashSet<int> { 404 }, ct: ct), ct).ConfigureAwait(false);
-    }
-
-    /// <summary>Sends under the resolved auth, retrying once with a fresh token when the service answers 401.</summary>
-    private async Task<HttpFetchResult> SendAsync(Func<AppliedAuth, Task<HttpFetchResult>> send, CancellationToken ct)
-    {
-        var auth = await _http.AuthResolver.ResolveAsync(_auth, _http.Auth, ct).ConfigureAwait(false);
-        try
-        {
-            return await send(auth).ConfigureAwait(false);
-        }
-        catch (OsduStatusException ex) when (ex.StatusCode == 401)
-        {
-            _http.AuthResolver.Invalidate();
-            var refreshed = await _http.AuthResolver.ResolveAsync(_auth, _http.Auth, ct).ConfigureAwait(false);
-            return await send(refreshed).ConfigureAwait(false);
-        }
-    }
-
-    private HttpRequestMessage Build(HttpMethod method, Uri url, AppliedAuth auth, byte[]? body)
-    {
-        var request = new HttpRequestMessage(method, url);
-        foreach (var (name, value) in _headers)
-        {
-            request.Headers.TryAddWithoutValidation(name, value);
-        }
-
-        auth.ApplyTo(request);
-        if (OsduCorrelation.Current is { } correlation)
-        {
-            request.Headers.TryAddWithoutValidation(OsduCorrelation.HeaderName, correlation);
-        }
-
-        // A bodiless request still carries Content-Type: application/json, as every OSDU call from this system does
-        // (see OsduHttpClient.JsonBody for why the services insist).
-        request.Content = Protocols.OsduHttpClient.JsonBody(body);
-        return request;
-    }
+    /// <summary>A path under the endpoint, taken as written: no token in it is substituted.</summary>
+    private Uri Url(string path) => new(Endpoint + "/" + path.TrimStart('/'));
 
     public void Dispose() => _http.Dispose();
 }

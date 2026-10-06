@@ -187,7 +187,7 @@ public sealed class SnapshotVersioningTests : IDisposable
             HttpMethod.Post,
             "/query_with_cursor",
             HttpStatusCode.OK,
-            """{"results":[{"id":"dev:master-data--Wellbore:A","data":{"FacilityName":"NO 1/1-A","NameAlias":[{"AliasName":"1/1-A"},{"AliasName":"WELL A"}]}}]}""");
+            """{"results":[{"id":"dev:master-data--Wellbore:A","data":{"FacilityName":"NO 1/1-A","NameAlias":[{"AliasName":"1/1-A"},{"AliasName":"WELL A"}]}}],"totalCount":1}""");
         using var osdu = await OsduConnection.CreateAsync(
             "http://localhost/osdu",
             new TargetAuth { Type = TargetAuthType.None },
@@ -208,6 +208,51 @@ public sealed class SnapshotVersioningTests : IDisposable
         Assert.Equal(["1/1-A", "WELL A"], wellbore.Fields["Alias"].Terms.Order(StringComparer.Ordinal));
         Assert.Equal("project-a", (await store.ListVersionsAsync(Scope)).Single().FlowName);
     }
+
+    [Fact]
+    public async Task A_capture_that_cannot_read_a_type_whole_writes_no_version_and_the_cache_keeps_the_one_it_had()
+    {
+        var (builder, store, _) = NewBuilder();
+        const string Whole = """{"cursor":"c1","totalCount":2,"results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}},{"id":"dev:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}""";
+        var first = new FakeHttpHandler().On(
+            HttpMethod.Post, "/query_with_cursor", hit => FakeHttpHandler.Json(HttpStatusCode.OK, hit == 0 ? Whole : """{"results":[]}"""));
+        CacheWrite kept;
+        using (var osdu = await ConnectAsync(first))
+        {
+            kept = await builder.CaptureAsync(osdu, new ReferenceCaptureSpec { Types = [Units] }, Capture);
+        }
+
+        Assert.True(kept.Written);
+
+        // The type has grown to three records, and the service answers the first page of each read and loses every page after
+        // it. A capture that kept what it read would write a version missing a unit; this one fails, writing nothing.
+        const string Grown = """{"cursor":"c2","totalCount":3,"results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}},{"id":"dev:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}""";
+        var lossy = new FakeHttpHandler().On(
+            HttpMethod.Post, "/query_with_cursor",
+            hit => hit % 2 == 0 ? FakeHttpHandler.Json(HttpStatusCode.OK, Grown) : FakeHttpHandler.Json(HttpStatusCode.ServiceUnavailable, """{"message":"busy"}"""));
+        using (var osdu = await ConnectAsync(lossy))
+        {
+            var error = await Assert.ThrowsAsync<DeliveryException>(() => builder.CaptureAsync(osdu, new ReferenceCaptureSpec { Types = [Units] }, Capture));
+            Assert.Contains("could not be read whole in 2 reads", error.Message, StringComparison.Ordinal);
+        }
+
+        var version = Assert.Single(await store.ListVersionsAsync(Scope));
+        Assert.Equal(kept.Snapshot.Version, version.Version);
+        Assert.True(version.Current);
+        Assert.Equal(
+            ["dev:reference-data--UnitOfMeasure:ft", "dev:reference-data--UnitOfMeasure:m"],
+            (await store.LoadAsync(Scope, version.Version))!.Type("UnitOfMeasure")!.Items.Select(i => i.Id));
+    }
+
+    private static Task<OsduConnection> ConnectAsync(FakeHttpHandler handler)
+        => OsduConnection.CreateAsync(
+            "http://localhost/osdu",
+            new TargetAuth { Type = TargetAuthType.None },
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [CacheScope.PartitionHeader] = Scope },
+            new FlowReliability { Retry = new FlowRetry { Attempts = 1, BaseDelayMs = 1, MaxDelayMs = 1 } },
+            new SecretResolver([new EnvSecretProvider()]),
+            handler,
+            allowLoopback: true);
 
     [Fact]
     public async Task An_import_holding_what_the_cache_does_not_declare_writes_nothing()
@@ -361,7 +406,7 @@ public class ReferenceCaptureCursorTests
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", hit => hit switch
         {
-            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
+            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","totalCount":2,"results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
             1 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c2","results":[{"id":"dev:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}"""),
 
             // Elasticsearch keeps handing out a scroll id past the end. The page is empty, and that is the end.
@@ -374,6 +419,10 @@ public class ReferenceCaptureCursorTests
 
             Assert.Equal(2, captured.Items.Count);
             Assert.Equal(3, handler.Calls.Count(c => c.Uri.AbsolutePath.EndsWith("/query_with_cursor", StringComparison.Ordinal)));
+
+            // The scroll the service still holds past the end is released rather than left to expire.
+            var closed = Assert.Single(handler.Calls, c => c.Method == HttpMethod.Delete);
+            Assert.EndsWith("/query_with_cursor/c3", closed.Uri.AbsolutePath, StringComparison.Ordinal);
         }
     }
 
@@ -382,7 +431,7 @@ public class ReferenceCaptureCursorTests
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", hit => hit switch
         {
-            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
+            0 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c1","totalCount":2,"results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}}]}"""),
             1 => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c2","results":[{"id":"dev:reference-data--UnitOfMeasure:m","data":{"Code":"m"}},{"id":"dev:reference-data--UnitOfMeasure:ft","data":{"Code":"ft"}}]}"""),
             _ => FakeHttpHandler.Json(HttpStatusCode.OK, """{"cursor":"c3","results":[]}"""),
         });
@@ -398,9 +447,9 @@ public class ReferenceCaptureCursorTests
     [Fact]
     public async Task A_service_that_hands_back_the_same_page_for_ever_ends_the_type_rather_than_paging_for_ever()
     {
-        // Nothing is new after the first page, so the capture is going in circles whatever the cursor says. It keeps
-        // what it read, warns, and closes the cursor.
-        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", HttpStatusCode.OK, Page("stuck", 1000));
+        // Nothing is new after the first page, so the read is going in circles whatever the cursor says. It ends, and
+        // because the first page already held every record the search matches, the type is whole and is captured.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", HttpStatusCode.OK, Page("stuck", 1000, total: 1000));
         var (builder, osdu) = await BuildAsync(handler);
         using (osdu)
         {
@@ -416,6 +465,28 @@ public class ReferenceCaptureCursorTests
     }
 
     [Fact]
+    public async Task A_type_that_cannot_be_read_whole_fails_the_capture_after_one_more_read()
+    {
+        // The search matches 1500 records and the service hands back the same first thousand for ever: a capture that kept
+        // what it read would cache two thirds of the type as if it were all of it. The type is read once more from its first
+        // page, comes back as short, and the capture fails naming both reads.
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", HttpStatusCode.OK, Page("stuck", 1000, total: 1500));
+        var (builder, osdu) = await BuildAsync(handler);
+        using (osdu)
+        {
+            var error = await Assert.ThrowsAsync<DeliveryException>(() => builder.CaptureTypeAsync(osdu, Spec));
+
+            Assert.Contains("could not be read whole in 2 reads", error.Message, StringComparison.Ordinal);
+            Assert.Contains("read 1: it returned 1000 of the 1500 record(s)", error.Message, StringComparison.Ordinal);
+            Assert.Contains("read 2: it returned 1000 of the 1500 record(s)", error.Message, StringComparison.Ordinal);
+
+            // Each read opens its own scroll (a first page without a cursor) and releases it when it ends.
+            Assert.Equal(2, handler.Calls.Count(c => c.Method == HttpMethod.Post && !c.Body!.Contains("\"cursor\"", StringComparison.Ordinal)));
+            Assert.Equal(2, handler.Calls.Count(c => c.Method == HttpMethod.Delete));
+        }
+    }
+
+    [Fact]
     public async Task The_same_cursor_on_every_page_is_still_paging_while_the_pages_bring_new_records()
     {
         // The contract says the cursor is null when there are no more results; a deployment answered with the same
@@ -424,7 +495,7 @@ public class ReferenceCaptureCursorTests
         // working, so what it reads is the records, not the handle.
         var handler = new FakeHttpHandler().On(HttpMethod.Post, "/query_with_cursor", hit => hit switch
         {
-            0 => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 1000)),
+            0 => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 1000, total: 2004)),
             1 => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 1000, from: 1000)),
             2 => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 4, from: 2000)),
             _ => FakeHttpHandler.Json(HttpStatusCode.OK, Page("c1", 0)),
@@ -439,11 +510,14 @@ public class ReferenceCaptureCursorTests
         }
     }
 
-    /// <summary>One search page of <paramref name="count"/> units of measure, offered with <paramref name="cursor"/>.</summary>
-    private static string Page(string cursor, int count, int from = 0)
+    /// <summary>
+    /// One search page of <paramref name="count"/> units of measure, offered with <paramref name="cursor"/>, naming
+    /// <paramref name="total"/> as the records the search matches when given, as a first page does.
+    /// </summary>
+    private static string Page(string cursor, int count, int from = 0, int? total = null)
     {
         var results = string.Join(",", Enumerable.Range(from, count).Select(
             i => "{\"id\":\"dev:reference-data--UnitOfMeasure:u" + i + "\",\"data\":{\"Code\":\"u" + i + "\"}}"));
-        return "{\"cursor\":\"" + cursor + "\",\"results\":[" + results + "]}";
+        return "{\"cursor\":\"" + cursor + "\"" + (total is { } t ? ",\"totalCount\":" + t : string.Empty) + ",\"results\":[" + results + "]}";
     }
 }

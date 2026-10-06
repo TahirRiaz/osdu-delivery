@@ -281,7 +281,7 @@ public static class TestEvaluator
         long read = 0;
         long notStored = 0;
         var notStoredIds = new List<string>();
-        await foreach (var page in scope.Search.PagesAsync(scope.Query with { ReturnedFields = fields }, Math.Min(OsduSearch.MaxPage, test.MaxRecords), deduplicate: true, ct)
+        await foreach (var page in scope.Search.PagesAsync(scope.Query with { ReturnedFields = fields }, Math.Min(OsduSearch.MaxPage, test.MaxRecords), ct)
                            .ConfigureAwait(false))
         {
             var hits = page.Hits.Take((int)Math.Min(page.Hits.Count, test.MaxRecords - read)).ToList();

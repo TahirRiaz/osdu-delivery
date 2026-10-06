@@ -253,8 +253,10 @@ tests hold the fake platform to them:
 | Legal | `POST /api/legal/v1/legaltags:validate` (at most 25 names) | Legal tags |
 | Wellbore DDMS | `GET /api/os-wellbore-ddms/ddms/v3/{collection}/{id}/data` | Bulk data |
 
-The search service's quirks are handled where they are met: a cursor that comes back unchanged is the same page again,
-three pages in a row that add nothing end the walk, a leading wildcard or a query of nothing but `NOT` is refused by
+The search service's quirks are handled where they are met: a cursor that comes back unchanged says nothing (a
+deployment may hand back the same one for every page while the context behind it advances), three pages in a row that
+add nothing end the walk, a walk that reaches the end is checked against the search's exact total and is read once more
+when it failed or came back short (osdu/docs/design.md section 15.1), a leading wildcard or a query of nothing but `NOT` is refused by
 OSDU and so reported as the test's error, and the index trails storage by about thirty seconds, which is why a schedule
 runs the tests after the delivery rather than in the same wave.
 

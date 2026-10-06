@@ -350,6 +350,21 @@ public sealed class WorkflowRouteTests
         Assert.Equal(["core/search POST /query_with_cursor"], AssertConform(platform));
     }
 
+    [Fact]
+    public async Task A_search_for_what_the_runs_wrote_that_matches_more_than_a_route_reads_fails_rather_than_name_some_of_them()
+    {
+        // A results search or a removal that named the first hundred thousand would leave the rest unread, or in place.
+        var ids = Enumerable.Range(0, OsduWorkflowProtocol.MaxSearchResults + 1).Select(i => $"dev:master-data--Well:w-{i}").ToList();
+        var platform = new FakeOsduPlatform { Search = (_, _) => ids };
+        using var rig = new Rig(platform);
+        var route = new WorkflowRoute { Anchor = WorkflowAnchor.Storage, Stages = [Stage("csv_ingestion", "{}")] };
+        var protocol = new OsduWorkflowProtocol(rig.Client, Rig.Options, route, Samples.Logger<OsduWorkflowProtocol>(), Secrets);
+
+        var error = await Assert.ThrowsAsync<DeliveryException>(() => protocol.SearchAsync("osdu:wks:master-data--Well:1.*.*", "tags.osduDeliveryAnchor:\"x\"", CancellationToken.None));
+
+        Assert.Contains("matches 100001 records, more than the 100000 a route names", error.Message, StringComparison.Ordinal);
+    }
+
     public static TheoryData<string, string, string, string> Conversions => new()
     {
         {

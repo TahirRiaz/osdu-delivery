@@ -255,7 +255,7 @@ public sealed class RetrievalRunner
         var search = new OsduSearchQuery { Kind = kind, Query = query, ReturnedFields = _flow.Source.ReturnedFields };
         await using (sink.ConfigureAwait(false))
         {
-            await foreach (var page in _search.PagesAsync(search, _flow.Source.PageSize, deduplicate: false, ct).ConfigureAwait(false))
+            await foreach (var page in _search.PagesAsync(search, _flow.Source.PageSize, ct).ConfigureAwait(false))
             {
                 if (pages == 0 && page.TotalCount is { } totalCount)
                 {

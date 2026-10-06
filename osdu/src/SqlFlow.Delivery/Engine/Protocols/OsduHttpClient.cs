@@ -108,10 +108,14 @@ public sealed class OsduHttpClient
     /// the bare media type (RAFS refuses <c>application/json; charset=utf-8</c> on a record write, osdu/specs/rafs-ddms
     /// INTEGRATION.md section 1.3).
     /// </param>
+    /// <param name="repeatRefused">
+    /// Repeats a request that may not be repeated otherwise after a status saying the service refused it unread (408, 425,
+    /// 429), as <see cref="HttpExecutor.SendAsync"/> describes.
+    /// </param>
     public Task<HttpFetchResult> SendJsonAsync(
         HttpMethod method, Uri url, JsonNode? body, IReadOnlySet<int>? allowStatuses, CancellationToken ct, bool? idempotent = null,
-        IReadOnlyDictionary<string, string>? headers = null, bool bareJsonType = false)
-        => SendJsonBytesAsync(method, url, body is null ? null : CanonicalJson.ToBytes(body), allowStatuses, ct, idempotent, headers, bareJsonType);
+        IReadOnlyDictionary<string, string>? headers = null, bool bareJsonType = false, bool repeatRefused = false)
+        => SendJsonBytesAsync(method, url, body is null ? null : CanonicalJson.ToBytes(body), allowStatuses, ct, idempotent, headers, bareJsonType, repeatRefused);
 
     /// <summary>
     /// <see cref="SendJsonAsync"/> with a body already serialised, sent as it stands: for a request the caller writes as a
@@ -119,7 +123,7 @@ public sealed class OsduHttpClient
     /// </summary>
     public async Task<HttpFetchResult> SendJsonBytesAsync(
         HttpMethod method, Uri url, byte[]? body, IReadOnlySet<int>? allowStatuses, CancellationToken ct, bool? idempotent = null,
-        IReadOnlyDictionary<string, string>? headers = null, bool bareJsonType = false)
+        IReadOnlyDictionary<string, string>? headers = null, bool bareJsonType = false, bool repeatRefused = false)
     {
         return await WithFreshAuthAsync(auth => _http.Data.SendAsync(() =>
         {
@@ -132,7 +136,7 @@ public sealed class OsduHttpClient
 
             request.Content = JsonBody(body, bareJsonType);
             return request;
-        }, allowStatuses, idempotent, ct), ct).ConfigureAwait(false);
+        }, allowStatuses, idempotent, repeatRefused, ct), ct).ConfigureAwait(false);
     }
 
     private static readonly IReadOnlyDictionary<string, string> NoHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -192,7 +196,7 @@ public sealed class OsduHttpClient
             Apply(request, auth);
             request.Content = StreamBody(open(), contentType, length);
             return request;
-        }, null, idempotent, ct), ct).ConfigureAwait(false);
+        }, null, idempotent, ct: ct), ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -251,7 +255,7 @@ public sealed class OsduHttpClient
     public Task<HttpFetchResult> SendAsIsAsync(Func<HttpRequestMessage> build, IReadOnlySet<int>? allowStatuses, bool? idempotent, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(build);
-        return _http.Data.SendAsync(build, allowStatuses, idempotent, ct);
+        return _http.Data.SendAsync(build, allowStatuses, idempotent, ct: ct);
     }
 
     /// <summary>

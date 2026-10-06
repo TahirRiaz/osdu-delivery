@@ -202,7 +202,10 @@ exact:
   another, so the pass is cut into ranges of the dimension's keys holding about as many records each (none under 4,000
   records, four ranges a reader) and the ranges are read side by side, each through a cursor of its own. A record
   holding keys of two ranges is read in both and counted in each under the keys of that range alone, so every record
-  and key is counted once.
+  and key is counted once. Each range, like every cursor scan of a build, is read whole or the build fails: a range
+  that loses a page or comes back short of the search's exact total is read once more from its first page, handing on
+  only the records the first read did not, and when that read fails too the dimension's build fails and writes
+  nothing, so the dimension keeps its last build ([design.md](design.md) section 15.1).
 
 The labels and the attributes read through a key's record, and the values a key collects, need nothing of each other, so
 a build reads them side by side, the flow's concurrency shared between them; the records of a label's or an attribute's

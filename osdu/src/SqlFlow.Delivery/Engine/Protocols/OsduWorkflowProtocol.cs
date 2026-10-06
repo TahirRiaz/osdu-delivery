@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Engine.Workflows;
 using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Identity;
@@ -41,6 +42,11 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
     public const int MaxSearchResults = 100_000;
 
     private const int SearchPage = 1000;
+
+    /// <summary>The end of the plain search path, and what its cursor form adds to it.</summary>
+    private const string PlainQuery = "/query";
+
+    private const string CursorSuffix = "_with_cursor";
 
     private readonly OsduHttpClient _client;
     private readonly ProtocolOptions _options;
@@ -679,48 +685,42 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
     }
 
     /// <summary>
-    /// The ids a search lists (openapi search v2, POST query_with_cursor), paged by cursor up to
-    /// <see cref="MaxSearchResults"/>; the index lags a write by at least 30 seconds, which the caller waits for.
+    /// The ids a search lists (openapi search v2, POST query_with_cursor), every one of them, read through the shared cursor
+    /// reader (<see cref="OsduSearch.PagesAsync"/>), which reads a search again once when its first read fails part way or
+    /// comes back short and fails when the second does too. A search matching more than <see cref="MaxSearchResults"/>
+    /// records fails rather than name only some of them, so neither a route's results nor a removal stops part way through
+    /// a run's records without saying so. The index lags a write by at least 30 seconds, which the caller waits for.
     /// </summary>
     internal async Task<IReadOnlyList<string>> SearchAsync(string kind, string? query, CancellationToken ct)
     {
         // The flow's search path names the plain query; its cursor form is the same path with _with_cursor, and a path that
-        // is not the plain query (a cursor path already, or a facade's) is used as written.
+        // is not the plain query (a cursor path already, or a facade's) is used as written. The plain query is what counts a
+        // search whose cursor names no exact total.
         var path = _options.SearchQueryPath ?? OsduManifestProtocol.DefaultSearchQueryPath;
-        var url = _client.Url(path.EndsWith("/query", StringComparison.Ordinal) ? path + "_with_cursor" : path);
+        var cursorPath = path.EndsWith(PlainQuery, StringComparison.Ordinal) ? path + CursorSuffix : path;
+        var queryPath = path.EndsWith(PlainQuery + CursorSuffix, StringComparison.Ordinal) ? path[..^CursorSuffix.Length] : path;
+        var search = new OsduSearch(_client, queryPath, cursorPath, _logger);
         var ids = new List<string>();
-        string? cursor = null;
-        while (ids.Count < MaxSearchResults)
+        await foreach (var page in search.PagesAsync(new OsduSearchQuery { Kind = kind, Query = query, ReturnedFields = ["id"] }, SearchPage, ct).ConfigureAwait(false))
         {
-            var body = new JsonObject
+            if (page.TotalCount is > MaxSearchResults and var matched)
             {
-                ["kind"] = kind,
-                ["limit"] = SearchPage,
-                ["returnedFields"] = new JsonArray(JsonValue.Create("id")),
-            };
-            if (query is not null)
-            {
-                body["query"] = query;
+                throw TooManyFound(kind, query, matched.ToString(CultureInfo.InvariantCulture));
             }
 
-            if (cursor is not null)
+            ids.AddRange(page.Hits.Select(hit => OsduSearch.IdOf(hit)!));
+            if (ids.Count > MaxSearchResults)
             {
-                body["cursor"] = cursor;
-            }
-
-            var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
-            var root = OsduHttpClient.ParseJson(result, url);
-            var page = JsonPathReader.SelectValues(root, "results[*].id");
-            ids.AddRange(page.Where(id => !ids.Contains(id, StringComparer.Ordinal)));
-            cursor = JsonPathReader.SelectValue(root, "cursor");
-            if (page.Count < SearchPage || string.IsNullOrEmpty(cursor))
-            {
-                break;
+                throw TooManyFound(kind, query, string.Create(CultureInfo.InvariantCulture, $"more than {MaxSearchResults}"));
             }
         }
 
         return ids;
     }
+
+    private static DeliveryException TooManyFound(string kind, string? query, string matched)
+        => new(string.Create(CultureInfo.InvariantCulture,
+            $"the search of kind {kind}{(string.IsNullOrWhiteSpace(query) ? string.Empty : $" for '{query}'")} matches {matched} records, more than the {MaxSearchResults} a route names; narrow the route's results query so it finds only the records the run made"));
 
     /// <summary>
     /// The ids of the records a manifest file lists (the manifest a translation writes, osdu/specs/workflows/INTEGRATION.md
