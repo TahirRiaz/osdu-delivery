@@ -353,6 +353,16 @@ public sealed class RecordValidatorTests
     }
 
     [Fact]
+    public void A_stored_first_version_reads_with_null_modify_stamps_which_are_absent_not_wrong()
+    {
+        var rules = SchemaRules.Of(SchemaOf("""{ "type": "object", "properties": { "modifyUser": { "type": "string" }, "modifyTime": { "type": "string" } } }"""));
+        var record = new JsonObject { ["modifyUser"] = null, ["modifyTime"] = null };
+
+        Assert.Empty(RecordValidator.Check(record, rules, form: RecordForm.Stored).Problems);
+        Assert.Equal(["modifyUser", "modifyTime"], RecordValidator.Check(record, rules).Problems.Select(p => p.Path));
+    }
+
+    [Fact]
     public void Checking_the_same_record_twice_finds_the_same_and_checks_from_many_threads_at_once_agree()
     {
         var broken = Record(r =>

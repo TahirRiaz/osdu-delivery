@@ -32,6 +32,9 @@ internal static class OwnedContent
     /// </summary>
     public static IReadOnlyList<string> OptionalBlocks { get; } = ["ancestry", "meta", "tags"];
 
+    /// <summary>The stamps Storage adds to a record: a first version has no modifier, and reads back with these null.</summary>
+    public static IReadOnlyList<string> ModifyStamps { get; } = ["modifyUser", "modifyTime"];
+
     private static readonly string[] LegalLists = ["legaltags", "otherRelevantDataCountries"];
 
     /// <summary>

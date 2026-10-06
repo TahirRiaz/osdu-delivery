@@ -172,6 +172,15 @@ public static class RecordValidator
             }
         }
 
+        foreach (var name in OwnedContent.ModifyStamps)
+        {
+            if (obj.TryGetPropertyValue(name, out var stamp) && stamp is null)
+            {
+                absent.Add(name);
+                notes.Add($"{name} is null, which is how the first version of a stored record reads, so it is read as absent");
+            }
+        }
+
         return (absent, notes);
     }
 }
