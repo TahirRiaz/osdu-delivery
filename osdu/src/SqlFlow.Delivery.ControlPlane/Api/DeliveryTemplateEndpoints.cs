@@ -28,7 +28,7 @@ public sealed record DeliveryTemplateDto(string Kind, string Version, DateTime C
 /// <summary>One template variable as the Templates page and the mapping builder show it.</summary>
 public sealed record DeliveryTemplateVariableDto(
     string Path, string Shape, string Type, string? ItemType, string? Format, bool Required, string Role, IReadOnlyList<string> Relationships,
-    string? Pattern, string? UnitContext, string? Title, string? Description, string? KeyValueType, bool Nested, IReadOnlyList<string> CacheTypes);
+    string? Pattern, string? UnitContext, string? Title, string? Description, string? KeyValueType, bool Nested, IReadOnlyList<string> CacheTypes, bool Open);
 
 /// <summary>
 /// A template laid out variable by variable. <c>Saved</c> is null for a schema being looked at before it is saved;
@@ -914,7 +914,7 @@ public static class DeliveryTemplateEndpoints
             saved,
             template.Variables.Select(v => new DeliveryTemplateVariableDto(
                 v.Path.Text, v.Shape.ToString(), v.Type, v.ItemType, v.Format, v.Required, v.Role.ToString(), v.Relationships, v.Pattern, v.UnitContext,
-                v.Title, v.Description, v.KeyValueType, v.Nested, MappingBuilder.CacheTypesFor(v, cache).Select(c => c.Name).ToList())).ToList());
+                v.Title, v.Description, v.KeyValueType, v.Nested, MappingBuilder.CacheTypesFor(v, cache).Select(c => c.Name).ToList(), v.Open)).ToList());
 
     private static DeliveryOsduReleaseDto Release(OsduDataDefinitions definitions, DataDefinitionsRelease release)
         => new(release.Name, release.Commit, release.PublishedUtc, definitions.ReleaseWebUrl(release), definitions.IsLocal(release));

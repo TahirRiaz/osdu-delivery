@@ -32,7 +32,13 @@ export function keyVariable(holder: DeliveryTemplateVariable, target: string): D
     keyValueType: null,
     nested: false,
     cacheTypes: [],
+    open: false,
   };
+}
+
+/** The variable a path inside an open object is: it takes a value, an object or a list as written. */
+function insideVariable(holder: DeliveryTemplateVariable, target: string): DeliveryTemplateVariable {
+  return { ...keyVariable(holder, target), shape: "Whole", type: "any" };
 }
 
 /**
@@ -48,14 +54,11 @@ export function withKeyVariables(
   const listed: DeliveryTemplateVariable[] = [];
   for (const variable of variables) {
     listed.push(variable);
-    if (variable.keyValueType === null) {
-      continue;
-    }
-
     for (const entry of entries) {
-      if (!named.has(entry.target) && isKeyOf(variable.path, entry.target)) {
+      const held = named.has(entry.target) ? null : heldVariable(variable, entry.target);
+      if (held !== null) {
         named.add(entry.target);
-        listed.push(keyVariable(variable, entry.target));
+        listed.push(held);
       }
     }
   }
@@ -63,8 +66,17 @@ export function withKeyVariables(
   return listed;
 }
 
-function isKeyOf(holder: string, target: string): boolean {
-  return target.startsWith(`${holder}.`) && KEY_NAME.test(target.slice(holder.length + 1));
+/** The variable `target` is under `holder`: a free key of an object that takes them, or any path inside an open object. Null for neither. */
+function heldVariable(holder: DeliveryTemplateVariable, target: string): DeliveryTemplateVariable | null {
+  if (!target.startsWith(`${holder.path}.`)) {
+    return null;
+  }
+
+  if (holder.open) {
+    return insideVariable(holder, target);
+  }
+
+  return holder.keyValueType !== null && KEY_NAME.test(target.slice(holder.path.length + 1)) ? keyVariable(holder, target) : null;
 }
 
 function unknownVariable(target: string): DeliveryTemplateVariable {
@@ -84,6 +96,7 @@ function unknownVariable(target: string): DeliveryTemplateVariable {
     keyValueType: null,
     nested: false,
     cacheTypes: [],
+    open: false,
   };
 }
 
@@ -106,15 +119,12 @@ export function variableRows(detail: DeliveryTemplateDetail, draft: MappingDraft
     const entry = byTarget.get(variable.path) ?? null;
     shown.add(variable.path);
     rows.push({ key: variable.path, variable, entry, kind: "variable", outside: null });
-    if (variable.keyValueType === null) {
-      continue;
-    }
-
     for (const candidate of draft.entries) {
       // A property the template names is its own row, even under an object that also takes free keys.
-      if (!shown.has(candidate.target) && !byPath.has(candidate.target) && isKeyOf(variable.path, candidate.target)) {
+      const held = shown.has(candidate.target) || byPath.has(candidate.target) ? null : heldVariable(variable, candidate.target);
+      if (held !== null) {
         shown.add(candidate.target);
-        rows.push({ key: candidate.target, variable: keyVariable(variable, candidate.target), entry: candidate, kind: "key", outside: null });
+        rows.push({ key: candidate.target, variable: held, entry: candidate, kind: "key", outside: null });
       }
     }
   }

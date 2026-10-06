@@ -1740,6 +1740,8 @@ export interface DeliveryTemplateVariable {
   nested: boolean;
   /** The repository's cached types this variable can be read from, when a repository was given. */
   cacheTypes: string[];
+  /** An object the schema leaves open (data.ExtensionProperties): entries may target any path inside it. */
+  open: boolean;
 }
 
 /** A template laid out variable by variable, parents before their children in schema order. `saved` is null for a schema not saved yet. */
