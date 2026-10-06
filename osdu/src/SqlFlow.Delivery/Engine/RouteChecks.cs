@@ -1,3 +1,4 @@
+using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
@@ -88,6 +89,45 @@ public static class RouteChecks
         {
             throw new DeliveryException($"{problem} ({mapping} renders {kind}.)");
         }
+    }
+
+    /// <summary>
+    /// Throws a <see cref="FlowValidationException"/> when the mapping writes under a data key the flow preserves
+    /// (<c>target.protocolOptions.preserveDataKeys</c>): every update carries that key over from the record OSDU holds in
+    /// place of what was rendered, so what the mapping writes there would reach a record when it is created and never
+    /// after, whatever it renders on later runs.
+    /// </summary>
+    /// <param name="flow">The flow being planned.</param>
+    /// <param name="mapping">The mapping the flow pins.</param>
+    /// <param name="where">The flow file, for messages.</param>
+    public static void CheckPreserved(FlowDefinition flow, MappingDefinition mapping, string where)
+    {
+        ArgumentNullException.ThrowIfNull(flow);
+        ArgumentNullException.ThrowIfNull(mapping);
+        ArgumentException.ThrowIfNullOrWhiteSpace(where);
+        var preserved = flow.Target.ProtocolOptions.PreserveDataKeys;
+        if (preserved.Count == 0)
+        {
+            return;
+        }
+
+        var written = mapping.Entries
+            .Where(entry => entry.Target.Root == "data" && entry.Target.Segments.Count > 1 && preserved.Contains(entry.Target.Segments[1].Name, StringComparer.Ordinal))
+            .Select(entry => entry.Target)
+            .ToList();
+        if (written.Count == 0)
+        {
+            return;
+        }
+
+        var keys = written.Select(target => target.Segments[1].Name).Distinct(StringComparer.Ordinal).ToList();
+        const int Named = 5;
+        var named = string.Join(", ", written.Take(Named).Select(target => target.Text))
+            + (written.Count > Named ? $" and {written.Count - Named} more" : string.Empty);
+        throw new FlowValidationException(
+            $"{where}: {KeyPaths.Of(flow).Shared("target.protocolOptions.preserveDataKeys")} carries data.{string.Join(", data.", keys)} over from the record OSDU holds "
+            + $"into every update, in place of what the mapping renders, and {mapping.Reference} writes {named}: what it writes there would reach a record only when it is created. "
+            + $"Take {string.Join(", ", keys)} out of preserveDataKeys, or leave {(keys.Count == 1 ? "it" : "them")} out of the mapping.");
     }
 
     /// <summary>

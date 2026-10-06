@@ -186,8 +186,11 @@ public static class MappingCoverage
             listed.Add((path, variable.Path.Parent?.Text, variable.Required));
         }
 
-        // A free key of an object that takes them (osdu.tags.DeliveredBy) is no variable of the template, but it is a
-        // target the mapping fills, so it is covered the same way and a view can show it under the object that holds it.
+        // A free key of an object that takes them (osdu.tags.DeliveredBy) and a path inside an open object
+        // (osdu.data.ExtensionProperties.Recall.Curves[].OriginalUnit) are no variables of the template, but targets the
+        // mapping fills, so they are covered the same way and a view can show them under the object that holds them. Inside
+        // an open object the objects between it and the target are listed first, so a holder always comes before what it
+        // holds, which is the order the roll-up reads.
         foreach (var entry in mapping.Entries)
         {
             var target = entry.Target.Text;
@@ -196,9 +199,29 @@ public static class MappingCoverage
                 continue;
             }
 
-            states[target] = own[target];
+            if (key.Inside is { } open)
+            {
+                var between = new List<TemplatePath>();
+                for (var holder = entry.Target.Parent; holder is not null && !holder.Equals(open); holder = holder.Parent)
+                {
+                    between.Add(holder);
+                }
+
+                for (var i = between.Count - 1; i >= 0; i--)
+                {
+                    var holder = between[i];
+                    if (states.TryAdd(holder.Text, Reach(holder.Text)))
+                    {
+                        listed.Add((holder.Text, holder.Parent?.Text, false));
+                    }
+                }
+            }
+
+            states[target] = Reach(target);
             listed.Add((target, entry.Target.Parent?.Text, key.Required));
         }
+
+        CoverageState Reach(string path) => Better(own.GetValueOrDefault(path, CoverageState.Empty), inside.GetValueOrDefault(path, CoverageState.Empty));
 
         var variables = Rolled(listed, states, own, direct, literals);
 

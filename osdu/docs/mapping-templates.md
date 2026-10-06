@@ -229,7 +229,7 @@ dataset's rows; the loader refuses both by name. A list of values whose items co
 read from the row the array is in, is a [list of objects](#lists-of-objects).
 
 Each property the tree writes is a template variable, named by its path in the record: `record.data.Curves.$item.CurveID`
-fills `osdu.data.Curves[].CurveID`. Messages name a node by where the document writes it, and the builder, the coverage
+fills `osdu.data.Curves[].CurveID`. Inside an [open object](#open-objects) the path is the variable, of no type. Messages name a node by where the document writes it, and the builder, the coverage
 view and the preflight name the variable it fills.
 
 ### Coalesce
@@ -540,6 +540,42 @@ the properties it decides for. A path steps into one array at most, so an item n
 never holds a list of objects of its own, and a list of objects is never inside the items of a `$forEach`; the loader
 refuses each of them by name. The preflight checks each property against the variable it fills and names what it finds
 on the list, and refuses a list of objects where the template takes a list of values.
+
+### Open objects
+
+An object the schema leaves open declares no properties, names no type for its keys and refuses none:
+`data.ExtensionProperties`, which every OSDU kind carries, is one, and the template marks it open. A mapping lays out
+what it writes inside one as it lays out the record: objects, values, literals, lists and a `$forEach`'s items, at any
+depth.
+
+```yaml
+# Recall's own unit spellings beside the partition's unit references in Curves: additional information, so a curve
+# without a unit, or a log without curves, holds nothing.
+ExtensionProperties:
+  Recall:
+    Curves:
+      $forEach: curves
+      $required: false
+      $item:
+        CurveID: { $from: curve_id }
+        OriginalUnit:
+          $from: curve_unit
+          $required: false
+```
+
+Nothing in the schema types what goes there, so a value is written as it arrives (text stays text, `0100` included,
+unless a modifier such as `number` or `date` writes another form) and nothing checks its shape. Everything else holds as
+anywhere in the record: a value is required unless it says otherwise, a list the mapping defines and no row fills is
+written empty, and a path steps into one array at most. An open object inside the items of a list is reached through
+the list's own step (`osdu.data.Curves[].Detail.Note`). An object that refuses undeclared keys
+(`additionalProperties: false`) or offers a choice of forms (`oneOf`, `anyOf`) is not open, and a property the schema
+does not declare there is refused as anywhere; so is a single value written over the open object itself, which takes a
+literal object whole or the properties laid out inside it.
+
+A DDMS may keep a key of its own in the same object: the Wellbore DDMS writes `ExtensionProperties.wdms`, which the
+ddms route carries into every update ([protocols.md](protocols.md#ddms)). A flow that preserves the object itself
+(`target.protocolOptions.preserveDataKeys`) would put the stored copy in place of what the mapping writes on every
+update, so the plan refuses a mapping that writes under a key its flow preserves, naming both.
 
 ### Access by field and country
 
@@ -891,7 +927,8 @@ Before any row is rendered (the preflight):
 
 1. The pinned template version is saved in the catalog.
 2. Every property the tree writes is a variable of the template, with an agreeing shape: `$forEach` only on an array
-   of objects, a plain value only on a scalar or an array of scalars, an object only from a literal.
+   of objects, a plain value only on a scalar or an array of scalars, an object only from a literal. Inside an
+   [open object](#open-objects) any path is a variable of no type, and what the tree writes there is its shape.
 3. No node fills `record.id`, `record.kind` or a property OSDU sets.
 4. `legal.legaltags` and `legal.otherRelevantDataCountries` are literal lists, non-empty and free of repeats, so the
    legal service can check the tags before a run; so are the literal values of `acl.owners` and `acl.viewers`, which a

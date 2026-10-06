@@ -319,6 +319,7 @@ public sealed class Planner
         var issues = Preflight.Check(resolved.Mapping, resolved.Schema, resolved.References, resolved.Context, source.Columns, resolved.Renderer.Searches);
         Preflight.ThrowIfFailed(issues, where);
         SourceBindings.Check(flow, resolved.Mapping, source, where);
+        RouteChecks.CheckPreserved(flow, resolved.Mapping, where);
 
         // What the preflight let through it still says, on the run that renders with it rather than on a plan run alone.
         if (Interlocked.Exchange(ref _warned, 1) == 0)

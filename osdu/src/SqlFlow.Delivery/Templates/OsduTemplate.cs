@@ -31,7 +31,10 @@ public enum TemplateVariableShape
     /// <summary>A list of objects whose properties are variables of their own: a repeater fills it from a child dataset.</summary>
     GroupList,
 
-    /// <summary>An object or list the schema does not break into named properties (a choice of shapes, free-form content); only a static value fills it.</summary>
+    /// <summary>
+    /// An object or list the schema does not break into named properties (a choice of shapes, free-form content): a static
+    /// value fills it whole, and an open object (<see cref="TemplateVariable.Open"/>) takes entries inside it as well.
+    /// </summary>
     Whole,
 }
 
@@ -73,6 +76,18 @@ public sealed record TemplateVariable
 
     /// <summary>A list of objects inside a repeated item: listed for reference, but not fillable, because a repeater inside a repeater is not supported.</summary>
     public bool Nested { get; init; }
+
+    /// <summary>
+    /// An object the schema leaves open (<c>data.ExtensionProperties</c>): it declares no properties, names no type for
+    /// its keys and refuses none. A mapping lays out what it writes inside it, at any depth, as it lays out the record.
+    /// </summary>
+    public bool Open { get; init; }
+
+    /// <summary>
+    /// For a path inside an open object: that object. Nothing in the schema types or shapes what is written there, so the
+    /// variable takes a value, an object, a list or a repeater's items alike, written as they arrive.
+    /// </summary>
+    public TemplatePath? Inside { get; init; }
 }
 
 /// <summary>
@@ -115,7 +130,8 @@ public sealed class OsduTemplate
 
     /// <summary>
     /// The variable at <paramref name="path"/>, or null when the template has none. A key under an object with free keys
-    /// (<c>osdu.tags.WellLogNativeUID</c>) is a variable of that object's value type.
+    /// (<c>osdu.tags.WellLogNativeUID</c>) is a variable of that object's value type, and a path inside an open object
+    /// (<c>osdu.data.ExtensionProperties.Recall.Curves[].OriginalUnit</c>) a variable of no type, <see cref="TemplateVariable.Inside"/> it.
     /// </summary>
     public TemplateVariable? Find(TemplatePath path)
     {
@@ -136,6 +152,34 @@ public sealed class OsduTemplate
                 Role = holder.Role,
                 Description = holder.Description,
             };
+        }
+
+        return OpenObjectOf(path) is { } open
+            ? new TemplateVariable
+            {
+                Path = path,
+                Shape = TemplateVariableShape.Whole,
+                Type = "any",
+                Role = open.Role,
+                Description = open.Description,
+                Inside = open.Path,
+            }
+            : null;
+    }
+
+    /// <summary>
+    /// The open object <paramref name="path"/> lies inside, or null. The path reaches it with the same steps into arrays the
+    /// object's own path takes, and never steps into the object itself, which is no list.
+    /// </summary>
+    public TemplateVariable? OpenObjectOf(TemplatePath path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        for (var holder = path.Parent; holder is not null; holder = holder.Parent)
+        {
+            if (_byPath.TryGetValue(holder.Text, out var candidate))
+            {
+                return candidate.Open && !path.Segments[holder.Segments.Count - 1].IntoArray ? candidate : null;
+            }
         }
 
         return null;
@@ -238,7 +282,7 @@ public sealed class OsduTemplate
                     }
                     else
                     {
-                        variables.Add(variable with { Shape = TemplateVariableShape.Whole });
+                        variables.Add(variable with { Shape = TemplateVariableShape.Whole, Open = IsOpen(own) });
                     }
 
                     break;
@@ -253,6 +297,16 @@ public sealed class OsduTemplate
             }
         }
     }
+
+    /// <summary>
+    /// Whether an object that declares no properties and no type for its keys takes any content: one that refuses
+    /// undeclared keys (<c>additionalProperties: false</c>) can only be empty, and one offering a choice of forms is one of
+    /// those forms, not free content.
+    /// </summary>
+    private static bool IsOpen(JsonObject own)
+        => !(own["additionalProperties"] is JsonValue closed && closed.GetValueKind() == System.Text.Json.JsonValueKind.False)
+            && own["oneOf"] is null
+            && own["anyOf"] is null;
 
     private static HashSet<string> Names(JsonNode? node)
     {

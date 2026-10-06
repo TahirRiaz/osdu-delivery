@@ -167,7 +167,7 @@ public static partial class Preflight
             return;
         }
 
-        if (entry.Parts.Any(part => part.IsObject) && variable.Shape != TemplateVariableShape.GroupList)
+        if (entry.Parts.Any(part => part.IsObject) && variable.Shape != TemplateVariableShape.GroupList && variable.Inside is null)
         {
             issues.Add(ValidationIssue.Error(
                 $"{name} is a list of objects whose properties read values, which fills a list of objects the template breaks into properties, and {entry.Target.Text} is {Describe(variable)}."));
@@ -280,11 +280,19 @@ public static partial class Preflight
         }
     }
 
-    /// <summary>Why the entry's value cannot take the variable's shape, or null when it can.</summary>
+    /// <summary>
+    /// Why the entry's value cannot take the variable's shape, or null when it can. Inside an open object nothing gives a
+    /// shape, so what the mapping writes there is the shape: a value, a literal, a list or a repeater's items.
+    /// </summary>
     private static string? ShapeProblem(MappingEntry entry, TemplateVariable variable)
     {
         var shape = variable.Shape;
         var target = entry.Target.Text;
+        if (variable.Inside is not null)
+        {
+            return null;
+        }
+
         if (entry.IsRepeater)
         {
             return shape == TemplateVariableShape.GroupList

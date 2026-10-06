@@ -13,6 +13,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A mapping writes inside an object the schema leaves open, such as `data.ExtensionProperties`.** The template marks an
+  object that declares no properties, names no type for its keys and refuses none as open, and any path inside it is a
+  variable of no type: a mapping lays out objects, values, literals, lists and a `$forEach`'s items there, at any depth,
+  each value written as it arrives. The Recall well logs use it to keep Recall's own unit spellings beside the
+  partition's unit references (`ExtensionProperties.Recall.Curves[].OriginalUnit`). An object that refuses undeclared keys
+  or offers a choice of forms is not open, and a property the schema does not declare there is refused as before. The plan
+  refuses a mapping that writes under a data key its flow preserves (`target.protocolOptions.preserveDataKeys`), since
+  every update would put the stored copy in its place, naming both (docs: `osdu/docs/mapping-templates.md`, Open objects).
 - **A run or a submission that went wrong is reversed: OSDU is put back, record by record, as it was before it.** A record
   the source updated gets back the version OSDU held before (read from storage and written again as a new version, as it
   was, with its own `bulkURI` on a Wellbore DDMS record), and a record it created is removed again at the reversible

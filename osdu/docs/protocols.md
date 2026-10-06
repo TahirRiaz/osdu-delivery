@@ -177,7 +177,10 @@ DDMS shape's calls, rules and deletes follow its pinned contract and its source 
   are refused rather than sent somewhere nobody chose, and the GUI does not offer them.
 - `preserveDataKeys` (for example `Datasets`, `DDMSDatasets`, `ExtensionProperties`) are read from the
   existing record before an update and copied into the document's `data`, because OSDU owns them
-  ([decisions/0004](decisions/0004-preserved-keys.md)). The read is the same one the bulk link takes.
+  ([decisions/0004](decisions/0004-preserved-keys.md)). The read is the same one the bulk link takes. The bulk link is
+  carried whether `ExtensionProperties` is preserved or not, so a mapping that writes into `ExtensionProperties`
+  ([mapping-templates.md](mapping-templates.md#open-objects)) leaves it out of the list, and the plan refuses one that
+  writes under a key its flow preserves.
 - Probe: `GET {root}/about` of every DDMS the flow reaches, or the flow's `probePath`; the target is reachable when
   every one of them answers.
 - Discovery: a DDMS `target.ddms` names with `register` is read from the Register service
