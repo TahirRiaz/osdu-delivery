@@ -133,7 +133,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /records/{flowId}/{key}/chain` | read | The record's row through its ingestion table: the table (`sourceTable`), when the row first arrived (`insertedUtc`), and every change of it the ledger recorded, newest first: `loaded` (the insert), `reloaded` (inserted again after earlier versions), `earliest` (the earliest version held, when the arrival is not known), `changed` and `deleted`, each with its file and row, the ingestion run that was writing the table when the row was stamped (`loading`), and the last landing of its file before that run (`landing`). A run that reloaded the row unchanged made no change and is not listed; a run the catalog does not prove is left out rather than guessed, and `note` says what could not be named. At most 50 changes, the newest and the arrival (`truncated`). |
 | `GET /submissions/{id}`, `/attempts` | read | One submission with the runs that carried it, and its attempts. |
 | `GET /submissions/{id}/batches` | read | The submission's work batches, paged, filterable by `status`. |
-| `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time and `idle` (`false` leaves out the runs that changed nothing, `true` lists only them); one activity with its captured log. A flow is named by its pipeline (`pipelineId`, with `interface` and `partition` as on a flow's own routes) or by its ledger identity (`flowId`, one of `GET /activities/flows`), not both; a `flowId` kept in another partition than the one read answers an empty trail. |
+| `GET /activities`, `GET /activities/{id}` | read | The audit trail, filtered by flow, kind, actor, outcome, time and `idle` (`false` leaves out the runs that changed nothing, `true` lists only them); one activity with its captured log, and the pipeline, interface and partition its ledger is reached by (`pipelineId`, `interface`, `namedPartition`, which a listing leaves out), so the entry can be acted on. A flow is named by its pipeline (`pipelineId`, with `interface` and `partition` as on a flow's own routes) or by its ledger identity (`flowId`, one of `GET /activities/flows`), not both; a `flowId` kept in another partition than the one read answers an empty trail. |
 | `GET /activities/flows` | read | The flows the audit trail can be narrowed to, in the partition `?partition=` names, else the workbench's, else every partition: each ledger identity with at least one activity (a delivery flow, an interface of a source, a dimension), with its flow name, interface, ledger kind and partition, ordered by flow. A ledger whose flow is no longer synced stays listed while its activities are kept. |
 | `GET /mappings`, `/mappings/{id}` | read | The mapping documents the repositories hold. |
 | `GET /mappings/{id}/flows` | read | The interfaces of the repository's delivery flows that render with the mapping, as the last sync described them, in every partition: each one's pipeline, flow, interface, partition, ledger identity, record table and route. What a value check of the mapping reads the rows of ([Checking a mapping's values](#checking-a-mappings-values)). An interface the repository no longer declares, or whose pipeline the catalog does not hold as an active delivery flow, is left out. |
@@ -189,7 +189,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
 | `POST /flows/{pipelineId}/reverse/preview` | operate | What reversing a run or a submission would reach ([Reversing a run](#reversing-a-run)), writing nothing: `runId` or `submissionId` (one of them; 400 for both or neither, 404 for a source the interface's ledger holds nothing of), how many records it delivered and under how many submissions, what the route can do (`route`: whether it restores and removes, and the call each makes or why not), the first 1,000 records in key order decided as the run decides them (`restore`, `remove`, `resolvedFromOsdu`, and `passedOver` by outcome), the target it is aimed at, and the reversal of that source when one exists, with its counts. |
-| `POST /flows/{pipelineId}/reverse` | operate | Queue the `reverse` run of `runId` or `submissionId` as the caller, on `pool` when named. `expected` is refused with 409 when the source no longer reaches that many records. Answers 202 with the run (`runId`, `status`, `source`, `sourceId`, `records`); asking again for a source whose reversal stopped resumes it. |
+| `POST /flows/{pipelineId}/reverse` | operate | Queue the `reverse` run of `runId` or `submissionId` as the caller, on `pool` when named. Refused with 409 when the source has nothing to reverse now (the reason `reversible` gives), and when `expected` no longer matches how many records it reaches. Answers 202 with the run (`runId`, `status`, `source`, `sourceId`, `records`); asking again for a source whose reversal stopped resumes it. |
+| `GET /flows/{pipelineId}/reversible?runId=&submissionId=` | read | Whether the run or submission has anything to reverse now, by the answer the request and the reverse run go by: `reversible`, `resumes` (the request would resume its reversal), `reason` (why not: it delivered nothing to the ledger, its reversal settled every record, or a reverse run of it is queued or running) and its `reversal`, counted, when one exists. A seek of the ledger at a time; what the GUI offers the action by. |
 | `GET /flows/{pipelineId}/reversals?max=&runId=&submissionId=` | read | The interface's reversals, newest first (50 by default, at most 200): source, state, who asked and when, the latest run. With `runId` or `submissionId`, that source's reversal alone, with its records counted by state and by outcome; empty when none was asked for. |
 | `GET /reversals/{reversalId}` | read | One reversal with its counts, the pipeline and interface it belongs to, the submissions its source covers, and the reverse runs that worked on it. |
 | `GET /reversals/{reversalId}/records?outcome=&after=&limit=` | read | Its records, in key order after `after` (a delivery key), every one or those of one `outcome` (`pending` for those not settled yet; 400 for an outcome a reversal does not have): a page (100 by default, at most 1,000) with each record's label, source key, OSDU id, the versions involved, what came of it and why, and `next`, the key to ask after for the next page. |
@@ -420,11 +421,21 @@ rows again, and the source watermark does not move back. A corrected row flows t
 by issue, or of every blocked record) makes a `reverted` record `delivered` again, and the next run sends it only where
 it renders differently from what OSDU now holds.
 
-**Asking for one.** The GUI's **Reverse this submission** (the submission page) and **Reverse this run** (the page of a
-`deliver`, `replan`, `drain` or `intake` run once it has ended) open a dialog showing the preview and queue the run with
-the count shown, which is refused if the source has moved since. The API is `POST /flows/{pipelineId}/reverse` after
-its preview; the CLI is `sqlflow records reverse <flow.yaml> --run <id>` or `--submission <id>`, with `--preview` to see
-what it would do.
+**Asking for one.** A reversal is offered only where there is something to reverse: a source that delivered records to
+the ledger and has no reversal yet, or one whose reversal stopped with records still to take (offered as **Resume the
+reversal**). A source that delivered nothing, one whose reversal settled every record, and one a reverse run is already
+queued or running for offer nothing, and the request and the reverse run refuse them for the same reason
+(`GET /flows/{pipelineId}/reversible` says which). Whether a run delivered anything is a seek of the submissions it
+planned, then of its own attempts, reading at most 50,000 of them in the ledger so the answer stays quick for a run that
+held a million records.
+
+The GUI offers it as **Reverse this run** on the audit trail's entry of a `deliver`, `drain` or `intake` run and on the
+run's page (once the run has ended), and as **Reverse this submission** on a submission's page. A run of a source of
+several interfaces delivers to each interface's ledger, and is reversed one interface at a time, from its entry in the
+audit trail (one per interface) or from each submission's page. Each opens a dialog showing the preview and queues the
+run with the count shown, which is refused if the source has moved since. The API is `POST /flows/{pipelineId}/reverse`
+after its preview; the CLI is `sqlflow records reverse <flow.yaml> --run <id>` or `--submission <id>`, with `--preview`
+to see what it would do.
 
 ## Redelivering records
 
@@ -792,10 +803,10 @@ Pipelines like any other flow.
 - **A submission's page**: which selection it read and the window it covered, the ingestion table and connection it
   read from, its counts, the runs that carried it, its work batches, its attempts, and its two record sets as links:
   what it delivered and what it last planned. The submission is the batch, and **Reverse this submission** is how a
-  batch is undone ([Reversing a run](#reversing-a-run)): the dialog names the target, says how many records the
+  batch is undone ([Reversing a run](#reversing-a-run)), shown while the submission has anything to reverse: the dialog names the target, says how many records the
   submission delivered and what the reversal would do with them (restored, removed, passed over and why, decided as the
   run decides them over the first 1,000 records), and the calls the route makes; confirming queues the reverse run with
-  that count, refused if the count has moved by then. The button is off while the submission has delivered nothing.
+  that count, refused if the count has moved by then.
   Once a reversal is asked for, its card shows on the page: its state, who asked and when, its records by outcome (each
   outcome opens its records, a page at a time, each opening the record), and the runs that worked on it, followed live
   while a run works on it.
@@ -905,8 +916,10 @@ Pipelines like any other flow.
   schedule, a person, the command line or a service), the result (how it ended and the counts that are not zero) and
   what it worked on (the record, else the submission, else the run). The runs that changed nothing are left out and
   counted beside **Show idle runs**, which brings them back dimmed. An entry opens on the whole ids of its record,
-  submission and run, its parameters and, for a run, its captured log. The table fits its page: the flow and the result
-  clip with the whole value on hover rather than scrolling sideways.
+  submission and run, its parameters and, for a run, its captured log. The entry of a `deliver`, `drain` or `intake` run
+  that has ended offers **Reverse this run** when it left anything to reverse ([Reversing a run](#reversing-a-run)), and
+  the entry of a `reverse` run shows the reversal it worked on, its records by outcome and its runs, followed live. The
+  table fits its page: the flow and the result clip with the whole value on hover rather than scrolling sideways.
 - **Mappings** (OSDU): the mapping documents the repositories hold, each mapping with the template it pins and a
   link to the Mapping builder. A mapping opens on its Properties, laid out so that what needs a look is what stands
   out: the data check on one line, then the template the mapping pins as the record's tree beside the selected
@@ -1091,9 +1104,9 @@ Pipelines like any other flow.
   flags says so in a line: it reported none for the partition, or could not be asked, which the refresh's log says.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
-  A run that sent records (`deliver`, `replan`, `drain`, `intake`) offers **Records of this run** and, once it has ended,
-  **Reverse this run**, through the same dialog as a submission's; a `reverse` run's page names the run or submission it
-  reverses and shows the reversal's card.
+  A run that sent records (`deliver`, `replan`, `drain`, `intake`) offers **Records of this run** and, once it has ended
+  and when it left anything to reverse, **Reverse this run**, through the same dialog as a submission's; a `reverse`
+  run's page names the run or submission it reverses and shows the reversal's card.
   The trigger dialog offers the operations the flow's kind runs. For a deliver run, **Force** looks at every record past
   the whole-run gates and still sends only what changed; **Send again** set to **What renders differently** brings
   records up to date: the records named under **Redeliver these records**, or with none named every record the flow has

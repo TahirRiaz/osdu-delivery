@@ -13,10 +13,13 @@ import { OutcomePill } from "@/components/StatusBadge";
 import { TraceLog } from "@/components/TraceLog";
 import { formatDurationSeconds, parseUtc } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { deliveryApi, deliveryRecordRoute, type DeliveryActivity } from "../../api/delivery";
+import { deliveryApi, deliveryRecordRoute, ledgerLabel, type DeliveryActivity, type DeliveryFlowScope, type ReversalSource } from "../../api/delivery";
 import { Actor } from "./ActivityActor";
 import { endingOf } from "./activityEnding";
 import { prettyJson } from "./prettyJson";
+import { ReversalCard } from "./ReversalCard";
+import { ReverseButton } from "./ReverseButton";
+import { DELIVERING_OPERATIONS } from "./runOutcome";
 import { runLogLines } from "./runLogLines";
 
 /** What a run is, on hover of its chip. */
@@ -185,6 +188,54 @@ function ActivityLog({ activity }: { activity: DeliveryActivity }) {
   );
 }
 
+/** The ledger an activity was done to, as a request about its flow names it: the interface and the partition the entry names. */
+function scopeOf(activity: DeliveryActivity): DeliveryFlowScope {
+  return { interfaceName: activity.interface ?? null, partition: activity.namedPartition ?? null };
+}
+
+/** The source a reverse run reversed, as its recorded parameters name it; null for parameters that name none. */
+function reversedBy(activity: DeliveryActivity): ReversalSource | null {
+  if (activity.kind !== "reverse" || activity.parametersJson === null) {
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(activity.parametersJson);
+    if (isObject(parsed) && (parsed.source === "run" || parsed.source === "submission") && typeof parsed.sourceId === "string") {
+      return { kind: parsed.source, id: parsed.sourceId };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * The reversal a reverse run worked on, as the ledger keeps it: its state, its records by outcome and its runs, followed live
+ * while a run works on it. Kept to a part of the sheet and scrolled inside, so the log keeps the rest of the height.
+ */
+function ActivityReversal({ activity, pipelineId, source }: { activity: DeliveryActivity; pipelineId: string; source: ReversalSource }) {
+  const scope = scopeOf(activity);
+  const found = useQuery({
+    queryKey: ["delivery", "reversals", pipelineId, scope.interfaceName, scope.partition, source.kind, source.id],
+    queryFn: () => deliveryApi.reversals(pipelineId, scope, source),
+  });
+  const reversalId = found.data?.[0]?.reversalId ?? null;
+  if (reversalId === null) {
+    return null;
+  }
+
+  return (
+    <section className="flex max-h-[45%] shrink-0 flex-col gap-1.5" data-testid="delivery-activity-reversal">
+      <h3 className={CAPTION}>Reversal</h3>
+      <div className="min-h-0 overflow-y-auto">
+        <ReversalCard reversalId={reversalId} />
+      </div>
+    </section>
+  );
+}
+
 /** How long an activity took, with when it completed on hover; a running one says so. */
 function Took({ activity }: { activity: DeliveryActivity }) {
   if (activity.completedUtc === null) {
@@ -202,10 +253,14 @@ function Took({ activity }: { activity: DeliveryActivity }) {
 
 /**
  * The head of the sheet: how it ended and what it was, the summary it recorded (the error, when it failed), who started
- * it, when and for how long, and the ids it worked on, each a chip that opens it and copies it whole.
+ * it, when and for how long, and the ids it worked on, each a chip that opens it and copies it whole. A run that sends
+ * records offers its reversal beside them once it has ended, when it left anything to reverse (docs/reversal-plan.md).
  */
 function ActivityHeader({ activity }: { activity: DeliveryActivity }) {
   const ending = endingOf(activity);
+  const pipelineId = typeof activity.pipelineId === "string" ? activity.pipelineId : null;
+  const reversible = activity.runId !== null && pipelineId !== null && activity.outcome !== "running" && DELIVERING_OPERATIONS.includes(activity.kind);
+  const scope = scopeOf(activity);
   return (
     <SheetHeader className="gap-2 border-b border-border px-5 pt-4 pr-12 pb-3">
       <div className="flex min-w-0 items-center gap-2.5">
@@ -271,6 +326,18 @@ function ActivityHeader({ activity }: { activity: DeliveryActivity }) {
               />
             </span>
           )}
+          {reversible && (
+            <span className="ml-auto">
+              <ReverseButton
+                pipelineId={pipelineId}
+                flowScope={scope}
+                flowName={ledgerLabel(activity.flowName, scope)}
+                source={{ kind: "run", id: activity.runId! }}
+                label="Reverse this run"
+                testId="delivery-activity-reverse"
+              />
+            </span>
+          )}
         </div>
       )}
     </SheetHeader>
@@ -291,6 +358,7 @@ export function DeliveryActivitySheet({ activityId, onClose }: { activityId: num
     refetchInterval: (query) => (query.state.data?.outcome === "running" ? 5000 : false),
   });
   const data = detail.data;
+  const reversed = data === undefined ? null : reversedBy(data);
   const problem = detail.error === null
     ? null
     : isApiError(detail.error) ? detail.error.detail ?? detail.error.title : String(detail.error);
@@ -312,6 +380,9 @@ export function DeliveryActivitySheet({ activityId, onClose }: { activityId: num
               <ActivityHeader activity={data} />
               <div className="flex min-h-0 flex-1 flex-col gap-4 px-5 pt-3 pb-5">
                 <ActivityParameters json={data.parametersJson} />
+                {reversed !== null && typeof data.pipelineId === "string" && (
+                  <ActivityReversal activity={data} pipelineId={data.pipelineId} source={reversed} />
+                )}
                 <ActivityLog activity={data} />
               </div>
             </>

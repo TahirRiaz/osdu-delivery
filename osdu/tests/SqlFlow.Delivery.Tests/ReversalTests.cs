@@ -73,6 +73,27 @@ public sealed class ReversalTests : IDisposable
             var created = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(4));
             Assert.Equal(RecordStatus.Delivered, created!.Status);
 
+            // Before it is reversed, each of the two runs and its submission has something to reverse; a run of the flow that
+            // delivered nothing has nothing, and asking for its reversal is refused saying so, with no reversal opened.
+            Assert.True(await ledger.SourceDeliveredAsync(runtime.Flow.Id, ReversalSource.Run(second)));
+            Assert.True(await ledger.SourceDeliveredAsync(runtime.Flow.Id, ReversalSource.Submission(await SubmissionOfAsync(ledger, second))));
+            var idle = Guid.CreateVersion7();
+            Assert.False(await ledger.SourceDeliveredAsync(runtime.Flow.Id, ReversalSource.Run(idle)));
+            var nothing = await ReversalAvailability.ReadAsync(ledger, runtime.Flow.Id, ReversalSource.Run(idle), null, CancellationToken.None);
+            Assert.False(nothing.Reversible);
+            Assert.Contains("delivered nothing", nothing.Reason!, StringComparison.Ordinal);
+            runtime.RunId = Guid.CreateVersion7();
+            var refused = await Assert.ThrowsAsync<DeliveryException>(() => runtime.ReverseAsync(ReversalSource.Run(idle)));
+            Assert.Equal(nothing.Reason, refused.Message);
+            var refusal = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "reverse" }));
+            Assert.Equal(("failed", nothing.Reason), (refusal.Outcome, refusal.Summary));
+            Assert.Null(await ledger.FindReversalAsync(runtime.Flow.Id, ReversalSource.Run(idle)));
+            var ready = await ReversalAvailability.ReadAsync(ledger, runtime.Flow.Id, ReversalSource.Run(second), null, CancellationToken.None);
+            Assert.Equal((true, false), (ready.Reversible, ready.Resumes));
+            var busy = await ReversalAvailability.ReadAsync(ledger, runtime.Flow.Id, ReversalSource.Run(second), Guid.CreateVersion7(), CancellationToken.None);
+            Assert.False(busy.Reversible);
+            Assert.Contains("is reversing", busy.Reason!, StringComparison.Ordinal);
+
             _clock.Advance(TimeSpan.FromMinutes(10));
             runtime.RunId = Guid.CreateVersion7();
             runtime.Actor = "manual:tester";
@@ -132,7 +153,9 @@ public sealed class ReversalTests : IDisposable
             var counts = await ledger.CountReversalAsync(reversal.ReversalId);
             Assert.Equal(2, counts.Outcome(ReversalOutcomes.Restored));
             Assert.Equal(1, counts.Outcome(ReversalOutcomes.Removed));
-            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "reverse" }));
+            var activity = Assert.Single(
+                await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "reverse" }),
+                a => a.ParametersJson!.Contains(second.ToString("D"), StringComparison.Ordinal));
             Assert.Equal("completed", activity.Outcome);
             Assert.Equal("manual:tester", activity.Actor);
             Assert.Contains("2 restored", activity.Summary!, StringComparison.Ordinal);
@@ -144,11 +167,14 @@ public sealed class ReversalTests : IDisposable
                     a => a.Kind == "reverse");
             }
 
-            // Asking again changes nothing: every record is settled.
+            // Every record is settled, so there is nothing left to reverse: asking again is refused saying so, and changes nothing.
+            var settled = await ReversalAvailability.ReadAsync(ledger, runtime.Flow.Id, ReversalSource.Run(second), null, CancellationToken.None);
+            Assert.False(settled.Reversible);
+            Assert.Contains("nothing is left to reverse", settled.Reason!, StringComparison.Ordinal);
             runtime.RunId = Guid.CreateVersion7();
-            var again = await runtime.ReverseAsync(ReversalSource.Run(second));
-            Assert.Equal(0, again.Taken);
-            Assert.Equal(2, again.Counts.Outcome(ReversalOutcomes.Restored));
+            var again = await Assert.ThrowsAsync<DeliveryException>(() => runtime.ReverseAsync(ReversalSource.Run(second)));
+            Assert.Equal(settled.Reason, again.Message);
+            Assert.Equal(2, (await ledger.CountReversalAsync(summary.ReversalId)).Outcome(ReversalOutcomes.Restored));
         }
     }
 

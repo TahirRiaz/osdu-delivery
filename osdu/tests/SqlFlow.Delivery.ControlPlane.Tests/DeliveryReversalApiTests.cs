@@ -149,11 +149,30 @@ public sealed class DeliveryReversalApiTests
             await StatusAsync(client, token, HttpMethod.Post, $"{flow}/reverse", HttpStatusCode.BadRequest, "{}");
             await StatusAsync(client, token, HttpMethod.Post, $"{flow}/reverse/preview", HttpStatusCode.NotFound, $$"""{"submissionId":"{{Guid.NewGuid():D}}"}""");
 
+            // Whether there is anything to reverse: the run delivered records, a run of the flow that delivered nothing did not,
+            // and asking for that one's reversal is refused with the same reason.
+            var ready = await JsonAsync(client, token, HttpMethod.Get, $"{flow}/reversible?runId={secondRun:D}");
+            Assert.Equal((true, false), (ready.GetProperty("reversible").GetBoolean(), ready.GetProperty("resumes").GetBoolean()));
+            var idleRun = Guid.CreateVersion7();
+            await SubmissionAsync(ledger, flowId, flowName, idleRun, now.AddMinutes(-30));
+            var idle = await JsonAsync(client, token, HttpMethod.Get, $"{flow}/reversible?runId={idleRun:D}");
+            Assert.False(idle.GetProperty("reversible").GetBoolean());
+            Assert.Contains("delivered nothing", idle.GetProperty("reason").GetString(), StringComparison.Ordinal);
+            await StatusAsync(client, token, HttpMethod.Post, $"{flow}/reverse", HttpStatusCode.Conflict, $$"""{"runId":"{{idleRun:D}}"}""");
+            await StatusAsync(client, token, HttpMethod.Get, $"{flow}/reversible", HttpStatusCode.BadRequest);
+
             // A request whose count no longer holds is refused; one that holds queues the reverse run as the caller.
             await StatusAsync(client, token, HttpMethod.Post, $"{flow}/reverse", HttpStatusCode.Conflict, $$"""{"runId":"{{secondRun:D}}","expected":5}""");
             var accepted = await JsonAsync(client, token, HttpMethod.Post, $"{flow}/reverse", $$"""{"runId":"{{secondRun:D}}","expected":2}""", HttpStatusCode.Accepted);
             Assert.Equal(2L, accepted.GetProperty("records").GetInt64());
             var runId = accepted.GetProperty("runId").GetGuid();
+
+            // While that run is queued there is nothing more to ask for: the source is being reversed, and a second request is
+            // refused rather than queuing a second run.
+            var queued = await JsonAsync(client, token, HttpMethod.Get, $"{flow}/reversible?runId={secondRun:D}");
+            Assert.False(queued.GetProperty("reversible").GetBoolean());
+            Assert.Contains(runId.ToString("D"), queued.GetProperty("reason").GetString(), StringComparison.Ordinal);
+            await StatusAsync(client, token, HttpMethod.Post, $"{flow}/reverse", HttpStatusCode.Conflict, $$"""{"runId":"{{secondRun:D}}"}""");
             await using (var db = CatalogDatabase.Create(cs))
             {
                 var run = await db.Runs.AsNoTracking().SingleAsync(r => r.RunId == runId);
@@ -186,6 +205,22 @@ public sealed class DeliveryReversalApiTests
             // The preview now names the reversal of the source, counted.
             var again = await JsonAsync(client, token, HttpMethod.Post, $"{flow}/reverse/preview", $$"""{"runId":"{{secondRun:D}}"}""");
             Assert.Equal(reversal.ReversalId, again.GetProperty("existing").GetProperty("reversalId").GetInt64());
+
+            // The audit trail's entry of the run names the pipeline and interface of its ledger, so the run can be reversed
+            // from it; the listing leaves them out.
+            var delivered = await ledger.StartActivityAsync(new ActivityRecord
+            {
+                FlowId = flowId, FlowName = flowName, Kind = "deliver", Actor = "user:tester", StartedUtc = now.AddHours(-1), RunId = secondRun,
+                SubmissionId = second,
+            });
+            await ledger.CompleteActivityAsync(delivered.ActivityId, "completed", "2 delivered", null, now.AddMinutes(-50));
+            var entry = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/activities/{delivered.ActivityId}");
+            Assert.Equal(pipelineId, entry.GetProperty("pipelineId").GetGuid());
+            Assert.True(!entry.TryGetProperty("interface", out var single) || single.ValueKind == JsonValueKind.Null);
+            Assert.Equal(secondRun, entry.GetProperty("runId").GetGuid());
+            var trail = await JsonAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/activities?flowId={flowId:D}&kind=deliver");
+            var row = Assert.Single(trail.GetProperty("items").EnumerateArray());
+            Assert.True(!row.TryGetProperty("pipelineId", out var unnamed) || unnamed.ValueKind == JsonValueKind.Null);
         }
         finally
         {

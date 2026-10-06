@@ -1,14 +1,12 @@
-import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { DatabaseZap, ListTree, Undo2 } from "lucide-react";
-import { toast } from "sonner";
+import { DatabaseZap, ListTree } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { RunDetail } from "@/api/types";
 import { DetailPair } from "@/components/DetailPair";
 import { IdChip } from "@/components/IdChip";
 import { ledgerLabel } from "../../api/delivery";
 import { DELIVERING_OPERATIONS, runRecordCounts, runResult, runScope, runSubmissionId } from "./runOutcome";
-import { ReverseDialog } from "./ReverseDialog";
+import { ReverseButton } from "./ReverseButton";
 import { shortId } from "./idTail";
 
 /** A record counter: grouped for readability, a real zero kept distinct from an unreported value (muted dash). */
@@ -21,14 +19,15 @@ function RecordCount({ value, testId }: { value: number | null; testId: string }
 }
 
 /**
- * The delivery run's way to the records it touched (the flow's Records tab, filtered to this run), and, for a run that sent
- * records once it has ended, its reversal: what it put into OSDU put back as OSDU held it before (docs/reversal-plan.md).
+ * The delivery run's way to the records it touched (the flow's Records tab, filtered to this run), and, once a run that
+ * sends records has ended, its reversal when it left anything to reverse: what it put into OSDU put back as OSDU held it
+ * before (docs/reversal-plan.md). A run of a source of several interfaces that names none is reversed one interface at a
+ * time, from each interface's entry in the audit trail or each submission's page: the reversal works in one ledger.
  */
 export function DeliveryRunActions({ run }: { run: RunDetail }) {
   const navigate = useNavigate();
-  const [reverseOpen, setReverseOpen] = useState(false);
   const ended = run.status === "succeeded" || run.status === "failed" || run.status === "cancelled";
-  const reversible = DELIVERING_OPERATIONS.includes(run.operation ?? "deliver") && run.pipelineId !== null;
+  const sends = DELIVERING_OPERATIONS.includes(run.operation ?? "deliver");
   const scope = runScope(run);
   return (
     <>
@@ -41,33 +40,15 @@ export function DeliveryRunActions({ run }: { run: RunDetail }) {
         <ListTree />
         Records of this run
       </Button>
-      {reversible && (
-        <>
-          <Button
-            variant="destructive-outline"
-            size="sm"
-            onClick={() => setReverseOpen(true)}
-            disabled={!ended}
-            title={ended ? "Put OSDU back as it was before this run." : "A run is reversed once it has ended."}
-            data-testid="run-reverse"
-          >
-            <Undo2 />
-            Reverse this run
-          </Button>
-          <ReverseDialog
-            open={reverseOpen}
-            onClose={() => setReverseOpen(false)}
-            pipelineId={run.pipelineId!}
-            flowScope={scope}
-            flowName={ledgerLabel(run.flowName, scope)}
-            source={{ kind: "run", id: run.runId }}
-            onQueued={(accepted) => {
-              toast.success(`Reversal of ${accepted.records.toLocaleString()} record(s) this run delivered queued.`, {
-                action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) },
-              });
-            }}
-          />
-        </>
+      {sends && ended && run.pipelineId !== null && (
+        <ReverseButton
+          pipelineId={run.pipelineId}
+          flowScope={scope}
+          flowName={ledgerLabel(run.flowName, scope)}
+          source={{ kind: "run", id: run.runId }}
+          label="Reverse this run"
+          testId="run-reverse"
+        />
       )}
     </>
   );

@@ -26,9 +26,11 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   `osdu.Reversal` and `osdu.ReversalItem` (migration `RecordReversals`, module 1.26.0), so a reversal stopped anywhere is
   resumed by asking again, and a write whose answer was lost is checked against OSDU rather than made twice. Reversed
   records are `reverted` (or `deleted`) and blocked until their source changes or they are released. The submission page's
-  **Reverse this submission** (in place of removing what it delivered, which also took out records that existed before)
-  and a delivery run's **Reverse this run** open a dialog that previews what it would do, and a card follows the reversal
-  with its records by outcome. The API answers it at `POST /flows/{pipelineId}/reverse` and `.../reverse/preview`,
+  **Reverse this submission** (in place of removing what it delivered, which also took out records that existed before),
+  and **Reverse this run** on a delivery run's page and on its entry in the audit trail, open a dialog that previews what
+  it would do, and a card follows the reversal with its records by outcome. The action shows only when the source has
+  something to reverse (it delivered records and has no reversal, or its reversal stopped with records left), and the
+  request and the reverse run refuse anything else for the same reason (`GET /flows/{pipelineId}/reversible`). The API answers it at `POST /flows/{pipelineId}/reverse` and `.../reverse/preview`,
   `GET /flows/{pipelineId}/reversals`, `GET /reversals/{id}` and `GET /reversals/{id}/records`; the CLI at
   `sqlflow records reverse` and `sqlflow records reversals`
   ([osdu/docs/operations.md](osdu/docs/operations.md#reversing-a-run), [osdu/docs/reversal-plan.md](osdu/docs/reversal-plan.md)).

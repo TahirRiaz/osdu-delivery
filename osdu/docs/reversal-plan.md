@@ -179,6 +179,7 @@ than 1,000 records to a statement.
 | --- | --- | --- |
 | `POST /flows/{pipelineId}/reverse/preview` | operate | What reversing `runId` or `submissionId` would reach: how many records the source delivered, what the route can do, a classification of up to 1,000 of them (how many would be restored, removed, passed over and why), and the reversal of that source if there is one. |
 | `POST /flows/{pipelineId}/reverse` | operate | Queue the `reverse` run for `runId` or `submissionId`, as the caller; `expected` is refused with 409 when the source no longer delivered that many records. Answers the run. |
+| `GET /flows/{pipelineId}/reversible` | read | Whether `runId` or `submissionId` has anything to reverse now (`ReversalAvailability`): it delivered a record of the ledger and has no reversal, or its reversal has records to take; never while a reverse run of it is queued or running. The GUI offers the action by it, and the request and the reverse run refuse by the same answer. |
 | `GET /flows/{pipelineId}/reversals` | read | The interface's reversals, newest first; with `runId` or `submissionId`, that source's reversal with its counts. |
 | `GET /reversals/{reversalId}` | read | One reversal: its source, its runs, its counts by state and outcome. |
 | `GET /reversals/{reversalId}/records` | read | Its records by outcome, a page at a time after a key. |
@@ -188,7 +189,8 @@ prints the counts (or, with `--preview`, what it would do); `sqlflow records rev
 reversals, or one source's records by outcome.
 
 The submission page's **Remove what it delivered** becomes **Reverse this submission**; the page of a run that sent
-records (`deliver`, `replan`, `drain`, `intake`) offers **Reverse this run** once it has ended; both open the Reverse
+records (`deliver`, `replan`, `drain`, `intake`) and the audit trail's entry of one offer **Reverse this run** once it has
+ended; each is shown only while the source has anything to reverse (**Resume the reversal** for one that stopped); all open the Reverse
 dialog (what the preview says, then confirm), and show the reversal's card: its state, its counts by outcome, each
 listing its records, and its runs. The reverse run's page shows the same card. The records listing, the counts and the
 record page show `reverted`; the timeline shows the reversal's activity and attempts.

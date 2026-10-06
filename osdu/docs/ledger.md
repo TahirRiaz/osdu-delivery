@@ -597,7 +597,8 @@ reversal item are written in one transaction, at most 1,000 records to a transac
 stands at the version the source left: a record that moved between the check and the write is settled as `failed`, not
 put back over what moved it. A run stopped anywhere loses nothing: the next run of the same reversal takes what is still
 pending, what failed and what was passed over as `busy`, and checks an item it left `sending` against OSDU before
-writing it again.
+writing it again. A source that delivered nothing to the ledger, and one whose reversal has nothing left to take, are
+refused before a reversal is opened, so the ledger never holds an empty reversal or a run that changed nothing in one.
 
 A reverted record stays blocked while its source row is unchanged, so a scheduled run does not send the same rows again.
 A corrected row flows through on its own; a release makes the record `delivered` again, and the next run plans it and

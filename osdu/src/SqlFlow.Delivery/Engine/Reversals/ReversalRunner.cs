@@ -92,6 +92,15 @@ public sealed class ReversalRunner
     public async Task<ReversalSummary> RunAsync(ReversalSource source, long? activityId, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(source);
+
+        // A source that delivered nothing, or whose reversal has nothing left to take, is refused before a reversal is opened,
+        // for the same reason the API and the GUI give: a run never opens an empty reversal or one it would change nothing in.
+        var availability = await ReversalAvailability.ReadAsync(_ledger, _flow.Id, source, activeRun: null, ct).ConfigureAwait(false);
+        if (!availability.Reversible)
+        {
+            throw new DeliveryException(availability.Reason!);
+        }
+
         var reversal = await _ledger.OpenReversalAsync(_flow.Id, _flow.Label, source, _actor, _runId, Now, ct).ConfigureAwait(false);
         _log.LogInformation(
             "Reversal {ReversalId} of {Source} in '{Flow}': {State}.",

@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Background;
+using SqlFlow.Core;
 using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Catalog;
 using SqlFlow.Delivery.Data;
@@ -71,6 +72,15 @@ public sealed record DeliveryReversalItemPageDto(IReadOnlyList<DeliveryReversalI
 public sealed record DeliveryReversalAccepted(Guid RunId, string Status, string Source, Guid SourceId, long Records);
 
 /// <summary>
+/// Whether a run or a submission has anything to reverse now, by the answer a request and the reverse run go by
+/// (<see cref="ReversalAvailability"/>): what the GUI offers the action by. <c>Resumes</c> says the request would resume the
+/// reversal that exists; <c>Reason</c> says why there is nothing to reverse (it delivered nothing, its reversal settled every
+/// record, or a reverse run of it is queued or running); <c>Reversal</c> is the reversal of the source, counted, when one was
+/// asked for.
+/// </summary>
+public sealed record DeliveryReversibleDto(string Source, Guid SourceId, bool Reversible, bool Resumes, string? Reason, DeliveryReversalDto? Reversal);
+
+/// <summary>
 /// Reversals (docs/reversal-plan.md): what one run or submission put into OSDU, put back record by record as OSDU held it
 /// before. A preview reads what a reversal would reach and decides a sample of it as the run would; a request queues the
 /// <c>reverse</c> run of the flow, which lists, reverses and settles every record on a node, resumably; the listing, the
@@ -90,6 +100,7 @@ public static class DeliveryReversalEndpoints
     public static void MapReads(RouteGroupBuilder delivery)
     {
         ArgumentNullException.ThrowIfNull(delivery);
+        delivery.MapGet("/flows/{pipelineId:guid}/reversible", ReversibleAsync).WithName("GetDeliveryReversible");
         delivery.MapGet("/flows/{pipelineId:guid}/reversals", ListReversalsAsync).WithName("ListDeliveryReversals");
         delivery.MapGet("/reversals/{reversalId:long}", GetReversalAsync).WithName("GetDeliveryReversal");
         delivery.MapGet("/reversals/{reversalId:long}/records", ListReversalRecordsAsync).WithName("ListDeliveryReversalRecords");
@@ -170,6 +181,14 @@ public static class DeliveryReversalEndpoints
             return NotReversible(ex.Message);
         }
 
+        // A source with nothing to reverse now is refused for the reason the GUI gives, rather than queuing a run that would
+        // act on nothing: it delivered nothing, its reversal settled every record, or a reverse run of it is on its way.
+        var availability = await AvailabilityAsync(db, ledger, flow, source, ct).ConfigureAwait(false);
+        if (!availability.Reversible)
+        {
+            return TypedResults.Problem(detail: availability.Reason, statusCode: StatusCodes.Status409Conflict, title: "Nothing to reverse");
+        }
+
         if (request!.Expected is { } expected && expected != read.Records)
         {
             return TypedResults.Problem(
@@ -189,6 +208,97 @@ public static class DeliveryReversalEndpoints
         };
         var runId = await DeliveryEndpoints.EnqueueRunAsync(db, dispatcher, flow, parameters, request.Pool, user, ct).ConfigureAwait(false);
         return TypedResults.Accepted($"/api/v1/runs/{runId}", new DeliveryReversalAccepted(runId, RunStatuses.Queued, source.Kind, source.Id, read.Records));
+    }
+
+    /// <summary>
+    /// Whether the source has anything to reverse now: what the run and submission pages and the audit trail offer the action
+    /// by. Reads the ledger a seek at a time and the platform's queued and running reverse runs of the flow.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryReversibleDto>, ProblemHttpResult>> ReversibleAsync(
+        Guid pipelineId, Guid? runId, Guid? submissionId, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition,
+        CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions, ILedger ledger, CancellationToken ct)
+    {
+        if (SourceOf(runId, submissionId) is not { } source)
+        {
+            return OneSource();
+        }
+
+        var (flow, problem) = await DeliveryEndpoints.ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        var availability = await AvailabilityAsync(db, ledger, flow, source, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliveryReversibleDto(
+            source.Kind, source.Id, availability.Reversible, availability.Resumes, availability.Reason,
+            availability.Reversal is { } reversal ? ToDto(reversal, availability.Counts) : null));
+    }
+
+    /// <summary>Whether <paramref name="source"/> has anything to reverse now in the interface's ledger, a reverse run of it queued or running included.</summary>
+    private static async Task<ReversalAvailability> AvailabilityAsync(
+        CatalogDbContext db, ILedger ledger, DeliveryEndpoints.FlowContext flow, ReversalSource source, CancellationToken ct)
+        => await ReversalAvailability.ReadAsync(ledger, flow.FlowId, source, await ActiveReverseRunAsync(db, flow, source, ct).ConfigureAwait(false), ct)
+            .ConfigureAwait(false);
+
+    /// <summary>
+    /// A reverse run of <paramref name="source"/> in the interface (and partition) the platform has queued or is running: the
+    /// flow's queued and running reverse runs, read through the run table's pipeline and operation index, matched by their
+    /// payload. A reverse run opens its reversal only when it starts, so the ledger alone does not know of one still queued.
+    /// </summary>
+    private static async Task<Guid?> ActiveReverseRunAsync(CatalogDbContext db, DeliveryEndpoints.FlowContext flow, ReversalSource source, CancellationToken ct)
+    {
+        var pipelineId = flow.Pipeline.Id;
+        var runs = await db.Runs.AsNoTracking()
+            .Where(r => r.PipelineId == pipelineId && r.Operation == DeliveryOperations.Reverse && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running))
+            .Select(r => new { r.RunId, r.Payload, r.ValuesJson })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        foreach (var run in runs)
+        {
+            DeliveryRunPayload payload;
+            try
+            {
+                payload = DeliveryRunPayload.Parse(run.Payload);
+            }
+            catch (SqlFlowException)
+            {
+                // A payload no reverse run could have been queued with names no source.
+                continue;
+            }
+
+            var names = source.IsRun ? payload.RunId == source.Id : payload.SubmissionId == source.Id;
+            if (names
+                && string.Equals(payload.Interface, flow.Flow.Interface, StringComparison.Ordinal)
+                && (flow.Flow.Partition is not { } partition || string.Equals(RunPartition(run.ValuesJson), partition, StringComparison.OrdinalIgnoreCase)))
+            {
+                return run.RunId;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The partition a queued run's values name, or null when they name none or are not a JSON object.</summary>
+    private static string? RunPartition(string? valuesJson)
+    {
+        if (string.IsNullOrWhiteSpace(valuesJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var parsed = JsonDocument.Parse(valuesJson);
+            return parsed.RootElement.ValueKind == JsonValueKind.Object
+                && parsed.RootElement.TryGetProperty(PartitionNames.RunValue, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -285,10 +395,13 @@ public static class DeliveryReversalEndpoints
     /// <summary>The activity kind a reverse run records itself under.</summary>
     internal const string ReverseKind = "reverse";
 
-    private static ReversalSource? SourceOf(DeliveryReversalRequest? request) => request switch
+    private static ReversalSource? SourceOf(DeliveryReversalRequest? request) => request is null ? null : SourceOf(request.RunId, request.SubmissionId);
+
+    /// <summary>The one source a request names, a run or a submission; null for both, neither, or an empty id.</summary>
+    private static ReversalSource? SourceOf(Guid? runId, Guid? submissionId) => (runId, submissionId) switch
     {
-        { RunId: { } run, SubmissionId: null } when run != Guid.Empty => ReversalSource.Run(run),
-        { RunId: null, SubmissionId: { } submission } when submission != Guid.Empty => ReversalSource.Submission(submission),
+        ({ } run, null) when run != Guid.Empty => ReversalSource.Run(run),
+        (null, { } submission) when submission != Guid.Empty => ReversalSource.Submission(submission),
         _ => null,
     };
 

@@ -20,6 +20,16 @@ public sealed partial class OsduLedger
     /// <summary>The most reversals one listing names.</summary>
     public const int MaxReversals = 200;
 
+    /// <summary>
+    /// The most of a run's own attempts in one ledger <see cref="SourceDeliveredAsync"/> reads for a delivered one, once the
+    /// submissions the run planned delivered nothing. A run's attempts are read through the run's index, which does not hold
+    /// the outcome, so each one read is a lookup: the bound keeps the answer quick for a run that held a million records and
+    /// delivered none. A run that wrote more attempts than this in the ledger, none of the first of them delivered, and
+    /// delivered only records of other submissions is answered as having delivered nothing; those submissions are reversed
+    /// on their own.
+    /// </summary>
+    public const int SourceDeliveredProbe = 50_000;
+
     public async Task<ReversalState> OpenReversalAsync(Guid flowId, string flowName, ReversalSource source, string actor, Guid? runId, DateTime nowUtc, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);
@@ -455,6 +465,17 @@ public sealed partial class OsduLedger
             },
             ct).ConfigureAwait(false);
         return rows.Select(ToState).ToList();
+    }
+
+    public async Task<bool> SourceDeliveredAsync(Guid flowId, ReversalSource source, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            return false;
+        }
+
+        return await ReadAsync(db => SqlServerLedgerBulk.SourceDeliveredAsync(db, partition, flowId, source, SourceDeliveredProbe, ct), ct).ConfigureAwait(false);
     }
 
     public async Task<ReversalSourceRead> ReadReversalSourceAsync(Guid flowId, string flowName, ReversalSource source, int sample, CancellationToken ct = default)

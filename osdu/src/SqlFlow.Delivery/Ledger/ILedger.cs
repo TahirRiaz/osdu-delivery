@@ -1957,6 +1957,14 @@ public interface ILedger
     Task<ReversalSourceRead> ReadReversalSourceAsync(Guid flowId, string flowName, ReversalSource source, int sample, CancellationToken ct = default);
 
     /// <summary>
+    /// Whether <paramref name="source"/> delivered a record of the flow's ledger, which is what a reversal of it would take:
+    /// a delivered attempt under the submission, or under a submission the run planned (a seek of the submission's index), or
+    /// one of the run's own, read from at most <see cref="OsduLedger.SourceDeliveredProbe"/> of the run's attempts in this
+    /// ledger. Writes nothing; a source the ledger does not know delivered nothing.
+    /// </summary>
+    Task<bool> SourceDeliveredAsync(Guid flowId, ReversalSource source, CancellationToken ct = default);
+
+    /// <summary>
     /// The keys of every record a listing matches, in key order, up to <paramref name="max"/>. Key order is what
     /// makes this safe to act on: a removal changes the records it touches, and the newest-first order the listing
     /// pages in would shuffle rows between pages while the removal ran. Bounded like <see cref="ListAsync"/>: a prefix

@@ -384,6 +384,12 @@ export interface DeliveryActivity {
   partition?: string | null;
   /** A run that completed having changed nothing: it planned, held and sent no record. An intervention never is. */
   idle: boolean;
+  /** Read on its own (not in a listing): the pipeline of the activity's ledger, so what it did can be acted on from it. */
+  pipelineId?: string | null;
+  /** Read on its own: the interface of the source the ledger is, null for a flow in the single form. */
+  interface?: string | null;
+  /** Read on its own: the partition a request about the flow names, null for a flow whose partition is its header's. */
+  namedPartition?: string | null;
 }
 
 /** A mapping document as the sync found it in a repository. */
@@ -1626,6 +1632,20 @@ export interface DeliveryReversalItem {
 export interface DeliveryReversalItemPage {
   items: DeliveryReversalItem[];
   next?: string | null;
+}
+
+/**
+ * Whether a run or a submission has anything to reverse now, by the answer a request and the reverse run go by: the action is
+ * offered exactly when `reversible`. `resumes` says the request would resume the reversal that exists; `reason` says why there
+ * is nothing (it delivered nothing, its reversal settled every record, or a reverse run of it is queued or running).
+ */
+export interface DeliveryReversible {
+  source: ReversalSourceKind;
+  sourceId: string;
+  reversible: boolean;
+  resumes: boolean;
+  reason?: string | null;
+  reversal?: DeliveryReversal | null;
 }
 
 /** The reverse run a request queued, with how many records its source delivered. */
@@ -3482,6 +3502,12 @@ export const deliveryApi = {
   /** Queues the reverse run of a run or a submission, as the caller; asking again resumes a reversal that stopped. */
   reverse: (pipelineId: string, request: DeliveryReversalRequest, scope?: DeliveryFlowScope) =>
     post<DeliveryReversalAccepted>(flowPath(pipelineId, "/reverse", scope), request),
+  /** Whether the source has anything to reverse now: what every place that offers a reversal shows the action by. */
+  reversible: (pipelineId: string, scope: DeliveryFlowScope | undefined, source: ReversalSource) =>
+    get<DeliveryReversible>(flowPath(pipelineId, "/reversible", scope), {
+      runId: source.kind === "run" ? source.id : undefined,
+      submissionId: source.kind === "submission" ? source.id : undefined,
+    }),
   /** The interface's reversals, newest first; with a source, the reversal of that source, counted, when one was asked for. */
   reversals: (pipelineId: string, scope?: DeliveryFlowScope, source?: ReversalSource) =>
     get<DeliveryReversal[]>(flowPath(pipelineId, "/reversals", scope), {

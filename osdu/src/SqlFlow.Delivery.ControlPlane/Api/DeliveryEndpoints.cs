@@ -174,12 +174,15 @@ public sealed record DeliveryAttemptDto(
 
 /// <summary>
 /// One entry of the audit trail: who did what, when, with which inputs, and how it ended, and the partition whose ledger it
-/// was done to. <c>Idle</c> marks a run that completed having changed nothing.
+/// was done to. <c>Idle</c> marks a run that completed having changed nothing. One entry read on its own also names the
+/// pipeline of its ledger, the interface of it, and the partition a request about the flow names
+/// (<c>NamedPartition</c>: null for a flow whose partition is its header's), so what it did can be acted on from it (a run
+/// reversed); a listing leaves them out.
 /// </summary>
 public sealed record DeliveryActivityDto(
     long ActivityId, Guid FlowId, string FlowName, string Kind, string Actor, DateTime StartedUtc, DateTime? CompletedUtc,
     string Outcome, string? ParametersJson, Guid? SubmissionId, Guid? DeliveryKey, Guid? RunId, string? Summary, string? Log,
-    string? Partition = null, bool Idle = false);
+    string? Partition = null, bool Idle = false, Guid? PipelineId = null, string? Interface = null, string? NamedPartition = null);
 
 /// <summary>A submission with the pipeline, interface and partition that planned it, and the runs that carried it.</summary>
 public sealed record DeliverySubmissionDetailDto(
@@ -1260,12 +1263,18 @@ public static class DeliveryEndpoints
             .ToList());
     }
 
-    private static async Task<Results<Ok<DeliveryActivityDto>, ProblemHttpResult>> GetActivityAsync(long activityId, ILedger ledger, CancellationToken ct)
+    private static async Task<Results<Ok<DeliveryActivityDto>, ProblemHttpResult>> GetActivityAsync(
+        long activityId, CatalogDbContext db, OsduDbContext osdu, ILedger ledger, CancellationToken ct)
     {
         var activity = await ledger.GetActivityAsync(activityId, ct).ConfigureAwait(false);
-        return activity is null
-            ? TypedResults.Problem(detail: $"No activity '{activityId}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found")
-            : TypedResults.Ok(ToDto(activity));
+        if (activity is null)
+        {
+            return TypedResults.Problem(detail: $"No activity '{activityId}'.", statusCode: StatusCodes.Status404NotFound, title: "Not found");
+        }
+
+        // The pipeline and interface of the ledger, as a submission names them, so the entry can be acted on where it is read.
+        var found = await DeliveryPipelines.ForLedgerAsync(db, osdu, activity.FlowId, ct).ConfigureAwait(false);
+        return TypedResults.Ok(ToDto(activity) with { PipelineId = found?.Pipeline.Id, Interface = NamedInterface(found), NamedPartition = NamedPartition(found) });
     }
 
     private static async Task<Ok<IReadOnlyList<DeliveryMappingDto>>> ListMappingsAsync(Guid? repoId, string? status, OsduDbContext osdu, CancellationToken ct)

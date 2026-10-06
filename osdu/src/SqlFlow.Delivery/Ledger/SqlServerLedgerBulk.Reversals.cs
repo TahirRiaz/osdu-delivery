@@ -43,6 +43,36 @@ internal static partial class SqlServerLedgerBulk
         ORDER BY a.[DeliveryKey];
         """;
 
+    // Whether a submission of the ledger, or a submission a run planned in it, delivered a record: a seek of the submission
+    // (by its id, or the run's submissions by the run's index), then a seek of each one's delivered attempts in the
+    // submission's index, which stops at the first.
+    private const string SubmissionDeliveredSql = """
+        SELECT TOP (1) 1
+        FROM [osdu].[Submission] AS s
+        WHERE s.[SubmissionId] = @submissionId AND s.[PartitionId] = @partitionId AND s.[FlowId] = @flowId
+          AND EXISTS (SELECT 1 FROM [osdu].[Attempt] AS a WHERE a.[SubmissionId] = s.[SubmissionId] AND a.[Outcome] = N'delivered');
+        """;
+
+    private const string RunSubmissionsDeliveredSql = """
+        SELECT TOP (1) 1
+        FROM [osdu].[Submission] AS s
+        WHERE s.[RunId] = @runId AND s.[PartitionId] = @partitionId AND s.[FlowId] = @flowId
+          AND EXISTS (SELECT 1 FROM [osdu].[Attempt] AS a WHERE a.[SubmissionId] = s.[SubmissionId] AND a.[Outcome] = N'delivered');
+        """;
+
+    // Whether a run delivered a record of the ledger itself, read from at most @probe of its attempts there: the run's index
+    // names them without their outcome, so the bound is what keeps a run that held a million records quick to answer.
+    private const string RunDeliveredSql = """
+        SELECT TOP (1) 1
+        FROM (
+            SELECT TOP (@probe) a.[PartitionId], a.[AttemptId]
+            FROM [osdu].[Attempt] AS a
+            WHERE a.[RunId] = @runId AND a.[PartitionId] = @partitionId AND a.[FlowId] = @flowId
+        ) AS t
+        INNER JOIN [osdu].[Attempt] AS d ON d.[PartitionId] = t.[PartitionId] AND d.[AttemptId] = t.[AttemptId]
+        WHERE d.[Outcome] = N'delivered';
+        """;
+
     // Whether a run delivered anything, or tried to, in one ledger.
     private const string RunTouchedSql = """
         SELECT TOP (1) 1 FROM [osdu].[Attempt] AS a WHERE a.[RunId] = @runId AND a.[PartitionId] = @partitionId AND a.[FlowId] = @flowId;
@@ -430,6 +460,47 @@ internal static partial class SqlServerLedgerBulk
         {
             await db.Database.CloseConnectionAsync().ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="source"/> delivered a record of one ledger: under the submission, under a submission the run
+    /// planned, or by the run itself among the first <paramref name="probe"/> of its attempts there.
+    /// </summary>
+    public static async Task<bool> SourceDeliveredAsync(OsduDbContext db, short partitionId, Guid flowId, ReversalSource source, int probe, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentOutOfRangeException.ThrowIfLessThan(probe, 1);
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            if (!source.IsRun)
+            {
+                return await ExistsAsync(connection, SubmissionDeliveredSql, "@submissionId", source.Id, partitionId, flowId, null, ct).ConfigureAwait(false);
+            }
+
+            return await ExistsAsync(connection, RunSubmissionsDeliveredSql, "@runId", source.Id, partitionId, flowId, null, ct).ConfigureAwait(false)
+                || await ExistsAsync(connection, RunDeliveredSql, "@runId", source.Id, partitionId, flowId, probe, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task<bool> ExistsAsync(
+        SqlConnection connection, string sql, string idParameter, Guid id, short partitionId, Guid flowId, int? probe, CancellationToken ct)
+    {
+        await using var command = Command(connection, null, sql, slice: null);
+        command.Parameters.Add(new SqlParameter(idParameter, SqlDbType.UniqueIdentifier) { Value = id });
+        command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
+        command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+        if (probe is { } bound)
+        {
+            command.Parameters.Add(new SqlParameter("@probe", SqlDbType.Int) { Value = bound });
+        }
+
+        return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) is not null;
     }
 
     /// <summary>Whether a run delivered anything, or tried to, in one ledger.</summary>

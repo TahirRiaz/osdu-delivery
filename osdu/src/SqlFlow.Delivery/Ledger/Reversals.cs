@@ -243,6 +243,12 @@ public sealed record ReversalCounts(long Records, IReadOnlyDictionary<string, lo
     /// <summary>Records not settled yet: pending, or left sending by a run that stopped.</summary>
     public long Open => State(ReversalItemStates.Pending) + State(ReversalItemStates.Sending);
 
+    /// <summary>
+    /// Records the next run of the reversal takes: those not settled yet, those that failed, and those passed over as busy.
+    /// None means asking again would change nothing.
+    /// </summary>
+    public long ToTake => Open + State(ReversalItemStates.Failed) + Outcome(ReversalOutcomes.Busy);
+
     /// <summary>The counts that are not zero, as the audit trail shows a reversal: "1,200 restored, 300 removed, 4 superseded".</summary>
     public override string ToString()
     {

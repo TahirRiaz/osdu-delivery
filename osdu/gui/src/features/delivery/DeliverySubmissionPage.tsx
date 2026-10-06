@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { Link as RouterLink, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CircleAlert, ListTree, Loader2, PackageCheck, Undo2 } from "lucide-react";
-import { toast } from "sonner";
+import { CircleAlert, ListTree, Loader2, PackageCheck } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,7 +25,7 @@ import { SubmissionStatusBadge } from "./DeliveryBadges";
 import { SubmissionCounts } from "./DeliveryFlowPanel";
 import { prettyJson } from "./prettyJson";
 import { ReversalCard } from "./ReversalCard";
-import { ReverseDialog } from "./ReverseDialog";
+import { ReverseButton } from "./ReverseButton";
 import { shortId } from "./idTail";
 
 /** Everything the ledger holds about one submission: what it was, how it went, every attempt it produced, and the runs
@@ -49,14 +48,13 @@ function recordsLink(detail: DeliverySubmissionDetail, param: "submission" | "de
 }
 
 /**
- * The batch as a thing that can be undone (docs/reversal-plan.md): the records this submission delivered are put back as
- * OSDU held them before it, each record the way it needs (removed again when the submission created it, given back its
- * earlier version when the submission updated it), confirmed with the target and the count it was shown, and refused if
- * that count has moved by the time it is asked.
+ * The batch as a thing that can be undone (docs/reversal-plan.md), offered while it has anything to reverse: the records
+ * this submission delivered are put back as OSDU held them before it, each record the way it needs (removed again when the
+ * submission created it, given back its earlier version when the submission updated it), confirmed with the target and the
+ * count it was shown, and refused if that count has moved by the time it is asked.
  */
 function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; onQueued: (runId: string) => void }) {
   const navigate = useNavigate();
-  const [reverseOpen, setReverseOpen] = useState(false);
   const s = detail.submission;
   const pipelineId = detail.pipelineId;
   // The records the submission delivered, as the flow's Records tab lists them, for the button that opens that list.
@@ -85,30 +83,14 @@ function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; 
         <ListTree />
         Records it last planned
       </Button>
-      <Button
-        variant="destructive-outline"
-        size="sm"
-        onClick={() => setReverseOpen(true)}
-        disabled={delivered.data === undefined || count === 0}
-        title={delivered.data !== undefined && count === 0 ? "This submission delivered nothing." : "Put OSDU back as it was before this submission."}
-        data-testid="submission-reverse"
-      >
-        <Undo2 />
-        Reverse this submission
-      </Button>
-      <ReverseDialog
-        open={reverseOpen}
-        onClose={() => setReverseOpen(false)}
+      <ReverseButton
         pipelineId={pipelineId}
         flowScope={{ interfaceName: detail.interface ?? null, partition: detail.partition ?? null }}
         flowName={ledgerLabel(s.flowName, { interfaceName: detail.interface ?? null, partition: detail.partition ?? null })}
         source={{ kind: "submission", id: s.submissionId }}
-        onQueued={(accepted) => {
-          onQueued(accepted.runId);
-          toast.success(`Reversal of ${accepted.records.toLocaleString()} record(s) this submission delivered queued.`, {
-            action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) },
-          });
-        }}
+        label="Reverse this submission"
+        testId="submission-reverse"
+        onQueued={(accepted) => onQueued(accepted.runId)}
       />
     </>
   );
