@@ -72,13 +72,13 @@ the identities its mapping declares when it is next staged.
 | `SourceModifiedUtc`, `PayloadModifiedUtc` | The last-modified moment of the source row, and the newest modified time of the payload files, that OSDU's document and payload were built from: the watermarks an incremental run is ordered against. |
 | `SourceKeyJson` | The record's key tuple as a JSON array, in `source.record.key` order: what a key-scoped read of the ingestion tables uses. |
 | `SourceFileName`, `SourceRowNumber`, `SourceUpdatedUtc` | Where the version OSDU holds came from: the ingestion row's `FileName_DW`, `RowNumber_DW` and `UpdatedDate_DW`. |
-| `PendingSourceFileName`, `PendingSourceRowNumber`, `PendingSourceUpdatedUtc` | The same for the queued version, or for the state a held, failed or deleted record was left in. |
+| `PendingSourceFileName`, `PendingSourceRowNumber`, `PendingSourceUpdatedUtc` | The same for the queued version, or for the state a held, failed, deleted or reverted record was left in. |
 | `SourceInsertedUtc` | When the ingestion table first inserted the record's row (`InsertedDate_DW`), which later changes never move: the row's arrival, as the last plan that read it saw it. Null while the table does not carry the column, or until a plan reads the row. |
 | `PlanRequestedUtc` | Set when the ledger asks for the record to be planned again (a redeliver of named records or of every delivered record, a request to bring records up to date, a release with no pending document, a cache rollout); the next run pages these records and plans them as a keys selection, and planning clears it. |
 | `TargetId`, `TargetVersion` | The OSDU id and the last known version (the drift handle). |
 | `ClaimedTargetId` | The OSDU id the record claimed for its flow when it first queued a document, kept for good. Unique across the ledger: one OSDU record belongs to one flow. Null for a record that was only ever held. |
-| `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`. |
-| `Blocked` | Set when the record was held, failed or deleted and not released since. |
+| `Status` | `pending`, `delivering`, `delivered`, `held`, `failed`, `deleted`, `reverted` (a reversal gave OSDU back the version it held before a run, [Reversals](#reversals)). |
+| `Blocked` | Set when the record was held, failed, deleted or reverted and not released since. |
 | `ProblemHash` | While the record is blocked, held or failed: the issue that keeps it so ([Issues](#issues)), the hash of its last error with every part that names the record replaced, which every record refused for the same reason shares. Null for any other record, a removed one included. |
 | `ValidationOutcome`, `ValidationProblems`, `ValidatedUtc` | What the last check of the record's document against its schema came to (`valid`, `invalid`, `unverified`), how many problems it found and when ([documents.md](documents.md#validation-before-a-record-is-sent)). Written by the try that checked it; a try that sent the payload alone leaves them as they were. Null until a document of the record was checked. A filtered index counts a flow's records by outcome. |
 | `AcceptedMetadataHash` | The metadata hash of the pending document a release accepted as it is: the gate sends that document whatever its verdict says. A release of a blocked record that still holds its rendered document writes it. |
@@ -114,8 +114,8 @@ A route that sends its payload in parts (the composed routes and the workflow ro
 
 ### `osdu.Attempt`: append-only, one row per delivery try
 
-The record it belongs to (`FlowId`, `DeliveryKey`), worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`), the
-phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `none`), the hashes
+The record it belongs to (`FlowId`, `DeliveryKey`), worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`, `restored`), the
+phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `reverse`, `none`), the hashes
 established, the version returned, the origin of the row it was built from (`SourceFileName`, `SourceRowNumber`,
 `SourceUpdatedUtc`, and `SourceDeletedUtc` for the hold of a row the ingestion table marked deleted),
 the redacted error (for a held or failed try only: a try that did not fail keeps its note, chunks sent or why nothing
@@ -126,6 +126,13 @@ its outcome, the template kind and content version it was checked against, how m
 the parts it could not check (listed up to a bound and counted exactly), what was found of the records it refers to,
 whether a release accepted it, and when ([documents.md](documents.md#validation-before-a-record-is-sent)). Render-time holds are written by the intake with worker
 `intake`; deletions by the actor who asked for them.
+
+A delivered try also records, under `replaced`, the version OSDU held of the record when it was sent
+(`{"version": 7}`, or `{"version": null}` for a record OSDU did not hold), so what a run replaced is known from its own
+attempts however much of the record's history is pruned later. A reversal's tries have the phase `reverse`
+([Reversals](#reversals)): `restored` (the version written back, with the hashes and origin of the attempt that
+delivered it), `deleted` (a record the source created, removed again), `skipped` (passed over, with why) or `failed`,
+each with the reversal's id, its source and its outcome under `reversal` in the result.
 
 The intake also writes the plan decisions that are changes of the record although nothing is sent, so the record's
 history holds every change of its row:
@@ -287,7 +294,7 @@ until its next build or the first read of its table.
 ### `osdu.Activity`: the audit trail of runs and interventions
 
 One row per operator or scheduler action. The runs are `deliver`, `intake` and `drain` (a fan-out member's share),
-`verify`, and the scheduled reachability `probe`; the interventions are `sync`, `release`, `redeliver`, `rerender` and `delete`,
+`verify`, `reverse` ([Reversals](#reversals)), and the scheduled reachability `probe`; the interventions are `sync`, `release`, `redeliver`, `rerender` and `delete`,
 and an admin's `remove-dimension` (a dimension its flow no longer declares, removed with everything kept of it).
 Each carries the actor (`schedule:<name>` for a run a schedule fired, the requesting user or `manual:<user>` for a run
 started by hand, `user:<name>` for an intervention from the GUI or the API, `cli:<user>` from a workstation,
@@ -314,15 +321,47 @@ wrote nothing to any record, so a record's history never misses one.
 
 ### `osdu.ActivityRecord`: the records a release or a redelivery reached
 
-An intervention made for one record names it on its activity (`DeliveryKey`). A release or a redelivery reaches many at
-once: the keys an operator ticked, every blocked or every delivered record of a flow, or every record one issue keeps
-blocked, which can be a million. Each record it changes is named here, one row of
+An intervention made for one record names it on its activity (`DeliveryKey`). A release, a redelivery or a reversal
+reaches many at once: the keys an operator ticked, every blocked or every delivered record of a flow, every record one
+issue keeps blocked, or every record a run delivered, which can be a million. Each record it changes is named here, one row of
 `(PartitionId, FlowId, DeliveryKey, ActivityId)`, written by the statement that changes it, in its transaction, so a
 record is named exactly when it was released or marked. A record's activities (`GET /records/{flowId}/{key}/activities`,
 its Timeline tab) are those that name it on their row and those that name it here, so its history shows every request
 that reached it, with who asked, when and for what. A cache change's rollout marks records under no activity: the change
 itself, on the cache page, is its record. The rows are never pruned: like the activity they point at, they are the
 record's history.
+
+### `osdu.Reversal` and `osdu.ReversalItem`: what a reversal did to each record
+
+A reversal puts OSDU back as it was before one run or one submission ([Reversals](#reversals),
+[reversal-plan.md](reversal-plan.md)). `osdu.Reversal` holds one row per source of a ledger: unique on
+`(PartitionId, FlowId, SourceKind, SourceId)`, so asking again resumes the reversal rather than opening a second one.
+
+| Column | Purpose |
+| --- | --- |
+| `PartitionId`, `ReversalId` | Primary key; `ReversalId` is an identity, unique across partitions, so a reversal is named by its number alone. |
+| `FlowId`, `FlowName` | The ledger reversed. |
+| `SourceKind`, `SourceId` | `run` or `submission`, and its id. |
+| `SubmissionsJson` | The submissions the source covers, fixed when the reversal is opened. |
+| `Status` | `capturing` (listing what the source delivered), `reversing`, `completed`, `failed`, `cancelled`. |
+| `RequestedBy`, `RequestedUtc` | Who asked first, and when. |
+| `CapturedUtc` | When every record the source delivered was listed; null while the listing is not finished. |
+| `StartedUtc`, `CompletedUtc`, `LastRunId`, `Error` | The latest reverse run that worked on it, and how it ended (`Error` redacted). |
+
+`osdu.ReversalItem` holds one row per record the source delivered, keyed by `(PartitionId, ReversalId, DeliveryKey)`:
+
+| Column | Purpose |
+| --- | --- |
+| `TargetId` | The OSDU id the record claimed (binary collation, as the claim). |
+| `FirstAttemptId`, `FirstVersion`, `RunVersion` | The source's first delivered attempt of the record, the first version it wrote, and the version the source left. |
+| `Prior`, `PriorVersion`, `PriorAttemptId` | What OSDU held before the source: `version` (with the version and the attempt that delivered or restored it), `none`, or `unknown` (the attempts before it were pruned, so OSDU's version list decides). |
+| `State` | `pending`, `sending` (an OSDU write is under way), `done`, `skipped` or `failed`. |
+| `Outcome`, `Detail` | What came of it (`restored`, `removed`, `already-gone`, or why it was passed over or failed) and the reason, redacted. |
+| `RestoredVersion`, `NewVersion`, `RunId`, `UpdatedUtc` | The version put back and the version OSDU gave it; the reverse run that settled it, and when. |
+
+The counts a page shows (by state and by outcome) are read from the items through their state index; nothing keeps a
+running total. The rows are never pruned: they are what the reversal did, and the attempts of each record point at the
+reversal by its id.
 
 ### `osdu.SourceWatermark`: tier 0
 
@@ -460,7 +499,10 @@ it.
                                                └──▶ failed  (retry budget exhausted; Blocked)
    operator removal ──▶ deleted (Blocked; OSDU no longer holds it) [scope record or everything]
                    └─▶ (no change)                                  [scope history: OSDU still holds it]
+   operator reversal ──▶ reverted (Blocked; OSDU holds the version from before the run again)  [the run updated it]
+                     └─▶ deleted  (Blocked; removed again, reversibly)                       [the run created it]
    operator release ──▶ pending (when a rendered document is still there) or unblocked for the next plan
+                        (a reverted record is delivered again, at the version the reversal wrote)
    claim ──▶ waiting (the document refers to a record of the ledger that has not landed) ──lands──▶ pending
 ```
 
@@ -476,7 +518,7 @@ sent, and a record naming one storage does not hold is held instead.
 A record the gate before sending holds for its verdict (`target.validation`) keeps its rendered document, so a release
 puts it back to pending with that document and accepts it as it is: the gate sends it whatever its verdict says, once.
 
-A **blocked** record (held, failed or deleted and not released) is skipped by every later plan as `blocked`
+A **blocked** record (held, failed, deleted or reverted and not released) is skipped by every later plan as `blocked`
 until either the source row changes (its fingerprint moves, or its last-modified moment passes the one it was left
 at) or an operator releases it. That is what "do not retry without intervention" means in practice: a re-run of the
 same data never re-attempts a known problem, while a corrected source row flows through on its own.
@@ -529,6 +571,37 @@ releases it, the next plan creates it again; that is ownership, not an accident.
 at the version the ledger already holds. Its custody state is therefore still true and is not disturbed; the
 purge is written as a `purge-history` attempt and nothing else changes. Every removal, at every depth, names the
 scope and the operator on the attempt and in the activity trail.
+
+### Reversals
+
+A **reversal** undoes what one run or one submission delivered ([reversal-plan.md](reversal-plan.md),
+[operations](operations.md#reversing-a-run)). It is a run of the flow with the operation `reverse`, so nothing else
+delivers the flow while it works. For each record the source delivered it reads from the record's own attempts what OSDU
+held before the source's first delivery of it, and:
+
+- a record the source **updated** gets that version back: it is read from storage and written as a new version, as it
+  was (only the keys External Data Services writes are carried from the latest version). The record becomes
+  `reverted`, blocked, at the new version, with the hashes and the origin of the attempt that delivered the version put
+  back, so the ledger says again what OSDU holds (a version found in OSDU's version list has no attempt, so its hashes
+  are left empty and the next delivery after a release sends the record whole);
+- a record the source **created** is removed again at the `record` scope (reversible), and becomes `deleted`, blocked,
+  as a removal leaves it.
+
+A record is reversed only while it is still the record the source left: a record a later run delivered again, or one
+restored or removed since (`superseded`), one OSDU holds at another version than the source left (`changed-in-osdu`),
+one with work queued or in flight (`busy`), and one the flow never claimed (`not-claimed`) are passed over, each with a
+`skipped` attempt that says why. To reverse a run a later run superseded, reverse the later one first.
+
+Each record's attempt, its custody change, its `osdu.ActivityRecord` row under the reverse run's activity and its
+reversal item are written in one transaction, at most 1,000 records to a transaction, and only while the record still
+stands at the version the source left: a record that moved between the check and the write is settled as `failed`, not
+put back over what moved it. A run stopped anywhere loses nothing: the next run of the same reversal takes what is still
+pending, what failed and what was passed over as `busy`, and checks an item it left `sending` against OSDU before
+writing it again.
+
+A reverted record stays blocked while its source row is unchanged, so a scheduled run does not send the same rows again.
+A corrected row flows through on its own; a release makes the record `delivered` again, and the next run plans it and
+sends only what renders differently from what OSDU holds now.
 
 ## Issues
 
@@ -660,8 +733,8 @@ delivers some rows to `dev` and others to `test` from the same instance, and a f
 Every element of the ledger is therefore one partition's, and the partition is part of every ledger table's key.
 
 - **Every ledger table leads with the partition.** `osdu.Record`, `RecordIdentity`, `Attempt`, `Submission`,
-  `WorkBatch`, `Lease`, `RecordEvent`, `SourceWatermark`, `Activity`, `ActivityRecord`, `Retrieval`, `AssertionRun` and
-  `AssertionResult` each carry `PartitionId`, and each
+  `WorkBatch`, `Lease`, `RecordEvent`, `SourceWatermark`, `Activity`, `ActivityRecord`, `Retrieval`, `AssertionRun`,
+  `AssertionResult`, `Reversal` and `ReversalItem` each carry `PartitionId`, and each
   primary key starts with it, so one partition's rows are one range of every clustered index and of every index that
   serves a listing. A partition's rows never interleave with another's, a partition's reads never touch another's pages,
   and a partition can later be moved to a filegroup or a table partition of its own without a key change.
@@ -834,8 +907,10 @@ do not are seeks on an id that is unique across partitions, where the partition 
 | `WorkBatch (PartitionId, SubmissionId, Index)` primary key, unique `(SubmissionId, Index) INCLUDE (Status)`, `(PartitionId, FlowId, Status, CreatedUtc)` | the batch claim, and the submission's batch list |
 | `Lease (PartitionId, Token)` primary key, unique `(Token)`, `(PartitionId, FlowId, ExpiresUtc)`, `(SubmissionId, ExpiresUtc)` | a lease by token, the leases of a flow that ran out, for the recovery; the next expiry a run waits for, for a flow and for one submission |
 | `RecordEvent (PartitionId, EventId)` primary key, `(LeaseToken, FlowId, DeliveryKey, EventId)`, `(PartitionId, FlowId, AtUtc) INCLUDE (LeaseToken)` | one lease's events in record order, a slice at a time, for its checkpoint; a flow's old events, for the recovery of those whose lease is gone |
-| `Attempt (PartitionId, AttemptId)` primary key, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, PartitionId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order across every partition |
-| `ActivityRecord (PartitionId, FlowId, DeliveryKey, ActivityId)` primary key | the releases that reached one record, for its history |
+| `Attempt (PartitionId, AttemptId)` primary key, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(SubmissionId, Outcome, Phase) INCLUDE (DeliveryKey)`, `(RunId, PartitionId, FlowId, DeliveryKey)`, `(StartedUtc)` | record timeline and the later attempt pruning looks for, the submission view and the counts a closing submission reads from the index alone, a run's records, pruning in start order across every partition; a reversal's listing of what a submission or a run delivered, a page of 1,000 at a time in index order |
+| `ActivityRecord (PartitionId, FlowId, DeliveryKey, ActivityId)` primary key | the releases, redeliveries and reversals that reached one record, for its history |
+| `Reversal (PartitionId, ReversalId)` primary key, unique `(ReversalId)`, unique `(PartitionId, FlowId, SourceKind, SourceId)`, `(PartitionId, FlowId, RequestedUtc)` | a reversal by number, the one reversal of a source, a ledger's reversals newest first |
+| `ReversalItem (PartitionId, ReversalId, DeliveryKey)` primary key, `(PartitionId, ReversalId, State, DeliveryKey) INCLUDE (Outcome)`, `(PartitionId, ReversalId, Outcome, DeliveryKey)` | a reversal's listing added to in key order, its next page to settle and its counts by state and outcome from the index alone, its records by outcome a page at a time |
 | `Activity (PartitionId, ActivityId)` primary key, unique `(ActivityId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, DeliveryKey, StartedUtc)`, `(PartitionId, Kind, StartedUtc)`, `(PartitionId, Actor, StartedUtc)`, `(PartitionId, StartedUtc)`, `(PartitionId, Idle, StartedUtc)`, `(SubmissionId)`, `(RunId)` | an activity by id, the audit views and their filters in a partition, the trail without its idle runs and the count of them, one record's interventions, a submission's and a run's |
 | `Retrieval (PartitionId, RetrievalId)` primary key, unique `(RetrievalId)`, `(PartitionId, FlowId, StartedUtc)`, `(PartitionId, FlowId, Status, StartedUtc)`, `(RunId)` | a retrieval by id, a retrieval flow's runs, the watermark chain (the last done run), the run's row |
 | `AssertionRun (PartitionId, AssertionRunId)` primary key, unique `(AssertionRunId)`, `(PartitionId, FlowId, StartedUtc)`, `(RunId)` | a report by number, an assertion flow's runs newest first, the platform run's report |
@@ -1030,6 +1105,13 @@ rebuilding each as the keys change. It sets the attempt and event tables' ever-i
 `OPTIMIZE_FOR_SEQUENTIAL_KEY` again, and adds `UpdateTag (Scope, Status)`. It rewrites every ledger table, so on a large
 ledger it needs log space for the largest of them, and runs while no host is up; a failed migration leaves the ledger
 as it was. Going back down restores the earlier keys and indexes and drops the directory.
+
+`RecordReversals` (module version 1.26.0) creates `osdu.Reversal` and `osdu.ReversalItem` ([`osdu.Reversal` and
+`osdu.ReversalItem`](#osdureversal-and-osdureversalitem-what-a-reversal-did-to-each-record)), both keyed by the partition
+first. The custody state `reverted`, the attempt outcome `restored` and the phase `reverse` are values of existing
+columns, so no other table changes and nothing is rewritten. A delivery made before it records no `replaced` version, so
+a reversal of a run delivered before it reads what OSDU held from the record's earlier attempts, or from OSDU's version
+list where those were pruned. Both tables are created empty; going back down drops them.
 
 The ledger asks nothing of the database but its own schema. 1.5.0 to 1.7.0 read every listing, wait and claim in a
 snapshot transaction, so the database holding the `osdu` schema had to allow snapshot isolation, and one that did not

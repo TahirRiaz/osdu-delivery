@@ -9,12 +9,13 @@ import type { PageQuery } from "@/api/endpoints";
 
 /**
  * A record's custody state. `waiting` holds a rendered document that refers to a record another record of the ledger
- * holds and has not delivered; the record goes back to pending when that one lands.
+ * holds and has not delivered; the record goes back to pending when that one lands. `reverted` is a record a reversal put
+ * back to the version OSDU held before the run it reversed, blocked until its source changes or it is released.
  */
-export type DeliveryRecordStatus = "pending" | "delivering" | "delivered" | "held" | "failed" | "deleted" | "waiting";
+export type DeliveryRecordStatus = "pending" | "delivering" | "delivered" | "held" | "failed" | "deleted" | "reverted" | "waiting";
 
 export const DELIVERY_RECORD_STATUSES: readonly DeliveryRecordStatus[] = [
-  "pending", "waiting", "delivering", "delivered", "held", "failed", "deleted",
+  "pending", "waiting", "delivering", "delivered", "held", "failed", "deleted", "reverted",
 ];
 
 export type DeliverySubmissionStatus = "received" | "planned" | "running" | "completed" | "failed";
@@ -39,6 +40,8 @@ export interface DeliveryFlowStats {
   held: number;
   failed: number;
   deleted: number;
+  /** Records a reversal put back to the version OSDU held before, blocked until released; absent from an older control plane. */
+  reverted?: number;
   /** Records waiting for a record they refer to that has not landed. */
   waiting: number;
   drifted: number;
@@ -331,7 +334,7 @@ export interface DeliveryAttempt {
   worker: string;
   startedUtc: string;
   completedUtc: string;
-  outcome: "delivered" | "skipped" | "failed" | "held" | "deleted" | "historypurged";
+  outcome: "delivered" | "skipped" | "failed" | "held" | "deleted" | "historypurged" | "restored";
   phase: string;
   metadataHash: string | null;
   payloadHash: string | null;
@@ -1516,6 +1519,121 @@ export interface DeliveryRemovalAccepted {
   taskId: string;
   status: RunStatus;
   scope: RemovalScope;
+  records: number;
+}
+
+/** What a reversal reverses: one run, or one submission. */
+export type ReversalSourceKind = "run" | "submission";
+
+/** A reversal's source, as a page names it. */
+export interface ReversalSource {
+  kind: ReversalSourceKind;
+  id: string;
+}
+
+/**
+ * A reversal of one run or one submission (docs/reversal-plan.md). `expected` is how many records the preview said the
+ * source delivered: the API refuses the request when the source reaches another number by then.
+ */
+export interface DeliveryReversalRequest {
+  runId?: string;
+  submissionId?: string;
+  expected?: number;
+}
+
+/** What a reversal can do on the flow's route: the calls a restore and a removal make, or why the route cannot, in brackets. */
+export interface DeliveryReversalRoute {
+  protocol: string;
+  restores: boolean;
+  restore: string;
+  removes: boolean;
+  remove: string;
+}
+
+/**
+ * A reversal's state (`capturing`, `reversing`, `completed`, `failed`, `cancelled`), who asked, its latest run, and its
+ * records by state and outcome (absent in a listing, which does not count them).
+ */
+export interface DeliveryReversal {
+  reversalId: number;
+  flowId: string;
+  flowName: string;
+  partition: string | null;
+  source: ReversalSourceKind;
+  sourceId: string;
+  submissions: number;
+  status: "capturing" | "reversing" | "completed" | "failed" | "cancelled";
+  requestedBy: string;
+  requestedUtc: string;
+  capturedUtc: string | null;
+  startedUtc: string | null;
+  completedUtc: string | null;
+  lastRunId: string | null;
+  error: string | null;
+  records?: number | null;
+  states?: Record<string, number> | null;
+  outcomes?: Record<string, number> | null;
+}
+
+/**
+ * What reversing a source would reach, nothing written: how many records it delivered under how many submissions, and for
+ * a sample of them (all of them when `sampleIsAll`) what the reversal would do, decided as the run decides each record.
+ */
+export interface DeliveryReversalPreview {
+  source: ReversalSourceKind;
+  sourceId: string;
+  submissions: number;
+  records: number;
+  sampled: number;
+  sampleIsAll: boolean;
+  restore: number;
+  remove: number;
+  resolvedFromOsdu: number;
+  passedOver: Record<string, number>;
+  route: DeliveryReversalRoute;
+  target: DeliveryTarget;
+  existing?: DeliveryReversal | null;
+}
+
+/** A reversal with its pipeline and interface, the submissions it covers, and the runs that worked on it. */
+export interface DeliveryReversalDetail {
+  reversal: DeliveryReversal;
+  pipelineId: string | null;
+  interface: string | null;
+  submissionIds: string[];
+  runIds: string[];
+}
+
+/** One record of a reversal: what its source left, what OSDU held before, and what came of it. */
+export interface DeliveryReversalItem {
+  deliveryKey: string;
+  targetId: string | null;
+  state: "pending" | "sending" | "done" | "skipped" | "failed";
+  outcome: string | null;
+  detail: string | null;
+  runVersion: number | null;
+  prior: "version" | "none" | "unknown";
+  priorVersion: number | null;
+  restoredVersion: number | null;
+  newVersion: number | null;
+  runId: string | null;
+  updatedUtc: string;
+  sourceKey: string | null;
+  label: string | null;
+}
+
+/** A page of a reversal's records in key order, and the key the next page starts after. */
+export interface DeliveryReversalItemPage {
+  items: DeliveryReversalItem[];
+  next?: string | null;
+}
+
+/** The reverse run a request queued, with how many records its source delivered. */
+export interface DeliveryReversalAccepted {
+  runId: string;
+  status: RunStatus;
+  source: ReversalSourceKind;
+  sourceId: string;
   records: number;
 }
 
@@ -3358,6 +3476,22 @@ export const deliveryApi = {
   /** Queues the removal of the selected records, or of every record the filter matches, on a node. */
   removeRecords: (pipelineId: string, request: DeliveryRemovalRequest, scope?: DeliveryFlowScope) =>
     post<DeliveryRemovalAccepted>(flowPath(pipelineId, "/records/remove", scope), request),
+  /** What reversing a run or a submission would reach, deciding a sample of its records as the run would; nothing is written. */
+  previewReversal: (pipelineId: string, request: DeliveryReversalRequest, scope?: DeliveryFlowScope) =>
+    post<DeliveryReversalPreview>(flowPath(pipelineId, "/reverse/preview", scope), request),
+  /** Queues the reverse run of a run or a submission, as the caller; asking again resumes a reversal that stopped. */
+  reverse: (pipelineId: string, request: DeliveryReversalRequest, scope?: DeliveryFlowScope) =>
+    post<DeliveryReversalAccepted>(flowPath(pipelineId, "/reverse", scope), request),
+  /** The interface's reversals, newest first; with a source, the reversal of that source, counted, when one was asked for. */
+  reversals: (pipelineId: string, scope?: DeliveryFlowScope, source?: ReversalSource) =>
+    get<DeliveryReversal[]>(flowPath(pipelineId, "/reversals", scope), {
+      runId: source?.kind === "run" ? source.id : undefined,
+      submissionId: source?.kind === "submission" ? source.id : undefined,
+    }),
+  reversal: (reversalId: number) => get<DeliveryReversalDetail>(`/api/v1/delivery/reversals/${reversalId}`),
+  /** A page of a reversal's records, every one or those of one outcome (`pending` for those not settled yet). */
+  reversalRecords: (reversalId: number, query: { outcome?: string; after?: string; limit?: number } = {}) =>
+    get<DeliveryReversalItemPage>(`/api/v1/delivery/reversals/${reversalId}/records`, query),
   prune: (olderThanDays: number) => post<DeliveryPruneResult>("/api/v1/delivery/ledger/prune", { olderThanDays }),
 };
 

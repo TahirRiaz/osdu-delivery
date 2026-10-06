@@ -343,6 +343,37 @@ public interface IDeliveryProtocol
 
     /// <summary>A reachability and credential check against the service's info endpoint, under the flow's auth.</summary>
     Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Writes each record back as OSDU held it at an earlier version, as the record's next version (a reversal,
+    /// docs/reversal-plan.md). <see cref="VersionRestore.Stored"/> is the version as <see cref="ReadVersionAsync"/> read it:
+    /// its system properties are left out, and only the data keys another system writes on its own are carried from the
+    /// latest version. Results align with <paramref name="restores"/>; one that failed carries its failure instead
+    /// of throwing. The default refuses every one: a route whose records carry what a version of the record does not bring
+    /// back (files, rows, objects kept outside it) cannot restore one, and <c>ReversalRoute</c> says so before anything is
+    /// asked of it.
+    /// </summary>
+    Task<IReadOnlyList<RestoreResult>> RestoreBatchAsync(IReadOnlyList<VersionRestore> restores, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(restores);
+        var refused = new DeliveryException($"The {DeliveryProtocols.Name(Kind)} route cannot write an earlier version of a record back.");
+        return Task.FromResult<IReadOnlyList<RestoreResult>>(restores.Select(r => new RestoreResult(r, null, null, refused)).ToList());
+    }
+}
+
+/// <summary>One record a reversal writes back: its OSDU id, the version to write back as OSDU held it, and what OSDU holds now.</summary>
+/// <param name="Key">The record's delivery key.</param>
+/// <param name="TargetId">The OSDU id the record claimed.</param>
+/// <param name="Version">The version written back.</param>
+/// <param name="Stored">That version as the target held it, system properties included.</param>
+/// <param name="Latest">The version OSDU holds now, which the write replaces.</param>
+/// <param name="TargetState">What the record's deliveries recorded of it (the hashes of the content it owns, ids beside it).</param>
+public sealed record VersionRestore(DeliveryKey Key, string TargetId, long Version, JsonObject Stored, long? Latest, IReadOnlyDictionary<string, string>? TargetState);
+
+/// <summary>What writing one record back came to: the version OSDU gave it and what it returned, or the failure that stopped it.</summary>
+public sealed record RestoreResult(VersionRestore Restore, long? NewVersion, IReadOnlyDictionary<string, string>? Returned, Exception? Failure)
+{
+    public bool Succeeded => Failure is null && NewVersion is not null;
 }
 
 /// <summary>What a probe found: whether the service answered, with which status, and the path it was asked on.</summary>

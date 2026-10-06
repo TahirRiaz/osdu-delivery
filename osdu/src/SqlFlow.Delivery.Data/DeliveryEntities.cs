@@ -621,6 +621,110 @@ public sealed class DeliveryActivityRecord
     public long ActivityId { get; set; }
 }
 
+/// <summary>
+/// One reversal: what one run or one submission put into OSDU, put back record by record as OSDU held it before
+/// (docs/reversal-plan.md). There is one per source of a ledger; asking again resumes it. Its counts are read from its
+/// items, never kept here.
+/// </summary>
+public sealed class DeliveryReversal
+{
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
+    public long ReversalId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>run or submission.</summary>
+    public string SourceKind { get; set; } = string.Empty;
+
+    /// <summary>The run or the submission reversed.</summary>
+    public Guid SourceId { get; set; }
+
+    /// <summary>The submissions the source covers, as a JSON array of ids, fixed when the reversal was opened.</summary>
+    public string SubmissionsJson { get; set; } = "[]";
+
+    /// <summary>capturing, reversing, completed, failed or cancelled.</summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>Who asked for the reversal first.</summary>
+    public string RequestedBy { get; set; } = string.Empty;
+
+    public DateTime RequestedUtc { get; set; }
+
+    /// <summary>When every record the source delivered was listed as an item; null while the listing is not finished.</summary>
+    public DateTime? CapturedUtc { get; set; }
+
+    /// <summary>When the latest run working on it started.</summary>
+    public DateTime? StartedUtc { get; set; }
+
+    /// <summary>When the latest run working on it ended.</summary>
+    public DateTime? CompletedUtc { get; set; }
+
+    /// <summary>The latest run that worked on it.</summary>
+    public Guid? LastRunId { get; set; }
+
+    /// <summary>Why the latest run stopped, redacted; null when it did not fail.</summary>
+    public string? Error { get; set; }
+}
+
+/// <summary>
+/// One record a reversal reaches: what its source delivered of it, what OSDU held before, and what the reversal did. Written
+/// when the reversal lists its source, and settled in the transaction that changes the record.
+/// </summary>
+public sealed class DeliveryReversalItem
+{
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
+    public long ReversalId { get; set; }
+
+    public Guid DeliveryKey { get; set; }
+
+    /// <summary>The OSDU id the record claimed when the reversal listed it; null for a record that claimed none.</summary>
+    public string? TargetId { get; set; }
+
+    /// <summary>The source's first delivered attempt of the record.</summary>
+    public long FirstAttemptId { get; set; }
+
+    /// <summary>The version that attempt wrote.</summary>
+    public long? FirstVersion { get; set; }
+
+    /// <summary>The version the source's last delivered attempt of the record left.</summary>
+    public long? RunVersion { get; set; }
+
+    /// <summary>What OSDU held before the source: version, none or unknown.</summary>
+    public string Prior { get; set; } = string.Empty;
+
+    /// <summary>With <see cref="Prior"/> version: the version OSDU held.</summary>
+    public long? PriorVersion { get; set; }
+
+    /// <summary>The attempt that delivered or restored the version OSDU held before, when the ledger still has it: its hashes and origin are what the record gets back.</summary>
+    public long? PriorAttemptId { get; set; }
+
+    /// <summary>pending, sending, done, skipped or failed.</summary>
+    public string State { get; set; } = string.Empty;
+
+    /// <summary>What came of it once settled: restored, removed, already-gone, or why it was passed over or failed.</summary>
+    public string? Outcome { get; set; }
+
+    /// <summary>The reason, redacted.</summary>
+    public string? Detail { get; set; }
+
+    /// <summary>The version a restore put back.</summary>
+    public long? RestoredVersion { get; set; }
+
+    /// <summary>The version OSDU gave the restored record.</summary>
+    public long? NewVersion { get; set; }
+
+    /// <summary>The reverse run that settled it, or marked it sending.</summary>
+    public Guid? RunId { get; set; }
+
+    public DateTime UpdatedUtc { get; set; }
+}
+
 /// <summary>A mapping document as the sync found it in a repository: the read model behind the mappings page.</summary>
 public sealed class DeliveryMapping
 {
@@ -2222,6 +2326,41 @@ public static class DeliveryModel
             e.ToTable("ActivityRecord", SchemaName);
             // A record's requests are one seek of its key, in the order the trail numbered them.
             e.HasKey(a => new { a.PartitionId, a.FlowId, a.DeliveryKey, a.ActivityId });
+        });
+
+        modelBuilder.Entity<DeliveryReversal>(e =>
+        {
+            e.ToTable("Reversal", SchemaName);
+            e.HasKey(r => new { r.PartitionId, r.ReversalId });
+            e.Property(r => r.ReversalId).ValueGeneratedOnAdd();
+            e.Property(r => r.FlowName).HasMaxLength(200).IsRequired();
+            e.Property(r => r.SourceKind).HasMaxLength(16).IsRequired();
+            e.Property(r => r.SubmissionsJson).IsRequired();
+            e.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            e.Property(r => r.RequestedBy).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Error).HasMaxLength(2000);
+            // A reversal named by its id alone: a run's payload, a link.
+            e.HasIndex(r => r.ReversalId).IsUnique();
+            // One reversal per source of a ledger: asking again resumes it rather than opening a second one.
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.SourceKind, r.SourceId }).IsUnique();
+            // A ledger's reversals, newest first.
+            e.HasIndex(r => new { r.PartitionId, r.FlowId, r.RequestedUtc });
+        });
+
+        modelBuilder.Entity<DeliveryReversalItem>(e =>
+        {
+            e.ToTable("ReversalItem", SchemaName);
+            // A reversal's records together, in key order: what its listing adds to and its settlement walks.
+            e.HasKey(i => new { i.PartitionId, i.ReversalId, i.DeliveryKey });
+            OptionalOsduId(e.Property(i => i.TargetId)).HasMaxLength(500);
+            e.Property(i => i.Prior).HasMaxLength(16).IsRequired();
+            e.Property(i => i.State).HasMaxLength(16).IsRequired();
+            e.Property(i => i.Outcome).HasMaxLength(24);
+            e.Property(i => i.Detail).HasMaxLength(2000);
+            // The next page of what is still to do, in key order, and the counts by state and outcome, read from this alone.
+            e.HasIndex(i => new { i.PartitionId, i.ReversalId, i.State, i.DeliveryKey }).IncludeProperties(i => i.Outcome);
+            // A reversal's records by what came of them, a page at a time.
+            e.HasIndex(i => new { i.PartitionId, i.ReversalId, i.Outcome, i.DeliveryKey });
         });
 
         modelBuilder.Entity<DeliveryRetrieval>(e =>

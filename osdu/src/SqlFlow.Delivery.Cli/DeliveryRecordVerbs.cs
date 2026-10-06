@@ -61,7 +61,9 @@ internal static class DeliveryRecordVerbs
             "show" => await ShowAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
             "issues" => await IssuesAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
             "release" => await ReleaseAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
-            _ => context.UsageError("say what to do with the records: list, show, issues or release."),
+            "reverse" => await DeliveryReversalVerbs.ReverseAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
+            "reversals" => await DeliveryReversalVerbs.ListAsync(context, ledger, flow, label, ct).ConfigureAwait(false),
+            _ => context.UsageError("say what to do with the records: list, show, issues, release, reverse or reversals."),
         };
     }
 

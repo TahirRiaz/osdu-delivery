@@ -99,6 +99,9 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
 
     public Dictionary<string, JsonObject> Records { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>Every version storage keeps of each record, oldest first, as each write stored it: what its version reads answer.</summary>
+    public Dictionary<string, List<JsonObject>> History { get; } = new(StringComparer.Ordinal);
+
     public HashSet<string> Removed { get; } = new(StringComparer.Ordinal);
 
     public HashSet<string> Purged { get; } = new(StringComparer.Ordinal);
@@ -196,6 +199,13 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
             var stored = (JsonObject)record.DeepClone();
             stored["version"] = version;
             Records[id] = stored;
+            if (!History.TryGetValue(id, out var versions))
+            {
+                versions = [];
+                History[id] = versions;
+            }
+
+            versions.Add((JsonObject)stored.DeepClone());
             Removed.Remove(id);
             return version;
         }
@@ -557,25 +567,32 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
             return new HttpResponseMessage(HttpStatusCode.NoContent);
         }
 
-        // The version list beside the record (openapi storage v2, GET /records/versions/{id}): this fake keeps one version
-        // per record, the one its last put gave it, so the list is that version alone.
+        // The version list beside the record (openapi storage v2, GET /records/versions/{id}): every version the record's
+        // writes left that no purge took, oldest first, as the service lists them.
         if (operation.StartsWith("records/versions/", StringComparison.Ordinal) && method == "GET")
         {
             var id = operation["records/versions/".Length..];
-            return Records.TryGetValue(id, out var versioned) && !Removed.Contains(id)
-                ? Json(HttpStatusCode.OK, new JsonObject { ["recordId"] = id, ["versions"] = new JsonArray(JsonValue.Create(versioned["version"]!.GetValue<long>())) })
+            return History.TryGetValue(id, out var kept) && Records.ContainsKey(id) && !Removed.Contains(id)
+                ? Json(HttpStatusCode.OK, new JsonObject
+                {
+                    ["recordId"] = id,
+                    ["versions"] = new JsonArray(kept.Select(v => (JsonNode?)JsonValue.Create(v["version"]!.GetValue<long>())).ToArray()),
+                })
                 : Error(HttpStatusCode.NotFound, "Record not found");
         }
 
         if (operation.StartsWith("records/", StringComparison.Ordinal))
         {
             var rest = operation["records/".Length..];
-            // A record at one version (GET /records/{id}/{version}): only the version this fake holds answers.
+            // A record at one version (GET /records/{id}/{version}): any version its history still keeps.
             var slash = rest.LastIndexOf('/');
             if (method == "GET" && slash > 0 && long.TryParse(rest[(slash + 1)..], NumberStyles.None, CultureInfo.InvariantCulture, out var atVersion))
             {
                 var id = rest[..slash];
-                return Records.TryGetValue(id, out var held) && !Removed.Contains(id) && held["version"]!.GetValue<long>() == atVersion
+                var held = History.TryGetValue(id, out var kept) && !Removed.Contains(id)
+                    ? kept.FirstOrDefault(v => v["version"]!.GetValue<long>() == atVersion)
+                    : null;
+                return held is not null
                     ? Json(HttpStatusCode.OK, held.DeepClone())
                     : Error(HttpStatusCode.NotFound, "Record version not found");
             }
@@ -594,6 +611,13 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
 
             if (rest.EndsWith("/versions", StringComparison.Ordinal) && method == "DELETE")
             {
+                // Every earlier version goes; the latest stays.
+                var id = rest[..^"/versions".Length];
+                if (History.TryGetValue(id, out var kept) && kept.Count > 1)
+                {
+                    kept.RemoveRange(0, kept.Count - 1);
+                }
+
                 return new HttpResponseMessage(HttpStatusCode.NoContent);
             }
 
@@ -604,6 +628,7 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
                     return Error(HttpStatusCode.NotFound, "Record not found");
                 }
 
+                History.Remove(rest);
                 Purged.Add(rest);
                 return new HttpResponseMessage(HttpStatusCode.NoContent);
             }

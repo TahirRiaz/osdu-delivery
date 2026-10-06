@@ -106,12 +106,19 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
 
     /// <summary>The endpoints of <paramref name="flow"/>; <paramref name="kind"/> is the kind its mapping renders, when known.</summary>
     public static RemovalEndpoints Of(FlowDefinition flow, string? kind)
+        => OfEntityType(flow, string.IsNullOrWhiteSpace(kind) ? null : OsduKind.EntityType(kind));
+
+    /// <summary>
+    /// The endpoints of <paramref name="flow"/> for records of <paramref name="entityType"/>, when known: what a record's own
+    /// OSDU id names (<c>{partition}:{entityType}:{key}</c>), where a kind is not at hand.
+    /// </summary>
+    public static RemovalEndpoints OfEntityType(FlowDefinition flow, string? entityType)
     {
         ArgumentNullException.ThrowIfNull(flow);
         var options = flow.Target.ProtocolOptions;
         if (DeliveryProtocols.ReachesDdms(flow.Target.Protocol))
         {
-            return OfDdms(flow, kind);
+            return OfDdms(flow, entityType);
         }
 
         if (flow.Target.Protocol == DeliveryProtocol.Dspdm)
@@ -130,7 +137,7 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
         // A dataset the route registers itself is removed reversibly through the Dataset service, whose undelete restores it.
         var registersDataset = flow.Target.Protocol switch
         {
-            DeliveryProtocol.Dataset => !string.IsNullOrWhiteSpace(kind) && OsduKind.EntityType(kind) is { } entityType && Protocols.DatasetService.IsDatasetType(entityType),
+            DeliveryProtocol.Dataset => !string.IsNullOrWhiteSpace(entityType) && Protocols.DatasetService.IsDatasetType(entityType),
             DeliveryProtocol.Workflow => flow.Target.Workflow?.Anchor == Model.WorkflowAnchor.Dataset,
             _ => false,
         };
@@ -148,11 +155,11 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
             options.PurgePath ?? OsduRecordProtocol.DefaultPurgePath);
     }
 
-    private static RemovalEndpoints OfDdms(FlowDefinition flow, string? kind)
+    private static RemovalEndpoints OfDdms(FlowDefinition flow, string? entityType)
     {
         var routing = DdmsRouting.Of(flow);
         var history = routing.HistoryPath ?? HistoryNotConfigured;
-        if ((string.IsNullOrWhiteSpace(kind) ? null : OsduKind.EntityType(kind)) is not { } entityType)
+        if (string.IsNullOrWhiteSpace(entityType))
         {
             return new RemovalEndpoints(CollectionNotKnown, history, CollectionNotKnown) { RecordMethod = "DELETE" };
         }

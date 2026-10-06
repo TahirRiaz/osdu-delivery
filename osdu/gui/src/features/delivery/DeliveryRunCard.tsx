@@ -1,11 +1,14 @@
 import { Info } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import type { RunDetail } from "@/api/types";
 import { CodeView } from "@/components/CodeView";
+import { deliveryApi, type ReversalSource } from "../../api/delivery";
 import { prettyJson } from "./prettyJson";
-import { runRequest } from "./runOutcome";
+import { ReversalCard } from "./ReversalCard";
+import { runRequest, runScope } from "./runOutcome";
 
 const OUTCOME_COPY: Record<string, string> = {
   cache: "What the refresh reported when it finished: the version it wrote (or that nothing changed), each type's record count and changes, and the delivered records those changes reach.",
@@ -34,6 +37,21 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
   const values = Object.entries(run.values ?? {});
   const asked = run.operation !== null || values.length > 0 || Object.keys(run.payload ?? {}).length > 0;
 
+  // A reverse run shows the reversal it works on, read from the ledger as it goes; it opens the reversal when it starts.
+  const reversed: ReversalSource | null = run.operation !== "reverse"
+    ? null
+    : request.reversesRun !== null
+      ? { kind: "run", id: request.reversesRun }
+      : request.submissionId !== null ? { kind: "submission", id: request.submissionId } : null;
+  const scope = runScope(run);
+  const reversal = useQuery({
+    queryKey: ["delivery", "reversals", run.pipelineId, scope.interfaceName, scope.partition, reversed?.kind ?? null, reversed?.id ?? null],
+    queryFn: () => deliveryApi.reversals(run.pipelineId!, scope, reversed!),
+    enabled: reversed !== null && run.pipelineId !== null,
+    refetchInterval: (q) => ((q.state.data?.length ?? 0) === 0 && (run.status === "queued" || run.status === "running") ? 3000 : false),
+  });
+  const reversalId = reversal.data?.[0]?.reversalId ?? null;
+
   return (
     <>
       {asked && (
@@ -47,7 +65,12 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
               )}
               {request.force && <Badge variant="secondary" className="bg-warning/15 text-warning">forced</Badge>}
               {request.submissionId !== null && (
-                <Badge variant="secondary" className="font-mono">submission {request.submissionId}</Badge>
+                <Badge variant="secondary" className="font-mono">
+                  {run.operation === "reverse" ? `reverses submission ${request.submissionId}` : `submission ${request.submissionId}`}
+                </Badge>
+              )}
+              {request.reversesRun !== null && (
+                <Badge variant="secondary" className="font-mono" data-testid="run-reverses">{`reverses run ${request.reversesRun}`}</Badge>
               )}
               {request.recordKeys.length > 0 && (
                 <Badge variant="secondary">
@@ -86,6 +109,8 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
           </AlertDescription>
         </Alert>
       )}
+
+      {reversalId !== null && <ReversalCard reversalId={reversalId} />}
 
       {run.resultJson !== null && (
         <Card className="gap-2 rounded-lg p-3" data-testid="run-result">

@@ -4,7 +4,7 @@ using SqlFlow.Delivery.Protocols;
 namespace SqlFlow.Delivery.Ledger;
 
 /// <summary>
-/// Record status vocabulary (design.md section 7.4). <c>Held</c>, <c>Failed</c> and <c>Deleted</c> are terminal
+/// Record status vocabulary (design.md section 7.4). <c>Held</c>, <c>Failed</c>, <c>Deleted</c> and <c>Reverted</c> are terminal
 /// until an operator releases the record or the source changes.
 /// </summary>
 public enum RecordStatus
@@ -17,6 +17,13 @@ public enum RecordStatus
 
     /// <summary>Removed from OSDU by an operator; blocked from redelivery while the source is unchanged.</summary>
     Deleted,
+
+    /// <summary>
+    /// Put back by a reversal to the version OSDU held before the run that was reversed (docs/reversal-plan.md): OSDU
+    /// holds that version again, as a new one, and the record is blocked from redelivery while the source is unchanged. A
+    /// release makes it delivered again.
+    /// </summary>
+    Reverted,
 
     /// <summary>
     /// Holds a rendered document that refers to a record another record of the ledger holds and has not delivered, and
@@ -47,6 +54,9 @@ public enum AttemptOutcome
 
     /// <summary>The record's earlier versions were purged; the record itself is still delivered and live.</summary>
     HistoryPurged,
+
+    /// <summary>A reversal wrote back the version OSDU held before the run it reversed, as a new version.</summary>
+    Restored,
 }
 
 /// <summary>The phases of the attempts that record a decision not to send, beside the delivery phases the worker reports.</summary>
@@ -72,6 +82,12 @@ public static class AttemptPhases
     /// planned under. The record keeps its status: what OSDU holds is removed only by a removal someone asks for.
     /// </summary>
     public const string SourceMissing = "source-missing";
+
+    /// <summary>
+    /// What a reversal did to a record (docs/reversal-plan.md): restored (outcome restored), removed (outcome deleted),
+    /// passed over (outcome skipped) or failed, each saying why in its result.
+    /// </summary>
+    public const string Reverse = "reverse";
 }
 
 public enum VerifyOutcome
@@ -180,7 +196,7 @@ public sealed record SubmissionState
     /// <summary>Records whose queued document was, when the worker came to send it, what OSDU already held: nothing was sent.</summary>
     public long UnchangedAtPush { get; init; }
 
-    /// <summary>Records held, failed or deleted earlier whose source has not changed; they need a release.</summary>
+    /// <summary>Records held, failed, deleted or reverted earlier whose source has not changed; they need a release.</summary>
     public long Blocked { get; init; }
 
     public long Delivered { get; init; }
@@ -409,7 +425,7 @@ public sealed record RecordState
     public string? WaitingFor { get; init; }
 
     /// <summary>
-    /// Set when the record was held, failed or deleted and not released since. A blocked record is planned again
+    /// Set when the record was held, failed, deleted or reverted and not released since. A blocked record is planned again
     /// only when its source changes (fingerprint moved) or an operator releases it.
     /// </summary>
     public bool Blocked { get; init; }
@@ -812,6 +828,9 @@ public sealed record FlowStats
     public long Failed { get; init; }
 
     public long Deleted { get; init; }
+
+    /// <summary>Records a reversal put back to the version OSDU held before the run it reversed, blocked until released.</summary>
+    public long Reverted { get; init; }
 
     /// <summary>Records waiting for a record they refer to that has not landed.</summary>
     public long Waiting { get; init; }
@@ -1789,7 +1808,7 @@ public interface ILedger
     Task RecordVerifyAsync(Guid flowId, DeliveryKey key, VerifyOutcome outcome, long? observedVersion, DateTime nowUtc, bool requeue, CancellationToken ct = default);
 
     /// <summary>
-    /// Releases held, failed or deleted records: those with a pending document go back to pending for the worker,
+    /// Releases held, failed, deleted or reverted records: those with a pending document go back to pending for the worker,
     /// the others are unblocked and asked to be planned again by the flow's next run. Null keys means every blocked record.
     /// A waiting record named by key goes back to pending without its references, so it is sent without waiting any more;
     /// a release of the whole flow leaves waiting records to their wait.
@@ -1876,6 +1895,66 @@ public interface ILedger
     /// which scope ran and who asked for it, because that attempt is how the removal is audited afterwards.
     /// </summary>
     Task MarkRemovedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Opens the reversal of <paramref name="source"/> in the flow's ledger, or resumes the one it holds
+    /// (docs/reversal-plan.md): one reversal per source of a ledger, which the run <paramref name="runId"/> now works on. A new
+    /// one fixes the submissions its source covers (a submission, or the submissions a run coordinated). Throws when the
+    /// source is not the ledger's: a submission of another ledger, or a run that neither planned a submission of it nor
+    /// delivered a record of it.
+    /// </summary>
+    Task<ReversalState> OpenReversalAsync(Guid flowId, string flowName, ReversalSource source, string actor, Guid? runId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists every record the reversal's source delivered as an item, with what OSDU held of it before, unless the listing
+    /// is finished: the source's delivered attempts are read a page at a time in index order and each record is added once,
+    /// so a listing stopped half way and started again adds only what is missing. <paramref name="progress"/> hears after
+    /// every page. Returns how many it added and how many items the reversal holds.
+    /// </summary>
+    Task<ReversalCapture> CaptureReversalAsync(long reversalId, Func<ReversalCapture, Task>? progress, CancellationToken ct = default);
+
+    /// <summary>
+    /// The next items of a reversal to work on after <paramref name="after"/>, in key order, at most <paramref name="max"/>:
+    /// pending, left sending by a run that stopped, failed, or passed over as busy. A run walks them forward once.
+    /// </summary>
+    Task<IReadOnlyList<ReversalItemState>> ListReversalWorkAsync(long reversalId, DeliveryKey? after, int max, CancellationToken ct = default);
+
+    /// <summary>Marks items as sending before the run writes to OSDU for them, so a run that stops mid-write is known to have.</summary>
+    Task MarkReversalSendingAsync(long reversalId, IReadOnlyList<DeliveryKey> keys, Guid? runId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// Settles items of a reversal with their records, a slice to a transaction: each record a restore or a removal puts
+    /// back becomes reverted or deleted and blocked, while it is still the record the source left; every item gets its
+    /// attempt (phase reverse), is named under <paramref name="activityId"/> when it changed its record, and is settled.
+    /// </summary>
+    Task<ReversalSettled> SettleReversalAsync(
+        long reversalId, IReadOnlyList<ReversalSettlement> settlements, string actor, long? activityId, Guid? runId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>Ends the latest run's work on a reversal in <paramref name="status"/>, with the redacted <paramref name="failure"/> of one that failed.</summary>
+    Task CloseReversalAsync(long reversalId, string status, string? failure, DateTime nowUtc, CancellationToken ct = default);
+
+    Task<ReversalState?> GetReversalAsync(long reversalId, CancellationToken ct = default);
+
+    /// <summary>The reversal of <paramref name="source"/> in the flow's ledger, or null when none was asked for.</summary>
+    Task<ReversalState?> FindReversalAsync(Guid flowId, ReversalSource source, CancellationToken ct = default);
+
+    /// <summary>The ledger's reversals, newest first.</summary>
+    Task<IReadOnlyList<ReversalState>> ListReversalsAsync(Guid flowId, int max, CancellationToken ct = default);
+
+    /// <summary>A reversal's records counted by state and outcome, read from its items.</summary>
+    Task<ReversalCounts> CountReversalAsync(long reversalId, CancellationToken ct = default);
+
+    /// <summary>
+    /// A page of a reversal's items after <paramref name="after"/> in key order, every one or those of one
+    /// <paramref name="outcome"/> (<see cref="ReversalItemStates.Pending"/> for those not settled yet).
+    /// </summary>
+    Task<IReadOnlyList<ReversalItemState>> ListReversalItemsAsync(long reversalId, string? outcome, DeliveryKey? after, int max, CancellationToken ct = default);
+
+    /// <summary>
+    /// What reversing <paramref name="source"/> would reach, writing nothing: the submissions it covers, how many records it
+    /// delivered, and the first <paramref name="sample"/> of them in key order as the reversal would list them.
+    /// </summary>
+    Task<ReversalSourceRead> ReadReversalSourceAsync(Guid flowId, string flowName, ReversalSource source, int sample, CancellationToken ct = default);
 
     /// <summary>
     /// The keys of every record a listing matches, in key order, up to <paramref name="max"/>. Key order is what

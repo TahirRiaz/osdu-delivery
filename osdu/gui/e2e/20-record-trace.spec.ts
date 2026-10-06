@@ -123,11 +123,11 @@ test.describe.serial("record trace", () => {
     await adminPage.getByTestId("removal-cancel").click();
     await expect(adminPage.getByTestId("removal-dialog")).toHaveCount(0);
 
-    // The record's submission is the batch: what it delivered is its own to remove, and this one delivered nothing.
+    // The record's submission is the batch: what it delivered is its own to reverse, and this one delivered nothing.
     await adminPage.getByTestId("record-submission-link").click();
     await expect(adminPage.getByTestId("page-delivery-submission")).toBeVisible();
     await expect(adminPage.getByTestId("submission-delivered-records")).toContainText("(0)", { timeout: 30_000 });
-    await expect(adminPage.getByTestId("submission-remove-delivered")).toBeDisabled();
+    await expect(adminPage.getByTestId("submission-reverse")).toBeDisabled();
 
     // Its two record sets are two links: what it delivered (nothing yet), and what it last planned (every record).
     await adminPage.getByTestId("submission-delivered-records").click();

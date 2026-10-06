@@ -1020,7 +1020,10 @@ public sealed class DeliveryWorker
                 _ => "none",
             };
             var targetState = JsonMerge.Merge(record.TargetStateJson, JsonMerge.FromValues(outcome.Returned));
-            return Settle(record, batch, started, RecordStatus.Delivered, AttemptOutcome.Delivered, phase, outcome.TargetVersion, outcome.Detail, null, resultJson, targetState, promote: true);
+
+            // The version this delivery replaced, as the claim knew it: what a reversal of it puts back.
+            var replaced = AttemptResult.WithReplaced(resultJson, work.ExistingVersion);
+            return Settle(record, batch, started, RecordStatus.Delivered, AttemptOutcome.Delivered, phase, outcome.TargetVersion, outcome.Detail, null, replaced, targetState, promote: true);
         }
 
         var failure = outcome.Failure!;

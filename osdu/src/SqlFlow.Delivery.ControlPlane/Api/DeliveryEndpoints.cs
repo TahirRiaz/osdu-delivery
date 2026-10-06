@@ -47,7 +47,7 @@ public sealed record DeliveryFlowStatsDto(
     Guid PipelineId, string FlowName, Guid FlowId, long Total, long Pending, long Delivering, long Delivered, long Held, long Failed,
     long Deleted, long Drifted, long DeliveredLast24h, DateTime? LastDeliveredUtc, DateTime? LastVerifiedUtc, long Submissions,
     DeliverySubmissionDto? LastSubmission, string? Interface = null, int Interfaces = 1, long Waiting = 0, string? Partition = null,
-    IReadOnlyList<string>? Partitions = null, string? HeaderPartition = null, IReadOnlyList<string>? RedeliverParts = null);
+    IReadOnlyList<string>? Partitions = null, string? HeaderPartition = null, IReadOnlyList<string>? RedeliverParts = null, long Reverted = 0);
 
 /// <summary>
 /// One interface of a delivery flow (docs/interfaces-design.md): its ledger identity, how it is delivered and why, the
@@ -516,6 +516,9 @@ public static class DeliveryEndpoints
         // What keeps a flow's records blocked, grouped by issue, and one issue with the files its records came from.
         DeliveryIssueEndpoints.MapReads(delivery);
 
+        // The reversals of runs and submissions, each with its records by outcome.
+        DeliveryReversalEndpoints.MapReads(delivery);
+
         // The report of assertion flows: boards, runs, history and the report of a run in every format.
         DeliveryAssertionEndpoints.MapReads(delivery);
 
@@ -559,6 +562,9 @@ public static class DeliveryEndpoints
         delivery.MapPost("/flows/{pipelineId:guid}/scope-values", ScopeValuesAsync).WithName("ListDeliveryFlowScopeValues");
         DeliveryValueCheckEndpoints.MapWrites(delivery);
         DeliveryIssueEndpoints.MapWrites(delivery);
+
+        // What reversing a run or a submission would reach, and the reverse run that puts OSDU back as it was before it.
+        DeliveryReversalEndpoints.MapWrites(delivery);
         delivery.MapPost("/flows/{pipelineId:guid}/osdu/read", ReadTargetAsync).WithName("ReadDeliveryOsduRecord");
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
@@ -796,7 +802,8 @@ public static class DeliveryEndpoints
             partitions.Count == 1 ? partitions[0] : null,
             partitions.Count > 0 ? partitions : null,
             headerPartition,
-            one is null ? null : RedeliverScopes.For(one));
+            one is null ? null : RedeliverScopes.For(one),
+            stats.Sum(s => s.Stats.Reverted));
     }
 
     private static async Task<Results<Ok<PagedResult<DeliveryRecordDto>>, ProblemHttpResult>> ListRecordsAsync(
@@ -2624,7 +2631,7 @@ public static class DeliveryEndpoints
     /// ddms route the endpoints and the collection are those serving the kind the flow's mapping renders, as the
     /// repository sync read it.
     /// </summary>
-    private static async Task<DeliveryTargetDto> ToTargetDtoAsync(OsduDbContext osdu, FlowContext flow, CancellationToken ct)
+    internal static async Task<DeliveryTargetDto> ToTargetDtoAsync(OsduDbContext osdu, FlowContext flow, CancellationToken ct)
     {
         var target = flow.Flow.Target;
         target.Headers.TryGetValue("data-partition-id", out var partition);
@@ -2632,12 +2639,7 @@ public static class DeliveryEndpoints
         string? ddms = null;
         if (DeliveryProtocols.ReachesDdms(target.Protocol))
         {
-            var reference = flow.Flow.Render.Mapping;
-            kind = await osdu.DeliveryMappings.AsNoTracking()
-                .Where(m => m.RepoId == flow.Pipeline.RepoId && m.Reference == reference && m.Status == "valid")
-                .Select(m => m.Kind)
-                .FirstOrDefaultAsync(ct)
-                .ConfigureAwait(false);
+            kind = await MappingKindAsync(osdu, flow, ct).ConfigureAwait(false);
             ddms = DdmsDescription(flow.Flow, kind);
         }
 
@@ -2645,6 +2647,18 @@ public static class DeliveryEndpoints
         return new DeliveryTargetDto(
             flow.Pipeline.Id, flow.Pipeline.Name, target.Endpoint, partition, DeliveryProtocols.Name(target.Protocol),
             target.Auth.Type.ToString(), paths.Record, paths.History, paths.Everything, flow.Flow.Interface, ddms, paths.RecordMethod);
+    }
+
+    /// <summary>The kind the flow's mapping renders, as the repository sync read it; null while the sync has read no valid mapping of that reference.</summary>
+    internal static Task<string?> MappingKindAsync(OsduDbContext osdu, FlowContext flow, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(osdu);
+        ArgumentNullException.ThrowIfNull(flow);
+        var reference = flow.Flow.Render.Mapping;
+        return osdu.DeliveryMappings.AsNoTracking()
+            .Where(m => m.RepoId == flow.Pipeline.RepoId && m.Reference == reference && m.Status == "valid")
+            .Select(m => m.Kind)
+            .FirstOrDefaultAsync(ct);
     }
 
     /// <summary>Where a ddms-route flow's records go, as a sentence: the collection and the DDMS serving the kind its mapping renders.</summary>
@@ -2945,7 +2959,7 @@ public static class DeliveryEndpoints
     }
 
     /// <summary>The interface a ledger identity's pipeline names, or null for a flow in the single form.</summary>
-    private static string? NamedInterface(LedgerPipeline? found) => found is { Interface.Length: > 0 } ? found.Interface : null;
+    internal static string? NamedInterface(LedgerPipeline? found) => found is { Interface.Length: > 0 } ? found.Interface : null;
 
     /// <summary>
     /// The partition a request about a ledger's flow names: the ledger's, for a flow that names or follows its partitions;

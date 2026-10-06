@@ -298,14 +298,14 @@ parameter; a retrieval flow refuses it.
 
 | Flow kind | Operations | Default |
 | --- | --- | --- |
-| `delivery` | `deliver` (read the changed records, plan against the ledger, deliver what changed), `plan` (render and compare, report what would be delivered, change nothing), `intake` (plan into work batches without delivering), `drain` (deliver the pending batches without re-reading the source), `verify` (read delivered records back from OSDU and compare versions), `sync` (read the records' rows from the ingestion tables and consolidate the ledger with them; sends nothing) | `deliver` |
+| `delivery` | `deliver` (read the changed records, plan against the ledger, deliver what changed), `plan` (render and compare, report what would be delivered, change nothing), `intake` (plan into work batches without delivering), `drain` (deliver the pending batches without re-reading the source), `verify` (read delivered records back from OSDU and compare versions), `sync` (read the records' rows from the ingestion tables and consolidate the ledger with them; sends nothing), `reverse` (put OSDU back as it was before the run or submission the payload names: what it created is removed again, reversibly, and what it updated gets back the version OSDU held before; [operations.md](../../operations.md#reversing-a-run)) | `deliver` |
 | `retrieval` | `retrieve`, `plan` | `retrieve` |
 | `cache` | `refresh` (capture every declared type and merge it into the partition's cache), `plan` (count what each type's search matches, write nothing) | `refresh` |
 | `assertion` | `test` (run the tests and keep their report), `plan` (check each test against its template and count what it matches and would read; record nothing) | `test` |
 | `dimension` | `build` (read every distinct key of each dimension's path, read each key's label where the dimension asks for one, clean them into values and keep them), `plan` (settle each dimension's field from the templates and count the records it would read; read no value, keep nothing) | `build` |
 
 A delivery flow needs the catalog for every operation: `deliver`, `plan` and `intake` render against the template
-and the cache version saved there, and `verify` and `drain` work on the ledger. A cache flow's `refresh` needs it
+and the cache version saved there, and `verify`, `drain` and `reverse` work on the ledger. A cache flow's `refresh` needs it
 because the versions it writes live there. An assertion flow's `test` needs it for the report it keeps and the
 templates its tests are checked against. A retrieval flow runs without it.
 
@@ -320,7 +320,8 @@ rather than half-applied.
 | Field | Meaning | Operations |
 | --- | --- | --- |
 | `force` | `true` lifts the whole-run gates (the tier 0 skip and an already completed submission), so the run looks at every record; each record's own hashes still decide what is sent, and a record that renders and hashes as it was delivered is not sent. To send records again, use `redeliver`. | all but `drain` and `sync` |
-| `submissionId` | The submission the run works on: a re-run, or a fan-out member's share. | all but `verify`, `replan` and `sync` |
+| `submissionId` | The submission the run works on: a re-run, a fan-out member's share, or the submission a `reverse` run reverses. | all but `verify`, `replan` and `sync` |
+| `runId` | The run a `reverse` run reverses: what was delivered under the submissions it planned and what it delivered itself. A reverse run names `submissionId` or `runId`, one of them, and takes nothing else but `interface`. | `reverse` |
 | `recordKeys` | The delivery keys (UUIDs) the run is scoped to, at most 1,000, each once. Not with `submissionId`. | `deliver`, `plan`, `intake`, `verify`, `sync` |
 | `redeliver` | What the run sends again, changed or not: of the records `recordKeys` names, or without `recordKeys` of every record the flow has delivered in the partition (a run sends at most 5,000 of them, and the flow's next runs send the rest). `all` (the default for named records), `record` (the record document; its datasets and bulk data keep what OSDU holds), `files` (uploaded and registered again, on the file, dataset, manifest and composed routes, and the workflow route with files), `bulk` (a new version of the bulk data, on the ddms and composed routes) or `workflow` (the workflow route's stages run again). On the composed and workflow routes the named part goes alone. `metadata` names the record and `payload` every part. A part the route does not send fails the run. Not with `submissionId`. | `deliver` |
 | `slices` | The key slices of `submissionId` a fan-out intake member plans (indexes 0 to 1023, each once). | `intake` |
@@ -347,6 +348,9 @@ sqlflow run flows/recall.yaml --set logSource=STAT_COMP --payload '{"interface":
 # send the curves of every well log the flow has delivered again
 sqlflow run flows/recall-welllog-03-header-delivery.yaml --set logSource=STAT_COMP --payload '{"redeliver":"bulk"}'
 
+# put OSDU back as it was before one run of a flow
+sqlflow trigger --repo recall --flow recall-welllog-03-header-delivery --operation reverse --payload '{"runId":"<run id>"}'
+
 # run the smoke tests of an assertion flow, and one more by name
 sqlflow run flows/recall-welllog-04-header-assertion.yaml --set partition=dev --payload '{"tags":["smoke"],"tests":["log-curves"]}'
 ```
@@ -354,7 +358,9 @@ sqlflow run flows/recall-welllog-04-header-assertion.yaml --set partition=dev --
 ### The result
 
 The run's result carries the submission and the record counts (planned, delivered, held, failed, unchanged),
-which the run page and the runs list show. A refresh's result carries the partition and the cache flow, the
+which the run page and the runs list show. A reverse run's result carries the reversal (`reversalId`), its source, how
+many records the source delivered and how many this run took, what it restored, removed, passed over and failed, how
+many are still open, and the reversal's records by outcome across every run that worked on it. A refresh's result carries the partition and the cache flow, the
 version the partition's cache holds after it, the version it replaced, whether a version was written, when it was
 captured, and per type what was captured and what its changes reach; a plan on a cache flow carries the partition,
 the flow, the current version and what each type's search matches. A cache flow that names several partitions, run for

@@ -211,7 +211,7 @@ public static class ChangeDetector
         => existing is null ? null : Latest(existing.PayloadModifiedUtc, existing is { HasPendingWork: true, PendingPayload: true } ? existing.PendingPayloadModifiedUtc : null);
 
     /// <summary>
-    /// Whether a blocked record (held, failed or deleted, and not released) stays blocked for the version the drop
+    /// Whether a blocked record (held, failed, deleted or reverted, and not released) stays blocked for the version the drop
     /// carries. It does until the source moves: past the moment it was left at when the flow orders its rows by a
     /// last-modified column, to a different fingerprint otherwise. A row that says nothing about its version, or a
     /// record left at no known version under a fingerprint flow, needs a release.

@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link as RouterLink, Navigate, useNavigate, useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, ListTree, PackageCheck, Trash2 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { CircleAlert, ListTree, Loader2, PackageCheck, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -25,12 +25,12 @@ import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { SubmissionStatusBadge } from "./DeliveryBadges";
 import { SubmissionCounts } from "./DeliveryFlowPanel";
 import { prettyJson } from "./prettyJson";
-import { RemovalDialog } from "./RemovalDialog";
-import { isTerminalTask, taskResultJson, useComputeTask } from "./useComputeTask";
+import { ReversalCard } from "./ReversalCard";
+import { ReverseDialog } from "./ReverseDialog";
 import { shortId } from "./idTail";
 
 /** Everything the ledger holds about one submission: what it was, how it went, every attempt it produced, and the runs
- * that carried it, with a way back to the records it touched and the removal of what it put into OSDU. */
+ * that carried it, with a way back to the records it touched and the reversal of what it put into OSDU. */
 export default function DeliverySubmissionPage() {
   const { submissionId } = useParams<{ submissionId: string }>();
   if (!submissionId) {
@@ -49,17 +49,17 @@ function recordsLink(detail: DeliverySubmissionDetail, param: "submission" | "de
 }
 
 /**
- * The batch as a thing that can be undone: the records this submission delivered are its own however many submissions
- * touched them since, so "remove the batch we ran" is one removal aimed at exactly that set, confirmed with the target
- * it leaves and the count it was shown, and refused if that count has moved by the time it runs.
+ * The batch as a thing that can be undone (docs/reversal-plan.md): the records this submission delivered are put back as
+ * OSDU held them before it, each record the way it needs (removed again when the submission created it, given back its
+ * earlier version when the submission updated it), confirmed with the target and the count it was shown, and refused if
+ * that count has moved by the time it is asked.
  */
-function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; onQueued: (taskId: string) => void }) {
+function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; onQueued: (runId: string) => void }) {
   const navigate = useNavigate();
-  const [removeOpen, setRemoveOpen] = useState(false);
+  const [reverseOpen, setReverseOpen] = useState(false);
   const s = detail.submission;
   const pipelineId = detail.pipelineId;
-  // The count the confirmation is built on, read the way the removal will resolve it, not the submission's own tally:
-  // a record removed or purged since is not in OSDU any more, and the removal must be aimed at what is.
+  // The records the submission delivered, as the flow's Records tab lists them, for the button that opens that list.
   const delivered = useQuery({
     queryKey: ["delivery", "records", pipelineId, detail.interface ?? null, detail.partition ?? null, "delivered-by", s.submissionId],
     queryFn: () => deliveryApi.records(pipelineId!, {
@@ -88,24 +88,26 @@ function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; 
       <Button
         variant="destructive-outline"
         size="sm"
-        onClick={() => setRemoveOpen(true)}
+        onClick={() => setReverseOpen(true)}
         disabled={delivered.data === undefined || count === 0}
-        title={delivered.data !== undefined && count === 0 ? "This submission delivered nothing that is still in OSDU under its name." : undefined}
-        data-testid="submission-remove-delivered"
+        title={delivered.data !== undefined && count === 0 ? "This submission delivered nothing." : "Put OSDU back as it was before this submission."}
+        data-testid="submission-reverse"
       >
-        <Trash2 />
-        Remove what it delivered
+        <Undo2 />
+        Reverse this submission
       </Button>
-      <RemovalDialog
-        open={removeOpen}
-        onClose={() => setRemoveOpen(false)}
+      <ReverseDialog
+        open={reverseOpen}
+        onClose={() => setReverseOpen(false)}
         pipelineId={pipelineId}
         flowScope={{ interfaceName: detail.interface ?? null, partition: detail.partition ?? null }}
         flowName={ledgerLabel(s.flowName, { interfaceName: detail.interface ?? null, partition: detail.partition ?? null })}
-        selection={{ kind: "filter", filter: { deliveredBy: s.submissionId }, expected: count }}
+        source={{ kind: "submission", id: s.submissionId }}
         onQueued={(accepted) => {
-          onQueued(accepted.taskId);
-          toast.success(`Removal of ${accepted.records.toLocaleString()} record(s) this submission delivered queued on a node.`);
+          onQueued(accepted.runId);
+          toast.success(`Reversal of ${accepted.records.toLocaleString()} record(s) this submission delivered queued.`, {
+            action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) },
+          });
         }}
       />
     </>
@@ -114,8 +116,7 @@ function BatchActions({ detail, onQueued }: { detail: DeliverySubmissionDetail; 
 
 function SubmissionContent({ submissionId }: { submissionId: string }) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const [removalTaskId, setRemovalTaskId] = useState<string | null>(null);
+  const [reverseRunId, setReverseRunId] = useState<string | null>(null);
   const query = useQuery({
     queryKey: ["delivery", "submission", submissionId],
     queryFn: () => deliveryApi.submission(submissionId),
@@ -136,15 +137,17 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
   });
   useTabTitle(query.data ? `Submission ${shortId(submissionId)}` : undefined);
 
-  // A removal that finished on a node changed the ledger for every record it touched: the attempts, the counts and
-  // the delivered set are read again once the task settles, so the page shows what it did without a manual reload.
-  const removal = useComputeTask(removalTaskId);
-  const finishedRemoval = isTerminalTask(removal.data) ? removal.data!.taskId : null;
-  useEffect(() => {
-    if (finishedRemoval !== null) {
-      void queryClient.invalidateQueries({ queryKey: ["delivery"] });
-    }
-  }, [finishedRemoval, queryClient]);
+  // The reversal of this submission, once one was asked for. A reverse run just queued opens it when it starts, so the page
+  // looks for it every few seconds until it appears.
+  const pipelineId = query.data?.pipelineId ?? null;
+  const scope = { interfaceName: query.data?.interface ?? null, partition: query.data?.partition ?? null };
+  const reversal = useQuery({
+    queryKey: ["delivery", "reversals", pipelineId, scope.interfaceName, scope.partition, "submission", submissionId],
+    queryFn: () => deliveryApi.reversals(pipelineId!, scope, { kind: "submission", id: submissionId }),
+    enabled: pipelineId !== null,
+    refetchInterval: (q) => (reverseRunId !== null && (q.state.data?.length ?? 0) === 0 ? 3000 : false),
+  });
+  const reversalId = reversal.data?.[0]?.reversalId ?? null;
 
   if (query.isError) {
     return (
@@ -165,7 +168,6 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
   }
 
   const s = detail.submission;
-  const removalJson = isTerminalTask(removal.data) ? taskResultJson(removal.data) : null;
   const attemptColumns: Column<DeliveryAttempt>[] = [
     { id: "started", header: "When", render: (row) => <RelativeTime value={row.startedUtc} absolute /> },
     {
@@ -236,7 +238,7 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
             <Badge variant="outline" data-testid="submission-mapping">{s.mappingReference}</Badge>
           </>
         )}
-        actions={<BatchActions detail={detail} onQueued={setRemovalTaskId} />}
+        actions={<BatchActions detail={detail} onQueued={setReverseRunId} />}
         meta={(
           <>
             <IdChip label="submission" value={s.submissionId} display={shortId(s.submissionId)} testId="submission-id" copyTestId="copy-submission-id" />
@@ -284,19 +286,17 @@ function SubmissionContent({ submissionId }: { submissionId: string }) {
         <SubmissionCounts submission={s} />
       </Card>
 
-      {removalTaskId !== null && (
-        <Card className="gap-2 rounded-lg p-3" data-testid="submission-removal-result">
-          <div className="flex items-center gap-2 text-[13px] font-medium">
-            Removal of what this submission delivered
-            <Badge variant="outline">{removal.data?.status ?? "queued"}</Badge>
-            {removal.data?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{removal.data.claimedByNode}</span>}
-          </div>
-          {removal.data?.error && <p className="text-[13px] text-destructive">{removal.data.error}</p>}
-          {removalJson !== null && (
-            <CodeView value={removalJson} language="json" height={260} data-testid="submission-removal-json" />
-          )}
-        </Card>
-      )}
+      {reversalId !== null
+        ? <ReversalCard reversalId={reversalId} />
+        : reverseRunId !== null && (
+          <Card className="gap-2 rounded-lg p-3" data-testid="submission-reversal-queued">
+            <span className="inline-flex items-center gap-2 text-[13px] text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              {"The reverse run is queued; the reversal shows here once it starts. "}
+              <RouterLink to={`/runs/${reverseRunId}`} className="text-primary hover:underline">Open the run</RouterLink>
+            </span>
+          </Card>
+        )}
 
       <Tabs defaultValue="attempts">
         <TabsList data-testid="submission-tabs">

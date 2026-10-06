@@ -25,6 +25,7 @@ public sealed class OsduDdmsProtocol : IDeliveryProtocol
     public const string PayloadStep = "payload";
 
     private readonly OsduHttpClient _client;
+    private readonly ProtocolOptions _options;
     private readonly DdmsRouting _routing;
     private readonly TimeProvider _time;
     private readonly IDdmsShape _wellbore;
@@ -40,6 +41,7 @@ public sealed class OsduDdmsProtocol : IDeliveryProtocol
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
         _client = client;
+        _options = options;
         _routing = routing ?? DdmsRouting.Of(options);
         _time = time ?? TimeProvider.System;
         var context = new DdmsShapeContext(client, options, _routing, logger, requestBodyCeiling, _time);
@@ -109,17 +111,86 @@ public sealed class OsduDdmsProtocol : IDeliveryProtocol
         return ShapeOf(paths).ReadAsync(paths, targetId, ct);
     }
 
-    /// <summary>The storage service's version list for a record no DDMS the flow reaches serves; null for a DDMS's record, whose DDMS keeps none.</summary>
+    /// <summary>
+    /// The storage service's version list for a record it keeps (<see cref="StorageVersionsPath"/>): one no DDMS the flow
+    /// reaches serves, or a Wellbore DDMS record; null for another DDMS's record, whose versions the storage service does
+    /// not hold the whole of.
+    /// </summary>
     public Task<IReadOnlyList<long>?> VersionsAsync(string targetId, CancellationToken ct = default)
-        => _routing.StorageReadPath(targetId) is { } storage
+        => StorageVersionsPath(targetId) is { } storage
             ? RecordWriter.VersionsAsync(_client, storage, targetId, ct)
             : Task.FromResult<IReadOnlyList<long>?>(null);
 
-    /// <summary>A record no DDMS the flow reaches serves, as the storage service held it at <paramref name="version"/>.</summary>
+    /// <summary>A record the storage service keeps (<see cref="StorageVersionsPath"/>), as it held it at <paramref name="version"/>.</summary>
     public Task<JsonObject?> ReadVersionAsync(string targetId, long version, CancellationToken ct = default)
-        => _routing.StorageReadPath(targetId) is { } storage
+        => StorageVersionsPath(targetId) is { } storage
             ? RecordWriter.ReadVersionAsync(_client, storage, targetId, version, ct)
             : throw new DeliveryException($"The target keeps no version history for {targetId}, so there is no version {version.ToString(CultureInfo.InvariantCulture)} to read.");
+
+    /// <summary>
+    /// Where the storage service's read of the record <paramref name="targetId"/> is, when its versions are the whole of it:
+    /// a record no DDMS the flow reaches serves, or a record of a Wellbore DDMS collection, which is a storage record whose
+    /// bulk data the version names by its <c>bulkURI</c> (<see cref="WellboreDdmsBulkLink"/>), under a platform endpoint.
+    /// Null for any other record: another DDMS keeps data of its own beside the record, which a version does not hold.
+    /// </summary>
+    private string? StorageVersionsPath(string targetId)
+        => _routing.StorageReadPath(targetId) ?? (_routing.PlatformEndpoint && ServedByWellboreDdms(targetId) ? OsduRecordProtocol.DefaultVerifyPath : null);
+
+    /// <summary>Whether a Wellbore DDMS collection the flow reaches serves the record <paramref name="targetId"/>.</summary>
+    private bool ServedByWellboreDdms(string targetId)
+    {
+        try
+        {
+            return _routing.ForRecord(targetId).Shape == DdmsShape.WellboreDdmsV3;
+        }
+        catch (DeliveryException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Writes Wellbore DDMS records back as they were at an earlier version, through the storage service rather than the
+    /// DDMS (<see cref="RecordRestores"/>): the DDMS refuses a write whose <c>bulkURI</c> is not the one its latest version
+    /// holds (<see cref="WellboreDdmsBulkLink"/>), while the version written back through storage carries its own, so the
+    /// bulk data of that version is what the DDMS serves again. A record of any other DDMS, or one the storage service is
+    /// not reachable for (the endpoint is a DDMS itself), is refused, naming why.
+    /// </summary>
+    public async Task<IReadOnlyList<RestoreResult>> RestoreBatchAsync(IReadOnlyList<VersionRestore> restores, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(restores);
+        var results = new RestoreResult?[restores.Count];
+        var writable = new List<(int Index, VersionRestore Restore)>();
+        for (var i = 0; i < restores.Count; i++)
+        {
+            var restore = restores[i];
+            if (Reversals.ReversalRoute.DdmsRestoreRefusal(_routing, restore.TargetId) is { } refusal)
+            {
+                results[i] = new RestoreResult(restore, null, null, new DeliveryException(refusal));
+            }
+            else
+            {
+                writable.Add((i, restore));
+            }
+        }
+
+        if (writable.Count > 0)
+        {
+            // The storage service's own paths under the platform endpoint, with the flow's batching; nothing of the DDMS's
+            // paths applies to it.
+            _storage ??= new OsduRecordProtocol(_client, RecordRestores.WriterOptions(new ProtocolOptions { BatchSize = _options.BatchSize }), _time);
+            var written = await RecordRestores.WriteAsync(_storage, writable.Select(w => w.Restore).ToList(), ct).ConfigureAwait(false);
+            for (var j = 0; j < writable.Count; j++)
+            {
+                results[writable[j].Index] = written[j];
+            }
+        }
+
+        return results.Select(r => r!).ToList();
+    }
+
+    /// <summary>The storage service's record writer under the platform endpoint, made when a restore first needs it.</summary>
+    private OsduRecordProtocol? _storage;
 
     /// <summary>
     /// Asks each DDMS the flow reaches for its service description, as its shape describes itself (<c>GET /about</c> of

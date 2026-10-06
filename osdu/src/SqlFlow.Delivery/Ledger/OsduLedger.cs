@@ -1487,6 +1487,7 @@ public sealed partial class OsduLedger : ILedger
             Held = byStatus.GetValueOrDefault("held"),
             Failed = byStatus.GetValueOrDefault("failed"),
             Deleted = byStatus.GetValueOrDefault("deleted"),
+            Reverted = byStatus.GetValueOrDefault("reverted"),
             Waiting = byStatus.GetValueOrDefault("waiting"),
             Drifted = drifted,
             DeliveredLast24h = last24,
@@ -1792,7 +1793,7 @@ public sealed partial class OsduLedger : ILedger
 
     /// <summary>The custody states a blocked record is in: what a release of every blocked record walks.</summary>
     private static readonly string[] BlockedStatuses =
-        [StatusText.Of(RecordStatus.Held), StatusText.Of(RecordStatus.Failed), StatusText.Of(RecordStatus.Deleted)];
+        [StatusText.Of(RecordStatus.Held), StatusText.Of(RecordStatus.Failed), StatusText.Of(RecordStatus.Deleted), StatusText.Of(RecordStatus.Reverted)];
 
     /// <summary>
     /// Releases the records one problem keeps blocked, or the blocked records in one custody state, a page of keys at a time
@@ -3359,6 +3360,7 @@ internal static class StatusText
         RecordStatus.Held => "held",
         RecordStatus.Failed => "failed",
         RecordStatus.Deleted => "deleted",
+        RecordStatus.Reverted => "reverted",
         RecordStatus.Waiting => "waiting",
         _ => throw new ArgumentOutOfRangeException(nameof(status)),
     };
@@ -3371,6 +3373,7 @@ internal static class StatusText
         "held" => RecordStatus.Held,
         "failed" => RecordStatus.Failed,
         "deleted" => RecordStatus.Deleted,
+        "reverted" => RecordStatus.Reverted,
         "waiting" => RecordStatus.Waiting,
         _ => throw new DeliveryException($"Unknown record status '{text}' in the ledger."),
     };

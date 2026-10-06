@@ -394,7 +394,8 @@ public class WellboreDdmsRootTests
         var handler = new FakeHttpHandler()
             .On(HttpMethod.Get, "/api/storage/v2/records/" + Linked, HttpStatusCode.OK, """{"id":"dev:reference-data--WellLogSamplingDomainType:Depth","version":7}""")
             .On(HttpMethod.Get, "/api/storage/v2/records/versions/" + Linked, HttpStatusCode.OK, """{"recordId":"x","versions":[3,7]}""")
-            .On(HttpMethod.Get, "/api/storage/v2/records/" + Linked + "/3", HttpStatusCode.OK, """{"id":"x","version":3}""");
+            .On(HttpMethod.Get, "/api/storage/v2/records/" + Linked + "/3", HttpStatusCode.OK, """{"id":"x","version":3}""")
+            .On(HttpMethod.Get, "/api/storage/v2/records/versions/" + RecordId, HttpStatusCode.OK, """{"recordId":"x","versions":[5,9]}""");
         var (client, runtime) = Client(handler);
         using (runtime)
         {
@@ -403,7 +404,9 @@ public class WellboreDdmsRootTests
             Assert.Equal(7, (int?)(await protocol.ReadAsync(Linked))?["version"]);
             Assert.Equal([7L, 3L], await protocol.VersionsAsync(Linked));
             Assert.Equal(3, (int?)(await protocol.ReadVersionAsync(Linked, 3))?["version"]);
-            Assert.Null(await protocol.VersionsAsync(RecordId));
+
+            // A Wellbore DDMS record is a storage record, whose versions name their bulk data: they are read there too.
+            Assert.Equal([9L, 5L], await protocol.VersionsAsync(RecordId));
         }
     }
 

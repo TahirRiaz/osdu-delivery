@@ -1,6 +1,6 @@
 import { useCallback, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
-import { Ban, CircleAlert, Hourglass, KeyRound, Loader2, Send, Trash2, type LucideIcon } from "lucide-react";
+import { Ban, CircleAlert, Hourglass, KeyRound, Loader2, Send, Trash2, Undo2, type LucideIcon } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -246,6 +246,14 @@ export function RecordSituation({ record, waitsOn, waitedOnBy }: {
       lines.push(
         <Line key="deleted" tone="muted" icon={Trash2} testId="record-deleted">
           Removed from OSDU: nothing of this flow&apos;s is there under its id. Redeliver sends it again from the current source.
+        </Line>,
+      );
+      break;
+    case "reverted":
+      lines.push(
+        <Line key="reverted" tone="muted" icon={Undo2} testId="record-reverted">
+          {`Reverted: a reversal gave OSDU back the version it held before the run it reversed${record.targetVersion !== null ? `, as version ${record.targetVersion}` : ""}. `}
+          A release plans it again from the current source; a changed source plans it on its own.
         </Line>,
       );
       break;

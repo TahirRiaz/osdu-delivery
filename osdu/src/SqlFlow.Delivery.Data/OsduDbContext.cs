@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.25.0";
+    public const string ModuleVersion = "1.26.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -55,6 +55,12 @@ public sealed class OsduDbContext : DbContext
 
     /// <summary>The records an intervention made for many records changed, each named once.</summary>
     public DbSet<DeliveryActivityRecord> DeliveryActivityRecords => Set<DeliveryActivityRecord>();
+
+    /// <summary>The reversals of runs and submissions, one row per source of a ledger.</summary>
+    public DbSet<DeliveryReversal> DeliveryReversals => Set<DeliveryReversal>();
+
+    /// <summary>The records each reversal reaches, with what it did to each.</summary>
+    public DbSet<DeliveryReversalItem> DeliveryReversalItems => Set<DeliveryReversalItem>();
 
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
 

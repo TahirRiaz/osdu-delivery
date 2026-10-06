@@ -644,7 +644,7 @@ public sealed class Planner
                 continue;
             }
 
-            // A record held, failed or deleted earlier stays where it is until an operator releases it or the source
+            // A record held, failed, deleted or reverted earlier stays where it is until an operator releases it or the source
             // moves past the version it was left at (design.md section 7.4).
             if (state is { Blocked: true } && ChangeDetector.StaysBlocked(state, source, ordered))
             {

@@ -80,6 +80,7 @@ public sealed class DeliveryFlowKind : IFlowDocumentKind, ICompanionDocumentKind
         new(DeliveryOperations.Verify, "Verify", "Compare what OSDU holds with what the ledger recorded, and optionally queue redelivery of drift.", WritesTarget: false),
         new(DeliveryOperations.Replan, "Replan", "Read every row of the scope again and deliver what renders differently now.", WritesTarget: true),
         new(DeliveryOperations.Sync, "Sync timelines", "Read the ledger's records from the ingestion tables and consolidate the ledger: record what it lacks, flag rows that changed unseen for the next run, report rows that are gone. Sends nothing.", WritesTarget: false),
+        new(DeliveryOperations.Reverse, "Reverse", "Put OSDU back as it was before one run or submission (payload runId or submissionId): remove what it created, restore the version it replaced, and block those records until their source changes or they are released.", WritesTarget: true),
     ];
 
     public string FlowType => FlowDefinition.FlowTypeName;

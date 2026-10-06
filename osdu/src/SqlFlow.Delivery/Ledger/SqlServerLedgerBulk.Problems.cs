@@ -14,17 +14,18 @@ namespace SqlFlow.Delivery.Ledger;
 internal static partial class SqlServerLedgerBulk
 {
     // One slice of a release, in one transaction with the rows that name what it released. The named records of one ledger
-    // that are blocked (held, failed, or removed from OSDU), and with @waiting the named waiting records, each found by the
-    // table's key. A record still holding its rendered document goes back to pending for the worker, its tries counted
-    // afresh; any other blocked record is unblocked and asked to be planned again; a waiting record goes back to pending
-    // without its references, so it is sent without waiting. Every right-hand side reads the row as it was. Released, a
+    // that are blocked (held, failed, removed from OSDU, or reverted by a reversal), and with @waiting the named waiting
+    // records, each found by the table's key. A record still holding its rendered document goes back to pending for the
+    // worker, its tries counted afresh; any other blocked record is unblocked and asked to be planned again, a reverted one
+    // as delivered, since OSDU holds the version the reversal put back; a waiting record goes back to pending without its
+    // references, so it is sent without waiting. Every right-hand side reads the row as it was. Released, a
     // record has no problem any more. A blocked record released with its rendered document accepts that document as it
     // is: the gate before a record is sent sends it whatever its verdict says (docs/validation-plan.md), and a document
     // rendered differently later is judged again. With an activity, each record released is named under it.
     private const string ReleaseSliceSql = $$"""
         DECLARE @released TABLE ([DeliveryKey] uniqueidentifier NOT NULL PRIMARY KEY);
         UPDATE r SET
-            r.[Status] = CASE WHEN r.[Status] = N'waiting' OR r.[PendingDocumentRef] IS NOT NULL THEN N'pending' ELSE r.[Status] END,
+            r.[Status] = CASE WHEN r.[Status] = N'waiting' OR r.[PendingDocumentRef] IS NOT NULL THEN N'pending' WHEN r.[Status] = N'reverted' THEN N'delivered' ELSE r.[Status] END,
             r.[Blocked] = 0,
             r.[ProblemHash] = NULL,
             r.[AcceptedMetadataHash] = CASE WHEN r.[Status] <> N'waiting' AND r.[PendingDocumentRef] IS NOT NULL THEN r.[PendingMetadataHash] ELSE r.[AcceptedMetadataHash] END,
@@ -39,7 +40,7 @@ internal static partial class SqlServerLedgerBulk
         FROM (SELECT DISTINCT CAST(k.[value] AS uniqueidentifier) AS [DeliveryKey] FROM OPENJSON(@keys) AS k) AS n
         INNER JOIN [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
             ON r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[DeliveryKey] = n.[DeliveryKey]
-        WHERE (r.[Blocked] = 1 AND r.[Status] IN (N'held', N'failed', N'deleted'))
+        WHERE (r.[Blocked] = 1 AND r.[Status] IN (N'held', N'failed', N'deleted', N'reverted'))
            OR (@waiting = 1 AND r.[Status] = N'waiting');
         IF @activityId IS NOT NULL
             INSERT INTO [osdu].[ActivityRecord] ([PartitionId], [FlowId], [DeliveryKey], [ActivityId])

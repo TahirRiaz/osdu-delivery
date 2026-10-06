@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, CircleDashed, Hourglass, PauseCircle, ShieldCheck, Trash2, XCircle, type LucideIcon } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleDashed, Hourglass, PauseCircle, ShieldCheck, Trash2, Undo2, XCircle, type LucideIcon } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { RelativeTime } from "@/components/RelativeTime";
 import { cn } from "@/lib/utils";
@@ -37,6 +37,15 @@ function partsOf(stats: DeliveryFlowStats): StatusPart[] {
     { key: "held", label: "held", count: stats.held, icon: PauseCircle, fill: "bg-warning", ink: "text-warning", meaning: "Held back until someone releases it." },
     { key: "failed", label: "failed", count: stats.failed, icon: XCircle, fill: "bg-destructive", ink: "text-destructive", meaning: "Failed on every try." },
     { key: "deleted", label: "deleted", count: stats.deleted, icon: Trash2, fill: "bg-muted-foreground/50", ink: "text-muted-foreground", meaning: "Removed, and blocked until released." },
+    {
+      key: "reverted",
+      label: "reverted",
+      count: stats.reverted ?? 0,
+      icon: Undo2,
+      fill: "bg-muted-foreground/30",
+      ink: "text-muted-foreground",
+      meaning: "Put back by a reversal to the version OSDU held before, and blocked until its source changes or it is released.",
+    },
   ];
 }
 

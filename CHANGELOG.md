@@ -13,6 +13,25 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A run or a submission that went wrong is reversed: OSDU is put back, record by record, as it was before it.** A record
+  the source updated gets back the version OSDU held before (read from storage and written again as a new version, as it
+  was, with its own `bulkURI` on a Wellbore DDMS record), and a record it created is removed again at the reversible
+  `record` scope; nothing is purged. What OSDU held is read from the record's own attempts (every delivered attempt now
+  records the version it replaced), or from OSDU's version list where those were pruned. A record is reversed only while
+  it is still the one the source left: one a later run or another system changed since, one with work in flight, and one
+  the flow never claimed are passed over, each with an attempt saying why. A reversal is a run of the flow (operation
+  `reverse`, payload `runId` or `submissionId`) that lists what the source delivered a page at a time and settles 500
+  records at a time, at most 1,000 to a transaction, so what it holds in memory and writes to the trace stays bounded
+  however many records it reaches; each record's attempt, custody change and audit line commit together. It is kept in
+  `osdu.Reversal` and `osdu.ReversalItem` (migration `RecordReversals`, module 1.26.0), so a reversal stopped anywhere is
+  resumed by asking again, and a write whose answer was lost is checked against OSDU rather than made twice. Reversed
+  records are `reverted` (or `deleted`) and blocked until their source changes or they are released. The submission page's
+  **Reverse this submission** (in place of removing what it delivered, which also took out records that existed before)
+  and a delivery run's **Reverse this run** open a dialog that previews what it would do, and a card follows the reversal
+  with its records by outcome. The API answers it at `POST /flows/{pipelineId}/reverse` and `.../reverse/preview`,
+  `GET /flows/{pipelineId}/reversals`, `GET /reversals/{id}` and `GET /reversals/{id}/records`; the CLI at
+  `sqlflow records reverse` and `sqlflow records reversals`
+  ([osdu/docs/operations.md](osdu/docs/operations.md#reversing-a-run), [osdu/docs/reversal-plan.md](osdu/docs/reversal-plan.md)).
 - **A record page's OSDU tab checks the record it shows against the schema of its kind.** Its **Validation**, under the
   record's Checks, is the explorer's: by default against what the partition's Schema service holds, or a saved template,
   with the problems, what each value takes and how to fix it, the parts not checked, the references storage does not

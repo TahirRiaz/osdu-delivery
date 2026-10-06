@@ -85,6 +85,10 @@ export interface RunRequest {
   /** The tests an assertion run was asked to run, by name and by tag; both empty when it ran every test. */
   tests: string[];
   tags: string[];
+  /** The run a reverse run reverses (a reverse run of a submission names it in `submissionId`). */
+  reversesRun: string | null;
+  /** The one interface of a source the run works on, when it names one. */
+  interfaceName: string | null;
 }
 
 function names(value: unknown): string[] {
@@ -106,8 +110,19 @@ export function runRequest(run: RunDetail): RunRequest {
       : [],
     tests: names(payload.tests),
     tags: names(payload.tags),
+    reversesRun: typeof payload.runId === "string" && UUID.test(payload.runId) ? payload.runId : null,
+    interfaceName: typeof payload.interface === "string" ? payload.interface : null,
   };
 }
+
+/** The ledger a run worked in, as a page scopes the flow's requests: the interface its payload names and its partition value. */
+export function runScope(run: RunDetail): { interfaceName: string | null; partition: string | null } {
+  const request = runRequest(run);
+  return { interfaceName: request.interfaceName, partition: run.values?.partition ?? null };
+}
+
+/** The operations of a delivery flow whose runs send records to OSDU, which a reversal can undo. */
+export const DELIVERING_OPERATIONS: readonly string[] = ["deliver", "replan", "drain", "intake"];
 
 /** One record a plan would send, as its outcome names it. */
 export interface PlanSample {

@@ -40,6 +40,13 @@ public static class DeliveryOperations
     /// </summary>
     public const string Sync = "sync";
 
+    /// <summary>
+    /// Put OSDU back as it was before one run or one submission (docs/reversal-plan.md): what it created is removed again and
+    /// what it updated is given back the version OSDU held before, record by record, every step written to the ledger. The
+    /// payload names the source: <c>submissionId</c>, or <c>runId</c>.
+    /// </summary>
+    public const string Reverse = "reverse";
+
     /// <summary>Capture a cache flow's types into its partition's cache: the cache kind's default.</summary>
     public const string Refresh = "refresh";
 
@@ -222,6 +229,9 @@ public sealed record DeliveryRunPayload
 
     public const string SubmissionIdProperty = "submissionId";
 
+    /// <summary>The run a reverse run reverses (docs/reversal-plan.md).</summary>
+    public const string RunIdProperty = "runId";
+
     public const string RecordKeysProperty = "recordKeys";
 
     public const string RedeliverProperty = "redeliver";
@@ -253,8 +263,8 @@ public sealed record DeliveryRunPayload
     public const int MaxSelected = AssertionFlowDefinition.MaxTests;
 
     private static readonly string[] Properties =
-        [ForceProperty, SubmissionIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty, PartitionReferencesProperty,
-            TestsProperty, TagsProperty, DimensionsProperty];
+        [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty,
+            PartitionReferencesProperty, TestsProperty, TagsProperty, DimensionsProperty];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -264,8 +274,14 @@ public sealed record DeliveryRunPayload
     /// </summary>
     public bool Force { get; init; }
 
-    /// <summary>The submission the run works on: a re-run, or a fan-out member's share.</summary>
+    /// <summary>The submission the run works on: a re-run, a fan-out member's share, or the submission a reverse run reverses.</summary>
     public Guid? SubmissionId { get; init; }
+
+    /// <summary>
+    /// The run a reverse run reverses: what was delivered under the submissions it coordinated, and what it delivered itself
+    /// (docs/reversal-plan.md). Only a reverse run names it.
+    /// </summary>
+    public Guid? RunId { get; init; }
 
     /// <summary>The delivery keys the run is scoped to.</summary>
     public IReadOnlyList<Guid> RecordKeys { get; init; } = [];
@@ -333,7 +349,7 @@ public sealed record DeliveryRunPayload
 
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
-        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
+        => !Force && SubmissionId is null && RunId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
             && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests && !SelectsDimensions;
 
     /// <summary>
@@ -341,7 +357,7 @@ public sealed record DeliveryRunPayload
     /// a kind that names no submission, record, slice, test or dimension may hold.
     /// </summary>
     public bool CarriesOnlyConfiguration
-        => !Force && SubmissionId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
+        => !Force && SubmissionId is null && RunId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
             && !SelectsTests && !SelectsDimensions;
 
     /// <summary>
@@ -408,6 +424,7 @@ public sealed record DeliveryRunPayload
         {
             Force = Boolean(root, ForceProperty),
             SubmissionId = root[SubmissionIdProperty] is null ? null : Id(root[SubmissionIdProperty], SubmissionIdProperty),
+            RunId = root[RunIdProperty] is null ? null : Id(root[RunIdProperty], RunIdProperty),
             RecordKeys = Keys(root[RecordKeysProperty]),
             Redeliver = root[RedeliverProperty] is null ? null : Text(root[RedeliverProperty], RedeliverProperty),
             Rerender = Boolean(root, RerenderProperty),
@@ -447,6 +464,16 @@ public sealed record DeliveryRunPayload
         if (SubmissionId == Guid.Empty)
         {
             throw new SqlFlowException("payload submissionId is an empty UUID.");
+        }
+
+        if (RunId == Guid.Empty)
+        {
+            throw new SqlFlowException("payload runId is an empty UUID.");
+        }
+
+        if (RunId is not null && operation != DeliveryOperations.Reverse)
+        {
+            throw new SqlFlowException($"payload {RunIdProperty} does not apply to the {operation} operation: only a reverse run names the run it reverses.");
         }
 
         if (Redeliver is { } scope && !RedeliverScopes.Names.Contains(scope, StringComparer.OrdinalIgnoreCase))
@@ -547,6 +574,16 @@ public sealed record DeliveryRunPayload
                 Refuse(Rerender, RerenderProperty, operation, "a sync sends nothing");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 break;
+            case DeliveryOperations.Reverse:
+                Refuse(SubmissionId is null && RunId is null, SubmissionIdProperty, operation, "a reverse run names what it reverses, a submissionId or a runId");
+                Refuse(SubmissionId is not null && RunId is not null, RunIdProperty, operation, "a reverse run reverses one submission or one run, not both");
+                Refuse(Force, ForceProperty, operation, "a reversal passes no gate: it takes every record its source delivered");
+                Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a reversal takes every record its source delivered");
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "a reversal puts back what OSDU held; it sends nothing the flow renders");
+                Refuse(Rerender, RerenderProperty, operation, "a reversal puts back what OSDU held; it renders nothing");
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                Refuse(Interfaces.Count > 0, InterfacesProperty, operation, "a reversal works in one interface's ledger, which 'interface' names");
+                break;
             case DeliveryOperations.Replan:
                 Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a replan reads every row of the scope under a submission of its own");
                 Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a replan reads every row of the scope; scope a deliver run to records instead");
@@ -576,6 +613,11 @@ public sealed record DeliveryRunPayload
         if (SubmissionId is { } submission)
         {
             root[SubmissionIdProperty] = submission.ToString("D");
+        }
+
+        if (RunId is { } run)
+        {
+            root[RunIdProperty] = run.ToString("D");
         }
 
         if (RecordKeys.Count > 0)

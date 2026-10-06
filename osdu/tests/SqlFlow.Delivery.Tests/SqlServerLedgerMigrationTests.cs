@@ -48,6 +48,12 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before a dimension's table named its key's and its value's columns after what the dimension reads.</summary>
     private const string BeforeDimensionColumnNames = "20261001163440_DimensionTables";
 
+    /// <summary>The migration before runs and submissions could be reversed.</summary>
+    private const string BeforeReversals = "20261004123427_RecordValidation";
+
+    /// <summary>The tables of reversals, each a ledger table keyed by the partition first.</summary>
+    private static readonly string[] ReversalTables = ["Reversal", "ReversalItem"];
+
     /// <summary>The tables of dimension flows, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] DimensionTables =
         ["Dimension", "DimensionRun", "DimensionMember", "DimensionValue", "DimensionChange", "DimensionAttribute", "DimensionCollectedText", "DimensionAttributeName"];
@@ -861,6 +867,47 @@ public sealed class SqlServerLedgerMigrationTests
         await database.MigrateAsync(null);
         Assert.Equal(1L, await database.ScalarAsync(Recorded));
         Assert.Equal(1L, await database.ScalarAsync(Row));
+    }
+
+    [Fact]
+    public async Task The_reversal_tables_are_added_keyed_by_partition_with_one_reversal_to_a_source_and_go_back_with_the_migration()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeReversals);
+        const string Tables = "SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name IN (N'Reversal', N'ReversalItem');";
+        Assert.Equal(0L, await database.ScalarAsync(Tables));
+
+        await database.MigrateAsync(null);
+
+        Assert.Equal(2L, await database.ScalarAsync(Tables));
+        foreach (var table in ReversalTables)
+        {
+            Assert.Equal("PartitionId", (await database.PrimaryKeyAsync(table))[0]);
+        }
+
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, ReversalTables), await database.IndexesAsync(ReversalTables));
+        }
+
+        // An item's OSDU id compares exactly, as the record's claim of it does.
+        const string Binary = "SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[ReversalItem]') AND [name] = N'TargetId' AND [collation_name] = N'Latin1_General_100_BIN2';";
+        Assert.Equal(1L, await database.ScalarAsync(Binary));
+
+        // A source of a ledger has one reversal: asking again resumes it, and the database refuses a second one.
+        const string Open = """
+            INSERT INTO [osdu].[Reversal] ([PartitionId], [FlowId], [FlowName], [SourceKind], [SourceId], [SubmissionsJson], [Status], [RequestedBy], [RequestedUtc])
+            VALUES (1, @logs, N'recall-welllog-03-header-delivery', N'run', @run, N'[]', N'capturing', N'user:alice', @now);
+            """;
+        var run = Guid.NewGuid();
+        await database.ExecuteAsync(Open, ("run", run));
+        var second = await Assert.ThrowsAsync<SqlException>(() => database.ExecuteAsync(Open, ("run", run)));
+        Assert.Equal(2601, second.Number);
+
+        await database.MigrateAsync(BeforeReversals);
+        Assert.Equal(0L, await database.ScalarAsync(Tables));
+        await database.MigrateAsync(null);
+        Assert.Equal(2L, await database.ScalarAsync(Tables));
     }
 
     /// <summary>

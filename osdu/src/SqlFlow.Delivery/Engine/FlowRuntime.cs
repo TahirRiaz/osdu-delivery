@@ -684,7 +684,7 @@ public sealed class FlowRuntime : IDisposable
             return (summary, summary.ToString(), (Guid?)null, false);
         }, ct);
 
-    /// <summary>Releases held, failed or deleted records (all of them when <paramref name="keys"/> is null).</summary>
+    /// <summary>Releases held, failed, deleted or reverted records (all of them when <paramref name="keys"/> is null).</summary>
     public Task<int> ReleaseAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
         => TrackAsync("release", new { keys = keys?.Select(k => k.ToString()).ToList() }, keys is { Count: 1 } ? keys[0] : null, async activity =>
         {
@@ -913,6 +913,23 @@ public sealed class FlowRuntime : IDisposable
 
             var summary = RemovalSummary.Of(scope, keys.Count, results);
             return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null, false);
+        }, ct);
+    }
+
+    /// <summary>
+    /// Reverses what <paramref name="source"/> delivered (docs/reversal-plan.md): opens or resumes its reversal, lists every
+    /// record it delivered, and puts each back as OSDU held it before, through the flow's protocol, every step written to the
+    /// ledger under this run's activity. Resumable: a reversal stopped anywhere is finished by running it again.
+    /// </summary>
+    public Task<Reversals.ReversalSummary> ReverseAsync(ReversalSource source, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return TrackAsync("reverse", new { source = source.Kind, sourceId = source.Id }, null, async activity =>
+        {
+            var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
+            var runner = new Reversals.ReversalRunner(Flow, RequireLedger(), protocol, _context.Time, _log, _context.Trace, Actor, RunId);
+            var summary = await runner.RunAsync(source, activity, ct).ConfigureAwait(false);
+            return (summary, summary.Describe(source), source.IsRun ? (Guid?)null : source.Id, false);
         }, ct);
     }
 

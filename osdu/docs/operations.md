@@ -188,11 +188,16 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
+| `POST /flows/{pipelineId}/reverse/preview` | operate | What reversing a run or a submission would reach ([Reversing a run](#reversing-a-run)), writing nothing: `runId` or `submissionId` (one of them; 400 for both or neither, 404 for a source the interface's ledger holds nothing of), how many records it delivered and under how many submissions, what the route can do (`route`: whether it restores and removes, and the call each makes or why not), the first 1,000 records in key order decided as the run decides them (`restore`, `remove`, `resolvedFromOsdu`, and `passedOver` by outcome), the target it is aimed at, and the reversal of that source when one exists, with its counts. |
+| `POST /flows/{pipelineId}/reverse` | operate | Queue the `reverse` run of `runId` or `submissionId` as the caller, on `pool` when named. `expected` is refused with 409 when the source no longer reaches that many records. Answers 202 with the run (`runId`, `status`, `source`, `sourceId`, `records`); asking again for a source whose reversal stopped resumes it. |
+| `GET /flows/{pipelineId}/reversals?max=&runId=&submissionId=` | read | The interface's reversals, newest first (50 by default, at most 200): source, state, who asked and when, the latest run. With `runId` or `submissionId`, that source's reversal alone, with its records counted by state and by outcome; empty when none was asked for. |
+| `GET /reversals/{reversalId}` | read | One reversal with its counts, the pipeline and interface it belongs to, the submissions its source covers, and the reverse runs that worked on it. |
+| `GET /reversals/{reversalId}/records?outcome=&after=&limit=` | read | Its records, in key order after `after` (a delivery key), every one or those of one `outcome` (`pending` for those not settled yet; 400 for an outcome a reversal does not have): a page (100 by default, at most 1,000) with each record's label, source key, OSDU id, the versions involved, what came of it and why, and `next`, the key to ask after for the next page. |
 | `DELETE /dimensions/{dimensionId}` | admin | Removes a dimension its flow no longer declares, and everything kept of it in its partition (its builds, values, keys, attribute values, collected texts, change log and its rows in its own table, which is dropped when no partition is left writing it), for good, and nothing of any other dimension or partition. Refused with 409 for a dimension the flow declares, for one whose flow cannot be read now (whether it still declares it cannot be told), and for one a cache flow of its partition captures, naming it. Rows go a batch at a time under the dimension's write lock, its own row last, so a removal that stops part way is finished by asking again. Recorded as a `remove-dimension` activity of the flow under the admin who asked. Answers what went, table by table. |
 | `POST /ledger/prune` | admin | The ledger's retention pass at one cut-off (`olderThanDays`): ages out attempts older than it, keeping the latest of every record, clears the captured run log of the activities older than it that have finished, and removes whole the assertion runs older than it whose every result a later one superseded. No row of the audit trail is deleted. Answers what it took ([Retention and backup](#retention-and-backup)). |
 
 A route under `/flows/{pipelineId}` that acts on records (`records`, `problems`, `target`, `submissions`, `release`, `probe`,
-`preview`, `osdu/read`, `osdu/validate`, `records/remove` and its preview, and `GET /activities?pipelineId=`) works on one interface of the flow. A flow in the
+`preview`, `osdu/read`, `osdu/validate`, `records/remove` and its preview, `reverse` and its preview, `reversals`, and `GET /activities?pipelineId=`) works on one interface of the flow. A flow in the
 single form, or a source of one interface, needs no name. For a source of several, the request names the interface
 with `?interface=<name>`: without it the answer is 400 (`Interface required`, listing the interfaces), and a name the
 flow does not declare is 404 (`No such interface`). A record's own routes need no name, because the ledger identity in
@@ -211,7 +216,8 @@ most 64 targets, each retired after 10 minutes unused or 30 in all, or at once o
 token is fetched once rather than for every read, and a read is a person's: at most two attempts, no wait on a
 Retry-After, and an answer within 60 seconds or a 504. A value check, which may render every row of a scope, and a
 removal, which writes to OSDU and the ledger, are compute tasks a node runs; their routes answer 202 with the task to
-poll at `GET /api/v1/compute/tasks/{taskId}`. Runs are a node's, always: the control plane delivers nothing.
+poll at `GET /api/v1/compute/tasks/{taskId}`. A reversal is a run of the flow, so its route answers 202 with the run.
+Runs are a node's, always: the control plane delivers nothing.
 
 A flow that names its partitions ([documents.md](documents.md#partitions)) keeps a ledger per partition as well, so the
 same routes work in one partition of it: the request names it with `?partition=<name>`. Without it the answer is 400
@@ -222,7 +228,7 @@ ledger identity in their path is that partition's; the record's answer names its
 a hit of the record lookup and a choice of `GET /records/flows`. A task a route queues for a node carries the partition,
 and the node acts in that partition alone, with its own configuration.
 
-A run carries its `operation` (`deliver`, `plan`, `intake`, `drain`, `verify`, `replan` or `sync`) and the flow's `values` on
+A run carries its `operation` (`deliver`, `plan`, `intake`, `drain`, `verify`, `replan`, `sync` or `reverse`) and the flow's `values` on
 the platform's trigger (`POST /api/v1/runs`), with the kind's own arguments in the run payload: `force` (lift the
 whole-run gates so the run looks at every record; what did not change is still not sent), `submissionId` (the submission to work on), `recordKeys` (scope the run to named records, at most
 1,000), `redeliver` (what the run sends again, changed or not, of the records `recordKeys` names or, without it, of every record the flow has delivered, which the run plans whole, 5,000 to a pass; not with `submissionId`: `all`, the default for named records, `record`, or `files` on the file, dataset, manifest, fileAndDdms and manifestAndDdms routes (and on the workflow route when it declares files), `bulk` on the ddms and composed routes, and `workflow`, a new run of the workflow route's stages; on a route that sends its payload in parts the named part goes alone; `metadata` names the record and `payload` every part, and a part the route does not send fails the run),
@@ -340,8 +346,10 @@ records no page ever rendered. The filter has two ways of naming a submission's 
 sets: `submissionId` is the records the submission last planned, which a later submission moves on (a record it
 finds unchanged becomes that submission's), and `deliveredBy` is the records the submission delivered, resolved
 through the delivered attempts it wrote, which stay its own however many submissions touch them afterwards.
-"Remove the batch we ran" is a `deliveredBy` removal. One removal takes at most 25,000 records; a larger one is
-several removals.
+A `deliveredBy` removal takes every record the submission delivered out of OSDU, including those that existed before
+it and were only updated by it; to undo a batch, reverse it instead ([Reversing a run](#reversing-a-run)), which gives
+those records back the version OSDU held before. One removal takes at most 25,000 records; a larger one is several
+removals.
 Records are removed in chunks of 500, batched into a single request where the protocol and the scope allow it
 (only the reversible scope has a bulk endpoint), and each record gets its own ledger attempt. A record OSDU has
 already lost is reported as already gone, not as a failure, and a record with no OSDU id at all is skipped. A
@@ -352,6 +360,71 @@ another flow's OSDU record ([ledger.md](ledger.md#one-source-several-flows)).
 The `record` and `everything` scopes mark the record deleted and blocked here; `history` leaves it delivered,
 because OSDU still holds it at the version the ledger knows. The task result carries the counts and up to 200
 per-record outcomes (failures first); every record's outcome is in its own attempt regardless.
+
+## Reversing a run
+
+A run that went wrong (a wrong file loaded, a wrong mapping or cache, the wrong partition reached) is undone by reversing
+it: OSDU is put back, record by record, as it was before that run ([reversal-plan.md](reversal-plan.md),
+[ledger.md](ledger.md#reversals)). The source of a reversal is one of two things:
+
+- a **submission**: every record its batch delivered, whichever run drained it;
+- a **run**: every record delivered under the submissions it planned (its own plan, each requested pass, what its
+  fan-out members drained) and every record it delivered itself.
+
+For each record the source delivered, the ledger says what OSDU held before the source's first delivery of it. A record
+the source **updated** gets that version back: it is read from storage (`GET /records/{id}/{version}`) and written again
+as a new version (`PUT /records`), as it was; only the keys External Data Services writes are carried from the latest
+version. A record the source **created** is removed again at the `record` scope (`POST /records/delete`, 500 ids to a
+request), which OSDU can undo. A reversal never purges. Where the ledger no longer says what OSDU held (the attempts
+before the source were pruned), OSDU's version list decides (`GET /records/versions/{id}`): the newest version older
+than the source's first is put back, and with none the record is removed.
+
+| Route | Gives a version back | Removes what the source created |
+| --- | --- | --- |
+| `storage` | Yes | Yes, in bulk |
+| `ddms` (Wellbore DDMS) | Yes, through storage under a platform endpoint: the version written back carries its own `bulkURI`, so the DDMS serves that version's bulk data again | Yes, the DDMS's own delete |
+| Other routes | No: their records carry files, datasets or rows a version of the record does not bring back, so such a record is passed over as `not-reversible`, with the reason | Where their `record` scope removes reversibly |
+
+A record is reversed only while it is still the record the source left. Each one passed over gets a `skipped` attempt
+saying why:
+
+| Outcome | When |
+| --- | --- |
+| `superseded` | A later run delivered the record again, or it was restored or removed since. Reverse the later run first, newest first. |
+| `changed-in-osdu` | OSDU's latest version is not the one the source left: something outside this flow wrote it. |
+| `missing-in-osdu` | OSDU no longer holds a record the source updated. |
+| `unchanged` | The version before the source is the one the source left. |
+| `version-missing` | The version to put back can no longer be read from OSDU. |
+| `busy` | Work is queued or in flight for the record; it is taken again when the reversal is asked again. |
+| `not-claimed`, `not-in-ledger` | The flow never claimed the record's OSDU id, or the ledger no longer holds the record. |
+| `not-reversible` | The route cannot do what the record needs. |
+
+A reversal is a run of the flow with the operation `reverse` and the payload `{"runId": "..."}` or
+`{"submissionId": "..."}` (with `interface` for a source of several interfaces), so nothing else delivers the flow while
+it works, and it is on the audit trail as a `reverse` activity under the person who asked. The run lists what the source
+delivered (a page of 1,000 attempts at a time, in index order), then reverses 500 records at a time in key order:
+reads OSDU's latest versions in batches, removes in bulk, reads the versions to put back with the flow's
+`reliability.concurrency`, writes them in the route's batches, and settles each page in the ledger at most 1,000 records
+to a transaction. Each record gets a `reverse` attempt (`restored`, `deleted`, `skipped` or `failed`), its custody
+change and a line under the run's activity, in one transaction; its record page shows what was done, by whom, from which
+version to which. Nothing in the run's size changes what it holds in memory or how often it writes to the trace.
+
+**Stopping and resuming.** A reversal is kept per source (`osdu.Reversal`, one row per record in `osdu.ReversalItem`).
+A run stopped anywhere loses nothing that was settled; asking for the same source again resumes it, taking the records
+not done yet, those that failed and those passed over as `busy`. A record left mid-write is checked against OSDU first:
+if OSDU already holds what the reversal writes, it is settled without writing again.
+
+**After a reversal.** A record given back its earlier version is `reverted`; a removed one is `deleted`. Both are
+blocked: the next runs pass them over while their source rows are unchanged, so a scheduled run does not send the same
+rows again, and the source watermark does not move back. A corrected row flows through on its own. A release (by record,
+by issue, or of every blocked record) makes a `reverted` record `delivered` again, and the next run sends it only where
+it renders differently from what OSDU now holds.
+
+**Asking for one.** The GUI's **Reverse this submission** (the submission page) and **Reverse this run** (the page of a
+`deliver`, `replan`, `drain` or `intake` run once it has ended) open a dialog showing the preview and queue the run with
+the count shown, which is refused if the source has moved since. The API is `POST /flows/{pipelineId}/reverse` after
+its preview; the CLI is `sqlflow records reverse <flow.yaml> --run <id>` or `--submission <id>`, with `--preview` to see
+what it would do.
 
 ## Redelivering records
 
@@ -718,11 +791,14 @@ Pipelines like any other flow.
   two permanent scopes ask the operator to type the data partition back before the button enables.
 - **A submission's page**: which selection it read and the window it covered, the ingestion table and connection it
   read from, its counts, the runs that carried it, its work batches, its attempts, and its two record sets as links:
-  what it delivered and what it last planned. The submission is the batch, and **Remove what it delivered from OSDU**
-  is how a batch is undone: one removal aimed at exactly the records this submission delivered, through the same
-  removal dialog (the target, the three scopes, the typed confirmation for the permanent ones), with the count read
-  the way the removal will resolve it and refused if that count has moved by the time it runs. The button is off
-  while the submission has delivered nothing that is still in OSDU under its name.
+  what it delivered and what it last planned. The submission is the batch, and **Reverse this submission** is how a
+  batch is undone ([Reversing a run](#reversing-a-run)): the dialog names the target, says how many records the
+  submission delivered and what the reversal would do with them (restored, removed, passed over and why, decided as the
+  run decides them over the first 1,000 records), and the calls the route makes; confirming queues the reverse run with
+  that count, refused if the count has moved by then. The button is off while the submission has delivered nothing.
+  Once a reversal is asked for, its card shows on the page: its state, who asked and when, its records by outcome (each
+  outcome opens its records, a page at a time, each opening the record), and the runs that worked on it, followed live
+  while a run works on it.
 - **A retrieval flow's page** (Pipelines): the Retrievals tab, every run with its window, location, counts and
   outcome; a row opens the platform run.
 - **A cache flow's page** (Pipelines): the Cache versions tab names the partition the flow fills and how many other
@@ -1015,6 +1091,9 @@ Pipelines like any other flow.
   flags says so in a line: it reported none for the partition, or could not be asked, which the refresh's log says.
 - **Runs**: a delivery run is a platform run; its trace streams live and its parameters, record counts and
   result show on the run page; a fan-out member shows its root and slot. Re-run repeats the same parameters.
+  A run that sent records (`deliver`, `replan`, `drain`, `intake`) offers **Records of this run** and, once it has ended,
+  **Reverse this run**, through the same dialog as a submission's; a `reverse` run's page names the run or submission it
+  reverses and shows the reversal's card.
   The trigger dialog offers the operations the flow's kind runs. For a deliver run, **Force** looks at every record past
   the whole-run gates and still sends only what changed; **Send again** set to **What renders differently** brings
   records up to date: the records named under **Redeliver these records**, or with none named every record the flow has
@@ -1031,7 +1110,7 @@ Pipelines like any other flow.
 | `sqlflow check <flow.yaml> [--interface <name>] [--partition <name>] [--connect] [--set name=value]... [--db <ref>] [--json]` | The delivery preflight: the flow, its mappings, its templates and its payload roots. With `--connect` it opens the flow's source connection on this machine and reports the tables, their columns, the key types, the system columns, the current watermark window and the candidate counts. A source is checked one interface at a time, each with its route, its ledger, its wave, what it waits for and why, and the references it does not wait for, after a first line giving the order the interfaces run in; `--interface` checks one. Interfaces that wait for each other in a way nothing cuts fail the check, naming them. With `--json`, a source answers `flow`, `order` and one object per interface (with `wave`, `waitsFor` and `notWaitedFor`). |
 | `sqlflow preview <flow.yaml> [--interface <name>] [--partition <name>] [--key <key>] [--set name=value]... [--out <file.json>] [--db <ref>] [--json]` | One record rendered as a delivery would render it, and nothing sent ([Previewing a record](#previewing-a-record)): the first record of the scope, or the one `--key` names. It says what the next run would do with the record, lists the payload files and the route's requests, and prints the document as the route sends it. A source is previewed one interface at a time, each with its own first record; a key names a record of one interface, so it needs `--interface`. `--out` writes the whole preview as JSON, however large its document. Ends with 1 when no record was found. |
 | `sqlflow values <flow.yaml> [--interface <name>] [--partition <name>] [--target <osdu.path>]... [--set name=value]... [--max-rows <n>] [--samples <n>] [--skip <n>] [--rows <file.csv>] [--out <file.json>] [--db <ref>] [--json]` | The rows that will not give the mapping's attributes the values the template expects ([Checking a mapping's values](#checking-a-mappings-values)): each attribute's rows by outcome, every reason with the values behind it and example records. `--target` checks one attribute and what it holds (repeat it for more); `--max-rows` reads that many rows (10,000 by default, 0 for the whole scope); `--rows` writes every failing row to CSV, however many; `--out` writes the whole check as JSON. Ends with 1 when a row is held or writes a value the template does not accept. |
-| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|intake\|drain\|replan\|sync\|retrieve\|refresh\|test] [--set name=value]... [--payload <json>\|@<file>] [--db <ref>]` | A run on the workstation. The payload carries the delivery kind's arguments (`force`, `submissionId`, `recordKeys`, `redeliver`, `rerender`, `interface`, `interfaces`; [The API](#the-api)). A delivery flow's runs need the module database connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition and so needs it. `--set partition=<name>` names the partition a flow that works in partitions runs in; without it a run takes the registry's default when the flow serves it, else the flow's only listed partition. A cache flow given `--set partition=*` builds every partition it serves in turn. An assertion flow runs `test` by default, with `--payload '{"tests":["log-headers"],"tags":["smoke"]}'` to run some of its tests, and keeps its report in the module database; `--operation plan` checks and counts the tests and records nothing. |
+| `sqlflow run <flow.yaml> [--operation deliver\|verify\|plan\|intake\|drain\|replan\|sync\|reverse\|retrieve\|refresh\|test] [--set name=value]... [--payload <json>\|@<file>] [--db <ref>]` | A run on the workstation. The payload carries the delivery kind's arguments (`force`, `submissionId`, `runId`, `recordKeys`, `redeliver`, `rerender`, `interface`, `interfaces`; [The API](#the-api)). A delivery flow's runs need the module database connection: rendering reads the template and the cache version saved there, and the ledger lives there. A retrieval flow runs `retrieve` by default, and runs without one. A cache flow runs `refresh` by default, which merges into the cache of its partition and so needs it. `--set partition=<name>` names the partition a flow that works in partitions runs in; without it a run takes the registry's default when the flow serves it, else the flow's only listed partition. A cache flow given `--set partition=*` builds every partition it serves in turn. An assertion flow runs `test` by default, with `--payload '{"tests":["log-headers"],"tags":["smoke"]}'` to run some of its tests, and keeps its report in the module database; `--operation plan` checks and counts the tests and records nothing. |
 | `sqlflow assertions list <flow.yaml> [--partition <name>] [--max <n>] [--db <ref>] [--json]` | An assertion flow's runs in a partition, newest first: status, counts, when and by whom, and why a run failed. |
 | `sqlflow assertions status <flow.yaml> [--partition <name>] [--db <ref>] [--json]` | Where each test of the flow stands: its latest outcome and report, what it matched, how many of its assertions failed and why it errored, and whether the test changed since. |
 | `sqlflow assertions report <flow.yaml> [--partition <name>] [--run <n>] [--format json\|md\|html\|junit] [--out <file>] [--db <ref>]` | A run's full report (the latest when `--run` is left out), rendered by the same code as the API's; `--out` writes it to a file, which a CI job publishes (JUnit XML for its test view). |
@@ -1039,6 +1118,8 @@ Pipelines like any other flow.
 | `sqlflow records list <flow.yaml> [--interface <name>] [--partition <name>] [--search <term>] [--contains] [--status <status>] [--issue <id>] [--max <n>] [--db <ref>] [--json]` | The interface's records from the ledger: the delivery key, the status, the source key, the OSDU id and version, what a waiting record waits for, and the last error of each. A source is read one interface at a time, and says which interfaces it has when it is not told. |
 | `sqlflow records issues <flow.yaml> [--interface <name>] [--partition <name>] [--issue <id>] [--max <n>] [--db <ref>] [--json]` | The issues keeping the interface's records blocked ([ledger.md](ledger.md#issues)), the most records first (50 unless `--max` says otherwise): each issue's id, whether it is a set error or row errors, its records, held and failed, when they last changed, the pattern its records' errors share, and an example record with its own error; how many blocked records are not sorted yet. `--issue` shows one issue, the files its records came from and five samples spread across it with the values their errors name. `records list --issue <id>` lists its records. |
 | `sqlflow records release <flow.yaml> [--interface <name>] [--partition <name>] [--key <delivery key>]... [--issue <id>] [--db <ref>] [--json]` | Release blocked records back to delivery once their cause is fixed: every one, the ones `--key` names, or every one `--issue` keeps blocked. A record still holding its rendered document is queued now; the others are planned again by the flow's next runs. Recorded on the audit trail as `cli:<user>`'s, with every record released named under it. |
+| `sqlflow records reverse <flow.yaml> --run <id> \| --submission <id> [--interface <name>] [--partition <name>] [--preview] [--db <ref>] [--json]` | Reverse what a run or a submission delivered ([Reversing a run](#reversing-a-run)), in this process as a reverse run of the flow runs on a node, recorded as `cli:<user>`'s: the counts this run took by outcome, and the reversal's counts so far. Asking again resumes a reversal that stopped. Exits 1 when a record failed, naming how to list them. `--preview` says what it would reach and do and writes nothing. |
+| `sqlflow records reversals <flow.yaml> [--interface <name>] [--partition <name>] [--run <id> \| --submission <id>] [--outcome <outcome>] [--max <n>] [--db <ref>] [--json]` | The interface's reversals, newest first: source, state, who asked and when. With `--run` or `--submission`, that source's reversal with its records counted by state and by outcome, and with `--outcome` the records it settled that way (20 unless `--max` says otherwise), each with its versions and why. |
 | `sqlflow records show <flow.yaml> --key <delivery key \| source key> [--interface <name>] [--partition <name>] [--attempts <n>] [--db <ref>] [--json]` | One record and every try it took: the custody state and where the row came from, then each attempt with its outcome, what it delivered, how long it took, the steps it ran with what the target answered, and the error that stopped it. The source key finds the record as surely as the delivery key, because that is what an operator holds. |
 | `sqlflow cache list <partition\|cache.yaml> [--partition <name>] [--db <ref>] [--json]` | The versions of a partition's cache (a cache flow's file lists the partition it fills, or every partition it serves, or the one `--partition` names), newest first: the cache flow that wrote each, when it was captured, by whom and in which run, and what it holds. |
 | `sqlflow partition list \| add <name> [--description <text>] [--default] \| describe <name> --description <text> \| default <name> \| remove <name> [--db <ref>] [--json]` | The partition registry ([docs/partitions-design.md](../../docs/partitions-design.md)): the partitions a flow that names none serves, and the default a run that names none runs in. The first partition registered becomes the default. Removing one deletes nothing kept under it, and the default is removed only when it is the last. Each repository describes a change at its next sync; the control plane's own upkeep (the Partitions page) makes every repository due at once. |
@@ -1058,7 +1139,7 @@ that said it:
 
 | Step | What it says |
 | --- | --- |
-| `run` | The run and who asked for it; the mapping, template, cache version and partition it renders with (never the mapping's other parameter values, which can be secret references); the route it delivers by; whether the legal service accepts the mapping's legal tags; the window it reads; its outcome. |
+| `run` | The run and who asked for it; the mapping, template, cache version and partition it renders with (never the mapping's other parameter values, which can be secret references); the route it delivers by; whether the legal service accepts the mapping's legal tags; the window it reads; its outcome. A reverse run says which reversal it opened or resumed, how many records it lists, how far it has got (at the pace of the progress lines) and its counts by outcome. |
 | `source` | The ingestion table it opened, the window it fixed and how many candidate records are in it; how a fan-out cut them into ranges. |
 | `plan`, `intake` | The mapping's preflight warnings; the tier-0 skip; the submission being planned and how far the planning has got; held records with their reason; the submission's counts. |
 | `deliver` | The batches claimed and finished; how far the run's deliveries have got (`Delivering: <n> of <m> planned record(s) settled after <t> (<rate> a second): ...`), from the run's totals; held, failed and retried records with their reason. |
@@ -1367,6 +1448,7 @@ deleting a record, its submission, the cache version it was rendered against, or
 | `osdu.Activity` | The audit trail of runs and interventions: flow, kind, actor, times, parameters, outcome, summary, and the captured run log. | Runs and interventions | The **row: never** (it is the operator action the traceability rule keeps). Its `Log`: **yes**, by age, once the activity has finished. |
 | `osdu.ActivityRecord` | The records a release or a redelivery of many records reached, one row each under its activity, so each record's history shows it ([ledger.md](ledger.md#osduactivityrecord-the-records-a-release-or-a-redelivery-reached)). | Records released or redelivered | **Never**: like the activity it points at, it is the record's history. |
 | `osdu.Submission` | One plan of a flow over its ingestion tables; a record points at the submission that planned it. | Plans | **Never** by this tool. |
+| `osdu.Reversal`, `osdu.ReversalItem` | One reversal per run or submission reversed, and one row per record it reached: what OSDU held before, what was done and why ([ledger.md](ledger.md#osdureversal-and-osdureversalitem-what-a-reversal-did-to-each-record)). | Reversals, and the records each reached | **Never**: it is what a reversal did, and its records' attempts name it. |
 | `osdu.WorkBatch` | One file of rendered documents of a submission, with its counts and outcome; an attempt names its batch. | Submissions, and batches inside them | **Never** by this tool: it belongs to its submission. |
 | `osdu.Lease`, `osdu.RecordEvent` | A worker's live hold and what it has appended and not yet applied. | In-flight work only | **Self-clearing**: applying a lease deletes its events in the same transaction, and closing or recovering it deletes the lease. |
 | `osdu.SourceWatermark` | One row per flow scope: how far the last whole-scope plan read. | Scopes | **Never**: it is state, and losing it re-reads everything. |

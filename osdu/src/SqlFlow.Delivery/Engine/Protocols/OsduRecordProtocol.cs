@@ -235,6 +235,19 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
     public Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default)
         => RecordWriter.ProbeAsync(_client, _options.ProbePath ?? DefaultProbePath, ct);
 
+    /// <summary>
+    /// Writes records back as they were at an earlier version through the same array write a delivery takes
+    /// (<see cref="RecordRestores"/>): the version read back, without its system properties, as the next version.
+    /// </summary>
+    public Task<IReadOnlyList<RestoreResult>> RestoreBatchAsync(IReadOnlyList<VersionRestore> restores, CancellationToken ct = default)
+    {
+        _restorer ??= new OsduRecordProtocol(_client, RecordRestores.WriterOptions(_options), _time);
+        return RecordRestores.WriteAsync(_restorer, restores, ct);
+    }
+
+    /// <summary>The writer a restore goes through: this route's paths and batching, without the keys a delivery carries forward.</summary>
+    private OsduRecordProtocol? _restorer;
+
     private LegalTagValidator? _legal;
 
     /// <summary>Asks the legal service under this target, when the flow's target reaches it (see <see cref="LegalTagValidator.PathFor"/>).</summary>

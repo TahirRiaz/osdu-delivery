@@ -256,6 +256,12 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                     $"Flow '{source.Name}' delivers {source.Interfaces.Count} interface(s) ({string.Join(", ", source.Names)}); a run on records or slices names the interface they belong to with 'interface' in its payload.");
             }
 
+            if (operation == DeliveryOperations.Reverse)
+            {
+                throw new DeliveryException(
+                    $"Flow '{source.Name}' delivers {source.Interfaces.Count} interface(s) ({string.Join(", ", source.Names)}); a reversal of a run works in one interface's ledger, which 'interface' names in its payload.");
+            }
+
             source.Select(payload.Interfaces);
             return (null, null);
         }
@@ -378,6 +384,12 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                 var synced = await runtime.SyncAsync(keys.Count == 0 ? null : keys, ct).ConfigureAwait(false);
                 LogOutcome(log, $"sync: {synced}");
                 return SyncRunOutcome.From(operation, synced);
+
+            case DeliveryOperations.Reverse:
+                var reversed = payload.SubmissionId is { } reversedSubmission ? ReversalSource.Submission(reversedSubmission) : ReversalSource.Run(payload.RunId!.Value);
+                var reversal = await runtime.ReverseAsync(reversed, ct).ConfigureAwait(false);
+                LogOutcome(log, $"reverse: {reversal.Describe(reversed)}");
+                return ReverseRunOutcome.From(operation, reversed, reversal);
 
             case DeliveryOperations.Verify:
                 var reconcile = flow.Verify.Reconcile;
@@ -913,3 +925,34 @@ public sealed record SyncRunOutcome(
 
 /// <summary>The <c>result</c> of a run that failed before producing an outcome.</summary>
 public sealed record OperationFailure(string Operation, string Error);
+
+/// <summary>
+/// The <c>result</c> of a reverse run (docs/reversal-plan.md): the reversal and its source, what this run took of it and what
+/// came of those records, and the reversal's records by outcome across every run that worked on it.
+/// </summary>
+public sealed record ReverseRunOutcome(
+    string Operation,
+    long ReversalId,
+    string Source,
+    Guid SourceId,
+    long Records,
+    long Taken,
+    long Restored,
+    long Removed,
+    long Skipped,
+    long Failed,
+    long Open,
+    IReadOnlyDictionary<string, long> Outcomes)
+{
+    /// <summary>The run's headline count as the platform projects it onto the run row: the records this run put back.</summary>
+    public long RowsLoaded => Restored + Removed;
+
+    public static ReverseRunOutcome From(string operation, ReversalSource source, Reversals.ReversalSummary summary)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(summary);
+        return new ReverseRunOutcome(
+            operation, summary.ReversalId, source.Kind, source.Id, summary.Records, summary.Taken, summary.Restored, summary.Removed, summary.Skipped, summary.Failed,
+            summary.Counts.Open, summary.Counts.Outcomes);
+    }
+}

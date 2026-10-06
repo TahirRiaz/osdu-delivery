@@ -3,7 +3,7 @@ import { Link as RouterLink } from "react-router-dom";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   ArchiveRestore, CheckCircle2, ChevronRight, CircleDashed, CircleDot, Database, DatabaseZap, Eraser, FileInput, FilePen,
-  FileQuestion, FileX2, Layers, PauseCircle, RefreshCw, ScanSearch, ShieldCheck, Trash2, XCircle,
+  FileQuestion, FileX2, Layers, PauseCircle, RefreshCw, ScanSearch, ShieldCheck, Trash2, Undo2, XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -538,6 +538,7 @@ function reachedTarget(attempt: DeliveryAttempt): boolean {
     || attempt.outcome === "failed"
     || attempt.outcome === "deleted"
     || attempt.outcome === "historypurged"
+    || attempt.outcome === "restored"
     || (attempt.result?.steps?.length ?? 0) > 0
     || (attempt.outcome === "held" && attempt.worker !== "intake" && refusalOf(attempt.error) !== null);
 }
@@ -556,6 +557,39 @@ function attemptShape(attempt: DeliveryAttempt, refusal: Refusal | null, reached
   title: string; tone: Tone; icon: LucideIcon; then: Outcome | null; outcome: Outcome | null;
 } {
   const waits = "the record waits for someone to release or redeliver it";
+
+  // What a reversal did to the record: put back as OSDU held it before the run it reversed, passed over, or not yet.
+  if (attempt.phase === "reverse") {
+    switch (attempt.outcome) {
+      case "restored":
+        return {
+          title: "Reverted to the version OSDU held before the reversed run",
+          tone: "muted",
+          icon: Undo2,
+          then: { text: "Blocked until its source changes or someone releases it.", tone: "muted" },
+          outcome: { text: "Reverted", tone: "muted" },
+        };
+      case "deleted":
+        return {
+          title: "Removed by a reversal: the reversed run created it",
+          tone: "muted",
+          icon: Undo2,
+          then: { text: "Blocked until its source changes or someone releases it.", tone: "muted" },
+          outcome: { text: "Removed by a reversal", tone: "muted" },
+        };
+      case "failed":
+        return {
+          title: "A reversal could not put it back",
+          tone: "destructive",
+          icon: XCircle,
+          then: { text: "Taken again when the reversal is asked again.", tone: "muted" },
+          outcome: null,
+        };
+      default:
+        return { title: "A reversal passed it over", tone: "muted", icon: Undo2, then: null, outcome: null };
+    }
+  }
+
   switch (attempt.outcome) {
     case "delivered":
       return { title: "Delivered", tone: "success", icon: CheckCircle2, then: null, outcome: { text: "Delivered", tone: "success" } };
@@ -600,6 +634,8 @@ function attemptShape(attempt: DeliveryAttempt, refusal: Refusal | null, reached
       return { title: "Removed", tone: "muted", icon: Trash2, then: { text: "Blocked until someone releases it.", tone: "muted" }, outcome: { text: "Removed", tone: "muted" } };
     case "historypurged":
       return { title: "Earlier versions purged", tone: "warning", icon: Eraser, then: null, outcome: { text: "Earlier versions purged", tone: "warning" } };
+    case "restored":
+      return { title: "An earlier version written back", tone: "muted", icon: Undo2, then: null, outcome: { text: "Reverted", tone: "muted" } };
     default:
       return { title: attempt.outcome, tone: "muted", icon: CircleDashed, then: null, outcome: null };
   }
@@ -843,6 +879,7 @@ const REQUESTS: Partial<Record<string, { one: string; many: (count: number) => s
   },
   release: { one: "Release of this record asked", many: (count) => `Release asked for ${count} records, this one among them`, button: "Release" },
   delete: { one: "Removal of this record asked", many: (count) => `Removal asked for ${count} records, this one among them`, button: "Remove" },
+  reverse: { one: "Reversal of a run asked", many: (count) => `Reversal of a run that reached ${count} records, this one among them`, button: "Reverse" },
   verify: { one: "Verify of this record asked", many: (count) => `Verify asked for ${count} records, this one among them`, button: "Verify" },
 };
 
@@ -1021,6 +1058,8 @@ function standingOf(record: DeliveryRecord): { outcome: Outcome; inFlight: boole
       return { outcome: { text: "Failed", tone: "destructive" }, inFlight: false };
     case "deleted":
       return { outcome: { text: "Removed", tone: "muted" }, inFlight: false };
+    case "reverted":
+      return { outcome: { text: "Reverted", tone: "muted" }, inFlight: false };
     default:
       return { outcome: { text: record.status, tone: "muted" }, inFlight: false };
   }

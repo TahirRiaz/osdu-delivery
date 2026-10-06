@@ -51,6 +51,30 @@ public static class AttemptResult
     }
 
     /// <summary>
+    /// <paramref name="resultJson"/> with the version of the record the delivery replaced added under <c>replaced</c>
+    /// (<c>{"version": n}</c>, or <c>{"version": null}</c> when OSDU held no version of the record before it, as the ledger
+    /// knew it when the try was claimed): what a reversal of the delivery puts back (docs/reversal-plan.md). An attempt
+    /// written before the ledger kept it has no <c>replaced</c>, and a reversal reads the record's earlier attempts instead.
+    /// </summary>
+    public static string WithReplaced(string? resultJson, long? version)
+    {
+        var result = ObjectOrEmpty(resultJson);
+        result["replaced"] = new JsonObject { ["version"] = version is { } v ? JsonValue.Create(v) : null };
+        return result.ToJsonString();
+    }
+
+    /// <summary>The version an attempt's result says its delivery replaced: recorded or not, and the version (null for none).</summary>
+    public static (bool Recorded, long? Version) Replaced(string? resultJson)
+    {
+        if (Parse(resultJson)?["replaced"] is not JsonObject replaced)
+        {
+            return (false, null);
+        }
+
+        return (true, replaced["version"] is JsonValue value && value.TryGetValue<long>(out var version) ? version : null);
+    }
+
+    /// <summary>
     /// <paramref name="resultJson"/> with the verdict the gate reached on the try's document added under <c>validation</c>
     /// (docs/validation-plan.md), so every attempt says what its document was checked against and what the check found.
     /// </summary>
