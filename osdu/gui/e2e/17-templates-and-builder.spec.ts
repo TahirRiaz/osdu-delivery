@@ -524,7 +524,7 @@ test.describe.serial("templates and the mapping builder", () => {
     // The flow names its partitions, so the check renders in the one the builder offers it for, and says which.
     await expect(adminPage.getByTestId("mapping-builder-check-dataPartition")).toHaveValue("dev");
     await expect(adminPage.getByTestId("mapping-builder-check-source-dataPartition")).toContainText("one of the partitions the flow names");
-    // The sample mapping renders its fixtures against the imported cache exactly, so it loads, passes and can be proposed.
+    // The sample mapping checks against the imported cache, so it loads, passes and can be proposed.
     await expect(adminPage.getByTestId("mapping-builder-valid")).toBeVisible({ timeout: 30_000 });
     await expect(adminPage.getByTestId("mapping-builder-propose")).toBeEnabled();
 

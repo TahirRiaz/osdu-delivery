@@ -131,8 +131,8 @@ renderContext = (mappingVersion, mappingFingerprint, cache partition and cacheVe
 ```
 
 The mapping fingerprint is what the mapping document says about how records render: the document as YAML, without its
-comments and its fixtures, hashed. A mapping edited in place under the same name and version therefore still moves the
-context, while a comment or a fixture's expected record does not.
+comments, hashed. A mapping edited in place under the same name and version therefore still moves the context, while a
+comment does not.
 
 A run reads the cache of the partition it delivers to (section 6.2): the one it is bound to among the partitions its flow
 names (`partitions`), or its `target.headers.data-partition-id` for a flow that names none. A render reads the version
@@ -842,7 +842,6 @@ Before any render, and with no OSDU call:
 3. Every property the template requires in `data` has an entry that may not be left out.
 4. Every target is a variable of the pinned template, with an agreeing shape, and every
    cached or static reference points at an entity type the schema allows.
-5. The mapping's own fixtures still render exactly, without holds, under this exact context.
 
 [mapping-templates.md](mapping-templates.md) lists every check.
 
@@ -851,9 +850,12 @@ If the combination does not validate, nothing renders. Not a warning.
 ### 10.3 Schema validation is structurally complete and semantically blind
 
 Point 4 would not have caught the `recall_curve` bug. Both are strings, both bind to a
-string field, both validate. The fixtures at point 5 are what catch semantic drift: each is
-an example row and the exact record it must render to, a regression suite written in the
-contract's own terms.
+string field, both validate. Semantic drift is caught by what a change would deliver: a
+`plan` run renders the rows against the ledger and reports the records a mapping change
+would send again before any is sent. Mappings once carried fixtures for this, example rows
+with the exact record each had to render to; they were removed, because that record is the
+mapping's own output written down again, and keeping it in every mapping by hand cost
+more than it caught.
 
 ### 10.4 Unknown keys are an error
 

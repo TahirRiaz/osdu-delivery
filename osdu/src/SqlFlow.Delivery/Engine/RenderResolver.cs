@@ -50,13 +50,8 @@ public sealed class RenderResolver
         _search = search;
     }
 
-    public Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, CancellationToken ct = default) => ResolveAsync(flow, checkFixtures: true, ct);
-
-    /// <summary>
-    /// Resolves the flow's mapping and runs its preflight. <paramref name="checkFixtures"/> false leaves the fixtures to
-    /// the caller, which renders them itself: the fixtures update verb, which writes what they render now.
-    /// </summary>
-    public async Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, bool checkFixtures, CancellationToken ct = default)
+    /// <summary>Resolves the flow's mapping and runs its preflight.</summary>
+    public async Task<ResolvedMapping> ResolveAsync(FlowDefinition flow, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(flow);
         var where = KeyPaths.Where(flow);
@@ -111,40 +106,10 @@ public sealed class RenderResolver
         };
 
         var searches = await SearchesAsync(_templates, mapping, ct).ConfigureAwait(false);
-        var fixtureCaches = await FixtureCachesAsync(_cache, mapping, scope, ct).ConfigureAwait(false);
-        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches, checkFixtures, fixtureCaches);
+        var issues = Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches);
         Preflight.ThrowIfFailed(issues, where);
-        var renderer = new MappingRenderer(mapping, schema, references, context, searches, _search, fixtureCaches);
+        var renderer = new MappingRenderer(mapping, schema, references, context, searches, _search);
         return new ResolvedMapping(mapping, schema, references, context, renderer);
-    }
-
-    /// <summary>
-    /// The current version of the cache of every other partition than <paramref name="scope"/> the fixtures of
-    /// <paramref name="mapping"/> are written for (<see cref="Preflight.FixturePartitions"/>), by partition, read from
-    /// <paramref name="caches"/>. A partition whose cache holds no version is left out, and the preflight names each fixture
-    /// written for it. None when the mapping reads no cache, its fixtures are all written for <paramref name="scope"/>, or
-    /// the host has no module database.
-    /// </summary>
-    public static async Task<IReadOnlyDictionary<string, ReferenceSnapshot>> FixtureCachesAsync(
-        ICacheStore? caches, MappingDefinition mapping, string? scope, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(mapping);
-        var found = new Dictionary<string, ReferenceSnapshot>(StringComparer.Ordinal);
-        if (caches is null)
-        {
-            return found;
-        }
-
-        foreach (var partition in Preflight.FixturePartitions(mapping, scope))
-        {
-            if (await caches.CurrentVersionAsync(partition, ct).ConfigureAwait(false) is { } version
-                && await caches.LoadAsync(partition, version, ct).ConfigureAwait(false) is { } snapshot)
-            {
-                found[partition] = snapshot;
-            }
-        }
-
-        return found;
     }
 
     /// <summary>

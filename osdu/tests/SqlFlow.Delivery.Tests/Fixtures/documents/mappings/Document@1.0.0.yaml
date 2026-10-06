@@ -53,34 +53,3 @@ record:
     Source:
       $value: recall
       $description: The system the document came from, carried as provenance.
-
-fixtures:
-  - name: a document with a title and a description
-    parameters:
-      dataPartition: dev
-      aclOwner: data.welllogsrecall.owners@dev.dataservices.energy
-      aclViewer: data.sdd-well-logs.viewers@dev.dataservices.energy
-      legalTag: dev-equinor-osdu-reference-default
-    row:
-      doc_id: D-0001
-      doc_title: " Well report NO 15/9 A "
-      doc_description: Geological observations over the logged interval.
-    expected: |
-      {
-        "id": "dev:work-product-component--Document:9534c481c62851e4a5cedc2268e0141a",
-        "kind": "osdu:wks:work-product-component--Document:1.0.0",
-        "acl": {
-          "owners": ["data.welllogsrecall.owners@dev.dataservices.energy"],
-          "viewers": ["data.sdd-well-logs.viewers@dev.dataservices.energy"]
-        },
-        "legal": {
-          "legaltags": ["dev-equinor-osdu-reference-default"],
-          "otherRelevantDataCountries": ["NO"]
-        },
-        "tags": { "DeliveredBy": "osdu-delivery" },
-        "data": {
-          "Name": "Well report NO 15/9 A",
-          "Description": "Geological observations over the logged interval.",
-          "Source": "wells"
-        }
-      }

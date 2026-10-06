@@ -838,17 +838,6 @@ internal sealed class MappingYaml
     /// Read as the author wrote it and parsed node by node, since its keys are the template's property names.
     /// </summary>
     public Dictionary<string, object?>? Record { get; set; }
-
-    /// <summary>What every fixture renders with unless it says otherwise, written once.</summary>
-    public MappingFixtureDefaultsYaml? FixtureDefaults { get; set; }
-
-    public List<MappingFixtureYaml>? Fixtures { get; set; }
-}
-
-/// <summary>What every fixture of a mapping renders with unless the fixture gives its own: the parameter values.</summary>
-internal sealed class MappingFixtureDefaultsYaml
-{
-    public Dictionary<string, string>? Parameters { get; set; }
 }
 
 /// <summary>
@@ -893,42 +882,6 @@ internal sealed class MappingDatasetYaml
     public string? Label { get; set; }
 
     public List<string>? Identity { get; set; }
-}
-
-internal sealed class MappingFixtureYaml
-{
-    public string? Name { get; set; }
-
-    /// <summary>The dataset's row the fixture renders.</summary>
-    public Dictionary<string, string?>? Row { get; set; }
-
-    public Dictionary<string, List<Dictionary<string, string?>>>? Datasets { get; set; }
-
-    public Dictionary<string, string>? Parameters { get; set; }
-
-    /// <summary>What the fixture assumes the platform answers to each search its render asks.</summary>
-    public List<MappingFixtureSearchYaml>? Searches { get; set; }
-
-    /// <summary>
-    /// The cached rows the fixture assumes, by cached type: each a map with the record <c>id</c> and its fields. Read as the
-    /// author wrote it, since a field may hold a value, a list or an object.
-    /// </summary>
-    public Dictionary<string, object?>? Cache { get; set; }
-
-    public string? Expected { get; set; }
-}
-
-/// <summary>One answer a fixture assumes: <c>{ search: Wellbore, field: data.FacilityName, value: NO 15/9-F-1, id: ... }</c>.</summary>
-internal sealed class MappingFixtureSearchYaml
-{
-    public string? Search { get; set; }
-
-    public string? Field { get; set; }
-
-    public string? Value { get; set; }
-
-    /// <summary>The one record found; left out when the platform holds no such record.</summary>
-    public string? Id { get; set; }
 }
 
 internal sealed class RetrievalYaml

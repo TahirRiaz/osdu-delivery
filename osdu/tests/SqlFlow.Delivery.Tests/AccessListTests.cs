@@ -59,7 +59,7 @@ public sealed class AccessListTests
         """;
 
     /// <summary>A mapping document over the test template with <paramref name="lookups"/>, the record <paramref name="record"/> and <paramref name="data"/>.</summary>
-    internal static string Document(string record = Access, string lookups = Lookups, string data = "WellboreID: { $lookup: wellbore.id }", string fixtures = "")
+    internal static string Document(string record = Access, string lookups = Lookups, string data = "WellboreID: { $lookup: wellbore.id }")
         => $"""
             documentType: mapping
             name: Thing
@@ -74,10 +74,10 @@ public sealed class AccessListTests
               dataPartition: {"{"} required: true {"}"}
 
             """ + lookups + "\nrecord:\n" + TestSchema.Indented(record, 2) + "  data:\n"
-            + TestSchema.Indented(TestSchema.BaseData, 4) + TestSchema.Indented(data, 4) + "\n" + fixtures + "\n";
+            + TestSchema.Indented(TestSchema.BaseData, 4) + TestSchema.Indented(data, 4) + "\n";
 
-    internal static MappingDefinition Mapping(string record = Access, string lookups = Lookups, string data = "WellboreID: { $lookup: wellbore.id }", string fixtures = "")
-        => new DeliveryDocumentLoader().ParseMapping(Document(record, lookups, data, fixtures), "thing.yaml");
+    internal static MappingDefinition Mapping(string record = Access, string lookups = Lookups, string data = "WellboreID: { $lookup: wellbore.id }")
+        => new DeliveryDocumentLoader().ParseMapping(Document(record, lookups, data), "thing.yaml");
 
     internal static ReferenceItem Item(string id, params (string Field, string Json)[] fields)
         => new(id, fields.ToDictionary(f => f.Field, f => ReferenceValue.From(JsonNode.Parse(f.Json)!), StringComparer.OrdinalIgnoreCase));
@@ -461,60 +461,8 @@ public sealed class AccessListTests
         Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains("with $findAll gives a list, one value from every row it finds", StringComparison.Ordinal));
     }
 
-    /// <summary>A fixture that declares the wellbore and the access group it renders against, whatever the partition's cache holds.</summary>
-    internal const string FieldFixture = """
-        fixtures:
-          - name: a wellbore of a field whose group the data office maintains
-            row: { name: log-1, depth: "1", wellbore_uwi: NO 5/5-F }
-            cache:
-              Wellbore:
-                - id: dev:master-data--Wellbore:f1
-                  FacilityName: NO 5/5-F
-                  GeoContexts.FieldID: [ "dev:master-data--Field:F:" ]
-              AccessGroupMap:
-                - id: dev:data-governance--AccessGroupMap:f
-                  FieldIDList: [ "dev:master-data--Field:F:" ]
-                  FieldList: [ F ]
-                  EntitlementGroupEmail: data.office.f.viewers@x
-            expected: |
-              {
-                "id": "dev:test--Thing:x",
-                "kind": "test:wks:work-product-component--Thing:1.0.0",
-                "acl": { "owners": ["owners@x"], "viewers": ["viewers@x", "data.office.f.viewers@x"] },
-                "legal": { "legaltags": ["tag"], "otherRelevantDataCountries": ["NO"] },
-                "data": { "Name": "log-1", "Depth": 1, "WellboreID": "dev:master-data--Wellbore:f1:" }
-              }
-        """;
-
     [Fact]
-    public void A_fixture_renders_against_the_rows_it_declares_and_not_the_partition_s_rows_of_the_day()
-    {
-        var mapping = Mapping(fixtures: FieldFixture);
-        var fixture = Assert.Single(mapping.Fixtures);
-        Assert.Equal(["AccessGroupMap", "Wellbore"], fixture.Cache.Keys.Order(StringComparer.Ordinal));
-
-        // The partition's cache holds neither the wellbore nor the group; the fixture renders against what it declares.
-        var render = Assert.Single(Preflight.RenderFixtures(mapping, Renderer(mapping)));
-        Assert.Null(render.Problem);
-        Assert.False(render.Result!.IsHeld, string.Join("; ", render.Result.Holds));
-        Assert.Equal(["viewers@x", "data.office.f.viewers@x"], Viewers(render.Result));
-        Assert.Equal("dev:master-data--Wellbore:f1:", render.Result.Document["data"]!["WellboreID"]!.GetValue<string>());
-    }
-
-    [Theory]
-    [InlineData("Field: []", "the mapping reads no cached type 'Field'")]
-    [InlineData("Wellbore: { id: x }", "lists the rows the fixture assumes")]
-    [InlineData("Wellbore: [ { FacilityName: x } ]", "names no id")]
-    [InlineData("Wellbore: [ { id: a }, { id: a } ]", "is 'a' again; a type holds a record once")]
-    public void A_fixture_s_cache_block_is_refused_where_it_cannot_stand_in_for_the_cache(string cache, string expected)
-    {
-        var fixtures = "fixtures:\n  - name: f\n    row: { name: log-1, depth: \"1\", wellbore_uwi: x }\n    cache:\n" + TestSchema.Indented(cache, 6) + "    expected: \"{}\"\n";
-        var ex = Assert.Throws<FlowValidationException>(() => Mapping(fixtures: fixtures));
-        Assert.Contains(expected, ex.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void The_builder_opens_lookups_find_alls_lists_and_a_fixture_s_cached_rows_and_writes_back_the_same_mapping()
+    public void The_builder_opens_lookups_find_alls_and_lists_and_writes_back_the_same_mapping()
     {
         var original = Mapping(
             lookups: """
@@ -568,8 +516,7 @@ public sealed class AccessListTests
                     $findAll: FieldList = wellbore_uwi
                     $modifiers: [upper]
                     $required: false
-                """,
-            fixtures: FieldFixture);
+                """);
 
         var draft = MappingBuilder.FromDefinition(original);
         Assert.Empty(MappingBuilder.Incomplete(draft));
@@ -598,7 +545,6 @@ public sealed class AccessListTests
         Assert.Equal(MappingDraftInput.Lookup, aliases.Items[1].Input);
         Assert.Equal(("wellbore_uwi", "upper"), (aliases.Items[2].FindAll!.Column, Assert.Single(aliases.Items[2].Modifiers).Kind));
         Assert.Equal(MappingDraftInput.Lookup, draft.Entries.Single(e => e.Target == "osdu.data.Symbol").Alternatives[0].Input);
-        Assert.Equal(["Wellbore", "AccessGroupMap"], Assert.Single(draft.Fixtures).Cache!.Keys);
 
         // Written back and read again, it is the same draft and the same document.
         var yaml = MappingBuilder.ToYaml(draft);
@@ -616,13 +562,5 @@ public sealed class AccessListTests
             Assert.Equal(string.Join("; ", before.Holds), string.Join("; ", after.Holds));
             Assert.Equal(before.Document.ToJsonString(), after.Document.ToJsonString());
         }
-
-        // The fixture keeps the rows it declares: its wellbore is in no cache but its own, so it renders unheld only with them.
-        var fixtureBefore = Assert.Single(Preflight.RenderFixtures(original, Renderer(original)));
-        var fixtureAfter = Assert.Single(Preflight.RenderFixtures(reread, Renderer(reread)));
-        Assert.Null(fixtureAfter.Problem);
-        Assert.False(fixtureAfter.Result!.IsHeld, string.Join("; ", fixtureAfter.Result.Holds));
-        Assert.Equal("dev:master-data--Wellbore:f1:", fixtureAfter.Result.Document["data"]!["WellboreID"]!.GetValue<string>());
-        Assert.Equal(fixtureBefore.Result!.Document.ToJsonString(), fixtureAfter.Result.Document.ToJsonString());
     }
 }

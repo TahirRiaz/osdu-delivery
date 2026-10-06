@@ -691,7 +691,7 @@ export function lookupText(entry: MappingDraftEntry): string {
   return groups.map((group) => `${group.fields.join("/")} = ${group.operand}`).join(" or ");
 }
 
-/** The dataset columns and child datasets a draft already names: its key, label, entries, lookups, findBy lines and fixtures. */
+/** The dataset columns and child datasets a draft already names: its key, label, entries, lookups and findBy lines. */
 export function knownColumns(draft: MappingDraft): { columns: string[]; children: string[] } {
   const columns = new Set<string>(draft.key);
   const children = new Set<string>();
@@ -719,14 +719,6 @@ export function knownColumns(draft: MappingDraft): { columns: string[]; children
   for (const find of draft.lookups.flatMap((lookup) => lookup.findBy)) {
     if (find.column !== null && find.column !== "") {
       columns.add(find.column);
-    }
-  }
-
-  for (const fixture of draft.fixtures) {
-    Object.keys(fixture.record).forEach((column) => columns.add(column));
-    for (const [child, rows] of Object.entries(fixture.datasets)) {
-      children.add(child);
-      rows.forEach((row) => Object.keys(row).forEach((column) => columns.add(`${child}.${column}`)));
     }
   }
 

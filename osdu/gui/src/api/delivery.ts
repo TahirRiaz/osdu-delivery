@@ -2070,27 +2070,6 @@ export interface MappingDraftLookup {
   description: string | null;
 }
 
-/** What a fixture assumes the platform answers when a search compares `field` with `value`: the record found, or none. */
-export interface MappingDraftFixtureSearch {
-  search: string;
-  field: string;
-  value: string;
-  id: string | null;
-}
-
-/** An example row and the exact record it must render to. */
-export interface MappingDraftFixture {
-  name: string;
-  parameters: Record<string, string>;
-  record: Record<string, string | null>;
-  datasets: Record<string, Record<string, string | null>[]>;
-  expected: string;
-  /** What the fixture assumes the platform answers to each search its render asks; null when it searches nothing. */
-  searches: MappingDraftFixtureSearch[] | null;
-  /** The cached rows the fixture renders against, by cached type, each with its record id; null when it declares none. */
-  cache: Record<string, Record<string, unknown>[]> | null;
-}
-
 /**
  * One record set the mapping searches the platform for as a record needs one, rather than capturing it into the cache:
  * the name entries read it by, the kind it looks in, and the saved template whose schema says how that kind is indexed.
@@ -2103,7 +2082,7 @@ export interface MappingDraftSearch {
   description: string | null;
 }
 
-/** A mapping as the builder edits it: the header, the parameters, the entries and the fixtures. */
+/** A mapping as the builder edits it: the header, the parameters and the entries. */
 export interface MappingDraft {
   name: string;
   version: string;
@@ -2123,9 +2102,6 @@ export interface MappingDraft {
   /** The records the mapping finds once for a row, which lookup entries and find all lines read. */
   lookups: MappingDraftLookup[];
   entries: MappingDraftEntry[];
-  /** The parameter values every fixture renders with unless it gives its own (fixtureDefaults.parameters). */
-  fixtureParameters: Record<string, string>;
-  fixtures: MappingDraftFixture[];
 }
 
 /** What the builder found about a draft: an error stops the mapping from loading, a warning does not. */

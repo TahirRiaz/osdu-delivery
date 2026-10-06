@@ -303,7 +303,7 @@ target:
 
 - **A run targets one partition**, named under the run value `partition`: the partition picked in the GUI's title bar,
   `--set partition=test` on `sqlflow run` and `sqlflow trigger`, `values: { partition: test }` on a schedule; the
-  module's own verbs (`check`, `preview`, `fixtures`, `records`, `cache`, `config`) take `--partition test`. A run that
+  module's own verbs (`check`, `preview`, `records`, `cache`, `config`) take `--partition test`. A run that
   names none runs in the registry's default when the flow serves it, else in the flow's only listed partition, and is
   refused otherwise. A registry-driven flow runs only in a registered partition; a hard-coded partition need not be
   registered. A flow whose header names its partition refuses a run that names one.
@@ -320,8 +320,6 @@ target:
   a flow that moves from a header to partitions keeps every record it delivered. A whole run refuses to start, and says
   why, while no partition keeps a ledger that holds records delivered to a partition the flow still serves (they would be
   delivered again as new), and while the kept ledger holds another partition's records.
-- **Fixtures stay written for the partition they were captured in.** A fixture renders against the cache of the partition
-  its `dataPartition` names ([Fixtures](#fixtures)), so a run in another partition checks the same fixtures.
 - A flow that works in partitions leaves `target.headers.data-partition-id` and `render.parameters.dataPartition` out,
   and declares no parameter named `partition`. It pins no `render.cacheVersion` when it names more than one partition or
   serves the registry, because a version is a version of one partition's cache. A partition is written literally, an id
@@ -1782,16 +1780,6 @@ record:                            # laid out as the record is; every word of th
             - Code = business_value
             - Name = business_value
           $required: false         # no value leaves the property out instead of holding the record
-
-fixtures:                          # whole-record regression fixtures, rendered by the preflight gate
-  - name: ...
-    parameters: { dataPartition: dev }
-    searches:                            # what the platform is assumed to answer; a fixture never asks it
-      - { search: Wellbore, field: data.FacilityName, value: NO 15/9-F-1, id: "dev:master-data--Wellbore:abc" }
-    row: { column: value, ... }          # the dataset's row
-    datasets: { curves: [ { ... } ] }    # child dataset rows by child dataset name
-    expected: |
-      { ...the exact record... }
 ```
 
 ### The header
@@ -1809,7 +1797,6 @@ fixtures:                          # whole-record regression fixtures, rendered 
 | `parameters` | Values the flow supplies under `render.parameters`, each declared with `required`, `default` and `description`. `dataPartition` is always declared, and a flow value for a parameter the mapping does not declare is refused. |
 | `searches` | The record sets the mapping's `$search` nodes look in: each a `kind` and the saved template (`schema.kind`, `schema.version`) whose schema says how that kind's properties are indexed. One search per kind, and each one is read by a node. |
 | `record` | The record the mapping renders, laid out as the record is (below). |
-| `fixtures` | Example rows and the exact record each must render to, with `searches:` saying what the platform is assumed to answer to each search the render asks. |
 
 ### The record tree
 
@@ -2326,24 +2313,6 @@ A mapping of a DSPDM kind renders a business object row: `id` and `kind` as abov
 rendered empty as null, so a value the source no longer gives is cleared in DSPDM, and leaves the attributes the mapping
 does not fill as they are ([protocols.md](protocols.md#osdudspdm-the-dspdm-route)).
 
-### Fixtures
-
-| Key | Meaning |
-| --- | --- |
-| `fixtureDefaults.parameters` | Beside `fixtures`: the parameter values every fixture renders with, over the flow's. Refused when empty or when the mapping has no fixtures. |
-| `name` | Names the fixture in messages. |
-| `parameters` | Parameter values for this fixture, over the flow's and `fixtureDefaults.parameters`, name by name. |
-| `searches` | What the platform is assumed to answer to each search the render asks: `{ search, field, value, id }`, without `id` for no record. |
-| `row` | The dataset's row, column by column. |
-| `datasets` | The rows of each child dataset, by child dataset name. |
-| `expected` | The exact record, as JSON, compared canonically, an empty list and one left out alike, so a fixture is written without the lists the engine writes empty. `sqlflow fixtures update` writes it from what the fixture renders ([reference/cli/delivery.md](reference/cli/delivery.md)). |
-
-A fixture is captured against the cache of one partition, and renders against that partition's cache wherever the mapping
-runs: the partition its `dataPartition` names (its own, or the one `fixtureDefaults.parameters` gives every fixture). A
-mapping delivered to several partitions ([Partitions](#partitions)) therefore keeps one set of fixtures: a run in another
-partition renders them against the current version of the cache they were written for, and fails its preflight, naming
-each fixture, while that cache holds no version in the catalog. A fixture that names no partition renders in the run's.
-
 ### What the preflight gate checks
 
 When the mapping is read, its header, every node of the record tree, the `$findBy` lines, modifiers and expressions
@@ -2370,8 +2339,6 @@ any row is rendered, and with no OSDU call:
    and a `ref` settles one entity type.
 9. Every parameter the mapping requires has a value, the flow supplies none the mapping does not declare, and every
    `{$param.name}` token and every `$param.<name>` an expression reads has a value.
-10. Every fixture renders exactly as declared, and without holds, under this context, against the cache of the
-    partition it is written for ([Fixtures](#fixtures)).
 
 If any check fails, nothing renders.
 

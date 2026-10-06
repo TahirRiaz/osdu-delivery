@@ -1,9 +1,7 @@
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
-using SqlFlow.Delivery.Json;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Rendering;
@@ -32,22 +30,13 @@ public static partial class Preflight
     /// The mapping's searches resolved against the schemas they pin. A mapping that declares searches is checked only
     /// with them, since without them nothing says whether its lookups can be asked at all.
     /// </param>
-    /// <param name="fixtures">
-    /// False leaves the fixtures unchecked, for a caller that renders them itself (<see cref="RenderFixtures"/>).
-    /// </param>
-    /// <param name="fixtureCaches">
-    /// The current versions of the caches of the other partitions the fixtures are written for
-    /// (<see cref="FixturePartitions"/>), by partition. A fixture written for a partition this leaves out cannot render.
-    /// </param>
     public static IReadOnlyList<ValidationIssue> Check(
         MappingDefinition mapping,
         SchemaSnapshot schema,
         ReferenceSnapshot references,
         RenderContext context,
         IReadOnlyDictionary<string, IReadOnlySet<string>>? sourceColumns,
-        ResolvedSearches? searches = null,
-        bool fixtures = true,
-        IReadOnlyDictionary<string, ReferenceSnapshot>? fixtureCaches = null)
+        ResolvedSearches? searches = null)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schema);
@@ -80,7 +69,7 @@ public static partial class Preflight
         MappingRenderer renderer;
         try
         {
-            renderer = new MappingRenderer(mapping, schema, references, context, searches, fixtureCaches: fixtureCaches);
+            renderer = new MappingRenderer(mapping, schema, references, context, searches);
         }
         catch (FlowValidationException ex)
         {
@@ -120,45 +109,7 @@ public static partial class Preflight
             }
         }
 
-        if (issues.Any(i => i.Severity == IssueSeverity.Error))
-        {
-            return issues;
-        }
-
-        // 10. Every fixture renders exactly as declared under this context, unless the caller renders them itself (the
-        //     fixtures update verb, which writes what they render).
-        if (fixtures)
-        {
-            CheckFixtures(mapping, renderer, issues, where);
-        }
-
         return issues;
-    }
-
-    /// <summary>
-    /// The answers a fixture declares, as a search: what it declares is known, and anything else was never asked, so a
-    /// render of the fixture that needs more comes back unfinished and names what it needed.
-    /// </summary>
-    private sealed class FixtureSearch : IRecordSearch
-    {
-        private readonly Dictionary<(string Kind, string Field, string Value), SearchAnswer> _answers = [];
-
-        public FixtureSearch(MappingDefinition mapping, MappingFixture fixture)
-        {
-            foreach (var answer in fixture.Searches)
-            {
-                if (mapping.Searches.TryGetValue(answer.Search, out var search))
-                {
-                    _answers[(search.Kind, answer.Field, answer.Value)] = answer.Id is { } id ? SearchAnswer.Found(id) : SearchAnswer.None;
-                }
-            }
-        }
-
-        public bool TryAnswer(SearchQuestion question, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out SearchAnswer? answer)
-            => _answers.TryGetValue((question.Kind, question.Field, question.Value), out answer);
-
-        public Task AnswerAsync(IReadOnlyCollection<SearchQuestion> questions, CancellationToken ct = default)
-            => throw new DeliveryException("A fixture renders against the answers it declares and never asks the platform.");
     }
 
     /// <summary>Throws a <see cref="FlowValidationException"/> listing every error when any is present.</summary>
@@ -1035,285 +986,8 @@ public static partial class Preflight
         }
     }
 
-    /// <summary>
-    /// The partitions the fixtures of <paramref name="mapping"/> are written for other than <paramref name="scope"/>, the
-    /// partition whose cache the render reads: each fixture's <c>dataPartition</c> (its own, or the one
-    /// <c>fixtureDefaults</c> gives every fixture) that names a partition. A fixture is captured against the cache of the
-    /// partition it names, so it renders against that partition's cache wherever the mapping runs: a mapping delivered to
-    /// several partitions keeps one set of fixtures. None when the mapping reads no cache (a null scope).
-    /// </summary>
-    public static IReadOnlyList<string> FixturePartitions(MappingDefinition mapping, string? scope)
-    {
-        ArgumentNullException.ThrowIfNull(mapping);
-        if (scope is null)
-        {
-            return [];
-        }
-
-        return mapping.Fixtures
-            .Select(FixturePartition)
-            .OfType<string>()
-            .Where(partition => !partition.Equals(scope, StringComparison.Ordinal))
-            .Distinct(StringComparer.Ordinal)
-            .Order(StringComparer.Ordinal)
-            .ToList();
-    }
-
-    /// <summary>The partition <paramref name="fixture"/> names by its <c>dataPartition</c>, when it names one written as a partition id.</summary>
-    private static string? FixturePartition(MappingFixture fixture)
-        => fixture.Parameters.TryGetValue(RenderContext.DataPartitionParameter, out var value) && value.Trim() is { } partition && CacheScope.IsPartitionId(partition)
-            ? partition
-            : null;
-
-    /// <summary>
-    /// Renders every fixture of <paramref name="mapping"/> as the preflight gate does: over its own rows, with its
-    /// parameters over the render's, against the search answers it declares and never the platform, and against the cache
-    /// of the partition it is written for (<see cref="FixturePartitions"/>). A fixture that fails to render, asks a search it
-    /// declares no answer to, or is written for a partition whose cache the renderer was not given, carries why instead of
-    /// a result. The gate compares what each renders with what it expects; <c>sqlflow fixtures update</c> writes it.
-    /// </summary>
-    public static IReadOnlyList<FixtureRender> RenderFixtures(MappingDefinition mapping, MappingRenderer renderer)
-    {
-        ArgumentNullException.ThrowIfNull(mapping);
-        ArgumentNullException.ThrowIfNull(renderer);
-        var renders = new List<FixtureRender>(mapping.Fixtures.Count);
-        foreach (var fixture in mapping.Fixtures)
-        {
-            var datasets = fixture.Datasets.ToDictionary(
-                kv => kv.Key,
-                kv => (IReadOnlyList<SourceRow>)kv.Value.Select(SourceRow.FromStrings).ToList(),
-                StringComparer.OrdinalIgnoreCase);
-            var record = new SourceRecord { Row = SourceRow.FromStrings(fixture.Record), Scopes = datasets };
-
-            RenderContext? fixtureContext = null;
-            if (fixture.Parameters.Count > 0)
-            {
-                var parameters = new Dictionary<string, string>(renderer.Context.Parameters, StringComparer.Ordinal);
-                foreach (var kv in fixture.Parameters)
-                {
-                    parameters[kv.Key] = kv.Value;
-                }
-
-                fixtureContext = renderer.Context with { Parameters = parameters };
-            }
-
-            // A fixture written for another partition than the one the render reads the cache of renders against the cache
-            // of its own: its ids name that partition, and only that partition's reference data holds them.
-            ReferenceSnapshot? fixtureCache = null;
-            var scope = renderer.Context.CacheScope;
-            if (scope is not null && FixturePartition(fixture) is { } partition && !partition.Equals(scope, StringComparison.Ordinal))
-            {
-                if (!renderer.FixtureCaches.TryGetValue(partition, out fixtureCache))
-                {
-                    renders.Add(new FixtureRender(
-                        fixture,
-                        null,
-                        $"is written for partition '{partition}' ({RenderContext.DataPartitionParameter}: {partition}), so it renders against that partition's cache, of which the catalog holds no version. Refresh a cache flow that builds '{partition}', or write the fixture for partition '{scope}'."));
-                    continue;
-                }
-
-                var context = fixtureContext ?? renderer.Context;
-                fixtureContext = context with
-                {
-                    CacheScope = partition,
-                    CacheVersion = fixtureCache.Version,
-                    SystemProperties = context.SystemProperties.Count > 0 ? SystemProperties.Pinned(fixtureCache.SystemProperties) : context.SystemProperties,
-                };
-            }
-
-            // A fixture that declares the rows of a cached type renders against exactly those, whatever the partition holds of
-            // it: the business data it reads (wellbores, access groups) changes daily, and the fixture checks the mapping.
-            if (fixture.Cache.Count > 0)
-            {
-                if (FixtureRows(fixture, fixtureCache ?? renderer.References, out var problem) is not { } declared)
-                {
-                    renders.Add(new FixtureRender(fixture, null, problem));
-                    continue;
-                }
-
-                fixtureCache = declared;
-            }
-
-            // A fixture renders against the answers it declares, never the platform: what it checks is the mapping.
-            var fixtureRenderer = renderer.With(fixtureContext, new FixtureSearch(mapping, fixture), fixtureCache);
-
-            RenderResult result;
-            try
-            {
-                result = fixtureRenderer.Render(record);
-            }
-            catch (DeliveryException ex)
-            {
-                renders.Add(new FixtureRender(fixture, null, $"failed to render: {ex.Message}"));
-                continue;
-            }
-
-            if (result.IsIncomplete)
-            {
-                var searchesOf = mapping.Searches.Values.ToDictionary(v => v.Kind, v => v.Name, StringComparer.Ordinal);
-                var missing = string.Join("; ", result.Unanswered.Select(q =>
-                    $"{{ search: {searchesOf.GetValueOrDefault(q.Kind, q.Kind)}, field: {q.Field}, value: {q.Value}, id: <the record found, or leave it out for none> }}"));
-                renders.Add(new FixtureRender(
-                    fixture, null, $"searches for what it declares no answer to; a fixture says what the platform answers to every search its render asks, under 'searches': {missing}"));
-                continue;
-            }
-
-            renders.Add(Compared(fixture, result));
-        }
-
-        return renders;
-    }
-
-    /// <summary>A fixture's render beside the record it expects, each read as a fixture compares them (<see cref="Comparable"/>).</summary>
-    private static FixtureRender Compared(MappingFixture fixture, RenderResult result)
-    {
-        var writable = (JsonObject)Comparable(result.Document)!;
-        try
-        {
-            return new FixtureRender(fixture, result, null) { Expected = Comparable(JsonNode.Parse(fixture.Expected)), Writable = writable };
-        }
-        catch (JsonException ex)
-        {
-            return new FixtureRender(fixture, result, null) { ExpectedProblem = ex.Message, Writable = writable };
-        }
-    }
-
-    /// <summary>
-    /// A record as a fixture compares it: canonical, and without the lists it holds empty at any depth, so an empty list and
-    /// one left out compare alike. The engine writes a list the mapping defines and nothing fills empty, and the record's
-    /// own <c>meta</c> (docs: documents.md, What the record contains); a fixture written without them expects the record that
-    /// renders with them, and <c>sqlflow fixtures update</c> writes a record without them.
-    /// </summary>
-    public static JsonNode? Comparable(JsonNode? record)
-    {
-        var normal = CanonicalJson.Normalize(record);
-        WithoutEmptyLists(normal);
-        return normal;
-    }
-
-    private static void WithoutEmptyLists(JsonNode? node)
-    {
-        switch (node)
-        {
-            case JsonObject value:
-                foreach (var name in value.Where(p => p.Value is JsonArray { Count: 0 }).Select(p => p.Key).ToList())
-                {
-                    value.Remove(name);
-                }
-
-                foreach (var (_, child) in value)
-                {
-                    WithoutEmptyLists(child);
-                }
-
-                break;
-            case JsonArray items:
-                foreach (var item in items)
-                {
-                    WithoutEmptyLists(item);
-                }
-
-                break;
-        }
-    }
-
-    /// <summary>
-    /// The cache a fixture declaring rows renders against: <paramref name="cache"/> with each type the fixture names holding
-    /// exactly the rows it declares. A type keeps the entity type (and a lookup table its key) the cache gives it; one the
-    /// cache does not hold takes the entity type its rows' ids name. Null, with why, when that cannot be told.
-    /// </summary>
-    private static ReferenceSnapshot? FixtureRows(MappingFixture fixture, ReferenceSnapshot cache, out string? problem)
-    {
-        var types = new List<ReferenceType>(fixture.Cache.Count);
-        foreach (var (name, rows) in fixture.Cache)
-        {
-            var existing = cache.Type(name);
-            var items = rows.Select(row => new ReferenceItem(
-                row["id"]!.GetValue<string>().Trim(),
-                row.Where(kv => kv.Key != "id" && kv.Value is not null)
-                    .ToDictionary(kv => ReferenceField.Normalize(kv.Key), kv => ReferenceValue.From(kv.Value!), StringComparer.OrdinalIgnoreCase))).ToList();
-            var entityType = existing?.EntityType;
-            if (entityType is null)
-            {
-                var named = items.Select(i => CachedReferences.Parse(i.Id)?.EntityType).Distinct(StringComparer.Ordinal).ToList();
-                if (named.Count != 1 || named[0] is null)
-                {
-                    problem = items.Count == 0
-                        ? $"declares no rows of {name}, which the cache does not hold either, so nothing says what {name} is a type of; declare a row of it, or leave {name} out."
-                        : $"declares rows of {name}, which the cache does not hold, whose ids do not all name records of one entity type ({string.Join(", ", items.Select(i => i.Id))}).";
-                    return null;
-                }
-
-                entityType = named[0];
-            }
-
-            types.Add(new ReferenceType(existing?.Name ?? name, entityType!, items, existing?.Key));
-        }
-
-        problem = null;
-        return cache.WithTypes(types);
-    }
-
-    private static void CheckFixtures(MappingDefinition mapping, MappingRenderer renderer, List<ValidationIssue> issues, string where)
-    {
-        foreach (var render in RenderFixtures(mapping, renderer))
-        {
-            var (fixture, rendered, problem) = render;
-            if (problem is not null)
-            {
-                issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' {problem}"));
-                continue;
-            }
-
-            var result = rendered!;
-            if (render.ExpectedProblem is { } unreadable)
-            {
-                issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' has invalid expected JSON: {unreadable}"));
-                continue;
-            }
-
-            var expected = render.Expected;
-            var expectedText = CanonicalJson.ToString(expected);
-            if (!string.Equals(CanonicalJson.ToString(render.Writable), expectedText, StringComparison.Ordinal))
-            {
-                var diff = Planning.DocumentDiff.Compute(expected, render.Writable);
-                var holds = result.Holds.Count > 0 ? Environment.NewLine + "    holds: " + string.Join("; ", result.Holds) : string.Empty;
-                issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' rendered a different document:{Environment.NewLine}{diff.Indent("    ")}{holds}"));
-            }
-            else if (result.Holds.Count > 0)
-            {
-                issues.Add(ValidationIssue.Error($"{where}: fixture '{fixture.Name}' renders the expected document but holds the record: {string.Join("; ", result.Holds)}"));
-            }
-        }
-    }
-
     [GeneratedRegex(@"^(?<id>[\w\-\.]+:(?<entity>[\w\-\.]+--[\w\-\.]+):[\w\-\.\%]+):?[0-9]*$")]
     private static partial Regex RecordId();
-}
-
-/// <summary>
-/// One fixture as the preflight renders it: the render, or why there is none (it failed, or it asked a search the
-/// fixture declares no answer to).
-/// </summary>
-/// <param name="Fixture">The fixture rendered.</param>
-/// <param name="Result">What it rendered, or null when <paramref name="Problem"/> says why it did not.</param>
-/// <param name="Problem">Why the fixture has no render, as a phrase that follows "fixture 'name'", or null.</param>
-public sealed record FixtureRender(MappingFixture Fixture, RenderResult? Result, string? Problem)
-{
-    /// <summary>
-    /// The record the fixture expects, beside a result, canonical. Null without a result, or when
-    /// <see cref="ExpectedProblem"/> says its expected JSON cannot be read.
-    /// </summary>
-    public JsonNode? Expected { get; init; }
-
-    /// <summary>Why the fixture's expected JSON cannot be read, or null.</summary>
-    public string? ExpectedProblem { get; init; }
-
-    /// <summary>
-    /// The render as a fixture compares it (<see cref="Preflight.Comparable"/>), beside a result: what the expected record is
-    /// compared with, and what <c>sqlflow fixtures update</c> writes as it.
-    /// </summary>
-    public JsonObject? Writable { get; init; }
 }
 
 public enum IssueSeverity
@@ -1325,7 +999,7 @@ public enum IssueSeverity
 /// <summary>
 /// One finding of a check. <paramref name="Target"/> is the template variable it concerns (<c>osdu.data.FacilityName</c>)
 /// for a finding about one variable, so a view of the template can show it there; null for a finding about the mapping as
-/// a whole, such as a parameter or a fixture.
+/// a whole, such as a parameter.
 /// </summary>
 public sealed record ValidationIssue(IssueSeverity Severity, string Message, string? Target = null)
 {
@@ -1334,10 +1008,4 @@ public sealed record ValidationIssue(IssueSeverity Severity, string Message, str
     public static ValidationIssue Warning(string message, string? target = null) => new(IssueSeverity.Warning, message, target);
 
     public override string ToString() => $"{Severity.ToString().ToLowerInvariant()}: {Message}";
-}
-
-internal static class StringExtensions
-{
-    public static string Indent(this string text, string indent)
-        => string.Join(Environment.NewLine, text.Split('\n').Select(l => indent + l.TrimEnd('\r')));
 }

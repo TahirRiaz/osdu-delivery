@@ -674,7 +674,7 @@ export default function MappingBuilderPage() {
               <div className="flex flex-col gap-0.5">
                 <h2 className="text-[13px] font-medium">Check values</h2>
                 <p className="text-xs text-muted-foreground">
-                  The check renders the fixtures and static values with these. They are not written into the mapping.
+                  The check renders static values with these. They are not written into the mapping.
                   {checkFlow !== null && <> Prefilled from flow <span className="font-mono">{checkFlowName}</span>.</>}
                 </p>
               </div>

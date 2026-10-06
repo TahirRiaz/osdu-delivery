@@ -87,7 +87,8 @@ Whether each path is a variable of the kind is checked against the saved templat
   parameter, and a literal reads no other token.
 - `acl.owners`, `acl.viewers`, `legal.legaltags` and `legal.otherRelevantDataCountries` each hold a literal list of
   at least one text, without repeats and without `$when`.
-- Every fixture has a `name`, a `row` and `expected`.
+- A mapping holds no `fixtures` or `fixtureDefaults` block: one written when mappings carried example rows is told to
+  delete them.
 
 Every key is described in [../../documents.md](../../documents.md) and
 [../../mapping-templates.md](../../mapping-templates.md).

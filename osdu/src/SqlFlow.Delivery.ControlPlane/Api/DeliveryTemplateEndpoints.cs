@@ -151,7 +151,7 @@ public sealed record DeliveryBuilderCacheDto(string Scope, IReadOnlyList<string>
 /// <summary>Starts a mapping for a saved template version, prefilled from the cache of partition <c>Scope</c> when one is named.</summary>
 public sealed record DeliveryMappingDraftRequest(string? Scope, string Kind, string Version, string Name, string MappingVersion, string System);
 
-/// <summary>A draft to write as YAML and check against the cache of partition <c>Scope</c>; <c>Parameters</c> are the values the check renders the fixtures and static ids with.</summary>
+/// <summary>A draft to write as YAML and check against the cache of partition <c>Scope</c>; <c>Parameters</c> are the values the check renders static ids with.</summary>
 public sealed record DeliveryMappingComposeRequest(string? Scope, MappingDraft Draft, IReadOnlyDictionary<string, string>? Parameters);
 
 /// <summary>The draft as YAML, what the checks found, and whether the mapping loads and passes the preflight.</summary>
@@ -758,8 +758,7 @@ public static class DeliveryTemplateEndpoints
         {
             // A search is checked against the schema it pins, as a delivery resolving the mapping would check it.
             var searches = await RenderResolver.SearchesAsync(templates, mapping, ct).ConfigureAwait(false);
-            var fixtureCaches = await RenderResolver.FixtureCachesAsync(caches, mapping, context.CacheScope, ct).ConfigureAwait(false);
-            foreach (var issue in Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches, fixtureCaches: fixtureCaches))
+            foreach (var issue in Preflight.Check(mapping, schema, references, context, sourceColumns: null, searches))
             {
                 issues.Add(new MappingDraftIssue(
                     issue.Severity == IssueSeverity.Error ? MappingDraftIssue.ErrorSeverity : MappingDraftIssue.WarningSeverity, issue.Message, issue.Target));

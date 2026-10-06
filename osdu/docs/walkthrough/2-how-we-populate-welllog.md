@@ -41,8 +41,7 @@ petrodb-api's `RecallToWellLogMapper` fills them:
    must have them.
 6. **Before anything renders, the preflight gate checks the mapping against the template.** A property the template does
    not have, a single value written to an object, a reference that does not match its property's pattern and
-   relationship, or a required property nothing fills stops the run. The gate also renders the mapping's fixtures and
-   compares each with the record it names.
+   relationship, or a required property nothing fills stops the run.
 7. **The flow's protocol sends it.** `ddms` writes the record to the wellbore DDMS under the flow's `ddmsRoot`
    (`/api/os-wellbore-ddms`), then streams the curve values as the log's bulk data from the folder the row's own
    `curve_folder` column names, under the flow's declared payload root: one chunk to the log's data endpoint, or several
@@ -60,8 +59,8 @@ The status column in the tables below uses these words:
 | **Kept** | On an update, copied forward from the record OSDU already holds, because the flow lists it under `protocolOptions.preserveDataKeys`. A new record does not get it from us. |
 | **Not filled** | Nothing writes it. |
 
-The example values are for log `12359/1` of wellbore `NO 33/9-C-28 B` in the sample estate, rendered with the mapping's
-fixture parameters.
+The example values are for log `12359/1` of wellbore `NO 33/9-C-28 B` in the sample estate, rendered in partition `dev`
+with the sample estate's access groups and legal tag.
 
 ## 1. The record root
 
@@ -239,11 +238,12 @@ Its curve rows in `OsduData.arc.WellLogCurve`:
 | 1 | `GR` | `GAPI` | `M` | `2715.6156`, `2739.8472` | Gamma Ray | `1` | empty | `2021-11-15T23:32:06Z` |
 | 2 | `RD` | `OHMM` | `M` | `2717.5968`, `2741.676` | Deep resistivity | `1` | `HIGH` | `2021-11-15T23:32:06Z` |
 
-The document below is the mapping's own fixture for this log, which the preflight gate renders and compares before every
-render, so it is exactly what the engine produces from those inputs. The fixture stands in for the platform's search
-with the wellbore id it names; a real render asks the partition. `MD` has no `CurveVersion` or `DateStamp` because its
-row has neither, and `GR` has no `LogCurveBusinessValueID` because its business value is empty. A second fixture, for
-`22494/1` of `NO 34/10-B-31 AT2`, covers a gamma ray of high business value.
+The document below is exactly what the engine renders from those inputs. The suites keep it
+(`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/rendered/WellLog@1.4.0/12359_1.json`) and render the log and compare on
+every build, with the platform's search answered by the wellbore id `dev:master-data--Wellbore:NO-33-9-C-28-B`; a real
+render asks the partition. `MD` has no `CurveVersion` or `DateStamp` because its row has neither, and `GR` has no
+`LogCurveBusinessValueID` because its business value is empty. A second record the suites keep, for `22494/1` of
+`NO 34/10-B-31 AT2`, covers a gamma ray of high business value.
 
 ```json
 {
@@ -365,6 +365,6 @@ person to judge. Most follow petrodb-api, whose record the mapping reproduces.
    not hold. Every unit, mnemonic and measurement point in the sample data is listed.
 7. **`CompanyID` is left out.** petrodb-api finds it by searching Organisation records, a template this estate does not
    pin.
-8. **Both fixtures carry an `MD` curve.** Each names `MD` as the reference curve and lists `MD` among its curves, so the
-   documents the gate compares are ones the well log protocol would send. The sample estate's logs have an `MD` curve
+8. **Both records the suites keep carry an `MD` curve.** Each names `MD` as the reference curve and lists `MD` among its
+   curves, so the documents the suites compare are ones the well log protocol would send. The sample estate's logs have an `MD` curve
    too.

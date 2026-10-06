@@ -97,11 +97,11 @@ public class SearchSourceTests
         """;
 
     /// <summary>A mapping over the test template whose entries include <paramref name="entries"/>, declaring the Wellbore search.</summary>
-    internal static MappingDefinition Mapping(string entries, string fixtures = "")
-        => new DeliveryDocumentLoader().ParseMapping(Document(entries, fixtures), "thing.yaml");
+    internal static MappingDefinition Mapping(string entries)
+        => new DeliveryDocumentLoader().ParseMapping(Document(entries), "thing.yaml");
 
-    internal static string Document(string entries, string fixtures = "")
-        => TestSchema.MappingDocument(entries, fixtures).Replace("parameters:", SearchesBlock(WellboreSchema()) + "\nparameters:", StringComparison.Ordinal);
+    internal static string Document(string entries)
+        => TestSchema.MappingDocument(entries).Replace("parameters:", SearchesBlock(WellboreSchema()) + "\nparameters:", StringComparison.Ordinal);
 
     internal static ResolvedSearches Resolve(MappingDefinition mapping)
     {

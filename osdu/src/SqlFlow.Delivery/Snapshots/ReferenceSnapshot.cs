@@ -160,23 +160,6 @@ public sealed class ReferenceSnapshot
             CapturedUtc,
             _types.Values.Select(t => new ReferenceType(t.Name, t.EntityType, t.Items.OrderBy(i => i.Id, StringComparer.Ordinal), t.Key)),
             SystemProperties);
-
-    /// <summary>
-    /// This version with <paramref name="types"/> in place of the types of the same names, and beside the rest: what a
-    /// fixture renders against when it declares the rows of a type it assumes. The version label and the system
-    /// properties stay, so a render against it reads as a render against the version it was drawn from.
-    /// </summary>
-    public ReferenceSnapshot WithTypes(IEnumerable<ReferenceType> types)
-    {
-        ArgumentNullException.ThrowIfNull(types);
-        var replaced = new Dictionary<string, ReferenceType>(_types, StringComparer.OrdinalIgnoreCase);
-        foreach (var type in types)
-        {
-            replaced[type.Name] = type;
-        }
-
-        return new ReferenceSnapshot(Version, CapturedUtc, replaced.Values, SystemProperties);
-    }
 }
 
 /// <summary>

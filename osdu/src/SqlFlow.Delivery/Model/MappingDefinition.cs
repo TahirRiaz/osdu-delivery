@@ -102,15 +102,6 @@ public sealed record MappingDefinition
     /// <summary>The access list and legal block, as the static entries for them declare them (parameter tokens unexpanded).</summary>
     public required MappingEnvelope Envelope { get; init; }
 
-    /// <summary>Example rows and the exact record each must render to.</summary>
-    public IReadOnlyList<MappingFixture> Fixtures { get; init; } = [];
-
-    /// <summary>
-    /// The parameter values every fixture renders with unless it gives its own (<c>fixtureDefaults.parameters</c>); each
-    /// fixture's <see cref="MappingFixture.Parameters"/> already holds them. Kept so the builder writes the block back.
-    /// </summary>
-    public IReadOnlyDictionary<string, string> FixtureParameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
-
     public string Reference => Name + "@" + Version;
 
     /// <summary>The OSDU kind of the records the mapping renders.</summary>
@@ -711,47 +702,6 @@ public sealed partial record MappingEntry
     [GeneratedRegex(ParameterTokenPattern)]
     private static partial Regex ParameterToken();
 }
-
-public sealed record MappingFixture
-{
-    public required string Name { get; init; }
-
-    /// <summary>The dataset's row.</summary>
-    public required IReadOnlyDictionary<string, string?> Record { get; init; }
-
-    /// <summary>Child dataset rows by child dataset name.</summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> Datasets { get; init; }
-        = new Dictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>>(StringComparer.Ordinal);
-
-    /// <summary>Parameter values for the fixture render: the mapping's fixture defaults, and the fixture's own over them.</summary>
-    public IReadOnlyDictionary<string, string> Parameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
-
-    /// <summary>
-    /// What the fixture assumes the platform answers to each search its render asks, so a fixture checks the mapping and
-    /// never the platform's data of the day. A render asking a question the fixture does not answer fails the fixture.
-    /// </summary>
-    public IReadOnlyList<FixtureSearchAnswer> Searches { get; init; } = [];
-
-    /// <summary>
-    /// The cached records the fixture assumes, by cached type: for each type named here the fixture renders against exactly
-    /// these rows, whatever the partition's cache holds of it, so a fixture reading business data that changes every day
-    /// (wellbores, the access groups a data office maintains) checks the mapping and never the data of the day. Each row
-    /// is an object with its record <c>id</c> and the fields it holds, named as the cache names them. Types the fixture
-    /// does not name are read from the partition's cache.
-    /// </summary>
-    public IReadOnlyDictionary<string, IReadOnlyList<JsonObject>> Cache { get; init; }
-        = new Dictionary<string, IReadOnlyList<JsonObject>>(StringComparer.Ordinal);
-
-    /// <summary>The expected record (JSON text, compared canonically).</summary>
-    public required string Expected { get; init; }
-}
-
-/// <summary>What a fixture assumes the platform answers when a search compares one property with one value.</summary>
-/// <param name="Search">The search, by the name the mapping declares it under.</param>
-/// <param name="Field">The property compared, as findBy writes it.</param>
-/// <param name="Value">The value compared, after the entry's modifiers.</param>
-/// <param name="Id">The one record found, or null when the platform holds no such record.</param>
-public sealed record FixtureSearchAnswer(string Search, string Field, string Value, string? Id);
 
 /// <summary>
 /// One record set a mapping resolves by searching the platform. The kind is what a search is issued against; the name

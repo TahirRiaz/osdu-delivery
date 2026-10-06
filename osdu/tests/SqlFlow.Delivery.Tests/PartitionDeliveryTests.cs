@@ -8,7 +8,6 @@ using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
-using SqlFlow.Delivery.Validation;
 using SqlFlow.Execution;
 using SqlFlow.Orchestration;
 using Xunit;
@@ -19,8 +18,7 @@ namespace SqlFlow.Delivery.Tests;
 /// One delivery flow and one generic mapping delivered to two partitions (docs/partitions-design.md sections 3 and 4): the
 /// sample WellLog flow naming dev, which keeps the ledger it had, and a partition of the test's own, over the sample estate,
 /// the real WellLog schema, each partition's cache and a fake protocol. A run for a partition reads that partition's cache,
-/// mints every id and reference in it, and keeps its records in that partition's ledger; the mapping, and the fixtures it
-/// was captured with in dev, are the same for both.
+/// mints every id and reference in it, and keeps its records in that partition's ledger; the mapping is the same for both.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
 public sealed partial class PartitionDeliveryTests : IDisposable
@@ -84,40 +82,6 @@ public sealed partial class PartitionDeliveryTests : IDisposable
 
     [GeneratedRegex(@"^[\w\-\.]+:[\w\-\.]+--[\w\-\.]+:")]
     private static partial Regex OsduId();
-
-    [Fact]
-    public async Task A_fixture_renders_against_the_cache_of_the_partition_it_is_written_for_wherever_the_mapping_runs()
-    {
-        // The sample mapping's fixtures are written for dev (fixtureDefaults). Run for another partition, whose cache holds
-        // the same reference data under its own ids, they still render against dev's cache, which holds theirs.
-        var mapping = new MappingCatalog(Samples.Mappings, new DeliveryDocumentLoader()).Load(WellLogVersions.CurrentMapping);
-        var schema = (await Samples.SampleTemplates.LoadAsync(mapping.Template))!;
-        var searches = await RenderResolver.SearchesAsync(Samples.SampleTemplates, mapping);
-        var caches = await CachesAsync();
-        var other = (await caches.LoadAsync(Other, (await caches.CurrentVersionAsync(Other))!))!;
-        var context = new RenderContext
-        {
-            MappingReference = mapping.Reference,
-            CacheScope = Other,
-            CacheVersion = other.Version,
-            SchemaSnapshotVersion = schema.Version,
-            Parameters = new Dictionary<string, string>(mapping.FixtureParameters, StringComparer.Ordinal) { [RenderContext.DataPartitionParameter] = Other },
-            SystemProperties = SystemProperties.Pinned(other.SystemProperties),
-        };
-
-        Assert.Equal([Samples.SamplePartition], Preflight.FixturePartitions(mapping, Other));
-        Assert.Empty(Preflight.FixturePartitions(mapping, Samples.SamplePartition));
-        Assert.Empty(Preflight.FixturePartitions(mapping, scope: null));
-
-        // Given no version of dev's cache, every fixture says it cannot render, and why; nothing else is wrong.
-        var unrendered = Preflight.Check(mapping, schema, other, context, sourceColumns: null, searches);
-        Assert.Equal(mapping.Fixtures.Count, unrendered.Count);
-        Assert.All(unrendered, i => Assert.Contains($"is written for partition '{Samples.SamplePartition}'", i.Message, StringComparison.Ordinal));
-
-        var fixtureCaches = await RenderResolver.FixtureCachesAsync(caches, mapping, Other);
-        Assert.Equal([Samples.SamplePartition], fixtureCaches.Keys);
-        Assert.Empty(Preflight.Check(mapping, schema, other, context, sourceColumns: null, searches, fixtureCaches: fixtureCaches));
-    }
 
     [Fact]
     public async Task Each_partition_delivers_the_same_records_under_its_own_ids_into_its_own_ledger()

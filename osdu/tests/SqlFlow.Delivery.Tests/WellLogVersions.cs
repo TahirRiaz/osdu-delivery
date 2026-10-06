@@ -49,7 +49,7 @@ internal static class WellLogVersions
         ArgumentNullException.ThrowIfNull(flow);
         var mappings = Path.Combine(root, "next-mappings-" + FolderName(partition));
         Directory.CreateDirectory(mappings);
-        File.WriteAllText(Path.Combine(mappings, NextMapping + ".yaml"), NextMappingDocument(partition));
+        File.WriteAllText(Path.Combine(mappings, NextMapping + ".yaml"), NextMappingDocument());
         if (flow.DeclaresPartitions)
         {
             // A flow that names its partitions delivers to the one a run binds it to: the pipeline names the partition it
@@ -120,30 +120,15 @@ internal static class WellLogVersions
     }
 
     /// <summary>
-    /// The sample WellLog 1.4.0 mapping pinned to WellLog 1.5.0, with its entries untouched. Its fixtures, the regression
-    /// suite the preflight renders against the partition's cache, are written for <paramref name="partition"/>: a render
-    /// there reads that partition's references. Every edit is checked to have applied.
+    /// The sample WellLog 1.4.0 mapping pinned to WellLog 1.5.0, with its entries untouched. Every edit is checked to have
+    /// applied.
     /// </summary>
-    private static string NextMappingDocument(string partition)
+    private static string NextMappingDocument()
     {
         var text = File.ReadAllText(Path.Combine(Samples.Mappings, CurrentMapping + ".yaml")).ReplaceLineEndings("\n");
         text = Replace(text, "# Mapping: Recall well logs into the WellLog 1.4.0 template", "# Mapping: Recall well logs into the WellLog 1.5.0 template", 1);
         text = Replace(text, "\nversion: 1.4.0\n", "\nversion: 1.5.0\n", 1);
-        text = Replace(text, $"  kind: {CurrentKind}\n  version: {CurrentTemplateVersion}\n", $"  kind: {NextKind}\n  version: {NextTemplateVersion}\n", 1);
-        text = Replace(text, $"\"kind\": \"{CurrentKind}\"", $"\"kind\": \"{NextKind}\"", 2);
-        // A fixture pins the values its expected record was captured with, so it is only rewritten for a partition other
-        // than the sample estate's own, which a caller may name either as the estate writes it or as it resolves.
-        if (partition == Samples.SamplePartition || partition == Samples.SampleCacheScope)
-        {
-            return text;
-        }
-
-        // The fixtures render under the partition fixtureDefaults gives them all.
-        var at = text.IndexOf("\nfixtureDefaults:\n", StringComparison.Ordinal);
-        Assert.True(at > 0, "The sample WellLog mapping has no fixtureDefaults section: the derived 1.5.0 mapping no longer follows it.");
-        var fixtures = Replace(text[at..], $"dataPartition: {Samples.SamplePartition}\n", $"dataPartition: {partition}\n", 1);
-        fixtures = Replace(fixtures, $"\"{Samples.SamplePartition}:", $"\"{partition}:", expected: null);
-        return text[..at] + fixtures;
+        return Replace(text, $"  kind: {CurrentKind}\n  version: {CurrentTemplateVersion}\n", $"  kind: {NextKind}\n  version: {NextTemplateVersion}\n", 1);
     }
 
     /// <summary>
@@ -153,13 +138,13 @@ internal static class WellLogVersions
     private static string FolderName(string partition)
         => string.Concat(partition.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-'));
 
-    /// <summary>Replaces <paramref name="from"/>, which must occur <paramref name="expected"/> times, or at least once when that is null.</summary>
-    private static string Replace(string text, string from, string to, int? expected)
+    /// <summary>Replaces <paramref name="from"/>, which must occur <paramref name="expected"/> times.</summary>
+    private static string Replace(string text, string from, string to, int expected)
     {
         var found = text.Split(from).Length - 1;
         Assert.True(
-            expected is { } count ? found == count : found > 0,
-            $"The sample WellLog mapping holds '{from.ReplaceLineEndings(" ")}' {found} time(s), not {expected?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "at least once"}: the derived 1.5.0 mapping no longer follows it.");
+            found == expected,
+            $"The sample WellLog mapping holds '{from.ReplaceLineEndings(" ")}' {found} time(s), not {expected.ToString(System.Globalization.CultureInfo.InvariantCulture)}: the derived 1.5.0 mapping no longer follows it.");
         return text.Replace(from, to, StringComparison.Ordinal);
     }
 }

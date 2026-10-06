@@ -1,0 +1,79 @@
+{
+  "id": "dev:work-product-component--WellLog:da57bceaa21e58e48abacec2e63d0267",
+  "kind": "osdu:wks:work-product-component--WellLog:1.4.0",
+  "acl": {
+    "owners": ["data.welllogsrecall.owners@dev.dataservices.energy"],
+    "viewers": ["data.sdd-well-logs.viewers@dev.dataservices.energy"]
+  },
+  "legal": { "legaltags": ["dev-equinor-osdu-reference-default"], "otherRelevantDataCountries": ["NO"] },
+  "tags": { "DeliveredBy": "osdu-delivery", "LogStatus": "FINAL", "WellLogNativeUID": "12359/1", "SourceProject": "NORWAY_WELLDB" },
+  "data": {
+    "Name": "STAT_COMP",
+    "WellboreID": "dev:master-data--Wellbore:NO-33-9-C-28-B:",
+    "LogRun": "C",
+    "LogSource": "EQUINOR",
+    "LogVersion": "1",
+    "LogActivity": "C",
+    "ActivityType": "HYBRID",
+    "Source": "RECALL",
+    "SamplingStart": 2715.6155,
+    "SamplingStop": 2741.676,
+    "SamplingInterval": 0.1524,
+    "SamplingDomainTypeID": "dev:reference-data--WellLogSamplingDomainType:Depth:",
+    "WellLogTypeID": "dev:reference-data--LogType:Interpreted:",
+    "ReferenceCurveID": "MD",
+    "IsRegular": true,
+    "TechnicalAssurances": [
+      { "TechnicalAssuranceTypeID": "dev:reference-data--TechnicalAssuranceType:Unevaluated:" }
+    ],
+    "VerticalMeasurement": {
+      "VerticalMeasurement": 78.4,
+      "VerticalMeasurementUnitOfMeasureID": "dev:reference-data--UnitOfMeasure:m:",
+      "VerticalMeasurementTypeID": "dev:reference-data--VerticalMeasurementType:KellyBushing:"
+    },
+    "Curves": [
+      {
+        "CurveID": "MD",
+        "Mnemonic": "MD",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "TopDepth": 2715.6155,
+        "BaseDepth": 2741.676,
+        "CurveDescription": "Measured depth",
+        "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-DEPTH:",
+        "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Reference:",
+        "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:EQ-Measured%20Depth:"
+      },
+      {
+        "CurveID": "GR",
+        "Mnemonic": "GR",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:gAPI:",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "TopDepth": 2715.6156,
+        "BaseDepth": 2739.8472,
+        "CurveDescription": "Gamma Ray",
+        "CurveVersion": "1",
+        "DateStamp": "2021-11-15T23:32:06Z",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-GR:",
+        "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:GammaRay:",
+        "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Gamma%20Ray:"
+      },
+      {
+        "CurveID": "RD",
+        "Mnemonic": "RD",
+        "CurveUnit": "dev:reference-data--UnitOfMeasure:ohm.m:",
+        "DepthUnit": "dev:reference-data--UnitOfMeasure:m:",
+        "TopDepth": 2717.5968,
+        "BaseDepth": 2741.676,
+        "CurveDescription": "Deep resistivity",
+        "CurveVersion": "1",
+        "DateStamp": "2021-11-15T23:32:06Z",
+        "LogCurveBusinessValueID": "dev:reference-data--LogCurveBusinessValue:High:",
+        "LogCurveTypeID": "dev:reference-data--LogCurveType:Equinor-RD:",
+        "LogCurveMainFamilyID": "dev:reference-data--LogCurveMainFamily:Resistivity:",
+        "LogCurveFamilyID": "dev:reference-data--LogCurveFamily:Resistivity%20-%20Deep:"
+      }
+    ]
+  }
+}

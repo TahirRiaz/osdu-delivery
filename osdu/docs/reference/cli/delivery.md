@@ -1,4 +1,4 @@
-# sqlflow check, preview, values, fixtures, cache, template, assertions, and the OSDU run options
+# sqlflow check, preview, values, cache, template, assertions, and the OSDU run options
 
 ## check
 
@@ -25,8 +25,7 @@ Templates and caches live in the catalog, so `check` needs the catalog connectio
 
 `--set` supplies the flow's own parameters (`logSource=STAT_COMP`). A flow that names its partitions is checked in one
 partition, as a run of it is ([documents.md](../../documents.md#partitions)): `--partition` names it, a flow naming one
-needs none, and a partition the flow does not name is refused. The mapping's fixtures render against the caches of the
-partitions they are written for, whichever partition is checked. `--json` prints the resolved facts (flow id,
+needs none, and a partition the flow does not name is refused. `--json` prints the resolved facts (flow id,
 mapping reference, the template's kind and version, render context, layout, and the cache read with its
 `partition`, `version` and `types` count, null when the mapping reads no cache). A flow on the `ddms` route also gets a
 `ddms` line, and `ddms` in its JSON, saying which collection of which DDMS its records go to
@@ -108,35 +107,6 @@ answer's example records are the first of.
 
 A source that declares interfaces is checked one interface at a time; `--interface` checks one, and `--target` needs it,
 since an attribute is one of an interface's mapping.
-
-## fixtures
-
-```text
-sqlflow fixtures update <flow.yaml> [--interface <name>] [--partition <name>] [--dry-run] [--db <ref>] [--json]
-```
-
-Writes what each fixture of the flow's mapping renders into its `expected` block
-([mapping-templates.md](../../mapping-templates.md#fixtures)). The mapping is resolved and checked exactly as `check`
-does, against the template it pins and the cache version it reads, except that its fixtures are not compared: they are
-rendered, each over its own rows, with its parameters over `fixtureDefaults.parameters` and the flow's, against the
-search answers it declares and never the platform. Templates and caches live in the catalog, so it needs `--db <ref>` or
-`SQLFLOW_CATALOG_DB`, as `check` does.
-
-Only the lines of the `expected` blocks that change are written; the rest of the file, its comments and its layout stay
-as they were. A written record reads the way the sample fixtures do: `id` and `kind`, then the properties in the order
-the mapping's record tree writes them, an object or a list of plain values on one line when it fits. The file is written
-through a temporary file beside it and read back as a mapping first, so an interrupted run leaves it as it was.
-
-| Fixture | What happens |
-| --- | --- |
-| Renders what it expects (compared canonically, as the gate compares) | `unchanged`: its text is left exactly as written. |
-| Renders a record a delivery would send, and expects another | `updated`: its `expected` block now holds the record. A value that was not a block (`expected: "{}"`) becomes one. |
-| Renders a record that would be held, fails to render, or asks a search it declares no answer to | `skipped`, with the reason: a fixture expects a record a delivery would send. |
-| Is written as a flow mapping (`- { name: ..., expected: ... }`), or its `expected` is anchored or followed by more on its line | `skipped`, naming what to write instead. |
-
-`--dry-run` says what would change (`differs`) and writes nothing. A source with interfaces updates the mapping of each
-interface, and a mapping file two interfaces share once; `--interface <name>` updates one. `--json` answers one object
-per mapping file: `mapping`, `path`, `written`, and `fixtures`, each with its `name`, `outcome` and `reason`.
 
 ## cache
 
@@ -375,6 +345,5 @@ result lists each test with what it matches, would read, the template it fits an
 `check`, `cache`, `template` and `assertions` exit 0 on success and 1 on a failure, which prints one `ERROR` line naming
 the problem; `assertions report` writes the report of a run whatever its tests found, and exits 0 when it did. `preview` exits 1 as well when no record was found to preview, after saying why. `values` exits 1 as well when
 a row checked is held, writes a value the template does not accept, or has an empty key part; a row that leaves an
-optional attribute out is reported without failing it. `fixtures update` exits 1 as well when any fixture was skipped, after writing the others, so a script never
-takes a partial update for a complete one. `run` exits 0 when the run succeeded and 1 when it failed (for an assertion flow, when its tests failed it as its
+optional attribute out is reported without failing it. `run` exits 0 when the run succeeded and 1 when it failed (for an assertion flow, when its tests failed it as its
 `failRunOn` says); Ctrl+C exits 130.

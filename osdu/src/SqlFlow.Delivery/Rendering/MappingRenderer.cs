@@ -33,9 +33,6 @@ public sealed class MappingRenderer
     private readonly ResolvedSearches _searches;
     private readonly IRecordSearch _search;
     private readonly IReadOnlyDictionary<(string Target, string? EntityType), (IdTemplate? Template, string? Problem)> _referenceTemplates;
-    private readonly IReadOnlyDictionary<string, ReferenceSnapshot> _fixtureCaches;
-
-    private static readonly IReadOnlyDictionary<string, ReferenceSnapshot> NoFixtureCaches = new Dictionary<string, ReferenceSnapshot>(StringComparer.Ordinal);
 
     /// <param name="mapping">The mapping rendered.</param>
     /// <param name="schema">The template the mapping pins.</param>
@@ -50,20 +47,14 @@ public sealed class MappingRenderer
     /// Where a <c>search.</c> source is answered. A mapping with no search never consults it, so a render of one may be
     /// given none; a mapping that searches and is given none finds nothing and holds.
     /// </param>
-    /// <param name="fixtureCaches">
-    /// The caches of the other partitions the mapping's fixtures are written for, by partition, each at its current version
-    /// (<see cref="Validation.Preflight.FixturePartitions"/>): a fixture renders against the cache of the partition it names,
-    /// wherever the mapping runs. Only a fixture render reads them.
-    /// </param>
     public MappingRenderer(
         MappingDefinition mapping,
         SchemaSnapshot schema,
         ReferenceSnapshot references,
         RenderContext context,
         ResolvedSearches? searches = null,
-        IRecordSearch? search = null,
-        IReadOnlyDictionary<string, ReferenceSnapshot>? fixtureCaches = null)
-        : this(mapping, schema, references, context, requireParameters: true, searches, search, fixtureCaches)
+        IRecordSearch? search = null)
+        : this(mapping, schema, references, context, requireParameters: true, searches, search)
     {
     }
 
@@ -74,8 +65,7 @@ public sealed class MappingRenderer
         RenderContext context,
         bool requireParameters,
         ResolvedSearches? searches = null,
-        IRecordSearch? search = null,
-        IReadOnlyDictionary<string, ReferenceSnapshot>? fixtureCaches = null)
+        IRecordSearch? search = null)
     {
         ArgumentNullException.ThrowIfNull(mapping);
         ArgumentNullException.ThrowIfNull(schema);
@@ -93,7 +83,6 @@ public sealed class MappingRenderer
         _schema = schema;
         _references = references;
         _context = context;
-        _fixtureCaches = fixtureCaches ?? NoFixtureCaches;
 
         if (requireParameters)
         {
@@ -377,20 +366,7 @@ public sealed class MappingRenderer
         return (document, key, sourceKey, targetId);
     }
 
-    /// <summary>
-    /// This renderer over the same mapping and template with <paramref name="context"/> in place of its context,
-    /// <paramref name="search"/> in place of its search and <paramref name="references"/> in place of its cache, where
-    /// given: a fixture's own parameters, the answers a fixture assumes the platform gives, or the cache of the partition a
-    /// fixture is written for.
-    /// </summary>
-    internal MappingRenderer With(RenderContext? context = null, IRecordSearch? search = null, ReferenceSnapshot? references = null)
-        => new(_mapping, _schema, references ?? _references, context ?? _context, requireParameters: true, _searches, search ?? _search, _fixtureCaches);
-
     internal ReferenceSnapshot References => _references;
-
-    /// <summary>The caches of the other partitions the mapping's fixtures are written for, by partition; see the constructor.</summary>
-    internal IReadOnlyDictionary<string, ReferenceSnapshot> FixtureCaches => _fixtureCaches;
-
 
     /// <summary>The mapping's searches, resolved against the schemas they pin.</summary>
     public ResolvedSearches Searches => _searches;

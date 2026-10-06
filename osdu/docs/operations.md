@@ -982,8 +982,8 @@ Pipelines like any other flow.
   with its modifiers, condition and required flag; the mapping's lookups are edited in a card of their own. The YAML and
   its checks against the template and the cache's current version follow every edit. The mapping is copied, or proposed
   to the repository as a pull request through the proposal endpoint (`POST /api/v1/repos/sources/{id}/proposals`). An
-  existing synced mapping opens with everything it declares, fixtures' cached rows included; the builder writes the
-  document whole, without the comments a hand-written one carries.
+  existing synced mapping opens with everything it declares; the builder writes the document whole, without the
+  comments a hand-written one carries.
 - **Cache** (OSDU): the reference and master data every delivered document is built from, one cache per OSDU
   partition. The header names the partition and, on one line, the cache flow files that fill it by file name, each
   with its path in the repository on hover (or how many when more than three fill it, every file on hover), with an

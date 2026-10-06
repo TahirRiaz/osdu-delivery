@@ -12,7 +12,7 @@ namespace SqlFlow.Delivery.Tests;
 /// <summary>
 /// An ordinary scheduled run after the mapping it renders with was edited in place: the rows did not change, yet every record
 /// has to be rendered again under the new rules, and only what renders differently is sent. An edit that cannot change a
-/// record (a comment, a fixture) leaves the run incremental.
+/// record (a comment) leaves the run incremental.
 /// </summary>
 [Collection(SqlServerSuite.Name)]
 public sealed class RenderRulesTests : IDisposable
@@ -32,13 +32,12 @@ public sealed class RenderRulesTests : IDisposable
     }
 
     [Fact]
-    public void A_mapping_fingerprint_moves_with_what_renders_and_not_with_comments_or_fixtures()
+    public void A_mapping_fingerprint_moves_with_what_renders_and_not_with_comments()
     {
         var original = File.ReadAllText(Path.Combine(Samples.Mappings, "WellLog@1.4.0.yaml"));
         var fingerprint = MappingFingerprint.Of(original, "original");
 
         Assert.Equal(fingerprint, MappingFingerprint.Of("# A note.\n" + original.Replace("\r\n", "\n", StringComparison.Ordinal), "commented"));
-        Assert.Equal(fingerprint, MappingFingerprint.Of(original.Replace("\"LogRun\": \"C\",", "\"LogRun\": \"D\",", StringComparison.Ordinal), "fixture"));
         Assert.NotEqual(fingerprint, MappingFingerprint.Of(original.Replace("DeliveredBy: osdu-delivery", "DeliveredBy: someone-else", StringComparison.Ordinal), "tag"));
         Assert.Equal(fingerprint, new DeliveryDocumentLoader().ParseMapping(original).Fingerprint);
     }
@@ -99,7 +98,6 @@ public sealed class RenderRulesTests : IDisposable
 
         // A value every record carries: the next ordinary run sends every record again, and the one after it nothing.
         await File.WriteAllTextAsync(file, described.Replace("DeliveredBy: osdu-delivery", "DeliveredBy: osdu-delivery-rules", StringComparison.Ordinal));
-        Assert.True((await FixtureUpdates.UpdateAsync(engine, flow, write: true)).Written);
         protocol.Deliveries.Clear();
         var edited = await RunAsync();
         Assert.Equal(logs, edited.Delivered);

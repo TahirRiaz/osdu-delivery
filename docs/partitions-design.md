@@ -123,8 +123,8 @@ keepLedger: dev                      # registry-driven: no partitions, no data-p
 
 A run of a flow that works in partitions targets exactly one of them. The partition is the run value `partition`, set
 from the trigger dialog (a dropdown of the partitions the flow serves), from a schedule's `values:`, from
-`--set partition=<name>` on `sqlflow run` and `sqlflow trigger`; the module's own verbs (`check`, `preview`, `fixtures`,
-`records`, `cache`) take `--partition`. The executor takes the value off the run's values before anything else reads
+`--set partition=<name>` on `sqlflow run` and `sqlflow trigger`; the module's own verbs (`check`, `preview`, `records`,
+`cache`) take `--partition`. The executor takes the value off the run's values before anything else reads
 them, so it never reaches the flow's parameters, its watermarks or a submission's scope.
 
 The partition is settled in one place (`SourceDefinition.Resolve`, `CacheDefinition.ForRun`), the same for every host:
@@ -158,12 +158,6 @@ Everything downstream (planning, rendering, the protocols, the cache capture and
 flow and needs no knowledge of partitions. An unbound flow that works in partitions has no ledger identity, no cache
 scope and no ledger name: asking for one throws, so a path that forgot to bind fails loudly rather than reading another
 partition's ledger.
-
-A mapping's fixtures are captured against one partition's cache, and render against that partition's cache wherever the
-mapping runs: the partition a fixture's `dataPartition` names (its own, or `fixtureDefaults`), at the current version of
-that partition's cache. A mapping delivered to several partitions keeps one set of fixtures, and a run in another
-partition fails its preflight, naming each fixture, while the partition the fixtures are written for holds no cache
-version.
 
 ## 4. Ledger identity
 
@@ -306,9 +300,9 @@ The registry's routes:
 | `POST /delivery/partitions/{name}/default` | Makes it the default (admin). |
 | `DELETE /delivery/partitions/{name}` | Takes it out of the registry (admin). 409 for the default while others are registered. |
 
-The CLI's run and trigger take the run value as `--set partition=<name>`; `check`, `preview`, `fixtures`, `records`,
-`cache` and `config` take `--partition`, settled as a run settles it (`records` and `fixtures` bind a named partition as
-it is, since they send nothing). `sqlflow partition list | add <name> [--description <text>] [--default] | describe
+The CLI's run and trigger take the run value as `--set partition=<name>`; `check`, `preview`, `records`, `cache` and
+`config` take `--partition`, settled as a run settles it (`records` binds a named partition as it is, since it sends
+nothing). `sqlflow partition list | add <name> [--description <text>] [--default] | describe
 <name> --description <text> | default <name> | remove <name>` keeps the registry; a repository describes a change at its
 next sync.
 

@@ -132,27 +132,27 @@ public class MappingShapeTests
     }
 
     /// <summary>
-    /// Every property the sample fixtures render is in the shape and the shape has nothing they do not: between them the
-    /// fixtures fill every entry of the sample mappings, so the two layouts must agree path for path.
+    /// Every property the records kept for a sample mapping's rows carry is in the shape and the shape has nothing they do
+    /// not (<see cref="SampleRecordTests"/> renders those rows): between them the rows fill every entry of the sample
+    /// mappings, so the two layouts must agree path for path.
     /// </summary>
     [Theory]
-    [InlineData("WellLog@1.4.0.yaml")]
-    [InlineData("Wellbore@1.0.0.yaml")]
-    public void The_shape_of_a_sample_mapping_lays_out_what_its_fixtures_render(string file)
+    [InlineData("WellLog@1.4.0")]
+    [InlineData("Wellbore@1.0.0")]
+    public void The_shape_of_a_sample_mapping_lays_out_what_its_rows_render(string reference)
     {
-        var mapping = new DeliveryDocumentLoader().LoadMapping(Path.Combine(Samples.FixtureMappings, file));
-        var fixture = mapping.Fixtures[0];
-        var shape = MappingRenderer.Shape(mapping, Samples.SampleTemplate(mapping.Kind), fixture.Parameters);
+        var mapping = new DeliveryDocumentLoader().LoadMapping(Path.Combine(Samples.FixtureMappings, reference + ".yaml"));
+        var shape = MappingRenderer.Shape(mapping, Samples.SampleTemplate(mapping.Kind), SampleRecordTests.Parameters);
 
         var rendered = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var each in mapping.Fixtures)
+        foreach (var name in RenderedRecord.Names(reference))
         {
-            rendered.UnionWith(Paths(JsonNode.Parse(each.Expected)));
+            rendered.UnionWith(Paths(JsonNode.Parse(RenderedRecord.Expected(reference, name))));
         }
 
         Assert.Equal(rendered, Paths(shape.Document));
         Assert.DoesNotContain(shape.Notes, n => n.StartsWith("parameter", StringComparison.Ordinal));
-        Assert.StartsWith(fixture.Parameters[RenderContext.DataPartitionParameter] + ":" + mapping.EntityType + ":<delivery key", shape.Document["id"]!.GetValue<string>(), StringComparison.Ordinal);
+        Assert.StartsWith(Samples.SamplePartition + ":" + mapping.EntityType + ":<delivery key", shape.Document["id"]!.GetValue<string>(), StringComparison.Ordinal);
     }
 
     private static SortedSet<string> Paths(JsonNode? node)

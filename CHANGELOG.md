@@ -1000,6 +1000,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 - Manual submission: records reach OSDU only through the regular flows, and records delivered by hand are files
   placed where a pre-ingestion flow reads them. The SQLFlow extension point it alone used, a run group enqueued
   together with rows of its own, went with it.
+- **Mapping fixtures.** A mapping no longer carries `fixtures` (example rows with the exact record each had to render
+  to, and the search answers and cached rows they assumed) or `fixtureDefaults`, and the preflight no longer renders
+  them before a run (its check 10). The expected record was the mapping's own output written down again, which made
+  half of a mapping document test data its authors had to keep by hand. The `sqlflow fixtures update` verb, the builder's
+  fixture fields and the fixture count on the Documents page went with them. A mapping that still holds either block
+  is refused, naming the blocks to delete; the mapping's fingerprint is unchanged by deleting them, so nothing is sent
+  again. Every record is still judged against its template before it is sent, and a `plan` run reports what a mapping
+  change would send. The records the sample and fixture mappings render are kept by the test suites instead
+  (`osdu/tests/SqlFlow.Delivery.Tests/Fixtures/rendered`), which render those rows and compare on every build.
 
 ### Fixed
 

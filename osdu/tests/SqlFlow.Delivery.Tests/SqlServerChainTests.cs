@@ -19,7 +19,6 @@ using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Templates;
-using SqlFlow.Delivery.Validation;
 using SqlFlow.Execution;
 using SqlFlow.Lineage.Collection;
 using SqlFlow.Lineage.Graph;
@@ -55,7 +54,7 @@ public class SqlServerChainTests
 
     /// <summary>Case 1: the first run of the chain, from files to delivered records.</summary>
     [Fact]
-    public async Task A_first_run_loads_the_tables_renders_what_the_mapping_fixtures_pin_and_delivers_every_log()
+    public async Task A_first_run_loads_the_tables_renders_the_records_kept_for_the_logs_and_delivers_every_log()
     {
         await using var estate = await SqlServerIngestionFixture.StartAsync();
         var logs = SampleWellLogs.Logs();
@@ -78,8 +77,8 @@ public class SqlServerChainTests
         Assert.Equal(logs.Sum(l => l.Curves.Count), await estate.CountAsync(estate.ArcSchema, "WellLogCurve"));
 
         // The first plan over the loaded tables, with nothing delivered yet: every record is new, so every entry creates.
-        // Rendered from the real tables, each document is the one the mapping's own fixture pins, which is what holds the
-        // typing of the ingestion columns (a decimal where the fixture says a number) to the record OSDU receives.
+        // Rendered from the real tables, each document is the one the suites keep for the log (Fixtures/rendered), which is
+        // what holds the typing of the ingestion columns (a decimal where the record says a number) to the record OSDU receives.
         var flow = estate.DeliveryFlow();
         using (var runtime = await FlowRuntime.CreateAsync(estate.Engine, flow, SampleEstate.Values))
         {
@@ -89,23 +88,18 @@ public class SqlServerChainTests
             Assert.All(plan.Entries, e => Assert.Equal(PlannedAction.Create, e.Action));
             Assert.All(plan.Entries, e => Assert.Equal(LogFile, e.Origin.FileName));
             Assert.All(plan.Entries, e => Assert.Equal(1, e.ChunkCount));
-            // The mapping pins a fixture for the logs whose rendering it means to hold (L-1001 and L-2001), not for every
-            // sample log, so each log that has one is compared and the count is asserted: a fixture that stopped matching
-            // would otherwise leave this comparing nothing and still passing.
+            // The suites keep a record for some of the sample logs, not for every one, so each log that has one is compared
+            // and the count is asserted: a kept record whose log stopped being found would otherwise leave this comparing
+            // nothing and still passing.
+            var kept = RenderedRecord.Names(WellLogVersions.CurrentMapping);
             var compared = 0;
-            foreach (var log in logs)
+            foreach (var log in logs.Where(l => kept.Contains(KeptName(l))))
             {
-                var entry = plan.Entries.Single(e => e.Key == log.Key);
-                if (Fixture(runtime.Mapping.Mapping, log.LogId) is null)
-                {
-                    continue;
-                }
-
-                AssertRendersTheFixture(runtime.Mapping.Mapping, entry, log.LogId);
+                AssertRendersTheKeptRecord(plan.Entries.Single(e => e.Key == log.Key), log);
                 compared++;
             }
 
-            Assert.Equal(runtime.Mapping.Mapping.Fixtures.Count, compared);
+            Assert.Equal(kept.Count, compared);
         }
 
         // The group's last member, run now that its first plan has been read.
@@ -931,25 +925,20 @@ public class SqlServerChainTests
         ("recall-welllog-03-header-delivery", FlowDefinition.FlowTypeName, 2),
     ];
 
-    /// <summary>
-    /// Asserts that what the chain rendered from the real tables is exactly what the mapping's fixture pins, compared
-    /// canonically so the order the two were written in never decides the outcome.
-    /// </summary>
-    /// <summary>The fixture this mapping pins for a log, or null when it pins none for it.</summary>
-    private static MappingFixture? Fixture(MappingDefinition mapping, string logId)
-        => mapping.Fixtures.SingleOrDefault(f => f.Name.StartsWith(logId, StringComparison.Ordinal));
+    /// <summary>The name the suites keep a log's record under: its id, with the slash a file name cannot hold as an underscore.</summary>
+    private static string KeptName(SampleLog log) => log.LogId.Replace('/', '_');
 
     /// <summary>
-    /// Whether the plan rendered the record the mapping's fixture for the log pins, each read as the preflight compares a
-    /// fixture: an empty list and one left out alike.
+    /// Asserts that what the chain rendered from the real tables is exactly the record the suites keep for the log, compared
+    /// canonically so the order the two were written in never decides the outcome, and an empty list and one left out alike.
     /// </summary>
-    private static void AssertRendersTheFixture(MappingDefinition mapping, PlanEntry entry, string logId)
+    private static void AssertRendersTheKeptRecord(PlanEntry entry, SampleLog log)
     {
-        var fixture = Fixture(mapping, logId)
-            ?? throw new InvalidOperationException($"The mapping pins no fixture for log '{logId}'.");
         Assert.NotNull(entry.Render);
         Assert.Empty(entry.Render!.Holds);
-        Assert.Equal(Canonical(Preflight.Comparable(JsonNode.Parse(fixture.Expected))), Canonical(Preflight.Comparable(entry.Render.Document)));
+        Assert.Equal(
+            Canonical(RenderedRecord.Comparable(JsonNode.Parse(RenderedRecord.Expected(WellLogVersions.CurrentMapping, KeptName(log))))),
+            Canonical(RenderedRecord.Comparable(entry.Render.Document)));
     }
 
     /// <summary>One JSON document as a comparable text: object members in name order, array order left as it is.</summary>

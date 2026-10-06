@@ -93,15 +93,7 @@ const mappingColumns: Column<DeliveryMapping>[] = [
     id: "entries",
     header: "Entries",
     align: "right",
-    render: (row) => {
-      const fixtures = summaryText(row.summary, "fixtures");
-      return (
-        <span className="font-mono tabular-nums">
-          {summaryText(row.summary, "entries")}
-          {fixtures !== "-" && <span className="text-muted-foreground @max-3xl/table:sr-only">{` + ${fixtures} fixtures`}</span>}
-        </span>
-      );
-    },
+    render: (row) => <span className="font-mono tabular-nums">{summaryText(row.summary, "entries")}</span>,
   },
   { id: "path", header: "Path", render: (row) => <GlyphRef icon={FileCode} title="Path" body={row.relativePath} mono /> },
   { id: "seen", header: "Last seen", render: (row) => <RelativeTime value={row.lastSeenUtc} /> },

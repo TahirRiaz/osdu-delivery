@@ -289,8 +289,7 @@ public sealed class DeliveryTemplateApiTests
             Assert.Equal(
                 ("id", "{$param.dataPartition}:reference-data--LogCurveFamily:{$cache.CurveDictionary.log_curve_family_id}:"),
                 (family.Kind, family.Text));
-            // The sample mapping's fixtures are written for dev, and render against dev's cache wherever the mapping is
-            // checked, as the delivery suites keep it: the sample reference data under dev's ids.
+            // The check reads dev's cache as the delivery suites keep it: the sample reference data under dev's ids.
             await Samples.ImportSampleCacheAsync(new OsduCacheStore(() => SampleEstate.Context(cs)));
             var parameters = new Dictionary<string, string>
             {
@@ -349,16 +348,13 @@ public sealed class DeliveryTemplateApiTests
             Assert.Contains(unsaved.Issues, i => i.Severity == "error" && i.Message.Contains("which is not saved", StringComparison.Ordinal));
 
             // A wellbore reference read from the unit cache is written, and refused by the check against the template. The
-            // entry no longer searches for the wellbore, so the search it read goes with it, and the fixtures go too, with
-            // the parameters they share.
+            // entry no longer searches for the wellbore, so the search it read goes with it.
             var wrong = parsed.Draft with
             {
                 Searches = [],
                 Entries = parsed.Draft.Entries.Select(e => e.Target == "osdu.data.WellboreID"
                     ? e with { Input = MappingDraftInput.Cache, CacheType = "UnitOfMeasure", CacheField = "id", FindBy = [new MappingDraftFind("Code", "wellbore_uwi", null)] }
                     : e).ToList(),
-                Fixtures = [],
-                FixtureParameters = new Dictionary<string, string>(StringComparer.Ordinal),
             };
             var refused = await ReadAsync<DeliveryMappingComposeResult>(await SendAsync(client, author, HttpMethod.Post, "/api/v1/delivery/mapping-builder/compose", new { scope,draft = wrong, parameters }));
             Assert.False(refused.Valid);

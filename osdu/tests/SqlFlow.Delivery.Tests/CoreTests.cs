@@ -799,8 +799,8 @@ public class MappingRendererTests
         data["Curves"]!["items"]!["properties"]!["Notes"] = JsonNode.Parse("""{ "type": "array", "items": { "type": "string" } }""");
         data["Mixed"] = JsonNode.Parse("""{ "type": "array", "items": { "type": ["string", "null"] } }""");
         var schema = new SchemaSnapshot(TestSchema.Kind, root, DateTimeOffset.UnixEpoch);
-        MappingDefinition Mapping(string data = "", string record = "", string fixtures = "") => new DeliveryDocumentLoader().ParseMapping(
-            TestSchema.MappingDocument(data, fixtures, record: record).Replace(TestSchema.Build().Version, schema.Version, StringComparison.Ordinal), "thing.yaml");
+        MappingDefinition Mapping(string data = "", string record = "") => new DeliveryDocumentLoader().ParseMapping(
+            TestSchema.MappingDocument(data, record: record).Replace(TestSchema.Build().Version, schema.Version, StringComparison.Ordinal), "thing.yaml");
         MappingRenderer Over(MappingDefinition mapping) => new(mapping, schema, TestSchema.References(), TestSchema.Context() with { SchemaSnapshotVersion = schema.Version });
         static SourceRow Row(params (string Column, string? Value)[] values) => SourceRow.FromStrings(values.ToDictionary(v => v.Column, v => v.Value));
         SourceRecord Rows(bool curves = true) => new()
@@ -872,24 +872,6 @@ public class MappingRendererTests
         Assert.Equal(["meta"], new ListValues(schema).Names);
         Assert.Empty(new ListValues(schema, recordLists: false).Names);
 
-        // A fixture written without the empty lists expects the record that renders with them, and is written without them.
-        var key = DeliveryKey.Derive("test", ["well-1"]).Value.ToString("N");
-        var withFixture = Mapping(Defines, fixtures: $$$"""
-            fixtures:
-              - name: without the empty lists
-                row: { name: well-1, depth: "12.5", alias: "", codes: "" }
-                datasets:
-                  curves:
-                    - { curve_id: GR, note: "" }
-                expected: |
-                  {"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"well-1","Depth":12.5,"Nested":{"Inner":"well-1"},"Curves":[{"CurveID":"GR"}]}}
-            """);
-        var fixture = Assert.Single(Preflight.RenderFixtures(withFixture, Over(withFixture)));
-        Assert.Null(fixture.Problem);
-        Assert.Empty(Assert.IsType<JsonArray>(fixture.Result!.Document["data"]!["Aliases"]));
-        Assert.Equal(CanonicalJson.ToString(fixture.Writable), CanonicalJson.ToString(fixture.Expected));
-        Assert.False(fixture.Writable!.ContainsKey("meta"));
-
         // A null item, as a list read whole from the cache may hold, is dropped where the template's items take no null and
         // kept where they take one; nothing else of the record is touched.
         var lists = new ListValues(schema);
@@ -926,8 +908,8 @@ public class PreflightTests
         };
 
     private static IReadOnlyList<ValidationIssue> Check(
-        string data, IReadOnlyDictionary<string, IReadOnlySet<string>>? columns = null, string baseData = TestSchema.BaseData, RenderContext? context = null, string fixtures = "", string record = "")
-        => Preflight.Check(TestSchema.Mapping(data, fixtures, baseData, record), TestSchema.Build(), TestSchema.References(), context ?? TestSchema.Context(), columns);
+        string data, IReadOnlyDictionary<string, IReadOnlySet<string>>? columns = null, string baseData = TestSchema.BaseData, RenderContext? context = null, string record = "")
+        => Preflight.Check(TestSchema.Mapping(data, baseData, record), TestSchema.Build(), TestSchema.References(), context ?? TestSchema.Context(), columns);
 
     private static void HasError(IReadOnlyList<ValidationIssue> issues, string text)
         => Assert.Contains(issues, i => i.Severity == IssueSeverity.Error && i.Message.Contains(text, StringComparison.Ordinal));
@@ -1072,91 +1054,16 @@ public class PreflightTests
         HasError(Check(string.Empty, context: context), "parameter 'extra'");
     }
 
-    [Fact]
-    public void Fixtures_are_rendered_and_compared_canonically()
+    [Theory]
+    [InlineData("fixtureDefaults:\n  parameters: { dataPartition: dev }\nfixtures:\n  - name: f\n    row: { name: w }\n    expected: \"{}\"\n", "delete its fixtureDefaults and fixtures blocks.")]
+    [InlineData("fixtures:\n", "delete its fixtures block.")]
+    public void A_mapping_that_still_holds_fixtures_is_refused_and_told_to_delete_them(string blocks, string expected)
     {
-        var key = DeliveryKey.Derive("test", ["w"]).Value.ToString("N");
-        string Fixture(string depth) => $$$"""
-            fixtures:
-              - name: f
-                row: { name: w, depth: "1" }
-                expected: |
-                  {"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"w","Depth":{{{depth}}}}}
-            """;
-
-        Assert.DoesNotContain(Check(string.Empty, fixtures: Fixture("1")), i => i.Severity == IssueSeverity.Error);
-        HasError(Check(string.Empty, fixtures: Fixture("2")), "~ data.Depth: 2 -> 1");
-
-        // A fixture that renders its document but would hold the record is not a passing fixture.
-        HasError(Check("Description: { $from: missing }", fixtures: Fixture("1")), "renders the expected document but holds the record");
-    }
-
-    [Fact]
-    public void Fixture_defaults_give_every_fixture_its_parameters_and_a_fixture_replaces_them_by_name()
-    {
-        var key = DeliveryKey.Derive("test", ["w"]).Value.ToString("N");
-        string Expected(string region) =>
-            $$$"""{"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"w","Depth":1,"Description":"w-{{{region}}}"}}""";
-        var fixtures = $$$"""
-            fixtureDefaults:
-              parameters:
-                dataPartition: dev
-                region: north
-            fixtures:
-              - name: the defaults
-                row: { name: w, depth: "1" }
-                expected: |
-                  {{{Expected("north")}}}
-              - name: its own region
-                parameters: { region: south }
-                row: { name: w, depth: "1" }
-                expected: |
-                  {{{Expected("south")}}}
-            """;
-        var document = TestSchema.MappingDocument(
-            """
-            Description:
-              $expr: name & "-" & $param.region
-            """,
-            fixtures).Replace("  dataPartition: { required: true }", "  dataPartition: { required: true }\n  region: {}", StringComparison.Ordinal);
-
-        var loader = new DeliveryDocumentLoader();
-        var mapping = loader.ParseMapping(document, "thing.yaml");
-        Assert.Equal("north", mapping.Fixtures[0].Parameters["region"]);
-        Assert.Equal("dev", mapping.Fixtures[1].Parameters["dataPartition"]);
-        Assert.Equal("south", mapping.Fixtures[1].Parameters["region"]);
-
-        var context = TestSchema.Context() with { Parameters = new Dictionary<string, string> { ["dataPartition"] = "dev", ["region"] = "east" } };
-        Assert.DoesNotContain(Preflight.Check(mapping, TestSchema.Build(), TestSchema.References(), context, null), i => i.Severity == IssueSeverity.Error);
-
-        // The builder writes the block back and each fixture with only what it gives beyond it.
-        var draft = MappingBuilder.FromDefinition(mapping);
-        Assert.Empty(draft.Fixtures[0].Parameters);
-        Assert.Equal(new Dictionary<string, string> { ["region"] = "south" }, draft.Fixtures[1].Parameters);
-        var yaml = MappingBuilder.ToYaml(draft).ReplaceLineEndings("\n");
-        Assert.Contains("fixtureDefaults:\n  parameters:\n    dataPartition: dev\n    region: north\n", yaml, StringComparison.Ordinal);
-        Assert.Equal(yaml, MappingBuilder.ToYaml(MappingBuilder.FromDefinition(loader.ParseMapping(yaml, "again.yaml"))).ReplaceLineEndings("\n"));
-    }
-
-    [Fact]
-    public void Fixture_defaults_that_say_nothing_or_apply_to_nothing_are_refused()
-    {
-        var loader = new DeliveryDocumentLoader();
-        var empty = Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingDocument(fixtures: """
-            fixtureDefaults:
-              parameters: {}
-            fixtures:
-              - name: f
-                row: { name: w }
-                expected: "{}"
-            """), "thing.yaml"));
-        Assert.Contains("fixtureDefaults.parameters lists the parameter values every fixture renders with", empty.Message, StringComparison.Ordinal);
-
-        var alone = Assert.Throws<FlowValidationException>(() => loader.ParseMapping(TestSchema.MappingDocument(fixtures: """
-            fixtureDefaults:
-              parameters: { dataPartition: dev }
-            """), "thing.yaml"));
-        Assert.Contains("the mapping has no fixtures; remove it, or add fixtures", alone.Message, StringComparison.Ordinal);
+        // Mappings carried example rows and the records they had to render to; a document written then is told to delete the
+        // blocks rather than given the parser's unknown key, and a key written with nothing under it is refused the same way.
+        var ex = Assert.Throws<FlowValidationException>(() => new DeliveryDocumentLoader().ParseMapping(TestSchema.MappingDocument() + blocks, "thing.yaml"));
+        Assert.StartsWith("thing.yaml: a mapping holds no fixtures; ", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(expected, ex.Message, StringComparison.Ordinal);
     }
 }
 
@@ -1381,16 +1288,6 @@ public class JsonPathAndDiffTests
         Assert.Equal(2, JsonPathReader.CountRecords(root, null));
     }
 
-    [Fact]
-    public void Diff_reports_added_removed_and_changed_leaves()
-    {
-        var diff = DocumentDiff.Compute(JsonNode.Parse("""{"a":1,"b":[1,2],"c":"x"}"""), JsonNode.Parse("""{"a":2,"b":[1],"d":true}"""));
-        Assert.Contains("~ a: 1 -> 2", diff, StringComparison.Ordinal);
-        Assert.Contains("- b[1]: 2", diff, StringComparison.Ordinal);
-        Assert.Contains("- c: \"x\"", diff, StringComparison.Ordinal);
-        Assert.Contains("+ d: true", diff, StringComparison.Ordinal);
-        Assert.Equal("(no differences)", DocumentDiff.Compute(JsonNode.Parse("{\"a\":1}"), JsonNode.Parse("{\"a\":1.0}")));
-    }
 }
 
 public class RenderContextTests

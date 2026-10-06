@@ -103,9 +103,9 @@ public sealed class ListOfObjectsTests
 
     /// <summary>
     /// A mapping document over <see cref="Schema"/>: the envelope (<see cref="TestSchema.Envelope"/> unless one is given), the
-    /// name and depth, then <paramref name="data"/>, then <paramref name="fixtures"/>.
+    /// name and depth, then <paramref name="data"/>.
     /// </summary>
-    private static string Document(string data, string fixtures = "", string lookups = "", string envelope = TestSchema.Envelope)
+    private static string Document(string data, string lookups = "", string envelope = TestSchema.Envelope)
         => $"""
             documentType: mapping
             name: Assured
@@ -120,10 +120,10 @@ public sealed class ListOfObjectsTests
               dataPartition: {"{"} required: true {"}"}
 
             """ + lookups + "\nrecord:\n" + TestSchema.Indented(envelope, 2) + "  data:\n"
-            + TestSchema.Indented("Name: { $from: name }\nDepth: { $from: depth }", 4) + TestSchema.Indented(data, 4) + "\n" + fixtures + "\n";
+            + TestSchema.Indented("Name: { $from: name }\nDepth: { $from: depth }", 4) + TestSchema.Indented(data, 4) + "\n";
 
-    private static MappingDefinition Mapping(string data, string fixtures = "", string lookups = "", string envelope = TestSchema.Envelope)
-        => new DeliveryDocumentLoader().ParseMapping(Document(data, fixtures, lookups, envelope), "assured.yaml");
+    private static MappingDefinition Mapping(string data, string lookups = "", string envelope = TestSchema.Envelope)
+        => new DeliveryDocumentLoader().ParseMapping(Document(data, lookups, envelope), "assured.yaml");
 
     private static string Refused(string data)
         => Assert.Throws<FlowValidationException>(() => Mapping(data)).Message;
@@ -582,35 +582,6 @@ public sealed class ListOfObjectsTests
         Assert.StartsWith("<string from iif(startsWith(log_source, \"stat_\"), \"Certified\", \"Unevaluated\")", items[0]!["TechnicalAssuranceTypeID"]!.GetValue<string>(), StringComparison.Ordinal);
         Assert.Equal("Set by the conversion", items[0]!["Comment"]!.GetValue<string>());
         Assert.Equal("""{"Comment":"fixed"}""", items[1]!.ToJsonString());
-    }
-
-    [Fact]
-    public void A_fixture_is_rewritten_with_each_item_s_properties_in_the_order_the_item_writes_them()
-    {
-        const string Fixtures = """
-            fixtures:
-              - name: scored
-                row: { name: w, depth: "1", score: "3" }
-                expected: "{}"
-            """;
-        var yaml = Document(
-            """
-            TechnicalAssurances:
-              - Score: { $from: score }
-                Comment: fixed
-            """,
-            Fixtures).ReplaceLineEndings("\n");
-        var mapping = new DeliveryDocumentLoader().ParseMapping(yaml, "assured.yaml");
-
-        var rewrite = FixtureRewriter.Rewrite(yaml, mapping, Preflight.RenderFixtures(mapping, Renderer(mapping)), "assured.yaml");
-
-        Assert.Equal(FixtureOutcomeKind.Updated, Assert.Single(rewrite.Outcomes).Kind);
-        Assert.Contains("\"TechnicalAssurances\": [\n", rewrite.Text, StringComparison.Ordinal);
-        Assert.Contains("{ \"Score\": 3, \"Comment\": \"fixed\" }\n", rewrite.Text, StringComparison.Ordinal);
-
-        // What was written passes the gate's comparison.
-        var reread = new DeliveryDocumentLoader().ParseMapping(rewrite.Text, "assured.yaml");
-        Assert.Equal(FixtureOutcomeKind.Unchanged, Assert.Single(FixtureRewriter.Rewrite(rewrite.Text, reread, Preflight.RenderFixtures(reread, Renderer(reread)), "assured.yaml").Outcomes).Kind);
     }
 
     [Fact]

@@ -56,7 +56,7 @@ public enum MappingDraftInput
 }
 
 /// <summary>
-/// A mapping as the builder edits it: the header, the parameters, one entry per variable it fills, and the fixtures
+/// A mapping as the builder edits it: the header, the parameters, and one entry per variable it fills
 /// (osdu/docs/mapping-templates.md). The entries are flat, each naming its variable by target path; the document the draft
 /// is written as lays them out as the record tree. Every text a person types is written in the mapping language as the
 /// document reads it: a literal's <c>{$param.name}</c>, an id template's tokens and the label's <c>{column}</c>.
@@ -93,20 +93,12 @@ public sealed record MappingDraft
     public IReadOnlyList<MappingDraftLookup> Lookups { get; init; } = [];
 
     public IReadOnlyList<MappingDraftEntry> Entries { get; init; } = [];
-
-    /// <summary>The parameter values every fixture renders with unless it gives its own (<c>fixtureDefaults.parameters</c>).</summary>
-    public IReadOnlyDictionary<string, string> FixtureParameters { get; init; } = new Dictionary<string, string>(StringComparer.Ordinal);
-
-    public IReadOnlyList<MappingDraftFixture> Fixtures { get; init; } = [];
 }
 
 public sealed record MappingDraftParameter(string Name, bool Required, string? Default, string? Description);
 
 /// <summary>One search: the name entries read it by, the kind it looks in, and the saved template whose schema says how that kind is indexed.</summary>
 public sealed record MappingDraftSearch(string Name, string Kind, string SchemaKind, string SchemaVersion, string? Description);
-
-/// <summary>What a fixture assumes the platform answers when a search compares <c>Field</c> with <c>Value</c>: the record found, or none.</summary>
-public sealed record MappingDraftFixtureSearch(string Search, string Field, string Value, string? Id);
 
 /// <summary>
 /// One lookup: the name nodes read it by, the cached type its record is found in, the findBy lines that find it against the
@@ -243,19 +235,6 @@ public sealed record MappingDraftModifier(
 
 /// <summary>One pair of a replace: the incoming value, and what it becomes; a null <see cref="To"/> is no value.</summary>
 public sealed record MappingDraftReplacement(string From, string? To);
-
-/// <summary>
-/// An example row and the exact record it must render to, with the search answers and the cached rows by type it renders
-/// against (null for none), which stand in for the platform and the partition's cache.
-/// </summary>
-public sealed record MappingDraftFixture(
-    string Name,
-    IReadOnlyDictionary<string, string> Parameters,
-    IReadOnlyDictionary<string, string?> Record,
-    IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyDictionary<string, string?>>> Datasets,
-    string Expected,
-    IReadOnlyList<MappingDraftFixtureSearch>? Searches = null,
-    IReadOnlyDictionary<string, IReadOnlyList<JsonObject>>? Cache = null);
 
 /// <summary>What the builder found about a draft: an error stops the mapping from loading, a warning does not.</summary>
 public sealed record MappingDraftIssue(string Severity, string Message, string? Target = null)
@@ -1090,7 +1069,7 @@ public static partial class MappingBuilder
 
     /// <summary>
     /// The draft written as a mapping document, in the documented style: the header, then the record tree, each entry at
-    /// the place its target names, then the fixtures. Incomplete values are written as they stand, so the page shows what
+    /// the place its target names. Incomplete values are written as they stand, so the page shows what
     /// was typed and the loader reports it; an entry that has no place in the tree is left out with a comment saying why,
     /// and <see cref="Incomplete"/> reports it.
     /// </summary>
@@ -1179,36 +1158,13 @@ public static partial class MappingBuilder
         }
 
         WriteProperties(layout.Root, 2, null, Line);
-
-        if (draft.FixtureParameters.Count > 0)
-        {
-            Line(string.Empty);
-            Line("fixtureDefaults:");
-            Line("  parameters:");
-            foreach (var (name, value) in draft.FixtureParameters)
-            {
-                Line("    " + Scalar(name) + ": " + Scalar(value));
-            }
-        }
-
-        if (draft.Fixtures.Count > 0)
-        {
-            Line(string.Empty);
-            Line("fixtures:");
-            foreach (var fixture in draft.Fixtures)
-            {
-                WriteFixture(fixture, Line);
-            }
-        }
-
         return yaml.ToString();
     }
 
     /// <summary>
     /// The draft of a loaded mapping, for opening it in the builder: everything the document says, so writing the draft back
     /// gives the same mapping. Its lookups, the nodes reading them, the rows a <c>$findAll</c> reads, the items of a list of
-    /// values, the object items of a list of objects with their properties, and the cached rows a fixture declares all have
-    /// their place in the draft.
+    /// values, and the object items of a list of objects with their properties all have their place in the draft.
     /// </summary>
     public static MappingDraft FromDefinition(MappingDefinition mapping)
     {
@@ -1242,23 +1198,8 @@ public static partial class MappingBuilder
                 })
                 .ToList(),
             Entries = mapping.Entries.Select(Draft).ToList(),
-            FixtureParameters = mapping.FixtureParameters,
-            Fixtures = mapping.Fixtures.Select(f => new MappingDraftFixture(
-                f.Name,
-                OwnParameters(f.Parameters, mapping.FixtureParameters),
-                f.Record,
-                f.Datasets,
-                f.Expected,
-                f.Searches.Count == 0 ? null : f.Searches.Select(a => new MappingDraftFixtureSearch(a.Search, a.Field, a.Value, a.Id)).ToList(),
-                f.Cache.Count == 0 ? null : f.Cache)).ToList(),
         };
     }
-
-    /// <summary>The parameters a fixture gives beyond the defaults: those the defaults do not hold, or hold another value for.</summary>
-    private static IReadOnlyDictionary<string, string> OwnParameters(IReadOnlyDictionary<string, string> parameters, IReadOnlyDictionary<string, string> defaults)
-        => parameters
-            .Where(kv => !defaults.TryGetValue(kv.Key, out var shared) || !string.Equals(shared, kv.Value, StringComparison.Ordinal))
-            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
 
     private static MappingDraftEntry Draft(MappingEntry entry)
     {
@@ -2041,67 +1982,6 @@ public static partial class MappingBuilder
                     line(pad + "- null");
                     break;
             }
-        }
-    }
-
-    private static void WriteFixture(MappingDraftFixture fixture, Action<string> line)
-    {
-        line("  - name: " + Scalar(fixture.Name));
-        if (fixture.Parameters.Count > 0)
-        {
-            line("    parameters: { " + string.Join(", ", fixture.Parameters.Select(kv => FlowScalar(kv.Key) + ": " + FlowScalar(kv.Value))) + " }");
-        }
-
-        if (fixture.Searches is { Count: > 0 } searches)
-        {
-            line("    searches:");
-            foreach (var answer in searches)
-            {
-                var id = answer.Id is null ? string.Empty : ", id: " + FlowScalar(answer.Id);
-                line("      - { search: " + FlowScalar(answer.Search) + ", field: " + FlowScalar(answer.Field) + ", value: " + FlowScalar(answer.Value) + id + " }");
-            }
-        }
-
-        if (fixture.Cache is { Count: > 0 } cache)
-        {
-            // Each row as the object it is, written verbatim as a $value is: the cache names its fields, not the record tree.
-            line("    cache:");
-            foreach (var (type, rows) in cache)
-            {
-                if (rows.Count == 0)
-                {
-                    line("      " + Scalar(type) + ": []");
-                    continue;
-                }
-
-                line("      " + Scalar(type) + ":");
-                WriteArray(new JsonArray(rows.Select(row => (JsonNode?)row.DeepClone()).ToArray()), 8, escape: false, line);
-            }
-        }
-
-        line("    row:");
-        foreach (var (column, value) in fixture.Record)
-        {
-            line("      " + Scalar(column) + ": " + (value is null ? "null" : Scalar(value)));
-        }
-
-        if (fixture.Datasets.Count > 0)
-        {
-            line("    datasets:");
-            foreach (var (child, rows) in fixture.Datasets)
-            {
-                line("      " + Scalar(child) + ":");
-                foreach (var row in rows)
-                {
-                    line("        - { " + string.Join(", ", row.Select(kv => FlowScalar(kv.Key) + ": " + (kv.Value is null ? "null" : FlowScalar(kv.Value)))) + " }");
-                }
-            }
-        }
-
-        line("    expected: |");
-        foreach (var text in fixture.Expected.Replace("\r\n", "\n", StringComparison.Ordinal).TrimEnd('\n').Split('\n'))
-        {
-            line(text.Length == 0 ? string.Empty : "      " + text);
         }
     }
 

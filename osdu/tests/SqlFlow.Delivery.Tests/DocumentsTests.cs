@@ -141,7 +141,6 @@ public class YamlDocumentLoaderTests
         Assert.Equal(new TemplateReference("osdu:wks:work-product-component--WellLog:1.4.0", "26a3c3441882db4f"), mapping.Template);
         Assert.Contains(mapping.Entries, e => e.Target.Text == "osdu.data.Curves" && e.IsRepeater && e.Source!.Child == "curves");
         Assert.Equal(["curves"], mapping.ChildDatasets);
-        Assert.Equal(2, mapping.Fixtures.Count);
         Assert.Equal(["{$param.legalTag}"], mapping.Envelope.LegalTags);
         Assert.Equal(["NO"], mapping.Envelope.OtherRelevantDataCountries);
     }

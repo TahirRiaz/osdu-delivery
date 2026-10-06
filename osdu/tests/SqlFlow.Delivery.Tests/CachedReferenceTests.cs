@@ -204,19 +204,16 @@ public sealed class CachedReferenceTests : IDisposable
     }
 
     [Fact]
-    public void The_translation_example_in_the_documents_renders_in_a_fixture()
+    public void The_translation_example_in_the_documents_passes_the_gate_and_renders_the_unit_it_translates_to()
     {
-        var key = DeliveryKey.Derive("test", ["w"]).Value.ToString("N");
-        var mapping = TestSchema.Mapping(ThroughAliases, $$$"""
-            fixtures:
-              - name: a Recall unit spelling, translated by OSDU's own ExternalUnitOfMeasure records
-                row: { name: w, depth: "1", unit: M }
-                expected: |
-                  {"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"w","Depth":1,"Unit":"dev:reference-data--UnitOfMeasure:m:"}}
-            """);
+        // A Recall unit spelling, translated by OSDU's own ExternalUnitOfMeasure records.
+        var cache = Cache(Units(), Aliases(clean: true));
+        Assert.Empty(Preflight.Check(TestSchema.Mapping(ThroughAliases), TestSchema.Build(), cache, TestSchema.Context(), sourceColumns: null));
 
-        var issues = Preflight.Check(mapping, TestSchema.Build(), Cache(Units(), Aliases(clean: true)), TestSchema.Context(), sourceColumns: null);
-        Assert.Empty(issues);
+        var key = DeliveryKey.Derive("test", ["well-1"]).Value.ToString("N");
+        RenderedRecord.AssertIs(
+            $$$"""{"id":"dev:work-product-component--Thing:{{{key}}}","kind":"test:wks:work-product-component--Thing:1.0.0","acl":{"owners":["owners@x"],"viewers":["viewers@x"]},"legal":{"legaltags":["tag"],"otherRelevantDataCountries":["NO"]},"data":{"Name":"well-1","Depth":1,"Unit":"dev:reference-data--UnitOfMeasure:m:"}}""",
+            Renderer(cache).Render(Record("M")));
     }
 
     [Fact]

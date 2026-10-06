@@ -1,0 +1,18 @@
+{
+  "id": "dev:work-product-component--Document:4e8fd15d4b6d585c8af23ee818efa8c9",
+  "kind": "osdu:wks:work-product-component--Document:1.0.0",
+  "acl": {
+    "owners": ["data.welllogsrecall.owners@dev.dataservices.energy"],
+    "viewers": ["data.sdd-well-logs.viewers@dev.dataservices.energy"]
+  },
+  "legal": {
+    "legaltags": ["dev-equinor-osdu-reference-default"],
+    "otherRelevantDataCountries": ["NO"]
+  },
+  "tags": { "DeliveredBy": "osdu-delivery" },
+  "data": {
+    "Name": "Well report NO 15/9 A",
+    "Description": "Geological observations over the logged interval.",
+    "Source": "recall"
+  }
+}

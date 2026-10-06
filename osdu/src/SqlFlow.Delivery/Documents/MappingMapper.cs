@@ -91,7 +91,6 @@ internal static partial class MappingMapper
         Validate(entries, parameters, source);
         ValidateSearches(entries, searches, source);
         ValidateLookups(entries, lookups, source);
-        var fixtureParameters = FixtureDefaults(y, source);
 
         return new MappingDefinition
         {
@@ -112,128 +111,7 @@ internal static partial class MappingMapper
             Lookups = lookups,
             Entries = entries,
             Envelope = Envelope(entries, kind, source),
-            FixtureParameters = fixtureParameters,
-            Fixtures = (y.Fixtures ?? []).Select((f, i) => new MappingFixture
-            {
-                Name = FlowMapper.Require(f.Name, $"fixtures[{i}].name", source),
-                Record = f.Row ?? throw FlowMapper.Missing($"fixtures[{i}].row", source),
-                Datasets = (f.Datasets ?? []).ToDictionary(
-                    kv => kv.Key,
-                    kv => (IReadOnlyList<IReadOnlyDictionary<string, string?>>)(kv.Value ?? []).Select(r => (IReadOnlyDictionary<string, string?>)r).ToList(),
-                    StringComparer.Ordinal),
-                Parameters = WithDefaults(fixtureParameters, f.Parameters),
-                Searches = FixtureSearches(f.Searches, searches, entries, $"{source}: fixtures[{i}]"),
-                Cache = FixtureCache(f.Cache, entries, $"{source}: fixtures[{i}]"),
-                Expected = FlowMapper.Require(f.Expected, $"fixtures[{i}].expected", source),
-            }).ToList(),
         };
-    }
-
-    /// <summary>
-    /// The parameter values every fixture renders with unless it gives its own (<c>fixtureDefaults.parameters</c>). A
-    /// defaults block with nothing in it, or with no fixture to apply to, is refused: it would say something that is never
-    /// used.
-    /// </summary>
-    private static IReadOnlyDictionary<string, string> FixtureDefaults(MappingYaml y, string source)
-    {
-        if (y.FixtureDefaults is not { } defaults)
-        {
-            return new Dictionary<string, string>(StringComparer.Ordinal);
-        }
-
-        if (defaults.Parameters is not { Count: > 0 } parameters)
-        {
-            throw new FlowValidationException(
-                $"{source}: fixtureDefaults.parameters lists the parameter values every fixture renders with, such as dataPartition: dev; it is empty.");
-        }
-
-        if (y.Fixtures is not { Count: > 0 })
-        {
-            throw new FlowValidationException($"{source}: fixtureDefaults says what every fixture renders with, and the mapping has no fixtures; remove it, or add fixtures.");
-        }
-
-        return new Dictionary<string, string>(parameters, StringComparer.Ordinal);
-    }
-
-    /// <summary>A fixture's parameters: the defaults, each replaced by the fixture's own value where it gives one.</summary>
-    private static Dictionary<string, string> WithDefaults(IReadOnlyDictionary<string, string> defaults, Dictionary<string, string>? own)
-    {
-        var merged = new Dictionary<string, string>(defaults, StringComparer.Ordinal);
-        foreach (var (name, value) in own ?? [])
-        {
-            merged[name] = value;
-        }
-
-        return merged;
-    }
-
-    /// <summary>
-    /// A fixture's assumed search answers, each naming a search the mapping declares, a property one of its findBy lines
-    /// compares, and at most one answer per question, so a fixture cannot say two things about the same lookup.
-    /// </summary>
-    private static List<FixtureSearchAnswer> FixtureSearches(
-        List<MappingFixtureSearchYaml>? written,
-        IReadOnlyDictionary<string, MappingSearch> searches,
-        IReadOnlyList<MappingEntry> entries,
-        string where)
-    {
-        var answers = new List<FixtureSearchAnswer>();
-        var seen = new HashSet<(string, string, string)>();
-        foreach (var (y, i) in (written ?? []).Select((y, i) => (y, i)))
-        {
-            var at = $"{where} searches[{i}]";
-            var name = y?.Search?.Trim();
-            if (string.IsNullOrEmpty(name) || !searches.TryGetValue(name, out var search))
-            {
-                throw new FlowValidationException(
-                    searches.Count == 0
-                        ? $"{at} answers a search, and the mapping declares none."
-                        : $"{at} names search '{name}', which the mapping does not declare; it declares {string.Join(", ", searches.Keys.Order(StringComparer.Ordinal))}.");
-            }
-
-            var field = y!.Field?.Trim();
-            var compared = entries
-                .SelectMany(e => e.ValueNodes)
-                .Where(e => e.Source?.Kind == MappingSourceKind.Search && string.Equals(e.Source.CacheType, name, StringComparison.Ordinal))
-                .SelectMany(e => e.FindBy.Select(f => f.Field))
-                .ToHashSet(StringComparer.Ordinal);
-            if (string.IsNullOrEmpty(field) || !compared.Contains(field))
-            {
-                throw new FlowValidationException(
-                    $"{at} answers search '{name}' on '{field}', which no findBy line of that search compares; they compare {string.Join(", ", compared.Order(StringComparer.Ordinal))}.");
-            }
-
-            var value = y.Value?.Trim();
-            if (string.IsNullOrEmpty(value))
-            {
-                throw new FlowValidationException($"{at} gives no value; an answer is for one value of {field}, which a render never searches for when it is empty.");
-            }
-
-            if (!seen.Add((name, field, value)))
-            {
-                throw new FlowValidationException($"{at} answers search '{name}' on {field} '{value}' a second time; a fixture says one thing about each lookup.");
-            }
-
-            var id = y.Id?.Trim();
-            if (string.IsNullOrEmpty(id))
-            {
-                id = null;
-            }
-            else
-            {
-                var segments = id.Split(':');
-                var searched = search.Kind.Split(':')[2];
-                if (segments.Length < 3 || !string.Equals(segments[1], searched, StringComparison.Ordinal))
-                {
-                    throw new FlowValidationException(
-                        $"{at} answers with '{id}', which is not the id of a {searched} record; search '{name}' looks in {search.Kind}.");
-                }
-            }
-
-            answers.Add(new FixtureSearchAnswer(name, field, value, id));
-        }
-
-        return answers;
     }
 
     /// <summary>Every lookup the mapping declares is read by a node: one nothing reads says something no record uses.</summary>
@@ -249,66 +127,6 @@ internal static partial class MappingMapper
             throw new FlowValidationException(
                 $"{source}: lookups.{name} is read by no node; read it with {LookupKey}: {name}.<field> or in a {FindAllKey} line as {LookupReference}.{name}.<field>, or remove it.");
         }
-    }
-
-    /// <summary>
-    /// A fixture's <c>cache</c> block: for each cached type it names, the rows the fixture renders against in place of what
-    /// the partition's cache holds of that type. A type is one the mapping reads, and each row an object with its record
-    /// <c>id</c>, named once in its type, and the fields it holds.
-    /// </summary>
-    private static Dictionary<string, IReadOnlyList<JsonObject>> FixtureCache(
-        Dictionary<string, object?>? written, IReadOnlyList<MappingEntry> entries, string where)
-    {
-        var cache = new Dictionary<string, IReadOnlyList<JsonObject>>(StringComparer.Ordinal);
-        if (written is null)
-        {
-            return cache;
-        }
-
-        var readTypes = MappingDefinition.CacheTypesReadBy(entries);
-        foreach (var (type, value) in written)
-        {
-            var at = $"{where} cache.{type}";
-            if (!readTypes.Contains(type, StringComparer.OrdinalIgnoreCase))
-            {
-                throw new FlowValidationException(readTypes.Count == 0
-                    ? $"{at}: the mapping reads nothing from the cache, so a fixture has no cached rows to declare."
-                    : $"{at}: the mapping reads no cached type '{type}'; it reads {string.Join(", ", readTypes)}.");
-            }
-
-            if (value is not IEnumerable<object> rows || value is IDictionary<object, object>)
-            {
-                throw new FlowValidationException($"{at} lists the rows the fixture assumes, each with its id and fields, such as [{{ id: \"dev:master-data--Wellbore:1234\", FacilityName: NO 15/9-F-1 }}]; write [] for a type that holds none.");
-            }
-
-            var items = new List<JsonObject>();
-            var ids = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var (row, i) in rows.Select((row, i) => (row, i)))
-            {
-                var rowAt = $"{at}[{i.ToString(CultureInfo.InvariantCulture)}]";
-                if (StaticValue(row, rowAt) is not JsonObject item)
-                {
-                    throw new FlowValidationException($"{rowAt} is a row: an object with its id and fields.");
-                }
-
-                var id = item["id"] is JsonValue idValue && idValue.TryGetValue<string>(out var text) ? text.Trim() : null;
-                if (string.IsNullOrEmpty(id))
-                {
-                    throw new FlowValidationException($"{rowAt} names no id; every cached row is kept under its record id.");
-                }
-
-                if (!ids.Add(id))
-                {
-                    throw new FlowValidationException($"{rowAt} is '{id}' again; a type holds a record once.");
-                }
-
-                items.Add(item);
-            }
-
-            cache[readTypes.First(t => t.Equals(type, StringComparison.OrdinalIgnoreCase))] = items;
-        }
-
-        return cache;
     }
 
     /// <summary>Every text inside a static value, where parameter tokens can appear.</summary>

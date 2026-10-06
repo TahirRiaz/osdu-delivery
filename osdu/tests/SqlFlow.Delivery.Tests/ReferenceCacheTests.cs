@@ -533,14 +533,14 @@ public class ReferenceCacheTests
         };
         // The wellbore the log belongs to is searched for, and the sample platform holds it.
         var searches = await RenderResolver.SearchesAsync(Samples.SampleTemplates, mapping);
-        var fixture = mapping.Fixtures.Single(f => f.Name.StartsWith("22494/1", StringComparison.Ordinal));
-        var search = new FixedRecordSearch([("data.FacilityName", fixture.Record["wellbore_uwi"]!, fixture.Searches[0].Id!)]);
+        var log = SampleWellLogs.Logs().Single(l => l.LogId == "22494/1");
+        var search = new FixedRecordSearch([("data.FacilityName", log.WellboreUwi, "dev:master-data--Wellbore:" + FixedRecordSearchFactory.WellboreId(log.WellboreUwi))]);
         var renderer = new MappingRenderer(mapping, schema, references, context, searches, search);
-        // The neutron porosity of NO 15/5-7 AT2, as Recall describes it, in place of the fixture's own curves.
+        // The neutron porosity of NO 15/5-7 AT2, as Recall describes it, in place of the log's own curves.
         var nphi = SampleWellLogs.CurveRows(SampleWellLogs.Logs().Single(l => l.LogId == "9982/1")).Single(c => c["curve_id"] == "NPHI");
         var porosity = await Samples.RenderSettledAsync(renderer, new SourceRecord
         {
-            Row = SourceRow.FromStrings(fixture.Record),
+            Row = SourceRow.FromStrings(SampleWellLogs.LogRow(log)),
             Scopes = new Dictionary<string, IReadOnlyList<SourceRow>>(StringComparer.OrdinalIgnoreCase)
             {
                 ["curves"] = [SourceRow.FromStrings(nphi.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase))],

@@ -180,8 +180,6 @@ record:
 | `searches` | The record sets the mapping's `$search` nodes look in, each with the saved schema that says how its kind is indexed. See [Searches](#searches). |
 | `lookups` | The records a row is matched to once in the cache and read wherever the record needs them, by name. See [Lookups](#lookups). |
 | `record` | The record the mapping renders, laid out as the record is, described below. |
-| `fixtureDefaults` | What every fixture renders with unless it says otherwise: `parameters`, written once. See [Fixtures](#fixtures). |
-| `fixtures` | Example rows and the exact record each must render to, with the answers they assume the platform gives to the searches they make and the cached rows they assume. Every run checks them before rendering. See [Fixtures](#fixtures). |
 
 ### The record tree
 
@@ -415,19 +413,6 @@ the flow's identity may view in the partition it delivers to.
   renders none of its records again.
 - In lineage the mapping reads the searched kind and the flow reads the mapping, so the flow that delivers wellbores to
   the partition is ordered before a flow whose mapping searches for them.
-
-A fixture declares the answers it assumes, and renders against them without asking the platform, so it checks the
-mapping rather than the platform's data of the day. An answer without `id` says the platform holds no such record. A
-fixture whose render asks something it does not answer fails, naming the answer to add:
-
-```yaml
-fixtures:
-  - name: L-1001, three curves in metres
-    searches:
-      - { search: Wellbore, field: data.FacilityName, value: OSDU-DEV-1-A, id: "dev:master-data--Wellbore:OSDU-DEV-1-A" }
-    row:
-      wellbore_uwi: OSDU-DEV-1-A
-```
 
 ### Lookups
 
@@ -866,58 +851,6 @@ One rule decides both: the gate runs it (`MappingCoverage.RequiredIssues`) as it
 rule over the whole template. `POST /api/v1/delivery/mapping-builder/coverage` answers the same for any mapping
 document; nothing is rendered and no cache is read.
 
-### Fixtures
-
-A fixture is an example row and the exact record it must render to. The preflight renders every fixture before every
-run, against the pinned template and cache, the search answers the fixture declares and the cached rows it declares, and
-a fixture that renders anything else stops the run: the fixtures are the mapping's regression suite. A fixture renders
-with the flow's parameters, `fixtureDefaults.parameters` over them, and its own `parameters` over those, name by name:
-
-```yaml
-fixtureDefaults:
-  parameters: { dataPartition: dev, aclOwner: owners@dev, aclViewer: viewers@dev, legalTag: dev-default }
-
-fixtures:
-  - name: L-1001, three curves in metres
-    row: { log_id: L-1001, wellbore_uwi: OSDU-DEV-1-A }
-    expected: |
-      { "id": "dev:work-product-component--WellLog:...", ... }
-  - name: L-1002, another partition's legal tag
-    parameters: { legalTag: dev-other }
-    row: { log_id: L-1002, wellbore_uwi: OSDU-DEV-1-A }
-    expected: |
-      { ... }
-```
-
-A fixture reading a cached type whose rows change every day (wellbores, the access groups a data office maintains)
-declares the rows it assumes under `cache`, by type: for each type it names, it renders against exactly those rows,
-whatever the partition's cache holds of it, so it checks the mapping rather than the data of the day. A row is an object
-with its record `id` and the fields it holds, named as the cache names them; `[]` says the type holds none. Every type it
-names is one the mapping reads. Types it does not name are read from the partition's cache as ever:
-
-```yaml
-  - name: L-1003, a wellbore in a field with a group of its own
-    cache:
-      Wellbore:
-        - id: dev:master-data--Wellbore:OSDU-DEV-1-A
-          FacilityName: OSDU-DEV-1-A
-          GeoContexts.FieldID: ["dev:master-data--Field:DEV:"]
-      AccessGroupMap:
-        - id: dev:data-governance--AccessGroupMap:dev-field
-          EntitlementGroupEmail: data.office.dev.viewers@dev
-          FieldIDList: ["dev:master-data--Field:DEV"]
-          FieldList: [DEV]
-    row: { log_id: L-1003, wellbore_uwi: OSDU-DEV-1-A }
-    expected: |
-      { ... }
-```, `sqlflow fixtures update <flow.yaml>` renders each
-fixture exactly as the preflight does and writes what it renders into its `expected` block
-([reference/cli/delivery.md](reference/cli/delivery.md)). Only those blocks change; the rest of the file, its comments and
-its layout stay as written, and a fixture that already renders what it expects is not touched. A fixture whose record
-would be held, that asks a search it declares no answer to, or whose `expected` is written inside a flow mapping is left
-as it is and named, and the command ends with an error. Review the change like any other: the fixture now says what the
-mapping does, which is only right if the mapping is.
-
 ### Writing a node once: YAML anchors
 
 A node, a list of modifiers or a condition used in several places can be written once with a YAML anchor and repeated
@@ -947,13 +880,12 @@ When a mapping is read:
   refused. A key written twice in one map is refused, naming its line.
 - Every `$search` node names a search the `searches` block declares, and its `$findBy` lines compare properties under
   `data`. Every declared search is read by a node, no two look in one kind, and each pins a schema of the entity type it
-  searches. A fixture's answers name a declared search, a property its `$findBy` lines compare, and an id of the entity
-  type searched, once per lookup.
+  searches.
 - Every `$lookup` node, and every `$findAll` line reading a lookup, names a lookup the `lookups` block declares and a
   field of its record, and every declared lookup is read by a node. A `$findAll` belongs to a `$cache` node, has exactly
   one key line and no key field it also asks to be empty, and reads another type than the lookup it keys by. A list of
   values holds only literals and value nodes; the access lists among them list at least one literal, and the legal
-  lists hold none. A fixture's cached rows name types the mapping reads, each row once with its id.
+  lists hold none.
 
 Before any row is rendered (the preflight):
 
@@ -977,7 +909,6 @@ Before any row is rendered (the preflight):
    read from a cached type of `master-data--Wellbore`.
 9. A literal on a relationship property exists in the cache when the cache holds that entity type. An `id` or `ref`
    modifier builds ids of an entity type the property points to, matching its pattern; a `ref` settles one type.
-10. Every fixture renders exactly as declared, against the search answers and the cached rows it declares.
 
 These checks judge the mapping before anything renders. Each rendered document is judged as well, immediately before it
 is sent, against every rule of its template and the records it refers to, and its verdict is recorded on its attempt
@@ -1023,8 +954,7 @@ The GUI's Mapping builder answers "I want to populate this OSDU kind; how do I w
    nodes hold) is named with a request for a value to check with. What is typed there is never written into the mapping.
 
 An existing mapping opens in the builder with everything it says: its lookups, the nodes reading them, its `$findAll`
-nodes, its lists of values and of objects, and the search answers and cached rows its fixtures declare, so writing it
-back gives the same mapping. The builder writes the whole document from what it holds, so the comments of a hand-written mapping are
+nodes, and its lists of values and of objects, so writing it back gives the same mapping. The builder writes the whole document from what it holds, so the comments of a hand-written mapping are
 not kept.
 
 ## What is removed
@@ -1044,6 +974,13 @@ not kept.
 - Manual submission: the API that took records in a request, the page and dialog that sent them, and the source contract
   that described a flow's columns to a sender. Records delivered by hand go through the flow's pre and ingestion flows
   like any other ([design.md](design.md) section 3.3).
+- Fixtures: the `fixtures` and `fixtureDefaults` blocks, the example rows a mapping carried with the exact record each
+  had to render to, which the preflight rendered before every run, and the `sqlflow fixtures update` verb that wrote
+  those records. A mapping that still holds either block is refused, naming the blocks to delete. Every record a run
+  renders is still judged against its template before it is sent
+  ([documents.md](documents.md#validation-before-a-record-is-sent)), and a `plan` run renders the rows against the
+  ledger and reports what a mapping change would send, sending nothing
+  ([reference/cli/delivery.md](reference/cli/delivery.md)).
 
 Rendering now needs the catalog, because templates live there. A CLI run without a catalog can still validate
 documents. The reference snapshots, which this change left in the repository, have since gone the same way: what is cached is

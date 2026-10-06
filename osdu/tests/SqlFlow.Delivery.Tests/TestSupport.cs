@@ -440,8 +440,8 @@ public static class Samples
     /// <summary>
     /// The sample estate declares where it delivers the way a real estate does, as ${env:...} references a node holds
     /// (osdu/docs/environment-variables.md), so the suites supply them exactly as a node would. The values are the ones
-    /// every mapping fixture pins, which is what keeps a rendered document byte-identical to the fixture's expected
-    /// record. Set for the whole assembly before any test reads a sample document, and never overwriting a value the
+    /// the records the suites keep were rendered with (<see cref="RenderedRecord.Folder"/>), which is what keeps a rendered
+    /// document byte-identical to the kept record. Set for the whole assembly before any test reads a sample document, and never overwriting a value the
     /// process was started with, so a run against a real estate keeps its own.
     /// </summary>
     [ModuleInitializer]
@@ -985,10 +985,10 @@ public static class TestSchema
     /// <summary>
     /// A mapping document over the test template: the header, then the record with <see cref="Envelope"/>, the data
     /// properties <paramref name="baseData"/> followed by <paramref name="data"/>, and the record-level properties
-    /// <paramref name="record"/> (a tags block, or a property the record writes itself), then <paramref name="fixtures"/>
-    /// (a whole top-level block). A fragment is written at any indentation: it is laid under its parent as it stands.
+    /// <paramref name="record"/> (a tags block, or a property the record writes itself). A fragment is written at any
+    /// indentation: it is laid under its parent as it stands.
     /// </summary>
-    public static string MappingDocument(string data = "", string fixtures = "", string baseData = BaseData, string record = "")
+    public static string MappingDocument(string data = "", string baseData = BaseData, string record = "")
     {
         var body = Indented(Envelope, 2) + Indented(record, 2);
         var properties = Indented(baseData, 4) + Indented(data, 4);
@@ -1011,12 +1011,12 @@ public static class TestSchema
               dataPartition: {"{"} required: true {"}"}
             record:
 
-            """ + body + "\n" + fixtures + "\n";
+            """ + body + "\n";
     }
 
     /// <summary>A valid mapping over the test template, with <paramref name="data"/> after the base data properties.</summary>
-    public static MappingDefinition Mapping(string data = "", string fixtures = "", string baseData = BaseData, string record = "")
-        => new DeliveryDocumentLoader().ParseMapping(MappingDocument(data, fixtures, baseData, record), "thing.yaml");
+    public static MappingDefinition Mapping(string data = "", string baseData = BaseData, string record = "")
+        => new DeliveryDocumentLoader().ParseMapping(MappingDocument(data, baseData, record), "thing.yaml");
 
     /// <summary>A mapping document with a cache node and a repeated array, for the loader tests.</summary>
     public static string MappingYaml => MappingDocument("""

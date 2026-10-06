@@ -250,9 +250,28 @@ public sealed class DeliveryDocumentLoader
             throw new FlowValidationException($"{source}: expected 'documentType: {MappingDefinition.DocumentTypeName}', found '{kind}'.");
         }
 
+        RefuseFixtures(yaml, source);
         var y = Deserialize<MappingYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
         return MappingMapper.Map(y, source) with { Fingerprint = MappingFingerprint.Of(yaml, source) };
     }
+
+    /// <summary>
+    /// Refuses a mapping written when mappings carried example rows and the records they had to render to. It is told to
+    /// delete those blocks rather than given the parser's unknown key, which would leave the author looking for a new name.
+    /// </summary>
+    private void RefuseFixtures(string yaml, string source)
+    {
+        var keys = Deserialize<Dictionary<string, object?>>(_probe, yaml, source);
+        var present = FixtureKeys.Where(key => keys?.ContainsKey(key) == true).ToList();
+        if (present.Count > 0)
+        {
+            throw new FlowValidationException(
+                $"{source}: a mapping holds no fixtures; delete its {string.Join(" and ", present)} block{(present.Count > 1 ? "s" : string.Empty)}. Every record a run renders is checked against the template, and a plan run shows which records a change would deliver again.");
+        }
+    }
+
+    /// <summary>The top-level keys of a mapping that carried fixtures.</summary>
+    private static readonly string[] FixtureKeys = ["fixtureDefaults", "fixtures"];
 
     /// <summary>
     /// The template a mapping document names in its <c>template</c> block, read without validating anything else, or

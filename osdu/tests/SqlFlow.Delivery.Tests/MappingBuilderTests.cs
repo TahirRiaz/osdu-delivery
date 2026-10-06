@@ -37,7 +37,7 @@ public class MappingBuilderTests
         Assert.Equal(JsonSerializer.Serialize(draft, Json), JsonSerializer.Serialize(again, Json));
         Assert.Equal(yaml, MappingBuilder.ToYaml(again));
 
-        // What the builder wrote passes the preflight against the sample template and cache, fixtures included.
+        // What the builder wrote passes the preflight against the sample template and cache.
         var schema = await Samples.SampleTemplates.LoadAsync(reread.Template);
         Assert.NotNull(schema);
         var references = await SampleCacheAsync();
