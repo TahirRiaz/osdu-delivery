@@ -595,6 +595,42 @@ public class RemovalRuntimeTests : IDisposable
     }
 
     [Fact]
+    public async Task Records_already_removed_are_deleted_from_the_ledger_without_asking_OSDU_and_the_rest_are_left()
+    {
+        var (runtime, protocol, ledger) = await DeliveredEstateAsync();
+        using (runtime)
+        {
+            var keys = await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100);
+            runtime.Actor = "gui:tahir";
+            Assert.Equal(2, (await runtime.RemoveAsync(RemovalSelection.Of([keys[0], keys[1]]), RemovalChoice.Record)).Removed);
+            protocol.Deletes.Clear();
+
+            // Named: the removed one goes, the one OSDU still holds is left and counted as such.
+            var named = await runtime.PurgeFromLedgerAsync([keys[0], keys[2], keys[0]]);
+
+            Assert.Equal((2, 1, 1), (named.Selected, named.Purged, named.Left));
+            Assert.Contains("1 of 2 record(s) deleted from the ledger; 1 left as they were", named.Describe(), StringComparison.Ordinal);
+            Assert.Empty(protocol.Deletes);
+            Assert.Null(await ledger.GetRecordAsync(runtime.Flow.Id, keys[0]));
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, keys[2]))!.Status);
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "purge" }));
+            Assert.Equal(("completed", "gui:tahir"), (activity.Outcome, activity.Actor));
+            Assert.Equal(activity.ActivityId, (await ledger.FindPurgedAsync(runtime.Flow.Id, keys[0]))!.ActivityId);
+
+            // Every record removed: the rest of them go, and nothing OSDU holds.
+            var every = await runtime.PurgeFromLedgerAsync(null);
+
+            Assert.Equal((1, 1), (every.Selected, every.Purged));
+            Assert.Null(await ledger.GetRecordAsync(runtime.Flow.Id, keys[1]));
+            Assert.Equal(3, (await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100)).Count);
+            Assert.Empty(protocol.Deletes);
+
+            // Nothing left to delete: asked again, it says so and changes nothing.
+            Assert.Equal((0, 0), ((await runtime.PurgeFromLedgerAsync(null)).Selected, (await runtime.PurgeFromLedgerAsync(null)).Purged));
+        }
+    }
+
+    [Fact]
     public async Task A_record_OSDU_had_already_lost_is_deleted_from_the_ledger_with_the_removal()
     {
         var (runtime, protocol, ledger) = await DeliveredEstateAsync();

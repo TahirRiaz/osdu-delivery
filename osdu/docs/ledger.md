@@ -602,6 +602,11 @@ activities that named it before stay, as the whole audit trail does. A record's 
 404 titled "Deleted from the ledger", saying who deleted it and when, with that line under `purged`. A reversal's item
 of the record stays: it is the reversal's.
 
+A record removed from OSDU earlier is deleted from the ledger alone, asking nothing of OSDU, by the same deletion: the
+removal dialog's "Leave as it is" with the ledger step, or `POST /flows/{pipelineId}/records/purge` (keys, a filter, or
+every record removed) and `POST /records/{flowId}/{key}/purge`. It runs in the control plane as an intervention of kind
+`purge`, and a record OSDU may still hold is left as it is and counted as left (the record route refuses it with 409).
+
 What goes is the record's history, for good. If its row is still in the source, the next run that reads it delivers it
 as a record the ledger never held, under the same OSDU id; the line of the earlier one stays.
 

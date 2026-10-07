@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CircleAlert, Info, Loader2, RotateCcw, Trash2, TriangleAlert, Undo2, type LucideIcon } from "lucide-react";
+import { CircleAlert, Eraser, Info, Loader2, RotateCcw, Trash2, TriangleAlert, Undo2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -23,6 +23,7 @@ import { isApiError } from "@/api/client";
 import {
   deliveryApi,
   type DeliveryFlowScope,
+  type DeliveryLedgerPurgeResult,
   type DeliveryRecordFilter,
   type DeliveryRemovalAccepted,
   type DeliveryRemovalRequest,
@@ -53,19 +54,28 @@ interface RemovalDialogProps {
   selection: RemovalSelection;
   /** What the records are called in the dialog's title when there is exactly one of them. */
   singleLabel?: string;
+  /** Every selected record is removed from OSDU already: the dialog opens on deleting it from the ledger. */
+  alreadyRemoved?: boolean;
+  /** A removal that reaches OSDU was queued on a node. */
   onQueued: (accepted: DeliveryRemovalAccepted) => void;
+  /** Records already removed from OSDU were deleted from the ledger, here and now. */
+  onPurged: (result: DeliveryLedgerPurgeResult) => void;
 }
 
+/** What to do in OSDU: one of the removal scopes, or nothing, for records already removed from it. */
+type OsduChoice = RemovalScope | "none";
+
 interface ScopeChoice {
-  scope: RemovalScope;
+  scope: OsduChoice;
   title: string;
   /** What happens, in one line of the operator's terms. */
   effect: string;
   /** What the ledger does about it, which is not the same question as what OSDU does: shown on hover, with the call. */
   ledger: string;
-  reversible: boolean;
-  /** The call the scope makes against the target, as the flow resolves it. */
-  call: (target: DeliveryTarget) => string;
+  /** Whether it can be undone; null for a choice that changes nothing in OSDU. */
+  reversible: boolean | null;
+  /** The call the scope makes against the target, as the flow resolves it; null for none. */
+  call: (target: DeliveryTarget) => string | null;
   /** Why the flow cannot make the call, or null when it can. */
   refusal: (target: DeliveryTarget) => string | null;
   confirmLabel: string;
@@ -124,25 +134,30 @@ const SCOPES: ScopeChoice[] = [
     refusal: (target) => refusalOf(target.everythingPath),
     confirmLabel: "Purge everything",
   },
+  {
+    scope: "none",
+    title: "Leave as it is",
+    effect: "For records already removed.",
+    ledger: "Nothing is asked of OSDU. Deleting from the ledger reaches only the records already removed from it.",
+    reversible: null,
+    call: () => null,
+    refusal: () => null,
+    confirmLabel: "Delete from ledger",
+  },
 ];
 
-const GROUPS: { reversible: boolean; label: string; icon: LucideIcon; tone: string }[] = [
-  { reversible: true, label: "Reversible", icon: RotateCcw, tone: "text-success" },
-  { reversible: false, label: "Permanent", icon: TriangleAlert, tone: "text-destructive" },
-];
+/** The choices that leave a record out of OSDU, after which the ledger may delete it. */
+function leavesItOut(scope: OsduChoice): boolean {
+  return scope === "record" || scope === "everything" || scope === "none";
+}
 
 /** The word an operator types to confirm a permanent removal: the partition it is aimed at, or the flow. */
 function confirmationWord(target: DeliveryTarget | undefined, flowName: string): string {
   return target?.dataPartition ?? flowName;
 }
 
-/** The scopes that take a record out of OSDU, after which the ledger may delete it too. */
-function takesItOut(scope: RemovalScope): boolean {
-  return scope === "record" || scope === "everything";
-}
-
 function requestFor(selection: RemovalSelection, scope: RemovalScope, purgeLedger = false): DeliveryRemovalRequest {
-  const purge = purgeLedger && takesItOut(scope) ? { purgeLedger: true } : {};
+  const purge = purgeLedger && leavesItOut(scope) ? { purgeLedger: true } : {};
   return selection.kind === "keys"
     ? { scope, keys: selection.keys, ...purge }
     : { scope, filter: selection.filter, expected: selection.expected, ...purge };
@@ -169,6 +184,17 @@ function InfoTip({ label, children, testId }: { label: string; children: ReactNo
   );
 }
 
+/** Whether a choice can be undone: a quiet word led by a glyph in its tone, the same on every row of both parts. */
+function Permanence({ reversible }: { reversible: boolean }) {
+  const Icon = reversible ? RotateCcw : TriangleAlert;
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground">
+      <Icon className={cn("size-3", reversible ? "text-success" : "text-destructive")} aria-hidden />
+      {reversible ? "reversible" : "permanent"}
+    </span>
+  );
+}
+
 /** One fact of the target panel: a quiet label over its value. */
 function TargetFact({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
   return (
@@ -179,32 +205,60 @@ function TargetFact({ label, value, mono = false }: { label: string; value: stri
   );
 }
 
+/** The heading of one part of the dialog: where its choice acts. */
+function PartHeading({ children }: { children: ReactNode }) {
+  return <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
+}
+
+/** The frame of one choice: a bordered row, marked when chosen, quiet when the flow cannot take it. */
+function ChoiceRow({ active, permanent, unavailable, children }: { active: boolean; permanent: boolean; unavailable: boolean; children: ReactNode }) {
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-1 rounded-md border pl-3 pr-1 transition-colors",
+        active
+          ? permanent ? "border-destructive/70 bg-destructive/5" : "border-primary bg-primary/5"
+          : "border-border hover:bg-accent/40",
+        unavailable && "opacity-60 hover:bg-transparent",
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
 /**
- * The one removal surface: which records, how much of each goes, and whether it can be undone. The four scopes are
- * genuinely different OSDU calls with different promises, so each is named with one line of what it does, grouped by
- * whether it can be undone; the call it makes and what the ledger does about it are on hover, beside it. The partition
- * stays in sight, since an operator one tab away from another environment needs it before anything else, and a
- * permanent scope asks for it to be typed back; the endpoint and route are on hover beside it.
+ * The one removal surface, for what goes in OSDU and what goes in the ledger: which records, how much of each goes, and
+ * whether it can be undone. Its two parts say where each choice acts. In OSDU, the scopes are genuinely different calls
+ * with different promises, each named with one line of what it does; "Leave as it is" is offered for records already
+ * removed. In the ledger, deleting the records' history is a step of its own, offered only with a choice that leaves them
+ * out of OSDU. Every row carries the same mark of whether it can be undone, and anything permanent asks for the partition
+ * to be typed back. What the ledger does and the call each choice makes are on hover, beside it; the endpoint and route
+ * are beside the partition, which stays in sight.
  */
-export function RemovalDialog({ open, onClose, pipelineId, flowScope, flowName, selection, singleLabel, onQueued }: RemovalDialogProps) {
-  const [scope, setScope] = useState<RemovalScope>("record");
-  const [purgeLedger, setPurgeLedger] = useState(false);
+export function RemovalDialog({
+  open, onClose, pipelineId, flowScope, flowName, selection, singleLabel, alreadyRemoved = false, onQueued, onPurged,
+}: RemovalDialogProps) {
+  const [scope, setScope] = useState<OsduChoice>(alreadyRemoved ? "none" : "record");
+  const [purgeLedger, setPurgeLedger] = useState(alreadyRemoved);
   const [typed, setTyped] = useState("");
   const [wasOpen, setWasOpen] = useState(open);
 
-  // Every opening starts from the reversible removal with an empty confirmation and the ledger left alone, so a purge is
-  // never one click away from the last thing the operator did.
+  // Every opening starts afresh: on the reversible removal with the ledger left alone, or, for records already removed, on
+  // deleting them from the ledger, which still waits for the partition to be typed. A purge is never one click away from
+  // the last thing the operator did.
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
-      setScope("record");
-      setPurgeLedger(false);
+      setScope(alreadyRemoved ? "none" : "record");
+      setPurgeLedger(alreadyRemoved);
       setTyped("");
     }
   }
 
-  const purging = purgeLedger && takesItOut(scope);
-  const request = useMemo(() => requestFor(selection, scope, purging), [selection, scope, purging]);
+  const purging = purgeLedger && leavesItOut(scope);
+  const removalScope: RemovalScope = scope === "none" ? "record" : scope;
+  const request = useMemo(() => requestFor(selection, removalScope, purging), [selection, removalScope, purging]);
   const preview = useQuery({
     queryKey: ["delivery", "removal-preview", pipelineId, flowScope?.interfaceName ?? null, flowScope?.partition ?? null, JSON.stringify(requestFor(selection, "record"))],
     queryFn: () => deliveryApi.previewRemoval(pipelineId, requestFor(selection, "record"), flowScope),
@@ -222,17 +276,37 @@ export function RemovalDialog({ open, onClose, pipelineId, flowScope, flowName, 
     onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
+  // Deleting from the ledger alone asks nothing of OSDU: the ledger answers here and now, through the same deletion the
+  // removal's extra step makes.
+  const purge = useMutation({
+    mutationFn: () => deliveryApi.purgeRecords(
+      pipelineId,
+      selection.kind === "keys" ? { keys: selection.keys } : { filter: selection.filter, expected: selection.expected },
+      flowScope),
+    onSuccess: (result) => {
+      onPurged(result);
+      onClose();
+    },
+    onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
+  });
+
   const choice = SCOPES.find((s) => s.scope === scope)!;
   const target = preview.data?.target;
   const word = confirmationWord(target, flowName);
-  // Deleting from the ledger cannot be undone either: the record's history goes, whichever removal takes it out of OSDU.
-  const needsTyping = !choice.reversible || purging;
-  const confirmed = !needsTyping || typed.trim() === word;
   const records = preview.data?.records ?? (selection.kind === "keys" ? selection.keys.length : selection.expected);
+  const removed = preview.data?.removed ?? (alreadyRemoved ? records : 0);
   // More than one removal takes: the API would refuse it, so the dialog says so and does not offer it.
   const capped = preview.data?.capped === true;
   const refused = target === undefined ? null : choice.refusal(target);
-  const busy = remove.isPending;
+  const busy = remove.isPending || purge.isPending;
+  const needsTyping = choice.reversible === false || purging;
+  const confirmed = !needsTyping || typed.trim() === word;
+  // Nothing in OSDU and nothing in the ledger is no request at all.
+  const nothingAsked = scope === "none" && !purging;
+  const acting = scope === "none" ? removed : records;
+  // Every record of the selection is out of OSDU already: only purging what OSDU keeps of it, or leaving it, still acts on it.
+  const allRemoved = records > 0 && removed >= records;
+  const offered = SCOPES.filter((option) => option.scope !== "none" || removed > 0 || scope === "none");
 
   const subject = capped
     ? `More than one removal takes: ${records.toLocaleString()}${selection.kind === "filter" ? "+" : ""} records. Narrow the selection and remove them in parts.`
@@ -241,6 +315,13 @@ export function RemovalDialog({ open, onClose, pipelineId, flowScope, flowName, 
       : selection.kind === "filter"
         ? `${records.toLocaleString()} records matching the filter`
         : `${records.toLocaleString()} records`;
+  const removedNote = removed === 0
+    ? null
+    : records === 1 ? "removed from OSDU" : `${removed.toLocaleString()} of them removed from OSDU`;
+
+  const confirmLabel = scope === "none"
+    ? choice.confirmLabel
+    : purging ? `${choice.confirmLabel} and delete from ledger` : choice.confirmLabel;
 
   return (
     <AlertDialog
@@ -251,14 +332,14 @@ export function RemovalDialog({ open, onClose, pipelineId, flowScope, flowName, 
         }
       }}
     >
-      {/* Four scopes and a typed confirmation can outgrow a short window: the dialog scrolls rather than putting its
-          buttons past the bottom of the viewport. */}
+      {/* Five choices, the ledger step and a typed confirmation can outgrow a short window: the dialog scrolls rather than
+          putting its buttons past the bottom of the viewport. */}
       <AlertDialogContent data-testid="removal-dialog" className="max-h-[calc(100dvh-2rem)] max-w-lg gap-4 overflow-y-auto">
         <AlertDialogHeader className="gap-1 text-left">
           <div className="flex items-center gap-2">
             <AlertDialogTitle className="flex min-w-0 flex-1 items-center gap-2">
               <Trash2 className="size-4 shrink-0 text-destructive" />
-              Remove from OSDU
+              Remove
             </AlertDialogTitle>
             {target === undefined
               ? !preview.isError && <Skeleton className="h-5 w-16 rounded-md" />
@@ -282,6 +363,7 @@ export function RemovalDialog({ open, onClose, pipelineId, flowScope, flowName, 
           </div>
           <AlertDialogDescription className="break-words" data-testid="removal-scope-line">
             {subject}
+            {removedNote !== null && !capped && <span className="text-muted-foreground/80">{` · ${removedNote}`}</span>}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
@@ -289,115 +371,120 @@ export function RemovalDialog({ open, onClose, pipelineId, flowScope, flowName, 
           ? <CorrelationError error={preview.error} />
           : <p className="text-[13px] text-destructive">{String(preview.error)}</p>)}
 
-        <RadioGroup
-          value={scope}
-          onValueChange={(next) => {
-            setScope(next as RemovalScope);
-            setTyped("");
-          }}
-          disabled={busy}
-          aria-label="What to remove"
-          className="gap-3"
-        >
-          {GROUPS.map((group) => (
-            <div key={group.label} className="flex flex-col gap-1.5" role="group" aria-label={group.label}>
-              <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                <group.icon className={cn("size-3", group.tone)} aria-hidden />
-                {group.label}
-              </div>
-              {SCOPES.filter((option) => option.reversible === group.reversible).map((option) => {
-                const active = option.scope === scope;
-                // A scope whose call the flow cannot resolve, or whose route refuses it, is not offered: the node would
-                // refuse it anyway, and offering it invites an operator to ask for a removal that never happens.
-                const unavailable = target === undefined ? null : option.refusal(target);
-                const id = `removal-scope-${option.scope}`;
-                return (
-                  <div
-                    key={option.scope}
-                    className={cn(
-                      "flex items-start gap-1 rounded-md border pl-3 pr-1 transition-colors",
-                      active
-                        ? option.reversible ? "border-primary bg-primary/5" : "border-destructive/70 bg-destructive/5"
-                        : "border-border hover:bg-accent/40",
-                      unavailable !== null && "opacity-60 hover:bg-transparent",
-                    )}
+        <div className="flex flex-col gap-1.5">
+          <PartHeading>In OSDU</PartHeading>
+          <RadioGroup
+            value={scope}
+            onValueChange={(next) => {
+              setScope(next as OsduChoice);
+              setTyped("");
+            }}
+            disabled={busy}
+            aria-label="What to do in OSDU"
+            className="gap-1.5"
+          >
+            {offered.map((option) => {
+              const active = option.scope === scope;
+              // A scope whose call the flow cannot resolve, or whose route refuses it, is not offered: the node would refuse
+              // it anyway, and offering it invites an operator to ask for a removal that never happens. Nor is one that has
+              // nothing left to act on: a record out of OSDU has no latest version to step back from or earlier ones to purge.
+              const refusal = target === undefined || option.scope === "none" ? null : option.refusal(target);
+              const unavailable: { line: string; why: string } | null = option.scope === "none"
+                ? removed === 0 ? { line: "None of these is removed yet.", why: "None of these is removed from OSDU yet." } : null
+                : allRemoved && option.scope !== "everything"
+                  ? { line: "Removed from OSDU already.", why: "Every record here is removed from OSDU already, so there is nothing of it for this to act on." }
+                  : refusal !== null ? { line: "Not available for this flow.", why: refusal } : null;
+              const call = target === undefined ? null : option.call(target);
+              const id = `removal-scope-${option.scope}`;
+              return (
+                <ChoiceRow key={option.scope} active={active} permanent={option.reversible === false} unavailable={unavailable !== null}>
+                  <label
+                    htmlFor={id}
+                    className={cn("flex min-w-0 flex-1 items-start gap-2.5 py-2", unavailable === null ? "cursor-pointer" : "cursor-not-allowed")}
                   >
-                    <label
-                      htmlFor={id}
-                      className={cn("flex min-w-0 flex-1 items-start gap-2.5 py-2", unavailable === null ? "cursor-pointer" : "cursor-not-allowed")}
-                    >
-                      <RadioGroupItem
-                        id={id}
-                        value={option.scope}
-                        disabled={unavailable !== null}
-                        className={cn("mt-0.5", !option.reversible && "text-destructive [&_svg]:fill-destructive")}
-                        data-testid={id}
-                      />
-                      <span className="flex min-w-0 flex-col gap-0.5">
-                        <span className="text-[13px] font-medium leading-tight">{option.title}</span>
-                        <span className="text-[12px] leading-snug text-muted-foreground">
-                          {unavailable !== null ? "Not available for this flow." : option.effect}
-                        </span>
+                    <RadioGroupItem
+                      id={id}
+                      value={option.scope}
+                      disabled={unavailable !== null}
+                      className={cn("mt-0.5", option.reversible === false && "text-destructive [&_svg]:fill-destructive")}
+                      data-testid={id}
+                    />
+                    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="text-[13px] font-medium leading-tight">{option.title}</span>
+                      <span className="text-[12px] leading-snug text-muted-foreground">
+                        {unavailable !== null
+                          ? unavailable.line
+                          : option.scope === "none" && records > 1 ? `For the ${removed.toLocaleString()} already removed.` : option.effect}
                       </span>
-                    </label>
+                    </span>
+                  </label>
+                  <span className="flex items-center gap-1 pt-1.5">
+                    {option.reversible !== null && <Permanence reversible={option.reversible} />}
                     {target !== undefined && (
-                      <span className="pt-1.5">
-                        <InfoTip label={`About ${option.title.toLowerCase()}`} testId={`removal-scope-${option.scope}-info`}>
-                          {unavailable !== null
-                            ? <span>{unavailable}</span>
-                            : (
-                              <div className="flex flex-col gap-1.5">
-                                <span>{option.ledger}</span>
-                                <span className="break-all font-mono text-[11px] text-muted-foreground">{option.call(target)}</span>
-                              </div>
-                            )}
-                        </InfoTip>
-                      </span>
+                      <InfoTip label={`About ${option.title.toLowerCase()}`} testId={`${id}-info`}>
+                        {unavailable !== null
+                          ? <span>{unavailable.why}</span>
+                          : (
+                            <div className="flex flex-col gap-1.5">
+                              <span>{option.ledger}</span>
+                              {call !== null && <span className="break-all font-mono text-[11px] text-muted-foreground">{call}</span>}
+                            </div>
+                          )}
+                      </InfoTip>
                     )}
-                  </div>
-                );
-              })}
-            </div>
-          ))}
-        </RadioGroup>
+                  </span>
+                </ChoiceRow>
+              );
+            })}
+          </RadioGroup>
+        </div>
 
-        {takesItOut(scope) && (
-          <div className="flex items-start gap-1 pr-1">
-            <label htmlFor="removal-purge-ledger" className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5 pl-3">
+        <div className="flex flex-col gap-1.5">
+          <PartHeading>In the ledger</PartHeading>
+          <ChoiceRow active={purging} permanent unavailable={!leavesItOut(scope)}>
+            <label
+              htmlFor="removal-purge-ledger"
+              className={cn("flex min-w-0 flex-1 items-start gap-2.5 py-2", leavesItOut(scope) ? "cursor-pointer" : "cursor-not-allowed")}
+            >
               <Checkbox
                 id="removal-purge-ledger"
-                checked={purgeLedger}
+                checked={purging}
                 onCheckedChange={(checked) => {
                   setPurgeLedger(checked === true);
                   setTyped("");
                 }}
-                disabled={busy}
+                disabled={busy || !leavesItOut(scope)}
                 className="mt-0.5"
                 data-testid="removal-purge-ledger"
               />
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-[13px] font-medium leading-tight">Also delete from the ledger</span>
-                <span className="text-[12px] leading-snug text-muted-foreground">Its history here goes once OSDU confirms the removal.</span>
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="text-[13px] font-medium leading-tight">Delete from the ledger</span>
+                <span className="text-[12px] leading-snug text-muted-foreground">
+                  {leavesItOut(scope) ? "Its history here goes. One line of each is kept." : "Only with a choice that leaves it out of OSDU."}
+                </span>
               </span>
             </label>
-            {target !== undefined && (
-              <InfoTip label="About deleting from the ledger" testId="removal-purge-ledger-info">
-                <div className="flex flex-col gap-1.5">
-                  <span>
-                    Each record OSDU confirms removed is deleted from the ledger: its attempts and search entries go. One line is kept
-                    of it: what it was, its OSDU id and last version, who deleted it and when.
-                  </span>
-                  <span>
-                    A record whose removal failed stays as it was. If its row is still in the source, the next run that reads it
-                    delivers it as a new record.
-                  </span>
-                </div>
-              </InfoTip>
-            )}
-          </div>
-        )}
+            <span className="flex items-center gap-1 pt-1.5">
+              <Permanence reversible={false} />
+              {target !== undefined && (
+                <InfoTip label="About deleting from the ledger" testId="removal-purge-ledger-info">
+                  <div className="flex flex-col gap-1.5">
+                    <span>
+                      Each record out of OSDU is deleted from the ledger: its attempts and search entries go. One line is kept of
+                      it: what it was, its OSDU id and last version, who deleted it and when.
+                    </span>
+                    <span>
+                      Only a record OSDU no longer holds goes: one whose removal failed, or that OSDU still holds, stays as it was.
+                      If its row is still in the source, the next run that reads it delivers it as a new record.
+                    </span>
+                  </div>
+                </InfoTip>
+              )}
+            </span>
+          </ChoiceRow>
+        </div>
 
-        {preview.data !== undefined && preview.data.neverDelivered > 0 && (
+        {scope !== "none" && preview.data !== undefined && preview.data.neverDelivered > 0 && (
           <p className="flex items-start gap-2 text-[12px] text-muted-foreground" data-testid="removal-never-delivered">
             <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" />
             {`${preview.data.neverDelivered.toLocaleString()} of these were never delivered: they are asked for, and come back as already gone.`}
@@ -431,13 +518,13 @@ export function RemovalDialog({ open, onClose, pipelineId, flowScope, flowName, 
           <Button
             variant={scope === "previous" ? "default" : "destructive"}
             size="sm"
-            onClick={() => remove.mutate()}
-            disabled={busy || !confirmed || records === 0 || capped || preview.isError || refused !== null}
+            onClick={() => (scope === "none" ? purge.mutate() : remove.mutate())}
+            disabled={busy || nothingAsked || !confirmed || acting === 0 || capped || preview.isError || refused !== null}
             data-testid="removal-confirm"
           >
-            {busy ? <Loader2 className="animate-spin" /> : scope === "previous" ? <Undo2 /> : null}
-            {purging ? `${choice.confirmLabel} and delete from ledger` : choice.confirmLabel}
-            {records > 1 ? ` (${records.toLocaleString()})` : ""}
+            {busy ? <Loader2 className="animate-spin" /> : scope === "previous" ? <Undo2 /> : scope === "none" ? <Eraser /> : null}
+            {confirmLabel}
+            {acting > 1 ? ` (${acting.toLocaleString()})` : ""}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

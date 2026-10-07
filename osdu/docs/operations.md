@@ -187,7 +187,9 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /explorer/dimension/candidates`, `POST /explorer/dimension/keys`, `/explorer/dimension/compose` | operate | The explorer's dimension builder ([explorer.md](explorer.md#building-a-dimension)): the keys a kind's saved template suggests, the commonest keys of a drafted dimension's path read through the explorer's connection, and the draft written as the item a dimension flow lists, read back by the flow loader, checked against the saved templates and the dimensions held, with an example key made into its row as a build makes it. Nothing is saved: the YAML is the answer. |
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `previous`, `history` or `everything`) on a node. `purgeLedger: true`, with `record` or `everything`, also deletes it from the ledger once OSDU answered for it ([ledger.md](ledger.md#deleting-a-removed-record-from-the-ledger)); with the other scopes it is refused with 400. |
 | `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. `purgeLedger` as for one record. |
-| `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
+| `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, how many are removed from OSDU already (`removed`), and the target it is aimed at. |
+| `POST /flows/{pipelineId}/records/purge` | operate | Delete records already removed from OSDU from the ledger, here and now, asking nothing of OSDU: `keys`, or `filter` with `expected`, or with neither every record removed. A record OSDU may still hold is left and counted as `left` ([ledger.md](ledger.md#deleting-a-removed-record-from-the-ledger)). |
+| `POST /records/{flowId}/{key}/purge` | operate | The same for one record; 409 when it is not removed from OSDU. |
 | `POST /flows/{pipelineId}/reverse/preview` | operate | What reversing a run or a submission would reach ([Reversing a run](#reversing-a-run)), writing nothing: `runId` or `submissionId` (one of them; 400 for both or neither, 404 for a source the interface's ledger holds nothing of), how many records it delivered and under how many submissions, what the route can do (`route`: whether it restores and removes, and the call each makes or why not), the first 1,000 records in key order decided as the run decides them (`restore`, `remove`, `resolvedFromOsdu`, and `passedOver` by outcome), the target it is aimed at, and the reversal of that source when one exists, with its counts. |
 | `POST /flows/{pipelineId}/reverse` | operate | Queue the `reverse` run of `runId` or `submissionId` as the caller, on `pool` when named. Refused with 409 when the source has nothing to reverse now (the reason `reversible` gives), and when `expected` no longer matches how many records it reaches. Answers 202 with the run (`runId`, `status`, `source`, `sourceId`, `records`); asking again for a source whose reversal stopped resumes it. |
 | `GET /flows/{pipelineId}/reversible?runId=&submissionId=` | read | Whether the run or submission has anything to reverse now, by the answer the request and the reverse run go by: `reversible`, `resumes` (the request would resume its reversal), `reason` (why not: it delivered nothing to the ledger, its reversal settled every record, or a reverse run of it is queued or running) and its `reversal`, counted, when one exists. A seek of the ledger at a time; what the GUI offers the action by. |
@@ -357,9 +359,13 @@ reads its row (a full read, or the row changed under an incremental one) deliver
 marks deleted is never sent. `previous` does block, as a reversal does, since the next run would otherwise write the
 version it took back again.
 
-A removal that takes records out of OSDU can delete them from the ledger as well, as an extra step the operator
-ticks ("Also delete from the ledger"). Only what OSDU answered for goes, one line of each is kept, and the record's
-page then answers who deleted it and when ([ledger.md](ledger.md#deleting-a-removed-record-from-the-ledger)).
+The removal dialog (**Remove** on a record's page and on the Records tab's selection) is the one place records are
+removed, in two parts that say where each choice acts. **In OSDU**: the four scopes, and "Leave as it is" for records
+removed already. **In the ledger**: "Delete from the ledger", offered with a choice that leaves the records out of OSDU.
+Every choice is marked reversible or permanent, and anything permanent asks for the partition to be typed back. Deleting
+from the ledger takes only what OSDU answered for or removed already, keeps one line of each, and the record's page then
+answers who deleted it and when ([ledger.md](ledger.md#deleting-a-removed-record-from-the-ledger)). A record's page of a
+record removed from OSDU opens the dialog on deleting it from the ledger.
 
 A removal names its records by key or by filter. The filter form is resolved on the node when the removal runs,
 so "every record this run delivered" travels as the filter rather than as tens of thousands of ids, and covers

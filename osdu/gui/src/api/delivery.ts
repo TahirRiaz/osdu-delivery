@@ -1529,6 +1529,26 @@ export interface DeliveryRemovalPreview {
   neverDelivered: number;
   capped: boolean;
   target: DeliveryTarget;
+  /** Of the selection, the records removed from OSDU already: those deleting from the ledger alone reaches. */
+  removed: number;
+}
+
+/**
+ * Records already removed from OSDU to delete from the ledger: named by `keys` or by `filter` with the `expected` count the
+ * operator was shown. A record OSDU may still hold is never deleted; it is counted as left.
+ */
+export interface DeliveryLedgerPurgeRequest {
+  keys?: string[];
+  filter?: DeliveryRecordFilter;
+  expected?: number;
+}
+
+/** What deleting from the ledger did: records asked about, deleted, and left as they were. */
+export interface DeliveryLedgerPurgeResult {
+  selected: number;
+  purged: number;
+  left: number;
+  summary: string;
 }
 
 /** A removal was queued on a node. */
@@ -3492,6 +3512,9 @@ export const deliveryApi = {
   /** Queues the removal of the selected records, or of every record the filter matches, on a node. */
   removeRecords: (pipelineId: string, request: DeliveryRemovalRequest, scope?: DeliveryFlowScope) =>
     post<DeliveryRemovalAccepted>(flowPath(pipelineId, "/records/remove", scope), request),
+  /** Deletes the selected records already removed from OSDU from the ledger, here and now; OSDU is asked nothing. */
+  purgeRecords: (pipelineId: string, request: DeliveryLedgerPurgeRequest, scope?: DeliveryFlowScope) =>
+    post<DeliveryLedgerPurgeResult>(flowPath(pipelineId, "/records/purge", scope), request),
   /** What reversing a run or a submission would reach, deciding a sample of its records as the run would; nothing is written. */
   previewReversal: (pipelineId: string, request: DeliveryReversalRequest, scope?: DeliveryFlowScope) =>
     post<DeliveryReversalPreview>(flowPath(pipelineId, "/reverse/preview", scope), request),

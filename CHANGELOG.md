@@ -21,6 +21,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   migration `RecordPurges`, module 1.27.0), and a deleted record's page answers "Deleted from the ledger" with who and when.
   A row still in the source is delivered again by the next run that reads it, as a new record (docs: `osdu/docs/ledger.md`,
   Deleting a removed record from the ledger).
+- **Records removed from OSDU earlier are deleted from the ledger alone.** The removal dialog is the one **Remove** surface,
+  in two parts: **In OSDU** (the four scopes, and "Leave as it is" for records removed already) and **In the ledger**
+  ("Delete from the ledger"), every choice marked reversible or permanent. "Leave as it is" with the ledger step deletes the
+  removed records of the selection here and now, asking nothing of OSDU (`POST /flows/{pipelineId}/records/purge`,
+  `POST /records/{flowId}/{key}/purge`; activity kind `purge`), through the same deletion as the removal's step; a record
+  OSDU may still hold is left and counted. A removed record's page opens the dialog on it, and the preview counts how many
+  of a selection are removed already.
 
 - **A record's latest version can be taken back: Restore the previous version.** The removal dialog, the API and the
   node's removal take a fourth scope, `previous`. OSDU has no call that removes only the latest version (checked against

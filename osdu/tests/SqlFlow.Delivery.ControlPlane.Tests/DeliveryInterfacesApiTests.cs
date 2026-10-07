@@ -273,16 +273,36 @@ public sealed class DeliveryInterfacesApiTests
 
             Assert.NotNull(await ledger.GetRecordAsync(logsLedger, key));
 
-            // A record deleted from the ledger answers who deleted it and when, with the line the ledger keeps of it.
+            // A record OSDU may still hold is not deleted from the ledger alone, and the preview counts none of it as removed.
+            using (var notRemoved = await SendAsync(client, token, HttpMethod.Post, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/purge"))
+            {
+                Assert.Equal(HttpStatusCode.Conflict, notRemoved.StatusCode);
+                Assert.Equal("Not removed from OSDU", JsonDocument.Parse(await notRemoved.Content.ReadAsStringAsync()).RootElement.GetProperty("title").GetString());
+            }
+
+            var before = await PreviewAsync(client, token, pipelineId, key.Value);
+            Assert.Equal((1, 0), (before.GetProperty("records").GetInt32(), before.GetProperty("removed").GetInt32()));
+
+            // Once removed from OSDU, the preview counts it, and deleting it from the ledger alone answers what it did.
             await ledger.MarkRemovedAsync(logsLedger, [key], SqlFlow.Delivery.Protocols.RemovalScope.Record, "user:alice", now);
-            Assert.Equal(key, Assert.Single(await ledger.PurgeRecordsAsync(logsLedger, [key], "user:alice", null, now)));
+            Assert.Equal(1, (await PreviewAsync(client, token, pipelineId, key.Value)).GetProperty("removed").GetInt32());
+            using (var deleted = await SendJsonAsync(
+                client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/records/purge?interface=welllogs", new { keys = new[] { key.Value } }))
+            {
+                var body = await deleted.Content.ReadAsStringAsync();
+                Assert.True(deleted.StatusCode == HttpStatusCode.OK, body);
+                var result = JsonDocument.Parse(body).RootElement;
+                Assert.Equal((1, 1, 0), (result.GetProperty("selected").GetInt32(), result.GetProperty("purged").GetInt32(), result.GetProperty("left").GetInt32()));
+            }
+
+            // A record deleted from the ledger answers who deleted it and when, with the line the ledger keeps of it.
             using (var purged = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}"))
             {
                 var body = await purged.Content.ReadAsStringAsync();
                 Assert.True(purged.StatusCode == HttpStatusCode.NotFound, body);
                 var problem = JsonDocument.Parse(body).RootElement;
                 Assert.Equal("Deleted from the ledger", problem.GetProperty("title").GetString());
-                Assert.Contains("deleted from the ledger by user:alice", problem.GetProperty("detail").GetString(), StringComparison.Ordinal);
+                Assert.Contains("deleted from the ledger by ", problem.GetProperty("detail").GetString(), StringComparison.Ordinal);
                 Assert.Equal("NO_15_9/L-1001", problem.GetProperty("purged").GetProperty("sourceKey").GetString());
             }
 
@@ -334,6 +354,15 @@ public sealed class DeliveryInterfacesApiTests
         using var response = await SendAsync(client, token, HttpMethod.Get, path);
         var body = await response.Content.ReadAsStringAsync();
         Assert.True(response.StatusCode == HttpStatusCode.OK, $"GET {path} answered {(int)response.StatusCode}: {body}");
+        return JsonDocument.Parse(body).RootElement.Clone();
+    }
+
+    private static async Task<JsonElement> PreviewAsync(HttpClient client, string token, Guid pipelineId, Guid key)
+    {
+        using var response = await SendJsonAsync(
+            client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/records/remove/preview?interface=welllogs", new { scope = "record", keys = new[] { key } });
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(response.StatusCode == HttpStatusCode.OK, body);
         return JsonDocument.Parse(body).RootElement.Clone();
     }
 

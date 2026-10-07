@@ -441,14 +441,27 @@ public static class DeliveryRerender
 /// <summary>A removal was queued on a node: the task to watch, how many records it will act on, and whether it deletes them from the ledger too.</summary>
 public sealed record DeliveryRemovalAccepted(Guid TaskId, string Status, string Scope, int Records, bool PurgeLedger = false);
 
+/// <summary>
+/// Records already removed from OSDU to delete from the ledger: those <c>Keys</c> names, every one <c>Filter</c> matches (refused
+/// when it no longer matches the <c>Expected</c> count the operator was shown), or, with neither, every record the ledger marks
+/// deleted.
+/// </summary>
+public sealed record DeliveryLedgerPurgeRequest(IReadOnlyList<Guid>? Keys, DeliveryRecordFilterDto? Filter, int? Expected);
+
+/// <summary>What deleting from the ledger did: records asked about, deleted, and left as they were (not removed from OSDU, or busy).</summary>
+public sealed record DeliveryLedgerPurgeResult(int Selected, int Purged, int Left, string Summary);
+
 /// <summary>What the ledger keeps of a record deleted from it after it was removed from OSDU.</summary>
 public sealed record DeliveryPurgedRecordDto(
     Guid FlowId, Guid DeliveryKey, string SourceKey, string? Label, string? TargetId, long? LastVersion, int Attempts, long? ActivityId,
     string PurgedBy, DateTime PurgedUtc);
 
-/// <summary>What a removal would act on, for the confirmation the operator sees before asking for it.</summary>
+/// <summary>
+/// What a removal would act on, for the confirmation the operator sees before asking for it. <c>Removed</c> counts the
+/// records of the selection the ledger marks removed from OSDU already: those deleting from the ledger alone reaches.
+/// </summary>
 public sealed record DeliveryRemovalPreview(
-    string Scope, int Records, int InOsdu, int NeverDelivered, bool Capped, DeliveryTargetDto Target);
+    string Scope, int Records, int InOsdu, int NeverDelivered, bool Capped, DeliveryTargetDto Target, int Removed = 0);
 
 /// <summary>How far back the ledger's retention pass keeps its history: everything older than this many days that may be
 /// aged out is, and nothing a delivered record has to stay reconstructible from ever is.</summary>
@@ -581,6 +594,8 @@ public static class DeliveryEndpoints
         delivery.MapPost("/records/{flowId:guid}/{key:guid}/delete", DeleteRecordAsync).WithName("DeleteDeliveryRecord");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove", RemoveRecordsAsync).WithName("RemoveDeliveryRecords");
         delivery.MapPost("/flows/{pipelineId:guid}/records/remove/preview", PreviewRemovalAsync).WithName("PreviewDeliveryRemoval");
+        delivery.MapPost("/flows/{pipelineId:guid}/records/purge", PurgeRecordsAsync).WithName("PurgeDeliveryRecordsFromLedger");
+        delivery.MapPost("/records/{flowId:guid}/{key:guid}/purge", PurgeRecordAsync).WithName("PurgeDeliveryRecordFromLedger");
         delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization(ControlPlanePolicies.Admin);
         DeliveryDimensionEndpoints.MapWrites(delivery);
         return group;
@@ -1894,6 +1909,69 @@ public static class DeliveryEndpoints
         public static Intervention Redelivery { get; } = new("A redelivery", "redeliver");
 
         public static Intervention Rerender { get; } = new("A request to bring records up to date", "bring up to date");
+
+        public static Intervention Purge { get; } = new("Deleting from the ledger", "delete from the ledger");
+    }
+
+    /// <summary>
+    /// Deletes records already removed from OSDU from the ledger, in this process and asking nothing of OSDU
+    /// (docs/ledger.md, Deleting a removed record from the ledger): those <c>keys</c> names, every one <c>filter</c> matches
+    /// (refused when it no longer matches the <c>expected</c> count the operator was shown), or, with neither, every record the
+    /// ledger marks deleted. A record OSDU may still hold is never deleted; it is counted as left.
+    /// </summary>
+    private static async Task<Results<Ok<DeliveryLedgerPurgeResult>, ProblemHttpResult>> PurgeRecordsAsync(
+        Guid pipelineId, DeliveryLedgerPurgeRequest? request, [FromQuery(Name = "interface")] string? interfaceName, [FromQuery] string? partition, CatalogDbContext db,
+        DeliveryDocumentLoader documents, IPartitionRegistry partitions, EngineContext engine, DeliveryConfigStore config, ILedger ledger, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, problem) = await ResolveAsync(db, documents, partitions, pipelineId, interfaceName, partition, ct).ConfigureAwait(false);
+        if (flow is null)
+        {
+            return problem!;
+        }
+
+        var (keys, unselected) = await SelectedAsync(flow, request?.Keys, request?.Filter, request?.Expected, Intervention.Purge, ledger, ct).ConfigureAwait(false);
+        if (unselected is not null)
+        {
+            return unselected;
+        }
+
+        using var runtime = FlowRuntime.ForTarget(await ConfiguredAsync(engine, config, flow, ct).ConfigureAwait(false), flow.Flow);
+        runtime.Actor = RequestActor.Label(user);
+        var summary = await runtime.PurgeFromLedgerAsync(keys, ct).ConfigureAwait(false);
+        return TypedResults.Ok(new DeliveryLedgerPurgeResult(summary.Selected, summary.Purged, summary.Left, summary.Describe()));
+    }
+
+    /// <summary>Deletes one record already removed from OSDU from the ledger; refused with 409 for a record OSDU may still hold.</summary>
+    private static async Task<Results<Ok<DeliveryLedgerPurgeResult>, ProblemHttpResult>> PurgeRecordAsync(
+        Guid flowId, Guid key, CatalogDbContext db, OsduDbContext osdu, DeliveryDocumentLoader documents, EngineContext engine, DeliveryConfigStore config, ILedger ledger,
+        ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (flow, record, problem) = await ResolveForRecordAsync(db, osdu, documents, ledger, flowId, key, ct).ConfigureAwait(false);
+        if (flow is null || record is null)
+        {
+            return problem!;
+        }
+
+        if (record.Status != RecordStatus.Deleted)
+        {
+            return TypedResults.Problem(
+                detail: $"The record is {record.Status.ToString().ToLowerInvariant()}, so OSDU may still hold it: only a record removed from OSDU is deleted from the ledger. Remove it from OSDU first.",
+                statusCode: StatusCodes.Status409Conflict,
+                title: "Not removed from OSDU");
+        }
+
+        using var runtime = FlowRuntime.ForTarget(await ConfiguredAsync(engine, config, flow, ct).ConfigureAwait(false), flow.Flow);
+        runtime.Actor = RequestActor.Label(user);
+        var summary = await runtime.PurgeFromLedgerAsync([new DeliveryKey(key)], ct).ConfigureAwait(false);
+        if (summary.Purged == 0)
+        {
+            return TypedResults.Problem(
+                detail: "Work for the record started after it was read, so it was left as it was. Ask again once it has settled.",
+                statusCode: StatusCodes.Status409Conflict,
+                title: "Record busy");
+        }
+
+        return TypedResults.Ok(new DeliveryLedgerPurgeResult(summary.Selected, summary.Purged, summary.Left, summary.Describe()));
     }
 
     /// <summary>
@@ -2581,12 +2659,14 @@ public static class DeliveryEndpoints
         // operator needs to know is how many of the selection were ever actually delivered.
         int records;
         int neverDelivered;
+        int removed;
         bool capped;
         if (request.Keys is { Count: > 0 })
         {
             var found = await ledger.GetRecordsAsync(flow.FlowId, request.Keys.Select(k => new DeliveryKey(k)), ct).ConfigureAwait(false);
             records = request.Keys.Count;
             neverDelivered = records - found.Values.Count(r => r.LastDeliveredUtc is not null);
+            removed = found.Values.Count(r => r.Status == RecordStatus.Deleted);
             capped = records > RemovalLimits.MaxSelection;
         }
         else
@@ -2612,6 +2692,11 @@ public static class DeliveryEndpoints
                 capped = !counted.Exact || counted.Count > RemovalLimits.MaxSelection;
                 records = Math.Min(counted.Count, RemovalLimits.MaxSelection);
                 neverDelivered = Math.Min(never.Count, records);
+
+                // A listing of another state holds no removed record; any other is counted for its removed ones.
+                removed = query.Status is null or RecordStatus.Deleted
+                    ? Math.Min((await ledger.CountAsync(flow.FlowId, query with { Status = RecordStatus.Deleted }, RemovalLimits.MaxSelection + 1, ct).ConfigureAwait(false)).Count, records)
+                    : 0;
             }
             catch (RecordQueryTooBroadException ex)
             {
@@ -2620,7 +2705,7 @@ public static class DeliveryEndpoints
         }
 
         return TypedResults.Ok(new DeliveryRemovalPreview(
-            RemovalScopes.Wire(scope), records, Math.Max(0, records - neverDelivered), neverDelivered, capped, await ToTargetDtoAsync(osdu, flow, ct).ConfigureAwait(false)));
+            RemovalScopes.Wire(scope), records, Math.Max(0, records - neverDelivered), neverDelivered, capped, await ToTargetDtoAsync(osdu, flow, ct).ConfigureAwait(false), removed));
     }
 
     /// <summary>A record listing outside the ledger's bounds (<see cref="RecordListing"/>): the detail says how to narrow it.</summary>

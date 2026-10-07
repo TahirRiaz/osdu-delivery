@@ -700,6 +700,61 @@ public sealed class FlowRuntime : IDisposable
         }, ct);
 
     /// <summary>
+    /// Deletes records already removed from OSDU from the ledger (docs/ledger.md, Deleting a removed record from the ledger),
+    /// asking nothing of OSDU: the named records, or with null keys every record the ledger marks deleted, a page at a time.
+    /// Only a record the ledger marks deleted goes, and none a lease holds; any other named record is left as it is and
+    /// counted as such. Each record deleted keeps one line and is named under this intervention's activity, the same way the
+    /// removal's extra step deletes one (<see cref="ILedger.PurgeRecordsAsync"/>).
+    /// </summary>
+    public Task<LedgerPurgeSummary> PurgeFromLedgerAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
+        => TrackAsync(
+            "purge",
+            keys is null
+                ? new { every = (string?)"deleted", records = (int?)null, keys = (List<string>?)null }
+                : new { every = (string?)null, records = (int?)keys.Count, keys = (List<string>?)keys.Take(20).Select(k => k.ToString()).ToList() },
+            keys is { Count: 1 } ? keys[0] : null,
+            async activity =>
+            {
+                var ledger = RequireLedger();
+                var now = _context.Time.GetUtcNow().UtcDateTime;
+                LedgerPurgeSummary summary;
+                if (keys is not null)
+                {
+                    var purged = await ledger.PurgeRecordsAsync(Flow.Id, keys.Distinct().ToList(), Actor, activity, now, ct).ConfigureAwait(false);
+                    summary = new LedgerPurgeSummary(keys.Distinct().Count(), purged.Count);
+                }
+                else
+                {
+                    // Every record the ledger marks deleted, a selection's worth at a time. A page that leaves any record (a lease holds
+                    // it) ends the walk, so no record is counted twice and the intervention ends however the ledger moves underneath it.
+                    var selected = 0;
+                    var total = 0;
+                    while (true)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var page = await ledger.ListKeysAsync(Flow.Id, new RecordQuery { Status = RecordStatus.Deleted }, RemovalLimits.MaxSelection, ct).ConfigureAwait(false);
+                        if (page.Count == 0)
+                        {
+                            break;
+                        }
+
+                        var purged = await ledger.PurgeRecordsAsync(Flow.Id, page, Actor, activity, now, ct).ConfigureAwait(false);
+                        selected += page.Count;
+                        total += purged.Count;
+                        if (purged.Count < page.Count || page.Count < RemovalLimits.MaxSelection)
+                        {
+                            break;
+                        }
+                    }
+
+                    summary = new LedgerPurgeSummary(selected, total);
+                }
+
+                return (summary, summary.Describe(), (Guid?)null, false);
+            },
+            ct);
+
+    /// <summary>
     /// Releases every record one issue keeps blocked (docs/ledger.md, Issues), after its cause was fixed: every record
     /// blocked by it, however many. The activity names the issue
     /// and its pattern, and every record it releases is named under the activity, so each record's history shows the

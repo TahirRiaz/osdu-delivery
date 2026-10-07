@@ -460,10 +460,11 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                   size="sm"
                   className="h-7"
                   onClick={() => setRemoveOpen(true)}
+                  title="Remove the selected records from OSDU, and from the ledger if you choose"
                   data-testid="delivery-remove-selected"
                 >
                   <Trash2 />
-                  Remove from OSDU
+                  Remove
                 </Button>
               </div>
             )}
@@ -491,6 +492,11 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             flowScope={scope}
             flowName={ledgerName}
             selection={selectionFor(allMatching, filter, matched, selected)}
+            onPurged={(result) => {
+              clearSelection();
+              toast.success(result.summary);
+              void queryClient.invalidateQueries({ queryKey: ["delivery"] });
+            }}
             onQueued={(accepted) => {
               clearSelection();
               setRemovalTaskId(accepted.taskId);

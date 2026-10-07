@@ -287,6 +287,21 @@ public sealed record RemovalEndpoints(string Record, string History, string Ever
     public const string HistoryRefusedByWellDelivery = "(refused: the Well Delivery DDMS keys every version by the value other entities' references cite)";
 }
 
+/// <summary>
+/// What deleting records already removed from OSDU from the ledger did: how many it was asked about, and how many it deleted;
+/// the rest were not removed from OSDU, or a lease held them, and were left as they were.
+/// </summary>
+public sealed record LedgerPurgeSummary(int Selected, int Purged)
+{
+    /// <summary>Records it was asked about and left as they were.</summary>
+    public int Left => Math.Max(0, Selected - Purged);
+
+    /// <summary>The one line the activity trail carries.</summary>
+    public string Describe() => string.Create(
+        CultureInfo.InvariantCulture,
+        $"{Purged} of {Selected} record(s) deleted from the ledger{(Left > 0 ? $"; {Left} left as they were (not removed from OSDU, or work in flight)" : string.Empty)}");
+}
+
 /// <summary>What a removal did to one record: enough to answer "what happened to this one" without a second query.</summary>
 public sealed record RemovalRecordResult(
     Guid DeliveryKey, string? SourceKey, string? Label, string? TargetId, string Outcome, string Detail, Guid? SubmissionId)

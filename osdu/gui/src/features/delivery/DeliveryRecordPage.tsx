@@ -274,11 +274,13 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
               variant="destructive-outline"
               size="sm"
               onClick={() => setRemoveOpen(true)}
-              disabled={busy || !canActOnTarget || detail.pipelineId === null}
+              // A record removed from OSDU already is still the dialog's: deleting it from the ledger starts there.
+              disabled={busy || record.targetId === null || detail.pipelineId === null}
+              title={record.status === "deleted" ? "Removed from OSDU: delete it from the ledger" : "Remove from OSDU, and from the ledger if you choose"}
               data-testid="record-delete"
             >
               <Trash2 />
-              Remove from OSDU
+              Remove
             </Button>
           </div>
         </div>
@@ -386,6 +388,11 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           flowName={ledgerLabel(detail.flowName ?? "this flow", flowScope)}
           selection={{ kind: "keys", keys: [deliveryKey] }}
           singleLabel={record.label ?? record.sourceKey}
+          alreadyRemoved={record.status === "deleted"}
+          onPurged={(result) => {
+            toast.success(result.summary);
+            refresh();
+          }}
           onQueued={(accepted) => {
             setRemoval({
               taskId: accepted.taskId,
