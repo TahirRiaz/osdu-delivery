@@ -19,7 +19,8 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   goes, never one a lease holds or one whose removal failed. The ledger keeps one line of each in the new
   `osdu.PurgedRecord` (key, source key, label, OSDU id, last version, attempts deleted, who, when, which intervention;
   migration `RecordPurges`, module 1.27.0), and a deleted record's page answers "Deleted from the ledger" with who and when.
-  A row still in the source is delivered again by the next run that reads it, as a new record (docs: `osdu/docs/ledger.md`,
+  The ledger's watermarks go with the records, so the next run, a scheduled one included, reads every row once and
+  delivers a row still in the source again as a new record, under the id its mapping gives now (docs: `osdu/docs/ledger.md`,
   Deleting a removed record from the ledger).
 - **Records removed from OSDU earlier are deleted from the ledger alone.** The removal dialog is the one **Remove** surface,
   in two parts: **In OSDU** (the four scopes, and "Leave as it is" for records removed already) and **In the ledger**

@@ -1941,7 +1941,9 @@ public interface ILedger
     /// ledger), a slice to a transaction. Only a record the ledger marks deleted goes, and none a lease holds; any other is
     /// left as it is. Each record deleted keeps one line (<see cref="PurgedRecordState"/>: what it was, its OSDU id and last
     /// version, who deleted it and when) and is named under <paramref name="activityId"/>; its attempts, its search entries
-    /// and its row are deleted. The activities that name it stay, as the audit trail does. Returns the records it deleted.
+    /// and its row are deleted. The activities that name it stay, as the audit trail does. Once any record goes, the ledger's
+    /// watermarks go too, so its next run reads every row once and delivers a row still in the source as a new record,
+    /// rather than passing over a row that did not change since the last read. Returns the records it deleted.
     /// </summary>
     Task<IReadOnlyList<DeliveryKey>> PurgeRecordsAsync(
         Guid flowId, IReadOnlyList<DeliveryKey> keys, string actor, long? activityId, DateTime nowUtc, CancellationToken ct = default);

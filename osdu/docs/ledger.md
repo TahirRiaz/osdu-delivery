@@ -607,8 +607,12 @@ removal dialog's "Leave as it is" with the ledger step, or `POST /flows/{pipelin
 every record removed) and `POST /records/{flowId}/{key}/purge`. It runs in the control plane as an intervention of kind
 `purge`, and a record OSDU may still hold is left as it is and counted as left (the record route refuses it with 409).
 
-What goes is the record's history, for good. If its row is still in the source, the next run that reads it delivers it
-as a record the ledger never held, under the same OSDU id; the line of the earlier one stays.
+What goes is the record's history, for good. The ledger's watermarks go with it: a watermark says every row of its scope
+up to it was planned, which is no longer true of a row whose record was deleted, so the next run reads every row once (as
+after its rules moved), even one the schedule starts, and delivers a row still in the source as a record the ledger never
+held, under the OSDU id its mapping gives now; the line of the earlier one stays. Every other row is decided by its
+record's own hashes, so only the deleted records are sent. A run of the ledger that was already reading when the records
+were deleted writes its own watermark when it ends; a run with **Force** then reads the rows again.
 
 ### Reversals
 

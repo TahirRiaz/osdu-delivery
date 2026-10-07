@@ -18,6 +18,10 @@ internal static partial class SqlServerLedgerBulk
     // version an attempt of it named, how many attempts went with it), who deleted it and under which intervention; the
     // intervention names it too, so the audit trail reaches it however many records it reached. The rows of the audit trail
     // that name it (the activities and their links) and a reversal's item of it stay: they are another record's, or the trail's.
+    // The ledger's watermarks go with the first record deleted: a watermark says every row of its scope up to it was planned,
+    // which is no longer true of a row whose record the ledger forgot, so the next run of the ledger reads every row once, as
+    // after its rules moved, and delivers a row still in the source as a new record. A row it holds a record of is decided
+    // by that record's own hashes, as always.
     private const string PurgeSql = $$"""
         DECLARE @purged TABLE ([DeliveryKey] uniqueidentifier NOT NULL PRIMARY KEY);
         INSERT INTO @purged ([DeliveryKey])
@@ -59,6 +63,9 @@ internal static partial class SqlServerLedgerBulk
         DELETE r
         FROM [osdu].[Record] AS r
         INNER JOIN @purged AS p ON r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[DeliveryKey] = p.[DeliveryKey];
+
+        IF EXISTS (SELECT 1 FROM @purged)
+            DELETE FROM [osdu].[SourceWatermark] WHERE [PartitionId] = @partitionId AND [FlowId] = @flowId;
 
         SELECT p.[DeliveryKey] FROM @purged AS p;
         """;

@@ -289,6 +289,28 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
     [Fact]
+    public async Task Deleting_from_the_ledger_makes_the_next_run_read_every_row_again()
+    {
+        var removed = await DeliveredAsync("a", Guid.NewGuid());
+        var delivered = await DeliveredAsync("b", Guid.NewGuid());
+        await Ledger.MarkRemovedAsync(_flow, [removed], RemovalScope.Record, "gui:tahir", Now);
+        foreach (var scope in new[] { "", "scope=STAT_COMP" })
+        {
+            await Ledger.SetWatermarkAsync(new SourceWatermark(_flow, scope, Now, Guid.NewGuid(), Now, "rules"));
+        }
+
+        // A purge that deletes nothing (the record is still in OSDU) leaves what the ledger read as it was.
+        Assert.Empty(await Ledger.PurgeRecordsAsync(_flow, [delivered], "gui:tahir", null, Now));
+        Assert.NotNull(await Ledger.GetWatermarkAsync(_flow, ""));
+
+        // Once a record goes, no scope of the ledger is planned through anything: its next run reads every row once, and
+        // the row of the deleted record is delivered again as a new record.
+        Assert.Single(await Ledger.PurgeRecordsAsync(_flow, [removed], "gui:tahir", null, Now));
+        Assert.Null(await Ledger.GetWatermarkAsync(_flow, ""));
+        Assert.Null(await Ledger.GetWatermarkAsync(_flow, "scope=STAT_COMP"));
+    }
+
+    [Fact]
     public async Task A_removed_record_a_lease_holds_is_not_deleted_from_the_ledger()
     {
         var key = await DeliveredAsync("a", Guid.NewGuid());

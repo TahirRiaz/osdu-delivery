@@ -475,7 +475,7 @@ export function RemovalDialog({
                     </span>
                     <span>
                       Only a record OSDU no longer holds goes: one whose removal failed, or that OSDU still holds, stays as it was.
-                      If its row is still in the source, the next run that reads it delivers it as a new record.
+                      The next run reads every row once, so a row still in the source is delivered again, as a new record.
                     </span>
                   </div>
                 </InfoTip>
