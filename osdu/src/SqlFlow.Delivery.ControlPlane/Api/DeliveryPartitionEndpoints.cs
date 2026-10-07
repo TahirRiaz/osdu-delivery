@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
+using SqlFlow.ControlPlane.Background;
 using SqlFlow.ControlPlane.Hosting;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Catalog;
@@ -103,7 +104,7 @@ public static partial class DeliveryPartitionEndpoints
     /// <summary>Registers a partition; the first one registered becomes the default.</summary>
     private static async Task<Results<Created<DeliveryPartitionDto>, ProblemHttpResult>> AddAsync(
         DeliveryPartitionAddRequest? request, OsduDbContext osdu, CatalogDbContext catalog, DeliveryPartitionRegistry registry, TimeProvider clock,
-        ClaimsPrincipal user, ILoggerFactory loggers, CancellationToken ct)
+        RepoSyncSignal syncSignal, ClaimsPrincipal user, ILoggerFactory loggers, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(request?.Name))
         {
@@ -117,7 +118,7 @@ public static partial class DeliveryPartitionEndpoints
         try
         {
             var row = await registry.AddAsync(request.Name, request.Description, request.IsDefault == true, actor, now, ct).ConfigureAwait(false);
-            await ResyncAsync(catalog, now, ct).ConfigureAwait(false);
+            await ResyncAsync(catalog, syncSignal, now, ct).ConfigureAwait(false);
             LogChanged(Logger(loggers), "registered", row.Name, actor);
             return TypedResults.Created($"partitions/{Uri.EscapeDataString(row.Name)}", await DescribeOneAsync(osdu, row.Name, ct).ConfigureAwait(false));
         }
@@ -178,8 +179,8 @@ public static partial class DeliveryPartitionEndpoints
     /// serving it, and the default is refused while other partitions are registered.
     /// </summary>
     private static async Task<Results<NoContent, ProblemHttpResult>> RemoveAsync(
-        string name, CatalogDbContext catalog, DeliveryPartitionRegistry registry, TimeProvider clock, ClaimsPrincipal user, ILoggerFactory loggers,
-        CancellationToken ct)
+        string name, CatalogDbContext catalog, DeliveryPartitionRegistry registry, TimeProvider clock, RepoSyncSignal syncSignal, ClaimsPrincipal user,
+        ILoggerFactory loggers, CancellationToken ct)
     {
         var actor = RequestActor.Label(user);
         try
@@ -196,22 +197,24 @@ public static partial class DeliveryPartitionEndpoints
             return TypedResults.Problem(detail: refused.Message, statusCode: StatusCodes.Status409Conflict, title: "Not removed");
         }
 
-        await ResyncAsync(catalog, clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+        await ResyncAsync(catalog, syncSignal, clock.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
         LogChanged(Logger(loggers), "removed", name.Trim(), actor);
         return TypedResults.NoContent();
     }
 
     /// <summary>
-    /// Makes every enabled repository source due, so the next sync describes each registry-driven flow in the partitions the
-    /// registry holds now. The same request an operator makes with "sync now".
+    /// Makes every enabled repository source due and wakes the sync loop, so the sync that describes each registry-driven
+    /// flow in the partitions the registry holds now starts at once. The same request an operator makes with "sync now".
     /// </summary>
-    private static async Task ResyncAsync(CatalogDbContext catalog, DateTime nowUtc, CancellationToken ct)
+    private static async Task ResyncAsync(CatalogDbContext catalog, RepoSyncSignal syncSignal, DateTime nowUtc, CancellationToken ct)
     {
         var sources = await catalog.RepoSources.AsNoTracking().Where(s => s.Enabled).Select(s => s.Id).ToListAsync(ct).ConfigureAwait(false);
         foreach (var source in sources)
         {
             await RepoSourceStore.TriggerNowAsync(catalog, source, nowUtc, ct).ConfigureAwait(false);
         }
+
+        syncSignal.Wake();
     }
 
     private static async Task<DeliveryPartitionDto> DescribeOneAsync(OsduDbContext osdu, string name, CancellationToken ct)
