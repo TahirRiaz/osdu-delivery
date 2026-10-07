@@ -106,8 +106,17 @@ public sealed record SourceRunOutcome(string Operation, string Source, IReadOnly
         _ => 0,
     });
 
-    /// <summary>The run's headline count on the run row (<c>result.rowsLoaded</c>): the records the run delivered.</summary>
-    public long RowsLoaded => Delivered;
+    /// <summary>Records a run deleting the ledger deleted from the ledgers of the interfaces.</summary>
+    public long Deleted => Sum(r => r is DeleteLedgerOutcome d ? d.Records : 0);
+
+    /// <summary>Records a run deleting the ledger removed from OSDU on the way.</summary>
+    public long Removed => Sum(r => r is DeleteLedgerOutcome d ? d.Removed : 0);
+
+    /// <summary>
+    /// The run's headline count on the run row (<c>result.rowsLoaded</c>): the records the run delivered, or for a run
+    /// deleting the ledger, the records it deleted.
+    /// </summary>
+    public long RowsLoaded => Operation == DeliveryOperations.DeleteLedger ? Deleted : Delivered;
 
     /// <summary>True when every interface completed.</summary>
     public bool Succeeded => Interfaces.All(i => i.State == InterfaceStates.Completed);
@@ -115,9 +124,13 @@ public sealed record SourceRunOutcome(string Operation, string Source, IReadOnly
     /// <summary>One paragraph: how many interfaces completed, and which stopped or were skipped and why.</summary>
     public string Describe()
     {
+        var deleting = Operation == DeliveryOperations.DeleteLedger;
+        var counts = deleting
+            ? string.Create(CultureInfo.InvariantCulture, $"{Removed} record(s) removed from OSDU, {Deleted} deleted from the ledger")
+            : string.Create(CultureInfo.InvariantCulture, $"{Delivered} record(s) delivered, {Held} held, {Failed} failed, {Waiting} waiting");
         var text = string.Create(
             CultureInfo.InvariantCulture,
-            $"{Operation} of '{Source}': {Completed} of {Interfaces.Count} interface(s) completed ({Delivered} record(s) delivered, {Held} held, {Failed} failed, {Waiting} waiting)");
+            $"{Operation} of '{Source}': {Completed} of {Interfaces.Count} interface(s) completed ({counts})");
         var stopped = Interfaces.Where(i => i.State == InterfaceStates.Stopped).Select(i => $"{i.Interface} ({i.Reason})").ToList();
         var skipped = Interfaces.Where(i => i.State == InterfaceStates.Skipped).Select(i => $"{i.Interface} ({i.Reason})").ToList();
         if (stopped.Count > 0)
@@ -130,8 +143,13 @@ public sealed record SourceRunOutcome(string Operation, string Source, IReadOnly
             text += "; skipped: " + string.Join("; ", skipped);
         }
 
-        return Succeeded
-            ? text + "."
+        if (Succeeded)
+        {
+            return text + ".";
+        }
+
+        return deleting
+            ? text + ". The ledger of an interface that completed is deleted; the others are as they were, and deleting the ledger again does the rest."
             : text + ". What completed is in the ledger, and the next run does what is left.";
     }
 
@@ -209,7 +227,10 @@ public sealed class SourceRuntime
         ArgumentException.ThrowIfNullOrWhiteSpace(operation);
         ArgumentNullException.ThrowIfNull(payload);
         var selected = _source.Select(payload.Interfaces);
-        var (runtimes, order) = await PreflightAsync(selected, operation, ct).ConfigureAwait(false);
+        var (runtimes, planned) = await PreflightAsync(selected, operation, ct).ConfigureAwait(false);
+
+        // Deleting the ledger takes records out of OSDU, so it goes the other way: what refers to a record goes before it.
+        var order = operation == DeliveryOperations.DeleteLedger ? planned.Reversed() : planned;
         _log.LogInformation(
             "{Operation} of {Count} interface(s) of '{Source}' in {Waves} wave(s): {Order}.",
             operation, selected.Count, _source.Name, order.Waves.Count, order.Describe());
@@ -473,7 +494,7 @@ public sealed class SourceRuntime
         await EmitAsync(flow, "interface.started", $"{operation} by the {route} route").ConfigureAwait(false);
 
         // What the run asked of the source applies to the interface as a run of it alone takes it.
-        var own = new DeliveryRunPayload { Force = payload.Force, Interface = flow.Interface };
+        var own = new DeliveryRunPayload { Force = payload.Force, Interface = flow.Interface, Confirm = payload.Confirm };
         try
         {
             var result = await DeliveryExecutor.GuardedAsync(
@@ -517,6 +538,7 @@ public sealed class SourceRuntime
         IntakeOutcome i => string.Create(CultureInfo.InvariantCulture, $"{i.Planned} planned in {i.Batches} batch(es), {i.Held} held (submission {i.SubmissionId:D})"),
         DrainOutcome d => string.Create(CultureInfo.InvariantCulture, $"{d.Processed} processed, {d.Delivered} delivered, {d.Held} held, {d.Failed} failed, {d.Waiting} waiting"),
         VerifyRunOutcome v => string.Create(CultureInfo.InvariantCulture, $"{v.Checked} checked, {v.Matched} matched, {v.Drifted} drifted, {v.Missing} missing"),
+        DeleteLedgerOutcome d => d.Describe(),
         _ => result.ToString() ?? string.Empty,
     };
 

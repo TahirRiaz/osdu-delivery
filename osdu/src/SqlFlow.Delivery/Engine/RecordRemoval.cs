@@ -302,6 +302,19 @@ public sealed record LedgerPurgeSummary(int Selected, int Purged)
         $"{Purged} of {Selected} record(s) deleted from the ledger{(Left > 0 ? $"; {Left} left as they were (not removed from OSDU, or work in flight)" : string.Empty)}");
 }
 
+/// <summary>
+/// What deleting the ledger did (docs/ledger.md, Deleting the ledger): in the partition it confirmed, the records it removed
+/// from OSDU reversibly on the way, those OSDU had already lost, those the ledger already marked removed, and those that were
+/// never in OSDU (never delivered, or a document never queued); then what it deleted of the ledger.
+/// </summary>
+public sealed record LedgerDeleteSummary(string Partition, int Removed, int AlreadyGone, int AlreadyRemoved, int NeverInOsdu, LedgerDeletion Deleted)
+{
+    /// <summary>The one line the activity trail and the run log carry.</summary>
+    public string Describe() => string.Create(
+        CultureInfo.InvariantCulture,
+        $"in partition '{Partition}': {Removed} record(s) removed from OSDU (reversible), {AlreadyGone} already gone, {AlreadyRemoved} removed before, {NeverInOsdu} never in OSDU; {Deleted.Describe()}");
+}
+
 /// <summary>What a removal did to one record: enough to answer "what happened to this one" without a second query.</summary>
 public sealed record RemovalRecordResult(
     Guid DeliveryKey, string? SourceKey, string? Label, string? TargetId, string Outcome, string Detail, Guid? SubmissionId)

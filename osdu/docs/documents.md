@@ -1050,7 +1050,8 @@ A run takes the interfaces in waves: the first wave holds every interface that w
 the interfaces whose dependencies all ran before it. Within a wave the interfaces are taken by OSDU group (reference
 data, master data, datasets, work product components, work products, then any other group) and then as the document
 lists them; up to `reliability.parallelInterfaces` of them run at once. Each still plans, fans out and drains as a run
-of that interface alone does.
+of that interface alone does. A run deleting the ledger ([ledger.md](ledger.md#deleting-the-ledger)) takes the waves
+backwards, each interface after every interface whose records refer to its own.
 
 OSDU's schemas refer both ways (a wellbore to its definitive trajectory, the trajectory to its wellbore), so two
 interfaces can wait for each other. Such a cycle is cut, and the reference that is not waited for is reported with why:

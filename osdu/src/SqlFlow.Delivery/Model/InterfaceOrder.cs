@@ -65,6 +65,22 @@ public sealed record InterfaceOrderPlan(
 
     /// <summary>The waves as text: the interfaces of a wave joined by '+', the waves by "then".</summary>
     public string Describe() => string.Join(" then ", Waves.Select(w => string.Join(" + ", w)));
+
+    /// <summary>
+    /// The order a run that takes records out of OSDU follows (deleting the ledger): the waves backwards, each interface
+    /// waiting for the interfaces whose records refer to its own, so a record goes only once nothing of the source that
+    /// refers to it is left, and an interface that did not complete keeps every interface it refers to as it was.
+    /// </summary>
+    public InterfaceOrderPlan Reversed()
+    {
+        static InterfaceDependency Turned(InterfaceDependency d)
+            => new(d.DependsOn, d.Interface, $"{d.Interface} refers to its records ({d.Why})") { Origin = d.Origin };
+
+        return new InterfaceOrderPlan(
+            Waves.Reverse().ToList(),
+            Dependencies.Select(Turned).ToList(),
+            NotWaitedFor.Select(Turned).ToList());
+    }
 }
 
 /// <summary>

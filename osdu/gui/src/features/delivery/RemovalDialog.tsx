@@ -185,7 +185,7 @@ function InfoTip({ label, children, testId }: { label: string; children: ReactNo
 }
 
 /** Whether a choice can be undone: a quiet word led by a glyph in its tone, the same on every row of both parts. */
-function Permanence({ reversible }: { reversible: boolean }) {
+export function Permanence({ reversible }: { reversible: boolean }) {
   const Icon = reversible ? RotateCcw : TriangleAlert;
   return (
     <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-muted-foreground">
@@ -206,12 +206,12 @@ function TargetFact({ label, value, mono = false }: { label: string; value: stri
 }
 
 /** The heading of one part of the dialog: where its choice acts. */
-function PartHeading({ children }: { children: ReactNode }) {
+export function PartHeading({ children }: { children: ReactNode }) {
   return <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{children}</div>;
 }
 
 /** The frame of one choice: a bordered row, marked when chosen, quiet when the flow cannot take it. */
-function ChoiceRow({ active, permanent, unavailable, children }: { active: boolean; permanent: boolean; unavailable: boolean; children: ReactNode }) {
+export function ChoiceRow({ active, permanent, unavailable, children }: { active: boolean; permanent: boolean; unavailable: boolean; children: ReactNode }) {
   return (
     <div
       className={cn(
@@ -475,7 +475,7 @@ export function RemovalDialog({
                     </span>
                     <span>
                       Only a record OSDU no longer holds goes: one whose removal failed, or that OSDU still holds, stays as it was.
-                      The next run reads every row once, so a row still in the source is delivered again, as a new record.
+                      If its row is still in the source, the next run that reads it delivers it as a new record.
                     </span>
                   </div>
                 </InfoTip>

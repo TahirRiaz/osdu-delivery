@@ -437,6 +437,67 @@ public sealed class SourceRuntimeTests : IDisposable
     }
 
     [Fact]
+    public async Task Deleting_the_ledger_removes_what_refers_to_a_record_first_and_the_next_run_delivers_everything_again()
+    {
+        var source = Load(SourceYaml(welllogsAfter: false));
+        var engine = Engine(await EstateAsync());
+        Assert.True((await RunAsync(engine, source)).Success);
+        var ledger = engine.Ledger!;
+        var partition = (await ledger.GetLedgerAsync(FlowId.Of("wells/welllogs")))!.Partition!;
+        _clock.Advance(TimeSpan.FromMinutes(10));
+        var seen = _events.Events.Count;
+
+        var result = await RunAsync(engine, source, DeliveryOperations.DeleteLedger, new DeliveryRunPayload { Confirm = partition });
+
+        Assert.True(result.Success, result.Error);
+        var outcome = Outcome(result);
+        Assert.Equal((7, 7, 7), (outcome.Removed, outcome.Deleted, outcome.RowsLoaded));
+
+        // The well logs refer to the wellbores, so their ledger goes first and the wellbores' waits for it.
+        var (wellbores, welllogs) = (outcome.Interfaces[0], outcome.Interfaces[1]);
+        Assert.Equal((2, 1), (wellbores.Wave, welllogs.Wave));
+        Assert.Equal(["welllogs"], wellbores.WaitsFor);
+        Assert.Equal(5, Assert.IsType<DeleteLedgerOutcome>(welllogs.Result).Removed);
+        var trace = _events.Events.Skip(seen).Where(e => e.Kind.StartsWith("interface.", StringComparison.Ordinal)).Select(e => $"{e.Kind} {e.Interface}").ToList();
+        Assert.Equal(["interface.started welllogs", "interface.completed welllogs", "interface.started wellbores", "interface.completed wellbores"], trace);
+        Assert.Equal(5, _protocols["welllogs"].Deletes.Count);
+        Assert.Equal(2, _protocols["wellbores"].Deletes.Count);
+        Assert.All(_protocols["welllogs"].Deletes.Concat(_protocols["wellbores"].Deletes), d => Assert.Equal(RemovalScope.Record, d.Scope));
+        foreach (var name in new[] { "wells/wellbores", "wells/welllogs" })
+        {
+            Assert.Equal(0, (await ledger.StatsAsync(FlowId.Of(name), _clock.GetUtcNow().UtcDateTime)).Total);
+            Assert.Empty(await ledger.ListSubmissionsAsync(FlowId.Of(name), 10));
+        }
+
+        // Nothing is left that says a row was planned: the next run reads every row and delivers each as a new record.
+        var again = await RunAsync(engine, source);
+        Assert.True(again.Success, again.Error);
+        Assert.Equal(7, Outcome(again).Delivered);
+        Assert.Equal(7 + 7, _protocols["wellbores"].Deliveries.Count + _protocols["welllogs"].Deliveries.Count);
+    }
+
+    [Fact]
+    public async Task A_run_deleting_the_ledger_that_names_another_partition_deletes_nothing()
+    {
+        var source = Load(SourceYaml(welllogsAfter: false));
+        var engine = Engine(await EstateAsync());
+        Assert.True((await RunAsync(engine, source)).Success);
+
+        var result = await RunAsync(engine, source, DeliveryOperations.DeleteLedger, new DeliveryRunPayload { Confirm = "elsewhere" });
+
+        Assert.False(result.Success);
+        var outcome = Outcome(result);
+        Assert.Equal(
+            [("wellbores", InterfaceStates.Skipped), ("welllogs", InterfaceStates.Stopped)],
+            outcome.Interfaces.Select(i => (i.Interface, i.State)).ToArray());
+        Assert.Contains("so nothing was removed or deleted", outcome.Interfaces[1].Reason, StringComparison.Ordinal);
+        Assert.Contains("deleting the ledger again does the rest", result.Error, StringComparison.Ordinal);
+        Assert.Empty(_protocols["welllogs"].Deletes);
+        Assert.Empty(_protocols["wellbores"].Deletes);
+        Assert.Equal(5, (await engine.Ledger!.StatsAsync(FlowId.Of("wells/welllogs"), _clock.GetUtcNow().UtcDateTime)).Delivered);
+    }
+
+    [Fact]
     public async Task The_preflight_refuses_interfaces_that_refer_to_each_other_until_after_says_which_goes_first()
     {
         // Both wellbore interfaces fill osdu.data.KickOffWellbore, which refers to wellbores: each could refer to the other's.

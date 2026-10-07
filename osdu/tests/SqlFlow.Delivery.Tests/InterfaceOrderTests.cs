@@ -51,6 +51,24 @@ public sealed class InterfaceOrderTests
     }
 
     [Fact]
+    public void Deleting_takes_the_waves_backwards_each_interface_waiting_for_what_refers_to_it()
+    {
+        var plan = Plan(
+            [],
+            Schema("logs", Log, ("osdu.data.WellboreID", "master-data--Wellbore")),
+            Schema("wellbores", Wellbore, ("osdu.data.WellID", "master-data--Well")),
+            Schema("wells", Well)).Reversed();
+
+        Assert.Equal([["logs"], ["wellbores"], ["wells"]], Waves(plan));
+        Assert.Equal("logs then wellbores then wells", plan.Describe());
+        Assert.Empty(plan.WaitsFor("logs"));
+        var wait = Assert.Single(plan.WaitsFor("wellbores"));
+        Assert.Equal(("logs", DependencyOrigin.Schema), (wait.DependsOn, wait.Origin));
+        Assert.Equal($"logs refers to its records (osdu.data.WellboreID refers to master-data--Wellbore, which wellbores delivers ({Wellbore}))", wait.Why);
+        Assert.Equal((3, 1), (plan.WaveOf("wells"), plan.WaveOf("logs")));
+    }
+
+    [Fact]
     public void A_diamond_runs_the_shared_dependency_first_and_the_two_sides_together()
     {
         var plan = Plan(

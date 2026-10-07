@@ -607,12 +607,41 @@ removal dialog's "Leave as it is" with the ledger step, or `POST /flows/{pipelin
 every record removed) and `POST /records/{flowId}/{key}/purge`. It runs in the control plane as an intervention of kind
 `purge`, and a record OSDU may still hold is left as it is and counted as left (the record route refuses it with 409).
 
-What goes is the record's history, for good. The ledger's watermarks go with it: a watermark says every row of its scope
-up to it was planned, which is no longer true of a row whose record was deleted, so the next run reads every row once (as
-after its rules moved), even one the schedule starts, and delivers a row still in the source as a record the ledger never
-held, under the OSDU id its mapping gives now; the line of the earlier one stays. Every other row is decided by its
-record's own hashes, so only the deleted records are sent. A run of the ledger that was already reading when the records
-were deleted writes its own watermark when it ends; a run with **Force** then reads the rows again.
+What goes is the record's history, for good, and nothing else of the ledger: its watermarks stay. A row whose record was
+deleted is read again when it changes, as any row is, and planned then as a record the ledger never held, under the OSDU id
+its mapping gives now; nothing holds or blocks it, and the line of the earlier one stays. To have every row read and
+delivered again, delete the ledger ([Deleting the ledger](#deleting-the-ledger)), or run `replan`, which reads every row of
+the scope; **Force** does not, since it lifts only the gates that skip a whole run.
+
+### Deleting the ledger
+
+**Delete ledger** on a flow's overview deletes the ledger of every interface of the pipeline in the partition in view, in
+one action, for a flow to be delivered again from nothing. It queues a run of the pipeline with the operation
+`delete-ledger` (`POST /flows/{pipelineId}/ledger/delete`, [operations](operations.md#the-api)), so no delivery of the
+pipeline runs beside it. Nothing happens unless the request names the partition the ledger is kept in (`confirm`, typed
+back in the dialog), and the run checks it again on the node before it touches anything. For each interface the run:
+
+1. Refuses while a worker holds a lease on the ledger's records (work in flight); a lease that ran out is settled first.
+2. Removes from OSDU every record it may hold, reversibly (the `record` scope), through the removal a selection takes, a
+   page of the ledger at a time in key order: each record gets its removal attempt, and a record the ledger already marks
+   removed is not asked about again. A route with no reversible removal (dspdm, etp) is refused before anything is asked.
+3. Only when OSDU answered for every record (removed, or already gone), deletes the ledger whole: every record whatever its
+   state, a slice to a transaction, each kept as one line in `osdu.PurgedRecord` named under the run's activity (kind
+   `delete-ledger`), with its attempts, search entries and lease events; then, in one transaction, its submissions and work
+   batches, its leases, its watermarks, and its reversals with their items. A record OSDU refused to remove leaves the
+   ledger as it was, with the records it did remove marked removed, and the run fails naming the refusals: OSDU never holds
+   a record the ledger forgot. Deleting the ledger again does the rest.
+
+What stays: the activities and their links (the audit trail), the lines of the deleted records, and the ledger's entry in
+the directory. The work batch files under `source.work` are not touched. The next run of the flow, a scheduled one
+included, finds no watermark, reads every row, and delivers each as a new record under the OSDU id its mapping gives,
+which is the id the record had: ids are made from the source key.
+
+A source's interfaces go in reverse delivery order ([documents.md](documents.md#order)): an interface waits for every
+interface whose records refer to its own, so nothing that refers to a record outlives it, and an interface that does not
+complete keeps every interface it refers to as it was. The run's result names, per interface, what it removed from OSDU
+(`removed`, `alreadyGone`, `alreadyRemoved`, `neverInOsdu`) and what it deleted of the ledger (`records`, `submissions`,
+`workBatches`, `watermarks`, `reversals`); the run row's headline count is the records deleted.
 
 ### Reversals
 

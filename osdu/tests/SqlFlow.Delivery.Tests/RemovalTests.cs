@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Http;
@@ -289,7 +290,7 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
     [Fact]
-    public async Task Deleting_from_the_ledger_makes_the_next_run_read_every_row_again()
+    public async Task Deleting_a_record_from_the_ledger_deletes_only_the_record_so_its_row_is_read_again_when_it_changes()
     {
         var removed = await DeliveredAsync("a", Guid.NewGuid());
         var delivered = await DeliveredAsync("b", Guid.NewGuid());
@@ -299,15 +300,94 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
             await Ledger.SetWatermarkAsync(new SourceWatermark(_flow, scope, Now, Guid.NewGuid(), Now, "rules"));
         }
 
-        // A purge that deletes nothing (the record is still in OSDU) leaves what the ledger read as it was.
-        Assert.Empty(await Ledger.PurgeRecordsAsync(_flow, [delivered], "gui:tahir", null, Now));
-        Assert.NotNull(await Ledger.GetWatermarkAsync(_flow, ""));
-
-        // Once a record goes, no scope of the ledger is planned through anything: its next run reads every row once, and
-        // the row of the deleted record is delivered again as a new record.
+        // The record goes and nothing else of the ledger moves: no row is read again for it until it changes, and nothing
+        // holds or blocks it then.
         Assert.Single(await Ledger.PurgeRecordsAsync(_flow, [removed], "gui:tahir", null, Now));
+        Assert.Null(await Ledger.GetRecordAsync(_flow, removed));
+        Assert.Equal(RecordStatus.Delivered, (await Ledger.GetRecordAsync(_flow, delivered))!.Status);
+        Assert.NotNull(await Ledger.GetWatermarkAsync(_flow, ""));
+        Assert.NotNull(await Ledger.GetWatermarkAsync(_flow, "scope=STAT_COMP"));
+    }
+
+    [Fact]
+    public async Task Deleting_the_ledger_takes_every_record_whatever_its_state_and_everything_its_runs_kept()
+    {
+        var submission = await SubmissionAsync(_flow);
+        var delivered = await DeliveredAsync("a", submission);
+        var removed = await DeliveredAsync("b", submission);
+        await Ledger.MarkRemovedAsync(_flow, [removed], RemovalScope.Record, "gui:tahir", Now);
+        var pending = Pending(_flow, "c", submission).DeliveryKey;
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync(_flow, [Pending(_flow, "c", submission)])).Staged);
+        await Ledger.SetWatermarkAsync(new SourceWatermark(_flow, "", Now, submission, Now, "rules"));
+        await using (var db = _db.CreateDbContext())
+        {
+            var partition = await db.DeliveryLedgers.Where(l => l.FlowId == _flow).Select(l => l.PartitionId).SingleAsync();
+            db.DeliveryWorkBatches.Add(new DeliveryWorkBatch
+            {
+                PartitionId = partition, SubmissionId = submission, Index = 0, FlowId = _flow, Location = "batch-0.jsonl", RecordCount = 1, CreatedUtc = Now,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Another ledger of the partition, which the deletion leaves as it is.
+        var other = FlowId.Of("another-flow");
+        await Ledger.RegisterAsync(other);
+        var kept = Pending(other, "z", Guid.NewGuid()).DeliveryKey;
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync(other, [Pending(other, "z", Guid.NewGuid())])).Staged);
+        await Ledger.SetWatermarkAsync(new SourceWatermark(other, "", Now, Guid.NewGuid(), Now, "rules"));
+        var activity = await Ledger.StartActivityAsync(new ActivityRecord
+        {
+            FlowId = _flow, FlowName = "test-flow", Kind = DeliveryOperations.DeleteLedger, Actor = "gui:tahir", StartedUtc = Now,
+        });
+
+        // The leases the deliveries took ran out long ago, and are settled with the rest.
+        _clock.Advance(TimeSpan.FromMinutes(10));
+        var deleted = await Ledger.DeleteLedgerAsync(_flow, "gui:tahir", activity.ActivityId, Now);
+
+        Assert.Equal((3, 1, 1, 1), (deleted.Records, deleted.Submissions, deleted.WorkBatches, deleted.Watermarks));
+        foreach (var key in new[] { delivered, removed, pending })
+        {
+            Assert.Null(await Ledger.GetRecordAsync(_flow, key));
+            Assert.Equal(activity.ActivityId, (await Ledger.FindPurgedAsync(_flow, key))!.ActivityId);
+        }
+
         Assert.Null(await Ledger.GetWatermarkAsync(_flow, ""));
-        Assert.Null(await Ledger.GetWatermarkAsync(_flow, "scope=STAT_COMP"));
+        Assert.Empty(await Ledger.ListSubmissionsAsync(_flow, 10));
+        await using (var db = _db.CreateDbContext())
+        {
+            Assert.False(await db.DeliveryWorkBatches.AnyAsync(b => b.FlowId == _flow));
+            Assert.False(await db.DeliveryLeases.AnyAsync(l => l.FlowId == _flow));
+            Assert.False(await db.DeliveryAttempts.AnyAsync(a => a.FlowId == _flow));
+            Assert.False(await db.DeliveryRecordEvents.AnyAsync(e => e.FlowId == _flow));
+        }
+
+        // The audit trail and the ledger's entry in the directory stay, and so does every row of the other ledger.
+        Assert.NotNull(await Ledger.GetActivityAsync(activity.ActivityId));
+        Assert.NotNull(await Ledger.GetLedgerAsync(_flow));
+        Assert.NotNull(await Ledger.GetRecordAsync(other, kept));
+        Assert.NotNull(await Ledger.GetWatermarkAsync(other, ""));
+
+        // Asked again, an empty ledger has nothing left to delete.
+        Assert.Equal(new LedgerDeletion(0, 0, 0, 0, 0, 0, 0), await Ledger.DeleteLedgerAsync(_flow, "gui:tahir", null, Now));
+    }
+
+    [Fact]
+    public async Task A_worker_holding_a_lease_keeps_the_record_it_holds_and_everything_the_runs_kept()
+    {
+        var delivered = await DeliveredAsync("a", Guid.NewGuid());
+        _clock.Advance(TimeSpan.FromMinutes(10));
+        var submission = Guid.NewGuid();
+        var busy = Pending(_flow, "busy", submission).DeliveryKey;
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync(_flow, [Pending(_flow, "busy", submission)])).Staged);
+        Assert.Single((await Ledger.ClaimAsync(_flow, submission, "elsewhere", 10, TimeSpan.FromMinutes(5), Now)).Records);
+        await Ledger.SetWatermarkAsync(new SourceWatermark(_flow, "", Now, submission, Now, "rules"));
+
+        var refused = await Assert.ThrowsAsync<DeliveryException>(() => Ledger.DeleteLedgerAsync(_flow, "gui:tahir", null, Now));
+
+        Assert.Contains("1 record(s) were deleted, but a worker still holds a lease on its records", refused.Message, StringComparison.Ordinal);
+        Assert.Null(await Ledger.GetRecordAsync(_flow, delivered));
+        Assert.NotNull(await Ledger.GetRecordAsync(_flow, busy));
+        Assert.NotNull(await Ledger.GetWatermarkAsync(_flow, ""));
     }
 
     [Fact]
@@ -525,6 +605,41 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
         Assert.Equal(new BoundedCount(1, Exact: true), await Ledger.CountAsync(_flow, new RecordQuery { EverDelivered = false }, 100));
     }
 
+    /// <summary>A record staged for <paramref name="flow"/> and never claimed: what a plan leaves for its drain.</summary>
+    private static RecordState Pending(Guid flow, string sourceKey, Guid submission) => new()
+    {
+        DeliveryKey = DeliveryKey.Derive("test", [sourceKey]),
+        FlowId = flow,
+        SourceKey = sourceKey,
+        MappingName = "Thing",
+        TargetId = "dev:x:" + sourceKey,
+        LastSubmissionId = submission,
+        PendingDocumentRef = "0:0:10",
+        PendingRenderContext = "{}",
+        PendingSourceFingerprint = "fp",
+        PendingMetadataHash = "mh",
+        PendingMetadata = true,
+    };
+
+    /// <summary>A submission of <paramref name="flow"/> in the ledger, as a plan registers one.</summary>
+    private async Task<Guid> SubmissionAsync(Guid flow)
+    {
+        var (submission, _) = await Ledger.RegisterSubmissionAsync(new SubmissionState
+        {
+            SubmissionId = Guid.CreateVersion7(),
+            FlowId = flow,
+            FlowName = "test-flow",
+            MappingReference = "Thing@1.0.0",
+            RenderContext = "{}",
+            Status = SubmissionStatus.Completed,
+            Kind = SubmissionKinds.Incremental,
+            SourceConnection = "${env:OSDU_DATA_DB}",
+            SourceObject = "OsduData.arc.Thing",
+            ReceivedUtc = Now,
+        });
+        return submission.SubmissionId;
+    }
+
     /// <summary>A record staged, claimed and delivered, so a removal has something real to act on.</summary>
     private async Task<DeliveryKey> DeliveredAsync(string sourceKey, Guid submission, Guid? runId = null)
     {
@@ -584,6 +699,8 @@ public class RemovalRuntimeTests : IDisposable
     private readonly string _root = Samples.NewTempDirectory();
 
     private Guid _submission;
+
+    private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
     [Fact]
     public async Task Removing_a_selection_settles_every_record_and_reports_what_each_one_did()
@@ -728,6 +845,98 @@ public class RemovalRuntimeTests : IDisposable
             await Assert.ThrowsAsync<DeliveryException>(() => runtime.RemoveAsync(RemovalSelection.Of([keys[2]]), RemovalChoice.History, purgeLedger: true));
             await Assert.ThrowsAsync<DeliveryException>(() => runtime.RemoveAsync(RemovalSelection.Of([keys[2]]), RemovalChoice.Previous, purgeLedger: true));
             Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, keys[2]))!.Status);
+        }
+    }
+
+    [Fact]
+    public async Task Deleting_the_ledger_removes_every_record_OSDU_holds_then_deletes_the_whole_ledger()
+    {
+        var (runtime, protocol, ledger) = await DeliveredEstateAsync();
+        using (runtime)
+        {
+            var keys = await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100);
+            var removedBefore = (await ledger.GetRecordAsync(runtime.Flow.Id, keys[0]))!.TargetId!;
+            runtime.Actor = "gui:tahir";
+            Assert.Equal(1, (await runtime.RemoveAsync(RemovalSelection.Of([keys[0]]), RemovalChoice.Record)).Removed);
+            protocol.Deletes.Clear();
+            await ledger.SetWatermarkAsync(new SourceWatermark(runtime.Flow.Id, "", Now, _submission, Now, "rules"));
+            var partition = (await ledger.GetLedgerAsync(runtime.Flow.Id))!.Partition!;
+            _clock.Advance(TimeSpan.FromMinutes(10));
+
+            var summary = await runtime.DeleteLedgerAsync(partition.ToUpperInvariant());
+
+            // The four records OSDU still held are removed from it, reversibly; the one removed before is not asked about again.
+            Assert.Equal((4, 0, 1, 0), (summary.Removed, summary.AlreadyGone, summary.AlreadyRemoved, summary.NeverInOsdu));
+            Assert.Equal(4, protocol.Deletes.Count);
+            Assert.All(protocol.Deletes, d => Assert.Equal(RemovalScope.Record, d.Scope));
+            Assert.DoesNotContain(protocol.Deletes, d => d.TargetId == removedBefore);
+
+            // Then the ledger goes whole: its records, its submission and its watermark, so the next run reads every row.
+            // Two watermarks: the one its run wrote for the scope it planned, and the one set here.
+            Assert.Equal((5, 2), (summary.Deleted.Records, summary.Deleted.Watermarks));
+            Assert.True(summary.Deleted.Submissions >= 1);
+            Assert.Empty(await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100));
+            Assert.Null(await ledger.GetWatermarkAsync(runtime.Flow.Id, ""));
+            Assert.Empty(await ledger.ListSubmissionsAsync(runtime.Flow.Id, 10));
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = DeliveryOperations.DeleteLedger }));
+            Assert.Equal(("completed", "gui:tahir"), (activity.Outcome, activity.Actor));
+            Assert.Contains("4 record(s) removed from OSDU (reversible)", activity.Summary!, StringComparison.Ordinal);
+            foreach (var key in keys)
+            {
+                Assert.Equal(activity.ActivityId, (await ledger.FindPurgedAsync(runtime.Flow.Id, key))!.ActivityId);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_record_OSDU_will_not_remove_keeps_the_whole_ledger_until_it_does()
+    {
+        var (runtime, protocol, ledger) = await DeliveredEstateAsync();
+        using (runtime)
+        {
+            var keys = await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100);
+            var refused = (await ledger.GetRecordAsync(runtime.Flow.Id, keys[2]))!.TargetId!;
+            protocol.Refuse.Add(refused);
+            runtime.Actor = "gui:tahir";
+            var partition = (await ledger.GetLedgerAsync(runtime.Flow.Id))!.Partition!;
+            _clock.Advance(TimeSpan.FromMinutes(10));
+
+            var failure = await Assert.ThrowsAsync<DeliveryException>(() => runtime.DeleteLedgerAsync(partition));
+
+            // OSDU never holds a record the ledger forgot: every record stays, the four OSDU removed marked so.
+            Assert.Contains("1 record(s) of", failure.Message, StringComparison.Ordinal);
+            Assert.Contains("could not be removed from OSDU, so the ledger was kept as it was", failure.Message, StringComparison.Ordinal);
+            Assert.Contains(refused, failure.Message, StringComparison.Ordinal);
+            Assert.Equal(5, (await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100)).Count);
+            Assert.Equal(4, (await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Deleted }, 100)).Count);
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, keys[2]))!.Status);
+            Assert.Equal("failed", Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = DeliveryOperations.DeleteLedger })).Outcome);
+
+            // Once OSDU removes it, the ledger goes, and what was removed before is not asked about again.
+            protocol.Refuse.Clear();
+            protocol.Deletes.Clear();
+            var summary = await runtime.DeleteLedgerAsync(partition);
+
+            Assert.Equal((1, 4, 5), (summary.Removed, summary.AlreadyRemoved, summary.Deleted.Records));
+            Assert.Equal(refused, Assert.Single(protocol.Deletes).TargetId);
+            Assert.Empty(await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100));
+        }
+    }
+
+    [Fact]
+    public async Task Deleting_the_ledger_names_the_partition_it_is_kept_in_or_touches_nothing()
+    {
+        var (runtime, protocol, ledger) = await DeliveredEstateAsync();
+        using (runtime)
+        {
+            var partition = (await ledger.GetLedgerAsync(runtime.Flow.Id))!.Partition!;
+            runtime.Actor = "gui:tahir";
+
+            var wrong = await Assert.ThrowsAsync<DeliveryException>(() => runtime.DeleteLedgerAsync("elsewhere"));
+
+            Assert.Contains($"which is kept in partition '{partition}', so nothing was removed or deleted", wrong.Message, StringComparison.Ordinal);
+            Assert.Empty(protocol.Deletes);
+            Assert.Equal(5, (await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery { Status = RecordStatus.Delivered }, 100)).Count);
         }
     }
 
@@ -921,6 +1130,36 @@ public class RemovalContractTests
         Assert.Null(back.RunId);
         Assert.False(back.Drifted);
         Assert.Equal(SearchMode.Prefix, back.Mode);
+    }
+
+    [Fact]
+    public void A_run_deleting_the_ledger_names_its_partition_and_nothing_it_does_not_take()
+    {
+        var payload = DeliveryRunPayload.Parse("""{"confirm":" dev ","interfaces":["units","quantities"]}""");
+        payload.Validate(DeliveryOperations.DeleteLedger);
+        Assert.Equal("dev", payload.Confirm);
+        Assert.Equal("""{"interfaces":["units","quantities"],"confirm":"dev"}""", payload.ToJson());
+        Assert.False(payload.CarriesOnlyConfiguration);
+
+        Assert.Contains(
+            "payload confirm is required by the delete-ledger operation",
+            Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.None.Validate(DeliveryOperations.DeleteLedger)).Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "payload confirm does not apply to the deliver operation",
+            Assert.Throws<SqlFlowException>(() => new DeliveryRunPayload { Confirm = "dev" }.Validate(DeliveryOperations.Deliver)).Message,
+            StringComparison.Ordinal);
+        foreach (var (json, why) in new[]
+        {
+            ("""{"confirm":"dev","force":true}""", "passes no gate"),
+            ("""{"confirm":"dev","recordKeys":["11111111-1111-1111-1111-111111111111"]}""", "remove records with a removal"),
+            ("""{"confirm":"dev","redeliver":"all"}""", "sends nothing"),
+        })
+        {
+            Assert.Contains(why, Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse(json).Validate(DeliveryOperations.DeleteLedger)).Message, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("payload confirm must be a non-empty string", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{"confirm":"  "}""")).Message, StringComparison.Ordinal);
     }
 
     [Fact]

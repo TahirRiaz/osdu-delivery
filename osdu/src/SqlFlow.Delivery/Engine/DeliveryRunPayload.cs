@@ -47,6 +47,13 @@ public static class DeliveryOperations
     /// </summary>
     public const string Reverse = "reverse";
 
+    /// <summary>
+    /// Delete the ledger (docs/ledger.md, Deleting the ledger): remove from OSDU, reversibly, every record the ledger holds
+    /// there, then delete everything the ledger keeps, so the flow's next run reads every row and delivers each as a new
+    /// record. The payload names the partition the run acts in (<c>confirm</c>), as the operator typed it.
+    /// </summary>
+    public const string DeleteLedger = "delete-ledger";
+
     /// <summary>Capture a cache flow's types into its partition's cache: the cache kind's default.</summary>
     public const string Refresh = "refresh";
 
@@ -250,6 +257,9 @@ public sealed record DeliveryRunPayload
     /// <summary>The central configuration set for one partition, by partition, which a run bound to it resolves with first.</summary>
     public const string PartitionReferencesProperty = "partitionReferences";
 
+    /// <summary>The partition a run deleting the ledger acts in, named by whoever asked for it as confirmation.</summary>
+    public const string ConfirmProperty = "confirm";
+
     /// <summary>The tests of an assertion flow a run runs, by name.</summary>
     public const string TestsProperty = "tests";
 
@@ -264,7 +274,7 @@ public sealed record DeliveryRunPayload
 
     private static readonly string[] Properties =
         [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty,
-            PartitionReferencesProperty, TestsProperty, TagsProperty, DimensionsProperty];
+            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -315,6 +325,12 @@ public sealed record DeliveryRunPayload
     public IReadOnlyList<string> Interfaces { get; init; } = [];
 
     /// <summary>
+    /// The partition a run deleting the ledger acts in, as whoever asked for it named it: the run refuses to delete anything
+    /// unless it is the partition the ledger is kept in, so a deletion is never one click away from a trigger dialog.
+    /// </summary>
+    public string? Confirm { get; init; }
+
+    /// <summary>
     /// The central configuration the control plane supplied with this run: the values a flow's ${env:NAME} references
     /// resolve to, ahead of the node's own environment. Empty when the control plane holds none, which leaves every
     /// reference to the node. A value here is a non-secret value or a reference the node resolves, never a secret.
@@ -350,7 +366,7 @@ public sealed record DeliveryRunPayload
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
         => !Force && SubmissionId is null && RunId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests && !SelectsDimensions;
+            && Confirm is null && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests && !SelectsDimensions;
 
     /// <summary>
     /// True when the payload carries nothing but the central configuration the control plane supplied: what the payload of
@@ -358,7 +374,7 @@ public sealed record DeliveryRunPayload
     /// </summary>
     public bool CarriesOnlyConfiguration
         => !Force && SubmissionId is null && RunId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && !SelectsTests && !SelectsDimensions;
+            && Confirm is null && !SelectsTests && !SelectsDimensions;
 
     /// <summary>
     /// The configuration a run resolves its references with when it acts on <paramref name="partition"/>: the partition's
@@ -431,6 +447,7 @@ public sealed record DeliveryRunPayload
             Slices = SliceList(root[SlicesProperty]),
             Interface = root[InterfaceProperty] is null ? null : Text(root[InterfaceProperty], InterfaceProperty),
             Interfaces = Names(root[InterfacesProperty]),
+            Confirm = root[ConfirmProperty] is null ? null : Text(root[ConfirmProperty], ConfirmProperty),
             References = ReferenceMap(root[ReferencesProperty], ReferencesProperty),
             PartitionReferences = PartitionReferenceMap(root[PartitionReferencesProperty]),
             Tests = Selection(root[TestsProperty], TestsProperty, "test names"),
@@ -474,6 +491,11 @@ public sealed record DeliveryRunPayload
         if (RunId is not null && operation != DeliveryOperations.Reverse)
         {
             throw new SqlFlowException($"payload {RunIdProperty} does not apply to the {operation} operation: only a reverse run names the run it reverses.");
+        }
+
+        if (Confirm is not null && operation != DeliveryOperations.DeleteLedger)
+        {
+            throw new SqlFlowException($"payload {ConfirmProperty} does not apply to the {operation} operation: only a run deleting the ledger names the partition it acts in.");
         }
 
         if (Redeliver is { } scope && !RedeliverScopes.Names.Contains(scope, StringComparer.OrdinalIgnoreCase))
@@ -584,6 +606,20 @@ public sealed record DeliveryRunPayload
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 Refuse(Interfaces.Count > 0, InterfacesProperty, operation, "a reversal works in one interface's ledger, which 'interface' names");
                 break;
+            case DeliveryOperations.DeleteLedger:
+                if (Confirm is null)
+                {
+                    throw new SqlFlowException(
+                        $"payload {ConfirmProperty} is required by the {operation} operation: name the partition the run acts in, which the run checks before it removes or deletes anything.");
+                }
+
+                Refuse(Force, ForceProperty, operation, "deleting the ledger passes no gate: it takes every record");
+                Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "deleting the ledger takes every record of it, not a submission's");
+                Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "deleting the ledger takes every record of it; remove records with a removal");
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "deleting the ledger sends nothing");
+                Refuse(Rerender, RerenderProperty, operation, "deleting the ledger renders nothing");
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                break;
             case DeliveryOperations.Replan:
                 Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "a replan reads every row of the scope under a submission of its own");
                 Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "a replan reads every row of the scope; scope a deliver run to records instead");
@@ -648,6 +684,11 @@ public sealed record DeliveryRunPayload
         if (Interfaces.Count > 0)
         {
             root[InterfacesProperty] = new JsonArray(Interfaces.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
+        }
+
+        if (Confirm is { } confirm)
+        {
+            root[ConfirmProperty] = confirm;
         }
 
         if (References.Count > 0)

@@ -391,6 +391,12 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                 LogOutcome(log, $"reverse: {reversal.Describe(reversed)}");
                 return ReverseRunOutcome.From(operation, reversed, reversal);
 
+            case DeliveryOperations.DeleteLedger:
+                var confirm = payload.Confirm ?? throw new DeliveryException("A run deleting the ledger names the partition it acts in (payload confirm), and this one names none.");
+                var cleared = await runtime.DeleteLedgerAsync(confirm, ct).ConfigureAwait(false);
+                LogOutcome(log, $"delete ledger: {cleared.Describe()}");
+                return DeleteLedgerOutcome.From(operation, cleared);
+
             case DeliveryOperations.Verify:
                 var reconcile = flow.Verify.Reconcile;
                 var summary = await runtime.VerifyAsync(VerifyBatch, payload.Force ? null : VerifyInterval, reconcile, keys.Count == 0 ? null : keys, ct).ConfigureAwait(false);
@@ -921,6 +927,32 @@ public sealed record SyncRunOutcome(
             summary.PlansRequested, summary.Restored, summary.NotFound, summary.NotFoundRecorded, summary.FoundAgain, summary.WithoutKey,
             summary.NotInLedger, summary.NotFoundSample);
     }
+}
+
+/// <summary>
+/// The <c>result</c> of a run deleting the ledger (docs/ledger.md, Deleting the ledger): the partition it confirmed, what it
+/// removed from OSDU on the way, and what it deleted of the ledger.
+/// </summary>
+public sealed record DeleteLedgerOutcome(
+    string Operation, string Partition, int Removed, int AlreadyGone, int AlreadyRemoved, int NeverInOsdu,
+    int Records, int Submissions, int WorkBatches, int Watermarks, int Reversals)
+{
+    /// <summary>The run's headline count on the run row (<c>result.rowsLoaded</c>): the records deleted from the ledger.</summary>
+    public long RowsLoaded => Records;
+
+    public static DeleteLedgerOutcome From(string operation, LedgerDeleteSummary summary)
+    {
+        ArgumentNullException.ThrowIfNull(summary);
+        var deleted = summary.Deleted;
+        return new DeleteLedgerOutcome(
+            operation, summary.Partition, summary.Removed, summary.AlreadyGone, summary.AlreadyRemoved, summary.NeverInOsdu,
+            deleted.Records, deleted.Submissions, deleted.WorkBatches, deleted.Watermarks, deleted.Reversals);
+    }
+
+    /// <summary>One line: what went from OSDU and from the ledger.</summary>
+    public string Describe() => string.Create(
+        CultureInfo.InvariantCulture,
+        $"{Removed} removed from OSDU (reversible), {AlreadyGone} already gone, {AlreadyRemoved} removed before, {NeverInOsdu} never in OSDU; {Records} record(s), {Submissions} submission(s) and {Watermarks} watermark(s) deleted from the ledger");
 }
 
 /// <summary>The <c>result</c> of a run that failed before producing an outcome.</summary>

@@ -13,15 +13,25 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **Delete ledger: a flow's whole ledger, every interface's, in one action.** The flow overview's **Delete ledger** queues a
+  run of the pipeline (operation `delete-ledger`, `POST /flows/{pipelineId}/ledger/delete`), so no delivery of the pipeline
+  runs beside it. It removes every record OSDU holds from it first, reversibly, through the same removal a selection takes,
+  then deletes everything the ledger keeps: every record whatever its state (one line of each kept in
+  `osdu.PurgedRecord`), its attempts, OSDU ids and lease events, and its submissions, work batches, leases, watermarks and
+  reversals, so the next run reads every row and delivers each as a new record under the same OSDU ids. A source's
+  interfaces go in reverse delivery order, so nothing that refers to a record outlives it, and an interface that does not
+  complete keeps every interface it refers to as it was. Nothing happens unless the partition the ledger is kept in is
+  named (`confirm`), and the run checks it again; a record OSDU refuses to remove keeps the whole ledger, so OSDU never
+  holds a record the ledger forgot; a worker holding a lease, or a route with no reversible removal (dspdm, etp), refuses
+  it. The audit trail stays (docs: `osdu/docs/ledger.md`, Deleting the ledger).
 - **A removal can delete the records it takes out of OSDU from the ledger too, as an extra step.** The removal dialog's
   "Also delete from the ledger" (API `purgeLedger`, with the `record` and `everything` scopes only) deletes each record OSDU
   answered for (removed, or already gone): its attempts, search entries and row. Only a record the ledger marks deleted
   goes, never one a lease holds or one whose removal failed. The ledger keeps one line of each in the new
   `osdu.PurgedRecord` (key, source key, label, OSDU id, last version, attempts deleted, who, when, which intervention;
   migration `RecordPurges`, module 1.27.0), and a deleted record's page answers "Deleted from the ledger" with who and when.
-  The ledger's watermarks go with the records, so the next run, a scheduled one included, reads every row once and
-  delivers a row still in the source again as a new record, under the id its mapping gives now (docs: `osdu/docs/ledger.md`,
-  Deleting a removed record from the ledger).
+  Deleting records deletes only those records: a row still in the source is delivered again, as a new record, by the next
+  run that reads it, and nothing holds or blocks it (docs: `osdu/docs/ledger.md`, Deleting a removed record from the ledger).
 - **Records removed from OSDU earlier are deleted from the ledger alone.** The removal dialog is the one **Remove** surface,
   in two parts: **In OSDU** (the four scopes, and "Leave as it is" for records removed already) and **In the ledger**
   ("Delete from the ledger"), every choice marked reversible or permanent. "Leave as it is" with the ledger step deletes the

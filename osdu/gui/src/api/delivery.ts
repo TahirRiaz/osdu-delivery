@@ -1551,6 +1551,23 @@ export interface DeliveryLedgerPurgeResult {
   summary: string;
 }
 
+/**
+ * Deleting a flow's whole ledger, every interface's: `confirm` names the partition the ledger is kept in, as the operator
+ * typed it; nothing is queued unless it is that partition.
+ */
+export interface DeliveryLedgerDeleteRequest {
+  confirm: string;
+  pool?: string | null;
+}
+
+/** The run that deletes the ledger: it removes every record from OSDU reversibly, then deletes everything the ledgers keep. */
+export interface DeliveryLedgerDeleteAccepted {
+  runId: string;
+  status: RunStatus;
+  partition: string;
+  interfaces: string[];
+}
+
 /** A removal was queued on a node. */
 export interface DeliveryRemovalAccepted {
   taskId: string;
@@ -3512,6 +3529,12 @@ export const deliveryApi = {
   /** Queues the removal of the selected records, or of every record the filter matches, on a node. */
   removeRecords: (pipelineId: string, request: DeliveryRemovalRequest, scope?: DeliveryFlowScope) =>
     post<DeliveryRemovalAccepted>(flowPath(pipelineId, "/records/remove", scope), request),
+  /**
+   * Queues the run that deletes the flow's ledger, every interface's, in the partition the request names (none for a flow
+   * whose partition is its header): every record is removed from OSDU reversibly first, then everything the ledgers keep goes.
+   */
+  deleteLedger: (pipelineId: string, request: DeliveryLedgerDeleteRequest, partition: string | null) =>
+    post<DeliveryLedgerDeleteAccepted>(flowPath(pipelineId, "/ledger/delete", { interfaceName: null, partition }), request),
   /** Deletes the selected records already removed from OSDU from the ledger, here and now; OSDU is asked nothing. */
   purgeRecords: (pipelineId: string, request: DeliveryLedgerPurgeRequest, scope?: DeliveryFlowScope) =>
     post<DeliveryLedgerPurgeResult>(flowPath(pipelineId, "/records/purge", scope), request),

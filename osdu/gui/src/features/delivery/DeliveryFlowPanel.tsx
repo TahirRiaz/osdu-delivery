@@ -31,6 +31,7 @@ import { OutsidePartition } from "./PartitionNotice";
 import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./RecordCells";
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
+import { DeleteLedgerDialog } from "./DeleteLedgerDialog";
 import { RedeliverDialog, type RedeliverSelection } from "./RedeliverDialog";
 import { PLANNED_PER_PASS, ReleaseDialog } from "./ReleaseDialog";
 import { failureText } from "./answers";
@@ -106,6 +107,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const [drifted, setDrifted] = useState(false);
   const [contains, setContains] = useState(false);
   const [releaseOpen, setReleaseOpen] = useState(false);
+  const [deleteLedgerOpen, setDeleteLedgerOpen] = useState(false);
   // Ticked rows survive paging and filter changes because the page owns them, not the table. `allMatching` is the
   // other selection: not a list of keys but the filter itself, resolved when the removal runs.
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -233,6 +235,9 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
   const removalJson = isTerminalTask(removal.data) ? taskResultJson(removal.data) : null;
   // What the ledger in view is called wherever the view names it: the flow, its interface, and its partition.
   const ledgerName = ledgerLabel(flowName, scope);
+  // The partition the ledgers are kept in, which deleting them asks to be typed back: the one in view, or for a flow whose
+  // partition is its header, the one its ledger is kept under. None until the flow has run, or while every partition is in view.
+  const ledgerPartition = partition ?? headerPartition;
 
   return (
     <div className="flex flex-col gap-4" data-testid={`delivery-panel-${section}`}>
@@ -292,6 +297,20 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                     <Button variant="outline" size="sm" onClick={() => syncSource.mutate(undefined)} disabled={!canSync || syncSource.isPending} title={syncTitle} data-testid="delivery-sync-all">
                       <RefreshCw />
                       Sync timelines
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setDeleteLedgerOpen(true)}
+                      disabled={ledgerPartition === null}
+                      title={ledgerPartition === null
+                        ? "Pick a partition in the title bar: a ledger is kept in one, and deleting it names that one."
+                        : "Remove every record from OSDU (reversible), then delete the whole ledger of every interface; the next run reads every row and delivers each as a new record"}
+                      data-testid="delivery-delete-ledger"
+                    >
+                      <Trash2 />
+                      Delete ledger
                     </Button>
                   </>
                 )}
@@ -538,6 +557,24 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             toast.success(
               outcome.runId ? `${asked} by a deliver run.` : `${asked} by the flow's next run.`,
               outcome.runId ? { action: { label: "Open run", onClick: () => navigate(`/runs/${outcome.runId}`) } } : undefined);
+            void queryClient.invalidateQueries({ queryKey: ["delivery"] });
+          }}
+        />
+      )}
+      {s !== undefined && ledgerPartition !== null && (
+        <DeleteLedgerDialog
+          open={deleteLedgerOpen}
+          onClose={() => setDeleteLedgerOpen(false)}
+          pipelineId={pipelineId}
+          flowName={flowName}
+          partition={partition}
+          word={ledgerPartition}
+          stats={s}
+          interfaces={many ? rows ?? null : null}
+          onQueued={(accepted) => {
+            toast.success(
+              `Deleting the ledger of ${flowName} in ${accepted.partition}: queued as a run.`,
+              { action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) } });
             void queryClient.invalidateQueries({ queryKey: ["delivery"] });
           }}
         />
