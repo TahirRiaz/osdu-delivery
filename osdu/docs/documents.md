@@ -1185,7 +1185,7 @@ source:
   # recordQueryPath: /api/storage/v2/query/records
   # legalPath: /api/legal/v1
 
-defaults: { maxRecords: 10000, examples: 20, read: storage }
+defaults: { maxRecords: 10000, examples: 20, read: storage, indexSettleSeconds: 300 }
 failRunOn: error                         # error | warning | never: which outcomes fail the platform run
 reliability: { concurrency: 4, retry: { attempts: 4 } }
 schedule: recall-welllog
@@ -1260,6 +1260,7 @@ A test:
 | `read` | `storage` (the record as OSDU keeps it; the default) or `index` (the projection search returns). |
 | `maxRecords` | The most records the test reads (10,000 by default, at most 1,000,000). When more match, the assertions that need records are not evaluated and say so. |
 | `sample` | `true` evaluates the first `maxRecords` records when more match, and marks the result as a sample. |
+| `indexSettleSeconds` | How long the search index is given to list a change before the test is judged, 0 to 3600 seconds (`defaults.indexSettleSeconds`, 300 unless the flow says otherwise); 0 judges it whatever changed ([Records the index may not list yet](#records-the-index-may-not-list-yet)). |
 | `bulk` | Reads each record's bulk data from the Wellbore DDMS under `source.ddmsRoot`: `columns` narrows the columns read (the ones the assertions name are always read), `maxRows` bounds the rows (1,000,000 by default). Only for a kind the DDMS keeps bulk data for (WellLog, WellboreTrajectory, PPFGDataset, WellPressureTestRawMeasurement). |
 | `template` | The template version its fields are checked against: the mapping's `template.version`, so the test is checked against the schema the mapping renders to. The newest saved one of its kind when left out. |
 | `partitions` | Narrows the test to some of the flow's partitions; a run in another skips it. |
@@ -1307,6 +1308,23 @@ from being evaluated, with the nearest variable suggested. A kind whose template
 
 What a test reads today is storage and search for every kind, and bulk data from the Wellbore DDMS alone; the other
 DDMSs and file contents are not read yet ([docs/assertions-design.md](../../docs/assertions-design.md) section 11).
+
+### Records the index may not list yet
+
+Every test finds its records through the search index, and OSDU indexes a change from a queue: for a while after records
+are written, removed or put back at an earlier version, the index lists them as they were. A test judged then fails on
+records that are fine (`delivered` misses what was just written, a field check finds nothing to check). So before a run
+judges anything it reads from the ledger what this module's delivery flows changed in OSDU in the partition within each
+test's `indexSettleSeconds`: the records each ledger wrote (when it last delivered them), the records it took out of OSDU
+or put back at an earlier version and still holds, and the records it deleted from itself that OSDU had held. A test that
+reads an entity type changed within its window is **skipped**, not failed: its result says which ledgers changed what,
+the latest change, and from when a run judges it. A skipped test does not fail the run, the run's summary names it, and
+the next run after the window judges it. A test that does not fit its template is reported as such whatever changed.
+
+The ledgers are matched by entity type (the kind's, or for a test that names records by `ids`, theirs), so a change to
+another version of the type skips the test too. What another system writes to the partition is not in the ledger and is
+not waited for. The flow's schedule runs it right after its delivery flow, so a delivery that changed records skips the
+tests of that type in the same fire; with `indexSettleSeconds: 0` a test is judged at once, whatever changed.
 
 The operations are `test` (the default) and `plan` (select, check and count the tests, and record nothing). The payload
 takes `tests` (names) and `tags`; a run with neither runs every test. A flow's pipeline has a Tests tab (its board), a

@@ -1190,6 +1190,11 @@ rebuilding each as the keys change. It sets the attempt and event tables' ever-i
 ledger it needs log space for the largest of them, and runs while no host is up; a failed migration leaves the ledger
 as it was. Going back down restores the earlier keys and indexes and drops the directory.
 
+`PurgedRecordRecency` (module version 1.28.0) indexes `osdu.PurgedRecord` on `(PartitionId, FlowId, PurgedUtc)`, carrying
+the OSDU id, so what a ledger deleted lately is one seek: an assertion run reads it, with what each ledger wrote and removed
+lately, before it judges the search index ([documents.md](documents.md#records-the-index-may-not-list-yet)). No column or
+other table changes; going back down drops the index.
+
 `RecordPurges` (module version 1.27.0) creates `osdu.PurgedRecord`
 ([Deleting a removed record from the ledger](#deleting-a-removed-record-from-the-ledger)), keyed by the partition first,
 indexed on `(PartitionId, FlowId, DeliveryKey)` for a record's page and on `(PartitionId, TargetId)` for a lookup by OSDU

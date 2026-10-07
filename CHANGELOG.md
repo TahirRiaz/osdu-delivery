@@ -13,6 +13,15 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **An assertion test of records just changed is skipped until the search index has had time to list them.** OSDU indexes
+  a change from a queue, so a test run right after a delivery judged an index that did not list the delivery yet and failed
+  on records that were fine (after a full redelivery of the Recall external units, 9 of 13 tests). Before it judges
+  anything, a run now reads from the ledger what this module's delivery flows wrote to, removed from or restored in OSDU in
+  the partition within each test's `indexSettleSeconds` (300 by default, `defaults.indexSettleSeconds` and per test, 0 to
+  3600, 0 judging at once), and a test of an entity type changed within it is skipped, not failed, saying which ledgers
+  changed what, the latest change, and from when a run judges it. The run's summary names the skipped tests. Migration
+  `PurgedRecordRecency` (module 1.28.0) indexes `osdu.PurgedRecord` by time for it (docs: `osdu/docs/documents.md`,
+  Records the index may not list yet).
 - **Delete ledger: a flow's whole ledger, every interface's, in one action.** The flow overview's **Delete ledger** queues a
   run of the pipeline (operation `delete-ledger`, `POST /flows/{pipelineId}/ledger/delete`), so no delivery of the pipeline
   runs beside it. It removes every record OSDU holds from it first, reversibly, through the same removal a selection takes,

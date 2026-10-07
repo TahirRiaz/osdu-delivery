@@ -372,6 +372,37 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task What_a_ledger_changed_in_OSDU_lately_is_counted_by_change_and_named_by_one_of_its_ids()
+    {
+        await DeliveredAsync("old", Guid.NewGuid());
+        var removed = await DeliveredAsync("removed", Guid.NewGuid());
+        var purged = await DeliveredAsync("purged", Guid.NewGuid());
+        var quiet = FlowId.Of("quiet-flow");
+        await Ledger.RegisterAsync(quiet);
+        Assert.Equal(1, (await Ledger.UpsertPendingAsync(quiet, [Pending(quiet, "q", Guid.NewGuid())])).Staged);
+        _clock.Advance(TimeSpan.FromMinutes(30));
+        var since = Now;
+
+        // After the moment: one record written, one taken out of OSDU and kept, one taken out and deleted from the ledger.
+        _clock.Advance(TimeSpan.FromSeconds(10));
+        await Ledger.MarkRemovedAsync(_flow, [removed, purged], RemovalScope.Record, "gui:tahir", Now);
+        Assert.Single(await Ledger.PurgeRecordsAsync(_flow, [purged], "gui:tahir", null, Now));
+        _clock.Advance(TimeSpan.FromSeconds(10));
+        await DeliveredAsync("written", Guid.NewGuid());
+        var latest = Now;
+
+        var change = Assert.Single(await Ledger.RecentOsduChangesAsync(TestLedgers.Partition, since));
+
+        Assert.Equal((_flow, 1L, 1L, 1L), (change.FlowId, change.Written, change.Removed, change.Deleted));
+        Assert.Equal(latest, change.LatestUtc);
+        Assert.StartsWith("dev:x:", change.SampleTargetId, StringComparison.Ordinal);
+
+        // Nothing after the latest change, and nothing in a partition the directory does not hold.
+        Assert.Empty(await Ledger.RecentOsduChangesAsync(TestLedgers.Partition, Now));
+        Assert.Empty(await Ledger.RecentOsduChangesAsync("nowhere", since));
+    }
+
+    [Fact]
     public async Task A_worker_holding_a_lease_keeps_the_record_it_holds_and_everything_the_runs_kept()
     {
         var delivered = await DeliveredAsync("a", Guid.NewGuid());

@@ -82,6 +82,18 @@ public sealed partial class OsduLedger
         return new LedgerDeletion(records, state.Submissions, state.WorkBatches, state.Leases, state.Events, state.Watermarks, state.Reversals);
     }
 
+    public async Task<IReadOnlyList<RecentOsduChange>> RecentOsduChangesAsync(string partition, DateTime sinceUtc, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(partition);
+        if (await PartitionIdOfAsync(partition, ct).ConfigureAwait(false) is not { } id)
+        {
+            return [];
+        }
+
+        await using var db = Open();
+        return await RetryDeadlockAsync(() => SqlServerLedgerBulk.RecentChangesAsync(db, id, sinceUtc, ct), ct).ConfigureAwait(false);
+    }
+
     public async Task<PurgedRecordState?> FindPurgedAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default)
     {
         if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)

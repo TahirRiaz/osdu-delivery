@@ -2386,6 +2386,9 @@ public static class DeliveryModel
             // which record went under it.
             e.HasIndex(p => new { p.PartitionId, p.FlowId, p.DeliveryKey });
             e.HasIndex(p => new { p.PartitionId, p.TargetId }).HasFilter("[TargetId] IS NOT NULL");
+            // What a ledger deleted lately, by when: an assertion run asks it before it judges what the search index lists, which
+            // can still list a record a removal took out of OSDU moments before.
+            e.HasIndex(p => new { p.PartitionId, p.FlowId, p.PurgedUtc }).IncludeProperties(p => p.TargetId);
         });
 
         modelBuilder.Entity<DeliveryReversal>(e =>

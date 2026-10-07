@@ -178,12 +178,111 @@ public sealed class AssertionRunTests : IDisposable
 
     private static AssertionOutcome Of(TestResult result, string type, int nth = 0) => result.Assertions.Where(a => a.Type == type).ElementAt(nth);
 
+    /// <summary>Tests of the wellbores a delivery flow wrote, of the logs it did not, and one that gives the index no time.</summary>
+    private const string Settling = $$"""
+        flowType: assertion
+        name: settle-assertion
+        partitions: [dev]
+        source:
+          endpoint: http://localhost
+        defaults: { indexSettleSeconds: 120 }
+        reliability: { concurrency: 2, retry: { attempts: 1, baseDelayMs: 1, maxDelayMs: 1 } }
+        tests:
+          - name: wellbores
+            kind: {{Wellbore}}
+            assert:
+              - { delivered: wells-delivery }
+          - name: wellbore-by-id
+            kind: {{Wellbore}}
+            ids: ["dev:master-data--Wellbore:w1"]
+            assert:
+              - count: 1
+          - name: wellbores-now
+            kind: {{Wellbore}}
+            indexSettleSeconds: 0
+            assert:
+              - count: 4
+          - name: logs
+            kind: {{WellLog}}
+            assert:
+              - count: 2
+        """;
+
+    [Fact]
+    public async Task A_test_of_records_delivered_moments_ago_is_skipped_until_the_index_has_had_time_to_list_them()
+    {
+        Estate();
+        var (runner, ledger, _) = await RunnerAsync(Settling);
+        await DeliveredAsync(ledger);
+        var delivered = _clock.GetUtcNow().UtcDateTime;
+        _clock.Advance(TimeSpan.FromSeconds(30));
+
+        var early = await runner.TestAsync([], [], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        // The two tests of the type just written are skipped, saying what changed and from when a run judges them; the test of
+        // another type, and the one that gives the index no time, are judged. Nothing failed, so the run passed.
+        Assert.Equal(AssertionRunStatus.Passed, early.Status);
+        Assert.Equal((4, 2, 2), (early.Tests, early.Passed, early.Skipped));
+        Assert.Contains("every test evaluated passed; 2 skipped (wellbore-by-id, wellbores)", early.Describe(), StringComparison.Ordinal);
+        var results = (await ledger.ListAssertionResultsAsync(early.AssertionRunId)).ToDictionary(r => r.TestName, r => TestResults.Deserialize(r.Detail)!);
+        foreach (var name in new[] { "wellbores", "wellbore-by-id" })
+        {
+            var skipped = results[name];
+            Assert.Equal(TestOutcomes.Skipped, skipped.Outcome);
+            Assert.Contains("The search index may not list every change to master-data--Wellbore yet", skipped.Error, StringComparison.Ordinal);
+            Assert.Contains("within the last 120 s (indexSettleSeconds), wells-delivery@dev wrote 3 record(s)", skipped.Error, StringComparison.Ordinal);
+            Assert.Contains($"a run from {delivered.AddSeconds(120):yyyy-MM-dd HH:mm:ss}Z judges it", skipped.Error, StringComparison.Ordinal);
+            Assert.All(skipped.Assertions, a => Assert.Equal(TestOutcomes.Skipped, a.Outcome));
+        }
+
+        Assert.Equal(TestOutcomes.Passed, results["wellbores-now"].Outcome);
+        Assert.Equal(TestOutcomes.Passed, results["logs"].Outcome);
+
+        // Once the window has closed, the same tests are judged on what the index lists: w5 was delivered and OSDU does not hold it.
+        _clock.Advance(TimeSpan.FromMinutes(2));
+        var settled = await runner.TestAsync([], [], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        Assert.Equal(0, settled.Skipped);
+        var judged = (await ledger.ListAssertionResultsAsync(settled.AssertionRunId)).ToDictionary(r => r.TestName, r => TestResults.Deserialize(r.Detail)!);
+        Assert.Equal(TestOutcomes.Failed, judged["wellbores"].Outcome);
+        Assert.Equal("dev:master-data--Wellbore:w5", Assert.Single(Of(judged["wellbores"], "delivered").Examples).Id);
+        Assert.Equal(TestOutcomes.Passed, judged["wellbore-by-id"].Outcome);
+    }
+
+    [Fact]
+    public async Task A_test_that_does_not_fit_its_template_is_reported_as_such_whatever_changed()
+    {
+        Estate();
+        var (runner, ledger, _) = await RunnerAsync($$"""
+            flowType: assertion
+            name: settle-misfit
+            partitions: [dev]
+            source:
+              endpoint: http://localhost
+            tests:
+              - name: misspelled
+                kind: {{Wellbore}}
+                assert:
+                  - { field: data.FacilityNam, exists: true }
+            """);
+        await DeliveredAsync(ledger);
+
+        var outcome = await runner.TestAsync([], [], Guid.NewGuid(), "tests", CancellationToken.None);
+
+        var result = TestResults.Deserialize(Assert.Single(await ledger.ListAssertionResultsAsync(outcome.AssertionRunId)).Detail)!;
+        Assert.Equal(TestOutcomes.Errored, result.Outcome);
+        Assert.Contains("did you mean 'data.FacilityName'", Assert.Single(result.Problems), StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Every_kind_of_assertion_is_held_to_what_the_platform_holds_and_the_report_is_kept()
     {
         Estate();
         var (runner, ledger, flow) = await RunnerAsync();
         await DeliveredAsync(ledger);
+
+        // The run comes once the search index has had the time its settle window gives it to list what was delivered.
+        _clock.Advance(TimeSpan.FromMinutes(10));
         var outcome = await runner.TestAsync([], [], Guid.NewGuid(), "tests", CancellationToken.None);
 
         Assert.Equal(AssertionRunStatus.Failed, outcome.Status);
@@ -301,6 +400,9 @@ public sealed class AssertionRunTests : IDisposable
         Estate();
         var (runner, ledger, _) = await RunnerAsync();
         await DeliveredAsync(ledger);
+
+        // The run comes once the search index has had the time its settle window gives it to list what was delivered.
+        _clock.Advance(TimeSpan.FromMinutes(10));
         var outcome = await runner.TestAsync([], ["smoke", "bulk"], Guid.NewGuid(), "gui:someone", CancellationToken.None);
         var run = (await ledger.GetAssertionRunAsync(outcome.AssertionRunId))!;
         var results = (await ledger.ListAssertionResultsAsync(run.AssertionRunId)).Select(r => TestResults.Deserialize(r.Detail)!).ToList();

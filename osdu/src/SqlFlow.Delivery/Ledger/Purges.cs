@@ -43,3 +43,12 @@ public sealed record LedgerDeletion(int Records, int Submissions, int WorkBatche
         CultureInfo.InvariantCulture,
         $"{Records} record(s) deleted from the ledger with {Submissions} submission(s), {WorkBatches} work batch(es), {Watermarks} watermark(s), {Reversals} reversal(s), {Leases} lease(s) and {Events} lease event(s); the next run reads every row and delivers each as a new record");
 }
+
+/// <summary>
+/// What one delivery ledger changed in OSDU after a moment (docs: osdu/docs/documents.md, Records the index may not list
+/// yet): the records it wrote, the records it took out of OSDU or put back at an earlier version and still holds, and the
+/// records it deleted from itself that OSDU had held, with the latest of those changes and one OSDU id of the ledger, which
+/// names the entity type its records are of. What an assertion run reads before it judges the search index, which can take a
+/// while to list a change.
+/// </summary>
+public sealed record RecentOsduChange(Guid FlowId, string LedgerName, long Written, long Removed, long Deleted, DateTime LatestUtc, string? SampleTargetId);

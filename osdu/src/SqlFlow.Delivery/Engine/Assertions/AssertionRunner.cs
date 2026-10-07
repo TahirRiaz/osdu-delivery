@@ -58,7 +58,9 @@ public sealed record AssertionRunOutcome(
         Add(Failed, TestOutcomes.Failed);
         Add(Errored, TestOutcomes.Errored);
         Add(Warned, TestOutcomes.Warned);
-        var tail = parts.Count == 0 ? "every test passed" : string.Join("; ", parts);
+        var evaluatedPassed = parts.Count == 0;
+        Add(Skipped, TestOutcomes.Skipped);
+        var tail = parts.Count == 0 ? "every test passed" : evaluatedPassed ? "every test evaluated passed; " + string.Join("; ", parts) : string.Join("; ", parts);
         return string.Create(CultureInfo.InvariantCulture, $"assertion flow '{Flow}' in partition '{Partition}': {Tests - Skipped} of {Tests} test(s) evaluated, {Passed} passed; {tail}.");
     }
 }
@@ -176,6 +178,8 @@ public sealed class AssertionRunner
                 results.Add(result);
             }
 
+            // What this module changed in OSDU lately, which the search index may not list yet: read once, before any test is judged.
+            var settling = await IndexSettling.ReadAsync(ledger, partition, runnable, Now, ct).ConfigureAwait(false);
             using var http = new HttpRuntime(_flow.Reliability, _context.Secrets, _context.Time, _transport, _allowLoopback, observer: _context.HttpObserver);
             var client = await ProtocolFactory.ClientAsync(http, flow.Source.Endpoint, flow.Source.Auth, flow.Source.Headers, _context.Secrets, ct).ConfigureAwait(false);
             var search = new OsduSearch(client, flow.Source.QueryPath, flow.Source.SearchPath, _log);
@@ -188,6 +192,22 @@ public sealed class AssertionRunner
                 new ParallelOptions { MaxDegreeOfParallelism = concurrency, CancellationToken = ct },
                 async (test, token) =>
                 {
+                    // A test that does not fit its template is reported as such whatever changed; one that fits and reads a
+                    // type this module changed within its settle window is skipped, saying why, rather than judged on an index
+                    // that may not list the change yet.
+                    if (fits[test.Name].Problems.Count == 0 && settling.Why(test) is { } unsettled)
+                    {
+                        var skippedNow = Skipped(test, unsettled);
+                        await RecordAsync(ledger, run, entry.FlowId, skippedNow, token).ConfigureAwait(false);
+                        Log(skippedNow);
+                        lock (gate)
+                        {
+                            results.Add(skippedNow);
+                        }
+
+                        return;
+                    }
+
                     var scope = new TestScope
                     {
                         Test = test,
@@ -383,6 +403,12 @@ public sealed class AssertionRunner
         if (result.Outcome == TestOutcomes.Passed)
         {
             _log.LogInformation("test {Test}: passed in {Ms} ms ({Matched})", result.Test, result.DurationMs, Matched(result));
+            return;
+        }
+
+        if (result.Outcome == TestOutcomes.Skipped)
+        {
+            _log.LogInformation("test {Test}: skipped: {Reason}", result.Test, result.Error);
             return;
         }
 

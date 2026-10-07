@@ -168,14 +168,25 @@ internal static partial class AssertionMapper
             MaxRecords = d.MaxRecords ?? AssertionDefaults.DefaultMaxRecords,
             Examples = d.Examples ?? AssertionDefaults.DefaultExamples,
             Read = FlowMapper.ParseEnum(d.Read, AssertionRead.Storage, "defaults.read", source),
+            IndexSettleSeconds = d.IndexSettleSeconds ?? AssertionDefaults.DefaultIndexSettleSeconds,
         };
         CheckMaxRecords(defaults.MaxRecords, "defaults.maxRecords", source);
+        CheckIndexSettle(defaults.IndexSettleSeconds, "defaults.indexSettleSeconds", source);
         if (defaults.Examples is < 1 or > AssertionDefaults.MaxExamples)
         {
             throw new FlowValidationException($"{source}: defaults.examples must be between 1 and {AssertionDefaults.MaxExamples}.");
         }
 
         return defaults;
+    }
+
+    private static void CheckIndexSettle(int value, string key, string source)
+    {
+        if (value is < 0 or > AssertionDefaults.MaxIndexSettleSeconds)
+        {
+            throw new FlowValidationException(
+                $"{source}: {key} must be between 0 and {AssertionDefaults.MaxIndexSettleSeconds} seconds: how long the search index is given to list a change before a test of the changed type is judged, 0 judging it whatever changed.");
+        }
     }
 
     private static void CheckMaxRecords(int value, string key, string source)
@@ -274,6 +285,8 @@ internal static partial class AssertionMapper
         var read = FlowMapper.ParseEnum(t.Read, defaults.Read, at + ".read", source);
         var maxRecords = t.MaxRecords ?? defaults.MaxRecords;
         CheckMaxRecords(maxRecords, at + ".maxRecords", source);
+        var indexSettle = t.IndexSettleSeconds ?? defaults.IndexSettleSeconds;
+        CheckIndexSettle(indexSettle, at + ".indexSettleSeconds", source);
         if (ids.Count > maxRecords)
         {
             throw new FlowValidationException($"{source}: {where} names {ids.Count} ids and reads at most {maxRecords} records; raise maxRecords or name fewer ids.");
@@ -299,6 +312,7 @@ internal static partial class AssertionMapper
             Read = read,
             MaxRecords = maxRecords,
             Sample = t.Sample ?? false,
+            IndexSettleSeconds = indexSettle,
             Bulk = bulk is null ? null : bulk with { Columns = BulkColumns(bulk, assertions) },
             Assertions = assertions,
         };

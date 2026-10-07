@@ -1103,6 +1103,8 @@ internal sealed class AssertionDefaultsYaml
     public int? Examples { get; set; }
 
     public string? Read { get; set; }
+
+    public int? IndexSettleSeconds { get; set; }
 }
 
 internal sealed class AssertionTestYaml
@@ -1135,6 +1137,8 @@ internal sealed class AssertionTestYaml
     public int? MaxRecords { get; set; }
 
     public bool? Sample { get; set; }
+
+    public int? IndexSettleSeconds { get; set; }
 
     public AssertionBulkYaml? Bulk { get; set; }
 

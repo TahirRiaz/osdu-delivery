@@ -6,7 +6,7 @@
   "includeEnvelope": true,
   "generatedFrom": "osdu/docs/documents.md and osdu/src/SqlFlow.Delivery/Documents/YamlModels.cs",
   "naming": "The loader deserializes with YamlDotNet's CamelCaseNamingConvention and refuses any key it does not know.",
-  "keyCount": 229,
+  "keyCount": 231,
   "keys": [
     {
       "path": "batch",
@@ -26,6 +26,13 @@
       "required": false,
       "description": "The most failing records an assertion names, 1 to 500. Counts are always exact; the examples are the first ones met.",
       "default": "20"
+    },
+    {
+      "path": "defaults.indexSettleSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "How long, in seconds (0 to 3600), the search index is given to list a change before a test of the changed type is judged: a run within that time of a delivery, removal or restore this module made to records of a test's entity type skips the test, saying what changed and from when a run judges it. 0 judges every test whatever changed.",
+      "default": "300"
     },
     {
       "path": "defaults.maxRecords",
@@ -1418,6 +1425,13 @@
       "type": "string",
       "required": false,
       "description": "One record id."
+    },
+    {
+      "path": "tests[].indexSettleSeconds",
+      "type": "integer",
+      "required": false,
+      "description": "How long, in seconds (0 to 3600), the search index is given to list a change to records of this test's entity type before the test is judged; within it the test is skipped with the reason. 0 judges it whatever changed.",
+      "default": "defaults.indexSettleSeconds"
     },
     {
       "path": "tests[].kind",

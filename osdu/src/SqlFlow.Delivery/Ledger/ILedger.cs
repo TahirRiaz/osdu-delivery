@@ -1965,6 +1965,13 @@ public interface ILedger
     Task<PurgedRecordState?> FindPurgedAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default);
 
     /// <summary>
+    /// What every delivery ledger of <paramref name="partition"/> changed in OSDU after <paramref name="sinceUtc"/>
+    /// (<see cref="RecentOsduChange"/>), ordered by ledger name; a ledger that changed nothing is left out, and so is every
+    /// ledger of a partition the directory does not hold. Each figure is one index seek per ledger of the partition.
+    /// </summary>
+    Task<IReadOnlyList<RecentOsduChange>> RecentOsduChangesAsync(string partition, DateTime sinceUtc, CancellationToken ct = default);
+
+    /// <summary>
     /// Records that each record's version before the latest was written back as its current version (docs/reversal-plan.md,
     /// Restoring the previous version), a chunk to a transaction. A record is settled only while the ledger still holds it at
     /// the version that was replaced, with no lease and no work queued; one that moved on meanwhile is left as it is and
