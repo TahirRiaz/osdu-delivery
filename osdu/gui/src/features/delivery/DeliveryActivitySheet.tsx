@@ -1,7 +1,6 @@
 import { useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { toast } from "sonner";
 import { Clock3, Timer } from "lucide-react";
 import { isApiError } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +10,7 @@ import { IdChip } from "@/components/IdChip";
 import { RelativeTime } from "@/components/RelativeTime";
 import { OutcomePill } from "@/components/StatusBadge";
 import { TraceLog } from "@/components/TraceLog";
+import { downloadFileName } from "@/lib/download";
 import { formatDurationSeconds, parseUtc } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { deliveryApi, deliveryRecordRoute, ledgerLabel, type DeliveryActivity, type DeliveryFlowScope, type ReversalSource } from "../../api/delivery";
@@ -140,9 +140,9 @@ function ActivityParameters({ json }: { json: string | null }) {
 
 /**
  * The run log the activity captured, through the workbench's trace view: a line per event with its time and step, the
- * whole line and a copy behind each. It takes the height it needs and no more, up to what the sheet leaves, then
- * scrolls inside itself. A running activity has no log yet: the ledger keeps it when the run ends, and the run's own
- * trace streams it meanwhile.
+ * whole line and a copy behind each, and the whole log to copy or download as it was captured. It takes the height it
+ * needs and no more, up to what the sheet leaves, then scrolls inside itself. A running activity has no log yet: the
+ * ledger keeps it when the run ends, and the run's own trace streams it meanwhile.
  */
 function ActivityLog({ activity }: { activity: DeliveryActivity }) {
   const log = activity.log;
@@ -162,15 +162,6 @@ function ActivityLog({ activity }: { activity: DeliveryActivity }) {
     );
   }
 
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(log);
-      toast.success("Log copied to clipboard.");
-    } catch {
-      toast.error("Could not copy the log.");
-    }
-  };
-
   return (
     <section className="flex min-h-0 flex-col gap-1.5">
       <h3 className={CAPTION}>Log</h3>
@@ -180,7 +171,8 @@ function ActivityLog({ activity }: { activity: DeliveryActivity }) {
           connected={false}
           ended
           failed={activity.outcome === "failed"}
-          onCopy={copy}
+          text={() => log}
+          fileName={downloadFileName([activity.flowName, activity.kind, "activity", String(activity.activityId)], "log")}
           emptyEnded="The captured log is empty."
         />
       </div>
