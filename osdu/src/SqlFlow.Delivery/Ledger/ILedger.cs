@@ -55,7 +55,11 @@ public enum AttemptOutcome
     /// <summary>The record's earlier versions were purged; the record itself is still delivered and live.</summary>
     HistoryPurged,
 
-    /// <summary>A reversal wrote back the version OSDU held before the run it reversed, as a new version.</summary>
+    /// <summary>
+    /// An earlier version was written back as a new version: by a reversal (phase <see cref="AttemptPhases.Reverse"/>), the
+    /// version OSDU held before the run it reversed; by an operator (phase <see cref="AttemptPhases.RestorePrevious"/>), the
+    /// version before the latest.
+    /// </summary>
     Restored,
 }
 
@@ -88,6 +92,12 @@ public static class AttemptPhases
     /// passed over (outcome skipped) or failed, each saying why in its result.
     /// </summary>
     public const string Reverse = "reverse";
+
+    /// <summary>
+    /// An operator took the record's latest version out of being current (docs/reversal-plan.md, Restoring the previous
+    /// version): the version before it was written back as a new version (outcome restored), naming both in its result.
+    /// </summary>
+    public const string RestorePrevious = "restore-previous";
 }
 
 public enum VerifyOutcome
@@ -1889,12 +1899,46 @@ public interface ILedger
 
     /// <summary>
     /// Records what a removal did to a set of the flow's records, in one round trip. <see cref="RemovalScope.Record"/> and
-    /// <see cref="RemovalScope.Everything"/> take the record out of OSDU, so the ledger marks it deleted and
-    /// blocked and forgets the hashes; <see cref="RemovalScope.History"/> leaves the record live, so its custody
+    /// <see cref="RemovalScope.Everything"/> take the record out of OSDU, so the ledger marks it deleted and forgets the
+    /// hashes and the version, without blocking it: the next run that reads its row delivers it again, as it would a
+    /// record never delivered. <see cref="RemovalScope.History"/> leaves the record live, so its custody
     /// state is untouched and only the attempt is written. Either way every record gets its own attempt, saying
     /// which scope ran and who asked for it, because that attempt is how the removal is audited afterwards.
     /// </summary>
     Task MarkRemovedAsync(Guid flowId, IReadOnlyList<DeliveryKey> keys, RemovalScope scope, string worker, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// What OSDU held of each record before the write that left the version <paramref name="current"/> names for it, as the
+    /// ledger tells it (<see cref="PriorVersion"/>): the attempt that delivered or restored that version, and the one before
+    /// it. A record no such attempt names is <see cref="ReversalPriors.Unknown"/>.
+    /// </summary>
+    Task<IReadOnlyDictionary<DeliveryKey, PriorVersion>> PriorVersionsAsync(Guid flowId, IReadOnlyDictionary<DeliveryKey, long> current, CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes records from the ledger that were removed from OSDU (docs/ledger.md, Deleting a removed record from the
+    /// ledger), a slice to a transaction. Only a record the ledger marks deleted goes, and none a lease holds; any other is
+    /// left as it is. Each record deleted keeps one line (<see cref="PurgedRecordState"/>: what it was, its OSDU id and last
+    /// version, who deleted it and when) and is named under <paramref name="activityId"/>; its attempts, its search entries
+    /// and its row are deleted. The activities that name it stay, as the audit trail does. Returns the records it deleted.
+    /// </summary>
+    Task<IReadOnlyList<DeliveryKey>> PurgeRecordsAsync(
+        Guid flowId, IReadOnlyList<DeliveryKey> keys, string actor, long? activityId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>What the ledger keeps of <paramref name="key"/> after the record was deleted from it, the latest time it was; null when it never was.</summary>
+    Task<PurgedRecordState?> FindPurgedAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default);
+
+    /// <summary>
+    /// Records that each record's version before the latest was written back as its current version (docs/reversal-plan.md,
+    /// Restoring the previous version), a chunk to a transaction. A record is settled only while the ledger still holds it at
+    /// the version that was replaced, with no lease and no work queued; one that moved on meanwhile is left as it is and
+    /// returned, so the caller can say what OSDU now holds. A settled record becomes reverted and blocked at the new version,
+    /// with the hashes and origin of the attempt that delivered or restored the version put back when the ledger holds one
+    /// (none otherwise, so a release sends it again where it renders differently), and gets its own attempt (outcome
+    /// restored, phase <see cref="AttemptPhases.RestorePrevious"/>) naming both versions and who asked. A record already
+    /// blocked by an earlier write back keeps the source version it is blocked at.
+    /// </summary>
+    Task<IReadOnlyList<DeliveryKey>> MarkRestoredAsync(
+        Guid flowId, IReadOnlyList<PreviousVersionRestored> restored, string worker, Guid? runId, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default);
 
     /// <summary>
     /// Opens the reversal of <paramref name="source"/> in the flow's ledger, or resumes the one it holds

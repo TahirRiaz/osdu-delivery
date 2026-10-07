@@ -1154,7 +1154,7 @@ public class EndToEndTests : IDisposable
 
             // Removing the wellbores takes the wellbore records out of OSDU and leaves every well log where it is.
             wellbores.Actor = "gui:tahir";
-            var removed = await wellbores.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalScope.Record);
+            var removed = await wellbores.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Record);
             Assert.Equal(1, removed.Removed);
             Assert.StartsWith("dev:master-data--Wellbore:", Assert.Single(wellboreProtocol.Deletes).TargetId, StringComparison.Ordinal);
             Assert.Empty(logProtocol.Deletes);
@@ -1199,7 +1199,7 @@ public class EndToEndTests : IDisposable
 
             // Removing the copy's records never reaches the first flow's OSDU records: the copy wrote nothing.
             copy.Actor = "gui:tahir";
-            var removal = await copy.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, LogCount).Select(SampleEstate.Key)]), RemovalScope.Everything);
+            var removal = await copy.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, LogCount).Select(SampleEstate.Key)]), RemovalChoice.Everything);
             Assert.Equal((LogCount, 0), (removal.Skipped, removal.Removed));
             Assert.Empty(copyProtocol.Deletes);
 

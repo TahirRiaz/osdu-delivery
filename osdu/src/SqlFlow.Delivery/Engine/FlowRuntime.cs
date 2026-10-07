@@ -841,25 +841,41 @@ public sealed class FlowRuntime : IDisposable
     }
 
     /// <summary>
-    /// Removes records from OSDU through the flow's protocol, to the extent the scope asks for, and records what
+    /// Removes records from OSDU through the flow's protocol, to the extent the choice asks for, and records what
     /// happened to each one in the ledger. One record and ten thousand take the same path: the selection is
     /// resolved to keys, the records are removed in chunks (batched into one request where the protocol and the
     /// scope allow it), and every record gets its own ledger attempt naming the scope and the operator. A record
     /// the flow never delivered has nothing in OSDU to remove and is reported as skipped rather than failing the
     /// removal; a record OSDU has already lost settles the ledger just as a removal would, because the state the
-    /// operator asked for is the state OSDU is in.
+    /// operator asked for is the state OSDU is in. <see cref="RemovalChoice.Previous"/> takes the same path to the same
+    /// records and, in place of a delete, writes the version before the latest back
+    /// (<see cref="Reversals.PreviousVersionRestore"/>), under an activity of its own, since it removes nothing. With
+    /// <paramref name="purgeLedger"/>, a removal that takes the record out of OSDU (<see cref="RemovalChoice.Record"/> or
+    /// <see cref="RemovalChoice.Everything"/>) also deletes each record OSDU answered for from the ledger, keeping one line
+    /// of it (<see cref="ILedger.PurgeRecordsAsync"/>); a record whose removal failed stays in the ledger as it was.
     /// </summary>
-    public Task<RemovalSummary> RemoveAsync(RemovalSelection selection, RemovalScope scope, CancellationToken ct = default)
+    public Task<RemovalSummary> RemoveAsync(RemovalSelection selection, RemovalChoice scope, bool purgeLedger = false, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(selection);
+        if (purgeLedger && scope is not (RemovalChoice.Record or RemovalChoice.Everything))
+        {
+            throw new DeliveryException(
+                $"A record is deleted from the ledger only with a removal that takes it out of OSDU (record or everything), not with {scope.ToString().ToLowerInvariant()}.");
+        }
+
         var single = selection.Keys is { Count: 1 } only ? only[0] : (DeliveryKey?)null;
-        return TrackAsync("delete", selection.Describe(scope), single, async () =>
+        var kind = scope == RemovalChoice.Previous ? AttemptPhases.RestorePrevious : "delete";
+        return TrackAsync(kind, selection.Describe(scope, purgeLedger), single, async activity =>
         {
             var ledger = RequireLedger();
             var keys = selection.Keys
                 ?? await ledger.ListKeysAsync(Flow.Id, selection.Filter!, RemovalLimits.MaxSelection, ct).ConfigureAwait(false);
             var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
             var results = new List<RemovalRecordResult>(keys.Count);
+            var stepBack = scope == RemovalChoice.Previous
+                ? new Reversals.PreviousVersionRestore(Flow, ledger, protocol, _context.Time, Actor, RunId)
+                : null;
+            var purged = 0;
 
             foreach (var chunk in keys.Chunk(RemovalLimits.Chunk))
             {
@@ -898,20 +914,38 @@ public sealed class FlowRuntime : IDisposable
                 // One correlation id for the chunk's calls, named on each removal attempt, so a removal can be followed
                 // into OSDU's own logs like a delivery.
                 using var correlation = OsduCorrelation.Begin();
-                var outcomes = await protocol.DeleteBatchAsync(removals, scope, ct).ConfigureAwait(false);
+                if (stepBack is not null)
+                {
+                    var stepped = await stepBack.RestoreAsync(removals.Select(r => records[r.Key]).ToList(), correlation.Id, ct).ConfigureAwait(false);
+                    for (var i = 0; i < removals.Count; i++)
+                    {
+                        results.Add(await AnnounceRestoreAsync(stepped[i], records[removals[i].Key], ct).ConfigureAwait(false));
+                    }
+
+                    continue;
+                }
+
+                var outcomes = await protocol.DeleteBatchAsync(removals, scope.Scope(), ct).ConfigureAwait(false);
 
                 // The ledger settles the whole chunk in one write, and only for the records the target actually
                 // answered for: a record whose call failed keeps the state it had, so a retry of the removal is
                 // still the removal of a record that is still there.
                 var settled = outcomes.Where(o => o.Succeeded).Select(o => o.Removal.Key).ToList();
-                await ledger.MarkRemovedAsync(Flow.Id, settled, scope, Actor, _context.Time.GetUtcNow().UtcDateTime, correlation.Id, ct).ConfigureAwait(false);
+                await ledger.MarkRemovedAsync(Flow.Id, settled, scope.Scope(), Actor, _context.Time.GetUtcNow().UtcDateTime, correlation.Id, ct).ConfigureAwait(false);
+
+                // The extra step: what OSDU no longer holds goes from the ledger too, one line of each kept.
+                var gone = purgeLedger && settled.Count > 0
+                    ? (await ledger.PurgeRecordsAsync(Flow.Id, settled, Actor, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false)).ToHashSet()
+                    : [];
+                purged += gone.Count;
                 foreach (var outcome in outcomes)
                 {
-                    results.Add(await AnnounceRemovalAsync(outcome, scope, records[outcome.Removal.Key], ct).ConfigureAwait(false));
+                    var result = await AnnounceRemovalAsync(outcome, scope.Scope(), records[outcome.Removal.Key], ct).ConfigureAwait(false);
+                    results.Add(gone.Contains(outcome.Removal.Key) ? result with { Detail = result.Detail + "; deleted from the ledger" } : result);
                 }
             }
 
-            var summary = RemovalSummary.Of(scope, keys.Count, results);
+            var summary = RemovalSummary.Of(scope, keys.Count, results, purged);
             return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null, false);
         }, ct);
     }
@@ -1318,6 +1352,34 @@ public sealed class FlowRuntime : IDisposable
         return result.AlreadyGone
             ? RemovalRecordResult.AlreadyGone(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId)
             : RemovalRecordResult.Removed(key, record.SourceKey, record.Label, record.TargetId, result.Detail, record.LastSubmissionId);
+    }
+
+    /// <summary>Announces one record written back at its version before the latest, now that the ledger holds it, and says what it did.</summary>
+    private async Task<RemovalRecordResult> AnnounceRestoreAsync(Reversals.PreviousVersionStep step, RecordState record, CancellationToken ct)
+    {
+        if (step.Restored is not { } restored)
+        {
+            return step.Result;
+        }
+
+        await _context.Listener.OnEventAsync(new DeliveryEvent
+        {
+            AtUtc = _context.Time.GetUtcNow().UtcDateTime,
+            FlowId = Flow.Id,
+            FlowName = Flow.Label,
+            Interface = Flow.Interface,
+            Kind = "record.restored",
+            SubmissionId = record.LastSubmissionId,
+            DeliveryKey = record.DeliveryKey,
+            SourceKey = record.SourceKey,
+            Label = record.Label,
+            TargetId = record.TargetId,
+            TargetVersion = restored.NewVersion,
+            Worker = Actor,
+            Phase = AttemptPhases.RestorePrevious,
+            Detail = step.Result.Detail,
+        }, ct).ConfigureAwait(false);
+        return step.Result;
     }
 
     /// <summary>

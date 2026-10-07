@@ -494,7 +494,9 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
             onQueued={(accepted) => {
               clearSelection();
               setRemovalTaskId(accepted.taskId);
-              toast.success(`Removal of ${accepted.records.toLocaleString()} record(s) queued on a node.`);
+              toast.success(accepted.scope === "previous"
+                ? `Restoring the previous version of ${accepted.records.toLocaleString()} record(s): queued on a node.`
+                : `Removal of ${accepted.records.toLocaleString()} record(s) queued on a node.`);
             }}
           />
         </>

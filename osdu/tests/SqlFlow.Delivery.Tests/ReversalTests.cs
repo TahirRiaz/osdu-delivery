@@ -438,6 +438,443 @@ public sealed class ReversalTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Restoring_the_previous_version_writes_it_back_as_the_latest_keeps_the_replaced_one_and_blocks_the_record()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            var first = await HeldAsync(runtime, ledger, 0, 2);
+            ChangeRows(tables, "HAL", 0);
+            await DeliverAsync(runtime);
+            var second = await HeldAsync(runtime, ledger, 0);
+            Assert.NotEqual(first[0].Version, second[0].Version);
+
+            var removal = Guid.CreateVersion7();
+            runtime.RunId = removal;
+            runtime.Actor = "user:operator";
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0), SampleEstate.Key(2)]), RemovalChoice.Previous);
+
+            Assert.Equal((2, 1, 1, 0, 0), (summary.Selected, summary.Restored, summary.Skipped, summary.Failed, summary.Removed));
+            Assert.Contains("1 put back at the version before the latest", summary.Describe(), StringComparison.Ordinal);
+
+            // OSDU's latest version is what the first delivery wrote, its bulk link included, as a new version; the version it
+            // replaced stays in the record's history.
+            var id = TargetOf(runtime, 0);
+            var latest = _platform.Records[id];
+            var restored = LatestVersion(id);
+            Assert.True(restored > second[0].Version);
+            Assert.True(JsonNode.DeepEquals(Content(VersionOf(id, first[0].Version)), Content(latest)));
+            Assert.Equal(first[0].BulkUri, BulkUri(latest));
+            Assert.Contains(_platform.History[id], v => v["version"]!.GetValue<long>() == second[0].Version);
+
+            var record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(RecordStatus.Reverted, record!.Status);
+            Assert.True(record.Blocked);
+            Assert.Equal(restored, record.TargetVersion);
+            Assert.Equal(first[0].MetadataHash, record.MetadataHash);
+            Assert.Contains("reverted by user:operator", record.LastError!, StringComparison.Ordinal);
+
+            var attempt = (await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 20)).First(a => a.Phase == AttemptPhases.RestorePrevious);
+            Assert.Equal(AttemptOutcome.Restored, attempt.Outcome);
+            Assert.Equal((restored, "user:operator", removal), (attempt.TargetVersion!.Value, attempt.Worker, attempt.RunId!.Value));
+            Assert.Contains("\"replacedVersion\":" + second[0].Version.ToString(CultureInfo.InvariantCulture), attempt.ResultJson!, StringComparison.Ordinal);
+            Assert.Contains("\"restoredVersion\":" + first[0].Version.ToString(CultureInfo.InvariantCulture), attempt.ResultJson!, StringComparison.Ordinal);
+
+            // Record 2 was delivered once. The delivery wrote two versions (the record, then its bulk data), but the first is
+            // half of the latest, not the record as it was: OSDU held nothing before the delivery, so it is left as it is.
+            Assert.True(_platform.History[TargetOf(runtime, 2)].Count > 1);
+            var once = Assert.Single(summary.Records, r => r.DeliveryKey == SampleEstate.Key(2).Value);
+            Assert.Equal("skipped", once.Outcome);
+            Assert.Contains("created the record, so OSDU held nothing before it", once.Detail, StringComparison.Ordinal);
+            Assert.Equal(first[2].Version, LatestVersion(TargetOf(runtime, 2)));
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(2)))!.Status);
+
+            // The audit trail keeps it under a kind of its own: nothing was deleted.
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = AttemptPhases.RestorePrevious }));
+            Assert.Equal(("completed", "user:operator"), (activity.Outcome, activity.Actor));
+            Assert.Contains("\"scope\":\"previous\"", activity.ParametersJson!, StringComparison.Ordinal);
+            Assert.Empty(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "delete" }));
+        }
+    }
+
+    [Fact]
+    public async Task A_record_stepped_back_stays_blocked_and_stepping_back_again_brings_the_replaced_version_back()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            ChangeRows(tables, "HAL", 0);
+            await DeliverAsync(runtime);
+            var second = await HeldAsync(runtime, ledger, 0);
+            var id = TargetOf(runtime, 0);
+            var secondContent = Content(_platform.Records[id]);
+
+            runtime.Actor = "user:operator";
+            Assert.Equal(1, (await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Previous)).Restored);
+            var stepped = LatestVersion(id);
+
+            // A run reading the whole scope again finds the row unchanged and passes the record over.
+            _clock.Advance(TimeSpan.FromMinutes(5));
+            await DeliverAsync(runtime, force: true);
+            Assert.Equal(stepped, LatestVersion(id));
+
+            // Asked again, the version it replaced comes back the same way, and the record stays blocked at the row it was left at.
+            runtime.Actor = "user:operator";
+            Assert.Equal(1, (await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Previous)).Restored);
+            var back = LatestVersion(id);
+            Assert.True(JsonNode.DeepEquals(secondContent, Content(_platform.Records[id])));
+            var record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal((RecordStatus.Reverted, true, back), (record!.Status, record.Blocked, record.TargetVersion!.Value));
+            Assert.Equal(second[0].MetadataHash, record.MetadataHash);
+            _clock.Advance(TimeSpan.FromMinutes(5));
+            await DeliverAsync(runtime, force: true);
+            Assert.Equal(back, LatestVersion(id));
+
+            // A row corrected in the source flows through on its own.
+            ChangeRows(tables, "SLB", 0);
+            await DeliverAsync(runtime, force: true);
+            record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(RecordStatus.Delivered, record!.Status);
+            Assert.NotEqual(back, record.TargetVersion);
+            Assert.Equal(record.TargetVersion, LatestVersion(id));
+        }
+    }
+
+    [Fact]
+    public async Task Restoring_the_previous_version_leaves_a_record_written_elsewhere_or_removed_as_it_is()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            ChangeRows(tables, "HAL", 0, 1, 2);
+            await DeliverAsync(runtime);
+
+            // Something outside the flow writes record 1, and an operator removes record 2.
+            var outside = (JsonObject)_platform.Records[TargetOf(runtime, 1)].DeepClone();
+            outside["data"]!["Name"] = "renamed elsewhere";
+            var outsideVersion = _platform.Put(outside);
+            runtime.Actor = "user:operator";
+            Assert.Equal(1, (await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(2)]), RemovalChoice.Record)).Removed);
+
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0), SampleEstate.Key(1), SampleEstate.Key(2)]), RemovalChoice.Previous);
+
+            Assert.Equal((1, 2, 0), (summary.Restored, summary.Skipped, summary.Failed));
+            var written = Assert.Single(summary.Records, r => r.DeliveryKey == SampleEstate.Key(1).Value);
+            Assert.Contains("something wrote the record since", written.Detail, StringComparison.Ordinal);
+            Assert.Equal(outsideVersion, LatestVersion(TargetOf(runtime, 1)));
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1)))!.Status);
+            Assert.DoesNotContain(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(1), 20), a => a.Phase == AttemptPhases.RestorePrevious);
+            var removed = Assert.Single(summary.Records, r => r.DeliveryKey == SampleEstate.Key(2).Value);
+            Assert.Contains("removed from OSDU", removed.Detail, StringComparison.Ordinal);
+            Assert.Equal(RecordStatus.Deleted, (await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(2)))!.Status);
+        }
+    }
+
+    [Fact]
+    public async Task A_removed_record_is_not_blocked_and_the_next_run_that_reads_its_row_delivers_it_again()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            var id = TargetOf(runtime, 0);
+            runtime.Actor = "user:operator";
+            Assert.Equal(1, (await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Record)).Removed);
+            Assert.Contains(id, _platform.Removed);
+            var removed = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal((RecordStatus.Deleted, false, (long?)null), (removed!.Status, removed.Blocked, removed.TargetVersion));
+            Assert.Equal(0, await ledger.ReleaseAsync(runtime.Flow.Id, [SampleEstate.Key(0)], Now));
+
+            // A run reading the whole scope finds nothing delivered for the row, and sends it again; the others stay as they were.
+            _clock.Advance(TimeSpan.FromMinutes(5));
+            await DeliverAsync(runtime, force: true);
+            var back = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(RecordStatus.Delivered, back!.Status);
+            Assert.DoesNotContain(id, _platform.Removed);
+            Assert.Equal(LatestVersion(id), back.TargetVersion);
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(1)))!.Status);
+        }
+    }
+
+    [Fact]
+    public async Task Restoring_the_previous_version_passes_over_a_record_with_work_in_flight()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            ChangeRows(tables, "HAL", 0, 1);
+            await DeliverAsync(runtime);
+            var held = await HeldAsync(runtime, ledger, 0, 1);
+
+            // One record is leased by a worker, the other has work queued for it.
+            await using (var db = _db.CreateDbContext())
+            {
+                var leased = await db.DeliveryRecords.SingleAsync(r => r.FlowId == runtime.Flow.Id && r.DeliveryKey == SampleEstate.Key(0).Value);
+                leased.LeaseOwner = "worker-elsewhere";
+                var queued = await db.DeliveryRecords.SingleAsync(r => r.FlowId == runtime.Flow.Id && r.DeliveryKey == SampleEstate.Key(1).Value);
+                queued.Status = "pending";
+                await db.SaveChangesAsync();
+            }
+
+            runtime.Actor = "user:operator";
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0), SampleEstate.Key(1)]), RemovalChoice.Previous);
+
+            Assert.Equal((0, 2, 0), (summary.Restored, summary.Skipped, summary.Failed));
+            Assert.All(summary.Records, r => Assert.Contains("work is queued for the record", r.Detail, StringComparison.Ordinal));
+            foreach (var i in new[] { 0, 1 })
+            {
+                Assert.Equal(held[i].Version, LatestVersion(TargetOf(runtime, i)));
+                Assert.DoesNotContain(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(i), 20), a => a.Phase == AttemptPhases.RestorePrevious);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Restoring_the_previous_version_after_the_earlier_versions_were_purged_has_nothing_to_put_back()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            ChangeRows(tables, "HAL", 0);
+            await DeliverAsync(runtime);
+            var second = await HeldAsync(runtime, ledger, 0);
+            runtime.Actor = "user:operator";
+            Assert.Equal(1, (await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.History)).Removed);
+            Assert.Single(_platform.History[TargetOf(runtime, 0)]);
+
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Previous);
+
+            var result = Assert.Single(summary.Records);
+            Assert.Equal("skipped", result.Outcome);
+            Assert.Contains("OSDU no longer holds version", result.Detail, StringComparison.Ordinal);
+            Assert.Equal(second[0].Version, LatestVersion(TargetOf(runtime, 0)));
+            var record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal((RecordStatus.Delivered, second[0].Version), (record!.Status, record.TargetVersion!.Value));
+        }
+    }
+
+    [Fact]
+    public async Task A_write_back_OSDU_refuses_leaves_the_record_and_the_ledger_as_they_were()
+    {
+        var tables = await EstateAsync();
+        var crashing = new CrashingProtocols(_protocols) { RefuseRestores = true };
+        var (runtime, ledger) = await RuntimeAsync(tables, crashing);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            ChangeRows(tables, "HAL", 0);
+            await DeliverAsync(runtime);
+            var second = await HeldAsync(runtime, ledger, 0);
+            runtime.Actor = "user:operator";
+
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Previous);
+
+            var result = Assert.Single(summary.Records);
+            Assert.Equal("failed", result.Outcome);
+            Assert.Contains("could not be written back", result.Detail, StringComparison.Ordinal);
+            Assert.Equal(second[0].Version, LatestVersion(TargetOf(runtime, 0)));
+            var record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal((RecordStatus.Delivered, false, second[0].Version), (record!.Status, record.Blocked, record.TargetVersion!.Value));
+            Assert.DoesNotContain(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 20), a => a.Phase == AttemptPhases.RestorePrevious);
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = AttemptPhases.RestorePrevious }));
+            Assert.Contains("1 failed", activity.Summary!, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Stepping_back_after_a_reversal_brings_back_the_version_the_reversal_replaced()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            ChangeRows(tables, "HAL", 0);
+            var second = await DeliverAsync(runtime);
+            var id = TargetOf(runtime, 0);
+            var secondContent = Content(_platform.Records[id]);
+            runtime.RunId = Guid.CreateVersion7();
+            Assert.Equal(1, (await runtime.ReverseAsync(ReversalSource.Run(second))).Restored);
+
+            runtime.Actor = "user:operator";
+            Assert.Equal(1, (await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Previous)).Restored);
+
+            Assert.True(JsonNode.DeepEquals(secondContent, Content(_platform.Records[id])));
+            var record = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal((RecordStatus.Reverted, true, LatestVersion(id)), (record!.Status, record.Blocked, record.TargetVersion!.Value));
+        }
+    }
+
+    [Fact]
+    public async Task Where_the_ledger_no_longer_says_the_version_list_decides_by_the_first_version_the_latest_write_left()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            var first = await HeldAsync(runtime, ledger, 0);
+            var id = TargetOf(runtime, 0);
+            var firstContent = Content(_platform.Records[id]);
+            ChangeRows(tables, "HAL", 0);
+            await DeliverAsync(runtime);
+            var second = await HeldAsync(runtime, ledger, 0);
+
+            // The earlier attempts were pruned, and the latest delivery predates the ledger recording what it replaced.
+            await using (var db = _db.CreateDbContext())
+            {
+                await db.DeliveryAttempts
+                    .Where(a => a.FlowId == runtime.Flow.Id && a.DeliveryKey == SampleEstate.Key(0).Value && a.TargetVersion != second[0].Version)
+                    .ExecuteDeleteAsync();
+                foreach (var attempt in await db.DeliveryAttempts.Where(a => a.FlowId == runtime.Flow.Id && a.DeliveryKey == SampleEstate.Key(0).Value).ToListAsync())
+                {
+                    var result = JsonNode.Parse(attempt.ResultJson!)!.AsObject();
+                    result.Remove("replaced");
+                    attempt.ResultJson = result.ToJsonString();
+                }
+
+                await db.SaveChangesAsync();
+            }
+
+            // The version list's newest version older than the first one the latest write left is what the first delivery left.
+            Assert.Equal(3, _platform.History[id].Count);
+            runtime.Actor = "user:operator";
+            Assert.Equal(1, (await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Previous)).Restored);
+            Assert.True(JsonNode.DeepEquals(firstContent, Content(_platform.Records[id])));
+            Assert.Equal(first[0].BulkUri, BulkUri(_platform.Records[id]));
+        }
+    }
+
+    [Fact]
+    public async Task A_delivery_that_wrote_two_versions_is_never_stepped_back_to_its_own_first_half()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            var id = TargetOf(runtime, 0);
+            var delivered = await HeldAsync(runtime, ledger, 0);
+
+            // One delivery wrote the record, then its bulk data: two versions, the first of them a half of the second.
+            Assert.Equal(2, _platform.History[id].Count);
+            await using (var db = _db.CreateDbContext())
+            {
+                foreach (var attempt in await db.DeliveryAttempts.Where(a => a.FlowId == runtime.Flow.Id && a.DeliveryKey == SampleEstate.Key(0).Value).ToListAsync())
+                {
+                    var result = JsonNode.Parse(attempt.ResultJson!)!.AsObject();
+                    result.Remove("replaced");
+                    attempt.ResultJson = result.ToJsonString();
+                }
+
+                await db.SaveChangesAsync();
+            }
+
+            runtime.Actor = "user:operator";
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Previous);
+
+            var result0 = Assert.Single(summary.Records);
+            Assert.Equal("skipped", result0.Outcome);
+            Assert.Contains("OSDU keeps no version of the record before version", result0.Detail, StringComparison.Ordinal);
+            Assert.Equal(delivered[0].Version, LatestVersion(id));
+            Assert.Equal(delivered[0].BulkUri, BulkUri(_platform.Records[id]));
+        }
+    }
+
+    [Fact]
+    public async Task Without_the_attempt_that_wrote_the_latest_version_nothing_is_guessed()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            ChangeRows(tables, "HAL", 0);
+            await DeliverAsync(runtime);
+            var second = await HeldAsync(runtime, ledger, 0);
+            await using (var db = _db.CreateDbContext())
+            {
+                await db.DeliveryAttempts
+                    .Where(a => a.FlowId == runtime.Flow.Id && a.DeliveryKey == SampleEstate.Key(0).Value && a.TargetVersion == second[0].Version)
+                    .ExecuteDeleteAsync();
+            }
+
+            runtime.Actor = "user:operator";
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Previous);
+
+            var result = Assert.Single(summary.Records);
+            Assert.Equal("skipped", result.Outcome);
+            Assert.Contains("no longer holds the attempt that wrote version", result.Detail, StringComparison.Ordinal);
+            Assert.Equal(second[0].Version, LatestVersion(TargetOf(runtime, 0)));
+        }
+    }
+
+    [Fact]
+    public async Task A_record_deleted_from_the_ledger_is_delivered_again_as_a_new_record_and_its_line_stays()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            var id = TargetOf(runtime, 0);
+            runtime.Actor = "user:operator";
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([SampleEstate.Key(0)]), RemovalChoice.Record, purgeLedger: true);
+            Assert.Equal((1, 1), (summary.Removed, summary.Purged));
+            Assert.Null(await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0)));
+            Assert.Contains(id, _platform.Removed);
+            var line = await ledger.FindPurgedAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(id, line!.TargetId);
+
+            // Its row is still in the source: the next run that reads it delivers it as a record the ledger never held.
+            _clock.Advance(TimeSpan.FromMinutes(5));
+            await DeliverAsync(runtime, force: true);
+            var back = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal(RecordStatus.Delivered, back!.Status);
+            Assert.DoesNotContain(id, _platform.Removed);
+            Assert.All(await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 50), a => Assert.True(a.StartedUtc > line.PurgedUtc));
+            Assert.Equal(line, await ledger.FindPurgedAsync(runtime.Flow.Id, SampleEstate.Key(0)));
+        }
+    }
+
+    [Fact]
+    public async Task The_ledger_settles_a_write_back_only_while_the_record_is_still_at_the_version_it_replaced()
+    {
+        var tables = await EstateAsync();
+        var (runtime, ledger) = await RuntimeAsync(tables);
+        using (runtime)
+        {
+            await DeliverAsync(runtime);
+            var before = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            var attempts = (await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 20)).Count;
+
+            // Told of a write back that replaced a version the ledger does not hold, the ledger leaves the record as it is and says so.
+            var moved = await ledger.MarkRestoredAsync(
+                runtime.Flow.Id,
+                [new PreviousVersionRestored(SampleEstate.Key(0), before!.TargetVersion!.Value + 1, before.TargetVersion.Value, before.TargetVersion.Value + 2, null)],
+                "user:operator",
+                null,
+                Now);
+
+            Assert.Equal(SampleEstate.Key(0), Assert.Single(moved));
+            var after = await ledger.GetRecordAsync(runtime.Flow.Id, SampleEstate.Key(0));
+            Assert.Equal((before.Status, before.TargetVersion, before.Blocked), (after!.Status, after.TargetVersion, after.Blocked));
+            Assert.Equal(attempts, (await ledger.ListAttemptsAsync(runtime.Flow.Id, SampleEstate.Key(0), 20)).Count);
+        }
+    }
+
     private async Task<MemoryIngestionTables> EstateAsync() => await SampleEstate.BuildAsync(_root, Now.AddMinutes(-5), time: _clock);
 
     /// <summary>The sample flow, aimed at the stand-in OSDU under its platform root, failing fast.</summary>
@@ -563,6 +1000,9 @@ public sealed class ReversalTests : IDisposable
         /// <summary>What happens once OSDU took a page of restores, before the run hears of it.</summary>
         public Action? AfterRestore { get; set; }
 
+        /// <summary>Whether OSDU refuses every restore, writing nothing.</summary>
+        public bool RefuseRestores { get; init; }
+
         public async Task<IDeliveryProtocol> CreateAsync(FlowDefinition flow, HttpRuntime http, ILoggerFactory loggers, CancellationToken ct = default)
             => new Crashing(await inner.CreateAsync(flow, http, loggers, ct), this);
 
@@ -603,6 +1043,11 @@ public sealed class ReversalTests : IDisposable
 
             public async Task<IReadOnlyList<RestoreResult>> RestoreBatchAsync(IReadOnlyList<VersionRestore> restores, CancellationToken ct = default)
             {
+                if (owner.RefuseRestores)
+                {
+                    return restores.Select(r => new RestoreResult(r, null, null, new DeliveryException("HTTP 403 Forbidden: the caller may not write the record"))).ToList();
+                }
+
                 var written = await inner.RestoreBatchAsync(restores, ct);
                 owner.AfterRestore?.Invoke();
                 return written;

@@ -115,7 +115,7 @@ A route that sends its payload in parts (the composed routes and the workflow ro
 ### `osdu.Attempt`: append-only, one row per delivery try
 
 The record it belongs to (`FlowId`, `DeliveryKey`), worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`, `restored`), the
-phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `reverse`, `none`), the hashes
+phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `reverse`, `restore-previous`, `none`), the hashes
 established, the version returned, the origin of the row it was built from (`SourceFileName`, `SourceRowNumber`,
 `SourceUpdatedUtc`, and `SourceDeletedUtc` for the hold of a row the ingestion table marked deleted),
 the redacted error (for a held or failed try only: a try that did not fail keeps its note, chunks sent or why nothing
@@ -497,7 +497,8 @@ it.
                             │ backoff          ├──▶ held    (data problem, non-retryable status, or the gate's verdict; Blocked)
                             └──────────────────┤
                                                └──▶ failed  (retry budget exhausted; Blocked)
-   operator removal ──▶ deleted (Blocked; OSDU no longer holds it) [scope record or everything]
+   operator removal ──▶ deleted (not blocked; OSDU no longer holds it) [scope record or everything]
+                   ├─▶ reverted (Blocked; OSDU holds the version before the latest again) [scope previous]
                    └─▶ (no change)                                  [scope history: OSDU still holds it]
    operator reversal ──▶ reverted (Blocked; OSDU holds the version from before the run again)  [the run updated it]
                      └─▶ deleted  (Blocked; removed again, reversibly)                       [the run created it]
@@ -563,14 +564,46 @@ record in any other state is left as it is. An intervention that names more than
 parameters, and the ledger names each one under it (`osdu.ActivityRecord`).
 
 **Removal** takes the record out of OSDU through the flow's protocol, to one of three depths (see
-[operations](operations.md#removing-records-from-osdu)). `record` and `everything` write a `delete` attempt,
-forget the hashes and version, and block the record. If the source still presents the record and an operator
-releases it, the next plan creates it again; that is ownership, not an accident.
+[operations](operations.md#removing-records-from-osdu)). `record` and `everything` write a `delete` attempt and
+forget the hashes and version. The record is not blocked: a removal is a clean-up, and the record follows its source
+again. The next run that reads its row (a full read, or the row changed under an incremental one) finds nothing
+delivered and creates it again; that is ownership, not an accident. A row the ingestion table marks deleted is never
+sent, and a record that should stay out of OSDU while its row stays is taken out of the source. A reversal's removal of
+a record the run created does block it, since a reversal undoes a run that went wrong and must not be redone by the
+next one.
 
 `history` is the exception: it destroys the record's earlier versions and leaves the record itself live in OSDU
 at the version the ledger already holds. Its custody state is therefore still true and is not disturbed; the
 purge is written as a `purge-history` attempt and nothing else changes. Every removal, at every depth, names the
 scope and the operator on the attempt and in the activity trail.
+
+`previous` takes the latest version out of being current without deleting anything (OSDU has no call for that): the
+version OSDU held before the write that left the latest is written back as a new version
+([reversal-plan.md](reversal-plan.md#restoring-the-previous-version)). The ledger tells which version that is: the one
+the delivered attempt recorded it replaced (`replaced.version`), the one an earlier step back recorded it replaced
+(`previous.replacedVersion`), else the version of the attempt before. The record becomes `reverted` and blocked, as a
+reversal leaves it, with the hashes and origin of the attempt that delivered the version put back, and gets a
+`restored` attempt (phase `restore-previous`) naming both versions. A record already blocked by an earlier step back
+keeps the source version it is blocked at. Its activity kind is `restore-previous`, not `delete`: nothing was removed.
+
+### Deleting a removed record from the ledger
+
+A removal that takes a record out of OSDU (`record` or `everything`) can take it out of the ledger too, as an extra step
+the operator asks for (`purgeLedger`). Once OSDU has answered for the record (removed, or already gone), the ledger
+deletes its attempts, its search entries and its row, in the same chunk, a slice of records to a transaction. Only a
+record the ledger marks `deleted` goes, and none a lease holds: a record whose removal failed, or one OSDU still holds,
+stays as it was, whatever is asked. History purges and `previous` never delete from the ledger; the API and the node
+refuse the extra step with them.
+
+The ledger keeps one line of each record it deletes, in `osdu.PurgedRecord`: its key, source key and label, the OSDU id
+it was delivered and removed under, the last version an attempt of it named, how many attempts went with it, who deleted
+it, when, and under which intervention. The intervention names the record in `osdu.ActivityRecord` as well, and the
+activities that named it before stay, as the whole audit trail does. A record's page asked for a deleted record answers
+404 titled "Deleted from the ledger", saying who deleted it and when, with that line under `purged`. A reversal's item
+of the record stays: it is the reversal's.
+
+What goes is the record's history, for good. If its row is still in the source, the next run that reads it delivers it
+as a record the ledger never held, under the same OSDU id; the line of the earlier one stays.
 
 ### Reversals
 
@@ -1106,6 +1139,12 @@ rebuilding each as the keys change. It sets the attempt and event tables' ever-i
 `OPTIMIZE_FOR_SEQUENTIAL_KEY` again, and adds `UpdateTag (Scope, Status)`. It rewrites every ledger table, so on a large
 ledger it needs log space for the largest of them, and runs while no host is up; a failed migration leaves the ledger
 as it was. Going back down restores the earlier keys and indexes and drops the directory.
+
+`RecordPurges` (module version 1.27.0) creates `osdu.PurgedRecord`
+([Deleting a removed record from the ledger](#deleting-a-removed-record-from-the-ledger)), keyed by the partition first,
+indexed on `(PartitionId, FlowId, DeliveryKey)` for a record's page and on `(PartitionId, TargetId)` for a lookup by OSDU
+id, its OSDU id compared byte for byte as a record's claim of it is. No other table changes; it is created empty, and going
+back down drops it.
 
 `RecordReversals` (module version 1.26.0) creates `osdu.Reversal` and `osdu.ReversalItem` ([`osdu.Reversal` and
 `osdu.ReversalItem`](#osdureversal-and-osdureversalitem-what-a-reversal-did-to-each-record)), both keyed by the partition

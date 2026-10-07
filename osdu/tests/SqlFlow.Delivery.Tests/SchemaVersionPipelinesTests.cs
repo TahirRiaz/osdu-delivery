@@ -99,7 +99,7 @@ public sealed class SchemaVersionPipelinesTests : IDisposable
 
         // Taking the 1.5.0 records out of OSDU takes only those: the 1.4.0 records stay delivered where they are.
         next.Runtime.Actor = "gui:tahir";
-        var removal = await next.Runtime.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, SampleEstate.Logs().Count).Select(SampleEstate.Key)]), RemovalScope.Record);
+        var removal = await next.Runtime.RemoveAsync(RemovalSelection.Of([.. Enumerable.Range(0, SampleEstate.Logs().Count).Select(SampleEstate.Key)]), RemovalChoice.Record);
         Assert.Equal(SampleEstate.Logs().Count, removal.Removed);
         Assert.All(next.Protocol.Deletes, d => Assert.StartsWith(NextPartition + ":", d.TargetId, StringComparison.Ordinal));
         Assert.Empty(current.Protocol.Deletes);

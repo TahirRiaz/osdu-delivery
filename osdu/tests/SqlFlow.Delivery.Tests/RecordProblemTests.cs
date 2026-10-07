@@ -176,10 +176,10 @@ public sealed class RecordProblemTests : IAsyncLifetime, IDisposable
         await Ledger.UpsertPendingAsync(_flow, [Pending("S-1", Guid.NewGuid())]);
         Assert.Null((await Ledger.GetRecordAsync(_flow, staged.DeliveryKey))!.ProblemHash);
 
-        // Removed by an operator: blocked, and still no problem to fix.
+        // Removed by an operator: no longer blocked by its problem, and no problem to fix.
         await Ledger.MarkRemovedAsync(_flow, [removed.DeliveryKey], RemovalScope.Record, "user:test", Now);
         var gone = await Ledger.GetRecordAsync(_flow, removed.DeliveryKey);
-        Assert.Equal((RecordStatus.Deleted, true, (long?)null), (gone!.Status, gone.Blocked, gone.ProblemHash));
+        Assert.Equal((RecordStatus.Deleted, false, (long?)null), (gone!.Status, gone.Blocked, gone.ProblemHash));
         Assert.Equal(0, (await Ledger.ListProblemsAsync(_flow, 10)).TotalRecords);
     }
 
@@ -231,10 +231,11 @@ public sealed class RecordProblemTests : IAsyncLifetime, IDisposable
         await sliced.MarkRemovedAsync(_flow, [removed.DeliveryKey], RemovalScope.Record, "user:test", Now);
         var release = await sliced.StartActivityAsync(new ActivityRecord { FlowId = _flow, FlowName = "problem-flow", Kind = "release", Actor = "user:test", StartedUtc = Now });
 
-        Assert.Equal(4, await sliced.ReleaseAsync(_flow, ReleaseSelection.EveryBlocked, release.ActivityId, Now));
+        // The removed record is not blocked, so a release of every blocked record does not reach it.
+        Assert.Equal(3, await sliced.ReleaseAsync(_flow, ReleaseSelection.EveryBlocked, release.ActivityId, Now));
         Assert.Equal(0, await sliced.ReleaseAsync(_flow, ReleaseSelection.EveryBlocked, release.ActivityId, Now));
         await using var db = _db.CreateDbContext();
-        Assert.Equal(4, await db.DeliveryActivityRecords.CountAsync(l => l.ActivityId == release.ActivityId));
+        Assert.Equal(3, await db.DeliveryActivityRecords.CountAsync(l => l.ActivityId == release.ActivityId));
     }
 
     [Fact]

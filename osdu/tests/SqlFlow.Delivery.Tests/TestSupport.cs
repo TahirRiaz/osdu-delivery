@@ -267,11 +267,19 @@ public sealed class FakeProtocol : IDeliveryProtocol
     /// <summary>Target ids the fake target no longer holds, so a removal of them reports them already gone.</summary>
     public HashSet<string> Gone { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>Target ids whose removal the fake target refuses.</summary>
+    public HashSet<string> Refuse { get; } = new(StringComparer.Ordinal);
+
     public Task<DeleteOutcome> DeleteAsync(string targetId, RemovalScope scope, IReadOnlyDictionary<string, string>? targetState = null, CancellationToken ct = default)
     {
         lock (_gate)
         {
             Deletes.Add((targetId, scope));
+        }
+
+        if (Refuse.Contains(targetId))
+        {
+            throw new DeliveryException($"HTTP 403 Forbidden from DELETE {targetId}: the fake target refuses this removal");
         }
 
         return Task.FromResult(Gone.Contains(targetId)

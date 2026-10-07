@@ -3,6 +3,7 @@ using System.Globalization;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Identity;
 
 namespace SqlFlow.Delivery.Ledger;
 
@@ -134,6 +135,56 @@ internal static partial class SqlServerLedgerBulk
                     WHERE a.[PartitionId] = @partitionId AND a.[FlowId] = @flowId AND a.[DeliveryKey] = k.[DeliveryKey]
                       AND a.[AttemptId] < f.[AttemptId] AND a.[Outcome] IN (N'delivered', N'deleted', N'restored')
                     ORDER BY a.[AttemptId] DESC) AS p)
+        """;
+
+    // What OSDU held of each record before the write that left the version the ledger holds now: the attempt that delivered
+    // or restored that version says, by the version a delivery recorded it replaced or a step back recorded it replaced;
+    // else the attempt before it does (a removal leaves nothing, a delivery or a restore its version); else nobody does. The
+    // first version the write left is the lowest any of its steps returned, since one try can write two.
+    private const string PriorVersionsSql = """
+        WITH k AS (
+            SELECT j.[k] AS [DeliveryKey], j.[v] AS [Version]
+            FROM OPENJSON(@items) WITH ([k] uniqueidentifier '$.k', [v] bigint '$.v') AS j)
+        SELECT k.[DeliveryKey],
+            CASE
+                WHEN w.[AttemptId] IS NULL THEN N'unknown'
+                WHEN w.[Recorded] = 1 AND w.[Replaced] IS NULL THEN N'none'
+                WHEN w.[Recorded] = 1 THEN N'version'
+                WHEN p.[Outcome] = N'deleted' THEN N'none'
+                WHEN p.[Outcome] IN (N'delivered', N'restored') AND p.[TargetVersion] IS NOT NULL THEN N'version'
+                ELSE N'unknown'
+            END,
+            CASE
+                WHEN w.[Recorded] = 1 THEN w.[Replaced]
+                WHEN p.[Outcome] IN (N'delivered', N'restored') THEN p.[TargetVersion]
+            END,
+            CASE
+                WHEN w.[AttemptId] IS NULL THEN NULL
+                WHEN w.[FirstWritten] IS NOT NULL AND w.[FirstWritten] < k.[Version] THEN w.[FirstWritten]
+                ELSE k.[Version]
+            END
+        FROM k
+        OUTER APPLY (
+            SELECT TOP (1) a.[AttemptId],
+                CASE WHEN ISJSON(a.[ResultJson]) = 1
+                    AND (JSON_QUERY(a.[ResultJson], '$.replaced') IS NOT NULL OR JSON_VALUE(a.[ResultJson], '$.previous.replacedVersion') IS NOT NULL)
+                    THEN 1 ELSE 0 END AS [Recorded],
+                CASE WHEN ISJSON(a.[ResultJson]) = 1 THEN COALESCE(
+                    TRY_CAST(JSON_VALUE(a.[ResultJson], '$.previous.replacedVersion') AS bigint),
+                    TRY_CAST(JSON_VALUE(a.[ResultJson], '$.replaced.version') AS bigint)) END AS [Replaced],
+                CASE WHEN ISJSON(a.[ResultJson]) = 1 THEN (
+                    SELECT MIN(TRY_CAST(JSON_VALUE(st.[value], '$.returned.version') AS bigint))
+                    FROM OPENJSON(a.[ResultJson], '$.steps') AS st) END AS [FirstWritten]
+            FROM [osdu].[Attempt] AS a
+            WHERE a.[PartitionId] = @partitionId AND a.[FlowId] = @flowId AND a.[DeliveryKey] = k.[DeliveryKey]
+              AND a.[Outcome] IN (N'delivered', N'restored') AND a.[TargetVersion] = k.[Version]
+            ORDER BY a.[AttemptId] DESC) AS w
+        OUTER APPLY (
+            SELECT TOP (1) a.[Outcome], a.[TargetVersion]
+            FROM [osdu].[Attempt] AS a
+            WHERE w.[AttemptId] IS NOT NULL AND a.[PartitionId] = @partitionId AND a.[FlowId] = @flowId AND a.[DeliveryKey] = k.[DeliveryKey]
+              AND a.[AttemptId] < w.[AttemptId] AND a.[Outcome] IN (N'delivered', N'deleted', N'restored')
+            ORDER BY a.[AttemptId] DESC) AS p;
         """;
 
     // A page of records added to a reversal once each: a record a page of another phase or submission listed already is
@@ -574,6 +625,43 @@ internal static partial class SqlServerLedgerBulk
             }
 
             return items;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>What OSDU held of each record before the write that left the version <paramref name="current"/> names for it.</summary>
+    public static async Task<IReadOnlyList<KeyValuePair<DeliveryKey, PriorVersion>>> PriorVersionsAsync(
+        OsduDbContext db, short partitionId, Guid flowId, IReadOnlyCollection<KeyValuePair<DeliveryKey, long>> current, CancellationToken ct)
+    {
+        if (current.Count == 0)
+        {
+            return [];
+        }
+
+        await db.Database.OpenConnectionAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var connection = (SqlConnection)db.Database.GetDbConnection();
+            await using var command = Command(connection, null, PriorVersionsSql, slice: null);
+            command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
+            command.Parameters.Add(new SqlParameter("@flowId", SqlDbType.UniqueIdentifier) { Value = flowId });
+            command.Parameters.Add(new SqlParameter("@items", SqlDbType.NVarChar, -1)
+            {
+                Value = System.Text.Json.JsonSerializer.Serialize(current.Select(c => new { k = c.Key.Value, v = c.Value })),
+            });
+            var priors = new List<KeyValuePair<DeliveryKey, PriorVersion>>(current.Count);
+            await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            {
+                priors.Add(new(
+                    new DeliveryKey(reader.GetGuid(0)),
+                    new PriorVersion(reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt64(2), reader.IsDBNull(3) ? null : reader.GetInt64(3))));
+            }
+
+            return priors;
         }
         finally
         {

@@ -306,9 +306,11 @@ public sealed class ReadRecordOperation : DeliveryOperation
 /// <summary>
 /// <c>delivery-delete</c>: removes records from OSDU through the flow's protocol and records what happened to each
 /// one in the ledger under the requesting <c>actor</c>. <c>scope</c> says how much goes (<c>record</c> reversibly,
-/// <c>history</c> for the earlier versions only, <c>everything</c> for the record and all its versions), and the
-/// records are named either by <c>deliveryKeys</c> (a comma-separated list, one key for the single-record case) or
-/// by <c>filter</c> (the listing whose every match is to be removed), resolved here against the ledger.
+/// <c>previous</c> for the latest version, the one before it written back as current, <c>history</c> for the earlier
+/// versions only, <c>everything</c> for the record and all its versions), <c>purgeLedger</c> (<c>true</c>, with record or
+/// everything) also deletes each record removed from the ledger, keeping one line of it, and the records are named either by
+/// <c>deliveryKeys</c> (a comma-separated list, one key for the single-record case) or by <c>filter</c> (the listing
+/// whose every match is to be removed), resolved here against the ledger.
 /// </summary>
 public sealed class DeleteRecordOperation : DeliveryOperation
 {
@@ -324,18 +326,21 @@ public sealed class DeleteRecordOperation : DeliveryOperation
     protected override async Task<object> RunAsync(EngineContext context, FlowDefinition flow, ComputeTaskPayload payload, CancellationToken ct)
     {
         var scope = RemovalScopes.Parse(payload.Argument("scope"));
+        var purgeLedger = RemovalScopes.ParsePurgeLedger(payload.Argument("purgeLedger"));
         var selection = ReadSelection(payload);
         RequireLedger();
         using var runtime = FlowRuntime.ForTarget(context, flow);
         runtime.Actor = Actor(payload);
-        var summary = await runtime.RemoveAsync(selection, scope, ct).ConfigureAwait(false);
+        var summary = await runtime.RemoveAsync(selection, scope, purgeLedger, ct).ConfigureAwait(false);
         return new
         {
             flow = flow.Label,
             scope = RemovalScopes.Wire(scope),
             summary.Selected,
             summary.Removed,
+            summary.Restored,
             summary.AlreadyGone,
+            summary.Purged,
             summary.Skipped,
             summary.Failed,
             summary.Truncated,
@@ -369,34 +374,48 @@ public sealed class DeleteRecordOperation : DeliveryOperation
     }
 }
 
-/// <summary>The removal scope on the wire: the lower-case names the API, the task payload and the GUI all use.</summary>
+/// <summary>
+/// A removal's <c>scope</c> on the wire: the lower-case names of the <see cref="RemovalChoice"/>s the API, the task payload
+/// and the GUI all use.
+/// </summary>
 public static class RemovalScopes
 {
-    public static string Wire(RemovalScope scope) => scope switch
+    public static string Wire(RemovalChoice scope) => scope switch
     {
-        RemovalScope.Record => "record",
-        RemovalScope.History => "history",
-        RemovalScope.Everything => "everything",
+        RemovalChoice.Record => "record",
+        RemovalChoice.Previous => "previous",
+        RemovalChoice.History => "history",
+        RemovalChoice.Everything => "everything",
         _ => throw new ArgumentOutOfRangeException(nameof(scope)),
     };
 
     /// <summary>Parses a wire scope. Null is not a default: a removal must say how much it takes.</summary>
-    public static RemovalScope Parse(string? wire) => wire switch
+    public static RemovalChoice Parse(string? wire)
+        => TryParse(wire, out var scope)
+            ? scope
+            : throw new SqlFlowException($"'{wire ?? "(none)"}' is not a removal scope; use record, previous, history or everything.");
+
+    /// <summary>
+    /// Parses the removal's <c>purgeLedger</c> argument: absent or <c>false</c> leaves the ledger as the removal leaves it,
+    /// <c>true</c> deletes what OSDU confirmed removed from it. Anything else is refused rather than read as either, since
+    /// a mistyped flag must neither delete history nor quietly keep it.
+    /// </summary>
+    public static bool ParsePurgeLedger(string? wire) => wire switch
     {
-        "record" => RemovalScope.Record,
-        "history" => RemovalScope.History,
-        "everything" => RemovalScope.Everything,
-        _ => throw new SqlFlowException($"'{wire ?? "(none)"}' is not a removal scope; use record, history or everything."),
+        null or "" or "false" => false,
+        "true" => true,
+        _ => throw new SqlFlowException($"'{wire}' is not what purgeLedger takes; use true or false."),
     };
 
-    public static bool TryParse(string? wire, out RemovalScope scope)
+    public static bool TryParse(string? wire, out RemovalChoice scope)
     {
         switch (wire)
         {
-            case "record": scope = RemovalScope.Record; return true;
-            case "history": scope = RemovalScope.History; return true;
-            case "everything": scope = RemovalScope.Everything; return true;
-            default: scope = RemovalScope.Record; return false;
+            case "record": scope = RemovalChoice.Record; return true;
+            case "previous": scope = RemovalChoice.Previous; return true;
+            case "history": scope = RemovalChoice.History; return true;
+            case "everything": scope = RemovalChoice.Everything; return true;
+            default: scope = RemovalChoice.Record; return false;
         }
     }
 }

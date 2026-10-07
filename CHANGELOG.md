@@ -13,6 +13,27 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A removal can delete the records it takes out of OSDU from the ledger too, as an extra step.** The removal dialog's
+  "Also delete from the ledger" (API `purgeLedger`, with the `record` and `everything` scopes only) deletes each record OSDU
+  answered for (removed, or already gone): its attempts, search entries and row. Only a record the ledger marks deleted
+  goes, never one a lease holds or one whose removal failed. The ledger keeps one line of each in the new
+  `osdu.PurgedRecord` (key, source key, label, OSDU id, last version, attempts deleted, who, when, which intervention;
+  migration `RecordPurges`, module 1.27.0), and a deleted record's page answers "Deleted from the ledger" with who and when.
+  A row still in the source is delivered again by the next run that reads it, as a new record (docs: `osdu/docs/ledger.md`,
+  Deleting a removed record from the ledger).
+
+- **A record's latest version can be taken back: Restore the previous version.** The removal dialog, the API and the
+  node's removal take a fourth scope, `previous`. OSDU has no call that removes only the latest version (checked against
+  the storage service's source: its version purge refuses the latest with 400 and no route reverts or promotes a
+  version), so the version OSDU held before the write that left the latest is written back as a new version, with the
+  restore a reversal makes, a Wellbore DDMS record with its own `bulkURI`. "Before the latest" is the ledger's answer,
+  not the version just below in OSDU's list, since one delivery to a Wellbore DDMS writes two versions. Nothing is
+  destroyed: the replaced version stays in the record's history and asking again brings it back. The record becomes
+  `reverted` and blocked until its row changes or it is released, with a `restored` attempt (phase `restore-previous`)
+  naming both versions, under an activity of its own kind. A record written outside the flow since, one created by its
+  latest write, one removed and one with work in flight are passed over, each saying why; a route that cannot write an
+  earlier version back does not offer it (docs: `osdu/docs/reversal-plan.md`, Restoring the previous version).
+
 - **A mapping writes inside an object the schema leaves open, such as `data.ExtensionProperties`.** The template marks an
   object that declares no properties, names no type for its keys and refuses none as open, and any path inside it is a
   variable of no type: a mapping lays out objects, values, literals, lists and a `$forEach`'s items there, at any depth,
@@ -674,6 +695,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   assert the result contract, and a link can set the pipelines page's repo and kind filters.
 
 ### Changed
+
+- **A removal no longer blocks the record.** A record taken out of OSDU (`record` or `everything`) is marked `deleted`
+  and follows its source again: the next run that reads its row delivers it again, with no release needed. Restoring the
+  previous version and a reversal still block, since the next run would otherwise write back what they took back. Records
+  a removal blocked before stay blocked until released. The test stand-in for the Wellbore DDMS now accepts a write to a
+  record it holds as deleted, as the service does (it reads the latest version through storage, which answers 404).
+- **The removal dialog says less up front.** The record and its partition head it; the endpoint, route and DDMS
+  collection are behind an info mark beside the partition. The four scopes are compact choices in two groups, reversible
+  and permanent, each one line of what it does, with what the ledger does and the call it makes on hover. A scope the flow
+  cannot reach is shown as not available, with the reason on hover, and cannot be confirmed.
 
 - **The explorer's welcome is a workbench view.** It fills the window as the browse view does, where it was a narrow
   column in a large card: **Recently opened** lists the records opened lately as the records grid (name, type and

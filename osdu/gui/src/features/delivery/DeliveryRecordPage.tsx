@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { Eraser, RefreshCw, RotateCcw, Send, ShieldCheck, Trash2, Unlock } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,9 +9,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
-import { deliveryApi, flowLedgerRoute, ledgerLabel, type DeliveryFlowScope, type DeliveryRecordRef } from "../../api/delivery";
+import { deliveryApi, flowLedgerRoute, ledgerLabel, type DeliveryFlowScope, type DeliveryRecordRef, type RemovalScope } from "../../api/delivery";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CorrelationError } from "@/components/CorrelationError";
+import { EmptyState } from "@/components/EmptyState";
 import { IdChip } from "@/components/IdChip";
 import { Page } from "@/components/Page";
 import { useTabTitle } from "@/layout/workbench/TabsContext";
@@ -37,6 +38,14 @@ import { shortId } from "./idTail";
  */
 const RECORD_TABS = ["timeline", "source", "render", "osdu"] as const;
 type RecordTab = (typeof RECORD_TABS)[number];
+
+/** What the task card under the header calls a removal this page queued, by its scope. */
+const REMOVAL_LABELS: Record<RemovalScope, string> = {
+  record: "Remove from OSDU",
+  previous: "Restore the previous version",
+  history: "Purge history in OSDU",
+  everything: "Purge from OSDU",
+};
 
 /** The tabs the page's earlier tabs went by, and the tab each now lands on, so an old link still lands somewhere. */
 const EARLIER_TABS = new Map<string, RecordTab>([
@@ -179,6 +188,20 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     onError: fail,
   });
   if (query.isError) {
+    // A record deleted from the ledger after it was removed from OSDU: the line the ledger keeps of it says who and when.
+    if (isApiError(query.error) && query.error.status === 404 && query.error.title === "Deleted from the ledger") {
+      return (
+        <Page data-testid="page-delivery-record">
+          <EmptyState
+            icon={<Eraser />}
+            title="Deleted from the ledger"
+            description={query.error.detail ?? undefined}
+            data-testid="record-purged"
+          />
+        </Page>
+      );
+    }
+
     return (
       <Page data-testid="page-delivery-record">
         {isApiError(query.error) ? <CorrelationError error={query.error} /> : <p className="text-[13px] text-destructive">{String(query.error)}</p>}
@@ -366,9 +389,11 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           onQueued={(accepted) => {
             setRemoval({
               taskId: accepted.taskId,
-              label: accepted.scope === "history" ? "Purge history in OSDU" : accepted.scope === "everything" ? "Purge from OSDU" : "Remove from OSDU",
+              label: REMOVAL_LABELS[accepted.scope],
             });
-            toast.success("Removal queued on a node.");
+            toast.success(accepted.scope === "previous"
+              ? "Restoring the previous version: queued on a node."
+              : accepted.purgeLedger ? "Removal, then deletion from the ledger: queued on a node." : "Removal queued on a node.");
           }}
         />
       )}

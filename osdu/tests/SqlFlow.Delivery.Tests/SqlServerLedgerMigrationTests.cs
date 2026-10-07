@@ -51,6 +51,9 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before runs and submissions could be reversed.</summary>
     private const string BeforeReversals = "20261004123427_RecordValidation";
 
+    /// <summary>The migration before a record removed from OSDU could be deleted from the ledger.</summary>
+    private const string BeforePurges = "20261005205855_RecordReversals";
+
     /// <summary>The tables of reversals, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] ReversalTables = ["Reversal", "ReversalItem"];
 
@@ -908,6 +911,33 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(0L, await database.ScalarAsync(Tables));
         await database.MigrateAsync(null);
         Assert.Equal(2L, await database.ScalarAsync(Tables));
+    }
+
+    [Fact]
+    public async Task The_table_of_records_deleted_from_the_ledger_is_added_keyed_by_partition_and_goes_back_with_the_migration()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforePurges);
+        const string Table = "SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name = N'PurgedRecord';";
+        Assert.Equal(0L, await database.ScalarAsync(Table));
+
+        await database.MigrateAsync(null);
+
+        Assert.Equal(1L, await database.ScalarAsync(Table));
+        Assert.Equal("PartitionId", (await database.PrimaryKeyAsync("PurgedRecord"))[0]);
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, ["PurgedRecord"]), await database.IndexesAsync(["PurgedRecord"]));
+        }
+
+        // The OSDU id a deleted record had compares exactly, as the record's claim of it did.
+        const string Binary = "SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[PurgedRecord]') AND [name] = N'TargetId' AND [collation_name] = N'Latin1_General_100_BIN2';";
+        Assert.Equal(1L, await database.ScalarAsync(Binary));
+
+        await database.MigrateAsync(BeforePurges);
+        Assert.Equal(0L, await database.ScalarAsync(Table));
+        await database.MigrateAsync(null);
+        Assert.Equal(1L, await database.ScalarAsync(Table));
     }
 
     /// <summary>

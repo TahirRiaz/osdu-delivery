@@ -951,10 +951,12 @@ export interface DeliveryRecordFlow {
 }
 
 /**
- * How much of a record a removal takes away in OSDU. The three are different endpoints with different promises,
- * not degrees of one thing: only "record" can be undone, and only "history" leaves the record live.
+ * How much of a record a removal takes away in OSDU. The four are different calls with different promises, not degrees
+ * of one thing: "record" and "previous" can be undone, "history" and "everything" cannot. OSDU has no call that removes
+ * only the latest version, so "previous" writes the version before it back as a new version, and the replaced one stays
+ * in the record's history.
  */
-export type RemovalScope = "record" | "history" | "everything";
+export type RemovalScope = "record" | "previous" | "history" | "everything";
 
 /** Where a flow's records live, and the exact call each removal scope would make against them. */
 export interface DeliveryTarget {
@@ -974,6 +976,10 @@ export interface DeliveryTarget {
   interface: string | null;
   /** On the ddms route: which collection of which DDMS the records go to, as a sentence; null on the other routes. */
   ddms: string | null;
+  /** The calls the previous scope makes: the version before the latest read, then written back as a new version. */
+  previousPath: string;
+  /** Why the route cannot write an earlier version back; absent or null when it can. */
+  previousRefusal?: string | null;
 }
 
 /** One interface another waits for, or does not wait for, and where that comes from. */
@@ -1508,6 +1514,11 @@ export interface DeliveryRemovalRequest {
   keys?: string[];
   filter?: DeliveryRecordFilter;
   expected?: number;
+  /**
+   * With "record" or "everything": also delete each record OSDU answered for from the ledger, keeping one line of it (who,
+   * when, its OSDU id and last version). Refused with the other scopes.
+   */
+  purgeLedger?: boolean;
 }
 
 /** What a removal would act on, and from where: the contents of the confirmation. */
@@ -1526,6 +1537,8 @@ export interface DeliveryRemovalAccepted {
   status: RunStatus;
   scope: RemovalScope;
   records: number;
+  /** Whether the removal deletes the records it removes from the ledger too. */
+  purgeLedger: boolean;
 }
 
 /** What a reversal reverses: one run, or one submission. */

@@ -76,13 +76,60 @@ To reverse a run that a later run superseded, reverse the later run first, newes
 
 ### After a reversal
 
-A reversed record is **blocked**, as a removed one is: the next runs pass over it while its source row is unchanged, so a
-scheduled run does not send the same wrong rows again. A row corrected in the source (a new version) flows through on its
+A reversed record is **blocked** (an operator's removal is not): the next runs pass over it while its source row is
+unchanged, so a scheduled run does not send the same wrong rows again. A row corrected in the source (a new version) flows through on its
 own. A release (by record, by issue, of every blocked record) unblocks it: a `reverted` record becomes `delivered` again and
 is planned by the next run, which sends it only where it renders differently from what OSDU now holds.
 
 The source watermark does not move back: rows the source read are not read again by an incremental run, which is what the
 block relies on.
+
+## Restoring the previous version
+
+The removal dialog's **Restore the previous version** (removal scope `previous`) takes one record's latest version out
+of being current, for the records an operator selects rather than for everything a run delivered. OSDU has no call that
+removes only the latest version (the storage service's `DELETE /records/{id}/versions` purges the versions before it and
+never the latest), so it writes the version before the latest back as a new version, through the same restore a reversal
+makes (`VersionWriteBack`, the one path both take): `GET /records/{id}/{version}`, then `PUT /records`, with a Wellbore
+DDMS record's own `bulkURI`. Nothing is destroyed: the version it replaced stays in the record's history, and asking
+again brings that version back the same way. The write back goes without `skipdupes`, which the storage service compares
+with the latest version only, so it always adds a version.
+
+Checked against the services' source (storage `master` at `e8d65c18`, wellbore-domain-services `master` at `aed1346b`,
+2026-10-07), not only the specifications: the storage service decides the current version as the last of the record's
+version paths, and no route removes that one. `DELETE /records/{id}/versions` refuses a `versionIds` naming the latest
+with 400 ("The versionIds contains latest record version", `VersionIdsValidator`), refuses a record of one version,
+takes the oldest versions for `limit`, and keeps the latest when `from` names it. `DELETE /records/{id}` purges every
+version, `POST /records/{id}:delete` and `POST /records/delete` mark the whole record deleted, and the PATCH routes write
+a new version or change the record's status. There is no revert, restore or promote route. The Wellbore DDMS deletes
+whole records only (`DELETE /ddms/v3/welllogs/{id}`, `purge` for every version and its bulk data), and serves versions
+for reading alone.
+
+"The version before the latest" is the version OSDU held before the write that left the latest, as the ledger tells it
+(`ILedger.PriorVersionsAsync`): the version the delivered attempt recorded it replaced, the version an earlier step back
+recorded it replaced, else the version of the attempt before. It is not the version just below in OSDU's list: one
+delivery to a Wellbore DDMS writes two versions (the record, then its bulk data), and the first of them is half of the
+latest. Only where the ledger no longer says (the record's earlier attempts were pruned) does OSDU's version list decide,
+by the newest version older than the first one the latest write left, as a reversal's does.
+
+| The record | What happens |
+| --- | --- |
+| OSDU's latest version is the one the ledger holds, and a version came before the write that left it | That version is written back; the record becomes `reverted`, blocked, at the new version, with a `restored` attempt (phase `restore-previous`) naming both versions |
+| The write that left the latest created the record | Passed over: OSDU held nothing before it; remove the record instead |
+| OSDU holds another version than the ledger (written outside the flow since) | Passed over: stepping back would undo that write instead |
+| Removed, or with work queued or in flight | Passed over, saying why |
+| On a route that cannot write an earlier version back | Not offered; the target view names why |
+
+It runs as a removal does (the `delivery-delete` task, with `scope: previous`), under an activity of its own kind,
+`restore-previous`, since nothing is deleted. The ledger settles a record only while it is still at the version that
+was replaced, with no lease and no work queued; one that moved on meanwhile is reported as failed, saying what OSDU now
+holds.
+
+**Tests:** the previous version written back as the latest with its bulk data, the replaced version kept in the history,
+the record reverted and blocked with its attempt and its activity; a record delivered once (two OSDU versions) passed
+over as created by its latest write; a record stepped back passed over by the next runs, stepped back again to the
+version it replaced while staying blocked at the row it was left at, and delivered again once its row changes; a record
+written outside the flow and a removed record left as they are; the ledger refusing a write back whose record moved on.
 
 ## The ledger (stage 1)
 

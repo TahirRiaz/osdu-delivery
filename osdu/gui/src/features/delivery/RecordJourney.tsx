@@ -590,6 +590,17 @@ function attemptShape(attempt: DeliveryAttempt, refusal: Refusal | null, reached
     }
   }
 
+  // An operator took the latest version out of being current: the version before it written back as a new version.
+  if (attempt.phase === "restore-previous" && attempt.outcome === "restored") {
+    return {
+      title: "Previous version restored",
+      tone: "muted",
+      icon: Undo2,
+      then: { text: "Blocked until its source changes or someone releases it.", tone: "muted" },
+      outcome: { text: "Reverted", tone: "muted" },
+    };
+  }
+
   switch (attempt.outcome) {
     case "delivered":
       return { title: "Delivered", tone: "success", icon: CheckCircle2, then: null, outcome: { text: "Delivered", tone: "success" } };
@@ -631,7 +642,7 @@ function attemptShape(attempt: DeliveryAttempt, refusal: Refusal | null, reached
           return { title: "Skipped", tone: "muted", icon: CircleDashed, then: null, outcome: { text: "Skipped", tone: "muted" } };
       }
     case "deleted":
-      return { title: "Removed", tone: "muted", icon: Trash2, then: { text: "Blocked until someone releases it.", tone: "muted" }, outcome: { text: "Removed", tone: "muted" } };
+      return { title: "Removed", tone: "muted", icon: Trash2, then: null, outcome: { text: "Removed", tone: "muted" } };
     case "historypurged":
       return { title: "Earlier versions purged", tone: "warning", icon: Eraser, then: null, outcome: { text: "Earlier versions purged", tone: "warning" } };
     case "restored":
@@ -879,6 +890,11 @@ const REQUESTS: Partial<Record<string, { one: string; many: (count: number) => s
   },
   release: { one: "Release of this record asked", many: (count) => `Release asked for ${count} records, this one among them`, button: "Release" },
   delete: { one: "Removal of this record asked", many: (count) => `Removal asked for ${count} records, this one among them`, button: "Remove" },
+  "restore-previous": {
+    one: "Restoring the previous version of this record asked",
+    many: (count) => `Restoring the previous version asked for ${count} records, this one among them`,
+    button: "Remove",
+  },
   reverse: { one: "Reversal of a run asked", many: (count) => `Reversal of a run that reached ${count} records, this one among them`, button: "Reverse" },
   verify: { one: "Verify of this record asked", many: (count) => `Verify asked for ${count} records, this one among them`, button: "Verify" },
 };

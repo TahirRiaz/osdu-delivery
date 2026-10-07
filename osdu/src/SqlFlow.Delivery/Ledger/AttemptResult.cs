@@ -51,6 +51,32 @@ public static class AttemptResult
     }
 
     /// <summary>
+    /// The result of writing a record's version before the latest back as its current version: the correlation id its calls
+    /// carried, the target state the record holds now (under <c>returned</c>), the two versions under <c>previous</c>
+    /// (<c>replacedVersion</c>, the latest taken out of being current; <c>restoredVersion</c>, the one put back), and the
+    /// note saying what was done.
+    /// </summary>
+    public static string PreviousRestored(string? correlationId, string? targetStateJson, long replacedVersion, long restoredVersion, string detail)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(detail);
+        var result = new JsonObject();
+        if (correlationId is not null)
+        {
+            result["correlationId"] = correlationId;
+        }
+
+        result["steps"] = new JsonArray();
+        if (Parse(targetStateJson) is { } held)
+        {
+            result["returned"] = held;
+        }
+
+        result["previous"] = new JsonObject { ["replacedVersion"] = replacedVersion, ["restoredVersion"] = restoredVersion };
+        result["detail"] = detail;
+        return result.ToJsonString();
+    }
+
+    /// <summary>
     /// <paramref name="resultJson"/> with the version of the record the delivery replaced added under <c>replaced</c>
     /// (<c>{"version": n}</c>, or <c>{"version": null}</c> when OSDU held no version of the record before it, as the ledger
     /// knew it when the try was claimed): what a reversal of the delivery puts back (docs/reversal-plan.md). An attempt

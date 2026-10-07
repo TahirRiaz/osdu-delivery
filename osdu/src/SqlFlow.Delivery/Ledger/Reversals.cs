@@ -332,6 +332,32 @@ public sealed record ReversalSettled(int Settled, int Changed, int MovedRestores
     }
 }
 
+/// <summary>
+/// One record whose version before the latest was written back as its current version (docs/reversal-plan.md, Restoring the
+/// previous version).
+/// </summary>
+/// <param name="Key">The record.</param>
+/// <param name="Replaced">The latest version OSDU held, which the ledger held too: the one taken out of being current.</param>
+/// <param name="Restored">The version before it, written back.</param>
+/// <param name="NewVersion">The version OSDU gave the write.</param>
+/// <param name="TargetStateJson">The target state the record holds now.</param>
+public sealed record PreviousVersionRestored(DeliveryKey Key, long Replaced, long Restored, long NewVersion, string? TargetStateJson);
+
+/// <summary>
+/// What OSDU held of a record before the write that left the version the ledger holds now, as the ledger tells it
+/// (docs/reversal-plan.md, Restoring the previous version): the version a delivery recorded it replaced, the version a step
+/// back recorded it replaced, else the version of the attempt before that write.
+/// </summary>
+/// <param name="Prior"><see cref="ReversalPriors.Version"/>, <see cref="ReversalPriors.None"/> (the write created the record), or <see cref="ReversalPriors.Unknown"/>.</param>
+/// <param name="Version">The version OSDU held before, for <see cref="ReversalPriors.Version"/>.</param>
+/// <param name="FirstVersion">
+/// The lowest version the write left: one try can write two (a Wellbore DDMS record, then its bulk data, which the try
+/// records as the version it left). OSDU's version list decides an unknown prior by the newest version older than it.
+/// Null when the ledger no longer holds the attempt that wrote the version (its attempts were pruned): which versions that
+/// write left cannot be told, so neither can the one before them.
+/// </param>
+public sealed record PriorVersion(string Prior, long? Version, long? FirstVersion);
+
 /// <summary>What a preview of a reversal reads of its source.</summary>
 /// <param name="Submissions">The submissions the source covers.</param>
 /// <param name="Records">The records it delivered, counted.</param>

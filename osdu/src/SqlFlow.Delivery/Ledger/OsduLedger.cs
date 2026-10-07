@@ -1965,9 +1965,9 @@ public sealed partial class OsduLedger : ILedger
 
         var note = scope switch
         {
-            RemovalScope.Record => $"removed from OSDU (reversible) by {worker}",
+            RemovalScope.Record => $"removed from OSDU (reversible) by {worker}; the next run that reads its row delivers it again",
             RemovalScope.History => $"earlier versions purged from OSDU by {worker}; the latest version is still live",
-            RemovalScope.Everything => $"purged from OSDU (the record and every version) by {worker}",
+            RemovalScope.Everything => $"purged from OSDU (the record and every version) by {worker}; the next run that reads its row delivers it again",
             _ => throw new ArgumentOutOfRangeException(nameof(scope)),
         };
 
@@ -2020,15 +2020,16 @@ public sealed partial class OsduLedger : ILedger
             return;
         }
 
+        // Removed, not blocked: a removal is a clean-up, and the record follows its source again from here. The next run
+        // that reads its row (a full read, or the row changed under an incremental one) finds nothing delivered and sends
+        // it; a row the ingestion table marks deleted is never sent. Released from any block it carried, since nothing of
+        // what blocked it is left in OSDU. Removed by an operator rather than kept back by a problem: nothing about it is
+        // a problem to fix.
         entity.Status = StatusText.Of(RecordStatus.Deleted);
-        entity.Blocked = true;
-        // Removed by an operator rather than kept back by a problem: nothing about it is a problem to fix.
+        entity.Blocked = false;
         entity.ProblemHash = null;
-        // The unchanged source keeps the record blocked; a source change or a release plans it again. Under a
-        // last-modified flow a record that never carried a moment is held at the removal itself, so only a row
-        // modified after it was taken out brings it back.
-        entity.PendingSourceFingerprint = entity.SourceFingerprint;
-        entity.PendingSourceModifiedUtc = entity.SourceModifiedUtc ?? nowUtc;
+        entity.PendingSourceFingerprint = null;
+        entity.PendingSourceModifiedUtc = null;
         entity.TargetVersion = null;
         entity.TargetStateJson = null;
         entity.MetadataHash = null;
@@ -2052,6 +2053,150 @@ public sealed partial class OsduLedger : ILedger
         entity.PendingPayloadModifiedUtc = null;
         entity.LastError = note;
         entity.UpdatedUtc = nowUtc;
+    }
+
+    public async Task<IReadOnlyList<DeliveryKey>> MarkRestoredAsync(
+        Guid flowId, IReadOnlyList<PreviousVersionRestored> restored, string worker, Guid? runId, DateTime nowUtc, string? correlationId = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(restored);
+        ArgumentException.ThrowIfNullOrWhiteSpace(worker);
+        if (restored.Count == 0)
+        {
+            return [];
+        }
+
+        var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
+        var moved = new List<DeliveryKey>();
+        foreach (var chunk in restored.GroupBy(r => r.Key).Select(g => g.Last()).Chunk(ChunkSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            moved.AddRange(await RetryDeadlockAsync(() => MarkRestoredChunkAsync(partition, flowId, chunk, worker, runId, nowUtc, correlationId, ct), ct).ConfigureAwait(false));
+        }
+
+        return moved;
+    }
+
+    /// <summary>
+    /// One chunk of <see cref="MarkRestoredAsync"/>, in one transaction: the records are read under repeatable read, so the
+    /// version and lease each is checked at are the ones it is written at. Returns the records that moved on.
+    /// </summary>
+    private async Task<IReadOnlyList<DeliveryKey>> MarkRestoredChunkAsync(
+        short partition, Guid flowId, IReadOnlyList<PreviousVersionRestored> chunk, string worker, Guid? runId, DateTime nowUtc, string? correlationId, CancellationToken ct)
+    {
+        var ids = chunk.Select(r => r.Key.Value).ToList();
+        var versions = chunk.Select(r => (long?)r.Restored).Distinct().ToList();
+        var putBack = new[] { StatusText.Of(AttemptOutcome.Delivered), StatusText.Of(AttemptOutcome.Restored) };
+        var busy = new[] { StatusText.Of(RecordStatus.Pending), StatusText.Of(RecordStatus.Delivering), StatusText.Of(RecordStatus.Waiting), StatusText.Of(RecordStatus.Deleted) };
+        var reverted = StatusText.Of(RecordStatus.Reverted);
+        await using var db = Open();
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            // A retried run of this block starts from the database, not from what a rolled back one left tracked.
+            db.ChangeTracker.Clear();
+            await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, ct).ConfigureAwait(false);
+            var entities = await db.DeliveryRecords
+                .Where(r => r.PartitionId == partition && r.FlowId == flowId && ids.Contains(r.DeliveryKey))
+                .ToDictionaryAsync(r => r.DeliveryKey, ct)
+                .ConfigureAwait(false);
+
+            // The attempt that delivered or restored each version put back says what the record's hashes and origin become.
+            var priors = (await db.DeliveryAttempts.AsNoTracking()
+                    .Where(a => a.PartitionId == partition && a.FlowId == flowId && ids.Contains(a.DeliveryKey)
+                        && putBack.Contains(a.Outcome) && versions.Contains(a.TargetVersion))
+                    .Select(a => new { a.DeliveryKey, a.TargetVersion, a.AttemptId, a.MetadataHash, a.PayloadHash, a.SourceFileName, a.SourceRowNumber, a.SourceUpdatedUtc })
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false))
+                .GroupBy(a => (a.DeliveryKey, a.TargetVersion))
+                .ToDictionary(g => g.Key, g => g.MaxBy(a => a.AttemptId)!);
+
+            var moved = new List<DeliveryKey>();
+            foreach (var r in chunk)
+            {
+                if (!entities.TryGetValue(r.Key.Value, out var entity)
+                    || entity.TargetVersion != r.Replaced || entity.LeaseOwner is not null || busy.Contains(entity.Status))
+                {
+                    moved.Add(r.Key);
+                    continue;
+                }
+
+                priors.TryGetValue((entity.DeliveryKey, (long?)r.Restored), out var prior);
+                var note = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"reverted by {worker}: version {r.Restored}, the one before the latest, written back as version {r.NewVersion}; version {r.Replaced} stays in the record's history. Release the record or change the source to plan it again");
+                db.DeliveryAttempts.Add(new DeliveryAttempt
+                {
+                    PartitionId = entity.PartitionId,
+                    FlowId = entity.FlowId,
+                    DeliveryKey = entity.DeliveryKey,
+                    SubmissionId = entity.LastSubmissionId,
+                    RunId = runId,
+                    Worker = worker,
+                    StartedUtc = nowUtc,
+                    CompletedUtc = nowUtc,
+                    Outcome = StatusText.Of(AttemptOutcome.Restored),
+                    Phase = AttemptPhases.RestorePrevious,
+                    MetadataHash = prior?.MetadataHash,
+                    PayloadHash = prior?.PayloadHash,
+                    TargetVersion = r.NewVersion,
+                    ResultJson = AttemptResult.PreviousRestored(correlationId, r.TargetStateJson, r.Replaced, r.Restored, note),
+                    SourceFileName = prior?.SourceFileName,
+                    SourceRowNumber = prior?.SourceRowNumber,
+                    SourceUpdatedUtc = prior?.SourceUpdatedUtc,
+                });
+
+                // Blocked at the source version it was left at, as a reversal leaves a record: the next plans pass it over
+                // until its row moves or someone releases it. A record an earlier write back already blocked holds that
+                // version among its pending columns (its own were cleared), and keeps it.
+                if (entity.Status != reverted)
+                {
+                    entity.PendingSourceFingerprint = entity.SourceFingerprint;
+                    entity.PendingSourceModifiedUtc = entity.SourceModifiedUtc ?? nowUtc;
+                    entity.PendingSourceFileName = entity.SourceFileName;
+                    entity.PendingSourceRowNumber = entity.SourceRowNumber;
+                    entity.PendingSourceUpdatedUtc = entity.SourceUpdatedUtc;
+                }
+
+                entity.Status = reverted;
+                entity.Blocked = true;
+                entity.ProblemHash = null;
+                entity.SourceFileName = prior?.SourceFileName;
+                entity.SourceRowNumber = prior?.SourceRowNumber;
+                entity.SourceUpdatedUtc = prior?.SourceUpdatedUtc;
+                entity.MetadataHash = prior?.MetadataHash;
+                entity.PayloadHash = prior?.PayloadHash;
+                entity.PayloadModifiedUtc = null;
+                entity.SourceFingerprint = null;
+                entity.SourceModifiedUtc = null;
+                entity.RenderContext = null;
+                entity.TargetVersion = r.NewVersion;
+                entity.TargetStateJson = r.TargetStateJson;
+                entity.LastVerifiedUtc = null;
+                entity.LastVerifyOutcome = null;
+                entity.NextAttemptUtc = null;
+                entity.AttemptCount = 0;
+                entity.PendingDocumentRef = null;
+                entity.WorkBatch = null;
+                entity.PendingStepJson = null;
+                entity.PendingReferences = null;
+                entity.WaitingFor = null;
+                entity.PendingMetadata = false;
+                entity.PendingPayload = false;
+                entity.PendingPayloadLocation = null;
+                entity.PendingPayloadModifiedUtc = null;
+                entity.PendingRenderContext = null;
+                entity.PendingMetadataHash = null;
+                entity.PendingPayloadHash = null;
+                entity.AcceptedMetadataHash = null;
+                entity.PlanRequestedUtc = null;
+                entity.LastError = Truncate(note, 2000);
+                entity.UpdatedUtc = nowUtc;
+            }
+
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await tx.CommitAsync(ct).ConfigureAwait(false);
+            return (IReadOnlyList<DeliveryKey>)moved;
+        }).ConfigureAwait(false);
     }
 
     public async Task<long> EnsureCacheSetAsync(string scope, IReadOnlyList<Snapshots.CacheUsage> usages, CancellationToken ct = default)

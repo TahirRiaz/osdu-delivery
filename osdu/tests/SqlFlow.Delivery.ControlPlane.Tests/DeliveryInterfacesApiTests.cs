@@ -231,6 +231,12 @@ public sealed class DeliveryInterfacesApiTests
             Assert.Equal("DELETE", target.GetProperty("recordMethod").GetString());
             Assert.Equal("/api/os-wellbore-ddms/ddms/v3/welllogs/{id}?purge=true", target.GetProperty("everythingPath").GetString());
             Assert.Equal("/api/storage/v2/records/{id}/versions", target.GetProperty("historyPath").GetString());
+
+            // Restoring the previous version goes past the DDMS to the storage service, which keeps a well log's versions.
+            Assert.Equal(
+                "GET /api/storage/v2/records/{id}/{version}, then PUT /api/storage/v2/records (the storage service, past the DDMS)",
+                target.GetProperty("previousPath").GetString());
+            Assert.Equal(JsonValueKind.Null, target.GetProperty("previousRefusal").ValueKind);
             var storageTarget = await JsonAsync(client, token, $"/api/v1/delivery/flows/{pipelineId:D}/target?interface=wellbores");
             Assert.Equal(JsonValueKind.Null, storageTarget.GetProperty("ddms").ValueKind);
             Assert.Equal("POST", storageTarget.GetProperty("recordMethod").GetString());
@@ -247,11 +253,52 @@ public sealed class DeliveryInterfacesApiTests
                 var ran = operations.Last();
                 Assert.Equal((flowName, "welllogs"), (ran.SourceRef, ran.Argument("interface")));
             }
+
+            // A record is deleted from the ledger only by a removal that takes it out of OSDU, never with one that leaves it there.
+            foreach (var scope in new[] { "history", "previous" })
+            {
+                using var refused = await SendJsonAsync(
+                    client, token, HttpMethod.Post, $"/api/v1/delivery/flows/{pipelineId:D}/records/remove?interface=welllogs",
+                    new { scope, keys = new[] { key.Value }, purgeLedger = true });
+                var body = await refused.Content.ReadAsStringAsync();
+                Assert.True(refused.StatusCode == HttpStatusCode.BadRequest, body);
+                Assert.Contains("only with a removal that takes it out of OSDU", body, StringComparison.Ordinal);
+            }
+
+            using (var refusedOne = await SendJsonAsync(
+                client, token, HttpMethod.Post, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}/delete", new { scope = "history", purgeLedger = true }))
+            {
+                Assert.Equal(HttpStatusCode.BadRequest, refusedOne.StatusCode);
+            }
+
+            Assert.NotNull(await ledger.GetRecordAsync(logsLedger, key));
+
+            // A record deleted from the ledger answers who deleted it and when, with the line the ledger keeps of it.
+            await ledger.MarkRemovedAsync(logsLedger, [key], SqlFlow.Delivery.Protocols.RemovalScope.Record, "user:alice", now);
+            Assert.Equal(key, Assert.Single(await ledger.PurgeRecordsAsync(logsLedger, [key], "user:alice", null, now)));
+            using (var purged = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/records/{logsLedger:D}/{key.Value:D}"))
+            {
+                var body = await purged.Content.ReadAsStringAsync();
+                Assert.True(purged.StatusCode == HttpStatusCode.NotFound, body);
+                var problem = JsonDocument.Parse(body).RootElement;
+                Assert.Equal("Deleted from the ledger", problem.GetProperty("title").GetString());
+                Assert.Contains("deleted from the ledger by user:alice", problem.GetProperty("detail").GetString(), StringComparison.Ordinal);
+                Assert.Equal("NO_15_9/L-1001", problem.GetProperty("purged").GetProperty("sourceKey").GetString());
+            }
+
+            // A key the ledger never held is plainly not found.
+            using (var unknown = await SendAsync(client, token, HttpMethod.Get, $"/api/v1/delivery/records/{logsLedger:D}/{Guid.NewGuid():D}"))
+            {
+                Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
+                Assert.Equal("Not found", JsonDocument.Parse(await unknown.Content.ReadAsStringAsync()).RootElement.GetProperty("title").GetString());
+            }
         }
         finally
         {
             await using (var osdu = SampleEstate.Context(cs))
             {
+                await osdu.DeliveryPurgedRecords.Where(p => p.FlowId == logsLedger).ExecuteDeleteAsync();
+                await osdu.DeliveryAttempts.Where(a => a.FlowId == logsLedger).ExecuteDeleteAsync();
                 await osdu.DeliveryRecords.Where(r => r.FlowId == logsLedger).ExecuteDeleteAsync();
                 await osdu.DeliveryInterfaces.Where(i => i.RepoId == repoId).ExecuteDeleteAsync();
                 await osdu.DeliveryMappings.Where(m => m.RepoId == repoId).ExecuteDeleteAsync();
@@ -288,6 +335,13 @@ public sealed class DeliveryInterfacesApiTests
         var body = await response.Content.ReadAsStringAsync();
         Assert.True(response.StatusCode == HttpStatusCode.OK, $"GET {path} answered {(int)response.StatusCode}: {body}");
         return JsonDocument.Parse(body).RootElement.Clone();
+    }
+
+    private static async Task<HttpResponseMessage> SendJsonAsync(HttpClient client, string token, HttpMethod method, string path, object body)
+    {
+        using var request = new HttpRequestMessage(method, new Uri(path, UriKind.Relative)) { Content = JsonContent.Create(body) };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return await client.SendAsync(request);
     }
 
     private static async Task<HttpResponseMessage> SendAsync(HttpClient client, string token, HttpMethod method, string path)

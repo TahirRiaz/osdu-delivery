@@ -104,7 +104,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /flows/{pipelineId}/records` | read | Paged, filtered records: `search` (a delivery key, or a prefix over label, source key and OSDU id; `mode=contains` for substring), `status`, `submissionId` (the records the submission last planned), `deliveredBy` (the records it delivered, which stay its own however many submissions touch them afterwards), `runId` (the records that run touched, through its attempts), `drifted`, `issue` (the records one issue keeps blocked, by the id the issues listing gives it; 400 for anything else). Each record names its `issue` while it is blocked, held or failed. |
 | `GET /records?search=&status=&flowId=` | read | One record from anywhere, across every flow: `search` is a delivery key, or the start of any value the record is known by (an identity the mapping declares, the source key or one of its columns, a word of the label, the OSDU id or its own part, the ingestion file). Paged; each hit carries the values that matched and what each is, and the ingestion file and row the record's newest version came from (the queued version's while work waits). `flowId` narrows it to one flow's ledger identity (one of `GET /records/flows`); without a term it is that flow's recency listing. It seeks `osdu.RecordIdentity` (by `[FlowId, Token]` for one flow), so it answers at production volume and counts no further than its candidate bound. |
 | `GET /records/flows` | read | The flows the lookup can be narrowed to: one entry per ledger identity the synced repositories name that holds at least one record (`flowId`), with its `pipelineId`, `flowName` and `interface` (null for the single form), named as a hit names them and ordered by flow, then interface. An interface that has delivered nothing yet, and a ledger no synced pipeline holds, are left out. Whether an identity holds a record is one index seek each, whatever the ledger's size. |
-| `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, the path each removal scope calls, and the method the record scope calls its path with (`recordMethod`: `POST`, or `DELETE` for a DDMS's own removal). On the ddms route the paths are those of the collection serving the kind the flow's synced mapping renders, and `ddms` says which collection of which DDMS that is (null on the other routes); a scope the flow cannot route reads `(not routable: ...)`, and one its DDMS refuses (the Well Delivery DDMS's history scope) `(refused: ...)`; neither is offered. |
+| `GET /flows/{pipelineId}/target` | read | Where the flow's records live: endpoint as declared, data partition, protocol, auth type, the path each removal scope calls, and the method the record scope calls its path with (`recordMethod`: `POST`, or `DELETE` for a DDMS's own removal); `previousPath` names the calls the `previous` scope makes, and `previousRefusal` why the route cannot write an earlier version back (absent when it can). On the ddms route the paths are those of the collection serving the kind the flow's synced mapping renders, and `ddms` says which collection of which DDMS that is (null on the other routes); a scope the flow cannot route reads `(not routable: ...)`, and one its DDMS refuses (the Well Delivery DDMS's history scope) `(refused: ...)`; neither is offered. |
 | `GET /flows/{pipelineId}/submissions` | read | The flow's submissions, newest first. |
 | `GET /flows/{pipelineId}/retrievals` | read | A retrieval flow's runs, newest first: window, location, counts, outcome. |
 | `GET /assertions` | read | The board of every active assertion flow ([docs/assertions-design.md](../../docs/assertions-design.md) section 8), in the partition `?partition=` names, else the workbench's (`X-Osdu-Partition`): per flow its partitions, whether it tests this one (`testsPartition`) and whether the catalog's copy of its document parses (`parses`), the `parameters` a run takes, `failRunOn`, its last run, and every test with its declaration, the template version it is checked against and the `problems` that keep it from being evaluated, its latest result that was not skipped, its last 12 outcomes (`history`, newest first) and whether it `changed` since that result; and the `totals` over every test that runs in the partition, with the pass rate of those evaluated. A flow whose document does not parse, or that does not test the partition, says why in `problem`. |
@@ -185,8 +185,8 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /explorer/connection`, `POST /explorer/types`, `/explorer/search`, `/explorer/fields`, `/explorer/read` | read; operate | The explorer ([explorer.md](explorer.md#the-api)): how a partition of OSDU is reached, and the reads made of it there through a delivery flow's connection (the kinds a search finds with their counts, a page of the records it finds, the properties a kind's records hold, one record from the storage service). Nothing is written, and nothing the ledger keeps is read. |
 | `POST /explorer/element-queries` | operate | The Lucene queries that find records by an element of a record, written from how the saved template of its kind has the platform index it, each said in words ([explorer.md](explorer.md#the-query-of-an-element)). Read from the saved templates alone. |
 | `GET /explorer/dimension/candidates`, `POST /explorer/dimension/keys`, `/explorer/dimension/compose` | operate | The explorer's dimension builder ([explorer.md](explorer.md#building-a-dimension)): the keys a kind's saved template suggests, the commonest keys of a drafted dimension's path read through the explorer's connection, and the draft written as the item a dimension flow lists, read back by the flow loader, checked against the saved templates and the dimensions held, with an example key made into its row as a build makes it. Nothing is saved: the YAML is the answer. |
-| `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `history` or `everything`) on a node. |
-| `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. |
+| `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `previous`, `history` or `everything`) on a node. `purgeLedger: true`, with `record` or `everything`, also deletes it from the ledger once OSDU answered for it ([ledger.md](ledger.md#deleting-a-removed-record-from-the-ledger)); with the other scopes it is refused with 400. |
+| `POST /flows/{pipelineId}/records/remove` | operate | Queue a removal of many records: `scope`, and either `keys` or `filter` (the listing, every match of which goes). `expected` is refused with 409 when the filter no longer resolves to it. `purgeLedger` as for one record. |
 | `POST /flows/{pipelineId}/records/remove/preview` | read | What that removal would act on: how many records, how many OSDU was ever given, and the target it is aimed at. |
 | `POST /flows/{pipelineId}/reverse/preview` | operate | What reversing a run or a submission would reach ([Reversing a run](#reversing-a-run)), writing nothing: `runId` or `submissionId` (one of them; 400 for both or neither, 404 for a source the interface's ledger holds nothing of), how many records it delivered and under how many submissions, what the route can do (`route`: whether it restores and removes, and the call each makes or why not), the first 1,000 records in key order decided as the run decides them (`restore`, `remove`, `resolvedFromOsdu`, and `passedOver` by outcome), the target it is aimed at, and the reversal of that source when one exists, with its counts. |
 | `POST /flows/{pipelineId}/reverse` | operate | Queue the `reverse` run of `runId` or `submissionId` as the caller, on `pool` when named. Refused with 409 when the source has nothing to reverse now (the reason `reversible` gives), and when `expected` no longer matches how many records it reaches. Answers 202 with the run (`runId`, `status`, `source`, `sourceId`, `records`); asking again for a source whose reversal stopped resumes it. |
@@ -307,16 +307,27 @@ interface views are stage 9 of [../../docs/osdu-coverage-plan.md](../../docs/osd
 ## Removing records from OSDU
 
 OSDU offers three removals and they are not degrees of one thing (openapi storage v2). The API, the node
-operation and the GUI all name them the same way:
+operation and the GUI all name them the same way, with a fourth scope, `previous`, for the latest version alone:
 
 | Scope | Call | What goes | Reversible |
 | --- | --- | --- | --- |
-| `record` | `POST /records/{id}:delete`, or `POST /records/delete` for a set | The record stops resolving. Nothing is destroyed. | Yes, in OSDU |
+| `record` | `POST /records/{id}:delete`, or `POST /records/delete` for a set | The record stops resolving. Nothing is destroyed. | Yes: the next run that reads its row delivers it again |
+| `previous` | `GET /records/{id}/{version}`, then `PUT /records` | The latest version stops being current: the one before it is written back as a new version. | Yes: asked again, the replaced version comes back |
 | `history` | `DELETE /records/{id}/versions` | Every earlier version. The latest stays live. | No |
 | `everything` | `DELETE /records/{id}` | The record and every version. | No |
 
-There is no OSDU call that removes only the latest version and promotes the previous one, so the GUI does not
-offer one.
+There is no OSDU call that removes only the latest version and promotes the previous one: the storage service's
+version purge (`DELETE /records/{id}/versions`) deletes the versions before the latest and never the latest. So
+`previous` does what a reversal does for a record it updated ([reversal-plan.md](reversal-plan.md#restoring-the-previous-version)):
+it reads the version OSDU held before the write that left the latest and writes it back as a new version, as it was
+(a Wellbore DDMS record with its own `bulkURI`, through the storage service past the DDMS). The version it replaced
+stays in the record's history. "Before the latest" is the ledger's answer, not the version just below in OSDU's
+list, since one delivery to a Wellbore DDMS writes two versions (the record, then its bulk data) and the first of
+them is half of the latest. The record becomes `reverted` and blocked, as a reversal leaves it. A record OSDU holds at
+another version than the ledger (something outside the flow wrote it since), one with work in flight, one removed, and
+one the latest write created (OSDU held nothing before it) are passed over, each saying why. A route that cannot write
+an earlier version back (see the reversal routes) does not offer it, and the target view says why
+(`previousRefusal`).
 
 The ddms route calls what the DDMS serving the records offers instead, and the target view names each call
 ([protocols.md](protocols.md#osduwelllog-the-ddms-route)): the Wellbore DDMS, the Well Delivery DDMS and RAFS remove a
@@ -340,6 +351,15 @@ deleted objects and no earlier versions, so only `everything` applies: it delete
 (`DeleteDataObjects`), and the target view reads `(refused: ...)` for the other two scopes. The route never deletes a
 dataspace, whatever the scope: the server purges the dataspace's own OSDU record when it does, which this project's
 cleanup rule forbids. A dataspace that is to go is an operator's decision, taken in the Reservoir DDMS.
+
+A removal does not block the record: the ledger marks it `deleted` and forgets what it delivered, and the next run that
+reads its row (a full read, or the row changed under an incremental one) delivers it again. A row the ingestion table
+marks deleted is never sent. `previous` does block, as a reversal does, since the next run would otherwise write the
+version it took back again.
+
+A removal that takes records out of OSDU can delete them from the ledger as well, as an extra step the operator
+ticks ("Also delete from the ledger"). Only what OSDU answered for goes, one line of each is kept, and the record's
+page then answers who deleted it and when ([ledger.md](ledger.md#deleting-a-removed-record-from-the-ledger)).
 
 A removal names its records by key or by filter. The filter form is resolved on the node when the removal runs,
 so "every record this run delivered" travels as the filter rather than as tens of thousands of ids, and covers

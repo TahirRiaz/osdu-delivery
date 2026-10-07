@@ -478,6 +478,33 @@ public sealed partial class OsduLedger
         return await ReadAsync(db => SqlServerLedgerBulk.SourceDeliveredAsync(db, partition, flowId, source, SourceDeliveredProbe, ct), ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyDictionary<DeliveryKey, PriorVersion>> PriorVersionsAsync(Guid flowId, IReadOnlyDictionary<DeliveryKey, long> current, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        if (current.Count == 0)
+        {
+            return new Dictionary<DeliveryKey, PriorVersion>();
+        }
+
+        if (await PartitionOfAsync(flowId, ct).ConfigureAwait(false) is not { } partition)
+        {
+            throw new DeliveryException($"Flow {flowId:D} has no ledger yet, so it holds no version of any record.");
+        }
+
+        var priors = new Dictionary<DeliveryKey, PriorVersion>(current.Count);
+        foreach (var slice in current.Chunk(MaxReversalPage))
+        {
+            ct.ThrowIfCancellationRequested();
+            var read = await ReadAsync(db => SqlServerLedgerBulk.PriorVersionsAsync(db, partition, flowId, slice, ct), ct).ConfigureAwait(false);
+            foreach (var (key, prior) in read)
+            {
+                priors[key] = prior;
+            }
+        }
+
+        return priors;
+    }
+
     public async Task<ReversalSourceRead> ReadReversalSourceAsync(Guid flowId, string flowName, ReversalSource source, int sample, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(flowName);

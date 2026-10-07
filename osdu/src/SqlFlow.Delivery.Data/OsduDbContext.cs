@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.26.0";
+    public const string ModuleVersion = "1.27.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -61,6 +61,9 @@ public sealed class OsduDbContext : DbContext
 
     /// <summary>The records each reversal reaches, with what it did to each.</summary>
     public DbSet<DeliveryReversalItem> DeliveryReversalItems => Set<DeliveryReversalItem>();
+
+    /// <summary>What the ledger keeps of a record deleted from it after it was removed from OSDU: one line each.</summary>
+    public DbSet<DeliveryPurgedRecord> DeliveryPurgedRecords => Set<DeliveryPurgedRecord>();
 
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
 

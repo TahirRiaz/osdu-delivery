@@ -318,32 +318,9 @@ public sealed class ReversalRunner
     }
 
     /// <summary>What OSDU holds of each record, read in the route's batches, as many at once as the flow's concurrency allows.</summary>
-    private async Task<VerifyResult[]> VerifyAsync(IReadOnlyList<Work> work, CancellationToken ct)
-    {
-        var results = new VerifyResult[work.Count];
-        var chunks = work.Select((w, i) => (Work: w, Index: i)).Chunk(Math.Max(1, _protocol.MaxVerifyBatch)).ToList();
-        await Parallel.ForEachAsync(chunks, new ParallelOptions { MaxDegreeOfParallelism = Concurrency, CancellationToken = ct }, async (chunk, token) =>
-        {
-            var requests = chunk.Select(c => new VerifyRequest(c.Work.Item.TargetId!, c.Work.Item.RunVersion, TargetStateOf(c.Work.Record))).ToList();
-            try
-            {
-                var answered = await _protocol.VerifyBatchAsync(requests, token).ConfigureAwait(false);
-                for (var j = 0; j < chunk.Length; j++)
-                {
-                    results[chunk[j].Index] = answered[j];
-                }
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
-            {
-                var detail = HeaderRedaction.RedactMessage(ex.Message);
-                foreach (var (_, index) in chunk)
-                {
-                    results[index] = new VerifyResult(VerifyOutcome.Error, null, detail);
-                }
-            }
-        }).ConfigureAwait(false);
-        return results;
-    }
+    private Task<VerifyResult[]> VerifyAsync(IReadOnlyList<Work> work, CancellationToken ct)
+        => VersionWriteBack.VerifyAsync(
+            _protocol, work.Select(w => new VerifyRequest(w.Item.TargetId!, w.Item.RunVersion, TargetStateOf(w.Record))).ToList(), Concurrency, ct);
 
     /// <summary>
     /// The version OSDU held before the source's first write of each record, read from its version list: the newest version
@@ -408,7 +385,7 @@ public sealed class ReversalRunner
                 if (latest is not null && earlier is not null && w.Latest is { } landed && SameContent(latest, earlier))
                 {
                     settled[index] = ReversalSettlement.Restored(
-                        w.Item.DeliveryKey, prior!.Value, landed, TargetStateAfter(w.Record, w.Item.TargetId!, landed, null),
+                        w.Item.DeliveryKey, prior!.Value, landed, VersionWriteBack.TargetStateAfter(w.Record.TargetStateJson, w.Item.TargetId!, landed, null),
                         string.Create(CultureInfo.InvariantCulture, $"restored version {prior}, the one OSDU held before {source}, as version {landed}: the write an earlier run of this reversal sent had landed"),
                         correlationId);
                     return;
@@ -460,7 +437,7 @@ public sealed class ReversalRunner
 
     /// <summary>
     /// Reads the version each record held before the source, as many at once as the flow's concurrency allows, and writes
-    /// them back in the route's batches.
+    /// them back in the route's batches (<see cref="VersionWriteBack"/>).
     /// </summary>
     private async Task<IReadOnlyList<ReversalSettlement>> RestoreAsync(IReadOnlyList<Work> work, ReversalSource source, string correlationId, CancellationToken ct)
     {
@@ -469,67 +446,39 @@ public sealed class ReversalRunner
             return [];
         }
 
-        var settlements = new ConcurrentBag<ReversalSettlement>();
-        var restores = new ConcurrentDictionary<int, (Work Work, VersionRestore Restore)>();
-        await Parallel.ForEachAsync(work.Select((w, i) => (Work: w, Index: i)), new ParallelOptions { MaxDegreeOfParallelism = Concurrency, CancellationToken = ct }, async (entry, token) =>
+        var written = await VersionWriteBack.RunAsync(
+            _protocol,
+            work.Select(w => new WriteBack(w.Item.DeliveryKey, w.Item.TargetId!, w.Prior ?? w.Item.PriorVersion!.Value, w.Latest, TargetStateOf(w.Record))).ToList(),
+            Concurrency,
+            ct).ConfigureAwait(false);
+        var settlements = new List<ReversalSettlement>(work.Count);
+        for (var i = 0; i < work.Count; i++)
         {
-            var (w, index) = entry;
-            var prior = w.Prior ?? w.Item.PriorVersion!.Value;
-            try
+            var w = work[i];
+            var result = written[i];
+            var prior = result.Request.Version;
+            settlements.Add(result.Outcome switch
             {
-                var stored = await _protocol.ReadVersionAsync(w.Item.TargetId!, prior, token).ConfigureAwait(false);
-                if (stored is null)
-                {
-                    settlements.Add(ReversalSettlement.Skipped(
-                        w.Item.DeliveryKey,
-                        ReversalOutcomes.VersionMissing,
-                        string.Create(CultureInfo.InvariantCulture, $"OSDU no longer holds version {prior}, the one it held before {source} (the record's earlier versions were purged), so there is nothing to put back"),
-                        correlationId));
-                    return;
-                }
-
-                restores[index] = (w, new VersionRestore(w.Item.DeliveryKey, w.Item.TargetId!, prior, stored, w.Latest, TargetStateOf(w.Record)));
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
-            {
-                settlements.Add(ReversalSettlement.Failed(
-                    w.Item.DeliveryKey, string.Create(CultureInfo.InvariantCulture, $"version {prior}, the one OSDU held before the source, could not be read: {ex.Message}"), correlationId));
-            }
-        }).ConfigureAwait(false);
-
-        var ready = restores.OrderBy(r => r.Key).Select(r => r.Value).ToList();
-        if (ready.Count > 0)
-        {
-            IReadOnlyList<RestoreResult> written;
-            try
-            {
-                written = await _protocol.RestoreBatchAsync(ready.Select(r => r.Restore).ToList(), ct).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
-            {
-                written = ready.Select(r => new RestoreResult(r.Restore, null, null, ex)).ToList();
-            }
-
-            for (var i = 0; i < ready.Count; i++)
-            {
-                var (w, restore) = ready[i];
-                var result = written[i];
-                settlements.Add(result.Succeeded
-                    ? ReversalSettlement.Restored(
-                        w.Item.DeliveryKey,
-                        restore.Version,
-                        result.NewVersion!.Value,
-                        TargetStateAfter(w.Record, w.Item.TargetId!, result.NewVersion.Value, result.Returned),
-                        string.Create(CultureInfo.InvariantCulture, $"restored version {restore.Version}, the one OSDU held before {source}, as version {result.NewVersion.Value}"),
-                        correlationId)
-                    : ReversalSettlement.Failed(
-                        w.Item.DeliveryKey,
-                        string.Create(CultureInfo.InvariantCulture, $"version {restore.Version} could not be written back: {result.Failure?.Message}"),
-                        correlationId));
-            }
+                WriteBackOutcome.Restored => ReversalSettlement.Restored(
+                    w.Item.DeliveryKey,
+                    prior,
+                    result.NewVersion!.Value,
+                    VersionWriteBack.TargetStateAfter(w.Record.TargetStateJson, w.Item.TargetId!, result.NewVersion.Value, result.Returned),
+                    string.Create(CultureInfo.InvariantCulture, $"restored version {prior}, the one OSDU held before {source}, as version {result.NewVersion.Value}"),
+                    correlationId),
+                WriteBackOutcome.VersionMissing => ReversalSettlement.Skipped(
+                    w.Item.DeliveryKey,
+                    ReversalOutcomes.VersionMissing,
+                    string.Create(CultureInfo.InvariantCulture, $"OSDU no longer holds version {prior}, the one it held before {source} (the record's earlier versions were purged), so there is nothing to put back"),
+                    correlationId),
+                WriteBackOutcome.ReadFailed => ReversalSettlement.Failed(
+                    w.Item.DeliveryKey, string.Create(CultureInfo.InvariantCulture, $"version {prior}, the one OSDU held before the source, could not be read: {result.Failure}"), correlationId),
+                _ => ReversalSettlement.Failed(
+                    w.Item.DeliveryKey, string.Create(CultureInfo.InvariantCulture, $"version {prior} could not be written back: {result.Failure}"), correlationId),
+            });
         }
 
-        return settlements.ToList();
+        return settlements;
     }
 
     /// <summary>What a reversal can do for the record <paramref name="targetId"/>, by the entity type it names; worked out once per type.</summary>
@@ -537,22 +486,6 @@ public sealed class ReversalRunner
         => _routes.GetOrAdd(DdmsRouting.EntityTypeOf(targetId) ?? string.Empty, _ => ReversalRoute.ForRecord(_flow, targetId));
 
     private static IReadOnlyDictionary<string, string> TargetStateOf(RecordState record) => JsonMerge.ToValues(record.TargetStateJson);
-
-    /// <summary>The target state a restored record holds: what it held, with what the write returned, at the new version.</summary>
-    private static string? TargetStateAfter(RecordState record, string targetId, long version, IReadOnlyDictionary<string, string>? returned)
-    {
-        var values = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["recordId"] = targetId,
-            ["version"] = version.ToString(CultureInfo.InvariantCulture),
-        };
-        foreach (var (name, value) in returned ?? new Dictionary<string, string>(StringComparer.Ordinal))
-        {
-            values[name] = value;
-        }
-
-        return JsonMerge.Merge(record.TargetStateJson, JsonMerge.FromValues(values));
-    }
 
     /// <summary>
     /// Whether two stored versions of a record hold the same content: every property but those the storage service writes

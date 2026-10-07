@@ -245,14 +245,15 @@ export function RecordSituation({ record, waitsOn, waitedOnBy }: {
     case "deleted":
       lines.push(
         <Line key="deleted" tone="muted" icon={Trash2} testId="record-deleted">
-          Removed from OSDU: nothing of this flow&apos;s is there under its id. Redeliver sends it again from the current source.
+          Removed from OSDU: nothing of this flow&apos;s is there under its id. The next run that reads its row sends it again;
+          Redeliver sends it now.
         </Line>,
       );
       break;
     case "reverted":
       lines.push(
         <Line key="reverted" tone="muted" icon={Undo2} testId="record-reverted">
-          {`Reverted: a reversal gave OSDU back the version it held before the run it reversed${record.targetVersion !== null ? `, as version ${record.targetVersion}` : ""}. `}
+          {`Reverted: an earlier version was written back${record.targetVersion !== null ? ` as version ${record.targetVersion}` : ""}, by a reversal or by restoring the previous version. `}
           A release plans it again from the current source; a changed source plans it on its own.
         </Line>,
       );

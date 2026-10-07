@@ -1,6 +1,7 @@
 using System.Data.SqlTypes;
 using System.Net;
 using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Core.Secrets;
@@ -288,14 +289,74 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
     private DateTime Now => _clock.GetUtcNow().UtcDateTime;
 
     [Fact]
-    public async Task Removing_the_record_marks_it_deleted_and_blocked_and_forgets_the_hashes()
+    public async Task A_removed_record_a_lease_holds_is_not_deleted_from_the_ledger()
+    {
+        var key = await DeliveredAsync("a", Guid.NewGuid());
+        await Ledger.MarkRemovedAsync(_flow, [key], RemovalScope.Record, "gui:tahir", Now);
+        await using (var db = _db.CreateDbContext())
+        {
+            var record = await db.DeliveryRecords.SingleAsync(r => r.FlowId == _flow && r.DeliveryKey == key.Value);
+            record.LeaseOwner = "worker-elsewhere";
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Empty(await Ledger.PurgeRecordsAsync(_flow, [key], "gui:tahir", null, Now));
+        Assert.NotNull(await Ledger.GetRecordAsync(_flow, key));
+        Assert.Null(await Ledger.FindPurgedAsync(_flow, key));
+    }
+
+    [Fact]
+    public async Task Deleting_many_removed_records_from_the_ledger_takes_every_one_a_slice_at_a_time()
+    {
+        var sliced = new OsduLedger(_db.CreateDbContext, _clock) { WriteSlice = 2 };
+        var keys = new List<DeliveryKey>();
+        for (var i = 0; i < 5; i++)
+        {
+            keys.Add(await DeliveredAsync("s" + i.ToString(System.Globalization.CultureInfo.InvariantCulture), Guid.NewGuid()));
+        }
+
+        await sliced.MarkRemovedAsync(_flow, keys, RemovalScope.Everything, "gui:tahir", Now);
+
+        var purged = await sliced.PurgeRecordsAsync(_flow, keys, "gui:tahir", null, Now);
+
+        Assert.Equal(keys.OrderBy(k => k.Value), purged.OrderBy(k => k.Value));
+        foreach (var key in keys)
+        {
+            Assert.Null(await sliced.GetRecordAsync(_flow, key));
+            Assert.NotNull(await sliced.FindPurgedAsync(_flow, key));
+        }
+    }
+
+    [Fact]
+    public async Task A_record_a_removal_blocked_before_removals_stopped_blocking_is_still_released()
+    {
+        var key = await DeliveredAsync("a", Guid.NewGuid());
+        await Ledger.MarkRemovedAsync(_flow, [key], RemovalScope.Record, "gui:tahir", Now);
+        await using (var db = _db.CreateDbContext())
+        {
+            // As a removal left a record before: deleted, blocked at the source version it was removed at.
+            var record = await db.DeliveryRecords.SingleAsync(r => r.FlowId == _flow && r.DeliveryKey == key.Value);
+            record.Blocked = true;
+            record.PendingSourceFingerprint = "fp";
+            await db.SaveChangesAsync();
+        }
+
+        Assert.Equal(1, await Ledger.ReleaseAsync(_flow, [key], Now));
+        var released = await Ledger.GetRecordAsync(_flow, key);
+        Assert.False(released!.Blocked);
+        Assert.NotNull(released.PlanRequestedUtc);
+    }
+
+    [Fact]
+    public async Task Removing_the_record_marks_it_deleted_and_forgets_the_hashes_without_blocking_it()
     {
         var key = await DeliveredAsync("a", Guid.NewGuid());
         await Ledger.MarkRemovedAsync(_flow, [key], RemovalScope.Record, "gui:tahir", Now);
 
         var record = await Ledger.GetRecordAsync(_flow, key);
         Assert.Equal(RecordStatus.Deleted, record!.Status);
-        Assert.True(record.Blocked);
+        Assert.False(record.Blocked);
+        Assert.Null(record.PendingSourceFingerprint);
         Assert.Null(record.MetadataHash);
         Assert.Null(record.TargetVersion);
 
@@ -331,6 +392,43 @@ public class RemovalLedgerTests : IAsyncLifetime, IDisposable
         var attempt = Assert.Single(await Ledger.ListAttemptsAsync(_flow, key, 10), a => a.Phase == "delete");
         Assert.Null(attempt.Error);
         Assert.Contains("every version", attempt.ResultJson!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Deleting_from_the_ledger_takes_only_removed_records_and_keeps_one_line_of_each()
+    {
+        var removed = await DeliveredAsync("a", Guid.NewGuid());
+        var delivered = await DeliveredAsync("b", Guid.NewGuid());
+        await Ledger.MarkRemovedAsync(_flow, [removed], RemovalScope.Record, "gui:tahir", Now);
+        var activity = await Ledger.StartActivityAsync(new ActivityRecord { FlowId = _flow, FlowName = "test-flow", Kind = "delete", Actor = "gui:tahir", StartedUtc = Now });
+        await using (var before = _db.CreateDbContext())
+        {
+            Assert.True(await before.DeliveryRecordIdentities.AnyAsync(i => i.DeliveryKey == removed.Value));
+        }
+
+        // A record OSDU still holds is never deleted from the ledger, whatever is asked.
+        var purged = await Ledger.PurgeRecordsAsync(_flow, [removed, delivered, removed], "gui:tahir", activity.ActivityId, Now);
+
+        Assert.Equal(removed, Assert.Single(purged));
+        Assert.Null(await Ledger.GetRecordAsync(_flow, removed));
+        Assert.Empty(await Ledger.ListAttemptsAsync(_flow, removed, 10));
+        Assert.Equal(RecordStatus.Delivered, (await Ledger.GetRecordAsync(_flow, delivered))!.Status);
+        Assert.NotEmpty(await Ledger.ListAttemptsAsync(_flow, delivered, 10));
+        await using (var after = _db.CreateDbContext())
+        {
+            Assert.False(await after.DeliveryRecordIdentities.AnyAsync(i => i.DeliveryKey == removed.Value));
+            Assert.True(await after.DeliveryActivityRecords.AnyAsync(l => l.DeliveryKey == removed.Value && l.ActivityId == activity.ActivityId));
+            Assert.Single(await after.DeliveryActivities.Where(a => a.ActivityId == activity.ActivityId).ToListAsync());
+        }
+
+        // The line the ledger keeps says what it was, which OSDU id and version it last had, and who deleted it when.
+        var line = await Ledger.FindPurgedAsync(_flow, removed);
+        Assert.Equal(("a", "dev:x:a", (long?)42, 2), (line!.SourceKey, line.TargetId, line.LastVersion, line.Attempts));
+        Assert.Equal(("gui:tahir", Now, (long?)activity.ActivityId), (line.PurgedBy, line.PurgedUtc, line.ActivityId));
+        Assert.Null(await Ledger.FindPurgedAsync(_flow, delivered));
+
+        // Asked again, there is nothing left to delete.
+        Assert.Empty(await Ledger.PurgeRecordsAsync(_flow, [removed], "gui:tahir", null, Now));
     }
 
     [Fact]
@@ -476,7 +574,7 @@ public class RemovalRuntimeTests : IDisposable
             protocol.Gone.Add((await ledger.GetRecordAsync(runtime.Flow.Id, keys[0]))!.TargetId!);
             runtime.Actor = "gui:tahir";
 
-            var summary = await runtime.RemoveAsync(RemovalSelection.Of(keys), RemovalScope.Everything);
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of(keys), RemovalChoice.Everything);
 
             Assert.Equal(5, summary.Selected);
             Assert.Equal(4, summary.Removed);
@@ -497,13 +595,92 @@ public class RemovalRuntimeTests : IDisposable
     }
 
     [Fact]
+    public async Task A_record_OSDU_had_already_lost_is_deleted_from_the_ledger_with_the_removal()
+    {
+        var (runtime, protocol, ledger) = await DeliveredEstateAsync();
+        using (runtime)
+        {
+            var keys = await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100);
+            protocol.Gone.Add((await ledger.GetRecordAsync(runtime.Flow.Id, keys[0]))!.TargetId!);
+            runtime.Actor = "gui:tahir";
+
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([keys[0]]), RemovalChoice.Everything, purgeLedger: true);
+
+            Assert.Equal((1, 1), (summary.AlreadyGone, summary.Purged));
+            Assert.Null(await ledger.GetRecordAsync(runtime.Flow.Id, keys[0]));
+            Assert.NotNull(await ledger.FindPurgedAsync(runtime.Flow.Id, keys[0]));
+        }
+    }
+
+    [Fact]
+    public async Task A_route_that_cannot_write_an_earlier_version_back_passes_every_record_over_before_asking_OSDU()
+    {
+        var ledger = _db.Ledger(_clock);
+        var flow = Samples.LocalFlow(_root);
+        flow = flow with { Target = flow.Target with { Protocol = DeliveryProtocol.Dspdm } };
+        await ledger.RegisterAsync(flow);
+        var protocol = new FakeProtocol();
+        var record = new RecordState
+        {
+            DeliveryKey = DeliveryKey.Derive("dspdm", ["row-1"]),
+            FlowId = flow.Id,
+            SourceKey = "row-1",
+            MappingName = "Row",
+            Status = RecordStatus.Delivered,
+            TargetId = "dev:x:row-1",
+            ClaimedTargetId = "dev:x:row-1",
+            TargetVersion = 7,
+        };
+
+        var steps = await new Engine.Reversals.PreviousVersionRestore(flow, ledger, protocol, _clock, "user:test", null)
+            .RestoreAsync([record], "corr-1", CancellationToken.None);
+
+        var step = Assert.Single(steps);
+        Assert.Equal("skipped", step.Result.Outcome);
+        Assert.Contains("DSPDM keeps no earlier versions of a row", step.Result.Detail, StringComparison.Ordinal);
+        Assert.Null(step.Restored);
+        Assert.Empty(protocol.Deletes);
+    }
+
+    [Fact]
+    public async Task A_removal_can_also_delete_what_OSDU_confirmed_removed_from_the_ledger()
+    {
+        var (runtime, protocol, ledger) = await DeliveredEstateAsync();
+        using (runtime)
+        {
+            var keys = await ledger.ListKeysAsync(runtime.Flow.Id, new RecordQuery(), 100);
+            var failing = (await ledger.GetRecordAsync(runtime.Flow.Id, keys[1]))!.TargetId!;
+            protocol.Refuse.Add(failing);
+            runtime.Actor = "gui:tahir";
+
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of([keys[0], keys[1]]), RemovalChoice.Record, purgeLedger: true);
+
+            // What OSDU confirmed removed is gone from the ledger, with one line kept; what it refused stays as it was.
+            Assert.Equal((1, 1, 1), (summary.Removed, summary.Failed, summary.Purged));
+            Assert.Contains("1 deleted from the ledger", summary.Describe(), StringComparison.Ordinal);
+            Assert.EndsWith("; deleted from the ledger", Assert.Single(summary.Records, r => r.Outcome == "removed").Detail, StringComparison.Ordinal);
+            Assert.Null(await ledger.GetRecordAsync(runtime.Flow.Id, keys[0]));
+            Assert.Equal("gui:tahir", (await ledger.FindPurgedAsync(runtime.Flow.Id, keys[0]))!.PurgedBy);
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, keys[1]))!.Status);
+            var activity = Assert.Single(await ledger.ListActivitiesAsync(new ActivityQuery { FlowId = runtime.Flow.Id, Kind = "delete" }));
+            Assert.Contains("\"purgeLedger\":true", activity.ParametersJson!, StringComparison.Ordinal);
+            Assert.Equal(activity.ActivityId, (await ledger.FindPurgedAsync(runtime.Flow.Id, keys[0]))!.ActivityId);
+
+            // Only a removal that takes the record out of OSDU deletes it from the ledger.
+            await Assert.ThrowsAsync<DeliveryException>(() => runtime.RemoveAsync(RemovalSelection.Of([keys[2]]), RemovalChoice.History, purgeLedger: true));
+            await Assert.ThrowsAsync<DeliveryException>(() => runtime.RemoveAsync(RemovalSelection.Of([keys[2]]), RemovalChoice.Previous, purgeLedger: true));
+            Assert.Equal(RecordStatus.Delivered, (await ledger.GetRecordAsync(runtime.Flow.Id, keys[2]))!.Status);
+        }
+    }
+
+    [Fact]
     public async Task A_filter_selection_is_resolved_when_the_removal_runs_not_when_it_was_asked_for()
     {
         var (runtime, protocol, ledger) = await DeliveredEstateAsync();
         using (runtime)
         {
             var summary = await runtime.RemoveAsync(
-                RemovalSelection.Of(new RecordQuery { Status = RecordStatus.Delivered }), RemovalScope.Record);
+                RemovalSelection.Of(new RecordQuery { Status = RecordStatus.Delivered }), RemovalChoice.Record);
 
             Assert.Equal(5, summary.Selected);
             Assert.Equal(5, summary.Removed);
@@ -526,7 +703,7 @@ public class RemovalRuntimeTests : IDisposable
                 protocol.Gone.Add((await ledger.GetRecordAsync(runtime.Flow.Id, key))!.TargetId!);
             }
 
-            var summary = await runtime.RemoveAsync(RemovalSelection.Of(keys), RemovalScope.Record);
+            var summary = await runtime.RemoveAsync(RemovalSelection.Of(keys), RemovalChoice.Record);
 
             Assert.Equal(keys.Count, summary.Selected);
             Assert.Equal(keys.Count, summary.AlreadyGone);
@@ -589,15 +766,49 @@ internal sealed class FixedProtocolFactory : IProtocolFactory
 public class RemovalContractTests
 {
     [Theory]
-    [InlineData("record", RemovalScope.Record)]
-    [InlineData("history", RemovalScope.History)]
-    [InlineData("everything", RemovalScope.Everything)]
-    public void Scopes_round_trip_through_their_wire_names(string wire, RemovalScope scope)
+    [InlineData("record", RemovalChoice.Record)]
+    [InlineData("previous", RemovalChoice.Previous)]
+    [InlineData("history", RemovalChoice.History)]
+    [InlineData("everything", RemovalChoice.Everything)]
+    public void Scopes_round_trip_through_their_wire_names(string wire, RemovalChoice scope)
     {
         Assert.Equal(scope, Engine.Operations.RemovalScopes.Parse(wire));
         Assert.Equal(wire, Engine.Operations.RemovalScopes.Wire(scope));
         Assert.True(Engine.Operations.RemovalScopes.TryParse(wire, out var parsed));
         Assert.Equal(scope, parsed);
+    }
+
+    [Theory]
+    [InlineData(RemovalChoice.Record, RemovalScope.Record)]
+    [InlineData(RemovalChoice.History, RemovalScope.History)]
+    [InlineData(RemovalChoice.Everything, RemovalScope.Everything)]
+    public void Each_delete_choice_reaches_the_protocol_as_its_own_scope(RemovalChoice choice, RemovalScope scope)
+        => Assert.Equal(scope, choice.Scope());
+
+    [Fact]
+    public void Restoring_the_previous_version_never_reaches_a_protocol_as_a_delete()
+    {
+        // A protocol reads any scope but the reversible one as a purge in places, so the one choice that deletes nothing must
+        // never be turned into a scope by accident.
+        Assert.Throws<ArgumentOutOfRangeException>(() => RemovalChoice.Previous.Scope());
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("false", false)]
+    [InlineData("true", true)]
+    public void The_extra_step_s_flag_reads_only_true_or_false(string? wire, bool purge)
+        => Assert.Equal(purge, Engine.Operations.RemovalScopes.ParsePurgeLedger(wire));
+
+    [Theory]
+    [InlineData("True")]
+    [InlineData("yes")]
+    [InlineData("1")]
+    public void A_mistyped_extra_step_is_refused_rather_than_read_as_either(string wire)
+    {
+        // A flag read as true would delete history nobody asked to delete; read as false, it would quietly keep what was asked gone.
+        Assert.Throws<SqlFlowException>(() => Engine.Operations.RemovalScopes.ParsePurgeLedger(wire));
     }
 
     [Theory]

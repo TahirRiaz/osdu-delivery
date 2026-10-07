@@ -51,11 +51,12 @@ public sealed record RemovalSelection
     }
 
     /// <summary>The selection as the activity trail records it: what was asked for, never the resolved key list.</summary>
-    public object Describe(RemovalScope scope) => Keys is not null
-        ? new { scope = scope.ToString().ToLowerInvariant(), records = Keys.Count, keys = Keys.Take(20).Select(k => k.ToString()).ToList() }
+    public object Describe(RemovalChoice scope, bool purgeLedger = false) => Keys is not null
+        ? new { scope = scope.ToString().ToLowerInvariant(), purgeLedger, records = Keys.Count, keys = Keys.Take(20).Select(k => k.ToString()).ToList() }
         : new
         {
             scope = scope.ToString().ToLowerInvariant(),
+            purgeLedger,
             filter = new
             {
                 status = Filter!.Status?.ToString().ToLowerInvariant(),
@@ -66,6 +67,48 @@ public sealed record RemovalSelection
                 drifted = Filter.Drifted,
             },
         };
+}
+
+/// <summary>
+/// What an operator's removal asks of each record it selects: one of the three <see cref="RemovalScope"/>s a protocol
+/// deletes with, or <see cref="Previous"/>. OSDU has no call that removes only a record's latest version (the storage
+/// service's version purge always keeps the latest), so <see cref="Previous"/> takes the latest version out of being current
+/// the one way OSDU allows: the version before it is read and written back as a new version, with the restore a reversal
+/// makes (docs/reversal-plan.md). Nothing is destroyed, and the version it replaces stays in the record's history.
+/// </summary>
+public enum RemovalChoice
+{
+    /// <summary><see cref="RemovalScope.Record"/>: the record stops resolving in OSDU, reversibly.</summary>
+    Record,
+
+    /// <summary>
+    /// The version before the latest becomes current again, written back as a new version. Reversible: asked again, the
+    /// version it replaced comes back the same way.
+    /// </summary>
+    Previous,
+
+    /// <summary><see cref="RemovalScope.History"/>: every earlier version is purged; the latest stays live.</summary>
+    History,
+
+    /// <summary><see cref="RemovalScope.Everything"/>: the record and every one of its versions are purged.</summary>
+    Everything,
+}
+
+/// <summary>How a removal choice reaches a protocol.</summary>
+public static class RemovalChoices
+{
+    /// <summary>
+    /// The scope a protocol deletes with for <paramref name="choice"/>. <see cref="RemovalChoice.Previous"/> deletes nothing,
+    /// so it has none, and asking for it is a defect in the caller.
+    /// </summary>
+    public static RemovalScope Scope(this RemovalChoice choice) => choice switch
+    {
+        RemovalChoice.Record => RemovalScope.Record,
+        RemovalChoice.History => RemovalScope.History,
+        RemovalChoice.Everything => RemovalScope.Everything,
+        RemovalChoice.Previous => throw new ArgumentOutOfRangeException(nameof(choice), choice, "Restoring the previous version deletes nothing, so no protocol removal scope stands for it."),
+        _ => throw new ArgumentOutOfRangeException(nameof(choice), choice, "Unknown removal choice."),
+    };
 }
 
 /// <summary>
@@ -254,6 +297,10 @@ public sealed record RemovalRecordResult(
     public static RemovalRecordResult AlreadyGone(DeliveryKey key, string? sourceKey, string? label, string? targetId, string detail, Guid? submissionId)
         => new(key.Value, sourceKey, label, targetId, "already-gone", detail, submissionId);
 
+    /// <summary>The version before the latest was written back as the record's current version (<see cref="RemovalChoice.Previous"/>).</summary>
+    public static RemovalRecordResult Restored(DeliveryKey key, string? sourceKey, string? label, string? targetId, string detail, Guid? submissionId)
+        => new(key.Value, sourceKey, label, targetId, "restored", detail, submissionId);
+
     public static RemovalRecordResult Skipped(DeliveryKey key, string? sourceKey, string? label, string? targetId, string detail, Guid? submissionId)
         => new(key.Value, sourceKey, label, targetId, "skipped", detail, submissionId);
 
@@ -266,36 +313,45 @@ public sealed record RemovalRecordResult(
 /// <see cref="RemovalLimits.MaxReported"/> so a removal of thousands still returns a result a page can render;
 /// every record's own outcome is in the ledger regardless, on its attempt, which is where a removal is audited.
 /// Failures are kept ahead of successes when the cap bites, because they are what an operator needs to see.
+/// <c>Purged</c> counts, of the records removed or already gone, those deleted from the ledger as the removal's extra step.
 /// </summary>
 public sealed record RemovalSummary(
-    RemovalScope Scope, int Selected, int Removed, int AlreadyGone, int Skipped, int Failed,
-    IReadOnlyList<RemovalRecordResult> Records, bool Truncated)
+    RemovalChoice Scope, int Selected, int Removed, int Restored, int AlreadyGone, int Skipped, int Failed,
+    IReadOnlyList<RemovalRecordResult> Records, bool Truncated, int Purged = 0)
 {
-    public static RemovalSummary Of(RemovalScope scope, int selected, IReadOnlyList<RemovalRecordResult> results)
+    public static RemovalSummary Of(RemovalChoice scope, int selected, IReadOnlyList<RemovalRecordResult> results, int purged = 0)
     {
         ArgumentNullException.ThrowIfNull(results);
         var removed = results.Count(r => r.Outcome == "removed");
+        var restored = results.Count(r => r.Outcome == "restored");
         var alreadyGone = results.Count(r => r.Outcome == "already-gone");
         var skipped = results.Count(r => r.Outcome == "skipped");
         var failed = results.Count(r => r.Outcome == "failed");
         var reported = results.Count <= RemovalLimits.MaxReported
             ? results
             : results.OrderBy(r => r.Outcome == "failed" ? 0 : r.Outcome == "skipped" ? 1 : 2).Take(RemovalLimits.MaxReported).ToList();
-        return new RemovalSummary(scope, selected, removed, alreadyGone, skipped, failed, reported, results.Count > reported.Count);
+        return new RemovalSummary(scope, selected, removed, restored, alreadyGone, skipped, failed, reported, results.Count > reported.Count, purged);
     }
 
     /// <summary>The one line the activity trail carries for the whole removal.</summary>
     public string Describe()
     {
+        if (Scope == RemovalChoice.Previous)
+        {
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"{Selected} record(s) selected: {Restored} put back at the version before the latest (reversible), {Skipped} skipped, {Failed} failed");
+        }
+
         var what = Scope switch
         {
-            RemovalScope.Record => "removed from OSDU (reversible)",
-            RemovalScope.History => "earlier versions purged",
-            RemovalScope.Everything => "purged from OSDU with every version",
+            RemovalChoice.Record => "removed from OSDU (reversible)",
+            RemovalChoice.History => "earlier versions purged",
+            RemovalChoice.Everything => "purged from OSDU with every version",
             _ => throw new InvalidOperationException($"Unknown removal scope '{Scope}'."),
         };
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"{Selected} record(s) selected: {Removed} {what}, {AlreadyGone} already gone, {Skipped} skipped, {Failed} failed");
+            $"{Selected} record(s) selected: {Removed} {what}, {AlreadyGone} already gone, {Skipped} skipped, {Failed} failed{(Purged > 0 ? $"; {Purged} deleted from the ledger" : string.Empty)}");
     }
 }

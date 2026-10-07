@@ -770,7 +770,12 @@ public sealed partial class FakeOsduPlatform : HttpMessageHandler
             {
                 var record = node!.AsObject();
                 var id = record["id"]!.GetValue<string>();
-                var held = Records.TryGetValue(id, out var existing) ? existing["data"]?["ExtensionProperties"]?["wdms"]?["bulkURI"]?.GetValue<string>() : null;
+                // The DDMS reads the latest version through storage, which answers 404 for a record it holds as deleted, and a
+                // record it cannot read has no link to match (wellbore-domain-services ddms_v3_utils.py, _raise_if_invalid_bulk_uri_task;
+                // storage QueryServiceImpl.getRecordInfo).
+                var held = Records.TryGetValue(id, out var existing) && !Removed.Contains(id)
+                    ? existing["data"]?["ExtensionProperties"]?["wdms"]?["bulkURI"]?.GetValue<string>()
+                    : null;
                 var sent = record["data"]?["ExtensionProperties"]?["wdms"]?["bulkURI"]?.GetValue<string>();
                 if (held != sent)
                 {

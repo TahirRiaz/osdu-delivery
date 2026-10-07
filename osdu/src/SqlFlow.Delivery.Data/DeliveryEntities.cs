@@ -622,6 +622,45 @@ public sealed class DeliveryActivityRecord
 }
 
 /// <summary>
+/// A record deleted from the ledger after it was removed from OSDU (docs/ledger.md, Deleting a removed record from the
+/// ledger): its attempts, search entries and row went, and this line is what the ledger keeps of it, so who deleted which
+/// record, with which OSDU id and last version, is still answered from the ledger. Rows are only ever added; the
+/// intervention that deleted it names it under <see cref="DeliveryActivityRecord"/> as well.
+/// </summary>
+public sealed class DeliveryPurgedRecord
+{
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
+    public long PurgedRecordId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public Guid DeliveryKey { get; set; }
+
+    /// <summary>The record's key in its source, as the ledger held it.</summary>
+    public string SourceKey { get; set; } = string.Empty;
+
+    public string? Label { get; set; }
+
+    /// <summary>The OSDU id the record was delivered and removed under; null for a record that never had one.</summary>
+    public string? TargetId { get; set; }
+
+    /// <summary>The last OSDU version an attempt of the record named, before it was removed.</summary>
+    public long? LastVersion { get; set; }
+
+    /// <summary>How many attempts were deleted with it.</summary>
+    public int Attempts { get; set; }
+
+    /// <summary>The intervention that deleted it, as the audit trail numbers it.</summary>
+    public long? ActivityId { get; set; }
+
+    public string PurgedBy { get; set; } = string.Empty;
+
+    public DateTime PurgedUtc { get; set; }
+}
+
+/// <summary>
 /// One reversal: what one run or one submission put into OSDU, put back record by record as OSDU held it before
 /// (docs/reversal-plan.md). There is one per source of a ledger; asking again resumes it. Its counts are read from its
 /// items, never kept here.
@@ -2326,6 +2365,21 @@ public static class DeliveryModel
             e.ToTable("ActivityRecord", SchemaName);
             // A record's requests are one seek of its key, in the order the trail numbered them.
             e.HasKey(a => new { a.PartitionId, a.FlowId, a.DeliveryKey, a.ActivityId });
+        });
+
+        modelBuilder.Entity<DeliveryPurgedRecord>(e =>
+        {
+            e.ToTable("PurgedRecord", SchemaName);
+            e.HasKey(p => new { p.PartitionId, p.PurgedRecordId });
+            e.Property(p => p.PurgedRecordId).ValueGeneratedOnAdd();
+            e.Property(p => p.SourceKey).HasMaxLength(400).IsRequired();
+            e.Property(p => p.Label).HasMaxLength(400);
+            OptionalOsduId(e.Property(p => p.TargetId)).HasMaxLength(500);
+            e.Property(p => p.PurgedBy).HasMaxLength(200).IsRequired();
+            // A record's page asks by its key what became of a record the ledger no longer holds, and a lookup by OSDU id finds
+            // which record went under it.
+            e.HasIndex(p => new { p.PartitionId, p.FlowId, p.DeliveryKey });
+            e.HasIndex(p => new { p.PartitionId, p.TargetId }).HasFilter("[TargetId] IS NOT NULL");
         });
 
         modelBuilder.Entity<DeliveryReversal>(e =>
