@@ -24,3 +24,14 @@ dependency: it can be recomputed from the key at any time.
 - If a partition rejects client-supplied ids for a kind, the protocol would need a lookup-by-natural-key
   step before the write and the ledger's `TargetId` would become authoritative. That is a protocol-level
   change; the mapping, hashing and ledger are unaffected.
+
+## Addendum: ids made from the key
+
+A mapping may make the unique segment from the key's own values, percent-encoded
+(`dataset.idFrom: key`), so reference data it delivers is named by code as OSDU's catalogs are
+(`RECALL::GAPI`). The delivery key without hyphens stays the default. The id is still computed from the
+data, and the delivery key stays the ledger's identity for the record, so the consequences above hold
+with two additions: ids made from values can meet where delivery keys cannot, so the ledger refuses a
+second claim on an id from a record of the same flow as it does from another flow's; and the ledger's
+`TargetId` is no longer recomputable from the delivery key alone, so a record keeps the id it first
+claimed, and a render that gives it another is held rather than sent.

@@ -77,10 +77,12 @@ internal static partial class SqlServerLedgerBulk
     // The slice's records that exist are found by key and update-locked to the end of the transaction, so nothing else
     // writes them between the tests below and the update. Only rows that exist are locked, never a range of keys: a
     // record another staging inserts meanwhile is not held off here, and the insert below refuses it instead. A record
-    // keeps the OSDU id it was first given, so that id, not the one this work was rendered with, is the one the work is
-    // delivered to and the one the claim check compares. A staging is one ledger's, so its partition is a parameter.
+    // keeps the OSDU id it claimed, so that id, not the one this work was rendered with, is the one the work is delivered
+    // to and the one the claim check compares (the plan holds a record whose render gives another, so the two agree). A
+    // record that claimed none takes the id this work gives: an id a held render left on it was never written to. A
+    // staging is one ledger's, so its partition is a parameter.
     private const string LockExistingSql = $$"""
-        UPDATE s SET [Existing] = 1, [TargetId] = COALESCE(t.[TargetId], s.[TargetId])
+        UPDATE s SET [Existing] = 1, [TargetId] = COALESCE(t.[ClaimedTargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2)
         FROM #PendingStage AS s
         INNER JOIN [osdu].[Record] AS t WITH (UPDLOCK, FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
             ON t.[PartitionId] = @partitionId AND t.[FlowId] = s.[FlowId] AND t.[DeliveryKey] = s.[DeliveryKey]
@@ -105,22 +107,43 @@ internal static partial class SqlServerLedgerBulk
                      OR (q.[Queued] = 1 AND t.[PendingPayload] = 1 AND s.[PendingPayloadModifiedUtc] < t.[PendingPayloadModifiedUtc]))));
         """;
 
-    // Work for an OSDU id another flow's record has claimed is taken out of the stage and named, with the owning flow
-    // and its name as its last submission recorded it. Ids compare exactly (the claim column's binary collation). The
-    // claim index is unique, so a stage row meets at most one record, and each is one seek of that index, named here: the
-    // filtered index applies because the query repeats its predicate, and a plan that went looking for the first match
-    // any other way would read the whole table for every id nobody has claimed. The unique index is also what settles a
-    // race between two flows' intakes; this read names the owner, from the owner's last submission, which its own ledger
-    // keeps under the owner's partition: one seek of the submission table's key.
+    // Work for an OSDU id another record has claimed is taken out of the stage and named: a record of another flow, with
+    // the owning flow and its name as its last submission recorded it, or another record of the same flow, whose key
+    // gives the same id (an id made from the key's values, under a key or system the mapping no longer has), named by its
+    // key. Ids compare exactly (the claim column's binary collation). The claim index is unique, so a stage row meets at
+    // most one record, and each is one seek of that index, named here: the filtered index applies because the query
+    // repeats its predicate, and a plan that went looking for the first match any other way would read the whole table
+    // for every id nobody has claimed. The unique index is also what settles a race between two flows' intakes; this read
+    // names the owner, from the owner's last submission, which its own ledger keeps under the owner's partition: one seek
+    // of the submission table's key.
     private const string RefuseClaimedSql = $$"""
         DELETE s
-        OUTPUT deleted.[DeliveryKey], deleted.[TargetId], t.[FlowId], sub.[FlowName]
+        OUTPUT deleted.[DeliveryKey], deleted.[TargetId], t.[FlowId], sub.[FlowName],
+            CASE WHEN t.[FlowId] = deleted.[FlowId] THEN t.[DeliveryKey] END, CASE WHEN t.[FlowId] = deleted.[FlowId] THEN t.[SourceKey] END
         FROM #PendingStage AS s
         INNER JOIN [osdu].[Record] AS t WITH (FORCESEEK ({{ClaimIndex}} ([ClaimedTargetId])))
             ON t.[ClaimedTargetId] = s.[TargetId] COLLATE Latin1_General_100_BIN2
             AND t.[ClaimedTargetId] IS NOT NULL
-            AND t.[FlowId] <> s.[FlowId]
+            AND (t.[FlowId] <> s.[FlowId] OR t.[DeliveryKey] <> s.[DeliveryKey])
         LEFT JOIN [osdu].[Submission] AS sub ON sub.[PartitionId] = t.[PartitionId] AND sub.[SubmissionId] = t.[LastSubmissionId]
+        WHERE s.[Slice] = @slice AND s.[TargetId] IS NOT NULL;
+        """;
+
+    // Two records of the slice that give one OSDU id nobody has claimed (keys whose values make the same id): the one with
+    // the lowest key is staged and claims it, and the others are taken out of the stage and named, each with the record
+    // that keeps the id. Run after the claim check, so an id a record already claimed stays with that record. A record of
+    // another slice that gives the same id finds this slice's claim when its own slice is checked.
+    private const string RefuseRepeatedSql = """
+        DELETE s
+        OUTPUT deleted.[DeliveryKey], deleted.[TargetId], k.[FlowId], k.[DeliveryKey], k.[SourceKey]
+        FROM #PendingStage AS s
+        CROSS APPLY (
+            SELECT TOP (1) f.[FlowId], f.[DeliveryKey], f.[SourceKey]
+            FROM #PendingStage AS f
+            WHERE f.[Slice] = @slice
+              AND f.[TargetId] COLLATE Latin1_General_100_BIN2 = s.[TargetId] COLLATE Latin1_General_100_BIN2
+              AND f.[DeliveryKey] < s.[DeliveryKey]
+            ORDER BY f.[DeliveryKey]) AS k
         WHERE s.[Slice] = @slice AND s.[TargetId] IS NOT NULL;
         """;
 
@@ -134,7 +157,7 @@ internal static partial class SqlServerLedgerBulk
         DECLARE @updated int;
         UPDATE t SET
                 [SourceKey] = s.[SourceKey], [SourceKeyJson] = COALESCE(s.[SourceKeyJson], t.[SourceKeyJson]), [Label] = s.[Label], [MappingName] = s.[MappingName],
-                [TargetId] = COALESCE(t.[TargetId], s.[TargetId]),
+                [TargetId] = COALESCE(s.[TargetId], t.[TargetId]),
                 [ClaimedTargetId] = COALESCE(t.[ClaimedTargetId], s.[TargetId] COLLATE Latin1_General_100_BIN2),
                 [LastSubmissionId] = s.[LastSubmissionId], [NextAttemptUtc] = NULL,
                 [Status] = CASE WHEN f.[InFlight] = 1 THEN t.[Status] ELSE N'pending' END,
@@ -355,7 +378,10 @@ internal static partial class SqlServerLedgerBulk
                 var transaction = (SqlTransaction)tx.GetDbTransaction();
                 await SliceAsync(connection, transaction, LockExistingSql, slice, partitionId, ct).ConfigureAwait(false);
                 var refused = await KeysAsync(connection, transaction, RefuseOlderSql, slice, partitionId, ct).ConfigureAwait(false);
-                var conflicts = await ConflictsAsync(connection, transaction, slice, ct).ConfigureAwait(false);
+                IReadOnlyList<TargetIdConflict> conflicts = [
+                    .. await ConflictsAsync(connection, transaction, slice, ct).ConfigureAwait(false),
+                    .. await RepeatsAsync(connection, transaction, slice, ct).ConfigureAwait(false),
+                ];
                 var staged = await ScalarAsync(connection, transaction, PendingWriteSql, now, partitionId, flowId, slice, ct).ConfigureAwait(false);
                 await tx.CommitAsync(ct).ConfigureAwait(false);
                 return new PendingStaging(staged, refused, conflicts);
@@ -720,7 +746,10 @@ internal static partial class SqlServerLedgerBulk
         return command;
     }
 
-    /// <summary>Runs the claim check over one slice and reads back the records it took out of the stage, with the flow that owns each id.</summary>
+    /// <summary>
+    /// Runs the claim check over one slice and reads back the records it took out of the stage, with the flow that owns each
+    /// id and, when it is the same flow, the record.
+    /// </summary>
     private static async Task<IReadOnlyList<TargetIdConflict>> ConflictsAsync(SqlConnection connection, SqlTransaction transaction, int slice, CancellationToken ct)
     {
         await using var command = Command(connection, transaction, RefuseClaimedSql, slice);
@@ -732,7 +761,32 @@ internal static partial class SqlServerLedgerBulk
                 new DeliveryKey(reader.GetGuid(0)),
                 reader.GetString(1),
                 reader.GetGuid(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3)));
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.IsDBNull(4) ? null : new DeliveryKey(reader.GetGuid(4)),
+                reader.IsDBNull(5) ? null : reader.GetString(5)));
+        }
+
+        return conflicts;
+    }
+
+    /// <summary>
+    /// Runs the check for one id given by several records of the slice, and reads back the records it took out of the
+    /// stage, each with the record of the same flow that keeps the id.
+    /// </summary>
+    private static async Task<IReadOnlyList<TargetIdConflict>> RepeatsAsync(SqlConnection connection, SqlTransaction transaction, int slice, CancellationToken ct)
+    {
+        await using var command = Command(connection, transaction, RefuseRepeatedSql, slice);
+        var conflicts = new List<TargetIdConflict>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            conflicts.Add(new TargetIdConflict(
+                new DeliveryKey(reader.GetGuid(0)),
+                reader.GetString(1),
+                reader.GetGuid(2),
+                null,
+                new DeliveryKey(reader.GetGuid(3)),
+                reader.GetString(4)));
         }
 
         return conflicts;

@@ -733,6 +733,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         mapping.Description,
         System = mapping.Dataset.System,
         Key = mapping.Dataset.Key,
+        IdFrom = mapping.Dataset.IdFrom == MappingIdSource.Key ? MappingMapper.IdFromKey : MappingMapper.IdFromDeliveryKey,
         mapping.Dataset.Label,
         ChildDatasets = mapping.ChildDatasets,
         Parameters = mapping.Parameters.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList(),

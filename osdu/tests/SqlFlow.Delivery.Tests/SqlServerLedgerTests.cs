@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Delivery.Catalog;
@@ -591,6 +592,81 @@ public class SqlServerLedgerTests
             var ids = names.Select(n => "dev:x:" + _run + prefix + n).ToList();
             Assert.Equal(names.Count, await db.DeliveryRecords.CountAsync(r => r.ClaimedTargetId != null && ids.Contains(r.ClaimedTargetId)));
         }
+    }
+
+    [Fact]
+    public async Task Two_records_of_one_flow_never_claim_one_osdu_id_on_sql_server()
+    {
+        // Ids made from key values can repeat across keys (a re-keyed mapping, an id given twice in one source). One record
+        // claims each id; every other record giving it is refused, naming the record that keeps it, and is never staged.
+        var ledger = await LedgerAsync(_clock);
+        var s1 = Guid.NewGuid();
+        var shared = "dev:x:" + _run + "shared";
+
+        // In one slice: the lowest key claims the id nobody held.
+        RecordState[] pair = [Work("one", s1, "0:0:10", "mh", Now) with { TargetId = shared }, Work("two", s1, "0:10:10", "mh", Now) with { TargetId = shared }];
+        var keeper = pair.MinBy(r => new SqlGuid(r.DeliveryKey.Value))!;
+        var refused = pair.Single(r => r.DeliveryKey != keeper.DeliveryKey);
+        var staging = await ledger.UpsertPendingAsync(_flow, pair);
+        Assert.Equal(1, staging.Staged);
+        var conflict = Assert.Single(staging.Conflicts);
+        Assert.Equal(
+            (refused.DeliveryKey, shared, _flow, (DeliveryKey?)keeper.DeliveryKey, keeper.SourceKey),
+            (conflict.DeliveryKey, conflict.TargetId, conflict.OwnerFlowId, conflict.OwnerDeliveryKey, conflict.OwnerSourceKey));
+        Assert.StartsWith($"OSDU id {shared} is already claimed by record {keeper.SourceKey} ({keeper.DeliveryKey}) of this flow", conflict.Describe(), StringComparison.Ordinal);
+        Assert.Equal(shared, (await ledger.GetRecordAsync(_flow, keeper.DeliveryKey))!.ClaimedTargetId);
+        Assert.Null(await ledger.GetRecordAsync(_flow, refused.DeliveryKey));
+
+        // Staged again later, the refused record meets the claim; the record that holds it restages its own id freely.
+        var again = await ledger.UpsertPendingAsync(_flow, [refused with { PendingMetadataHash = "mh2" }]);
+        Assert.Equal((0, (DeliveryKey?)keeper.DeliveryKey), (again.Staged, Assert.Single(again.Conflicts).OwnerDeliveryKey));
+        var own = await ledger.UpsertPendingAsync(_flow, [keeper with { PendingMetadataHash = "mh2" }]);
+        Assert.Equal((1, 0), (own.Staged, own.Conflicts.Count));
+
+        // One record to a slice: the second slice finds the claim the first one wrote.
+        var sliced = new OsduLedger(Database, _clock) { WriteSlice = 1 };
+        var across = "dev:x:" + _run + "across";
+        RecordState[] slices = [Work("three", s1, "0:20:10", "mh", Now) with { TargetId = across }, Work("four", s1, "0:30:10", "mh", Now) with { TargetId = across }];
+        var first = slices.MinBy(r => new SqlGuid(r.DeliveryKey.Value))!;
+        var split = await sliced.UpsertPendingAsync(_flow, slices);
+        Assert.Equal(1, split.Staged);
+        Assert.Equal((DeliveryKey?)first.DeliveryKey, Assert.Single(split.Conflicts).OwnerDeliveryKey);
+
+        await using var db = Database();
+        Assert.Equal(1, await db.DeliveryRecords.CountAsync(r => r.ClaimedTargetId == shared));
+        Assert.Equal(1, await db.DeliveryRecords.CountAsync(r => r.ClaimedTargetId == across));
+    }
+
+    [Fact]
+    public async Task A_record_that_claimed_no_id_names_the_one_its_latest_render_gives_and_a_claimed_one_keeps_its_own_on_sql_server()
+    {
+        var ledger = await LedgerAsync(_clock);
+        var s1 = Guid.NewGuid();
+        var held = Work("held", s1, "0:0:10", "mh", Now) with { PendingDocumentRef = null, LastError = "held for a test" };
+        var before = "dev:x:" + _run + "before";
+        var after = "dev:x:" + _run + "after";
+
+        // Only ever held, the record claims nothing, so it names the id each render gives: an earlier one was never written.
+        await ledger.MarkHeldAsync(_flow, [held with { TargetId = before }]);
+        Assert.Equal((before, (string?)null), Ids(await ledger.GetRecordAsync(_flow, held.DeliveryKey)));
+        await ledger.MarkHeldAsync(_flow, [held with { TargetId = after }]);
+        Assert.Equal((after, (string?)null), Ids(await ledger.GetRecordAsync(_flow, held.DeliveryKey)));
+
+        // An id another record claimed is never named by it.
+        var owner = Work("owner", s1, "0:10:10", "mh", Now) with { TargetId = "dev:x:" + _run + "owned" };
+        Assert.Equal(1, (await ledger.UpsertPendingAsync(_flow, [owner])).Staged);
+        await ledger.MarkHeldAsync(_flow, [held with { TargetId = owner.TargetId }]);
+        Assert.Equal(((string?)null, (string?)null), Ids(await ledger.GetRecordAsync(_flow, held.DeliveryKey)));
+
+        // Staged, the record claims the id this work gives, not one a held render left; then that id is its own for good.
+        Assert.Equal(1, (await ledger.UpsertPendingAsync(_flow, [held with { TargetId = after, PendingDocumentRef = "0:0:10" }])).Staged);
+        Assert.Equal((after, after), Ids(await ledger.GetRecordAsync(_flow, held.DeliveryKey)));
+        Assert.Equal(1, (await ledger.UpsertPendingAsync(_flow, [held with { TargetId = before, PendingDocumentRef = "0:0:10" }])).Staged);
+        Assert.Equal((after, after), Ids(await ledger.GetRecordAsync(_flow, held.DeliveryKey)));
+        await ledger.MarkHeldAsync(_flow, [held with { TargetId = before }]);
+        Assert.Equal((after, after), Ids(await ledger.GetRecordAsync(_flow, held.DeliveryKey)));
+
+        static (string? TargetId, string? Claimed) Ids(RecordState? record) => (record!.TargetId, record.ClaimedTargetId);
     }
 
     [Fact]

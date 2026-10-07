@@ -731,6 +731,18 @@ public sealed class DeliveryWorker
                 continue;
             }
 
+            // The document is written to the id it carries, and the ledger records the record's: the two must be one id, or
+            // OSDU would gain a record the ledger does not know while the one it names stays as it was.
+            if (document["id"] is JsonValue idValue && idValue.TryGetValue<string>(out var documentId) && !string.Equals(documentId, state.TargetId, StringComparison.Ordinal))
+            {
+                var (completion, evt, summary) = Settle(
+                    state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
+                    $"the queued document is written to {documentId}, and the record's OSDU id is {state.TargetId}, so nothing was sent; redeliver it to plan it again",
+                    null, null);
+                await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+                continue;
+            }
+
             // A payload sent in parts lists each part with its files and hash; one payload set is its folder.
             IPayloadSource? single = null;
             IReadOnlyList<WorkPayloadPart> parts = [];

@@ -2053,6 +2053,12 @@ public static class DeliveryModel
     /// </summary>
     public const int MaxSourceFileNameLength = 800;
 
+    /// <summary>
+    /// The longest OSDU id a record holds, as its id, its claim and the id it waits for. A render that gives a longer id holds
+    /// the record, naming this limit, rather than storing an id cut short.
+    /// </summary>
+    public const int MaxTargetIdLength = 500;
+
     /// <summary>The longest lease token, and the longest worker name a lease records as its owner.</summary>
     public const int MaxLeaseTokenLength = 200;
 
@@ -2143,9 +2149,9 @@ public static class DeliveryModel
             e.Property(r => r.SourceFileName).HasMaxLength(MaxSourceFileNameLength);
             e.Property(r => r.MetadataHash).HasMaxLength(64);
             e.Property(r => r.PayloadHash).HasMaxLength(64);
-            e.Property(r => r.TargetId).HasMaxLength(500);
-            OptionalOsduId(e.Property(r => r.ClaimedTargetId)).HasMaxLength(500);
-            OptionalOsduId(e.Property(r => r.WaitingFor)).HasMaxLength(500);
+            e.Property(r => r.TargetId).HasMaxLength(MaxTargetIdLength);
+            OptionalOsduId(e.Property(r => r.ClaimedTargetId)).HasMaxLength(MaxTargetIdLength);
+            OptionalOsduId(e.Property(r => r.WaitingFor)).HasMaxLength(MaxTargetIdLength);
             e.Property(r => r.Status).HasMaxLength(16).IsRequired();
             e.Property(r => r.LastVerifyOutcome).HasMaxLength(16);
             e.Property(r => r.LeaseOwner).HasMaxLength(200);

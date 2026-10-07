@@ -84,6 +84,12 @@ public sealed record MappingDraft
     /// <summary>The dataset columns an operator finds a record by, without the <c>dataset.</c> prefix.</summary>
     public IReadOnlyList<string> Identity { get; init; } = [];
 
+    /// <summary>
+    /// What the OSDU id's unique segment is made from, as <c>dataset.idFrom</c> writes it: <c>key</c> for the key's own values,
+    /// <c>deliveryKey</c> or null for the delivery key.
+    /// </summary>
+    public string? IdFrom { get; init; }
+
     public IReadOnlyList<MappingDraftParameter> Parameters { get; init; } = [];
 
     /// <summary>The record sets the mapping's search entries look in.</summary>
@@ -364,6 +370,11 @@ public static partial class MappingBuilder
         if (draft.Identity.Any(k => !ColumnName().IsMatch(k)))
         {
             Error("Name each dataset column an operator finds a record by, such as wellbore_uwi.");
+        }
+
+        if (draft.IdFrom is { } idFrom && idFrom != MappingMapper.IdFromDeliveryKey && idFrom != MappingMapper.IdFromKey)
+        {
+            Error($"Make the OSDU id from the delivery key ({MappingMapper.IdFromDeliveryKey}) or from the key's values ({MappingMapper.IdFromKey}).");
         }
 
         if (!string.IsNullOrWhiteSpace(draft.Label))
@@ -1104,6 +1115,11 @@ public static partial class MappingBuilder
             Line("  identity: [" + string.Join(", ", draft.Identity.Select(k => FlowScalar(k.Trim()))) + "]");
         }
 
+        if (draft.IdFrom is { } idFrom)
+        {
+            Line("  idFrom: " + Scalar(idFrom));
+        }
+
         Line(string.Empty);
         Line("parameters:");
         foreach (var parameter in draft.Parameters)
@@ -1180,6 +1196,7 @@ public static partial class MappingBuilder
             Key = mapping.Dataset.Key,
             Label = mapping.Dataset.Label,
             Identity = mapping.Dataset.Identity,
+            IdFrom = mapping.Dataset.IdFrom == MappingIdSource.Key ? MappingMapper.IdFromKey : null,
             Parameters = mapping.Parameters.Select(kv => new MappingDraftParameter(kv.Key, kv.Value.Required, kv.Value.Default, kv.Value.Description)).ToList(),
             Searches = mapping.Searches.Values
                 .OrderBy(s => s.Name, StringComparer.Ordinal)

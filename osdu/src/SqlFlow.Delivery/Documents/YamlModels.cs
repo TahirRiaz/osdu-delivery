@@ -882,6 +882,9 @@ internal sealed class MappingDatasetYaml
     public string? Label { get; set; }
 
     public List<string>? Identity { get; set; }
+
+    /// <summary>What the OSDU id's unique segment is made from: <c>deliveryKey</c> (the default) or <c>key</c>.</summary>
+    public string? IdFrom { get; set; }
 }
 
 internal sealed class RetrievalYaml

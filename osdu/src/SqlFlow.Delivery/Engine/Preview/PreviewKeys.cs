@@ -75,11 +75,17 @@ internal static class PreviewKeys
             }
         }
 
-        // An id of this flow's kind is what OSDU was sent; one the ledger does not hold was never planned by this flow, and
-        // its key cannot be recovered from it, since the id is derived from the key by a one-way hash.
+        // An id of this flow's kind is what OSDU was sent; one the ledger does not hold was never planned by this flow. An id
+        // made from the key's values (dataset.idFrom: key) reads back as that key; one made from the delivery key does not,
+        // since the delivery key is a one-way hash of the key.
         var ownIds = $"{partition}:{mapping.EntityType}:";
         if (text.StartsWith(ownIds, StringComparison.OrdinalIgnoreCase))
         {
+            if (mapping.Dataset.IdFrom == MappingIdSource.Key && TargetId.KeyValues(text, partition, mapping.EntityType, columns.Count) is { } values)
+            {
+                return PreviewKey.Of(new KeyTuple(values), PreviewKeyForms.OsduId);
+            }
+
             return PreviewKey.Refused(
                 PreviewKeyForms.OsduId,
                 $"No record of this flow is delivered as {text}. The preview finds a record by its OSDU id only when the ledger holds it; name the record by its source key ({Columns(columns)}) instead.");

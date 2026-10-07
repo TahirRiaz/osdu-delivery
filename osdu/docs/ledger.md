@@ -745,13 +745,25 @@ An ingestion table can feed several OSDU flows, each rendering the rows with its
   carry (`FlowName` on a submission, an activity and an event) is that ledger name. `osdu.Interface` leads a ledger
   identity back to its pipeline and interface, and an adopted ledger carries on under the interface with its whole
   history.
-- **One OSDU record, one flow.** The OSDU id is `{partition}:{entityType}:{deliveryKey}`, so flows delivering to
-  different entity types or partitions write different records. Staging claims a record's OSDU id the first time the
-  record queues a document (`ClaimedTargetId`, unique across the ledger). Work whose id another flow's record has
-  claimed is not staged: the record is held, with the owning flow named in its error, and nothing is sent. A release
-  plans it again and meets the same conflict. To resolve it, deliver the second flow to another partition, or give its
-  mapping a `dataset.system` or key that yields other ids. A new mapping has delivered nothing, so changing its
-  identity re-keys nothing.
+- **One OSDU record, one flow.** The OSDU id is `{partition}:{entityType}:{deliveryKey}`, or the key's own values for
+  a mapping with `dataset.idFrom: key`, so flows delivering to different entity types or partitions write different
+  records. Staging claims a record's OSDU id the first time the record queues a document (`ClaimedTargetId`, unique
+  across the ledger). Work whose id another flow's record has claimed is not staged: the record is held, with the
+  owning flow named in its error, and nothing is sent. A release plans it again and meets the same conflict. To resolve
+  it, deliver the second flow to another partition, or give its mapping a `dataset.system` or key that yields other ids.
+  A new mapping has delivered nothing, so changing its identity re-keys nothing.
+- **One OSDU record, one record of the ledger.** An id made from key values can be given by two records of one flow (a
+  mapping re-keyed under a new `dataset.system` gives its rows new delivery keys and the same ids). Staging refuses an id
+  another record of the same flow claimed, as it refuses another flow's, naming that record's key; two records of one
+  staging that give one unclaimed id stage the one with the lowest key and hold the others naming it.
+- **A record keeps the OSDU id it claimed.** The plan holds a record whose render gives another id than the one it
+  claimed, naming both, and sends nothing; staging keeps the claimed id whatever the work names, and the worker sends
+  nothing when the queued document's `id` is not the record's id. A record that only ever was held claimed nothing: it
+  names the id its latest render gives, unless another record claimed that one.
+- **An id made from a key is claimed only when it is free.** A record about to claim such an id for the first time has
+  never sent anything, so a record OSDU already holds there is not its own: the intake asks the flow's target before
+  staging, and holds the record, unclaimed and naming the id, when OSDU holds a record at an id no record of the ledger
+  claimed, or cannot say. An id another record of the ledger claimed is left to staging, which names that record.
 - **A flow acts only on ids it claimed.** The worker sends only a claimed id. A read back reads the claimed id, and a
   removal skips a record that claimed nothing, so a record that was only ever held can never reach another flow's
   OSDU record. A held record is not given an id another flow has claimed.

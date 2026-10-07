@@ -69,6 +69,8 @@ internal static partial class MappingMapper
             throw new FlowValidationException($"{source}: dataset.identity names a column more than once.");
         }
 
+        var idFrom = IdFrom(dataset.IdFrom, source);
+
         var parameters = (y.Parameters ?? []).ToDictionary(
             kv => kv.Key,
             kv => new MappingParameter { Required = kv.Value?.Required ?? false, Default = kv.Value?.Default, Description = kv.Value?.Description },
@@ -105,6 +107,7 @@ internal static partial class MappingMapper
                 Key = key,
                 Label = label,
                 Identity = identity,
+                IdFrom = idFrom,
             },
             Parameters = parameters,
             Searches = searches,
@@ -113,6 +116,27 @@ internal static partial class MappingMapper
             Envelope = Envelope(entries, kind, source),
         };
     }
+
+    /// <summary>The words <c>dataset.idFrom</c> takes, as a mapping writes them.</summary>
+    internal const string IdFromDeliveryKey = "deliveryKey";
+
+    /// <inheritdoc cref="IdFromDeliveryKey"/>
+    internal const string IdFromKey = "key";
+
+    /// <summary>
+    /// What <c>dataset.idFrom</c> says the OSDU id's unique segment is made from: the delivery key when it is not written,
+    /// as every mapping's id always was, or the key's own values. The words compare exactly, as every other word of a
+    /// mapping does.
+    /// </summary>
+    private static MappingIdSource IdFrom(string? written, string source) => written?.Trim() switch
+    {
+        null => MappingIdSource.DeliveryKey,
+        IdFromDeliveryKey => MappingIdSource.DeliveryKey,
+        IdFromKey => MappingIdSource.Key,
+        var other => throw new FlowValidationException(
+            $"{source}: dataset.idFrom is '{other}'; write {IdFromDeliveryKey} for an OSDU id made from the delivery key (the default), "
+            + $"or {IdFromKey} for one made from the values of dataset.key, such as dev:reference-data--ExternalUnitOfMeasure:RECALL::GAPI."),
+    };
 
     /// <summary>Every lookup the mapping declares is read by a node: one nothing reads says something no record uses.</summary>
     private static void ValidateLookups(IReadOnlyList<MappingEntry> entries, IReadOnlyDictionary<string, MappingLookup> lookups, string source)

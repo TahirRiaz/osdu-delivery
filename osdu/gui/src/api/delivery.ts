@@ -2097,6 +2097,9 @@ export interface MappingDraftSearch {
   description: string | null;
 }
 
+/** What a mapping makes its records' OSDU ids from: the delivery key (a GUID), or the key's own values (`RECALL::GAPI`). */
+export type MappingIdFrom = "deliveryKey" | "key";
+
 /** A mapping as the builder edits it: the header, the parameters and the entries. */
 export interface MappingDraft {
   name: string;
@@ -2111,6 +2114,8 @@ export interface MappingDraft {
   label: string | null;
   /** The dataset columns an operator finds a record by, without `dataset.`. */
   identity: string[];
+  /** What the OSDU id is made from, as `dataset.idFrom` writes it: `key` for the key's own values; `deliveryKey` or absent for the delivery key. */
+  idFrom?: MappingIdFrom | null;
   parameters: MappingDraftParameter[];
   /** The record sets the mapping's search entries look in. */
   searches: MappingDraftSearch[];

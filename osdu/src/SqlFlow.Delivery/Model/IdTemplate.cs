@@ -223,7 +223,7 @@ public sealed partial record IdTemplate
     }
 
     /// <summary>Whether <paramref name="c"/> is written into an id as it stands: an ASCII letter or digit, '_', '-', '.' or ':'.</summary>
-    public static bool IsIdCharacter(char c) => char.IsAsciiLetterOrDigit(c) || c is '_' or '-' or '.' or ':';
+    public static bool IsIdCharacter(char c) => Identity.IdSegment.IsIdCharacter(c);
 
     /// <summary>
     /// One token of an id template: a bare name is a column of the row the node reads, and a word of the mapping language

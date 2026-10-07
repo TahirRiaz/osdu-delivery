@@ -236,6 +236,12 @@ This is the highest-leverage decision in the design. With it:
 The current design lets OSDU assign the id, which is precisely why so much state exists
 to remember it.
 
+A mapping may make the unique segment from the key's own values instead
+(`dataset.idFrom: key`), so reference data reads as OSDU's own catalogs do
+(`RECALL::GAPI` beside `LIS-LAS::GAPI`). The id is still deterministic and client-supplied;
+the delivery key stays the ledger's identity for the record, and a record keeps the id it
+first claimed ([mapping-templates.md](mapping-templates.md#the-osdu-id)).
+
 ### 5.4 One source, several flows
 
 Data is loaded once. An ingestion table can feed any number of OSDU flows, each with its

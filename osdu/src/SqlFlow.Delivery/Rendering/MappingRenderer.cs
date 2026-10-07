@@ -174,10 +174,12 @@ public sealed class MappingRenderer
             }
         }
 
-        var key = string.Join(", ", mapping.Dataset.Key.Select(column => $"{DatasetColumn.Prefix}.{column}"));
+        var columns = mapping.Dataset.Key.Select(column => $"{DatasetColumn.Prefix}.{column}").ToList();
         var document = new JsonObject
         {
-            ["id"] = $"{partition}:{mapping.EntityType}:<delivery key from {mapping.Dataset.System}, {key}>",
+            ["id"] = mapping.Dataset.IdFrom == MappingIdSource.Key
+                ? $"{partition}:{mapping.EntityType}:<{string.Join(":", columns)}, percent-encoded>"
+                : $"{partition}:{mapping.EntityType}:<delivery key from {mapping.Dataset.System}, {string.Join(", ", columns)}>",
             ["kind"] = mapping.Kind,
             ["data"] = new JsonObject(),
         };
@@ -339,7 +341,7 @@ public sealed class MappingRenderer
 
     /// <summary>
     /// What every render of a record starts from: the delivery key (a hold when a key part is empty), the display key, and
-    /// the document with its kind, an empty data block and, when the key is complete, its id.
+    /// the document with its kind, an empty data block and, when the key is complete, its id (<see cref="RecordId"/>).
     /// </summary>
     private (JsonObject Document, DeliveryKey? Key, string SourceKey, string? TargetId) Start(SourceRecord record, List<string> holds)
     {
@@ -359,11 +361,42 @@ public sealed class MappingRenderer
         string? targetId = null;
         if (key is { } dk)
         {
-            targetId = TargetId.Compose(_context.DataPartition, _mapping.EntityType, dk);
-            document["id"] = targetId;
+            targetId = RecordId(dk, keyValues, sourceKey, holds);
+            if (targetId is not null)
+            {
+                document["id"] = targetId;
+            }
         }
 
         return (document, key, sourceKey, targetId);
+    }
+
+    /// <summary>
+    /// The record's OSDU id. Made from the delivery key, as every mapping's is unless it says otherwise; or, under
+    /// <c>dataset.idFrom: key</c>, from the key's own values (<see cref="TargetId.ComposeFromKey"/>), checked against the
+    /// pattern the template gives <c>id</c>. A key that gives no id that can be written holds the record with the reason, and
+    /// the record keeps no id: an id is never cut short or changed to fit.
+    /// </summary>
+    private string? RecordId(DeliveryKey key, IReadOnlyList<string?> keyValues, string sourceKey, List<string> holds)
+    {
+        if (_mapping.Dataset.IdFrom == MappingIdSource.DeliveryKey)
+        {
+            return TargetId.Compose(_context.DataPartition, _mapping.EntityType, key);
+        }
+
+        if (TargetId.ComposeFromKey(_context.DataPartition, _mapping.EntityType, keyValues, out var problem) is not { } id)
+        {
+            holds.Add($"id: the mapping makes the OSDU id from the key (dataset.idFrom: key), and {sourceKey} gives none: {problem}");
+            return null;
+        }
+
+        if (IdValues.Problem(id, _schema.Resolve("id")) is { } refused)
+        {
+            holds.Add($"id: the mapping makes the OSDU id from the key (dataset.idFrom: key), and the id {sourceKey} gives cannot be written: {refused}");
+            return null;
+        }
+
+        return id;
     }
 
     internal ReferenceSnapshot References => _references;

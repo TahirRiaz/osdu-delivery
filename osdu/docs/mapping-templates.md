@@ -174,12 +174,61 @@ record:
 | `description` | Free text. |
 | `dataset.system` | The source system. It enters the delivery key, and so the OSDU id: two mappings that deliver the same rows into the same entity type and partition need different systems or keys (the OSDU id carries the entity type, not the kind's version), because one OSDU record belongs to one flow ([ledger.md](ledger.md#one-source-several-flows)). |
 | `dataset.key` | The columns of the dataset's own row that identify a record, in order, each named as it is. The delivery key, and so the OSDU id, is derived from them. |
+| `dataset.idFrom` | Optional: what the OSDU id's last part is made from. `deliveryKey`, the default, is the delivery key's 32 hexadecimal digits; `key` is the key's own values, so the id reads as the code it stands for (`dev:reference-data--ExternalUnitOfMeasure:RECALL::GAPI`). See [The OSDU id](#the-osdu-id). |
 | `dataset.label` | Optional display text for the ledger and the GUI, with `{<column>}` tokens. It never enters the record. |
 | `dataset.identity` | Optional list of the dataset's own columns whose values identify the record to a person (a wellbore id, a well name, a log id). The ledger indexes every value, so the Records page finds the record by any of them across every flow, without knowing which flow delivered it. Search only: like the label, an identity never enters the record or its hash. |
 | `parameters` | Values the flow supplies under `render.parameters`. `dataPartition` is always declared. |
 | `searches` | The record sets the mapping's `$search` nodes look in, each with the saved schema that says how its kind is indexed. See [Searches](#searches). |
 | `lookups` | The records a row is matched to once in the cache and read wherever the record needs them, by name. See [Lookups](#lookups). |
 | `record` | The record the mapping renders, laid out as the record is, described below. |
+
+### The OSDU id
+
+The engine writes every record's `id`; no node fills it. It is `{partition}:{entityType}:{unique}`, and `dataset.idFrom`
+says what the unique part is made from:
+
+| `idFrom` | The unique part | Example |
+| --- | --- | --- |
+| `deliveryKey` (the default) | The delivery key, a UUIDv5 over `dataset.system` and the key's values, without hyphens. | `dev:work-product-component--WellLog:5f0c...` |
+| `key` | The key's own values, as OSDU's reference catalogs name their records by code. | `dev:reference-data--ExternalUnitOfMeasure:RECALL::G%2FCC` |
+
+Under `idFrom: key`:
+
+- **Each value is written as the id carries it.** Values are trimmed, as the delivery key trims them, and keep their case,
+  since OSDU and the ledger compare ids exactly. ASCII letters, digits, `_ - . :` stand as they are; every other character
+  is percent-encoded as its UTF-8 bytes with upper-case hex digits (`G/CC` is `G%2FCC`, `°C` is `%C2%B0C`, a space is
+  `%20`), which is what the storage service's id pattern takes. `%` is always written `%25`, so a value that looks encoded
+  (`A%2FB`) never lands on the id of another (`A/B`).
+- **One key column keeps its colons**, so a key `RECALL::GAPI` gives the code OSDU's catalogs write (`LIS-LAS::GAPI`). With
+  several, each value's own colons are escaped (`%3A`) and the values are joined with `:`, so two keys of one mapping
+  never give one id, and the key can be read back from the id: the record preview finds a record by such an id before any
+  ledger holds it.
+- **A key that gives no id holds the record.** An empty value, text that is not valid Unicode, an id longer than the 500
+  characters the ledger keeps, or an id the template's `id` pattern refuses holds the record with the reason; an id is
+  never cut short or changed to fit.
+- **A source that treats case as insignificant folds it in the key** (the Recall units' `RecordKey` is the code in upper
+  case), since the id keeps whatever case the key has.
+- **The delivery key is still the record's identity.** The ledger keys the record by its flow and delivery key, whatever
+  its id is made from, so a retry and an update land on the same record and the same id.
+
+The id is fixed when a record first queues a document, and it is the record's for good:
+
+- **A record keeps the id it claimed.** A mapping whose `idFrom`, system or key changes after records were delivered gives
+  them other ids; the plan holds each such record, naming both ids, and sends nothing, so OSDU never gains a second
+  record the ledger does not name. To move delivered records to new ids, remove them from OSDU at the `record` scope,
+  then either deliver the rows under a ledger of their own (an interface's `ledger:`), which keeps the removed records'
+  whole history, or delete them from the ledger with the removal
+  ([ledger.md](ledger.md#deleting-a-removed-record-from-the-ledger)), after which the next run delivers the rows as new
+  records under the new ids and the ledger keeps one line of each record it deleted.
+- **One OSDU id, one record of the ledger.** Ids made from values can meet where delivery keys could not: a key given by two
+  mappings of one entity type, or a mapping re-keyed under a new system. The second record to claim an id, of another
+  flow or of the same one, is held naming the record that holds it ([ledger.md](ledger.md#one-source-several-flows)).
+- **An id OSDU already holds is never taken over.** Before a record first claims an id made from its key, the intake asks
+  the flow's target whether OSDU holds a record there, through the read back a verify uses (one batched read for a work
+  batch). A record at that id that no record of the ledger claimed is another system's: the record is held naming it, and
+  nothing is sent. An answer that is not an absence holds the record too, and a release or the next run asks again. A
+  record that claimed its id is never asked again, so its retries and updates go to the id it owns.
+- **Choose before anything is delivered.** A mapping's ids are its records' ids for good.
 
 ### The record tree
 

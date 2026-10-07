@@ -673,26 +673,42 @@ public sealed record SkippedRecord
 /// by a concurrent intake since this one read them. They are stale and are recorded as such.
 /// </param>
 /// <param name="Conflicts">
-/// Records refused because another flow's record has claimed the OSDU id they would be written to. Nothing was written
-/// for them; the caller holds them with the owner named.
+/// Records refused because another record, of another flow or of the same one, has claimed the OSDU id they would be
+/// written to, or because another record of the same staging gives the same id. Nothing was written for them; the caller
+/// holds them with the owner named.
 /// </param>
 public sealed record PendingStaging(int Staged, IReadOnlyList<DeliveryKey> Refused, IReadOnlyList<TargetIdConflict> Conflicts)
 {
     public static PendingStaging Empty { get; } = new(0, [], []);
 }
 
-/// <summary>A record whose OSDU id another flow has claimed: the id, and the flow that holds it.</summary>
+/// <summary>A record whose OSDU id another record has claimed: the id, and the record that holds it.</summary>
 /// <param name="DeliveryKey">The record that was not staged.</param>
 /// <param name="TargetId">The OSDU id it would have been written to.</param>
 /// <param name="OwnerFlowId">The flow whose record claimed the id.</param>
 /// <param name="OwnerFlowName">That flow's name as its last submission recorded it, when the ledger knows it.</param>
-public sealed record TargetIdConflict(DeliveryKey DeliveryKey, string TargetId, Guid OwnerFlowId, string? OwnerFlowName)
+/// <param name="OwnerDeliveryKey">The record that claimed the id, when it is of the same flow as the refused one.</param>
+/// <param name="OwnerSourceKey">That record's source key, as the ledger shows it.</param>
+public sealed record TargetIdConflict(
+    DeliveryKey DeliveryKey, string TargetId, Guid OwnerFlowId, string? OwnerFlowName, DeliveryKey? OwnerDeliveryKey = null, string? OwnerSourceKey = null)
 {
     /// <summary>What the held record says about the conflict: which id, whose it is, and how to resolve it.</summary>
     public string Describe()
     {
-        var owner = OwnerFlowName is null ? $"flow {OwnerFlowId:D}" : $"flow '{OwnerFlowName}' ({OwnerFlowId:D})";
-        return $"OSDU id {TargetId} is already claimed by {owner}, and one OSDU record belongs to one flow. Deliver this flow "
+        if (OwnerDeliveryKey is { } record)
+        {
+            // Two records of one flow: their keys differ and give the same id, which only an id made from the key's values
+            // can, or the ledger holds the id under a key the mapping no longer derives (dataset.system or key changed).
+            var owner = OwnerSourceKey is null ? $"record {record}" : $"record {OwnerSourceKey} ({record})";
+            return $"OSDU id {TargetId} is already claimed by {owner} of this flow, and one OSDU record belongs to one record of the ledger. "
+                + "Two keys of this flow give the same id: keep one of them in the source. When the mapping's dataset.system or key changed "
+                + "since that record was delivered, the id stays that record's: put the mapping back, or remove the flow's records from OSDU "
+                + "(the record scope) and deliver them under a ledger of their own (the interface's ledger:), or delete them from the ledger "
+                + "with the removal.";
+        }
+
+        var flow = OwnerFlowName is null ? $"flow {OwnerFlowId:D}" : $"flow '{OwnerFlowName}' ({OwnerFlowId:D})";
+        return $"OSDU id {TargetId} is already claimed by {flow}, and one OSDU record belongs to one flow. Deliver this flow "
             + "to another data partition, or give its mapping a dataset.system or key that yields other OSDU ids.";
     }
 }
@@ -1574,6 +1590,12 @@ public interface ILedger
     Task<IReadOnlyDictionary<DeliveryKey, RecordState>> GetRecordsAsync(Guid flowId, IEnumerable<DeliveryKey> keys, CancellationToken ct = default);
 
     Task<RecordState?> GetRecordAsync(Guid flowId, DeliveryKey key, CancellationToken ct = default);
+
+    /// <summary>
+    /// Which of <paramref name="targetIds"/> a record of the ledger has claimed, of any flow and partition. Ids compare
+    /// exactly, as OSDU compares them; one seek of the claim index per id.
+    /// </summary>
+    Task<IReadOnlySet<string>> ClaimedTargetIdsAsync(IReadOnlyCollection<string> targetIds, CancellationToken ct = default);
 
     /// <summary>
     /// Inserts or updates one flow's records with pending work; existing current-state columns are preserved. A record

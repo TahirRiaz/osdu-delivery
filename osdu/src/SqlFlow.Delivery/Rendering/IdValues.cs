@@ -1,7 +1,7 @@
-using System.Globalization;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 using SqlFlow.Delivery.Templates;
@@ -19,46 +19,10 @@ internal static partial class IdValues
     /// <summary>
     /// A token's value as an id carries it: ASCII letters, digits, '_', '-', '.' and ':' as they stand (':' parts the
     /// code of an id such as a CRS's <c>Projected:EPSG::23031</c>), a percent-escape already there kept, so nothing is
-    /// encoded twice, and every other character percent-encoded as UTF-8. Null when the value is not valid Unicode text.
+    /// encoded twice, and every other character percent-encoded as UTF-8 (<see cref="IdSegment.Encode"/>). Null when the
+    /// value is not valid Unicode text.
     /// </summary>
-    public static string? Encode(string value)
-    {
-        ArgumentNullException.ThrowIfNull(value);
-        var written = new StringBuilder(value.Length);
-        Span<byte> bytes = stackalloc byte[4];
-        for (var i = 0; i < value.Length;)
-        {
-            var c = value[i];
-            if (IdTemplate.IsIdCharacter(c))
-            {
-                written.Append(c);
-                i++;
-                continue;
-            }
-
-            if (c == '%' && i + 2 < value.Length && Uri.IsHexDigit(value[i + 1]) && Uri.IsHexDigit(value[i + 2]))
-            {
-                written.Append('%').Append(char.ToUpperInvariant(value[i + 1])).Append(char.ToUpperInvariant(value[i + 2]));
-                i += 3;
-                continue;
-            }
-
-            if (Rune.DecodeFromUtf16(value.AsSpan(i), out var rune, out var consumed) != System.Buffers.OperationStatus.Done)
-            {
-                return null;
-            }
-
-            var length = rune.EncodeToUtf8(bytes);
-            for (var b = 0; b < length; b++)
-            {
-                written.Append('%').Append(bytes[b].ToString("X2", CultureInfo.InvariantCulture));
-            }
-
-            i += consumed;
-        }
-
-        return written.ToString();
-    }
+    public static string? Encode(string value) => IdSegment.Encode(value, keepEscapes: true);
 
     /// <summary>The entity type an id names (<c>master-data--Wellbore</c>), or null when it does not have OSDU's id shape.</summary>
     public static string? EntityType(string id)

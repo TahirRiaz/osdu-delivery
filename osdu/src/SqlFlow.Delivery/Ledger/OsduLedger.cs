@@ -444,34 +444,37 @@ public sealed partial class OsduLedger : ILedger
         }
     }
 
-    /// <summary>
-    /// Which of <paramref name="targetIds"/> another flow's record has claimed, with the owning flow and its name as its
-    /// last submission recorded it. Ids compare exactly, as OSDU compares them.
-    /// </summary>
-    private static async Task<Dictionary<string, (Guid FlowId, string? FlowName)>> ClaimsOfOtherFlowsAsync(
-        OsduDbContext db, Guid flowId, IEnumerable<string?> targetIds, CancellationToken ct)
+    public async Task<IReadOnlySet<string>> ClaimedTargetIdsAsync(IReadOnlyCollection<string> targetIds, CancellationToken ct = default)
     {
-        var claims = new Dictionary<string, (Guid FlowId, string? FlowName)>(StringComparer.Ordinal);
+        ArgumentNullException.ThrowIfNull(targetIds);
+        if (targetIds.Count == 0)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        await using var db = Open();
+        return await ClaimedAsync(db, targetIds, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Which of <paramref name="targetIds"/> a record has claimed, of any flow, the asking flow's included. Asked for the ids
+    /// of records that claimed none, so a claim found is always another record's. Ids compare exactly, as OSDU compares them.
+    /// </summary>
+    private static async Task<HashSet<string>> ClaimedAsync(OsduDbContext db, IEnumerable<string?> targetIds, CancellationToken ct)
+    {
+        var claimed = new HashSet<string>(StringComparer.Ordinal);
         var ids = targetIds.OfType<string>().Distinct(StringComparer.Ordinal).ToList();
         foreach (var chunk in ids.Chunk(LookupChunk))
         {
             var wanted = chunk.ToList();
-            var owners = await db.DeliveryRecords.AsNoTracking()
-                .Where(r => r.FlowId != flowId && r.ClaimedTargetId != null && wanted.Contains(r.ClaimedTargetId))
-                .Select(r => new
-                {
-                    ClaimedTargetId = r.ClaimedTargetId!,
-                    r.FlowId,
-                    FlowName = db.DeliverySubmissions.Where(s => s.PartitionId == r.PartitionId && s.SubmissionId == r.LastSubmissionId).Select(s => s.FlowName).FirstOrDefault(),
-                })
+            var found = await db.DeliveryRecords.AsNoTracking()
+                .Where(r => r.ClaimedTargetId != null && wanted.Contains(r.ClaimedTargetId))
+                .Select(r => r.ClaimedTargetId!)
                 .ToListAsync(ct).ConfigureAwait(false);
-            foreach (var owner in owners.Where(o => wanted.Contains(o.ClaimedTargetId, StringComparer.Ordinal)))
-            {
-                claims[owner.ClaimedTargetId] = (owner.FlowId, owner.FlowName);
-            }
+            claimed.UnionWith(found.Where(id => wanted.Contains(id, StringComparer.Ordinal)));
         }
 
-        return claims;
+        return claimed;
     }
 
     public async Task MarkSkippedAsync(Guid flowId, IReadOnlyList<SkippedRecord> records, Guid submissionId, CancellationToken ct = default)
@@ -641,10 +644,11 @@ public sealed partial class OsduLedger : ILedger
         {
             var keys = chunk.Select(r => r.DeliveryKey.Value).ToArray();
             var existing = await db.DeliveryRecords.Where(r => r.PartitionId == partition && r.FlowId == flowId && keys.Contains(r.DeliveryKey)).ToDictionaryAsync(r => r.DeliveryKey, ct).ConfigureAwait(false);
-            // A held record claims nothing, and it is not given an id another flow's record holds: nothing this flow
-            // does to it (a removal, a read back) may reach that flow's OSDU record.
-            var claims = await ClaimsOfOtherFlowsAsync(
-                db, flowId, chunk.Where(r => existing.GetValueOrDefault(r.DeliveryKey.Value)?.TargetId is null).Select(r => r.TargetId), ct).ConfigureAwait(false);
+            // A held record claims nothing, and it is not given an id another record holds, of another flow or of this one:
+            // nothing this flow does to it (a removal, a read back) may reach that record's OSDU record. A record that claimed
+            // an id keeps it; one that claimed none names the id its latest render gives, since no earlier one was written.
+            var claims = await ClaimedAsync(
+                db, chunk.Where(r => existing.GetValueOrDefault(r.DeliveryKey.Value)?.ClaimedTargetId is null).Select(r => r.TargetId), ct).ConfigureAwait(false);
             foreach (var record in chunk)
             {
                 if (!existing.TryGetValue(record.DeliveryKey.Value, out var entity))
@@ -663,9 +667,9 @@ public sealed partial class OsduLedger : ILedger
                 }
 
                 entity.Label = Truncate(record.Label, 400) ?? entity.Label;
-                if (record.TargetId is { } targetId && !claims.ContainsKey(targetId))
+                if (entity.ClaimedTargetId is null && record.TargetId is { } targetId)
                 {
-                    entity.TargetId ??= targetId;
+                    entity.TargetId = claims.Contains(targetId) ? null : targetId;
                 }
                 entity.Status = StatusText.Of(RecordStatus.Held);
                 entity.LastError = Truncate(record.LastError, 2000);

@@ -637,6 +637,28 @@ export default function MappingBuilderPage() {
                   )}
               </div>
               <div className="flex flex-col gap-1.5">
+                <Label htmlFor="mapping-builder-id-from">OSDU id</Label>
+                <Select
+                  value={draft.idFrom === "key" ? "key" : "deliveryKey"}
+                  onValueChange={(value) => {
+                    setDraft((current) => (current === null ? current : { ...current, idFrom: value === "key" ? "key" : null }));
+                  }}
+                >
+                  <SelectTrigger id="mapping-builder-id-from" size="sm" className="h-8 w-full md:w-72" data-testid="mapping-builder-id-from">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="deliveryKey">Made from the delivery key</SelectItem>
+                    <SelectItem value="key">Made from the key&apos;s values</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  The last part of every record&apos;s OSDU id: a GUID derived from the key, or the key&apos;s values themselves, so the id
+                  reads as the code it stands for (<span className="font-mono">RECALL::GAPI</span>). A record keeps the id it was first
+                  delivered under, so choose before anything is delivered.
+                </p>
+              </div>
+              <div className="flex flex-col gap-1.5">
                 <Label htmlFor="mapping-builder-label">Label</Label>
                 <Input
                   id="mapping-builder-label"

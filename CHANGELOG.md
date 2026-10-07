@@ -34,6 +34,18 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   latest write, one removed and one with work in flight are passed over, each saying why; a route that cannot write an
   earlier version back does not offer it (docs: `osdu/docs/reversal-plan.md`, Restoring the previous version).
 
+- **A mapping can make its records' OSDU ids from the key's own values: `dataset.idFrom: key`.** The id reads as the code
+  it stands for, as OSDU's reference catalogs name theirs (`dev:reference-data--ExternalUnitOfMeasure:RECALL::GAPI` beside
+  `LIS-LAS::GAPI`), instead of the delivery key's 32 hexadecimal digits, which stay the default for every mapping that
+  does not say so. Values are trimmed, keep their case and are percent-encoded as UTF-8 where an id cannot carry them
+  (`G/CC` is `G%2FCC`, `%` is `%25`); one key column keeps its colons, several are joined with `:`; an empty value, text
+  that is not Unicode, an id over the ledger's 500 characters or one the template's pattern refuses holds the record. The
+  delivery key stays the record's identity in the ledger, so retries and updates land on the same record and id. Before
+  a record first claims such an id, the intake asks OSDU through the flow's read back whether a record is already there:
+  one no record of the ledger claimed is another system's, and the record is held instead of writing a new version of
+  it. The mapping builder sets the option, the shape and the catalog show it, and the record preview reads such an id
+  back into its key (docs: `osdu/docs/mapping-templates.md`, The OSDU id).
+
 - **A mapping writes inside an object the schema leaves open, such as `data.ExtensionProperties`.** The template marks an
   object that declares no properties, names no type for its keys and refuses none as open, and any path inside it is a
   variable of no type: a mapping lays out objects, values, literals, lists and a `$forEach`'s items there, at any depth,
@@ -705,6 +717,14 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
   collection are behind an info mark beside the partition. The four scopes are compact choices in two groups, reversible
   and permanent, each one line of what it does, with what the ledger does and the call it makes on hover. A scope the flow
   cannot reach is shown as not available, with the reason on hover, and cannot be confirmed.
+
+- **One OSDU id belongs to one record of the ledger, and a record keeps the id it claimed.** Staging refuses an id that
+  another record of the same flow claimed, as it refused another flow's, naming that record; two records of one staging
+  that give one id stage the one with the lowest key and hold the others; the plan holds a record whose render gives
+  another id than the one it claimed, naming both, and sends nothing; and the worker sends nothing when a queued
+  document's id is not its record's. A record that was only ever held names the id its latest render gives. Before, a
+  same-flow collision failed the staging after five tries, and a render under a changed id would have been sent to the
+  new id while the ledger named the old one (docs: `osdu/docs/ledger.md`, One source, several flows).
 
 - **The explorer's welcome is a workbench view.** It fills the window as the browse view does, where it was a narrow
   column in a large card: **Recently opened** lists the records opened lately as the records grid (name, type and

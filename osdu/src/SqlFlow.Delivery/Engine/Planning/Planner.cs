@@ -832,6 +832,16 @@ public sealed class Planner
     }
 
     /// <summary>
+    /// Why a record whose render gives another OSDU id than the one it claimed is held: which two ids, and the two ways on.
+    /// </summary>
+    internal static string ChangedTargetId(string claimed, string rendered)
+        => $"the mapping now gives this record the OSDU id {rendered}, and the record claimed {claimed} when it first queued a document; "
+            + "a record keeps the OSDU id it claimed, so nothing is sent. To deliver the flow's records under the ids the mapping gives now, "
+            + "remove them from OSDU (the record scope) and either deliver them under a ledger of their own (the interface's ledger:), "
+            + "which keeps their history, or delete them from the ledger with the removal, after which the next run delivers the rows as new records; "
+            + "or put back the mapping's dataset.idFrom, system and key";
+
+    /// <summary>
     /// The record's document, the change it amounts to, and the entry the plan records for it: everything after the
     /// point where the record's payload has been resolved.
     /// </summary>
@@ -890,11 +900,20 @@ public sealed class Planner
             render = render with { Holds = [unusable] };
         }
 
+        // A record keeps the OSDU id it claimed when it first queued a document. A render that gives it another one (its
+        // mapping's dataset.idFrom, system or key changed) is never sent: the document would land on a second OSDU record
+        // while the ledger, and every removal and read back, still names the first.
+        if (state?.ClaimedTargetId is { } claimed && render.TargetId is { } rendered && !string.Equals(claimed, rendered, StringComparison.Ordinal))
+        {
+            render = render with { Holds = [.. render.Holds, ChangedTargetId(claimed, rendered)] };
+        }
+
         if (render.IsHeld)
         {
             entries.Add(basis with
             {
-                TargetId = render.TargetId,
+                // A record that claimed an id is held under it, whatever this render gives.
+                TargetId = state?.ClaimedTargetId ?? render.TargetId,
                 Reason = string.Join("; ", render.Holds),
                 Render = render,
                 PayloadHash = payloadHash,

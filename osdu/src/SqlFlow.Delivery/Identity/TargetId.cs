@@ -2,15 +2,114 @@ namespace SqlFlow.Delivery.Identity;
 
 /// <summary>
 /// A client-supplied OSDU record id: <c>{partition}:{entityType}:{unique}</c> (design.md section 5.3). The unique
-/// segment is the delivery key, so upsert is native and no id bookkeeping is needed.
+/// segment is the delivery key, or, for a mapping whose <c>dataset.idFrom</c> is <c>key</c>, the key's own values, so
+/// upsert is native and no id bookkeeping is needed.
 /// </summary>
 public static class TargetId
 {
+    /// <summary>The longest OSDU id the ledger keeps for a record.</summary>
+    public const int MaxLength = Data.DeliveryModel.MaxTargetIdLength;
+
+    /// <summary>The id whose unique segment is the delivery key, without hyphens: every mapping's, unless it derives its ids from its key.</summary>
     public static string Compose(string dataPartition, string entityType, DeliveryKey key)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataPartition);
         ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
         return $"{dataPartition}:{entityType}:{key.Value:N}";
+    }
+
+    /// <summary>
+    /// The id whose unique segment is the key's own values (<c>dataset.idFrom: key</c>), or null with why the values give
+    /// none. Each value is trimmed, as the delivery key trims it, and keeps its case, since OSDU compares ids exactly. One
+    /// value is written as it stands, its colons kept, so a key such as <c>RECALL::GAPI</c> gives the code OSDU's catalogs
+    /// write (<c>LIS-LAS::GAPI</c>); with several, each value's own colons are escaped and the values are joined with ':'.
+    /// Every other character an id does not carry, '%' among them, is percent-encoded (<see cref="IdSegment.Encode"/>), so
+    /// two different keys of one mapping never give one id and the key can be read back from it (<see cref="KeyValues"/>).
+    /// Keys of different lengths can: <c>[a:b]</c> and <c>[a, b]</c> both give <c>a:b</c>. Those are two mappings writing
+    /// one entity type, and the ledger refuses the second record that claims the id, as it refuses any id claimed twice.
+    /// </summary>
+    /// <param name="dataPartition">The partition the id is minted in.</param>
+    /// <param name="entityType">The entity type the mapping renders.</param>
+    /// <param name="keyValues">The key's values, in key order.</param>
+    /// <param name="problem">Why no id is given: a value that is empty or not valid Unicode, or an id longer than <see cref="MaxLength"/>.</param>
+    public static string? ComposeFromKey(string dataPartition, string entityType, IReadOnlyList<string?> keyValues, out string? problem)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataPartition);
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
+        ArgumentNullException.ThrowIfNull(keyValues);
+        problem = null;
+        if (keyValues.Count == 0)
+        {
+            problem = "the key has no values to make the OSDU id from";
+            return null;
+        }
+
+        var parts = new List<string>(keyValues.Count);
+        for (var i = 0; i < keyValues.Count; i++)
+        {
+            var value = keyValues[i]?.Trim();
+            if (string.IsNullOrEmpty(value))
+            {
+                problem = keyValues.Count == 1
+                    ? "the key is empty, and the OSDU id is made from it"
+                    : $"key value {i + 1} of {keyValues.Count} is empty, and the OSDU id is made from every key value";
+                return null;
+            }
+
+            if (IdSegment.Encode(value, keepEscapes: false, keepColons: keyValues.Count == 1) is not { } encoded)
+            {
+                problem = $"key value {i + 1} holds text that is not valid Unicode, which no OSDU id can carry";
+                return null;
+            }
+
+            parts.Add(encoded);
+        }
+
+        var id = $"{dataPartition}:{entityType}:{string.Join(':', parts)}";
+        if (id.Length > MaxLength)
+        {
+            problem = $"the OSDU id the key gives is {id.Length} characters long ({id[..60]}...), and the ledger keeps ids of at most {MaxLength}; "
+                + "a character outside ASCII letters, digits and _ - . : is written as up to 12 characters of percent-escapes";
+            return null;
+        }
+
+        return id;
+    }
+
+    /// <summary>
+    /// The key values an id made by <see cref="ComposeFromKey"/> was made from, for a mapping keyed by
+    /// <paramref name="keyCount"/> columns: null when the id is not of <paramref name="dataPartition"/> and
+    /// <paramref name="entityType"/>, or its unique segment does not read back as that many values.
+    /// </summary>
+    public static IReadOnlyList<string>? KeyValues(string id, string dataPartition, string entityType, int keyCount)
+    {
+        ArgumentNullException.ThrowIfNull(id);
+        ArgumentOutOfRangeException.ThrowIfLessThan(keyCount, 1);
+        var prefix = $"{dataPartition}:{entityType}:";
+        if (!id.StartsWith(prefix, StringComparison.Ordinal) || id.Length == prefix.Length)
+        {
+            return null;
+        }
+
+        var unique = id[prefix.Length..];
+        var parts = keyCount == 1 ? new[] { unique } : unique.Split(':');
+        if (parts.Length != keyCount)
+        {
+            return null;
+        }
+
+        var values = new List<string>(parts.Length);
+        foreach (var part in parts)
+        {
+            if (IdSegment.Decode(part) is not { Length: > 0 } value || value.Trim().Length != value.Length)
+            {
+                return null;
+            }
+
+            values.Add(value);
+        }
+
+        return values;
     }
 
     /// <summary>Extracts the entity type ("work-product-component--WellLog") from a kind ("osdu:wks:work-product-component--WellLog:1.4.0").</summary>

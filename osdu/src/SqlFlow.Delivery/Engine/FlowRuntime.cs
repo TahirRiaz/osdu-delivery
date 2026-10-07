@@ -347,7 +347,12 @@ public sealed class FlowRuntime : IDisposable
 
     public Planner Planner => _planner ??= new Planner(Source, _context.Payloads, _context.Ledger, _context.Loggers.CreateLogger<Planner>());
 
-    public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Stores, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>()) { RunId = RunId, Trace = _context.Trace };
+    public SubmissionIntake Intake => new(RequireLedger(), Planner, _context.Stores, _context.Time, _context.Listener, _context.Loggers.CreateLogger<SubmissionIntake>())
+    {
+        RunId = RunId,
+        Trace = _context.Trace,
+        Target = ProtocolAsync,
+    };
 
     /// <summary>What this run asks the intake for: its selection, the submission it works on, and a member's slices.</summary>
     public IntakeRequest Request => new(Selection, SubmissionId, Slices);

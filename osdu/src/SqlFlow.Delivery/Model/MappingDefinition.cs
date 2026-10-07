@@ -149,6 +149,25 @@ public sealed record MappingDataset
     /// every flow; search only, never part of the record.
     /// </summary>
     public IReadOnlyList<string> Identity { get; init; } = [];
+
+    /// <summary>
+    /// What the unique segment of every record's OSDU id is made from (<c>dataset.idFrom</c>): the delivery key, unless the
+    /// mapping says the key's own values. Either way the ledger keys the record by its delivery key.
+    /// </summary>
+    public MappingIdSource IdFrom { get; init; } = MappingIdSource.DeliveryKey;
+}
+
+/// <summary>What the unique segment of a mapping's OSDU ids is made from (<c>dataset.idFrom</c>).</summary>
+public enum MappingIdSource
+{
+    /// <summary>The delivery key, 32 hexadecimal digits (<c>dev:master-data--Wellbore:6f1c...</c>): every mapping's, unless it says otherwise.</summary>
+    DeliveryKey,
+
+    /// <summary>
+    /// The values of <c>dataset.key</c>, percent-encoded (<c>dev:reference-data--ExternalUnitOfMeasure:RECALL::G%2FCC</c>), so
+    /// the id reads as the code it stands for (<see cref="Identity.TargetId.ComposeFromKey"/>).
+    /// </summary>
+    Key,
 }
 
 public sealed record MappingParameter

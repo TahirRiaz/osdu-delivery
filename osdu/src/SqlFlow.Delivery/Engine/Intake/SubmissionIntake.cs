@@ -1,12 +1,14 @@
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using SqlFlow.Core;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Planning;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Planning;
+using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Source;
 using SqlFlow.Delivery.Storage;
@@ -92,6 +94,12 @@ public sealed class SubmissionIntake
     /// describes is on it, as a plan run shows it; so is how far the planning has got.
     /// </summary>
     public RunTrace? Trace { get; init; }
+
+    /// <summary>
+    /// The flow's target, asked whether OSDU already holds a record at an OSDU id made from a key's values before a record
+    /// first claims it (<see cref="HoldOccupiedAsync"/>). Null leaves every such id unconfirmed, so its record is held.
+    /// </summary>
+    public Func<CancellationToken, Task<IDeliveryProtocol>>? Target { get; init; }
 
     public SubmissionIntake(ILedger ledger, Planner planner, FileStoreRegistry stores, TimeProvider time, IDeliveryListener listener, ILogger<SubmissionIntake> logger)
     {
@@ -350,6 +358,8 @@ public sealed class SubmissionIntake
 
         WorkBatchWriter? writer = null;
         var pending = new List<RecordState>(batchRecords);
+        // The records of the batch about to claim an OSDU id made from their key for the first time.
+        var unclaimed = new HashSet<DeliveryKey>();
         var skipped = new List<SkippedRecord>(Planner.RenderBatch);
         var blocked = new List<DeliveryKey>(Planner.RenderBatch);
         var context = header.Mapping.Context.Canonical();
@@ -442,12 +452,17 @@ public sealed class SubmissionIntake
                                 entry.Render.CacheUsages,
                                 ct).ConfigureAwait(false);
                         pending.Add(PendingState(flow, submission, header.Mapping, entry, reference, nextBatch) with { CacheSetId = cacheSet });
+                        if (header.Mapping.Mapping.Dataset.IdFrom == MappingIdSource.Key && entry.Existing?.ClaimedTargetId is null)
+                        {
+                            unclaimed.Add(entry.Key.Value);
+                        }
+
                         if (pending.Count >= batchRecords)
                         {
-                            var closed = await CloseBatchAsync(flow, submission, writer, pending, skipped, ct).ConfigureAwait(false);
+                            var (closed, occupied) = await CloseBatchAsync(flow, submission, writer, pending, unclaimed, skipped, ct).ConfigureAwait(false);
                             staged += closed.Staged;
                             refused += closed.Refused.Count;
-                            conflicted += closed.Conflicts.Count;
+                            conflicted += closed.Conflicts.Count + occupied;
                             writer = null;
                             batches++;
                             nextBatch++;
@@ -467,10 +482,10 @@ public sealed class SubmissionIntake
 
             if (writer is not null)
             {
-                var closed = await CloseBatchAsync(flow, submission, writer, pending, skipped, ct).ConfigureAwait(false);
+                var (closed, occupied) = await CloseBatchAsync(flow, submission, writer, pending, unclaimed, skipped, ct).ConfigureAwait(false);
                 staged += closed.Staged;
                 refused += closed.Refused.Count;
-                conflicted += closed.Conflicts.Count;
+                conflicted += closed.Conflicts.Count + occupied;
                 writer = null;
                 batches++;
             }
@@ -531,15 +546,19 @@ public sealed class SubmissionIntake
     };
 
     /// <summary>
-    /// Commits the batch file, stages its records in the ledger and registers the batch. Records the ledger refuses
-    /// because a newer version landed or was queued since they were planned go to <paramref name="stale"/>, to be
-    /// recorded like any other stale skip. Records whose OSDU id another flow has claimed are held here, each naming the
-    /// flow that owns the id, so the conflict is on the record's page and in its history rather than only in a log.
+    /// Commits the batch file, stages its records in the ledger and registers the batch. A record about to claim an OSDU id
+    /// made from its key for the first time is held first when OSDU already holds a record there (<see cref="HoldOccupiedAsync"/>).
+    /// Records the ledger refuses because a newer version landed or was queued since they were planned go to
+    /// <paramref name="stale"/>, to be recorded like any other stale skip. Records whose OSDU id another record has claimed
+    /// are held here, each naming the record that owns the id, so the conflict is on the record's page and in its history
+    /// rather than only in a log. Returns the staging and how many records were held for an id OSDU already holds.
     /// </summary>
-    private async Task<PendingStaging> CloseBatchAsync(
-        FlowDefinition flow, SubmissionState submission, WorkBatchWriter writer, List<RecordState> pending, List<SkippedRecord> stale, CancellationToken ct)
+    private async Task<(PendingStaging Staging, int Occupied)> CloseBatchAsync(
+        FlowDefinition flow, SubmissionState submission, WorkBatchWriter writer, List<RecordState> pending, HashSet<DeliveryKey> unclaimed,
+        List<SkippedRecord> stale, CancellationToken ct)
     {
         await writer.DisposeAsync().ConfigureAwait(false);
+        var occupied = await HoldOccupiedAsync(flow, submission, writer.Batch, pending, unclaimed, ct).ConfigureAwait(false);
         var staging = await _ledger.UpsertPendingAsync(flow.Id, pending, ct).ConfigureAwait(false);
         if (staging.Conflicts.Count > 0)
         {
@@ -548,7 +567,7 @@ public sealed class SubmissionIntake
                 .Select(conflict => ConflictState(byKey[conflict.DeliveryKey], conflict))
                 .ToList();
             _logger.LogWarning(
-                "Batch {Batch}: {Conflicts} record(s) were held because another flow has claimed their OSDU ids; the first: {Detail}",
+                "Batch {Batch}: {Conflicts} record(s) were held because another record has claimed their OSDU ids; the first: {Detail}",
                 writer.Batch, staging.Conflicts.Count, staging.Conflicts[0].Describe());
             await FlushHeldAsync(flow, submission, held, ct).ConfigureAwait(false);
         }
@@ -590,12 +609,150 @@ public sealed class SubmissionIntake
             CreatedUtc = _time.GetUtcNow().UtcDateTime,
         }, ct).ConfigureAwait(false);
         pending.Clear();
-        return staging;
+        return (staging, occupied);
     }
 
     /// <summary>
-    /// A record staging refused because another flow claimed its OSDU id, as a hold: the origin and version the work was
-    /// built from, no OSDU id (the one it names is not this flow's), and the conflict as its reason.
+    /// Holds the records of <paramref name="unclaimed"/> whose OSDU id, made from their key, OSDU already holds a record at,
+    /// and takes them out of <paramref name="pending"/> before staging. Such a record never queued a document, so nothing it
+    /// did wrote that record: it is another system's, or one this ledger has no record of, and writing to the id would make
+    /// a new version of a record the ledger does not own. The flow's own read back asks (<see cref="IDeliveryProtocol.VerifyBatchAsync"/>),
+    /// one batched read for the batch. An id a record of the ledger has claimed is not asked: staging refuses it, naming that
+    /// record. An answer that is not an absence holds the record too, since an id made from a key is claimed only when it is
+    /// known to be free; a release, or the next run, asks again. A target that keeps records under keys of its own (a DSPDM
+    /// row's primary key) stores nothing at the id, and is not asked. Returns how many records were held.
+    /// </summary>
+    private async Task<int> HoldOccupiedAsync(
+        FlowDefinition flow, SubmissionState submission, int batch, List<RecordState> pending, HashSet<DeliveryKey> unclaimed, CancellationToken ct)
+    {
+        if (unclaimed.Count == 0)
+        {
+            return 0;
+        }
+
+        var asking = pending.Where(p => unclaimed.Contains(p.DeliveryKey) && p.TargetId is not null).ToList();
+        unclaimed.Clear();
+        var claimed = await _ledger.ClaimedTargetIdsAsync(asking.Select(p => p.TargetId!).Distinct(StringComparer.Ordinal).ToList(), ct).ConfigureAwait(false);
+        asking.RemoveAll(p => claimed.Contains(p.TargetId!));
+        if (asking.Count == 0)
+        {
+            return 0;
+        }
+
+        var reasons = await OccupiedAsync(asking.Select(p => p.TargetId!).Distinct(StringComparer.Ordinal).ToList(), ct).ConfigureAwait(false);
+        var held = asking
+            .Where(p => reasons.ContainsKey(p.TargetId!))
+            .Select(p => OccupiedState(p, reasons[p.TargetId!]))
+            .ToList();
+        if (held.Count == 0)
+        {
+            return 0;
+        }
+
+        var keys = held.Select(h => h.DeliveryKey).ToHashSet();
+        pending.RemoveAll(p => keys.Contains(p.DeliveryKey));
+        _logger.LogWarning(
+            "Batch {Batch}: {Held} record(s) were held because their OSDU ids, made from their keys, are not known to be free; the first: {Detail}",
+            batch, held.Count, held[0].LastError);
+        await FlushHeldAsync(flow, submission, held, ct).ConfigureAwait(false);
+        return held.Count;
+    }
+
+    /// <summary>
+    /// Why each of <paramref name="ids"/> that is not known to be free cannot be claimed: OSDU holds a record there, the target
+    /// could not say, or there is no target to ask. An id the target answers is absent is free, and not in the result.
+    /// </summary>
+    private async Task<Dictionary<string, string>> OccupiedAsync(IReadOnlyList<string> ids, CancellationToken ct)
+    {
+        var reasons = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (Target is null)
+        {
+            foreach (var id in ids)
+            {
+                reasons[id] = $"the OSDU id {id} is made from the key, and no target was given to ask whether OSDU already holds a record there; "
+                    + "an id made from a key is claimed only when it is known to be free";
+            }
+
+            return reasons;
+        }
+
+        var protocol = await Target(ct).ConfigureAwait(false);
+        if (protocol.VerifiesWithTargetState)
+        {
+            return reasons;
+        }
+
+        foreach (var chunk in ids.Chunk(Math.Max(1, protocol.MaxVerifyBatch)))
+        {
+            IReadOnlyList<VerifyResult> results;
+            try
+            {
+                results = await protocol.VerifyBatchAsync(chunk.Select(id => new VerifyRequest(id, null)).ToList(), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
+            {
+                var why = Http.HeaderRedaction.RedactMessage(ex.Message);
+                foreach (var id in chunk)
+                {
+                    reasons[id] = $"asking OSDU whether it already holds a record at {id}, the OSDU id made from the key, failed ({why}); "
+                        + "an id made from a key is claimed only when it is known to be free, so a release or the next run asks again";
+                }
+
+                continue;
+            }
+
+            if (results.Count != chunk.Length)
+            {
+                throw new DeliveryException(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"The target answered {results.Count} result(s) for the {chunk.Length} OSDU id(s) it was asked about, starting with {chunk[0]}; a read back answers once for each id."));
+            }
+
+            for (var i = 0; i < chunk.Length; i++)
+            {
+                var result = results[i];
+                switch (result.Outcome)
+                {
+                    case VerifyOutcome.Missing:
+                        break;
+                    case VerifyOutcome.Match or VerifyOutcome.Drifted:
+                        var version = result.ObservedVersion is { } observed ? string.Create(CultureInfo.InvariantCulture, $" at version {observed}") : string.Empty;
+                        reasons[chunk[i]] = $"OSDU already holds a record at {chunk[i]}{version}, the OSDU id made from the key, and no record of the ledger claimed it: "
+                            + "it is another system's, so nothing is sent rather than writing a new version of it. Remove or rename that record, "
+                            + "or give the mapping a key or dataset.idFrom that yields another id";
+                        break;
+                    default:
+                        reasons[chunk[i]] = $"OSDU could not say whether it holds a record at {chunk[i]}, the OSDU id made from the key ({Http.HeaderRedaction.RedactMessage(result.Detail ?? "no detail")}); "
+                            + "an id made from a key is claimed only when it is known to be free, so a release or the next run asks again";
+                        break;
+                }
+            }
+        }
+
+        return reasons;
+    }
+
+    /// <summary>
+    /// A record held before staging because its OSDU id is not known to be free, as a hold: the origin and version the work
+    /// was built from, no OSDU id (the one it names is not the ledger's), and the reason.
+    /// </summary>
+    private static RecordState OccupiedState(RecordState record, string reason) => record with
+    {
+        TargetId = null,
+        PendingDocumentRef = null,
+        WorkBatch = null,
+        PendingMetadataHash = null,
+        PendingPayloadHash = null,
+        PendingPayloadLocation = null,
+        PendingMetadata = false,
+        PendingPayload = false,
+        CacheSetId = null,
+        LastError = reason,
+    };
+
+    /// <summary>
+    /// A record staging refused because another record claimed its OSDU id, as a hold: the origin and version the work was
+    /// built from, no OSDU id (the one it names is not this record's), and the conflict as its reason.
     /// </summary>
     private static RecordState ConflictState(RecordState refused, TargetIdConflict conflict) => refused with
     {
