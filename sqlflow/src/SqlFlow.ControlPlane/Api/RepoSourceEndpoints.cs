@@ -96,7 +96,7 @@ public static class RepoSourceEndpoints
     }
 
     private static async Task<Results<Created<RepoSourceRegistered>, ProblemHttpResult>> RegisterSourceAsync(
-        RegisterRepoSourceRequest request, CatalogDbContext db, TimeProvider clock, CancellationToken ct)
+        RegisterRepoSourceRequest request, CatalogDbContext db, TimeProvider clock, RepoSyncSignal syncSignal, CancellationToken ct)
     {
         if (request is null || string.IsNullOrWhiteSpace(request.Name))
         {
@@ -137,18 +137,22 @@ public static class RepoSourceEndpoints
             hasLocal ? request.LocalPath!.Trim() : null,
             credentialReference, request.CredentialUsername, request.ExcludedFlowPaths, ct).ConfigureAwait(false);
 
+        // A new or re-enabled source is due now: start its first sync at once rather than on the next scan.
+        syncSignal.Wake();
         return TypedResults.Created($"/api/v1/repos/sources/{id}", new RepoSourceRegistered(id));
     }
 
     /// <summary>
-    /// Syncs a source now and answers once the sync has happened: the source is made due, and the response waits (up to
+    /// Syncs a source now and answers once the sync has happened: the source is made due and this host's sync loop is
+    /// woken to start it at once (<see cref="RepoSyncSignal"/>), and the response waits (up to
     /// <c>ManagedSync:SyncNowWaitSeconds</c>) for the attempt that answers this request, so it carries the commit that
     /// attempt pulled (<c>lastSyncedSha</c>), which is the commit a run started afterwards is pinned to, or the error it
     /// failed with (<c>lastError</c>). 200 when the attempt answered, success or failure; 202 with the source still
     /// <c>syncPending</c> when it outlasted the wait; 404 for an unknown or disabled source.
     /// </summary>
     private static async Task<Results<Ok<RepoSourceDto>, Accepted<RepoSourceDto>, ProblemHttpResult>> SyncNowAsync(
-        Guid id, CatalogDbContext db, TimeProvider clock, RepoSyncWaiter syncWaiter, CancellationToken ct)
+        Guid id, CatalogDbContext db, TimeProvider clock, RepoSyncWaiter syncWaiter, RepoSyncSignal syncSignal,
+        CancellationToken ct)
     {
         var requestedUtc = clock.GetUtcNow().UtcDateTime;
         var outcome = await RepoSourceStore.TriggerNowAsync(db, id, requestedUtc, ct).ConfigureAwait(false);
@@ -159,10 +163,15 @@ public static class RepoSourceEndpoints
         }
 
         // Post a non-terminal "queued" line to the activity trace so the panel a client opens on this click latches
-        // onto a live trace right away: the background sync worker (which claims the source on its next tick) then
-        // appends the real clone/reconcile/result trace, and the stream stays open until that attempt is terminal.
+        // onto a live trace right away: the background sync worker then appends the real clone/reconcile/result trace,
+        // and the stream stays open until that attempt is terminal. The line is written before the loop is woken, so it
+        // always comes first in the trace.
         var trace = await ActivityTrace.BeginAsync(db, ActivityKinds.RepoSync, id.ToString(), clock, ct).ConfigureAwait(false);
         await trace.InfoAsync("queued", "Sync requested; waiting for a worker to pick it up.", ct).ConfigureAwait(false);
+
+        // Start the sync now instead of on the loop's next scan. A sync already running finishes first, and the woken
+        // scan follows it at once.
+        syncSignal.Wake();
 
         var (row, answered) = await syncWaiter.WaitForAnswerAsync(db, id, requestedUtc, ct).ConfigureAwait(false);
         if (row is null)
