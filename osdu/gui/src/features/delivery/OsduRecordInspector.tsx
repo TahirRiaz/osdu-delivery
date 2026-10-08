@@ -261,17 +261,22 @@ function VersionPicker({ read, shown, ledgerVersion, loading, onPick }: {
 
 /**
  * A value that names another OSDU record: the name itself is the link, and a click opens that record here, read
- * through the same flow's route, after this one on the trail. The copy beside it hands over the id verbatim.
+ * through the same flow's route, after this one on the trail. The copy beside it hands over the id verbatim; in a list
+ * of records (`quietCopy`) it shows on the row's hover, as the explorer's grids show theirs.
  */
-function ReferenceLink({ value, path, ownId, onOpenLink, opening, term, className }: {
+function ReferenceLink({ value, path, ownId, onOpenLink, opening, term, className, withoutType = false, quietCopy = false }: {
   value: string; path: string; ownId: string | null; onOpenLink?: OpenLink; opening?: string | null; term: string; className?: string;
+  /** Names the record by its unique part alone, where a heading names its type. */
+  withoutType?: boolean;
+  /** Shows the copy on the hover of the row (`group/link`) rather than always. */
+  quietCopy?: boolean;
 }) {
   const id = withoutVersion(value);
   const self = ownId !== null && id === withoutVersion(ownId);
   const matched = term !== "" && value.toLowerCase().includes(term);
   const name = matched
     ? <span className="min-w-0 break-all font-mono text-[12px]"><Highlight text={value} term={term} /></span>
-    : <RecordName id={value} className="text-[12px]" />;
+    : <RecordName id={value} withoutType={withoutType} className="text-[12px]" />;
   return (
     <span className={cn("inline-flex min-w-0 max-w-full items-center gap-1", className)} data-testid="osdu-record-link" data-value={value}>
       {onOpenLink !== undefined && !self
@@ -288,8 +293,10 @@ function ReferenceLink({ value, path, ownId, onOpenLink, opening, term, classNam
             {name}
           </button>
         )
-        : <span className="inline-flex min-w-0 max-w-full items-center gap-1 text-muted-foreground">{name}{self && <span className="text-[11px]">(this record)</span>}</span>}
-      <CopyButton iconOnly label="Copy the id" text={value} testId="copy-osdu-link" />
+        : <span className="inline-flex min-w-0 max-w-full items-center gap-1 text-muted-foreground">{name}{self && <span className="shrink-0 text-[11px]">(this record)</span>}</span>}
+      <span className={cn("shrink-0", quietCopy && "opacity-0 transition-opacity group-hover/link:opacity-100 focus-within:opacity-100")}>
+        <CopyButton iconOnly label="Copy the id" text={value} testId="copy-osdu-link" />
+      </span>
     </span>
   );
 }
@@ -511,24 +518,108 @@ function AccessView({ record }: { record: Record<string, unknown> }) {
   );
 }
 
-/** The records this one refers to, each opened by its name, with the paths that name it, each a step to that place. */
+/** The paths a linked record is named at that its row lists before **more**; the others are one click away. */
+const LINK_PATHS_SHOWN = 2;
+
+/** The records a record links to, by their type (`WellLogSamplingDomainType`), the types in name order, each with its records. */
+function linksByType(references: RecordModel["references"]): { type: string; references: RecordModel["references"] }[] {
+  const byType = new Map<string, RecordModel["references"]>();
+  for (const reference of references) {
+    const type = idParts(reference.id).type || "Other";
+    byType.set(type, [...(byType.get(type) ?? []), reference]);
+  }
+
+  return [...byType.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, "en", { sensitivity: "base" }))
+    .map(([type, held]) => ({ type, references: [...held].sort((x, y) => idParts(x.id).unique.localeCompare(idParts(y.id).unique, "en", { numeric: true })) }));
+}
+
+/**
+ * The records this one refers to, under a heading per type with how many there are, each opened by its name (its unique
+ * part: the heading names the type), the copy on the row's hover. Beside it, in a column of its own share that never
+ * crowds the name, the paths that name it, each a step to that place: the first two, and the others behind **more**, so a
+ * unit named by every curve of a log takes one row, not a column of paths.
+ */
 function LinksView({ model, ownId, onOpenLink, opening, onSelect }: { model: RecordModel; ownId: string | null; onOpenLink?: OpenLink; opening?: string | null; onSelect: (path: string) => void }) {
+  const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(() => new Set());
+  const groups = useMemo(() => linksByType(model.references), [model.references]);
   if (model.references.length === 0) {
     return <EmptyState title="No linked records" description="No value of this record names another record." />;
   }
 
+  const toggle = (id: string) => setUnfolded((was) => {
+    const next = new Set(was);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+
+    return next;
+  });
+
   return (
-    <div className="flex flex-col">
-      {model.references.map((reference) => (
-        <div key={reference.id} className="flex min-w-0 items-baseline gap-3 border-b px-3 py-1.5 last:border-b-0">
-          <ReferenceLink value={reference.id} path={reference.paths[0]} ownId={ownId} onOpenLink={onOpenLink} opening={opening} term="" className="min-w-0 flex-1" />
-          <span className="flex shrink-0 flex-wrap justify-end gap-x-2 text-[11px] text-muted-foreground">
-            {reference.paths.map((path) => {
-              const holder = model.byPath.get(path)?.parent ?? "";
-              return <button key={path} type="button" className="cursor-pointer font-mono hover:text-foreground hover:underline" onClick={() => onSelect(holder === "" ? path : holder)} title="Go to where the record names it">{path}</button>;
-            })}
-          </span>
-        </div>
+    <div className="flex flex-col" data-testid="osdu-links">
+      {groups.map((group) => (
+        <section key={group.type} aria-label={group.type} data-testid="osdu-links-type">
+          <div className="flex items-baseline gap-2 border-b bg-muted/40 px-3 py-1 text-[11px] text-muted-foreground">
+            <span className="min-w-0 truncate font-medium text-foreground/80" title={group.type}>{group.type}</span>
+            <span className="shrink-0 tabular-nums">{group.references.length}</span>
+          </div>
+          {group.references.map((reference) => {
+            const open = unfolded.has(reference.id);
+            const paths = open ? reference.paths : reference.paths.slice(0, LINK_PATHS_SHOWN);
+            const more = reference.paths.length - LINK_PATHS_SHOWN;
+            return (
+              <div
+                key={reference.id}
+                className="group/link grid grid-cols-[minmax(0,1fr)_minmax(0,38%)] items-start gap-3 border-b px-3 py-1 last:border-b-0 hover:bg-accent/30"
+                data-testid="osdu-link"
+              >
+                <ReferenceLink
+                  value={reference.id}
+                  path={reference.paths[0]}
+                  ownId={ownId}
+                  onOpenLink={onOpenLink}
+                  opening={opening}
+                  term=""
+                  withoutType
+                  quietCopy
+                  className="min-w-0"
+                />
+                {/* Each path a line as tall as the name's, so the first sits beside the name it belongs to. */}
+                <span className="flex min-w-0 flex-col items-end text-[11px] leading-6 text-muted-foreground">
+                  {paths.map((path) => {
+                    const holder = model.byPath.get(path)?.parent ?? "";
+                    return (
+                      <button
+                        key={path}
+                        type="button"
+                        className="max-w-full cursor-pointer truncate font-mono hover:text-foreground hover:underline"
+                        onClick={() => onSelect(holder === "" ? path : holder)}
+                        title={`${path}\nGo to where the record names it`}
+                        data-testid="osdu-link-path"
+                      >
+                        {path}
+                      </button>
+                    );
+                  })}
+                  {more > 0 && (
+                    <button
+                      type="button"
+                      className="cursor-pointer rounded-sm px-1 text-[11px] leading-5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                      onClick={() => toggle(reference.id)}
+                      aria-expanded={open}
+                      data-testid="osdu-link-more"
+                    >
+                      {open ? "fewer" : `+${more} more`}
+                    </button>
+                  )}
+                </span>
+              </div>
+            );
+          })}
+        </section>
       ))}
     </div>
   );

@@ -6,12 +6,13 @@ import { idParts } from "./osduRecordModel";
 
 /**
  * An OSDU record named the way a reader knows it: the unique part of its id in the mono face, its type before it in
- * a whisper, and nothing of the partition and group that every id of the flow repeats. The unique part clips at
- * whatever width it is given, so a chip, a crumb or a table cell stays one line whatever the estate mints as ids. The
- * whole id (and the kind, when known) is one hover away, and the copy beside it hands the id over verbatim. The
- * element carries the full id as data, so a test or a script reads it without depending on what is rendered.
+ * a whisper, and nothing of the partition and group that every id of the flow repeats. Both clip at whatever width
+ * they are given, the type first, so a chip, a crumb or a table cell stays one line whatever the estate mints as ids and
+ * nothing beside the name is overlapped. The whole id (and the kind, when known) is one hover away, and the copy beside
+ * it hands the id over verbatim. The element carries the full id as data, so a test or a script reads it without
+ * depending on what is rendered.
  */
-export function RecordName({ id, kind, className, copy = false, typeOnly = false, testId, copyTestId }: {
+export function RecordName({ id, kind, className, copy = false, typeOnly = false, withoutType = false, testId, copyTestId }: {
   id: string;
   kind?: string | null;
   /** Classes for the name (size, weight, a width cap). */
@@ -23,6 +24,8 @@ export function RecordName({ id, kind, className, copy = false, typeOnly = false
    * its unique part names nothing a reader knows. An id with no type still shows what it has.
    */
   typeOnly?: boolean;
+  /** Names the record by its unique part alone, where a heading over it names its type already. */
+  withoutType?: boolean;
   testId?: string;
   copyTestId?: string;
 }) {
@@ -35,7 +38,8 @@ export function RecordName({ id, kind, className, copy = false, typeOnly = false
         ? <span ref={shownRef} className="min-w-0 truncate">{parts.type}</span>
         : (
           <>
-            {parts.type !== "" && <span className="shrink-0 text-[11px] font-sans font-normal text-muted-foreground">{parts.type}</span>}
+            {/* The type gives way first: a long one (WellLogSamplingDomainType) clips before the unique part does. */}
+            {parts.type !== "" && !withoutType && <span className="min-w-0 shrink-[3] truncate text-[11px] font-sans font-normal text-muted-foreground">{parts.type}</span>}
             <span ref={shownRef} className="min-w-0 truncate font-mono">{parts.unique}</span>
           </>
         )}

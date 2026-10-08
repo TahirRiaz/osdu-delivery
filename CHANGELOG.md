@@ -814,6 +814,13 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A record's linked records read by type, and a long name no longer runs under its icons.** The inspector's Linked
+  records (the explorer's and every record page's) groups the records a record names under a heading per type with how
+  many there are, names each by its unique part with its copy on the row's hover, and lists the paths that name it in a
+  column that never crowds the name: the first two, and the others behind **more**. A record's name everywhere gives way
+  by its type first, so a long type clips instead of overlapping the copy and the actions beside it
+  ([osdu/docs/explorer.md](osdu/docs/explorer.md#a-record)).
+
 - **The explorer has one search field, and asks less of the eye.** The field in the header searches the place in view
   (the type picked, or every type) in place of a second field over a type's records; every type stays one click away.
   The query a list is read by moved from a band over every list into a glyph in the place's line. The list of types

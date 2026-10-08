@@ -217,7 +217,11 @@ location (`dev > master-data > Wellbore > NO 33/9-C-28 B > data > ...`), the way
 before it:
 
 - every view of the inspector: the full document, the system fields, access and legal, the content branch by branch
-  as fields, tables or JSON, and the linked records, each opened after it on the trail;
+  as fields, tables or JSON, and the linked records, each opened after it on the trail. The linked records stand under
+  a heading per type with how many there are, each named by its unique part with its copy on hover, and beside it, in a
+  column of its own share that never crowds the name, the paths that name it, each a step to that place: the first two,
+  and the others behind **more**. A record's name gives way by its type first, so a long type (`WellLogSamplingDomainType`)
+  clips rather than running under what stands beside it;
 - **Validation**, under the outline's Checks: the record checked against the schema of its kind ([Validate](#validate));
 - **Mentioned by**: the records whose values name this one (`"<id>" AND NOT id:"<id>"` over every property), the first
   hundred listed with their count by type, each opened on the trail, and all of them one click from a search of their own;
