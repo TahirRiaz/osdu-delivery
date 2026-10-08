@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, ChevronsUpDown, CircleX, ClipboardList, Download, Info, Loader2, Play } from "lucide-react";
+import { ChevronRight, ChevronsUpDown, CircleX, ClipboardList, Download, Info, Loader2, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,7 @@ import { isApiError } from "@/api/client";
 import { TriggerRunDialog } from "@/features/runs/TriggerRunDialog";
 import { formatDurationSeconds, parseUtc } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { inventoryApi, type Inventory, type InventoryDetail, type InventoryRun } from "../../../api/inventories";
+import { REMOVABLE_FINDINGS, inventoryApi, type Inventory, type InventoryDetail, type InventoryRun } from "../../../api/inventories";
 import { KindText } from "../KindText";
 import { useActivePartition } from "../activePartition";
 import { RunRef } from "../DeliveryRefs";
@@ -248,6 +248,26 @@ function ExportMenu({ inventory, finding }: { inventory: Inventory; finding: str
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+/**
+ * Why the ids of a removable finding in view cannot be picked and removed here: the flow declares no removal, or not of this
+ * finding. Null where they can be, and for a finding no inventory removes.
+ */
+function removalOff(detail: InventoryDetail, finding: string | null): string | null {
+  if (finding === null || !REMOVABLE_FINDINGS.some((removable) => removable === finding)) {
+    return null;
+  }
+
+  const label = findingVisual(finding).label.toLowerCase();
+  const flow = detail.inventory.flowName;
+  if (detail.removal === undefined) {
+    return `Removing ${label} ids is off: ${flow} declares no removal, so it only reads OSDU. Add removal: { findings: [orphan, stale, forgotten] } to its YAML (and purge: true to allow purging as well) and sync the repository; the ids can then be picked here and removed from OSDU.`;
+  }
+
+  return detail.removal.findings.includes(finding)
+    ? null
+    : `${flow} allows removing ${detail.removal.findings.join(", ")} ids, not ${label} ones: add ${finding} to removal.findings in its YAML and sync the repository.`;
 }
 
 /** The inventory's builds and reconciles, newest first: what each read, changed and raised, who ran it and why one failed. */
@@ -507,7 +527,19 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
                 finding={chosen}
                 total={total}
                 leading={<InventoryFindingStrip total={data.ids} counts={counts} selected={chosen} onSelect={(picked) => onFinding(picked ?? EVERY_ID)} />}
-                trailing={<ExportMenu inventory={inventory} finding={chosen} />}
+                trailing={(
+                  <>
+                    {canReadOsdu && removalOff(data, chosen) !== null && (
+                      <RichTooltip title="Removal is off" body={removalOff(data, chosen)!}>
+                        <span className="inline-flex h-7 cursor-help items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground" data-testid="inventory-removal-off">
+                          <Trash2 className="size-3.5" aria-hidden />
+                          Removal off
+                        </span>
+                      </RichTooltip>
+                    )}
+                    <ExportMenu inventory={inventory} finding={chosen} />
+                  </>
+                )}
                 openId={openId}
                 onOpen={canReadOsdu ? onOpenId : undefined}
                 removal={canReadOsdu ? data.removal : undefined}
