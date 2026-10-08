@@ -10,14 +10,19 @@ using Xunit;
 namespace SqlFlow.Delivery.Tests;
 
 /// <summary>
-/// The search terms a mapping gives (osdu/docs/search-terms.md), read from the sample estate's Recall well log mapping: every
-/// column it reads, each route by which the column reaches the record, a value typed for a term put through the mapping as
-/// a render puts it, and a condition on a term turned into the condition the explorer asks of the records.
+/// The search terms a pipeline gives (osdu/docs/search-terms.md), read from the sample estate's Recall well log flow: the
+/// tables it reads and the mapping it renders them with. Every column of those tables the mapping reads is a term (the
+/// table's column, whichever pipelines read it), each route by which the column reaches the record, a value typed for a
+/// term put through the mapping as a render puts it, and a condition on a term turned into the condition the explorer asks.
 /// </summary>
 public sealed class SearchTermTests
 {
     private const string WellLog = "work-product-component--WellLog";
     private const string WellboreKind = "osdu:wks:master-data--Wellbore:1.3.0";
+
+    /// <summary>The tables the sample flow reads: a log's row, and its curves' rows under the dataset <c>curves</c>.</summary>
+    private const string Header = "OsduData.arc.WellLog";
+    private const string Curves = "OsduData.arc.WellLogCurve";
 
     private static readonly MappingDefinition Mapping = new DeliveryDocumentLoader().LoadMapping(Path.Combine(Samples.Mappings, "WellLog@1.4.0.yaml"));
 
@@ -35,10 +40,20 @@ public sealed class SearchTermTests
         _ => null,
     };
 
-    private static readonly IReadOnlyList<CompiledSearchTerm> Terms = SearchTermCompiler.Compile([Mapping], CacheType);
+    private static readonly SearchTermSource Flow = new(Mapping, Header, new Dictionary<string, string>(StringComparer.Ordinal) { ["curves"] = Curves });
+
+    private static readonly IReadOnlyList<CompiledSearchTerm> Terms = SearchTermCompiler.Compile([Flow], CacheType, []);
+
+    /// <summary>The sample mapping as a next version of it renders the same tables, under a source system of its own.</summary>
+    private static readonly MappingDefinition Next = Mapping with
+    {
+        Version = "1.5.0",
+        Template = Mapping.Template with { Kind = WellLogVersions.NextKind },
+        Dataset = Mapping.Dataset with { System = "recall-welllog-1.5.0" },
+    };
 
     private static CompiledSearchTerm Term(string column, string? dataset = null)
-        => Assert.Single(Terms, t => t.Key == SearchTermKey.Of("recall", WellLog, dataset, column));
+        => Assert.Single(Terms, t => t.Key == SearchTermKey.Of(dataset is null ? Header : Curves, column) && t.EntityType == WellLog);
 
     private static SearchRoute Route(string column, string target, SearchRouteKind kind, string? dataset = null)
         => Assert.Single(Term(column, dataset).Routes, r => r.Target == target && r.Kind == kind);
@@ -49,6 +64,9 @@ public sealed class SearchTermTests
         var run = Route("log_run", "osdu.data.LogRun", SearchRouteKind.Copy);
         Assert.Equal(("data.LogRun", (string?)null), (run.Path, run.Problem));
         Assert.Equal(["WellLog@1.4.0"], run.Mappings);
+        Assert.Equal([WellLogVersions.CurrentKind], run.Kinds);
+        Assert.Equal(["recall"], run.Systems);
+        Assert.Equal((WellLog, (string?)null), (run.EntityType, run.Dataset));
 
         var name = Route("log_source", "osdu.data.Name", SearchRouteKind.Steps);
         Assert.Equal(["trim"], name.Steps);
@@ -83,6 +101,8 @@ public sealed class SearchTermTests
         // The first and the last alternatives translate the spelling through a table of the database: one route, never
         // carried. The second finds the partition's unit by its ID, code or name: carried, by a search of the units. The
         // type captures a field called ID, so ID is that field, as the render reads it, and not the record id.
+        Assert.Equal("WellLogCurve.curve_unit", unit.Key.ColumnLabel);
+        Assert.All(unit.Routes, r => Assert.Equal("curves", r.Dataset));
         var table = Assert.Single(unit.Routes, r => r.Kind == SearchRouteKind.Steps);
         Assert.Contains("cached table RecallUnits", table.Problem, StringComparison.Ordinal);
         var lookup = Assert.Single(unit.Routes, r => r.Kind == SearchRouteKind.Lookup);
@@ -102,7 +122,8 @@ public sealed class SearchTermTests
         var id = Assert.Single(Term("log_id").Routes);
 
         Assert.Equal((SearchRouteKind.Key, "id", (string?)null), (id.Kind, id.Path, id.Problem));
-        Assert.Equal(("recall", false), (id.Key!.System, id.Key.FromKey));
+        Assert.Equal(["recall"], id.Key!.Systems);
+        Assert.False(id.Key.FromKey);
         Assert.Equal(["source_project", "log_id"], id.Key.Columns);
         Assert.Equal("tags.SourceProject", id.Key.Others!["source_project"]);
 
@@ -114,37 +135,65 @@ public sealed class SearchTermTests
     public void Who_may_read_a_record_and_its_legal_block_are_not_terms()
     {
         Assert.DoesNotContain(Terms.SelectMany(t => t.Routes), r => r.Path.StartsWith("acl.", StringComparison.Ordinal) || r.Path.StartsWith("legal.", StringComparison.Ordinal));
-        Assert.All(Terms, t => Assert.Equal("recall", t.Key.System));
+        Assert.All(Terms.SelectMany(t => t.Routes), r => Assert.Equal(["recall"], r.Systems));
+        Assert.All(Terms, t => Assert.Contains(t.Key.Source, new[] { Header, Curves }));
     }
 
     [Fact]
     public void A_lookup_through_a_type_no_cache_flow_declares_or_one_not_of_osdu_says_why_it_cannot_be_searched()
     {
-        var terms = SearchTermCompiler.Compile([Mapping], _ => null);
+        var terms = SearchTermCompiler.Compile([Flow], _ => null, []);
         var lookup = Assert.Single(Assert.Single(terms, t => t.Key.Column == "curve_unit").Routes, r => r.Kind == SearchRouteKind.Lookup);
 
         Assert.Contains("declared by no cache flow", lookup.Problem, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void One_route_read_by_two_versions_of_a_mapping_is_listed_under_both()
+    public void Two_pipelines_rendering_one_table_under_two_versions_give_one_term_whose_routes_both_read()
     {
-        var next = Mapping with { Version = "1.5.0" };
-        var terms = SearchTermCompiler.Compile([next, Mapping], CacheType);
-        var run = Assert.Single(Assert.Single(terms, t => t.Key.Column == "log_run").Routes);
+        // The estate's WellLog 1.4.0 and 1.5.0 flows read the same tables, each mapping under a source system of its own.
+        var next = new SearchTermSource(Next, "[OsduData].[arc].[WellLog]", new Dictionary<string, string>(StringComparer.Ordinal) { ["curves"] = Curves });
+        var terms = SearchTermCompiler.Compile([next, Flow], CacheType, []);
 
+        var uwi = Assert.Single(terms, t => t.Key.Column == "wellbore_uwi");
+        var run = Assert.Single(Assert.Single(terms, t => t.Key.Column == "log_run").Routes);
         Assert.Equal(["WellLog@1.4.0", "WellLog@1.5.0"], run.Mappings);
+        Assert.Equal([WellLogVersions.CurrentKind, WellLogVersions.NextKind], run.Kinds);
+        Assert.Equal(["recall", "recall-welllog-1.5.0"], run.Systems);
+        Assert.Equal("WellLog.wellbore_uwi", uwi.Key.ColumnLabel);
+        Assert.Equal(Header, uwi.Key.Source);
+        Assert.Equal(Terms.Count, terms.Count);
+
+        // The record's id is made as each version's delivery makes it.
+        var id = Assert.Single(Assert.Single(terms, t => t.Key.Column == "log_id").Routes);
+        Assert.Equal(["recall", "recall-welllog-1.5.0"], id.Key!.Systems);
     }
 
     [Fact]
-    public void A_terms_identity_is_its_key_whatever_the_case_of_the_column_or_the_system()
+    public void A_column_of_another_table_is_another_term_and_a_dataset_the_flow_does_not_declare_is_reported()
     {
-        var key = SearchTermKey.Of(" Recall ", WellLog, null, "Wellbore_UWI");
+        var other = new SearchTermSource(Mapping, "Staging.dbo.WellLogExport", new Dictionary<string, string>(StringComparer.Ordinal));
+        var warnings = new List<string>();
+        var terms = SearchTermCompiler.Compile([Flow, other], CacheType, warnings);
 
-        Assert.Equal("recall/work-product-component--WellLog//wellbore_uwi", key.Text);
-        Assert.Equal(SearchTermKey.Of("recall", WellLog, null, "wellbore_uwi").Id, key.Id);
-        Assert.NotEqual(SearchTermKey.Of("recall", WellLog, "curves", "wellbore_uwi").Id, key.Id);
-        Assert.Equal("curves.curve_unit", SearchTermKey.Of("recall", WellLog, "curves", "curve_unit").ColumnLabel);
+        Assert.Equal(2, terms.Count(t => t.Key.Column == "wellbore_uwi"));
+        Assert.Contains(terms, t => t.Key == SearchTermKey.Of("Staging.dbo.WellLogExport", "wellbore_uwi") && t.Key.ColumnLabel == "WellLogExport.wellbore_uwi");
+        Assert.DoesNotContain(terms, t => t.Key.Column == "curve_unit" && t.Key.Source == "Staging.dbo.WellLogExport");
+        Assert.Contains(warnings, w => w.Contains("dataset curves", StringComparison.Ordinal) && w.Contains("Staging.dbo.WellLogExport", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_terms_identity_is_its_table_and_column_whatever_their_case_or_brackets()
+    {
+        var key = SearchTermKey.Of(" [OsduData].[arc].[WellLog] ", "Wellbore_UWI");
+
+        Assert.Equal("osdudata.arc.welllog/wellbore_uwi", key.Text);
+        Assert.Equal(SearchTermKey.Of("OsduData.arc.WellLog", "wellbore_uwi").Id, key.Id);
+        Assert.NotEqual(SearchTermKey.Of(Curves, "wellbore_uwi").Id, key.Id);
+        Assert.Equal("WellLog", key.Table);
+        Assert.Equal("WellLog.Wellbore_UWI", key.ColumnLabel);
+        Assert.Equal(("recall", WellLog, "curves", "curve_unit"), SearchTermKey.Legacy("recall/work-product-component--WellLog/curves/curve_unit"));
+        Assert.Null(SearchTermKey.Legacy(key.Text));
     }
 
     [Theory]
@@ -161,7 +210,7 @@ public sealed class SearchTermTests
         string column, string? dataset, string target, SearchRouteKind kind, string typed, string written)
     {
         var values = SearchTermValues.For(Mapping, Template, "dev");
-        var key = SearchTermKey.Of("recall", WellLog, dataset, column);
+        var key = SearchTermKey.Of(dataset is null ? Header : Curves, column);
 
         var carried = values.Translate(key, Route(column, target, kind, dataset), typed);
 
@@ -173,14 +222,14 @@ public sealed class SearchTermTests
     {
         var values = SearchTermValues.For(Mapping, Template, "dev");
 
-        var notANumber = values.Translate(SearchTermKey.Of("recall", WellLog, null, "index_min"), Route("index_min", "osdu.data.SamplingStart", SearchRouteKind.Copy), "deep");
+        var notANumber = values.Translate(SearchTermKey.Of(Header, "index_min"), Route("index_min", "osdu.data.SamplingStart", SearchRouteKind.Copy), "deep");
         Assert.Null(notANumber.Value);
         Assert.Contains("deep", notANumber.Problem, StringComparison.Ordinal);
 
-        var empty = values.Translate(SearchTermKey.Of("recall", WellLog, null, "log_source"), Route("log_source", "osdu.data.Name", SearchRouteKind.Steps), "   ");
+        var empty = values.Translate(SearchTermKey.Of(Header, "log_source"), Route("log_source", "osdu.data.Name", SearchRouteKind.Steps), "   ");
         Assert.Null(empty.Value);
 
-        var table = values.Translate(SearchTermKey.Of("recall", WellLog, "curves", "curve_unit"), Route("curve_unit", "osdu.data.Curves[].CurveUnit", SearchRouteKind.Steps, "curves"), "GAPI");
+        var table = values.Translate(SearchTermKey.Of(Curves, "curve_unit"), Route("curve_unit", "osdu.data.Curves[].CurveUnit", SearchRouteKind.Steps, "curves"), "GAPI");
         Assert.Contains("RecallUnits", table.Problem, StringComparison.Ordinal);
 
         Assert.Throws<FlowValidationException>(() => SearchTermValues.For(Mapping, Template, "not a partition"));
@@ -232,7 +281,7 @@ public sealed class SearchTermTests
         ExplorerFilter Resolve(string column, string target, SearchRouteKind kind, SearchTermCondition asked, SchemaSnapshot? found = null)
         {
             var route = Route(column, target, kind);
-            return SearchTermResolver.Resolve(column, SearchTermKey.Of("recall", WellLog, null, column), route, SearchTermResolver.Classify(route, Template, found), asked, values);
+            return SearchTermResolver.Resolve(column, SearchTermKey.Of(Header, column), route, SearchTermResolver.Classify(route, Template, found), asked, values);
         }
 
         var domain = Resolve("index_type", "osdu.data.SamplingDomainTypeID", SearchRouteKind.Steps, new SearchTermCondition(ExplorerCondition.AnyOf, Values: ["DEPTH", "TIME"]));
@@ -251,7 +300,8 @@ public sealed class SearchTermTests
             wellbore.Via.Matching(wellbore).Text);
 
         var log = Resolve("log_id", "id", SearchRouteKind.Key, new SearchTermCondition(ExplorerCondition.Is, "9982/1"));
-        Assert.Equal(("id", OsduFieldIndex.Keyword, "log_id", "recall"), (log.Path, log.Index, log.Via!.Key!.Given, log.Via.Key.System));
+        Assert.Equal(("id", OsduFieldIndex.Keyword, "log_id", WellLog), (log.Path, log.Index, log.Via!.Key!.Given, log.Via.Key.EntityType));
+        Assert.Equal(["recall"], log.Via.Key.Systems);
         Assert.Equal(new ExplorerViaColumn { Column = "source_project", Path = "tags.SourceProject", Index = OsduFieldIndex.Keyword }, Assert.Single(log.Via.Key.Others));
 
         var exists = Resolve("log_run", "osdu.data.LogRun", SearchRouteKind.Copy, new SearchTermCondition(ExplorerCondition.Missing));
@@ -264,14 +314,14 @@ public sealed class SearchTermTests
         var values = SearchTermValues.For(Mapping, Template, "dev");
         var domain = Route("index_type", "osdu.data.SamplingDomainTypeID", SearchRouteKind.Steps);
         var fields = SearchTermResolver.Classify(domain, Template, null);
-        var key = SearchTermKey.Of("recall", WellLog, null, "index_type");
+        var key = SearchTermKey.Of(Header, "index_type");
 
         var words = Assert.Throws<DeliveryException>(() => SearchTermResolver.Resolve("Domain", key, domain, fields, new SearchTermCondition(ExplorerCondition.Contains, "DEP"), values));
         Assert.Contains("not Contains", words.Message, StringComparison.Ordinal);
 
         var start = Route("index_min", "osdu.data.SamplingStart", SearchRouteKind.Copy);
         var deep = Assert.Throws<DeliveryException>(() => SearchTermResolver.Resolve(
-            "Start", SearchTermKey.Of("recall", WellLog, null, "index_min"), start, SearchTermResolver.Classify(start, Template, null), new SearchTermCondition(ExplorerCondition.Is, "deep"), values));
+            "Start", SearchTermKey.Of(Header, "index_min"), start, SearchTermResolver.Classify(start, Template, null), new SearchTermCondition(ExplorerCondition.Is, "deep"), values));
         Assert.Contains("Start 'deep' cannot be searched for", deep.Message, StringComparison.Ordinal);
     }
 
@@ -281,9 +331,26 @@ public sealed class SearchTermTests
         var routes = Term("source_project").Routes;
 
         Assert.Equal(SearchRouteKind.Copy, SearchTermResolver.Preferred(routes, _ => true, picked: null)!.Kind);
-        Assert.Equal(SearchRouteKind.Key, SearchTermResolver.Preferred(routes, _ => true, picked: "id|Key")!.Kind);
-        Assert.Equal(SearchRouteKind.Copy, SearchTermResolver.Preferred(routes, r => r.Kind != SearchRouteKind.Key, picked: "id|Key")!.Kind);
+        Assert.Equal(SearchRouteKind.Key, SearchTermResolver.Preferred(routes, _ => true, picked: $"{WellLog}|id|Key")!.Kind);
+        Assert.Equal(SearchRouteKind.Copy, SearchTermResolver.Preferred(routes, r => r.Kind != SearchRouteKind.Key, picked: $"{WellLog}|id|Key")!.Kind);
         Assert.Null(SearchTermResolver.Preferred(routes, _ => false, picked: null));
+    }
+
+    [Fact]
+    public void Where_versions_write_a_column_differently_the_route_of_the_kind_in_view_is_searched()
+    {
+        // The next version writes the run into a property of its own; every other route is read by both versions.
+        var current = Route("log_run", "osdu.data.LogRun", SearchRouteKind.Copy);
+        var next = current with { Target = "osdu.data.LogRunNumber", Path = "data.LogRunNumber", Kinds = [WellLogVersions.NextKind], Mappings = [WellLogVersions.NextMapping] };
+        IReadOnlyList<SearchRoute> routes = [current, next];
+
+        Assert.Same(next, SearchTermResolver.Preferred(routes, _ => true, picked: null, kind: WellLogVersions.NextKind));
+        Assert.Same(current, SearchTermResolver.Preferred(routes, _ => true, picked: null, kind: WellLogVersions.CurrentKind));
+        Assert.Same(current, SearchTermResolver.Preferred(routes, _ => true, picked: null, kind: $"*:*:{WellLog}:*"));
+
+        // A route picked holds for the kinds it fills; another kind in view searches its own.
+        Assert.Same(next, SearchTermResolver.Preferred(routes, _ => true, picked: next.Id, kind: $"*:*:{WellLog}:*"));
+        Assert.Same(current, SearchTermResolver.Preferred(routes, _ => true, picked: next.Id, kind: WellLogVersions.CurrentKind));
     }
 
     /// <summary>Two finds alike: the same records, lines and read, the lines compared by value.</summary>

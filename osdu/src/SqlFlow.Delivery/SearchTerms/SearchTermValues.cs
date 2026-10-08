@@ -91,7 +91,8 @@ public sealed class SearchTermValues
             return SearchValue.Refused($"{route.Mappings[^1]} no longer writes {route.Target} from {key.ColumnLabel}; sync the repository again");
         }
 
-        var column = new DatasetColumn(key.Dataset, key.Column);
+        // The column as the route's mapping reads it: in the record's own row, or in a child dataset's rows.
+        var column = new DatasetColumn(route.Dataset, key.Column);
         // The node as it reads the column: its own modifiers, nothing else asked of it, and required, so an empty value says so.
         var reading = node with
         {
@@ -103,7 +104,7 @@ public sealed class SearchTermValues
             Required = true,
         };
         var row = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase) { [key.Column] = value };
-        var (root, item) = key.Dataset is null ? (SourceRow.FromStrings(row), (SourceRow?)null) : (SourceRow.Empty, SourceRow.FromStrings(row));
+        var (root, item) = route.Dataset is null ? (SourceRow.FromStrings(row), (SourceRow?)null) : (SourceRow.Empty, SourceRow.FromStrings(row));
         var holds = new List<string>();
         JsonNode? written;
         try

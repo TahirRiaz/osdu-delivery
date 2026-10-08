@@ -276,7 +276,7 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
       header: (
         <span
           className="block truncate font-mono text-[11px] normal-case"
-          title={[path, ...sourcesOf(path).map((source) => `Searched by the ${source} column`)].join("\n")}
+          title={[path, ...sourcesOf(path).map((source) => `Searched by the column ${source}`)].join("\n")}
         >
           {fieldLabel(path)}
         </span>

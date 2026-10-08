@@ -40,6 +40,8 @@ public sealed class InterfaceCatalogSyncTests : IDisposable
         interfaces:
           wellbores:
             record: { object: Petrel.ing.Wellbore, key: [facility_name] }
+            datasets:
+              aliases: { object: Petrel.ing.WellboreAlias, join: { facility_name: facility_name }, orderBy: [alias_name] }
             mapping: Wellbore@1.0.0
           logs:
             ledger: recall-welllog-03-header-delivery

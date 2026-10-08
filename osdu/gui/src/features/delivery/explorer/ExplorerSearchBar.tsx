@@ -515,7 +515,6 @@ function SearchInOptions({ id, typed, searchIn, terms, picks, highlighted, onEve
             <span className="text-muted-foreground"> {CONDITION_LABELS[termSearchInCondition(term.route)]} </span>
             <span className="font-medium">{typed}</span>
           </span>
-          {term.showSystem && <span className="shrink-0 rounded-sm border px-1 text-[10px] text-muted-foreground">{term.term.system}</span>}
         </>
       ), "term", termTitle(term)))}
       {picks && option(searchIn.choices.length + terms.length + 1, () => onPick(searchIn.choices.length + terms.length + 1), (

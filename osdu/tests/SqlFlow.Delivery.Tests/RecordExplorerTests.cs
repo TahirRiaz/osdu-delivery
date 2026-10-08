@@ -636,7 +636,7 @@ public class RecordExplorerTests
                     Term = "Recall log id",
                     Key = new ExplorerViaKey
                     {
-                        System = "recall",
+                        Systems = ["recall"],
                         EntityType = "work-product-component--WellLog",
                         Columns = ["source_project", "log_id"],
                         Given = "log_id",

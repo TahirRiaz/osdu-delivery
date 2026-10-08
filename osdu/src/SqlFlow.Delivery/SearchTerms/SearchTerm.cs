@@ -1,45 +1,80 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using SqlFlow.Delivery.Identity;
+using SqlFlow.Delivery.Model;
 
 namespace SqlFlow.Delivery.SearchTerms;
 
 /// <summary>
-/// What identifies a search term (osdu/docs/search-terms.md): a column of a source system, read by a mapping that fills an
-/// entity type, in the dataset's own row or in a child dataset's rows. <c>recall</c>'s <c>wellbore_uwi</c> on
-/// <c>work-product-component--WellLog</c> is one term whichever mapping version reads it, and whichever repository holds the
-/// mapping, so what a person makes of it (a name, leaving it out) is kept by this identity across syncs and versions.
+/// What identifies a search term (osdu/docs/search-terms.md): a column of a source table a delivery flow reads, as the flow
+/// names the table (its record table, or the table of a child dataset). <c>OsduData.arc.WellLog</c>'s <c>wellbore_uwi</c> is
+/// one term whichever pipeline reads the table, whichever mapping (and mapping version) renders it and into whichever entity
+/// type, so two flows rendering one table under two versions of a schema give one term, and what a person makes of it (a
+/// name, leaving it out) is kept by this identity across syncs, pipelines and versions.
 /// </summary>
-/// <param name="System">The source system (<c>dataset.system</c>), in lower case as the delivery key folds it.</param>
-/// <param name="EntityType">The entity type the mapping fills (<c>work-product-component--WellLog</c>).</param>
-/// <param name="Dataset">The child dataset whose rows hold the column (<c>curves</c>); null for the dataset's own row.</param>
+/// <param name="Source">The table, its parts without brackets (<c>OsduData.arc.WellLog</c>).</param>
 /// <param name="Column">The column as the mapping names it.</param>
-public sealed record SearchTermKey(string System, string EntityType, string? Dataset, string Column)
+public sealed record SearchTermKey(string Source, string Column)
 {
-    /// <summary>The longest key text: the system, the entity type, the dataset and the column, each well inside its own bound.</summary>
+    /// <summary>The longest key text: the table and the column, each well inside its own bound.</summary>
     public const int MaxTextLength = 600;
 
     private static readonly Guid IdNamespace = DeterministicGuid.Namespace("search-term");
 
     /// <summary>
-    /// The key as text, <c>recall/work-product-component--WellLog/curves/curve_unit</c>: the dataset left empty for the
-    /// dataset's own row, and the column in lower case, since a table's columns are named regardless of case.
+    /// The key as text, <c>osdudata.arc.welllog/wellbore_uwi</c>: the table and the column in lower case, since a database
+    /// names its tables and their columns regardless of case.
     /// </summary>
-    public string Text => $"{System}/{EntityType}/{Dataset ?? string.Empty}/{Column.ToLowerInvariant()}";
+    public string Text => $"{Source.ToLowerInvariant()}/{Column.ToLowerInvariant()}";
 
     /// <summary>The term's identity, derived from <see cref="Text"/>, so every host and every sync names the term alike.</summary>
     public Guid Id => DeterministicGuid.V5(IdNamespace, Text);
 
-    /// <summary>The column as a person who knows the source names it: <c>curves.curve_unit</c>, or <c>log_source</c>.</summary>
-    public string ColumnLabel => Dataset is null ? Column : $"{Dataset}.{Column}";
+    /// <summary>The table's own name, the last part of its name: <c>WellLog</c> of <c>OsduData.arc.WellLog</c>.</summary>
+    public string Table => TableOf(Source);
 
-    /// <summary>The key of the column <paramref name="column"/> of <paramref name="system"/> on <paramref name="entityType"/>.</summary>
-    public static SearchTermKey Of(string system, string entityType, string? dataset, string column)
+    /// <summary>
+    /// The column as a person who knows the source names it, the table before it: <c>WellLog.wellbore_uwi</c>, or
+    /// <c>WellLogCurve.curve_unit</c>. It is the term's name until a person gives it another.
+    /// </summary>
+    public string ColumnLabel => $"{Table}.{Column}";
+
+    /// <summary>The key of the column <paramref name="column"/> of the table <paramref name="source"/>.</summary>
+    public static SearchTermKey Of(string source, string column)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(system);
-        ArgumentException.ThrowIfNullOrWhiteSpace(entityType);
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
         ArgumentException.ThrowIfNullOrWhiteSpace(column);
-        return new SearchTermKey(system.Trim().ToLowerInvariant(), entityType.Trim(), string.IsNullOrWhiteSpace(dataset) ? null : dataset.Trim(), column.Trim());
+        return new SearchTermKey(NormalizeSource(source), column.Trim());
+    }
+
+    /// <summary>A table's name with its parts trimmed and their brackets or quotes taken off: <c>[OsduData].[arc].[WellLog]</c> reads <c>OsduData.arc.WellLog</c>.</summary>
+    public static string NormalizeSource(string source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
+        return string.Join('.', source.Split('.').Select(part => part.Trim().Trim('[', ']', '"', '`').Trim()));
+    }
+
+    /// <summary>
+    /// The parts of a key a term had while terms were keyed by their mapping's source system: <c>system/entityType/dataset/column</c>,
+    /// the dataset empty for the record's own row; null for a key of today's form (<c>table/column</c>). A refinement made
+    /// then is moved to the term its column is now (<c>DeliverySearchTermCatalog</c>).
+    /// </summary>
+    public static (string System, string EntityType, string Dataset, string Column)? Legacy(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var parts = text.Split('/');
+        return parts.Length == 4 && parts[1].Contains("--", StringComparison.Ordinal) && parts[3].Length > 0
+            ? (parts[0], parts[1], parts[2], parts[3])
+            : null;
+    }
+
+    /// <summary>The last part of a table's name: <c>WellLog</c> of <c>OsduData.arc.WellLog</c>.</summary>
+    public static string TableOf(string source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
+        var normalized = NormalizeSource(source);
+        var dot = normalized.LastIndexOf('.');
+        return dot < 0 ? normalized : normalized[(dot + 1)..];
     }
 }
 
@@ -88,14 +123,17 @@ public sealed record SearchRouteFind(string Name, string Kind, IReadOnlyList<Sea
 }
 
 /// <summary>The dataset key the record's id is made from: every column of it, in order, and how the id is made.</summary>
-/// <param name="System">The source system the delivery key is derived over.</param>
+/// <param name="Systems">
+/// The source systems the delivery key is derived over, in lower case: one per mapping that renders the table under a
+/// system of its own (two versions of a schema delivered side by side), so an id is made as each of them makes it.
+/// </param>
 /// <param name="Columns">The key's columns, in order.</param>
 /// <param name="FromKey">True when the id's last part is the key's own values (<c>idFrom: key</c>); false for the delivery key.</param>
 /// <param name="Others">
 /// For a key of several columns: where the record holds each of the others, by column, so their values can be read from
 /// the platform and the ids of every combination made; null for a key of one column.
 /// </param>
-public sealed record SearchRouteKey(string System, IReadOnlyList<string> Columns, bool FromKey, IReadOnlyDictionary<string, string>? Others);
+public sealed record SearchRouteKey(IReadOnlyList<string> Systems, IReadOnlyList<string> Columns, bool FromKey, IReadOnlyDictionary<string, string>? Others);
 
 /// <summary>
 /// One way a column reaches what a record holds: the variable it fills (<c>osdu.data.WellboreID</c>), the mapping node that
@@ -104,6 +142,21 @@ public sealed record SearchRouteKey(string System, IReadOnlyList<string> Columns
 /// </summary>
 public sealed record SearchRoute
 {
+    /// <summary>The entity type the route fills (<c>work-product-component--WellLog</c>).</summary>
+    public required string EntityType { get; init; }
+
+    /// <summary>
+    /// The kinds the route fills, as the templates of its mappings name them (<c>osdu:wks:work-product-component--WellLog:1.5.0</c>),
+    /// each once, in order: what the explorer prefers the route for while one of them is in view.
+    /// </summary>
+    public IReadOnlyList<string> Kinds { get; init; } = [];
+
+    /// <summary>The source systems (<c>dataset.system</c>) of its mappings, in lower case, each once.</summary>
+    public IReadOnlyList<string> Systems { get; init; } = [];
+
+    /// <summary>The child dataset the mapping reads the column under (<c>curves</c>); null for the record's own row.</summary>
+    public string? Dataset { get; init; }
+
     /// <summary>The template variable filled (<c>osdu.data.Curves[].CurveUnit</c>), or <c>id</c> for a key.</summary>
     public required string Target { get; init; }
 
@@ -147,9 +200,15 @@ public sealed record SearchRoute
     /// <summary>Why no value typed can be carried by this route, in words; null when one can.</summary>
     public string? Problem { get; init; }
 
-    /// <summary>The route's identity within its term: the variable and the way the value reaches it.</summary>
+    /// <summary>
+    /// The route's identity within its term: the entity type, the variable and the way the value reaches it; for a key, how
+    /// the id is made from it too, since a key whose values are the id and one derived from them make different ids.
+    /// </summary>
     [JsonIgnore]
-    public string Id => $"{Target}|{Kind}";
+    public string Id => Kind == SearchRouteKind.Key && Key is { FromKey: true } ? $"{EntityType}|{Target}|{Kind}|value" : $"{EntityType}|{Target}|{Kind}";
+
+    /// <summary>Whether the route fills <paramref name="kind"/>, a kind with no wildcard.</summary>
+    public bool Fills(string kind) => Kinds.Contains(kind, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The routes as they are kept beside their term.</summary>
     public static string ToJson(IReadOnlyList<SearchRoute> routes) => JsonSerializer.Serialize(routes, SearchTermJson.Options);
@@ -186,8 +245,20 @@ public enum SearchRouteKeeps
     Value,
 }
 
-/// <summary>A term as a mapping gives it: its key, and every route by which its column reaches the record.</summary>
-public sealed record CompiledSearchTerm(SearchTermKey Key, IReadOnlyList<SearchRoute> Routes);
+/// <summary>
+/// A term as the pipelines give it for one entity type: its key, the entity type, and every route by which its column
+/// reaches the records of that type.
+/// </summary>
+public sealed record CompiledSearchTerm(SearchTermKey Key, string EntityType, IReadOnlyList<SearchRoute> Routes);
+
+/// <summary>
+/// One pipeline's reading of its tables, as the search terms are compiled from it: the mapping it renders with, and the
+/// tables its source reads, the record table and each child dataset's by the name the mapping reads it under.
+/// </summary>
+/// <param name="Mapping">The mapping the delivery flow (or its interface) renders with.</param>
+/// <param name="RecordObject">The record table (<c>source.record.object</c>).</param>
+/// <param name="DatasetObjects">The child datasets' tables (<c>source.datasets.{name}.object</c>), by name.</param>
+public sealed record SearchTermSource(MappingDefinition Mapping, string RecordObject, IReadOnlyDictionary<string, string> DatasetObjects);
 
 /// <summary>How search terms and their routes are written as JSON: the web's conventions, nulls left out.</summary>
 public static class SearchTermJson

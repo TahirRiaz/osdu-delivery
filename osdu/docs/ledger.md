@@ -558,18 +558,19 @@ it.
 
 ### `osdu.SearchTerm` and `osdu.SearchTermRefinement`: search terms
 
-The columns of the source systems the mappings of active delivery flows read, each with the routes by which it reaches
-the records, and what people made of them ([search-terms.md](search-terms.md)). `osdu.SearchTerm` is a read model the
-repository sync writes, in its transaction, from the interfaces, mappings and cache declarations above; the control
-plane writes it again once when it starts. `osdu.SearchTermRefinement` is written by the Search terms page alone, and
-never by a sync.
+The columns of the source tables the active delivery flows read, each the table's column whichever flows read it, with
+the routes by which it reaches the records, and what people made of them ([search-terms.md](search-terms.md)).
+`osdu.SearchTerm` is a read model the repository sync writes, in its transaction, from the delivery flows it parsed and
+the mappings and cache declarations above; the control plane writes it again once when it starts, from its copies of the
+flows. `osdu.SearchTermRefinement` is written by the Search terms page, and by a sync only to move a refinement made
+under the key terms had before they were keyed by their table.
 
 | Column | Purpose |
 | --- | --- |
 | `SearchTerm.Id` | Primary key, derived from the repository and the term's key. |
-| `SearchTerm.RepoId`, `TermId`, `TermKey` | The repository, and the term's identity: a UUIDv5 of its key text (`recall/work-product-component--WellLog/curves/curve_unit`), the same in every repository and on every host. Unique on `(RepoId, TermId)`. |
-| `SearchTerm.System`, `EntityType`, `Dataset`, `Column` | The key's parts: the source system in lower case, the entity type the mappings fill, the child dataset (null for the dataset's own row) and the column. Indexed on `(EntityType, TermId)`, which the page and the explorer read a type's terms by. |
-| `SearchTerm.RoutesJson`, `FlowsJson` | The routes as JSON (each its target, path, kind, mappings, location, steps, what they keep, the records a lookup or a search finds, the key's columns, and why it cannot be searched), and the active delivery flows whose mappings read the column. |
+| `SearchTerm.RepoId`, `TermId`, `TermKey` | The repository, and the term's identity: a UUIDv5 of its key text (`osdudata.arc.welllogcurve/curve_unit`), the same in every repository, entity type and host. Unique on `(RepoId, TermId, EntityType)`. |
+| `SearchTerm.Source`, `Column`, `EntityType` | The table the column is read from (`OsduData.arc.WellLogCurve`), the column, and the entity type the row's routes fill. Indexed on `(EntityType, TermId)`, which the page and the explorer read a type's terms by. |
+| `SearchTerm.RoutesJson`, `FlowsJson` | The routes as JSON (each its entity type, the kinds, mappings and source systems that read it, the child dataset, its target, path, kind, location, steps, what they keep, the records a lookup or a search finds, the key's columns and systems, and why it cannot be searched), and the active delivery flows that read the column's table. |
 | `SearchTerm.FirstSeenUtc`, `LastSeenUtc` | When a sync first and last wrote the term; a term no mapping gives any longer is deleted by the next sync. |
 | `SearchTermRefinement.TermId` | Primary key: the term's identity, so what was made of it holds across syncs, mapping versions and repositories. |
 | `SearchTermRefinement.TermKey`, `EntityType` | The term it was made for, so it is listed while no sync gives the term. Indexed on `(EntityType, Name)`. |
@@ -577,7 +578,8 @@ never by a sync.
 | `SearchTermRefinement.UpdatedBy`, `UpdatedUtc` | Who changed it last, and when. |
 
 No foreign key reaches SQLFlow's tables: `RepoId` is a plain id, and a repository's terms are rewritten by each of its
-syncs. The tables came with `20261008170839_SearchTerms` (module version 1.32.0).
+syncs. The tables came with `20261008170839_SearchTerms` (module version 1.32.0); `20261008204608_SearchTermSources`
+(module version 1.33.0) keyed the terms by their table.
 
 ## Record lifecycle
 

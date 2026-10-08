@@ -51,7 +51,8 @@ public static class DeliverySearchTermEndpoints
 
     /// <summary>
     /// The terms of an entity type, named directly or by a kind pattern that names one (<c>*:*:work-product-component--WellLog:*</c>),
-    /// or of every entity type; with <c>orphans=true</c>, the refinements whose terms no mapping gives any longer too.
+    /// or of every entity type; with <c>orphans=true</c>, the refinements whose terms no pipeline gives any longer too. Named by a
+    /// kind (<c>osdu:wks:work-product-component--WellLog:1.5.0</c>), each term is searched through its route for that kind.
     /// </summary>
     private static async Task<Results<Ok<DeliverySearchTermsDto>, ProblemHttpResult>> ListAsync(
         [FromQuery] string? entityType, [FromQuery] string? kind, [FromQuery] bool? orphans,
@@ -77,7 +78,7 @@ public static class DeliverySearchTermEndpoints
             type = entityType.Trim();
         }
 
-        var terms = await new SearchTermDirectory(osdu, templates, documents, clock).ListAsync(type, orphans ?? false, ct).ConfigureAwait(false);
+        var terms = await new SearchTermDirectory(osdu, templates, documents, clock).ListAsync(type, string.IsNullOrWhiteSpace(kind) ? null : kind.Trim(), orphans ?? false, ct).ConfigureAwait(false);
         return TypedResults.Ok(new DeliverySearchTermsDto(type, terms));
     }
 
@@ -88,20 +89,21 @@ public static class DeliverySearchTermEndpoints
         return TypedResults.Ok<IReadOnlyList<DeliverySearchTermTypeDto>>(types.Select(t => new DeliverySearchTermTypeDto(t.EntityType, t.Terms)).ToList());
     }
 
+    /// <summary>One term as it reaches <c>entityType</c> (the first type it reaches when left out).</summary>
     private static async Task<Results<Ok<SearchTermView>, NotFound>> GetAsync(
-        Guid termId, OsduDbContext osdu, ITemplateStore templates, DeliveryDocumentLoader documents, TimeProvider clock, CancellationToken ct)
+        Guid termId, [FromQuery] string? entityType, OsduDbContext osdu, ITemplateStore templates, DeliveryDocumentLoader documents, TimeProvider clock, CancellationToken ct)
     {
-        var term = await new SearchTermDirectory(osdu, templates, documents, clock).FindAsync(termId, ct).ConfigureAwait(false);
+        var term = await new SearchTermDirectory(osdu, templates, documents, clock).FindAsync(termId, Blank(entityType), null, ct).ConfigureAwait(false);
         return term is null ? TypedResults.NotFound() : TypedResults.Ok(term);
     }
 
     /// <summary>Keeps a name, whether the term is left out, the route it is searched through and a note; a request keeping nothing removes the refinement.</summary>
     private static async Task<Results<Ok<SearchTermView>, NotFound, ProblemHttpResult>> RefineAsync(
-        Guid termId, DeliverySearchTermRefinementDto? body, OsduDbContext osdu, ITemplateStore templates, DeliveryDocumentLoader documents, TimeProvider clock,
-        ClaimsPrincipal user, CancellationToken ct)
+        Guid termId, [FromQuery] string? entityType, DeliverySearchTermRefinementDto? body, OsduDbContext osdu, ITemplateStore templates, DeliveryDocumentLoader documents,
+        TimeProvider clock, ClaimsPrincipal user, CancellationToken ct)
     {
         var directory = new SearchTermDirectory(osdu, templates, documents, clock);
-        if (await directory.FindAsync(termId, ct).ConfigureAwait(false) is null)
+        if (await directory.FindAsync(termId, Blank(entityType), null, ct).ConfigureAwait(false) is null)
         {
             return TypedResults.NotFound();
         }
@@ -110,7 +112,7 @@ public static class DeliverySearchTermEndpoints
         try
         {
             var refined = await directory.RefineAsync(
-                termId, new SearchTermRefinementRequest(request.Name, request.Excluded, request.Route, request.Note), RequestActor.Label(user), ct).ConfigureAwait(false);
+                termId, Blank(entityType), new SearchTermRefinementRequest(request.Name, request.Excluded, request.Route, request.Note), RequestActor.Label(user), ct).ConfigureAwait(false);
             return TypedResults.Ok(refined);
         }
         catch (DeliveryException ex)
@@ -119,7 +121,10 @@ public static class DeliverySearchTermEndpoints
         }
     }
 
-    /// <summary>Removes what people made of the term: it is searched as its mappings give it again, or, when no mapping gives it, it is gone.</summary>
+    /// <summary>Text given, trimmed; null for none.</summary>
+    private static string? Blank(string? text) => string.IsNullOrWhiteSpace(text) ? null : text.Trim();
+
+    /// <summary>Removes what people made of the term: it is searched as its pipelines give it again, or, when no pipeline gives it, it is gone.</summary>
     private static async Task<Results<NoContent, NotFound>> ResetAsync(
         Guid termId, OsduDbContext osdu, ITemplateStore templates, DeliveryDocumentLoader documents, TimeProvider clock, CancellationToken ct)
     {

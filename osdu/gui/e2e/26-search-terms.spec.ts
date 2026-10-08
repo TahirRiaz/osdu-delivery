@@ -98,9 +98,12 @@ test.describe.serial("search terms", () => {
     const find = adminPage.getByTestId("search-terms-find");
     await expect(grid.getByTestId("search-terms-grid-row").first()).toBeVisible({ timeout: 60_000 });
     await find.fill("log_source");
-    await expect(grid.getByTestId("search-terms-grid-row").filter({ hasText: /^log_source/ })).toBeVisible();
+    // A term is named by its table and column, the table the delivery flow reads: one term however many flows read it.
+    await expect(grid.getByTestId("search-terms-grid-row").filter({ hasText: /^WellLog\.log_source/ })).toBeVisible();
     await find.fill("wellbore_uwi");
     const row = grid.getByTestId("search-terms-grid-row").filter({ hasText: "wellbore_uwi" });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("WellLog.wellbore_uwi");
     await expect(row).toContainText("WellboreID");
     await expect(row).toContainText("search");
     await expect(row).toContainText("Searched");

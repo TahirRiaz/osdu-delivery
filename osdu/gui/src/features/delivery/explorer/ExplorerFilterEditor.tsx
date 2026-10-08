@@ -174,7 +174,7 @@ export function ExplorerFilterEditor({ partition, base, initial, applyLabel, onA
             {term.term.name}
           </span>
           <span className="max-w-[45%] shrink-0 truncate text-[11px] text-muted-foreground" title={`Searched in ${term.route.path}, ${term.route.how}`}>
-            {`${term.term.system} ${term.term.columnLabel} in `}
+            {term.term.renamed ? `${term.term.columnLabel} in ` : "in "}
             <span className="font-mono">{fieldLabel(term.route.path)}</span>
           </span>
         </div>

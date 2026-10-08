@@ -814,6 +814,16 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Changed
 
+- **A search term is a source table's column, named by it, once however many pipelines read the table.** The terms are
+  extracted from the pipelines: every active delivery flow's record table and dataset tables, with the mapping it renders
+  them with. Two flows reading one table (the Recall well logs rendered by WellLog 1.4.0 and 1.5.0, each under a source
+  system of its own) give one term, `WellLog.wellbore_uwi`, where they gave one per system; its routes list the kinds,
+  mappings and systems that write them, the explorer searches the route of the kind in view where versions write a column
+  differently, and a key's ids are made as each system's delivery makes them. Names, notes, exclusions and routes made on
+  the duplicates move to the term each now is, the newer of two; the other is listed as no longer found. Migration
+  `SearchTermSources` (module 1.33.0) rewrites `osdu.SearchTerm` (`Source` in place of `System` and `Dataset`, a row per
+  entity type) and keeps every refinement ([osdu/docs/search-terms.md](osdu/docs/search-terms.md#where-the-terms-come-from)).
+
 - **A record's linked records read by type, and a long name no longer runs under its icons.** The inspector's Linked
   records (the explorer's and every record page's) groups the records a record names under a heading per type with how
   many there are, names each by its unique part with its copy on the row's hover, and lists the paths that name it in a

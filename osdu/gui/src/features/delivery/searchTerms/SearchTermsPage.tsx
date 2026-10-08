@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { failureText } from "../answers";
 import { ExplorerGrid, type GridColumn } from "../explorer/ExplorerGrid";
 import { kindParts } from "../explorer/explorerModel";
+import { routeVersions, termSource } from "../explorer/explorerTerms";
 import { useWindowFit } from "../useWindowFit";
 import { searchTermsApi, searchedRoute, type SearchRouteView, type SearchTermView } from "../../../api/searchTerms";
 
@@ -120,10 +121,8 @@ export default function SearchTermsPage() {
             return !term.orphan;
         }
       })
-      .filter((term) => wanted === "" || [term.name, term.columnLabel, term.system, ...term.routes.map((r) => r.path)].some((text) => text.toLowerCase().includes(wanted)));
+      .filter((term) => wanted === "" || [term.name, term.columnLabel, term.source, ...term.routes.map((r) => r.path)].some((text) => text.toLowerCase().includes(wanted)));
   }, [terms.data, show, typed]);
-  // The system is said beside each column only where the terms come from more than one.
-  const severalSystems = useMemo(() => new Set((terms.data?.terms ?? []).map((term) => term.system)).size > 1, [terms.data]);
   const counts = useMemo(() => {
     const all = terms.data?.terms ?? [];
     return {
@@ -169,9 +168,12 @@ export default function SearchTermsPage() {
       header: "Source column",
       flex: 1.5,
       render: (term) => (
-        <span className="min-w-0 truncate font-mono text-[12px]" title={`${term.system}: ${term.columnLabel}`}>
-          {severalSystems && <span className="text-muted-foreground">{term.system} </span>}
-          {term.columnLabel}
+        // The table and the column the term is, in full; a long table's name cut from its start, so the column stays in view.
+        <span dir="rtl" className="min-w-0 truncate text-left font-mono text-[12px]" title={termSource(term)}>
+          <bdi dir="ltr">
+            {term.source !== "" && <span className="text-muted-foreground">{term.source}.</span>}
+            {term.column}
+          </bdi>
         </span>
       ),
     },
@@ -316,7 +318,7 @@ function TermEditor({ term, onSaved }: { term: SearchTermView; onSaved: () => vo
   const [excluded, setExcluded] = useState(term.excluded);
   const [picked, setPicked] = useState<string | null>(term.pickedRoute);
   const save = useMutation({
-    mutationFn: () => searchTermsApi.refine(term.id, { name: name.trim() === "" ? null : name.trim(), note: note.trim() === "" ? null : note.trim(), excluded, route: picked }),
+    mutationFn: () => searchTermsApi.refine(term.id, { name: name.trim() === "" ? null : name.trim(), note: note.trim() === "" ? null : note.trim(), excluded, route: picked }, term.entityType),
     onSuccess: onSaved,
   });
   const reset = useMutation({ mutationFn: () => searchTermsApi.reset(term.id), onSuccess: onSaved });
@@ -329,12 +331,12 @@ function TermEditor({ term, onSaved }: { term: SearchTermView; onSaved: () => vo
       <SheetHeader className="border-b px-4 py-3">
         <SheetTitle className="text-base">{term.name}</SheetTitle>
         <SheetDescription className="font-mono text-[12px]">
-          {term.system}: {term.columnLabel} on {kindParts(`*:*:${term.entityType}:*`).type}
+          {termSource(term)} on {kindParts(`*:*:${term.entityType}:*`).type}
         </SheetDescription>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
         {term.orphan
-          ? <p className="text-[13px] text-muted-foreground" data-testid="search-term-orphan">No mapping of an active delivery flow reads {term.columnLabel} any longer. What was made of it is kept until it is removed, and applies again if the column comes back.</p>
+          ? <p className="text-[13px] text-muted-foreground" data-testid="search-term-orphan">No pipeline of an active delivery flow reads {term.columnLabel} any longer. What was made of it is kept until it is removed, and applies again if the column comes back.</p>
           : (
             <>
               <label className="flex flex-col gap-1 text-[12px] text-muted-foreground">
@@ -381,6 +383,12 @@ function TermEditor({ term, onSaved }: { term: SearchTermView; onSaved: () => vo
                           {route.steps.length > 0 ? `: ${route.steps.join(", ")}` : ""}
                           {route.find ? `, ${route.find.name} by ${route.find.lines.map((l) => l.field.replace(/^data\./, "")).join(" or ")}` : ""}
                         </span>
+                        {/* Which versions of the type write the column this way: where they differ, each searches its own. */}
+                        {route.kinds.length > 0 && (
+                          <span className="text-[11px] text-muted-foreground" data-testid="search-term-route-versions">
+                            {`${kindParts(route.kinds[0]).type} ${routeVersions(route.kinds)}`}
+                          </span>
+                        )}
                         {route.problem && <span className="text-[11px] text-warning">{route.problem}</span>}
                       </button>
                     );

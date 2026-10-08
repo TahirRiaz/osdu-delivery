@@ -1132,46 +1132,43 @@ public sealed class DeliveryReversalItem
 }
 
 /// <summary>
-/// A search term a repository's mappings give (osdu/docs/search-terms.md): a column of a source system that the mappings of
-/// the repository's active delivery flows read, with every route by which it reaches the records they render. The sync
-/// writes the rows again whenever it runs, from the mappings the flows pin; what a person makes of a term is kept apart, in
-/// <see cref="DeliverySearchTermRefinement"/>, by the term's identity, so a sync never undoes it.
+/// A search term a repository's pipelines give (osdu/docs/search-terms.md) for one entity type: a column of a source table
+/// the repository's active delivery flows read, with every route by which it reaches the records of that type they render.
+/// A term is the table's column, whichever flows read the table and whichever mappings render it; a row is the term in one
+/// repository and one entity type. The sync writes the rows again whenever it runs, from the flows and the mappings they
+/// pin; what a person makes of a term is kept apart, in <see cref="DeliverySearchTermRefinement"/>, by the term's identity,
+/// so a sync never undoes it.
 /// </summary>
 public sealed class DeliverySearchTerm
 {
-    /// <summary>The longest source system, entity type, dataset and column a term names.</summary>
-    public const int MaxSystemLength = 100;
+    /// <summary>The longest table, entity type and column a term names.</summary>
+    public const int MaxSourceLength = 400;
 
     public const int MaxEntityTypeLength = 200;
 
-    public const int MaxDatasetLength = 128;
-
     public const int MaxColumnLength = 128;
 
-    /// <summary>Stable id: derived from the repo id and the term's key.</summary>
+    /// <summary>Stable id: derived from the repo id, the entity type and the term's key.</summary>
     public Guid Id { get; set; }
 
     public Guid RepoId { get; set; }
 
-    /// <summary>The term's identity, the same in every repository and on every host: derived from its key alone.</summary>
+    /// <summary>The term's identity, the same in every repository, entity type and host: derived from its key alone.</summary>
     public Guid TermId { get; set; }
 
-    /// <summary>The term's key as text: <c>recall/work-product-component--WellLog/curves/curve_unit</c>.</summary>
+    /// <summary>The term's key as text: <c>osdudata.arc.welllog/wellbore_uwi</c>.</summary>
     public string TermKey { get; set; } = string.Empty;
 
-    /// <summary>The source system (<c>dataset.system</c>), in lower case.</summary>
-    public string System { get; set; } = string.Empty;
+    /// <summary>The table the column is read from, its parts without brackets (<c>OsduData.arc.WellLog</c>).</summary>
+    public string Source { get; set; } = string.Empty;
 
-    /// <summary>The entity type the mappings fill (<c>work-product-component--WellLog</c>).</summary>
+    /// <summary>The entity type the routes fill (<c>work-product-component--WellLog</c>).</summary>
     public string EntityType { get; set; } = string.Empty;
-
-    /// <summary>The child dataset whose rows hold the column; null for the dataset's own row.</summary>
-    public string? Dataset { get; set; }
 
     /// <summary>The column as the mappings name it.</summary>
     public string Column { get; set; } = string.Empty;
 
-    /// <summary>The routes by which the column reaches the record, as JSON (<c>SearchRoute</c>).</summary>
+    /// <summary>The routes by which the column reaches the records of the entity type, as JSON (<c>SearchRoute</c>).</summary>
     public string RoutesJson { get; set; } = "[]";
 
     /// <summary>The active delivery flows whose mappings read the column, as a JSON list of names.</summary>
@@ -2496,7 +2493,7 @@ public static class DeliveryModel
     /// <summary>The widest data-partition-id, as every table that names a partition keeps it.</summary>
     public const int MaxPartitionLength = 200;
 
-    /// <summary>The longest search term key: its source system, entity type, dataset and column (osdu/docs/search-terms.md).</summary>
+    /// <summary>The longest search term key: its table and its column (osdu/docs/search-terms.md).</summary>
     public const int SearchTermKeyLength = 600;
 
     /// <summary>
@@ -3267,13 +3264,12 @@ public static class DeliveryModel
             e.ToTable("SearchTerm", SchemaName);
             e.HasKey(t => t.Id);
             e.Property(t => t.TermKey).HasMaxLength(SearchTermKeyLength).IsRequired();
-            e.Property(t => t.System).HasMaxLength(DeliverySearchTerm.MaxSystemLength).IsRequired();
+            e.Property(t => t.Source).HasMaxLength(DeliverySearchTerm.MaxSourceLength).IsRequired();
             e.Property(t => t.EntityType).HasMaxLength(DeliverySearchTerm.MaxEntityTypeLength).IsRequired();
-            e.Property(t => t.Dataset).HasMaxLength(DeliverySearchTerm.MaxDatasetLength);
             e.Property(t => t.Column).HasMaxLength(DeliverySearchTerm.MaxColumnLength).IsRequired();
             e.Property(t => t.RoutesJson).IsRequired();
             e.Property(t => t.FlowsJson).IsRequired();
-            e.HasIndex(t => new { t.RepoId, t.TermId }).IsUnique();
+            e.HasIndex(t => new { t.RepoId, t.TermId, t.EntityType }).IsUnique();
             // The search terms page and the explorer list the terms of one entity type, from every repository.
             e.HasIndex(t => new { t.EntityType, t.TermId });
         });

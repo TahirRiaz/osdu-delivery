@@ -44,21 +44,29 @@ public static class SearchTermResolver
     };
 
     /// <summary>
-    /// The route a term is searched by: the one <paramref name="picked"/> names while it can be searched, else the plainest one
-    /// that can (a copy before steps, before a lookup, before a key; the record's content before its tags; a value of its own
-    /// before one inside a list); null when none can.
+    /// The route a term is searched by. Of the routes that can be searched, those that fill <paramref name="kind"/> when one
+    /// kind is in view and any of them does: the route of the mapping version that renders that kind, where versions write
+    /// the column differently. Of those, the one <paramref name="picked"/> names, else the plainest (a copy before steps,
+    /// before a lookup, before a key; the record's content before its tags; a value of its own before one inside a list);
+    /// null when none can be searched.
     /// </summary>
-    public static SearchRoute? Preferred(IReadOnlyList<SearchRoute> routes, Func<SearchRoute, bool> usable, string? picked)
+    public static SearchRoute? Preferred(IReadOnlyList<SearchRoute> routes, Func<SearchRoute, bool> usable, string? picked, string? kind = null)
     {
         ArgumentNullException.ThrowIfNull(routes);
         ArgumentNullException.ThrowIfNull(usable);
-        if (picked is not null && routes.FirstOrDefault(r => string.Equals(r.Id, picked, StringComparison.Ordinal)) is { } chosen && usable(chosen))
+        var candidates = routes.Where(usable).ToList();
+        var shown = kind?.Trim();
+        if (!string.IsNullOrEmpty(shown) && !shown.Contains('*', StringComparison.Ordinal) && candidates.Any(r => r.Fills(shown)))
+        {
+            candidates = candidates.Where(r => r.Fills(shown)).ToList();
+        }
+
+        if (picked is not null && candidates.FirstOrDefault(r => string.Equals(r.Id, picked, StringComparison.Ordinal)) is { } chosen)
         {
             return chosen;
         }
 
-        return routes
-            .Where(usable)
+        return candidates
             .OrderBy(r => Rank(r.Kind))
             .ThenBy(r => r.Path.StartsWith("data.", StringComparison.Ordinal) ? 0 : 1)
             .ThenBy(r => r.Target.Contains("[]", StringComparison.Ordinal) ? 1 : 0)
@@ -226,8 +234,8 @@ public static class SearchTermResolver
                     Term = name,
                     Key = new ExplorerViaKey
                     {
-                        System = route.Key!.System,
-                        EntityType = key.EntityType,
+                        Systems = route.Key!.Systems,
+                        EntityType = route.EntityType,
                         Columns = route.Key.Columns,
                         Given = key.Column,
                         FromKey = route.Key.FromKey,

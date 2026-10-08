@@ -43,10 +43,12 @@ public sealed record SearchCacheType(string Name, string Origin, string? Kind, I
 }
 
 /// <summary>
-/// Compiles mapping documents into search terms (osdu/docs/search-terms.md): for every column a mapping reads, each place
-/// the column reaches in the record it renders, and how a value of the column becomes the value written there. Nothing
-/// is read but the mappings and the cached types their lookups name: the routes say what a search would ask, and the
-/// explorer asks it of the platform.
+/// Compiles the pipelines into search terms (osdu/docs/search-terms.md): for every column of a table a delivery flow reads,
+/// each place the column reaches in the records its mapping renders, and how a value of the column becomes the value
+/// written there. A term is the table's column, whichever flows read the table and whichever mappings render it: two flows
+/// rendering one table under two versions of a schema give one term, its routes read by both. Nothing is read but the flows'
+/// tables, their mappings and the cached types the lookups name: the routes say what a search would ask, and the explorer
+/// asks it of the platform.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -71,24 +73,29 @@ public static class SearchTermCompiler
     private static readonly HashSet<string> SearchedRoots = new(StringComparer.Ordinal) { "data", "tags" };
 
     /// <summary>
-    /// The terms <paramref name="mappings"/> give, each with its routes from every mapping that reads its column, a route
-    /// read by several versions of a mapping once, as the newest of them writes it.
+    /// The terms <paramref name="sources"/> give, each with its routes from every pipeline that reads its column into an
+    /// entity type: a route read by several mappings (two pipelines, two versions of a mapping) once, as the newest of them
+    /// writes it, listing every mapping, kind and source system that reads it.
     /// </summary>
-    /// <param name="mappings">The mappings, each a valid document.</param>
+    /// <param name="sources">The pipelines' readings: each mapping a valid document, with the tables its flow reads.</param>
     /// <param name="cacheTypes">The cached types the repository's cache flows declare, by name; null for a type none declares.</param>
-    public static IReadOnlyList<CompiledSearchTerm> Compile(IEnumerable<MappingDefinition> mappings, Func<string, SearchCacheType?> cacheTypes)
+    /// <param name="warnings">Where a column read from a dataset its flow does not declare is reported; it gives no route.</param>
+    public static IReadOnlyList<CompiledSearchTerm> Compile(IEnumerable<SearchTermSource> sources, Func<string, SearchCacheType?> cacheTypes, ICollection<string> warnings)
     {
-        ArgumentNullException.ThrowIfNull(mappings);
+        ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(cacheTypes);
+        ArgumentNullException.ThrowIfNull(warnings);
 
-        var routes = new Dictionary<SearchTermKey, Dictionary<string, (SearchRoute Route, string Version)>>();
-        foreach (var mapping in mappings.OrderBy(m => m.Name, StringComparer.Ordinal).ThenBy(m => m.Version, VersionOrder.Instance))
+        var routes = new Dictionary<(SearchTermKey Key, string EntityType), Dictionary<string, (SearchRoute Route, string Version)>>();
+        foreach (var source in sources.OrderBy(s => s.Mapping.Name, StringComparer.Ordinal).ThenBy(s => s.Mapping.Version, VersionOrder.Instance).ThenBy(s => s.RecordObject, StringComparer.Ordinal))
         {
-            foreach (var (key, route) in RoutesOf(mapping, cacheTypes))
+            var mapping = source.Mapping;
+            foreach (var (key, route) in RoutesOf(source, cacheTypes, warnings))
             {
-                if (!routes.TryGetValue(key, out var byId))
+                var at = (key, route.EntityType);
+                if (!routes.TryGetValue(at, out var byId))
                 {
-                    routes[key] = byId = new Dictionary<string, (SearchRoute, string)>(StringComparer.Ordinal);
+                    routes[at] = byId = new Dictionary<string, (SearchRoute, string)>(StringComparer.Ordinal);
                 }
 
                 if (!byId.TryGetValue(route.Id, out var held))
@@ -98,28 +105,43 @@ public static class SearchTermCompiler
                 }
 
                 // One route read by several mappings: listed under each, written as the newest version writes it, and within
-                // one mapping, a route some alternative carries a value by is kept over one none does.
-                var mappingsOf = held.Route.Mappings.Union(route.Mappings, StringComparer.Ordinal).ToList();
+                // one mapping, a route some alternative carries a value by is kept over one none does. A key's ids are made as
+                // every system it is read under makes them.
                 var newer = VersionOrder.Instance.Compare(mapping.Version, held.Version) > 0
                     || (string.Equals(mapping.Version, held.Version, StringComparison.Ordinal) && held.Route.Problem is not null && route.Problem is null);
-                byId[route.Id] = newer ? (route with { Mappings = mappingsOf }, mapping.Version) : (held.Route with { Mappings = mappingsOf }, held.Version);
+                var kept = newer ? route : held.Route;
+                var merged = kept with
+                {
+                    Mappings = Union(held.Route.Mappings, route.Mappings),
+                    Kinds = Union(held.Route.Kinds, route.Kinds),
+                    Systems = Union(held.Route.Systems, route.Systems),
+                    Key = kept.Key is { } keyOf ? keyOf with { Systems = Union(held.Route.Key?.Systems ?? [], route.Key?.Systems ?? []) } : null,
+                };
+                byId[route.Id] = (merged, newer ? mapping.Version : held.Version);
             }
         }
 
         return routes
-            .Select(pair => new CompiledSearchTerm(pair.Key, pair.Value.Values.Select(v => v.Route).OrderBy(r => r.Target, StringComparer.Ordinal).ThenBy(r => r.Kind).ToList()))
-            .OrderBy(t => t.Key.EntityType, StringComparer.Ordinal)
+            .Select(pair => new CompiledSearchTerm(
+                pair.Key.Key,
+                pair.Key.EntityType,
+                pair.Value.Values.Select(v => v.Route).OrderBy(r => r.Target, StringComparer.Ordinal).ThenBy(r => r.Kind).ToList()))
+            .OrderBy(t => t.EntityType, StringComparer.Ordinal)
             .ThenBy(t => t.Key.Text, StringComparer.Ordinal)
             .ToList();
     }
 
-    /// <summary>Every route <paramref name="mapping"/> gives, with the key of the term it belongs to.</summary>
-    private static IEnumerable<(SearchTermKey Key, SearchRoute Route)> RoutesOf(MappingDefinition mapping, Func<string, SearchCacheType?> cacheTypes)
+    /// <summary>The values of both lists, each once, in the order they first appear.</summary>
+    private static IReadOnlyList<string> Union(IReadOnlyList<string> first, IReadOnlyList<string> second)
+        => first.Union(second, StringComparer.Ordinal).ToList();
+
+    /// <summary>Every route a pipeline's reading gives, with the key of the term it belongs to: the table's column.</summary>
+    private static IEnumerable<(SearchTermKey Key, SearchRoute Route)> RoutesOf(SearchTermSource source, Func<string, SearchCacheType?> cacheTypes, ICollection<string> warnings)
     {
-        var system = mapping.Dataset.System;
-        var entityType = mapping.EntityType;
+        var mapping = source.Mapping;
         var copies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var found = new List<(SearchTermKey, SearchRoute)>();
+        var unknown = new HashSet<string>(StringComparer.Ordinal);
 
         foreach (var entry in mapping.Entries)
         {
@@ -141,7 +163,19 @@ public static class SearchTermCompiler
 
                 foreach (var (column, route) in NodeRoutes(mapping, entry, node, alternative, cacheTypes))
                 {
-                    found.Add((SearchTermKey.Of(system, entityType, column.Child, column.Column), route));
+                    if (TableOf(source, column.Child) is not { } table)
+                    {
+                        // Preflight refuses to run a flow whose mapping reads a dataset the flow does not declare; the sync
+                        // describes such a flow all the same, so the dataset is reported once and its columns give no term.
+                        if (unknown.Add(column.Child!))
+                        {
+                            warnings.Add($"{mapping.Reference} reads the dataset {column.Child}, which the flow reading {source.RecordObject} does not declare; its columns give no search term.");
+                        }
+
+                        continue;
+                    }
+
+                    found.Add((SearchTermKey.Of(table, column.Column), route with { Dataset = column.Child }));
                     if (column.Child is null && route.Problem is null && route.Kind == SearchRouteKind.Copy)
                     {
                         copies.TryAdd(column.Column, route.Path);
@@ -150,9 +184,13 @@ public static class SearchTermCompiler
             }
         }
 
-        found.AddRange(KeyRoutes(mapping, copies));
+        found.AddRange(KeyRoutes(source, copies));
         return found;
     }
+
+    /// <summary>The table a column is read from: the record table for the record's own row, else the child dataset's; null for a dataset the flow does not declare.</summary>
+    private static string? TableOf(SearchTermSource source, string? dataset)
+        => dataset is null ? source.RecordObject : source.DatasetObjects.GetValueOrDefault(dataset);
 
     /// <summary>The routes one value node gives, each with the column it carries.</summary>
     private static IEnumerable<(DatasetColumn Column, SearchRoute Route)> NodeRoutes(
@@ -162,6 +200,9 @@ public static class SearchTermCompiler
         var steps = node.Modifiers.Select(m => m.ToString()).ToList();
         SearchRoute Route(SearchRouteKind kind, string? problem) => new()
         {
+            EntityType = mapping.EntityType,
+            Kinds = [mapping.Template.Kind],
+            Systems = [mapping.Dataset.System.Trim().ToLowerInvariant()],
             Target = node.Target.Text,
             Path = node.Target.SchemaPath,
             Kind = kind,
@@ -308,8 +349,10 @@ public static class SearchTermCompiler
     /// The routes of the dataset's key: each of its columns makes the record's id, alone for a key of one column, and with
     /// the others for a key of several, whose values the record must hold where a search can read them.
     /// </summary>
-    private static IEnumerable<(SearchTermKey, SearchRoute)> KeyRoutes(MappingDefinition mapping, IReadOnlyDictionary<string, string> copies)
+    private static IEnumerable<(SearchTermKey, SearchRoute)> KeyRoutes(SearchTermSource source, IReadOnlyDictionary<string, string> copies)
     {
+        var mapping = source.Mapping;
+        var system = mapping.Dataset.System.Trim().ToLowerInvariant();
         var columns = mapping.Dataset.Key;
         if (columns.Count == 0)
         {
@@ -322,14 +365,17 @@ public static class SearchTermCompiler
             var missing = others.FirstOrDefault(o => !copies.ContainsKey(o));
             var held = others.Count == 0 ? null : others.Where(copies.ContainsKey).ToDictionary(o => o, o => copies[o], StringComparer.Ordinal);
             yield return (
-                SearchTermKey.Of(mapping.Dataset.System, mapping.EntityType, null, column),
+                SearchTermKey.Of(source.RecordObject, column),
                 new SearchRoute
                 {
+                    EntityType = mapping.EntityType,
+                    Kinds = [mapping.Template.Kind],
+                    Systems = [system],
                     Target = "id",
                     Path = "id",
                     Kind = SearchRouteKind.Key,
                     Mappings = [mapping.Reference],
-                    Key = new SearchRouteKey(mapping.Dataset.System.Trim().ToLowerInvariant(), columns, mapping.Dataset.IdFrom == MappingIdSource.Key, held),
+                    Key = new SearchRouteKey([system], columns, mapping.Dataset.IdFrom == MappingIdSource.Key, held),
                     Problem = missing is null
                         ? null
                         : $"the record's id is made from {string.Join(" and ", columns)} together, and the record does not hold {missing} as it stands, so the id cannot be made from {column} alone",

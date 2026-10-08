@@ -24,16 +24,22 @@ public sealed record SearchTermView
     /// <summary>The term's key as text (<see cref="SearchTermKey.Text"/>).</summary>
     public required string Key { get; init; }
 
-    public required string System { get; init; }
+    /// <summary>The table the column is read from (<c>OsduData.arc.WellLog</c>); empty for a refinement made before terms named theirs.</summary>
+    public required string Source { get; init; }
 
+    /// <summary>The table's own name (<c>WellLog</c>).</summary>
+    public required string Table { get; init; }
+
+    /// <summary>The entity type the view is of: the one the routes listed fill.</summary>
     public required string EntityType { get; init; }
-
-    public string? Dataset { get; init; }
 
     public required string Column { get; init; }
 
-    /// <summary>The column as the source names it: <c>curves.curve_unit</c>.</summary>
+    /// <summary>The column as a person who knows the source names it, the table before it: <c>WellLog.wellbore_uwi</c>.</summary>
     public required string ColumnLabel { get; init; }
+
+    /// <summary>The source systems (<c>dataset.system</c>) of the mappings that read the column, each once.</summary>
+    public IReadOnlyList<string> Systems { get; init; } = [];
 
     /// <summary>The name the term is searched by: the one a person gave it, else its column's.</summary>
     public required string Name { get; init; }
@@ -82,6 +88,15 @@ public sealed record SearchTermSuggest(string? Kind, string Path, string Index, 
 public sealed record SearchRouteView
 {
     public required string Id { get; init; }
+
+    /// <summary>The entity type the route fills.</summary>
+    public required string EntityType { get; init; }
+
+    /// <summary>The kinds the route fills, one per mapping version that writes it (<c>osdu:wks:work-product-component--WellLog:1.5.0</c>).</summary>
+    public IReadOnlyList<string> Kinds { get; init; } = [];
+
+    /// <summary>The child dataset the mapping reads the column under (<c>curves</c>); null for the record's own row.</summary>
+    public string? Dataset { get; init; }
 
     public required string Target { get; init; }
 
@@ -165,27 +180,35 @@ public sealed class SearchTermDirectory
     }
 
     /// <summary>
-    /// The terms of <paramref name="entityType"/> (every entity type when null), by name; with <paramref name="orphans"/>, the
-    /// refinements whose terms no mapping gives any longer too.
+    /// The terms of <paramref name="entityType"/> (every entity type when null, a term once per type it reaches), by name, each
+    /// searched through the route it would be for <paramref name="kind"/> when one kind is named; with
+    /// <paramref name="orphans"/>, the refinements whose terms no pipeline gives any longer too.
     /// </summary>
-    public async Task<IReadOnlyList<SearchTermView>> ListAsync(string? entityType, bool orphans, CancellationToken ct)
+    public async Task<IReadOnlyList<SearchTermView>> ListAsync(string? entityType, string? kind, bool orphans, CancellationToken ct)
     {
         var rows = await _db.DeliverySearchTerms.AsNoTracking()
             .Where(t => entityType == null || t.EntityType == entityType)
             .ToListAsync(ct).ConfigureAwait(false);
+        var termIds = rows.Select(r => r.TermId).Distinct().ToList();
         var refinements = await _db.DeliverySearchTermRefinements.AsNoTracking()
-            .Where(r => entityType == null || r.EntityType == entityType)
+            .Where(r => termIds.Contains(r.TermId) || (orphans && (entityType == null || r.EntityType == entityType)))
             .ToDictionaryAsync(r => r.TermId, ct).ConfigureAwait(false);
 
         var views = new List<SearchTermView>();
-        foreach (var term in rows.GroupBy(r => r.TermId))
+        foreach (var term in rows.GroupBy(r => (r.TermId, r.EntityType)))
         {
-            views.Add(await ViewAsync(Merge(term.ToList()), refinements.GetValueOrDefault(term.Key), ct).ConfigureAwait(false));
+            views.Add(await ViewAsync(Merge(term.ToList()), refinements.GetValueOrDefault(term.Key.TermId), kind, ct).ConfigureAwait(false));
         }
 
         if (orphans)
         {
-            var held = rows.Select(r => r.TermId).ToHashSet();
+            var held = termIds.ToHashSet();
+            var anywhere = await _db.DeliverySearchTerms.AsNoTracking()
+                .Where(t => refinements.Keys.Contains(t.TermId))
+                .Select(t => t.TermId)
+                .Distinct()
+                .ToListAsync(ct).ConfigureAwait(false);
+            held.UnionWith(anywhere);
             views.AddRange(refinements.Values.Where(r => !held.Contains(r.TermId)).Select(Orphaned));
         }
 
@@ -196,8 +219,12 @@ public sealed class SearchTermDirectory
             .ToList();
     }
 
-    /// <summary>The term <paramref name="termId"/>, or its refinement while no mapping gives it; null for neither.</summary>
-    public async Task<SearchTermView?> FindAsync(Guid termId, CancellationToken ct)
+    /// <summary>
+    /// The term <paramref name="termId"/> as it reaches <paramref name="entityType"/> (the first type it reaches, by name, when
+    /// null or one it does not reach), searched through the route it would be for <paramref name="kind"/>; its refinement while
+    /// no pipeline gives it; null for neither.
+    /// </summary>
+    public async Task<SearchTermView?> FindAsync(Guid termId, string? entityType, string? kind, CancellationToken ct)
     {
         var rows = await _db.DeliverySearchTerms.AsNoTracking().Where(t => t.TermId == termId).ToListAsync(ct).ConfigureAwait(false);
         var refinement = await _db.DeliverySearchTermRefinements.AsNoTracking().FirstOrDefaultAsync(r => r.TermId == termId, ct).ConfigureAwait(false);
@@ -206,25 +233,28 @@ public sealed class SearchTermDirectory
             return refinement is null ? null : Orphaned(refinement);
         }
 
-        return await ViewAsync(Merge(rows), refinement, ct).ConfigureAwait(false);
+        var type = rows.Any(r => string.Equals(r.EntityType, entityType, StringComparison.Ordinal))
+            ? entityType!
+            : rows.Select(r => r.EntityType).Order(StringComparer.Ordinal).First();
+        return await ViewAsync(Merge(rows.Where(r => r.EntityType == type).ToList()), refinement, kind, ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Keeps what <paramref name="actor"/> made of the term: its name (unique among its entity type's terms), whether it is
-    /// left out, the route it is searched through (one of its routes that can be searched) and a note. A request that keeps
-    /// nothing of the term's own removes its refinement.
+    /// Keeps what <paramref name="actor"/> made of the term: its name (unique among the terms of the entity type it is refined
+    /// in), whether it is left out, the route it is searched through (one of its routes that can be searched) and a note. A
+    /// request that keeps nothing of the term's own removes its refinement.
     /// </summary>
     /// <exception cref="DeliveryException">The term does not exist, or the request is not one a term takes; the message says why.</exception>
-    public async Task<SearchTermView> RefineAsync(Guid termId, SearchTermRefinementRequest request, string actor, CancellationToken ct)
+    public async Task<SearchTermView> RefineAsync(Guid termId, string? entityType, SearchTermRefinementRequest request, string actor, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentException.ThrowIfNullOrWhiteSpace(actor);
-        var current = await FindAsync(termId, ct).ConfigureAwait(false);
+        var current = await FindAsync(termId, entityType, null, ct).ConfigureAwait(false);
         if (current is null || current.Orphan)
         {
             throw new DeliveryException(current is null
-                ? $"No search term {termId} is extracted from the mappings of an active delivery flow."
-                : $"The search term {current.Key} is no longer extracted from any mapping, so only its refinement can be removed.");
+                ? $"No search term {termId} is extracted from the pipelines of an active delivery flow."
+                : $"The search term {current.Key} is no longer extracted from any pipeline, so only its refinement can be removed.");
         }
 
         var name = Clean(request.Name, DeliverySearchTermRefinement.MaxNameLength, "name", newlines: false);
@@ -236,7 +266,7 @@ public sealed class SearchTermDirectory
 
         if (name is not null)
         {
-            var others = await ListAsync(current.EntityType, orphans: false, ct).ConfigureAwait(false);
+            var others = await ListAsync(current.EntityType, null, orphans: false, ct).ConfigureAwait(false);
             if (others.FirstOrDefault(o => o.Id != termId && string.Equals(o.Name, name, StringComparison.OrdinalIgnoreCase)) is { } taken)
             {
                 throw new DeliveryException($"The name '{name}' is the search term {taken.ColumnLabel}'s already; two terms of {current.EntityType} cannot share one.");
@@ -247,7 +277,7 @@ public sealed class SearchTermDirectory
         if (route is not null)
         {
             var picked = current.Routes.FirstOrDefault(r => string.Equals(r.Id, route, StringComparison.Ordinal))
-                ?? throw new DeliveryException($"'{route}' is not a route of the search term {current.ColumnLabel}: {string.Join(", ", current.Routes.Select(r => r.Id))}.");
+                ?? throw new DeliveryException($"'{route}' is not a route of the search term {current.ColumnLabel} on {current.EntityType}: {string.Join(", ", current.Routes.Select(r => r.Id))}.");
             if (picked.Problem is { } problem)
             {
                 throw new DeliveryException($"The search term {current.ColumnLabel} cannot be searched through {picked.Target}: {problem}.");
@@ -263,7 +293,7 @@ public sealed class SearchTermDirectory
                 await _db.SaveChangesAsync(ct).ConfigureAwait(false);
             }
 
-            return (await FindAsync(termId, ct).ConfigureAwait(false))!;
+            return (await FindAsync(termId, current.EntityType, null, ct).ConfigureAwait(false))!;
         }
 
         if (row is null)
@@ -281,10 +311,10 @@ public sealed class SearchTermDirectory
         row.UpdatedBy = actor.Length <= 200 ? actor : actor[..200];
         row.UpdatedUtc = _time.GetUtcNow().UtcDateTime;
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return (await FindAsync(termId, ct).ConfigureAwait(false))!;
+        return (await FindAsync(termId, current.EntityType, null, ct).ConfigureAwait(false))!;
     }
 
-    /// <summary>Removes what people made of the term, so it is searched as its mappings give it; false when there was nothing to remove.</summary>
+    /// <summary>Removes what people made of the term, so it is searched as its pipelines give it; false when there was nothing to remove.</summary>
     public async Task<bool> ResetAsync(Guid termId, CancellationToken ct)
     {
         var removed = await _db.DeliverySearchTermRefinements.Where(r => r.TermId == termId).ExecuteDeleteAsync(ct).ConfigureAwait(false);
@@ -292,24 +322,42 @@ public sealed class SearchTermDirectory
     }
 
     /// <summary>
-    /// The condition the explorer asks of the records for <paramref name="asked"/> on the term <paramref name="termId"/>, in
-    /// <paramref name="partition"/>: on the property its route fills, the values put through its mapping, and for a route
-    /// through other records, the way the node reads those.
+    /// The condition the explorer asks of the records of <paramref name="kind"/> for <paramref name="asked"/> on the term
+    /// <paramref name="termId"/>, in <paramref name="partition"/>: on the property its route for that kind fills (the route
+    /// of the mapping version that renders the kind, where versions write it differently), the values put through that
+    /// mapping, and for a route through other records, the way the node reads those. A kind of many types takes the term's
+    /// one type, and is refused for a term that reaches several.
     /// </summary>
     /// <exception cref="DeliveryException">The term does not exist, is left out, cannot be searched, or a value cannot be carried.</exception>
-    public async Task<ExplorerFilter> ResolveAsync(Guid termId, SearchTermCondition asked, string partition, CancellationToken ct)
+    public async Task<ExplorerFilter> ResolveAsync(Guid termId, SearchTermCondition asked, string partition, string? kind, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(asked);
         ArgumentException.ThrowIfNullOrWhiteSpace(partition);
         var rows = await _db.DeliverySearchTerms.AsNoTracking().Where(t => t.TermId == termId).ToListAsync(ct).ConfigureAwait(false);
         if (rows.Count == 0)
         {
-            throw new DeliveryException($"No search term {termId} is extracted from the mappings of an active delivery flow; sync the repository, or pick the property itself.");
+            throw new DeliveryException($"No search term {termId} is extracted from the pipelines of an active delivery flow; sync the repository, or pick the property itself.");
+        }
+
+        var types = rows.Select(r => r.EntityType).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        var label = new SearchTermKey(rows[0].Source, rows[0].Column).ColumnLabel;
+        var named = string.IsNullOrWhiteSpace(kind) ? null : ExplorerKinds.EntityTypeOf(kind.Trim());
+        string type;
+        if (named is not null)
+        {
+            type = types.FirstOrDefault(t => string.Equals(t, named, StringComparison.Ordinal))
+                ?? throw new DeliveryException($"{label} is a column of {string.Join(" and ", types)} records, not of {named}'s.");
+        }
+        else
+        {
+            type = types.Count == 1
+                ? types[0]
+                : throw new DeliveryException($"{label} reaches the records of {string.Join(" and ", types)}: pick one of those types to search it.");
         }
 
         var refinement = await _db.DeliverySearchTermRefinements.AsNoTracking().FirstOrDefaultAsync(r => r.TermId == termId, ct).ConfigureAwait(false);
-        var term = Merge(rows);
-        var view = await ViewAsync(term, refinement, ct).ConfigureAwait(false);
+        var term = Merge(rows.Where(r => r.EntityType == type).ToList());
+        var view = await ViewAsync(term, refinement, kind, ct).ConfigureAwait(false);
         if (view.Excluded)
         {
             throw new DeliveryException($"{view.Name} is left out of the search; include it again on the Search terms page.");
@@ -323,7 +371,7 @@ public sealed class SearchTermDirectory
 
         var chosen = term.Routes[chosenAt];
 
-        var (mapping, fields) = await ClassifyAsync(chosen.Route, chosen.Repo, ct).ConfigureAwait(false);
+        var (mapping, fields) = await ClassifyAsync(chosen.Route, chosen.Repo, MappingFor(chosen.Route, kind), ct).ConfigureAwait(false);
         var template = mapping is null ? null : await TemplateAsync(mapping.Template, ct).ConfigureAwait(false);
         if (mapping is null || template is null)
         {
@@ -343,11 +391,14 @@ public sealed class SearchTermDirectory
         return SearchTermResolver.Resolve(view.Name, term.Key, chosen.Route, fields, asked, values);
     }
 
-    /// <summary>A term's rows from every repository that gives it: its key, every route once (the latest sync's), and every flow.</summary>
+    /// <summary>
+    /// A term's rows of one entity type from every repository that gives it: its key, every route once (the latest sync's),
+    /// and every flow.
+    /// </summary>
     private static Term Merge(IReadOnlyList<DeliverySearchTerm> rows)
     {
         var first = rows[0];
-        var key = new SearchTermKey(first.System, first.EntityType, first.Dataset, first.Column);
+        var key = new SearchTermKey(first.Source, first.Column);
         var routes = new Dictionary<string, (SearchRoute Route, Guid Repo, DateTime Seen)>(StringComparer.Ordinal);
         var flows = new SortedSet<string>(StringComparer.Ordinal);
         foreach (var row in rows)
@@ -366,20 +417,35 @@ public sealed class SearchTermDirectory
             }
         }
 
-        return new Term(first.TermId, key, routes.Values.Select(r => (r.Route, r.Repo)).ToList(), flows.ToList());
+        return new Term(first.TermId, key, first.EntityType, routes.Values.Select(r => (r.Route, r.Repo)).ToList(), flows.ToList());
     }
 
-    private async Task<SearchTermView> ViewAsync(Term term, DeliverySearchTermRefinement? refinement, CancellationToken ct)
+    /// <summary>
+    /// The mapping a route is classified and its values carried by: for a kind in view that one of the route's mappings
+    /// renders, that mapping; else the newest that reads the route. Null for the newest.
+    /// </summary>
+    private static string? MappingFor(SearchRoute route, string? kind)
+    {
+        if (string.IsNullOrWhiteSpace(kind) || kind.Contains('*', StringComparison.Ordinal) || route.Kinds.Count != route.Mappings.Count)
+        {
+            return null;
+        }
+
+        var at = route.Kinds.ToList().FindIndex(k => string.Equals(k, kind.Trim(), StringComparison.OrdinalIgnoreCase));
+        return at < 0 ? null : route.Mappings[at];
+    }
+
+    private async Task<SearchTermView> ViewAsync(Term term, DeliverySearchTermRefinement? refinement, string? kind, CancellationToken ct)
     {
         var routes = new List<(SearchRoute Route, SearchRouteFields Fields)>(term.Routes.Count);
         foreach (var (route, repo) in term.Routes)
         {
-            var (_, fields) = await ClassifyAsync(route, repo, ct).ConfigureAwait(false);
+            var (_, fields) = await ClassifyAsync(route, repo, MappingFor(route, kind), ct).ConfigureAwait(false);
             routes.Add((route, fields));
         }
 
         var usable = routes.Where(r => r.Fields.Target is not null).Select(r => r.Route).ToHashSet();
-        var chosen = SearchTermResolver.Preferred(routes.Select(r => r.Route).ToList(), usable.Contains, refinement?.Route);
+        var chosen = SearchTermResolver.Preferred(routes.Select(r => r.Route).ToList(), usable.Contains, refinement?.Route, kind);
         var views = routes
             .Select(r => View(r.Route, r.Fields))
             .OrderBy(v => chosen is not null && v.Id == chosen.Id ? 0 : 1)
@@ -393,11 +459,12 @@ public sealed class SearchTermDirectory
         {
             Id = term.Id,
             Key = term.Key.Text,
-            System = term.Key.System,
-            EntityType = term.Key.EntityType,
-            Dataset = term.Key.Dataset,
+            Source = term.Key.Source,
+            Table = term.Key.Table,
+            EntityType = term.EntityType,
             Column = term.Key.Column,
             ColumnLabel = term.Key.ColumnLabel,
+            Systems = term.Routes.SelectMany(r => r.Route.Systems).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList(),
             Name = refinement?.Name ?? term.Key.ColumnLabel,
             Renamed = refinement?.Name is not null,
             Excluded = refinement?.Excluded ?? false,
@@ -414,31 +481,54 @@ public sealed class SearchTermDirectory
         };
     }
 
-    /// <summary>A refinement whose term no mapping gives any longer: its name and note, and no route.</summary>
+    /// <summary>
+    /// A refinement whose term no pipeline gives any longer: its name and note, and no route. Its key names the table and the
+    /// column (<c>osdudata.arc.welllog/wellbore_uwi</c>); one made while terms were keyed by their mapping's source system
+    /// names those instead.
+    /// </summary>
     private static SearchTermView Orphaned(DeliverySearchTermRefinement refinement)
     {
-        var parts = refinement.TermKey.Split('/');
-        var (system, dataset, column) = parts.Length == 4 ? (parts[0], parts[2].Length == 0 ? null : parts[2], parts[3]) : (string.Empty, null, refinement.TermKey);
-        var label = dataset is null ? column : $"{dataset}.{column}";
+        string source, column, label;
+        IReadOnlyList<string> systems;
+        if (SearchTermKey.Legacy(refinement.TermKey) is { } legacy)
+        {
+            (source, column, systems) = (string.Empty, legacy.Column, [legacy.System]);
+            label = legacy.Dataset.Length == 0 ? legacy.Column : $"{legacy.Dataset}.{legacy.Column}";
+        }
+        else
+        {
+            (source, column) = SplitKey(refinement.TermKey);
+            systems = [];
+            label = source.Length == 0 ? column : $"{SearchTermKey.TableOf(source)}.{column}";
+        }
+
         return new SearchTermView
         {
             Id = refinement.TermId,
             Key = refinement.TermKey,
-            System = system,
+            Source = source,
+            Table = source.Length == 0 ? string.Empty : SearchTermKey.TableOf(source),
             EntityType = refinement.EntityType,
-            Dataset = dataset,
             Column = column,
             ColumnLabel = label,
+            Systems = systems,
             Name = refinement.Name ?? label,
             Renamed = refinement.Name is not null,
             Excluded = refinement.Excluded,
             Note = refinement.Note,
             PickedRoute = refinement.Route,
-            Problem = "no mapping of an active delivery flow reads this column any longer",
+            Problem = "no pipeline of an active delivery flow reads this column any longer",
             Orphan = true,
             UpdatedBy = refinement.UpdatedBy,
             UpdatedUtc = refinement.UpdatedUtc,
         };
+    }
+
+    /// <summary>The table and the column a key names (<c>osdudata.arc.welllog/wellbore_uwi</c>).</summary>
+    private static (string Source, string Column) SplitKey(string termKey)
+    {
+        var slash = termKey.LastIndexOf('/');
+        return slash <= 0 ? (string.Empty, termKey) : (termKey[..slash], termKey[(slash + 1)..]);
     }
 
     /// <summary>
@@ -463,6 +553,9 @@ public sealed class SearchTermDirectory
     private static SearchRouteView View(SearchRoute route, SearchRouteFields fields) => new()
     {
         Id = route.Id,
+        EntityType = route.EntityType,
+        Kinds = route.Kinds,
+        Dataset = route.Dataset,
         Target = route.Target,
         Path = route.Path,
         Kind = route.Kind.ToString().ToLowerInvariant(),
@@ -480,15 +573,18 @@ public sealed class SearchTermDirectory
         Problem = fields.Problem,
     };
 
-    /// <summary>How the route compares, as the schemas say it is indexed, with the mapping it reads; or why it cannot be searched.</summary>
-    private async Task<(MappingDefinition? Mapping, SearchRouteFields Fields)> ClassifyAsync(SearchRoute route, Guid repo, CancellationToken ct)
+    /// <summary>
+    /// How the route compares, as the schemas say it is indexed, with the mapping it reads (<paramref name="reference"/>, or
+    /// the newest that reads it); or why it cannot be searched.
+    /// </summary>
+    private async Task<(MappingDefinition? Mapping, SearchRouteFields Fields)> ClassifyAsync(SearchRoute route, Guid repo, string? reference, CancellationToken ct)
     {
         if (route.Problem is { } problem)
         {
             return (null, SearchRouteFields.Refused(problem));
         }
 
-        var reference = route.Mappings[^1];
+        reference ??= route.Mappings[^1];
         var (mapping, mappingProblem) = await MappingAsync(repo, reference, ct).ConfigureAwait(false);
         if (mapping is null)
         {
@@ -602,6 +698,9 @@ public sealed class SearchTermDirectory
     /// <summary>A condition as the explorer names it: <c>isNot</c>, <c>startsWith</c>.</summary>
     public static string ConditionName(ExplorerCondition condition) => JsonNamingPolicy.CamelCase.ConvertName(condition.ToString());
 
-    /// <summary>A term as its rows give it: its identity and key, every route with the repository its mapping is read from, and the flows that read it.</summary>
-    private sealed record Term(Guid Id, SearchTermKey Key, IReadOnlyList<(SearchRoute Route, Guid Repo)> Routes, IReadOnlyList<string> Flows);
+    /// <summary>
+    /// A term as its rows of one entity type give it: its identity and key, the entity type, every route with the repository
+    /// its mapping is read from, and the flows that read it.
+    /// </summary>
+    private sealed record Term(Guid Id, SearchTermKey Key, string EntityType, IReadOnlyList<(SearchRoute Route, Guid Repo)> Routes, IReadOnlyList<string> Flows);
 }

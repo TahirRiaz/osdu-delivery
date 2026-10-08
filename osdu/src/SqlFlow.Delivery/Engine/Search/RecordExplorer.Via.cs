@@ -139,15 +139,27 @@ public sealed partial class RecordExplorer
             }
         }
 
+        // Every combination's id, as each source system's delivery makes it (a key's own values make one id whatever the system).
         var ids = new List<string>();
         foreach (var combination in combinations)
         {
             IReadOnlyList<string?> values = key.Columns.Select(c => (string?)combination[c]).ToList();
-            var id = key.FromKey
-                ? TargetId.ComposeFromKey(partition, key.EntityType, values, out _)
-                : TargetId.Compose(partition, key.EntityType, DeliveryKey.Derive(key.System, values));
-            if (id is not null && !ids.Contains(id, StringComparer.Ordinal))
+            IEnumerable<string?> made = key.FromKey
+                ? [TargetId.ComposeFromKey(partition, key.EntityType, values, out _)]
+                : key.Systems.Select(system => (string?)TargetId.Compose(partition, key.EntityType, DeliveryKey.Derive(system, values)));
+            foreach (var id in made)
             {
+                if (id is null || ids.Contains(id, StringComparer.Ordinal))
+                {
+                    continue;
+                }
+
+                if (ids.Count == ExplorerVia.MaxFound)
+                {
+                    cut = true;
+                    break;
+                }
+
                 ids.Add(id);
             }
         }

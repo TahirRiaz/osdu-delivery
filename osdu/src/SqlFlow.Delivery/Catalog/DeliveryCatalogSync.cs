@@ -324,10 +324,11 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         var mappings = await SyncMappingsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
         var caches = await SyncCacheDefinitionsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
-        var interfaces = await SyncInterfacesAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
-        // The search terms are read from the rows the passes above wrote: the interfaces' mappings and the cached types. They
-        // are derived from the documents counted above, so the sync's counts stay the documents'; their warnings are reported.
-        await DeliverySearchTermCatalog.ReconcileAsync(context, repoId, _documents, nowUtc, warnings, ct).ConfigureAwait(false);
+        var (interfaces, sources) = await SyncInterfacesAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
+        // The search terms are read from the delivery flows parsed above and the rows the passes above wrote: the mappings
+        // and the cached types. They are derived from the documents counted above, so the sync's counts stay the documents';
+        // their warnings are reported.
+        await DeliverySearchTermCatalog.ReconcileAsync(context, repoId, sources, _documents, nowUtc, warnings, ct).ConfigureAwait(false);
         return mappings.Add(caches).Add(interfaces);
     }
 
@@ -673,10 +674,11 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
     /// <summary>
     /// The interfaces of the repository's delivery flows (docs/interfaces-design.md section 4), each with the ledger identity
-    /// it keeps and the kind its mapping fills, as the mapping rows this sync just wrote name it. A flow document that does
-    /// not parse describes no interface; the platform's own sync reports it.
+    /// it keeps and the kind its mapping fills, as the mapping rows this sync just wrote name it; with the flows as parsed,
+    /// which the search terms are read from. A flow document that does not parse describes no interface; the platform's own
+    /// sync reports it.
     /// </summary>
-    private async Task<CatalogSyncExtensionResult> SyncInterfacesAsync(
+    private async Task<(CatalogSyncExtensionResult Counts, IReadOnlyList<RepositorySource> Sources)> SyncInterfacesAsync(
         OsduDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
     {
         var sources = new List<RepositorySource>();
@@ -713,7 +715,7 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
 
         var kinds = await MappingKindsAsync(context, repoId, ct).ConfigureAwait(false);
         var counts = await DeliveryInterfaceCatalog.ReconcileAsync(context, repoId, sources, kinds, nowUtc, warnings, ct).ConfigureAwait(false);
-        return new CatalogSyncExtensionResult(counts.Added, counts.Updated, counts.Unchanged, counts.Removed, invalid);
+        return (new CatalogSyncExtensionResult(counts.Added, counts.Updated, counts.Unchanged, counts.Removed, invalid), sources);
     }
 
     /// <summary>The OSDU kind of every valid mapping the repository's rows hold, by reference.</summary>

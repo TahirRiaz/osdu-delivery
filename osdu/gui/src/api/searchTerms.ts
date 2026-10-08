@@ -1,6 +1,6 @@
-// The search terms (osdu/docs/search-terms.md): the columns of the source systems the mappings of active delivery flows
-// read, extracted by the repository sync, each with the routes by which it reaches the records and what people made of it.
-// The explorer searches by them; the Search terms page refines them.
+// The search terms (osdu/docs/search-terms.md): the columns of the source tables the active delivery flows read, extracted
+// from the pipelines by the repository sync, each the table's column whichever flows read it, with the routes by which it
+// reaches the records and what people made of it. The explorer searches by them; the Search terms page refines them.
 
 import { del, get, put } from "@/api/client";
 import type { ExplorerCondition, ExplorerIndex } from "./explorer";
@@ -18,8 +18,13 @@ export interface SearchRouteFind {
 
 /** One way a term's column reaches the record. */
 export interface SearchRouteView {
-  /** `osdu.data.WellboreID|Search`: the variable and how the value reaches it. */
+  /** `work-product-component--WellLog|osdu.data.WellboreID|Search`: the entity type, the variable and how the value reaches it. */
   id: string;
+  entityType: string;
+  /** The kinds the route fills, one per mapping version that writes it (`osdu:wks:work-product-component--WellLog:1.5.0`). */
+  kinds: string[];
+  /** The child dataset the mapping reads the column under (`curves`); absent for the record's own row. */
+  dataset?: string | null;
   target: string;
   path: string;
   kind: SearchRouteKind;
@@ -53,12 +58,17 @@ export interface SearchTermSuggest {
 export interface SearchTermView {
   id: string;
   key: string;
-  system: string;
+  /** The table the column is read from (`OsduData.arc.WellLog`); empty for a refinement made before terms named theirs. */
+  source: string;
+  /** The table's own name (`WellLog`). */
+  table: string;
+  /** The entity type the term is shown for: the one its routes listed fill. */
   entityType: string;
-  dataset: string | null;
   column: string;
-  /** The column as the source names it: `curves.curve_unit`. */
+  /** The column as the source names it, its table before it: `WellLog.wellbore_uwi`. */
   columnLabel: string;
+  /** The source systems (`dataset.system`) of the mappings that read it. */
+  systems: string[];
   /** The name the term is searched by. */
   name: string;
   renamed: boolean;
@@ -119,7 +129,9 @@ export const searchTermsApi = {
       ...(query.orphans ? { orphans: "true" } : {}),
     }),
   entityTypes: () => get<SearchTermType[]>(`${termsPath}/entity-types`),
-  get: (id: string) => get<SearchTermView>(`${termsPath}/${encodeURIComponent(id)}`),
-  refine: (id: string, refinement: SearchTermRefinement) => put<SearchTermView>(`${termsPath}/${encodeURIComponent(id)}`, refinement),
+  /** One term as it reaches `entityType` (a term may reach several). */
+  get: (id: string, entityType?: string) => get<SearchTermView>(`${termsPath}/${encodeURIComponent(id)}`, entityType ? { entityType } : undefined),
+  refine: (id: string, refinement: SearchTermRefinement, entityType?: string) =>
+    put<SearchTermView>(`${termsPath}/${encodeURIComponent(id)}${entityType ? `?entityType=${encodeURIComponent(entityType)}` : ""}`, refinement),
   reset: (id: string) => del<void>(`${termsPath}/${encodeURIComponent(id)}/refinement`),
 };

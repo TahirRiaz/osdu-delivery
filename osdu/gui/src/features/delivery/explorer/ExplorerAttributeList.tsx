@@ -64,7 +64,7 @@ export function ExplorerAttributeList({ read, kind, onPick, terms, onPickTerm, l
             {terms.map((offered) => (
               <CommandItem
                 key={offered.term.id}
-                value={`term ${offered.term.id} ${offered.term.name} ${offered.term.columnLabel} ${offered.term.system} ${offered.route.path}`}
+                value={`term ${offered.term.id} ${offered.term.name} ${offered.term.columnLabel} ${offered.term.source} ${offered.route.path}`}
                 onSelect={() => onPickTerm(offered)}
                 className="gap-2"
                 title={termTitle(offered)}
@@ -73,7 +73,6 @@ export function ExplorerAttributeList({ read, kind, onPick, terms, onPickTerm, l
               >
                 {mark(`term:${offered.term.id}`)}
                 <span className="min-w-0 flex-1 truncate text-[13px]">{offered.term.name}</span>
-                {offered.showSystem && <span className="shrink-0 rounded-sm border px-1 text-[10px] text-muted-foreground">{offered.term.system}</span>}
                 <span className="max-w-[45%] shrink-0 truncate text-right font-mono text-[11px] text-muted-foreground">{fieldLabel(offered.route.path)}</span>
               </CommandItem>
             ))}

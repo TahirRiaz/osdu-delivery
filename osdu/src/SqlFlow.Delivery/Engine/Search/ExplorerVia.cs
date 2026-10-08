@@ -127,9 +127,10 @@ public sealed partial record ExplorerVia
             throw new OsduQueryException("a condition on a key compares the record's id.");
         }
 
-        if (string.IsNullOrWhiteSpace(key.System) || key.System.Length > 100 || !EntityType().IsMatch(key.EntityType ?? string.Empty))
+        if (key.Systems is not { Count: > 0 and <= MaxParts } systems || systems.Any(s => string.IsNullOrWhiteSpace(s) || s.Length > 100)
+            || !EntityType().IsMatch(key.EntityType ?? string.Empty))
         {
-            throw new OsduQueryException("a key names its source system and the entity type its ids are of (group--Type).");
+            throw new OsduQueryException($"a key names 1 to {MaxParts} source systems and the entity type its ids are of (group--Type).");
         }
 
         if (key.Columns is not { Count: > 0 and <= MaxParts } columns || columns.Any(string.IsNullOrWhiteSpace)
@@ -159,13 +160,14 @@ public sealed partial record ExplorerVia
 }
 
 /// <summary>
-/// The dataset key a record's id is made from (<c>dataset.key</c>), for a condition on one of its columns: the source system
-/// the delivery key is derived over, the entity type the ids are of, every column in order, the one the condition gives,
-/// and where the record holds each of the others, whose values are read from the platform to make every id.
+/// The dataset key a record's id is made from (<c>dataset.key</c>), for a condition on one of its columns: the source systems
+/// the delivery key is derived over (one per mapping that renders the table under a system of its own, so the ids of each are
+/// made), the entity type the ids are of, every column in order, the one the condition gives, and where the record holds each
+/// of the others, whose values are read from the platform to make every id.
 /// </summary>
 public sealed record ExplorerViaKey
 {
-    public required string System { get; init; }
+    public required IReadOnlyList<string> Systems { get; init; }
 
     public required string EntityType { get; init; }
 

@@ -60,6 +60,9 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before the search terms the syncs extract from mappings, and what people make of them.</summary>
     private const string BeforeSearchTerms = "20261008132311_InventoryRemovals";
 
+    /// <summary>The migration before search terms were keyed by their source table: they were keyed by the mapping's source system.</summary>
+    private const string BeforeSearchTermSources = "20261008170839_SearchTerms";
+
     /// <summary>The tables of reversals, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] ReversalTables = ["Reversal", "ReversalItem"];
 
@@ -1003,10 +1006,10 @@ public sealed class SqlServerLedgerMigrationTests
             Assert.Equal(ModelIndexes(db, ["SearchTerm", "SearchTermRefinement"]), await database.IndexesAsync(["SearchTerm", "SearchTermRefinement"]));
         }
 
-        // A repository gives a term once: a second row of the same term in the same repository is refused.
+        // A repository gives a term once per entity type: a second row of the same term and type in the same repository is refused.
         const string Insert = """
-            INSERT INTO [osdu].[SearchTerm] ([Id], [RepoId], [TermId], [TermKey], [System], [EntityType], [Column], [RoutesJson], [FlowsJson], [FirstSeenUtc], [LastSeenUtc])
-            VALUES (NEWID(), @repo, @term, N'recall/work-product-component--WellLog//log_run', N'recall', N'work-product-component--WellLog', N'log_run', N'[]', N'[]', SYSUTCDATETIME(), SYSUTCDATETIME());
+            INSERT INTO [osdu].[SearchTerm] ([Id], [RepoId], [TermId], [TermKey], [Source], [EntityType], [Column], [RoutesJson], [FlowsJson], [FirstSeenUtc], [LastSeenUtc])
+            VALUES (NEWID(), @repo, @term, N'osdudata.arc.welllog/log_run', N'OsduData.arc.WellLog', N'work-product-component--WellLog', N'log_run', N'[]', N'[]', SYSUTCDATETIME(), SYSUTCDATETIME());
             """;
         var repo = Guid.NewGuid();
         var term = Guid.NewGuid();
@@ -1018,6 +1021,36 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(0L, await database.ScalarAsync(Tables));
         await database.MigrateAsync(null);
         Assert.Equal(2L, await database.ScalarAsync(Tables));
+    }
+
+    [Fact]
+    public async Task Search_terms_keyed_by_their_source_table_empty_the_read_model_and_keep_what_people_made_of_them()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeSearchTermSources);
+        await database.ExecuteAsync("""
+            INSERT INTO [osdu].[SearchTerm] ([Id], [RepoId], [TermId], [TermKey], [System], [EntityType], [Dataset], [Column], [RoutesJson], [FlowsJson], [FirstSeenUtc], [LastSeenUtc])
+            VALUES (NEWID(), NEWID(), NEWID(), N'recall/work-product-component--WellLog//log_run', N'recall', N'work-product-component--WellLog', NULL, N'log_run', N'[]', N'[]', SYSUTCDATETIME(), SYSUTCDATETIME());
+            INSERT INTO [osdu].[SearchTermRefinement] ([TermId], [TermKey], [EntityType], [Name], [Excluded], [UpdatedBy], [UpdatedUtc])
+            VALUES (NEWID(), N'recall/work-product-component--WellLog//log_run', N'work-product-component--WellLog', N'Run', 0, N'tester', SYSUTCDATETIME());
+            """);
+
+        await database.MigrateAsync(null);
+
+        // The terms are written again from the pipelines when the control plane starts; the refinement waits for its term.
+        Assert.Equal(0L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[SearchTerm];"));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[SearchTermRefinement] WHERE [Name] = N'Run';"));
+        const string Columns = "SELECT COUNT_BIG(*) FROM sys.columns WHERE object_id = OBJECT_ID(N'[osdu].[SearchTerm]') AND name IN (N'System', N'Dataset');";
+        Assert.Equal(0L, await database.ScalarAsync(Columns));
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, ["SearchTerm"]), await database.IndexesAsync(["SearchTerm"]));
+        }
+
+        await database.MigrateAsync(BeforeSearchTermSources);
+        Assert.Equal(2L, await database.ScalarAsync(Columns));
+        Assert.Equal(1L, await database.ScalarAsync("SELECT COUNT_BIG(*) FROM [osdu].[SearchTermRefinement];"));
+        await database.MigrateAsync(null);
     }
 
     /// <summary>

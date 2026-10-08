@@ -22,17 +22,18 @@ export function termsEntityType(kind: string | undefined): string | null {
 }
 
 /**
- * The search terms of the type `kind` names, read when `enabled` and kept by type, so every part asking for them shares one
- * read. A place of many types offers none; with `anyType`, the terms of every type are read there instead, so a condition
- * on a term carried to such a place is still named. Kept under the Search terms page's keys, so a term renamed there is
- * read again here.
+ * The search terms of the type `kind` names, read when `enabled` and kept by kind, so every part asking for them shares one
+ * read; each searched through its route for that kind (the version of the mapping that renders it, where versions write a
+ * column differently). A place of many types offers none; with `anyType`, the terms of every type are read there instead,
+ * so a condition on a term carried to such a place is still named. Kept under the Search terms page's keys, so a term
+ * renamed there is read again here.
  */
 export function useSearchTerms(kind: string | undefined, enabled = true, anyType = false) {
   const entityType = termsEntityType(kind);
-  const asked = entityType ?? (anyType ? "*" : null);
+  const asked = entityType === null ? (anyType ? "*" : null) : kind ?? null;
   return useQuery({
     queryKey: ["delivery", "search-terms", "explorer", asked],
-    queryFn: () => searchTermsApi.list(asked === "*" ? {} : { entityType: asked ?? undefined }),
+    queryFn: () => searchTermsApi.list(asked === "*" ? {} : { kind: asked ?? undefined }),
     enabled: enabled && asked !== null,
     staleTime: TERMS_FRESH_MS,
     gcTime: 10 * 60_000,
@@ -47,8 +48,6 @@ export interface OfferedTerm {
   route: SearchRouteView;
   /** The property the route fills, as the platform indexes it. */
   field: ExplorerFieldInfo;
-  /** Whether a list says the term's system beside it: where the terms offered come from more than one. */
-  showSystem: boolean;
 }
 
 /** The term `term` as offered: with its route and that route's property; null for one left out or that cannot be searched. */
@@ -58,17 +57,15 @@ export function offeredTerm(term: SearchTermView): OfferedTerm | null {
     return null;
   }
 
-  return { term, route, field: { path: route.path, index: route.index, nested: route.nested }, showSystem: false };
+  return { term, route, field: { path: route.path, index: route.index, nested: route.nested } };
 }
 
-/** The terms a place offers, by name: each searchable one, none left out, each with its system where they come from several. */
+/** The terms a place offers, by name: each searchable one, none left out. */
 export function offeredTerms(terms: SearchTermView[] | undefined): OfferedTerm[] {
-  const offered = (terms ?? [])
+  return (terms ?? [])
     .map(offeredTerm)
     .filter((term): term is OfferedTerm => term !== null)
     .sort((a, b) => a.term.name.localeCompare(b.term.name, "en", { sensitivity: "base" }));
-  const several = new Set(offered.map((term) => term.term.system)).size > 1;
-  return several ? offered.map((term) => ({ ...term, showSystem: true })) : offered;
 }
 
 /** The term a condition names, among those read; undefined while they are read, or for a condition on a property. */
@@ -76,18 +73,24 @@ export function termOf(filter: ExplorerFilter, terms: SearchTermView[] | undefin
   return filter.term === undefined ? undefined : terms?.find((term) => term.id === filter.term);
 }
 
-/** The source a term comes from, as a reader says it: `Recall wellbore_uwi`. */
+/** The source column a term is, in full: `OsduData.arc.WellLog.wellbore_uwi`. */
 export function termSource(term: SearchTermView): string {
-  return `${term.system} ${term.columnLabel}`;
+  return term.source === "" ? term.columnLabel : `${term.source}.${term.column}`;
+}
+
+/** The versions of a type a route's kinds name, as a reader says them: `1.4.0 and 1.5.0`. */
+export function routeVersions(kinds: string[]): string {
+  return kinds.map((kind) => kindParts(kind).version).filter((version) => version !== "").join(" and ");
 }
 
 /** What a term is and how it is searched, in lines for a tooltip. */
 export function termTitle(offered: OfferedTerm): string {
   const { term, route } = offered;
+  const versions = routeVersions(route.kinds);
   return [
     term.name,
-    `The ${term.system} column ${term.columnLabel}${term.renamed ? `, named ${term.name} here` : ""}.`,
-    `Searched in ${fieldLabel(route.path)}, ${route.how}.`,
+    `The column ${termSource(term)}${term.renamed ? `, named ${term.name} here` : ""}.`,
+    `Searched in ${fieldLabel(route.path)}, ${route.how}${versions === "" ? "" : `, as ${kindParts(route.kinds[0]).type} ${versions} write it`}.`,
     term.note,
   ].filter(Boolean).join("\n");
 }

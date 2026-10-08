@@ -55,7 +55,8 @@ public static partial class DeliveryExplorerEndpoints
 
             try
             {
-                resolved[place] = await directory.ResolveAsync(term, new SearchTermCondition(condition, filter.Value, filter.Values, filter.To), read, ct).ConfigureAwait(false);
+                // The route of the term for the kind searched: the version of the mapping that renders it, where versions differ.
+                resolved[place] = await directory.ResolveAsync(term, new SearchTermCondition(condition, filter.Value, filter.Values, filter.To), read, body.Kind, ct).ConfigureAwait(false);
             }
             catch (DeliveryException ex)
             {

@@ -3,9 +3,10 @@
 The people who search OSDU for delivered data know it by the columns of the systems it came from: a Recall well log by
 its `wellbore_uwi`, its `log_source` and its curves' `curve_unit`. The records hold other names and often other values:
 the log names its wellbore by a record id in `data.WellboreID`, its source after a `trim` in `data.Name`, its curves' units
-as references to `UnitOfMeasure` records. The mappings of the delivery flows say exactly how one becomes the other, so
-the module reads them for the way back: a **search term** is a column of a source system that a mapping of an active
-delivery flow reads, with every route by which a value of it reaches the record.
+as references to `UnitOfMeasure` records. The delivery flows say exactly how one becomes the other (the tables each reads,
+and the mapping it renders them with), so the module reads them for the way back: a **search term** is a column of a
+source table an active delivery flow reads, named as the source names it (`WellLog.wellbore_uwi`), with every route by
+which a value of it reaches the record.
 
 The explorer offers the terms beside the record's own properties ([explorer.md](explorer.md#searching-a-property)). A
 value typed for a term is the source's own (`NO 34/10-A-30`); the control plane carries it to what the record holds the
@@ -19,26 +20,37 @@ given a note.
 
 ## Where the terms come from
 
-Every repository sync writes the terms of the repository, in the transaction that writes its mappings, cache
-declarations and interfaces, and from those rows: the active interfaces of its delivery flows, the valid mappings they
-pin, and the cached types its cache flows declare (`DeliverySearchTermCatalog`). Nothing is read from the repository's
-files beyond what the sync already read. The control plane writes them again once when it starts, so a module upgraded
-since a repository's last sync describes its terms as the new version does without waiting for the next sync.
+The terms come from the pipelines. Every active delivery flow (every interface of a source) reads a record table
+(`source.record.object`, `OsduData.arc.WellLog`) and the tables of its child datasets (`source.datasets.curves.object`,
+`OsduData.arc.WellLogCurve`), and renders them with a mapping; every column of those tables the mapping reads is a term.
+Every repository sync writes the terms of the repository, in the transaction that writes its mappings, cache declarations
+and interfaces, from the flows it parsed, the valid mappings their interfaces pin and the cached types its cache flows
+declare (`DeliverySearchTermCatalog`). The control plane writes them again once when it starts, from its copies of the
+flows, so a module upgraded since a repository's last sync describes its terms as the new version does without waiting
+for the next sync, and a repository with no delivery flow any longer loses its terms.
 
 For every column a mapping reads (`$from`, the columns an `$expr` reads, the columns of a `$lookup`'s or a `$search`'s
 `findBy`, the columns of the dataset's key, under `$forEach` the child dataset's columns), the compiler
 (`SearchTermCompiler`) follows the value to each place the mapping writes it, and says how it gets there. A term is
-identified by its source system (`dataset.system`, in lower case as the delivery key folds it), the entity type the
-mapping fills, the child dataset whose rows hold the column (none for the dataset's own row) and the column:
-`recall/work-product-component--WellLog/curves/curve_unit`, the column in lower case. Its id is a UUIDv5 of that text,
-so a term is the same whichever version of the mapping reads it, whichever repository holds the mapping, and on every
-host. A column several mappings or versions read is one term with the routes of all of them, each route once, as the
-newest version writes it; the flows that read it are listed with it. The access list and the legal block are not
-routes: they say who may read a record, not what it holds.
+identified by the table the column is read from (its name with the brackets taken off, `OsduData.arc.WellLog`) and the
+column: `osdudata.arc.welllog/wellbore_uwi`, in lower case as a database names them. Its id is a UUIDv5 of that text, so
+a term is the same whichever pipeline reads the table, whichever mapping (and mapping version) renders it, whichever
+repository holds them, and on every host. Its name, until a person gives it another, is the table's own name and the
+column: `WellLog.wellbore_uwi`, `WellLogCurve.curve_unit`.
 
-A term no mapping of an active flow gives any longer is removed at the next sync. What a person made of it is kept
-apart and stays (see [Refining a term](#refining-a-term)). A mapping that no longer compiles, a cached type whose fields
-do not read, or a term whose key is longer than the table keeps, is left out with a warning of the sync.
+Two flows reading one table give one term. The Recall estate delivers its well logs twice, rendered by WellLog 1.4.0 and
+by 1.5.0, each mapping under a source system of its own (`recall`, `recall-welllog-1.5.0`) so their records are records
+of their own; both flows read `OsduData.arc.WellLog`, so `wellbore_uwi` is one term, its routes read by both mappings. A
+route both versions write alike is one route listing both mappings, both kinds and both source systems, as the newest
+writes it; where they write it differently, each version's route is listed, and the explorer searches the one of the
+kind in view ([The route a term is searched by](#the-route-a-term-is-searched-by)). A term is kept per entity type it
+reaches (a table rendered into two types is one term, with routes into each), and the flows that read it are listed
+with it. The access list and the legal block are not routes: they say who may read a record, not what it holds.
+
+A term no pipeline gives any longer is removed at the next sync. What a person made of it is kept apart and stays (see
+[Refining a term](#refining-a-term)). A mapping that no longer compiles, a mapping reading a dataset its flow does not
+declare, a cached type whose fields do not read, or a term whose key is longer than the table keeps, is left out with a
+warning of the sync.
 
 ## Routes
 
@@ -108,15 +120,28 @@ term is searched through the route a person picked while it can be searched, els
 steps, before a lookup or a search, before a key; the record's content before its tags; a value of its own before one
 inside a list; then the shorter path. A term none of whose routes can be searched is listed with why, and not offered.
 
+Each route lists the kinds it fills, one per version of the mapping that writes it. With one kind in view
+(`osdu:wks:work-product-component--WellLog:1.5.0`), the routes that fill it come first, so a column the versions write
+into different properties is searched where the version in view writes it, and its values are carried through that
+version's mapping; a route picked holds for the kinds it fills. With every version of the type in view, the choice is
+made among all the routes. A key's record ids are made as each source system's delivery makes them, so a log id finds
+the log however many versions deliver it.
+
 ## Refining a term
 
 What a person makes of a term is kept apart from the terms a sync writes, in `osdu.SearchTermRefinement`, by the term's
-id: it holds across every sync and every mapping version that keeps the column, and applies again if a term that was
-gone comes back. A refinement whose term no mapping gives any longer is listed as **No longer found** until it is
-removed.
+id: it holds across every sync, every pipeline and every mapping version that keeps the column, and applies again if a
+term that was gone comes back. A refinement whose term no pipeline gives any longer is listed as **No longer found** until
+it is removed.
+
+Terms were first keyed by their mapping's source system, so one table read by two flows under two systems gave two
+terms. Each sync moves what was made of such a term to the term its column is now, the table's: a name, a note, leaving
+it out, and a route picked where the term still has it. Of two made for what is now one term, the newer moves; the other
+stays, listed as **No longer found**, for a person to remove. Nothing else is written: the terms themselves are a read
+model the control plane writes again from the pipelines.
 
 - **Name**: the name the explorer offers the term by (at most 100 characters, on one line, unique among the terms of
-  its entity type in any case). Empty, or the column's own label, is the column's label: `curves.curve_unit`.
+  its entity type in any case). Empty, or the column's own label, is the column's label: `WellLogCurve.curve_unit`.
 - **Note**: what the term means to the people searching by it (at most 1,000 characters), on hover wherever the term
   is offered.
 - **Offered in the explorer**: off, the term is left out. It stays listed here and is never offered; a condition on it
@@ -124,26 +149,28 @@ removed.
 - **Searched as**: one of the routes that can be searched. Left to the term, it is searched by the plainest one.
 
 A refinement that keeps none of these is removed, and **Reset** removes it at once: the term is searched as its
-mappings give it again. Every change records who made it and when.
+pipelines give it again. Every change records who made it and when.
 
 ### The Search terms page
 
 The page lists the terms of one entity type (picked at its head, each with how many terms it has), found by any part of
 a name, a column or a path, and shown by state: **Every term**, **Searched**, **Left out**, **Not searchable** and **No
-longer found**, each with its count. A row says the term's name (a note on hover), the source column (with its system
-when the terms come from more than one), the property it is searched in with how it gets there (`steps`, `lookup`,
-`search`), its state (why it cannot be searched on hover) and when it was last changed. The grid fits the page and
-scrolls in place. A row opens the term in a panel: its name and note, whether the explorer offers it, every route with
-how it reaches the record (its steps, the records a lookup or a search finds and by what), why one cannot be searched,
-the mappings and flows that read it, and who changed it last. **Search WellLog** opens the explorer on the type.
+longer found**, each with its count. A row says the term's name (a note on hover), the source column in full (the table's
+whole name and the column, cut from its start when long, so the column stays in view), the property it is searched in
+with how it gets there (`steps`, `lookup`, `search`), its state (why it cannot be searched on hover) and when it was last
+changed. The grid fits the page and scrolls in place. A row opens the term in a panel: its name and note, whether the
+explorer offers it, every route with how it reaches the record (its steps, the records a lookup or a search finds and by
+what) and the versions of the type that write it so, why one cannot be searched, the mappings and flows that read it,
+and who changed it last. **Search WellLog** opens the explorer on the type.
 
 Reading the terms takes the read scope; refining one takes the author scope.
 
 ## Searching by a term
 
 In the explorer, for a type or a kind picked, every term offered is listed first in the condition editor, as **Source
-columns**, by its name with the property it is searched in, found by any part of its name, its column, its system or
-that path; the record's properties follow as ever. A term picked takes the conditions its route allows, the likeliest
+columns**, by its name with the property it is searched in, found by any part of its name, its column, its table or
+that path; the record's properties follow as ever. The terms are read for the kind in view, so each is searched through
+its route for that kind. A term picked takes the conditions its route allows, the likeliest
 first, and says that its value is typed as the source holds it. The values listed under it are those of the property
 the route writes, for a copy or steps that keep the text, or those of the property its records are found by, for a
 lookup or a search (`Values of Wellbore FacilityName`): what the source column holds, in the records OSDU has. A key
@@ -161,8 +188,9 @@ the address (`st`), so a link brings it back. A term no longer offered (left out
 its chip, and the search says why it was refused.
 
 The control plane resolves every condition naming a term before the search is checked or run, in the partition the
-search reads (`SearchTermDirectory.ResolveAsync`): the term, its route, the mapping and the template it pins, and each
-value carried through the mapping with the partition as the flow's parameter. A copy or steps become a condition on the
+search reads (`SearchTermDirectory.ResolveAsync`): the term, its route for the kind searched, the mapping (the version
+that renders that kind) and the template it pins, and each value carried through the mapping with the partition as the
+flow's parameter. A search of many types takes the term's one type; a term that reaches several asks for one of them. A copy or steps become a condition on the
 property, as any is. A lookup, a search or a key becomes a condition read through other records first
 (`ExplorerVia`): the explorer runs the search of the records found, or of the key's other values, through the same
 connection, compares with what it found, and says so in the notes of the answer (`Wellbore UWI is NO 34/10-A-30: 1
@@ -174,21 +202,23 @@ carry (a word where the mapping reads a number, an empty value) is refused with 
 
 | Table | What it holds |
 | --- | --- |
-| `osdu.SearchTerm` | One row per repository and term: the term's id (`TermId`) and key (`TermKey`, `System`, `EntityType`, `Dataset`, `Column`), its routes as JSON (`RoutesJson`), the active delivery flows that read it (`FlowsJson`), and when the sync first and last found it. Unique on `(RepoId, TermId)`; indexed on `(EntityType, TermId)`, which the explorer and the page read by. Written by the sync alone. |
+| `osdu.SearchTerm` | One row per repository, term and entity type: the term's id (`TermId`) and key (`TermKey`, the table as `Source`, `Column`), the entity type its routes fill (`EntityType`), its routes as JSON (`RoutesJson`: each with the kinds, mappings and source systems that read it), the active delivery flows that read its table (`FlowsJson`), and when the sync first and last found it. Unique on `(RepoId, TermId, EntityType)`; indexed on `(EntityType, TermId)`, which the explorer and the page read by. Written by the sync and the control plane's start alone. |
 | `osdu.SearchTermRefinement` | One row per term a person refined, keyed by `TermId`: the `TermKey` and `EntityType` it was made for (so it is listed when no sync gives the term), `Name`, `Note`, `Excluded`, `Route`, `UpdatedBy` and `UpdatedUtc`. Indexed on `(EntityType, Name)`. Never written by a sync. |
 
 The tables came with `20261008170839_SearchTerms` (module version 1.32.0), in the `osdu` schema
-([ledger.md](ledger.md#osdusearchterm-and-osdusearchtermrefinement-search-terms)).
+([ledger.md](ledger.md#osdusearchterm-and-osdusearchtermrefinement-search-terms)); `20261008204608_SearchTermSources`
+(module version 1.33.0) keyed the terms by their table, emptying the read model for the control plane to write again and
+keeping every refinement.
 
 ## The API
 
 | Route | Scope | What it does |
 | --- | --- | --- |
-| `GET /api/v1/delivery/search-terms?entityType=&kind=&orphans=` | read | The terms of an entity type, or of the one a kind pattern names (`*:*:work-product-component--WellLog:*`; a pattern of many types has none), or of every type; with `orphans=true`, the refinements whose terms no mapping gives any longer too. Each term: `id`, `key`, `system`, `entityType`, `dataset`, `column`, `columnLabel`, `name`, `renamed`, `excluded`, `note`, `pickedRoute`, `route` (the one searched by), `routes` (each `id`, `target`, `path`, `kind`, `how`, `steps`, `mappings`, `location`, `find`, `keyColumns`, `when`, `description`, `index`, `nested`, `conditions`, `problem`), `flows`, `mappings`, `problem`, `suggest` (where its values are listed from: `kind`, `path`, `index`, `nested`), `orphan`, `updatedBy`, `updatedUtc`. |
+| `GET /api/v1/delivery/search-terms?entityType=&kind=&orphans=` | read | The terms of an entity type, or of the one a kind or kind pattern names (`*:*:work-product-component--WellLog:*`; a pattern of many types has none), or of every type, a term once per type it reaches; named by a kind, each is searched through its route for that kind. With `orphans=true`, the refinements whose terms no pipeline gives any longer too. Each term: `id`, `key`, `source` (the table), `table`, `entityType`, `column`, `columnLabel` (`WellLog.wellbore_uwi`), `systems`, `name`, `renamed`, `excluded`, `note`, `pickedRoute`, `route` (the one searched by), `routes` (each `id`, `entityType`, `kinds`, `dataset`, `target`, `path`, `kind`, `how`, `steps`, `mappings`, `location`, `find`, `keyColumns`, `when`, `description`, `index`, `nested`, `conditions`, `problem`), `flows`, `mappings`, `problem`, `suggest` (where its values are listed from: `kind`, `path`, `index`, `nested`), `orphan`, `updatedBy`, `updatedUtc`. |
 | `GET /api/v1/delivery/search-terms/entity-types` | read | The entity types terms are extracted for, each with how many terms it has. |
-| `GET /api/v1/delivery/search-terms/{termId}` | read | One term, or its refinement while no mapping gives it; 404 for neither. |
-| `PUT /api/v1/delivery/search-terms/{termId}` | author | Refines a term. Body: `name`, `excluded`, `route` (a route's `id`), `note`. A body that keeps nothing removes the refinement. A name another term of the type has, a route the term does not have or that cannot be searched, or a name or note too long is refused with 400; a term no mapping gives with 400 too, since only its refinement can be removed. |
+| `GET /api/v1/delivery/search-terms/{termId}?entityType=` | read | One term as it reaches `entityType` (the first type it reaches when left out), or its refinement while no pipeline gives it; 404 for neither. |
+| `PUT /api/v1/delivery/search-terms/{termId}?entityType=` | author | Refines a term, as shown for `entityType`. Body: `name`, `excluded`, `route` (a route's `id`), `note`. A body that keeps nothing removes the refinement. A name another term of the type has, a route the term does not have or that cannot be searched, or a name or note too long is refused with 400; a term no pipeline gives with 400 too, since only its refinement can be removed. |
 | `DELETE /api/v1/delivery/search-terms/{termId}/refinement` | author | Removes what people made of the term: 204, or 404 when there was nothing. |
-| `POST /api/v1/delivery/explorer/search`, `/explorer/types`, `/explorer/validate-list` | operate | A condition of `filters` names a term by `term` (its id) in place of a property: its `condition`, `value`, `values` and `to` are the source's own. The `path` and `index` it carries are the property the route compares, which the page shows as a column; the control plane resolves the condition from the term. |
+| `POST /api/v1/delivery/explorer/search`, `/explorer/types`, `/explorer/validate-list` | operate | A condition of `filters` names a term by `term` (its id) in place of a property: its `condition`, `value`, `values` and `to` are the source's own. The `path` and `index` it carries are the property the route compares, which the page shows as a column; the control plane resolves the condition from the term, through its route for the search's `kind`. |
 
 The MCP server offers none of these routes.

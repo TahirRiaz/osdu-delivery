@@ -10,46 +10,53 @@ using SqlFlow.Delivery.SearchTerms;
 namespace SqlFlow.Delivery.Catalog;
 
 /// <summary>
-/// The search terms of a repository (osdu/docs/search-terms.md), extracted from the mappings its active delivery flows pin:
-/// for every column those mappings read, every route by which it reaches the records they render
-/// (<see cref="SearchTermCompiler"/>), with the flows that read it. The repository sync writes them after the mappings,
-/// the cache declarations and the interfaces it reads them from, in the same transaction; the control plane writes them
-/// again when it starts, so a module upgraded since the last sync describes its terms as this version does. What a person
-/// made of a term is never touched here: it is kept apart, by the term's identity.
+/// The search terms of a repository (osdu/docs/search-terms.md), extracted from its pipelines: every active delivery flow
+/// (each interface of a source) reads its tables and renders them with a mapping, and every column of those tables the
+/// mapping reads is a term, with every route by which it reaches the records rendered (<see cref="SearchTermCompiler"/>)
+/// and the flows that read it. A term is the table's column: two flows reading one table, rendering it under two versions of
+/// a schema, give one term. The repository sync writes them after the mappings, the cache declarations and the interfaces,
+/// in the same transaction, from the flows it parsed; the control plane writes them again when it starts, from its copies
+/// of the flows, so a module upgraded since the last sync describes its terms as this version does. What a person made of a
+/// term is kept apart, by the term's identity, and never undone here.
 /// </summary>
 public static class DeliverySearchTermCatalog
 {
     /// <summary>
-    /// Writes the search terms of <paramref name="repoId"/> into <paramref name="context"/> from the rows the context holds:
-    /// the repository's active interfaces, the valid mappings they pin, and the cached types the cache flows declare. A term
-    /// no mapping gives any longer is removed; the counts say what changed. Nothing is read from the repository's files.
+    /// Writes the search terms of <paramref name="repoId"/> into <paramref name="context"/> from <paramref name="sources"/>,
+    /// the repository's delivery flows as parsed (the active ones are read), the valid mappings their interfaces pin, and the
+    /// cached types the cache flows declare. A term no pipeline gives any longer is removed; the counts say what changed. What
+    /// a person made of a term while terms were keyed by their mapping's source system is moved to the term it is now.
     /// </summary>
     public static async Task<(int Added, int Updated, int Unchanged, int Removed)> ReconcileAsync(
-        OsduDbContext context, Guid repoId, DeliveryDocumentLoader documents, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
+        OsduDbContext context, Guid repoId, IReadOnlyList<RepositorySource> sources, DeliveryDocumentLoader documents, DateTime nowUtc,
+        ICollection<string> warnings, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(sources);
         ArgumentNullException.ThrowIfNull(documents);
         ArgumentNullException.ThrowIfNull(warnings);
 
-        var interfaces = await context.DeliveryInterfaces.AsNoTracking()
-            .Where(i => i.RepoId == repoId && i.Active)
-            .Select(i => new { i.FlowName, i.MappingReference })
-            .ToListAsync(ct).ConfigureAwait(false);
-        var flowsByMapping = interfaces
-            .GroupBy(i => i.MappingReference, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.Select(i => i.FlowName).Distinct(StringComparer.Ordinal).ToList(), StringComparer.Ordinal);
-        var pinned = flowsByMapping.Keys.ToList();
+        // Every interface of every active delivery flow: the mapping it renders with and the tables it reads.
+        var readings = sources
+            .Where(s => s.Active)
+            .SelectMany(s => s.Source.Interfaces.Select(flow => new Reading(
+                s.Source.Name,
+                flow.Render.Mapping,
+                SearchTermKey.NormalizeSource(flow.Source.Record.Object),
+                flow.Source.Datasets.ToDictionary(d => d.Key, d => SearchTermKey.NormalizeSource(d.Value.Object), StringComparer.Ordinal))))
+            .ToList();
+        var pinned = readings.Select(r => r.Mapping).Distinct(StringComparer.Ordinal).ToList();
         var rows = await context.DeliveryMappings.AsNoTracking()
             .Where(m => m.RepoId == repoId && m.Status == "valid" && pinned.Contains(m.Reference))
             .Select(m => new { m.Reference, m.Yaml, m.RelativePath })
             .ToListAsync(ct).ConfigureAwait(false);
 
-        var mappings = new List<MappingDefinition>(rows.Count);
+        var mappings = new Dictionary<string, MappingDefinition>(StringComparer.Ordinal);
         foreach (var row in rows.OrderBy(r => r.Reference, StringComparer.Ordinal))
         {
             try
             {
-                mappings.Add(documents.ParseMapping(row.Yaml, row.RelativePath));
+                mappings[row.Reference] = documents.ParseMapping(row.Yaml, row.RelativePath);
             }
             catch (FlowValidationException ex)
             {
@@ -58,8 +65,14 @@ public static class DeliverySearchTermCatalog
             }
         }
 
+        // One reading per mapping and tables: the partitions and interfaces that repeat it read nothing more.
+        var distinct = readings
+            .Where(r => mappings.ContainsKey(r.Mapping))
+            .GroupBy(r => (r.Mapping, r.RecordObject, Datasets: string.Join("|", r.Datasets.OrderBy(d => d.Key, StringComparer.Ordinal).Select(d => $"{d.Key}={d.Value}"))))
+            .Select(g => new SearchTermSource(mappings[g.Key.Mapping], g.Key.RecordObject, g.First().Datasets))
+            .ToList();
         var cacheTypes = await CacheTypesAsync(context, repoId, warnings, ct).ConfigureAwait(false);
-        var compiled = SearchTermCompiler.Compile(mappings, name => cacheTypes.GetValueOrDefault(name));
+        var compiled = SearchTermCompiler.Compile(distinct, name => cacheTypes.GetValueOrDefault(name), warnings);
 
         var existing = await context.DeliverySearchTerms
             .Where(t => t.RepoId == repoId)
@@ -67,20 +80,24 @@ public static class DeliverySearchTermCatalog
             .ToDictionaryAsync(t => t.Id, ct).ConfigureAwait(false);
         var seen = new HashSet<Guid>();
         int added = 0, updated = 0, unchanged = 0, removed = 0;
+        var kept = new List<CompiledSearchTerm>(compiled.Count);
         foreach (var term in compiled)
         {
             var key = term.Key;
-            if (Unfit(key) is { } why)
+            if (Unfit(key, term.EntityType) is { } why)
             {
-                warnings.Add($"The search term {key.Text} is left out: {why}.");
+                warnings.Add($"The search term {key.Text} of {term.EntityType} is left out: {why}.");
                 continue;
             }
 
-            var id = FlowIdentity.FromName($"delivery-search-term/{repoId:N}/{key.Text}");
+            kept.Add(term);
+            var id = FlowIdentity.FromName($"delivery-search-term/{repoId:N}/{term.EntityType.ToLowerInvariant()}/{key.Text}");
             seen.Add(id);
-            var flows = term.Routes
-                .SelectMany(r => r.Mappings)
-                .SelectMany(m => flowsByMapping.GetValueOrDefault(m) ?? [])
+            // The flows that read the term's table with a mapping its routes are read by.
+            var mappingsOf = term.Routes.SelectMany(r => r.Mappings).ToHashSet(StringComparer.Ordinal);
+            var flows = readings
+                .Where(r => mappingsOf.Contains(r.Mapping) && r.Reads(key.Source))
+                .Select(r => r.Flow)
                 .Distinct(StringComparer.Ordinal)
                 .Order(StringComparer.Ordinal)
                 .ToList();
@@ -94,9 +111,8 @@ public static class DeliverySearchTermCatalog
                     RepoId = repoId,
                     TermId = key.Id,
                     TermKey = key.Text,
-                    System = key.System,
-                    EntityType = key.EntityType,
-                    Dataset = key.Dataset,
+                    Source = key.Source,
+                    EntityType = term.EntityType,
                     Column = key.Column,
                     RoutesJson = routesJson,
                     FlowsJson = flowsJson,
@@ -108,7 +124,7 @@ public static class DeliverySearchTermCatalog
             }
 
             row.LastSeenUtc = nowUtc;
-            if (row.RoutesJson == routesJson && row.FlowsJson == flowsJson && row.Column == key.Column)
+            if (row.RoutesJson == routesJson && row.FlowsJson == flowsJson && row.Column == key.Column && row.Source == key.Source)
             {
                 unchanged++;
                 continue;
@@ -117,6 +133,7 @@ public static class DeliverySearchTermCatalog
             row.RoutesJson = routesJson;
             row.FlowsJson = flowsJson;
             row.Column = key.Column;
+            row.Source = key.Source;
             updated++;
         }
 
@@ -129,8 +146,67 @@ public static class DeliverySearchTermCatalog
             }
         }
 
+        await AdoptLegacyRefinementsAsync(context, kept, ct).ConfigureAwait(false);
         await context.SaveChangesAsync(ct).ConfigureAwait(false);
         return (added, updated, unchanged, removed);
+    }
+
+    /// <summary>One interface's reading: its flow, the mapping it renders with, and its tables (the record table, and each dataset's by name).</summary>
+    private sealed record Reading(string Flow, string Mapping, string RecordObject, IReadOnlyDictionary<string, string> Datasets)
+    {
+        /// <summary>Whether the interface reads <paramref name="table"/>, as its record table or a dataset's.</summary>
+        public bool Reads(string table)
+            => string.Equals(RecordObject, table, StringComparison.OrdinalIgnoreCase)
+               || Datasets.Values.Any(d => string.Equals(d, table, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Moves what people made of terms while a term was keyed by its mapping's source system, its entity type and its dataset
+    /// (<c>recall/work-product-component--WellLog/curves/curve_unit</c>) to the term that column now is: the one of
+    /// <paramref name="terms"/> in that entity type, read under that system and dataset. The newest of several made for one
+    /// term is moved; the others, like any no term matches, stay as they are and are listed as no longer found, to be removed.
+    /// A route picked is moved with it where the term still has it.
+    /// </summary>
+    private static async Task AdoptLegacyRefinementsAsync(OsduDbContext context, IReadOnlyList<CompiledSearchTerm> terms, CancellationToken ct)
+    {
+        var refinements = await context.DeliverySearchTermRefinements.AsTracking().ToListAsync(ct).ConfigureAwait(false);
+        var legacy = refinements.Where(r => SearchTermKey.Legacy(r.TermKey) is not null).OrderByDescending(r => r.UpdatedUtc).ToList();
+        if (legacy.Count == 0)
+        {
+            return;
+        }
+
+        var refined = refinements.Select(r => r.TermId).ToHashSet();
+        foreach (var old in legacy)
+        {
+            var (system, entityType, dataset, column) = SearchTermKey.Legacy(old.TermKey)!.Value;
+            var matches = terms
+                .Where(t => string.Equals(t.EntityType, entityType, StringComparison.Ordinal)
+                    && string.Equals(t.Key.Column, column, StringComparison.OrdinalIgnoreCase)
+                    && t.Routes.Any(r => string.Equals(r.Dataset ?? string.Empty, dataset, StringComparison.Ordinal) && r.Systems.Contains(system, StringComparer.Ordinal)))
+                .ToList();
+            if (matches.Select(t => t.Key.Id).Distinct().Count() != 1 || refined.Contains(matches[0].Key.Id))
+            {
+                continue;
+            }
+
+            var term = matches[0];
+            var route = old.Route is { } picked ? term.Routes.FirstOrDefault(r => string.Equals(r.Id, $"{entityType}|{picked}", StringComparison.Ordinal))?.Id : null;
+            context.DeliverySearchTermRefinements.Add(new DeliverySearchTermRefinement
+            {
+                TermId = term.Key.Id,
+                TermKey = term.Key.Text,
+                EntityType = entityType,
+                Name = old.Name,
+                Excluded = old.Excluded,
+                Route = route,
+                Note = old.Note,
+                UpdatedBy = old.UpdatedBy,
+                UpdatedUtc = old.UpdatedUtc,
+            });
+            context.DeliverySearchTermRefinements.Remove(old);
+            refined.Add(term.Key.Id);
+        }
     }
 
     /// <summary>
@@ -170,26 +246,21 @@ public static class DeliverySearchTermCatalog
     }
 
     /// <summary>Why a term's key does not fit the table's columns, or null when it does.</summary>
-    private static string? Unfit(SearchTermKey key)
+    private static string? Unfit(SearchTermKey key, string entityType)
     {
         if (key.Text.Length > DeliveryModel.SearchTermKeyLength)
         {
             return $"its key is {key.Text.Length} characters, and at most {DeliveryModel.SearchTermKeyLength} are kept";
         }
 
-        if (key.System.Length > DeliverySearchTerm.MaxSystemLength)
+        if (key.Source.Length > DeliverySearchTerm.MaxSourceLength)
         {
-            return $"its source system is longer than {DeliverySearchTerm.MaxSystemLength} characters";
+            return $"its table's name is longer than {DeliverySearchTerm.MaxSourceLength} characters";
         }
 
-        if (key.EntityType.Length > DeliverySearchTerm.MaxEntityTypeLength)
+        if (entityType.Length > DeliverySearchTerm.MaxEntityTypeLength)
         {
             return $"its entity type is longer than {DeliverySearchTerm.MaxEntityTypeLength} characters";
-        }
-
-        if (key.Dataset is { Length: > DeliverySearchTerm.MaxDatasetLength })
-        {
-            return $"its dataset is longer than {DeliverySearchTerm.MaxDatasetLength} characters";
         }
 
         return key.Column.Length > DeliverySearchTerm.MaxColumnLength ? $"its column is longer than {DeliverySearchTerm.MaxColumnLength} characters" : null;
