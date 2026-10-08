@@ -126,15 +126,16 @@ function NearIds({ partition, id, onOpen }: { partition: string | null; id: stri
  * inspector the record pages use: its place leads the location (the partition, the group, the type, each a step back to
  * the records there), its links open records after it on the trail, the records that mention it are a view of its own,
  * any two of its versions compare side by side, and an id OSDU holds nothing under offers the records whose ids are near.
- * Every record opened is remembered in this browser, so the reader finds it again.
+ * Every record opened is remembered in this browser, so the reader finds it again. A page that shows it in a panel of its
+ * own, which its own control closes, gives no way back.
  */
 export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpenId, onBrowseQuery, onSwitchPartition, fieldActions }: {
   partition: string | null;
   id: string;
   /** The version the record is opened at; null for its latest. */
   version: number | null;
-  /** Leaves the record for the records it was opened from, as they were left. */
-  onBack: () => void;
+  /** Leaves the record for the records it was opened from, as they were left; none where the record is in a panel of its own. */
+  onBack?: () => void;
   /** Leaves the record for the records of a place. */
   onScope: (scope: ExplorerScope) => void;
   /** Opens another record in this one's place. */
@@ -172,16 +173,18 @@ export function ExplorerRecord({ partition, id, version, onBack, onScope, onOpen
   const reading = answered.isFetching;
   const place = (
     <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-x-1" data-testid="explorer-record-place">
-      <button
-        type="button"
-        onClick={onBack}
-        className="mr-1 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-        aria-label="Back to the records"
-        title="Back to the records, as they were left"
-        data-testid="explorer-record-back"
-      >
-        <ArrowLeft className="size-4" />
-      </button>
+      {onBack !== undefined && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="mr-1 inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          aria-label="Back to the records"
+          title="Back to the records, as they were left"
+          data-testid="explorer-record-back"
+        >
+          <ArrowLeft className="size-4" />
+        </button>
+      )}
       <ScopeCrumbs partition={partition} scope={entityType === "" ? { level: "all" } : { level: "type", entityType }} onScope={onScope} last={false} />
     </span>
   );

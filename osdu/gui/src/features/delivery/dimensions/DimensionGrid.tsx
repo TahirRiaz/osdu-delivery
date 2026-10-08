@@ -5,6 +5,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useWindowFit } from "../useWindowFit";
 import type { GridColumnChoice } from "./dimensionGridState";
@@ -21,22 +22,29 @@ const NEAR_END = 320;
 /** The table's own scrolling container, which the grid sizes to the window. */
 const tableContainer = (element: HTMLElement) => element.querySelector<HTMLElement>('[data-slot="table-container"]');
 
+/** Nothing to size: a grid that fills its parent leaves the window to the frame its parent is. */
+const nothingToFit = () => null;
+
 /**
  * A table of a dimension as a grid that stays on the screen: its rows scroll inside it, under column headers that stay in
  * place, in rows a little denser than a list's, and it is as tall as the window leaves below where it starts, so the page
- * itself does not scroll for the rows. Scrolling near the end asks for the next page (`onNearEnd`).
+ * itself does not scroll for the rows. Scrolling near the end asks for the next page (`onNearEnd`). A grid that shares
+ * the window with something under it (`fill`) takes the height its flex column parent gives it instead, and its rows
+ * scroll inside that.
  */
-export function DimensionGrid({ children, onNearEnd, className, testId = "dimension-grid" }: {
+export function DimensionGrid({ children, onNearEnd, className, fill = false, testId = "dimension-grid" }: {
   children: ReactNode;
   /** Called when the rows are scrolled near their end; the caller reads the next page when there is one. */
   onNearEnd?: () => void;
   className?: string;
+  /** Whether the grid fills its flex column parent, a frame fitted to the window, rather than fitting itself to the window. */
+  fill?: boolean;
   /** The grid's test id, for a page that is not a dimension's. */
   testId?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
-  useWindowFit(ref, BELOW_GRID, MIN_GRID_HEIGHT, tableContainer);
+  useWindowFit(ref, BELOW_GRID, MIN_GRID_HEIGHT, fill ? nothingToFit : tableContainer);
 
   const scrolled = (event: UIEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
@@ -55,6 +63,8 @@ export function DimensionGrid({ children, onNearEnd, className, testId = "dimens
         // Rows a little denser than a list's, and columns a little closer, with the card's own margin kept at both edges.
         "[&_td]:px-2 [&_td]:py-1 [&_th]:px-2",
         "[&_td:first-child]:pl-3 [&_th:first-child]:pl-3 [&_td:last-child]:pr-3 [&_th:last-child]:pr-3",
+        // Filling its parent, the table's card takes the height left and its rows scroll inside it, under its toolbar.
+        fill && "flex min-h-0 flex-1 flex-col [&>[data-slot=card]]:min-h-0 [&>[data-slot=card]]:flex-1 [&_[data-slot=table-container]]:min-h-0 [&_[data-slot=table-container]]:flex-1",
         className,
       )}
       data-testid={testId}
@@ -66,9 +76,10 @@ export function DimensionGrid({ children, onNearEnd, className, testId = "dimens
 
 /**
  * What a grid shows, behind one button: the columns a reader can leave out, and, for a grid that can list them, whether
- * the rows no build finds any more are listed too.
+ * the rows no build finds any more are listed too. A grid whose toolbar is one line of its own (`compact`) shows the button
+ * as its glyph alone, named on hover.
  */
-export function GridViewMenu({ columns, hidden, atFirst = [], onToggle, removed = false, onRemoved, testId }: {
+export function GridViewMenu({ columns, hidden, atFirst = [], onToggle, removed = false, onRemoved, compact = false, testId }: {
   columns: GridColumnChoice[];
   hidden: ReadonlySet<string>;
   /** The columns the grid starts without, so the button marks only what a reader changed. */
@@ -77,18 +88,36 @@ export function GridViewMenu({ columns, hidden, atFirst = [], onToggle, removed 
   removed?: boolean;
   /** Given by a grid that can list what builds no longer find; a grid without such rows leaves it out. */
   onRemoved?: (shown: boolean) => void;
+  compact?: boolean;
   testId: string;
 }) {
   const changed = removed || hidden.size !== atFirst.length || atFirst.some((id) => !hidden.has(id));
+  const mark = <span className={cn("size-1.5 rounded-full bg-primary", compact && "absolute right-1 top-1")} aria-label="Changed from the default" />;
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" data-testid={testId}>
-          <SlidersHorizontal />
-          View
-          {changed && <span className="size-1.5 rounded-full bg-primary" aria-label="Changed from the default" />}
-        </Button>
-      </PopoverTrigger>
+      {compact
+        ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="relative size-7 text-muted-foreground" aria-label="View: the columns shown" data-testid={testId}>
+                  <SlidersHorizontal />
+                  {changed && mark}
+                </Button>
+              </PopoverTrigger>
+            </TooltipTrigger>
+            <TooltipContent>View: the columns shown</TooltipContent>
+          </Tooltip>
+        )
+        : (
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" data-testid={testId}>
+              <SlidersHorizontal />
+              View
+              {changed && mark}
+            </Button>
+          </PopoverTrigger>
+        )}
       <PopoverContent align="end" className="w-64 p-0" data-testid={`${testId}-menu`}>
         {columns.length > 0 && (
           <div className={cn("flex max-h-72 flex-col gap-0.5 overflow-y-auto p-2", onRemoved !== undefined && "border-b border-border")}>

@@ -141,6 +141,12 @@ before it:
 Every record opened is remembered in the browser (the last twenty, nowhere else), under **Recent** and on the welcome,
 and so is every type browsed (the last twelve).
 
+An inventory's report opens one of its ids in this same record view, in a panel that slides up under its grid
+([operations.md](operations.md#finding-orphans-inventory-flows)): read through the partition's connection, with
+everything above but the way back, which the panel's own close stands for. A place, a search or **Open in the
+explorer** there leaves for this page. The panel's line over the record (the id's finding and why) is the inventory's;
+the record under it is OSDU's alone.
+
 ## Validate
 
 The explorer checks what OSDU holds against what OSDU expects of it: a record, or the records a search finds, against

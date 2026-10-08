@@ -9,16 +9,14 @@ import { inventoryApi } from "../../../api/inventories";
 import { useActivePartition } from "../activePartition";
 import { ProblemView } from "../TemplateSheet";
 import { FindingGlyph } from "./InventoryBadges";
-import { findingVisual, inventoryRoute } from "./inventoryFormat";
+import { MAX_ID_LENGTH, findingVisual, inventoryRoute } from "./inventoryFormat";
 
 const LOOKUP_DELAY_MS = 400;
 
-/** The longest id a lookup sends, as the control plane takes it. */
-const MAX_ID_LENGTH = 1024;
-
 /**
  * A lookup by OSDU id across the inventories of the partition picked in the title bar: what each inventory holds of the id
- * (listed by it, or expected from a ledger), with its finding there; picking one opens that inventory on the id's finding.
+ * (listed by it, or expected from a ledger), with its finding there; picking one opens that inventory on the id's finding,
+ * with the id open in its panel as OSDU holds it.
  */
 export function InventoryLookupBox() {
   const navigate = useNavigate();
@@ -63,7 +61,7 @@ export function InventoryLookupBox() {
               type="button"
               onClick={() => {
                 setOpen(false);
-                navigate(inventoryRoute({ partition: inventory.partition, inventoryId: inventory.inventoryId }, record.finding));
+                navigate(inventoryRoute({ partition: inventory.partition, inventoryId: inventory.inventoryId }, record.finding, record.targetId));
               }}
               className="flex w-full flex-col gap-0.5 px-3 py-1.5 text-left outline-none hover:bg-accent/60 focus-visible:bg-accent/60"
               data-testid="inventory-lookup-hit"

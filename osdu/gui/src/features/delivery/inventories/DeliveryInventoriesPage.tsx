@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Page } from "@/components/Page";
 import { PageHeader } from "@/components/PageHeader";
 import { RelativeTime } from "@/components/RelativeTime";
+import { TruncatedText } from "@/components/TruncatedText";
 import { inventoryApi, type Inventory } from "../../../api/inventories";
 import { KindText } from "../KindText";
 import { useActivePartition } from "../activePartition";
@@ -15,13 +16,19 @@ import { ProblemView } from "../TemplateSheet";
 import { RaisedCounts, RunStatusPill, StandingGlyph } from "./InventoryBadges";
 import { InventoryLookupBox } from "./InventoryLookup";
 import { InventoryReport } from "./InventoryReport";
-import { counted, inventoryRoute, standingOf, type InventoryRef, type InventoryView } from "./inventoryFormat";
+import { MAX_ID_LENGTH, counted, inventoryRoute, standingOf, type InventoryRef, type InventoryView } from "./inventoryFormat";
 
 /** How often the inventories are read again, so a run under way shows its outcome as it lands. */
 const REFRESH_MS = 15000;
 
 /** The partition a link names, when it is one. */
 const PARTITION_ID = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/** The OSDU id the address opens in the report's panel, or null for none. */
+function openIdOf(params: URLSearchParams): string | null {
+  const id = params.get("id")?.trim() ?? "";
+  return id === "" || id.length > MAX_ID_LENGTH ? null : id;
+}
 
 /** The inventory the address names, or null for every inventory. */
 function referenceOf(params: URLSearchParams): InventoryRef | null {
@@ -35,7 +42,7 @@ function referenceOf(params: URLSearchParams): InventoryRef | null {
  * every ledger of the partition, each id with its finding. The page is two views of one address: every inventory, with what
  * its last reconcile raised and its newest run, and one inventory's report, whose grid takes the page's whole width and
  * scrolls inside it. A lookup by OSDU id across the partition's inventories is in the heading of both. The inventory, the
- * finding and the tab live in the address, so a link lands on the same view.
+ * finding, the tab and the id open in the report's panel live in the address, so a link lands on the same view.
  */
 export default function DeliveryInventoriesPage() {
   const [params, setParams] = useSearchParams();
@@ -63,7 +70,7 @@ export default function DeliveryInventoriesPage() {
   }, { replace: true });
 
   const open = (ref: InventoryRef | null) => (ref === null
-    ? update({ partition: null, inventory: null, finding: null, tab: null })
+    ? update({ partition: null, inventory: null, finding: null, tab: null, id: null })
     : navigate(inventoryRoute(ref)));
 
   if (reference !== null) {
@@ -74,10 +81,13 @@ export default function DeliveryInventoriesPage() {
           reference={reference}
           siblings={list.data?.inventories ?? []}
           finding={params.get("finding")}
-          onFinding={(finding) => update({ finding })}
+          // The panel steps through the ids of the finding in view, so another finding closes it.
+          onFinding={(finding) => update({ finding, id: null })}
           view={view}
           onView={(next) => update({ tab: next === "ids" ? null : next })}
           onOpen={open}
+          openId={openIdOf(params)}
+          onOpenId={(id) => update({ id })}
         />
       </Page>
     );
@@ -105,31 +115,34 @@ export default function DeliveryInventoriesPage() {
   const raised = inventories.reduce((sum, inventory) => sum + (inventory.raised ?? 0), 0);
   const columns: Column<Inventory>[] = [
     {
+      // The flow that keeps it, under its name, so a narrow page spends no column on it.
       id: "inventory",
       header: "Inventory",
       render: (row) => (
-        <span className="flex items-center gap-2">
-          <StandingGlyph standing={standingOf(row)} />
-          <span className="font-medium">{row.name}</span>
+        <span className="flex items-start gap-2">
+          <span className="mt-0.5"><StandingGlyph standing={standingOf(row)} /></span>
+          <span className="flex min-w-0 flex-col">
+            <span className="font-medium">{row.name}</span>
+            <TruncatedText text={row.flowName} mono maxWidth={240} className="text-[11.5px] text-muted-foreground" />
+          </span>
         </span>
       ),
     },
-    { id: "flow", header: "Flow", render: (row) => <span className="font-mono text-[12px]">{row.flowName}</span> },
-    { id: "kind", header: "Kind", fill: true, floor: 200, render: (row) => <KindText kind={row.kind} /> },
+    { id: "kind", header: "Kind", fill: true, floor: 110, render: (row) => <KindText kind={row.kind} /> },
     { id: "raised", header: "Raised", render: (row) => <RaisedCounts counts={row.reconciled} testId={`inventories-raised-${row.inventoryId}`} /> },
     {
+      // A run under way, or one that failed after the last reconcile, is what needs a look; else when it was last reconciled.
       id: "reconciled",
       header: "Reconciled",
-      render: (row) => (row.lastReconciledUtc === undefined
-        ? <span className="text-[12px] text-muted-foreground">{row.lastBuiltUtc === undefined ? "not built" : "not yet"}</span>
-        : <span className="whitespace-nowrap text-[12px]"><RelativeTime value={row.lastReconciledUtc} absolute={false} /></span>),
-    },
-    {
-      id: "newest",
-      header: "Newest run",
-      render: (row) => (row.latest === undefined || row.latest.inventoryRunId === row.lastReconcileRunId
-        ? null
-        : <RunStatusPill status={row.latest.status} testId={`inventories-newest-${row.inventoryId}`} />),
+      render: (row) => {
+        if (row.latest !== undefined && row.latest.inventoryRunId !== row.lastReconcileRunId) {
+          return <RunStatusPill status={row.latest.status} testId={`inventories-newest-${row.inventoryId}`} />;
+        }
+
+        return row.lastReconciledUtc === undefined
+          ? <span className="text-[12px] text-muted-foreground">{row.lastBuiltUtc === undefined ? "not built" : "not yet"}</span>
+          : <span className="whitespace-nowrap text-[12px]"><RelativeTime value={row.lastReconciledUtc} absolute={false} /></span>;
+      },
     },
   ];
   if (active === null) {

@@ -3,7 +3,7 @@ import {
   Undo2, Unlink, UserX, type LucideIcon,
 } from "lucide-react";
 import {
-  INVENTORY_FINDINGS, RAISED_FINDINGS, inventoryApi, type Inventory, type InventoryCount, type InventoryFinding, type InventoryRun,
+  INVENTORY_FINDINGS, RAISED_FINDINGS, inventoryApi, type Inventory, type InventoryCount, type InventoryFinding, type InventoryRecord, type InventoryRun,
 } from "../../../api/inventories";
 
 /** How a finding is drawn and said: its glyph, the tone the glyph takes when any id has it, its name, and what it means. */
@@ -82,6 +82,12 @@ export function findingVisual(finding: string): FindingVisual {
   return known === null
     ? { icon: CircleDashed, label: finding, tone: "text-muted-foreground", hint: `The control plane reports '${finding}', a finding this page does not describe.` }
     : FINDING_VISUALS[known];
+}
+
+/** Why an id has its finding: what the reconcile said of this id, then what the finding means. */
+export function findingWhy(record: Pick<InventoryRecord, "finding" | "detail">): string {
+  const meaning = findingVisual(record.finding).hint;
+  return record.detail === undefined || record.detail === "" ? meaning : `${record.detail}\n\n${meaning}`;
 }
 
 export function isRaised(finding: string): boolean {
@@ -199,14 +205,33 @@ export interface InventoryRef {
   inventoryId: number;
 }
 
-/** The address of an inventory's report, opened on a finding when one is named. */
-export function inventoryRoute(ref: InventoryRef, finding?: string | null): string {
+/** The address of an inventory's report, opened on a finding when one is named, with an id open in its panel when one is named. */
+export function inventoryRoute(ref: InventoryRef, finding?: string | null, id?: string | null): string {
   const params = new URLSearchParams({ partition: ref.partition, inventory: String(ref.inventoryId) });
   if (finding !== undefined && finding !== null) {
     params.set("finding", finding);
   }
 
+  if (id !== undefined && id !== null) {
+    params.set("id", id);
+  }
+
   return `/delivery/inventories?${params.toString()}`;
+}
+
+/** The longest OSDU id the page reads from its address or sends to a lookup, as the control plane takes it. */
+export const MAX_ID_LENGTH = 1024;
+
+/**
+ * The least and the most of the report's height the panel under its grid takes, as a share; the panel's own floor and
+ * the grid's are in pixels.
+ */
+export const MIN_SHARE = 0.2;
+export const MAX_SHARE = 0.85;
+
+/** A share of the report's height kept between the least and the most the panel takes. */
+export function clampShare(share: number): number {
+  return Math.min(MAX_SHARE, Math.max(MIN_SHARE, Number.isFinite(share) ? share : MIN_SHARE));
 }
 
 /** A part of a file name: letters, digits, dots, dashes and underscores, anything else a dash, as the control plane names it. */

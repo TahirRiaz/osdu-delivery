@@ -41,55 +41,6 @@ export function FindingGlyph({ finding, quiet = false, className }: { finding: s
 }
 
 /**
- * How many ids have a finding, as a neutral chip led by the finding's glyph: the count is data, the name follows quietly, and
- * a finding no id has stays quiet (its glyph and count muted). Pressing it picks the finding; what it means is on hover, to
- * copy.
- */
-export function FindingChip({ count, selected, onSelect, testId }: {
-  count: InventoryCount;
-  selected: boolean;
-  onSelect: () => void;
-  testId: string;
-}) {
-  const visual = findingVisual(count.finding);
-  const quiet = count.count === 0;
-  return (
-    <ExplainTip title={visual.label} text={visual.hint} testId={testId}>
-      <button
-        type="button"
-        onClick={onSelect}
-        aria-pressed={selected}
-        className={cn(
-          "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-[12px] outline-none transition-colors",
-          "focus-visible:ring-2 focus-visible:ring-ring/50",
-          selected ? "border-primary/60 bg-accent text-foreground" : "border-border bg-muted/40 hover:bg-accent/60",
-        )}
-        data-testid={testId}
-        data-finding={count.finding}
-        data-count={count.count}
-      >
-        <FindingGlyph finding={count.finding} quiet={quiet} />
-        <span className={cn("font-mono tabular-nums", quiet ? "text-muted-foreground/70" : "font-medium text-foreground")}>{count.count.toLocaleString("en-US")}</span>
-        <span className={quiet ? "text-muted-foreground/70" : "text-muted-foreground"}>{visual.label.toLowerCase()}</span>
-      </button>
-    </ExplainTip>
-  );
-}
-
-/** A finding in a line of text: its glyph and its name, what it means on hover. */
-export function FindingName({ finding, testId }: { finding: string; testId: string }) {
-  const visual = findingVisual(finding);
-  return (
-    <ExplainTip title={visual.label} text={visual.hint} testId={testId}>
-      <span className="inline-flex items-center gap-1 whitespace-nowrap text-[12px]" data-testid={testId} data-finding={finding}>
-        <FindingGlyph finding={finding} />
-        {visual.label.toLowerCase()}
-      </span>
-    </ExplainTip>
-  );
-}
-
-/**
  * The raised findings an inventory's last reconcile counted, each a glyph and a count on one line, the finding's name and
  * meaning on hover; a quiet word when there are none.
  */

@@ -7,8 +7,12 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useAuth } from "@/auth/AuthContext";
+import { CopyButton } from "@/components/CopyButton";
 import { DataTable, type Column } from "@/components/DataTable";
 import { EmptyState } from "@/components/EmptyState";
 import { PageHeader } from "@/components/PageHeader";
@@ -19,12 +23,13 @@ import { isApiError } from "@/api/client";
 import { TriggerRunDialog } from "@/features/runs/TriggerRunDialog";
 import { formatDurationSeconds, parseUtc } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { inventoryApi, type Inventory, type InventoryCount, type InventoryDetail, type InventoryRun } from "../../../api/inventories";
+import { inventoryApi, type Inventory, type InventoryDetail, type InventoryRun } from "../../../api/inventories";
 import { KindText } from "../KindText";
 import { useActivePartition } from "../activePartition";
 import { RunRef } from "../DeliveryRefs";
 import { ProblemView } from "../TemplateSheet";
-import { ExplainTip, FindingChip, RunStatusPill, StandingGlyph } from "./InventoryBadges";
+import { ExplainTip, RunStatusPill, StandingGlyph } from "./InventoryBadges";
+import { InventoryFindingStrip } from "./InventoryFindingStrip";
 import { InventoryLookupBox } from "./InventoryLookup";
 import { InventoryRecordsGrid } from "./InventoryRecordsGrid";
 import {
@@ -113,21 +118,88 @@ function RunFact({ label, run, at, testId }: { label: string; run: InventoryRun 
   );
 }
 
-/** The owners the last reconcile used and how it knew them, on hover, to copy. */
-function OwnersFact({ detail }: { detail: InventoryDetail }) {
+/** A run in the About card's words: when it ended (or started, while it runs), its number and who ran it. */
+function RunLine({ run, at }: { run: InventoryRun | undefined; at: string | undefined }) {
+  const when = run?.completedUtc ?? at ?? run?.startedUtc;
+  if (when === undefined) {
+    return <span className="text-muted-foreground">never</span>;
+  }
+
+  return (
+    <span>
+      <RelativeTime value={when} absolute={false} />
+      {run === undefined ? "" : `, run ${run.inventoryRunId} by ${run.actor}`}
+    </span>
+  );
+}
+
+/**
+ * What the inventory is and how it reads, behind the mark beside its name, so the heading keeps to its name and a line
+ * of facts: what it is for, the kind it lists (narrowed by its query) and how, the flow that keeps it, its last build and
+ * reconcile, and the owners the last reconcile used, by which an id no ledger knows is an orphan or foreign.
+ */
+function AboutTip({ detail }: { detail: InventoryDetail }) {
+  const inventory = detail.inventory;
   const owners = detail.owners;
   const identities = owners?.identities ?? [];
-  const text = owners === undefined
-    ? "No reconcile has said which identities write as this estate yet. An id no ledger knows is an orphan when one of them created it, else foreign."
-    : `${ownersSourceText(owners.source)}.${identities.length === 0 ? "" : "\n\n" + identities.map((o) => `${o.identity}: created ${counted(o.records, "id")} a ledger claims`).join("\n")}\n\nAn id no ledger knows is an orphan when one of them created it, else foreign.`;
-  const label = identities.length === 0 ? "no owners" : identities.length === 1 ? `owner ${identities[0].identity}` : `${identities.length} owners`;
+  const row = (label: string, value: ReactNode) => (
+    <>
+      <dt className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</dt>
+      <dd className="min-w-0">{value}</dd>
+    </>
+  );
+  const known = owners === undefined ? "Not known until a reconcile." : `${ownersSourceText(owners.source)}.`;
   return (
-    <ExplainTip title="Owners" text={text} testId="inventory-owners">
-      <button type="button" className="max-w-[22rem] truncate rounded-sm outline-none hover:text-foreground hover:underline focus-visible:underline" data-testid="inventory-owners">
-        {label}
-        {owners?.source === undefined ? "" : ` (${owners.source})`}
-      </button>
-    </ExplainTip>
+    <HoverCard openDelay={250} closeDelay={150}>
+      <HoverCardTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex shrink-0 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground"
+          aria-label="About the inventory"
+          data-testid="inventory-about"
+        >
+          <Info className="size-4" />
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-[30rem] max-w-[calc(100vw-2rem)] p-0" data-testid="inventory-about-tip">
+        {detail.description !== undefined && (
+          <p className="border-b border-border px-3 py-2 text-[12.5px] leading-snug" data-testid="inventory-description">{detail.description}</p>
+        )}
+        <dl className="grid grid-cols-[5.75rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-1.5 px-3 py-2.5 text-[12.5px] font-normal">
+          {row("Kind", (
+            <span className="flex items-start gap-1">
+              <span className="min-w-0 font-mono text-[11.5px] [overflow-wrap:anywhere]">{inventory.kind}</span>
+              <CopyButton iconOnly label="Copy the kind" text={inventory.kind} testId="inventory-about-copy-kind" />
+            </span>
+          ))}
+          {inventory.query !== undefined && row("Narrowed by", <span className="font-mono text-[11.5px] [overflow-wrap:anywhere]">{inventory.query}</span>)}
+          {row("Reads", `through ${inventory.read}, ${inventory.versions === "all" ? "every version" : "the latest version"}`)}
+          {row("Kept by", (
+            <span>
+              {detail.pipelineId === undefined
+                ? <span className="font-mono text-[12px]">{inventory.flowName}</span>
+                : <Link to={`/pipelines/${detail.pipelineId}?tab=inventories`} className="font-mono text-[12px] text-primary hover:underline">{inventory.flowName}</Link>}
+              {detail.declared === false ? ", which no longer declares it," : ""}
+              {` in ${inventory.partition}`}
+            </span>
+          ))}
+          {row("Built", <RunLine run={detail.lastBuild} at={inventory.lastBuiltUtc} />)}
+          {row("Reconciled", <RunLine run={detail.lastReconcile} at={inventory.lastReconciledUtc} />)}
+          {row("Owners", (
+            <span className="flex flex-col gap-0.5" data-testid="inventory-owners">
+              <span>{known.charAt(0).toUpperCase() + known.slice(1)}</span>
+              {identities.map((owner) => (
+                <span key={owner.identity} className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">
+                  <span className="font-mono text-[11.5px] text-foreground">{owner.identity}</span>
+                  {`: created ${counted(owner.records, "id")} a ledger claims`}
+                </span>
+              ))}
+              <span className="text-[11.5px] text-muted-foreground">An id no ledger knows is an orphan when one of them created it, else foreign.</span>
+            </span>
+          ))}
+        </dl>
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
@@ -148,12 +220,16 @@ function ExportMenu({ inventory, finding }: { inventory: Inventory; finding: str
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" disabled={busy} data-testid="inventory-export">
-          {busy ? <Loader2 className="animate-spin" /> : <Download />}
-          Export
-        </Button>
-      </DropdownMenuTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" disabled={busy} aria-label="Export the ids as CSV" data-testid="inventory-export">
+              {busy ? <Loader2 className="animate-spin" /> : <Download />}
+            </Button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent>Export the ids as CSV</TooltipContent>
+      </Tooltip>
       <DropdownMenuContent align="end" className="w-72">
         {finding !== null && (
           <DropdownMenuItem onSelect={() => void download(finding)} data-testid="inventory-export-finding">
@@ -167,25 +243,6 @@ function ExportMenu({ inventory, finding }: { inventory: Inventory; finding: str
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-/** The choice of every id, beside the findings: how many ids the inventory holds. */
-function EveryIdChip({ total, selected, onSelect }: { total: number; selected: boolean; onSelect: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onSelect}
-      aria-pressed={selected}
-      className={cn(
-        "inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-[12px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50",
-        selected ? "border-primary/60 bg-accent text-foreground" : "border-border bg-muted/40 hover:bg-accent/60",
-      )}
-      data-testid="inventory-finding-all"
-    >
-      <span className="font-mono font-medium tabular-nums">{total.toLocaleString("en-US")}</span>
-      <span className="text-muted-foreground">every id</span>
-    </button>
   );
 }
 
@@ -252,14 +309,15 @@ function InventoryRuns({ inventory }: { inventory: Inventory }) {
 }
 
 /**
- * One inventory of a partition, on the whole width of the page. Its heading is one block: the way back to every inventory,
- * its name and where it stands, the others a click away, the lookup, Export and Run pipeline; under it, in two lines, the
- * facts it is read against (its ids and how many are raised, its last build and reconcile and the owners they used, each
- * explained on hover) and what it reads. Then what its newest run asks of the reader, and its tabs: its ids by finding,
- * picked from its counts and paged in place in a grid that scrolls inside the page, and its runs. The finding and the tab
- * live in the address, so a link lands on the same view.
+ * One inventory of a partition, on the whole width of the page. Its heading is one line: the way back to every inventory,
+ * its name and where it stands, the others a click away, what it is on hover over the mark beside it, and on the right the
+ * lookup and Run pipeline; under it, one line of facts (its ids, how many are raised, its last reconcile and the kind it
+ * lists). Then what its newest run asks of the reader, and its tabs: its ids, whose findings lead the grid's toolbar as one
+ * line of tabs with the export and the columns at its end, paged in place in a grid that fills the window; and its runs. An
+ * id opens in a panel under the grid, as OSDU holds it. The finding, the tab and the id open live in the address, so a
+ * link lands on the same view.
  */
-export function InventoryReport({ reference, siblings, finding, onFinding, view, onView, onOpen }: {
+export function InventoryReport({ reference, siblings, finding, onFinding, view, onView, onOpen, openId, onOpenId }: {
   reference: InventoryRef;
   /** The inventories the switcher lists. */
   siblings: readonly Inventory[];
@@ -269,9 +327,16 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
   onView: (view: InventoryView) => void;
   /** Opens another inventory, or every inventory for null. */
   onOpen: (ref: InventoryRef | null) => void;
+  /** The OSDU id open in the panel under the grid; null when none is. */
+  openId: string | null;
+  /** Opens an id in the panel, or closes it with null. */
+  onOpenId: (id: string | null) => void;
 }) {
   const [launching, setLaunching] = useState(false);
   const [active] = useActivePartition();
+  const { hasScope } = useAuth();
+  // The panel reads OSDU through a flow's credentials, as the explorer does, which takes the operate scope.
+  const canReadOsdu = hasScope("operate");
   const detail = useQuery({
     queryKey: ["delivery", "inventories", "detail", reference.partition, reference.inventoryId],
     queryFn: () => inventoryApi.inventory(reference.partition, reference.inventoryId),
@@ -301,95 +366,65 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
   const standing = standingOf(inventory, data.declared !== false);
   const counts = allCounts(data.counts);
   const chosen = finding === EVERY_ID ? null : finding ?? openingFinding(counts);
-  // What ids have comes first, in report order; the raised findings no id has follow, quiet, so a narrow page wraps them alone.
-  const listed = counts.filter((count) => count.raised || count.count > 0 || count.finding === chosen);
-  const shownCounts = [...listed.filter((count) => count.count > 0), ...listed.filter((count) => count.count === 0)];
   const total = chosen === null ? data.ids : counts.find((count) => count.finding === chosen)?.count ?? null;
   const dot = <span className="text-muted-foreground/50" aria-hidden>·</span>;
   const latest = inventory.latest;
   const failedAfter = latest !== undefined && latest.status === "failed" && latest.inventoryRunId !== inventory.lastReconcileRunId ? latest : undefined;
   const canRun = data.pipelineId !== undefined && data.repoId !== undefined && data.declared !== false;
   const built = inventory.lastBuiltUtc !== undefined || inventory.lastReconcileRunId !== undefined;
-
-  const chips: ReactNode = (
-    <>
-      <EveryIdChip total={data.ids} selected={chosen === null} onSelect={() => onFinding(EVERY_ID)} />
-      {shownCounts.map((count: InventoryCount) => (
-        <FindingChip
-          key={count.finding}
-          count={count}
-          selected={chosen === count.finding}
-          onSelect={() => onFinding(count.finding)}
-          testId={`inventory-finding-${count.finding}`}
-        />
-      ))}
-    </>
-  );
+  const reconciled = data.lastReconcile !== undefined || inventory.lastReconciledUtc !== undefined;
 
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="inventory-report" data-inventory={inventory.name}>
-      <PageHeader
-        title={(
-          <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
-            <InventoriesCrumb onBack={() => onOpen(null)} />
-            <StandingGlyph standing={standing} testId="inventory-standing" />
-            <span className="min-w-0 truncate" data-testid="inventory-name">{inventory.name}</span>
-            <Switcher current={reference} siblings={siblings} onOpen={onOpen} />
-            {data.description !== undefined && (
-              <RichTooltip title="What it is for" body={data.description}>
-                <Info className="size-4 shrink-0 text-muted-foreground" aria-label="What the inventory is for" data-testid="inventory-description" />
-              </RichTooltip>
-            )}
-          </span>
-        )}
-        subtitle={(
-          <div className="flex flex-col gap-0.5">
-            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[13px]" data-testid="inventory-summary">
-              <span><span className="font-mono font-medium tabular-nums text-foreground">{data.ids.toLocaleString("en-US")}</span> {data.ids === 1 ? "id" : "ids"}</span>
-              {dot}
-              <span className={data.raised > 0 ? "text-foreground" : undefined} data-testid="inventory-summary-raised">
-                <span className="font-mono font-medium tabular-nums">{data.raised.toLocaleString("en-US")}</span> raised
-              </span>
-              {dot}
-              <RunFact label="built" run={data.lastBuild} at={inventory.lastBuiltUtc} testId="inventory-summary-built" />
-              {dot}
-              <RunFact label="reconciled" run={data.lastReconcile} at={inventory.lastReconciledUtc} testId="inventory-summary-reconciled" />
-              {dot}
-              <OwnersFact detail={data} />
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[12px]">
-              <span className="min-w-0 max-w-[26rem]"><KindText kind={inventory.kind} /></span>
-              {inventory.query !== undefined && (
-                <RichTooltip title="Narrowed by" body={inventory.query} mono>
-                  <span className="shrink-0 rounded-sm border border-border px-1 text-[10.5px]">query</span>
+      {/* The facts have the whole width under the title and its actions, on one line whose kind gives way first. */}
+      <div className="flex min-w-0 flex-col gap-0.5">
+        <PageHeader
+          title={(
+            <span className="flex min-w-0 items-center gap-x-1.5">
+              <InventoriesCrumb onBack={() => onOpen(null)} />
+              <StandingGlyph standing={standing} testId="inventory-standing" />
+              <span className="min-w-0 truncate" data-testid="inventory-name">{inventory.name}</span>
+              <Switcher current={reference} siblings={siblings} onOpen={onOpen} />
+              <AboutTip detail={data} />
+            </span>
+          )}
+          actions={(
+            <>
+              <InventoryLookupBox />
+              {canRun && (
+                <RichTooltip body={`Runs ${inventory.flowName} with this inventory picked: a build reads every id of its kind again and reconciles it; the dialog can pick a reconcile, a plan, or the flow's other inventories.`}>
+                  <Button size="sm" onClick={() => setLaunching(true)} disabled={latest?.status === "running"} data-testid="inventory-run">
+                    <Play />
+                    Run pipeline
+                  </Button>
                 </RichTooltip>
               )}
-              {dot}
-              <span>through {inventory.read}, {inventory.versions === "all" ? "every version" : "the latest version"}</span>
-              {dot}
-              <span>{inventory.partition === active ? "kept by" : `in ${inventory.partition}, kept by`}</span>
-              {data.pipelineId === undefined
-                ? <span className="font-mono text-foreground">{inventory.flowName}</span>
-                : <Link to={`/pipelines/${data.pipelineId}?tab=inventories`} className="font-mono text-foreground hover:underline">{inventory.flowName}</Link>}
-              {data.declared === false && <span>(no longer declared)</span>}
-            </div>
-          </div>
-        )}
-        actions={(
-          <>
-            {!built && <InventoryLookupBox />}
-            <ExportMenu inventory={inventory} finding={chosen} />
-            {canRun && (
-              <RichTooltip body={`Runs ${inventory.flowName} with this inventory picked: a build reads every id of its kind again and reconciles it; the dialog can pick a reconcile, a plan, or the flow's other inventories.`}>
-                <Button size="sm" onClick={() => setLaunching(true)} disabled={latest?.status === "running"} data-testid="inventory-run">
-                  <Play />
-                  Run pipeline
-                </Button>
-              </RichTooltip>
-            )}
-          </>
-        )}
-      />
+            </>
+          )}
+        />
+        <div className="flex min-w-0 items-center gap-x-1.5 overflow-hidden whitespace-nowrap text-[13px] text-muted-foreground" data-testid="inventory-summary">
+          <span className="flex shrink-0 items-center gap-x-1.5">
+            <span><span className="font-mono font-medium tabular-nums text-foreground">{data.ids.toLocaleString("en-US")}</span> {data.ids === 1 ? "id" : "ids"}</span>
+            {dot}
+            <span className={data.raised > 0 ? "text-foreground" : undefined} data-testid="inventory-summary-raised">
+              <span className="font-mono font-medium tabular-nums">{data.raised.toLocaleString("en-US")}</span> raised
+            </span>
+            {dot}
+            {reconciled || !built
+              ? <RunFact label="reconciled" run={data.lastReconcile} at={inventory.lastReconciledUtc} testId="inventory-summary-reconciled" />
+              : <RunFact label="built" run={data.lastBuild} at={inventory.lastBuiltUtc} testId="inventory-summary-built" />}
+            {dot}
+          </span>
+          <span className="min-w-0 max-w-[26rem]"><KindText kind={inventory.kind} /></span>
+          {inventory.query !== undefined && (
+            <RichTooltip title="Narrowed by" body={inventory.query} mono>
+              <span className="shrink-0 rounded-sm border border-border px-1 text-[10.5px]">query</span>
+            </RichTooltip>
+          )}
+          {inventory.partition !== active && <span className="shrink-0">{`in ${inventory.partition}`}</span>}
+          {data.declared === false && <span className="shrink-0">(no longer declared)</span>}
+        </div>
+      </div>
 
       {failedAfter !== undefined && (
         <Alert variant="destructive" data-testid="inventory-failed">
@@ -419,17 +454,23 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
         )
         : (
           <Tabs value={view} onValueChange={(next) => onView(next as InventoryView)} className="min-w-0 gap-2">
-            <div className="flex flex-wrap items-end justify-between gap-2 border-b border-border">
+            <div className="border-b border-border">
               <TabsList variant="line" data-testid="inventory-tabs">
                 <TabsTrigger value="ids" data-testid="inventory-tab-ids">Ids</TabsTrigger>
                 <TabsTrigger value="runs" data-testid="inventory-tab-runs">Runs</TabsTrigger>
               </TabsList>
-              <div className="pb-1.5">
-                <InventoryLookupBox />
-              </div>
             </div>
             <TabsContent value="ids">
-              <InventoryRecordsGrid key={chosen ?? EVERY_ID} inventory={inventory} finding={chosen} total={total} leading={chips} />
+              <InventoryRecordsGrid
+                key={chosen ?? EVERY_ID}
+                inventory={inventory}
+                finding={chosen}
+                total={total}
+                leading={<InventoryFindingStrip total={data.ids} counts={counts} selected={chosen} onSelect={(picked) => onFinding(picked ?? EVERY_ID)} />}
+                trailing={<ExportMenu inventory={inventory} finding={chosen} />}
+                openId={openId}
+                onOpen={canReadOsdu ? onOpenId : undefined}
+              />
             </TabsContent>
             <TabsContent value="runs">
               <InventoryRuns inventory={inventory} />
