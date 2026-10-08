@@ -182,7 +182,7 @@ export function recordAt(typed: string): { id: string; version: number | null } 
   return { id: text.slice(0, last), version: version !== null && Number.isSafeInteger(version) && version > 0 ? version : null };
 }
 
-const CONDITIONS = new Set<ExplorerCondition>(["is", "isNot", "anyOf", "contains", "startsWith", "range", "exists", "missing"]);
+const CONDITIONS = new Set<ExplorerCondition>(["is", "isNot", "anyOf", "noneOf", "contains", "startsWith", "range", "exists", "missing"]);
 
 /** A condition as the address writes it: short keys, and nothing a condition leaves at its default. */
 interface FilterEntry {
@@ -193,6 +193,8 @@ interface FilterEntry {
   vs?: string[];
   t?: string;
   n?: string;
+  /** The search term the condition names, by its id. */
+  st?: string;
 }
 
 /** One condition of the address, or null for an entry that is not one. */
@@ -223,6 +225,7 @@ function filterOf(item: unknown): ExplorerFilter | null {
     ...(text(entry.v) !== undefined ? { value: text(entry.v) } : {}),
     ...(values !== undefined ? { values } : {}),
     ...(text(entry.t) !== undefined ? { to: text(entry.t) } : {}),
+    ...(text(entry.st) !== undefined ? { term: text(entry.st) } : {}),
   };
 }
 
@@ -254,6 +257,7 @@ export function filtersText(filters: ExplorerFilter[]): string | null {
     ...(filter.values !== undefined ? { vs: filter.values } : {}),
     ...(filter.to !== undefined ? { t: filter.to } : {}),
     ...(filter.nested ? { n: filter.nested } : {}),
+    ...(filter.term ? { st: filter.term } : {}),
   })));
 }
 
@@ -268,6 +272,7 @@ export const CONDITION_LABELS: Record<ExplorerCondition, string> = {
   is: "is",
   isNot: "is not",
   anyOf: "is one of",
+  noneOf: "is none of",
   startsWith: "starts with",
   range: "is in a range",
   exists: "has a value",
@@ -280,6 +285,7 @@ export const CONDITION_HINTS: Record<ExplorerCondition, string> = {
   is: "The whole value, exactly.",
   isNot: "Every record but those holding the value.",
   anyOf: "The whole value is one of several.",
+  noneOf: "Every record but those holding one of several values.",
   startsWith: "The whole value starts with the text, in the same case.",
   range: "From a value (included) up to another (not included); either end may stay open.",
   exists: "Any value at all.",
@@ -296,12 +302,12 @@ export function conditionsFor(field: { index: ExplorerIndex; nested?: string | n
   const presence: ExplorerCondition[] = nested ? [] : ["exists", "missing"];
   switch (field.index) {
     case "text":
-      return ["contains", "is", "isNot", "anyOf", ...(nested ? [] : ["startsWith" as const]), ...presence];
+      return ["contains", "is", "isNot", "anyOf", "noneOf", ...(nested ? [] : ["startsWith" as const]), ...presence];
     case "keyword":
-      return ["is", "isNot", "anyOf", ...(nested ? [] : ["startsWith" as const]), ...presence];
+      return ["is", "isNot", "anyOf", "noneOf", ...(nested ? [] : ["startsWith" as const]), ...presence];
     case "number":
     case "date":
-      return ["range", "is", "isNot", "anyOf", ...presence];
+      return ["range", "is", "isNot", "anyOf", "noneOf", ...presence];
     default:
       return ["is", ...presence];
   }
@@ -319,6 +325,7 @@ export function conditionValueText(filter: ExplorerFilter): string {
     case "missing":
       return "";
     case "anyOf":
+    case "noneOf":
       return (filter.values ?? (filter.value === undefined ? [] : [filter.value])).join(", ");
     case "range":
       return [filter.value ? `from ${filter.value}` : null, filter.to ? `up to ${filter.to}` : null].filter(Boolean).join(" ");
@@ -327,11 +334,11 @@ export function conditionValueText(filter: ExplorerFilter): string {
   }
 }
 
-/** A condition as a sentence: `WellboreName starts with NO 34/10`. */
-export function filterSentence(filter: ExplorerFilter): string {
+/** A condition as a sentence: `WellboreName starts with NO 34/10`; a term's by its name, given in `name`. */
+export function filterSentence(filter: ExplorerFilter, name?: string): string {
   const condition = filter.condition ?? "is";
   const value = conditionValueText(filter);
-  return [fieldLabel(filter.path), condition === "range" ? "is" : CONDITION_LABELS[condition], value].filter((part) => part !== "").join(" ");
+  return [name ?? fieldLabel(filter.path), condition === "range" ? "is" : CONDITION_LABELS[condition], value].filter((part) => part !== "").join(" ");
 }
 
 /** Why a drafted condition cannot be asked yet, in a few words; null when it can. */
@@ -342,6 +349,7 @@ export function filterProblem(filter: ExplorerFilter): string | null {
     case "missing":
       return null;
     case "anyOf":
+    case "noneOf":
       return (filter.values ?? []).length === 0 ? "Pick or type at least one value." : null;
     case "range":
       return !filter.value && !filter.to ? "Give a lower bound, an upper bound, or both." : null;

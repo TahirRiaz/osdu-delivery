@@ -5,6 +5,7 @@ import type { ExplorerFieldInfo, ExplorerFields } from "../../../api/explorer";
 import { ExplorerErrorText } from "./ExplorerProblem";
 import { nestedLabel, offeredFields, originText } from "./explorerFields";
 import { counted, fieldLabel } from "./explorerModel";
+import { termTitle, type OfferedTerm } from "./explorerTerms";
 
 /**
  * The groups the properties are listed in, in order: the content the schema declares, what only the records hold, and the
@@ -20,12 +21,17 @@ const GROUPS: { origin: NonNullable<ExplorerFieldInfo["origin"]>; heading: strin
  * A property of the records in view to pick, found by typing any part of its path or title: the record's own, the content
  * the kind's schema declares, and what the records hold beyond the schema (an index augmentation such as Equinor.*). Each
  * says how it is indexed and the nested list it sits in; its title and description, and where it was found, are on hover.
- * The foot says what the list was read from.
+ * Where `terms` are given, the columns of the source systems the delivery flows read (osdu/docs/search-terms.md) are listed
+ * first, each by its name with its system and the property it is searched in, found by any of them. The foot says what the
+ * list was read from.
  */
-export function ExplorerAttributeList({ read, kind, onPick, placeholder = "Find a property", testId }: {
+export function ExplorerAttributeList({ read, kind, onPick, terms, onPickTerm, placeholder = "Find a property", testId }: {
   read: { data?: { answer: ExplorerFields }; isPending: boolean; isError: boolean; error: unknown };
   kind: string | undefined;
   onPick: (field: ExplorerFieldInfo) => void;
+  /** The search terms of the type in view, offered before its properties; none where the list offers properties alone. */
+  terms?: OfferedTerm[];
+  onPickTerm?: (term: OfferedTerm) => void;
   placeholder?: string;
   testId: string;
 }) {
@@ -45,6 +51,25 @@ export function ExplorerAttributeList({ read, kind, onPick, placeholder = "Find 
         )}
         {read.isError && <ExplorerErrorText error={read.error} className="px-3 py-3" />}
         {answer !== undefined && <CommandEmpty>No property matches.</CommandEmpty>}
+        {terms !== undefined && terms.length > 0 && onPickTerm !== undefined && (
+          <CommandGroup heading="Source columns">
+            {terms.map((offered) => (
+              <CommandItem
+                key={offered.term.id}
+                value={`term ${offered.term.id} ${offered.term.name} ${offered.term.columnLabel} ${offered.term.system} ${offered.route.path}`}
+                onSelect={() => onPickTerm(offered)}
+                className="gap-2"
+                title={termTitle(offered)}
+                data-testid={`${testId}-term`}
+                data-term={offered.term.id}
+              >
+                <span className="min-w-0 flex-1 truncate text-[13px]">{offered.term.name}</span>
+                {offered.showSystem && <span className="shrink-0 rounded-sm border px-1 text-[10px] text-muted-foreground">{offered.term.system}</span>}
+                <span className="max-w-[45%] shrink-0 truncate text-right font-mono text-[11px] text-muted-foreground">{fieldLabel(offered.route.path)}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
         {GROUPS.map(({ origin, heading }) => {
           // A property read before properties had an origin is content.
           const fields = offered.filter((field) => (field.origin ?? (field.path.startsWith("data.") ? "schema" : "record")) === origin);

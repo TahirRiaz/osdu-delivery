@@ -98,6 +98,10 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
         // record's page finds its flow without waiting for its repository's next sync.
         services.AddHostedService<InterfaceCatalogBackfillService>();
 
+        // The search terms are written again from the module's own rows when the control plane starts, so terms extracted by
+        // an older version, or never extracted, are this version's without waiting for a repository's next sync.
+        services.AddHostedService<SearchTermCatalogRefreshService>();
+
         // The records a ledger held before the identity index existed are indexed in the background, so looking a
         // record up by a wellbore id or a file name answers for the whole ledger, not only for what has been planned
         // since. Records staged from now on write their own rows as they are staged.
@@ -129,16 +133,19 @@ public sealed class DeliveryControlPlaneModule : IControlPlaneModule
     {
         ArgumentNullException.ThrowIfNull(endpoints);
 
-        // Reading the ledger, the mappings, the caches and the templates is any signed-in user's; running something
-        // (a redelivery, a removal, a data definitions sync) is an operate action; saving or deleting a
-        // template changes what mappings can pin, so it is an author action, as SQLFlow's own proposals are.
+        // Reading the ledger, the mappings, the caches, the templates and the search terms is any signed-in user's; running
+        // something (a redelivery, a removal, a data definitions sync) is an operate action; saving or deleting a template
+        // changes what mappings can pin, and refining a search term what every reader searches by, so both are author
+        // actions, as SQLFlow's own proposals are.
         endpoints.Read
             .MapDeliveryReadEndpoints()
-            .MapDeliveryTemplateReadEndpoints();
+            .MapDeliveryTemplateReadEndpoints()
+            .MapDeliverySearchTermReadEndpoints();
         endpoints.Operate
             .MapDeliveryWriteEndpoints()
             .MapDeliveryTemplateOperateEndpoints();
         endpoints.Author
-            .MapDeliveryTemplateAuthorEndpoints();
+            .MapDeliveryTemplateAuthorEndpoints()
+            .MapDeliverySearchTermAuthorEndpoints();
     }
 }

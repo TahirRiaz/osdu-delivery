@@ -124,6 +124,26 @@ public sealed class MappingRenderer
 
     public MappingDefinition Mapping => _mapping;
 
+    /// <summary>
+    /// A renderer that puts single values through the mapping's nodes, as a search does with a value a person typed
+    /// (osdu/docs/search-terms.md): no cache, no search, and only the parameters given, so a node reading a parameter it is
+    /// not given holds rather than writes.
+    /// </summary>
+    internal static MappingRenderer ForValues(MappingDefinition mapping, SchemaSnapshot schema, IReadOnlyDictionary<string, string> parameters)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        ArgumentNullException.ThrowIfNull(schema);
+        ArgumentNullException.ThrowIfNull(parameters);
+        var context = new RenderContext
+        {
+            MappingReference = mapping.Reference,
+            CacheVersion = ReferenceSnapshot.Empty.Version,
+            SchemaSnapshotVersion = schema.Version,
+            Parameters = parameters,
+        };
+        return new MappingRenderer(mapping, schema, ReferenceSnapshot.Empty, context, requireParameters: false);
+    }
+
     public RenderContext Context => _context;
 
     /// <summary>

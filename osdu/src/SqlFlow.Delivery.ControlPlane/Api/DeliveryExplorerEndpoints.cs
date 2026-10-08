@@ -11,6 +11,7 @@ using SqlFlow.ControlPlane.Api;
 using SqlFlow.ControlPlane.Hosting;
 using SqlFlow.Core.Compute;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Engine.Search;
@@ -19,7 +20,9 @@ using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Search;
+using SqlFlow.Delivery.SearchTerms;
 using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
@@ -43,8 +46,13 @@ public sealed record DeliveryExplorerConnectionDto(string? Partition, bool Avail
 /// <param name="Values">The values anyOf compares.</param>
 /// <param name="To">A range's upper bound, left out of it.</param>
 /// <param name="Nested">The nested array the property sits in, which the query reaches through.</param>
+/// <param name="Term">
+/// A search term (osdu/docs/search-terms.md) in place of the property: the condition names a column of a source system, its
+/// values the source's own, and the control plane turns it into the condition on the record the term's route fills.
+/// </param>
 public sealed record DeliveryExplorerFilterDto(
-    string? Path, string? Index, string? Value, string? Condition = null, IReadOnlyList<string>? Values = null, string? To = null, string? Nested = null);
+    string? Path, string? Index, string? Value, string? Condition = null, IReadOnlyList<string>? Values = null, string? To = null, string? Nested = null,
+    Guid? Term = null);
 
 /// <summary>A property the explorer groups records by.</summary>
 /// <param name="Path">The property's path from the record root.</param>
@@ -145,14 +153,20 @@ public static partial class DeliveryExplorerEndpoints
     /// <summary>The kinds of the records a search finds across every kind, each with its count.</summary>
     private static Task<Results<ContentHttpResult, ProblemHttpResult>> TypesAsync(
         DeliveryExplorerSearchRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
-        => QueueSearchAsync(ExploreOperation.TypesAction, body, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct);
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user,
+        OsduDbContext osdu, ITemplateStore templates, TimeProvider clock, CancellationToken ct)
+        => QueueSearchAsync(
+            ExploreOperation.TypesAction, body, partition, db, documents, partitions, ledger, config, direct, loggers, request, user,
+            new SearchTermDirectory(osdu, templates, documents, clock), ct);
 
     /// <summary>One page of the records a search finds.</summary>
     private static Task<Results<ContentHttpResult, ProblemHttpResult>> SearchAsync(
         DeliveryExplorerSearchRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
-        => QueueSearchAsync(ExploreOperation.SearchAction, body, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct);
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user,
+        OsduDbContext osdu, ITemplateStore templates, TimeProvider clock, CancellationToken ct)
+        => QueueSearchAsync(
+            ExploreOperation.SearchAction, body, partition, db, documents, partitions, ledger, config, direct, loggers, request, user,
+            new SearchTermDirectory(osdu, templates, documents, clock), ct);
 
     /// <summary>The properties the records of a kind hold: the record's own, those its schema declares, and those its records hold beyond them.</summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> FieldsAsync(
@@ -192,9 +206,17 @@ public static partial class DeliveryExplorerEndpoints
 
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> QueueSearchAsync(
         string action, DeliveryExplorerSearchRequest? body, string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user,
+        SearchTermDirectory directory, CancellationToken ct)
     {
-        var (search, invalid) = SearchOf(body ?? new DeliveryExplorerSearchRequest());
+        var asked = body ?? new DeliveryExplorerSearchRequest();
+        var (terms, failure) = await TermsOfAsync(asked, partition, db, documents, partitions, ledger, request, directory, ct).ConfigureAwait(false);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        var (search, invalid) = SearchOf(asked, terms);
         if (search is null)
         {
             return DeliveryEndpoints.Invalid(invalid!);
@@ -220,8 +242,11 @@ public static partial class DeliveryExplorerEndpoints
         return await DirectOperationRunner.RunAsync(db, config, direct, flow, ExploreOperation.OperationName, arguments, user, loggers, ct).ConfigureAwait(false);
     }
 
-    /// <summary>The search a request asks, checked as the operation checks it again, or why it cannot be asked.</summary>
-    internal static (ExplorerSearch? Search, string? Problem) SearchOf(DeliveryExplorerSearchRequest body)
+    /// <summary>
+    /// The search a request asks, checked as the operation checks it again, or why it cannot be asked. A condition naming a
+    /// search term is the one <paramref name="terms"/> holds at its place, resolved before (<see cref="TermsOfAsync"/>).
+    /// </summary>
+    internal static (ExplorerSearch? Search, string? Problem) SearchOf(DeliveryExplorerSearchRequest body, IReadOnlyDictionary<int, ExplorerFilter>? terms = null)
     {
         ArgumentNullException.ThrowIfNull(body);
         if (!TryParse<ExplorerSort>(body.Sort, ExplorerSort.Relevance, out var sort))
@@ -230,8 +255,21 @@ public static partial class DeliveryExplorerEndpoints
         }
 
         var filters = new List<ExplorerFilter>(body.Filters?.Count ?? 0);
+        var place = -1;
         foreach (var filter in body.Filters ?? [])
         {
+            place++;
+            if (filter?.Term is not null)
+            {
+                if (terms?.GetValueOrDefault(place) is not { } resolved)
+                {
+                    return (null, "A condition on a search term is resolved before the search is asked.");
+                }
+
+                filters.Add(resolved);
+                continue;
+            }
+
             if (filter?.Path is not { Length: > 0 } path)
             {
                 return (null, "Every condition a page narrows to names its property.");
@@ -244,7 +282,7 @@ public static partial class DeliveryExplorerEndpoints
 
             if (!TryParse<ExplorerCondition>(filter.Condition, ExplorerCondition.Is, out var condition))
             {
-                return (null, $"'{filter.Condition}' is not a condition: is, isNot, anyOf, contains, startsWith, range, exists or missing.");
+                return (null, $"'{filter.Condition}' is not a condition: {ConditionNames}.");
             }
 
             filters.Add(new ExplorerFilter

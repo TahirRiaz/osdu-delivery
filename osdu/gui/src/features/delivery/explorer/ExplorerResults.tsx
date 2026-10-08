@@ -28,6 +28,7 @@ import { ExplorerReferencesDialog } from "./ExplorerReferences";
 import { ExplorerValidateDialog } from "./ExplorerValidation";
 import { ReadingBar } from "./ReadingBar";
 import { counted, fieldLabel, kindParts, sameFilter, SORT_LABELS, type ExplorerScope } from "./explorerModel";
+import { termOf, termSource, useSearchTerms } from "./explorerTerms";
 
 /** How a search was read, as a word after the count; nothing for the plain cases. */
 const READINGS: Partial<Record<ExplorerReading, string>> = {
@@ -206,6 +207,13 @@ export function ExplorerResults({ partition, request, scope, adding, onAdding, o
     return [...byId.values()];
   }, [pages.data]);
   const notes = [...new Set((pages.data?.pages ?? []).flatMap((page) => page.answer.notes))];
+  // The source columns the conditions name, said on the columns of the properties they are searched in.
+  const terms = useSearchTerms(request.kind, request.filters.some((filter) => filter.term !== undefined), true);
+  const sourcesOf = (path: string) => [...new Set(request.filters
+    .filter((filter) => filter.path === path)
+    .map((filter) => termOf(filter, terms.data?.terms))
+    .filter((term) => term !== undefined)
+    .map(termSource))];
   const oneType = scope.level === "type" || scope.level === "kind";
   const reading = first === undefined ? undefined : READINGS[first.reading];
   const capped = first !== undefined && first.total > EXPLORER_WINDOW && !pages.hasNextPage && hits.length > 0;
@@ -251,7 +259,14 @@ export function ExplorerResults({ partition, request, scope, adding, onAdding, o
     },
     ...request.columns.map((path): GridColumn<ExplorerHit> => ({
       id: `column:${path}`,
-      header: <span className="block truncate font-mono text-[11px] normal-case" title={path}>{fieldLabel(path)}</span>,
+      header: (
+        <span
+          className="block truncate font-mono text-[11px] normal-case"
+          title={[path, ...sourcesOf(path).map((source) => `Searched by the ${source} column`)].join("\n")}
+        >
+          {fieldLabel(path)}
+        </span>
+      ),
       flex: 1.3,
       render: (hit) => <ColumnValues values={hit.values?.[path]} />,
     })),

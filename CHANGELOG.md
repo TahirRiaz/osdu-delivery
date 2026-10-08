@@ -13,6 +13,20 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The explorer searches by the columns of the source systems.** Every repository sync extracts the search terms of
+  its delivery flows: each column a mapping of an active flow reads (Recall's `wellbore_uwi`, `log_source`,
+  `curves.curve_unit`), with every route by which a value of it reaches the record (a copy, the mapping's steps, a
+  lookup, a search, the dataset's key) and why a route cannot be searched (an expression, a cached table). The new
+  **Search terms** page refines them: renamed to what the people searching call them, left out of the explorer, searched
+  through another route, or given a note, kept by the term's identity across every sync and mapping version. The
+  explorer offers the terms before the record's properties, in the condition editor and the search field: a value is
+  typed as the source holds it, carried through the mapping by the renderer's own code (for a lookup or a search, by
+  finding those records in OSDU first; for a key, by making the record's id), and asked of OSDU's search like any
+  condition, its chip naming the column. Nothing is searched in the ledger or the cache. Every property keeps every
+  condition it had, and gains **is none of**. New tables `osdu.SearchTerm` and `osdu.SearchTermRefinement` (migration
+  `SearchTerms`, module 1.32.0); new routes under `/api/v1/delivery/search-terms`, and `term` on an explorer condition
+  ([osdu/docs/search-terms.md](osdu/docs/search-terms.md)).
+
 - **The explorer searches one property as readily as every one.** Text typed in a search field is offered, under it, in
   one property instead of every one (the properties searched in lately for the type, then the record's name), or in
   any other picked in the new condition editor. **Filter**, beside Group by, asks any property a condition: contains (its

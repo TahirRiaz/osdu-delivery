@@ -53,6 +53,9 @@ public enum ExplorerCondition
 
     /// <summary>The property holds no value: every record but those that hold one.</summary>
     Missing,
+
+    /// <summary>The property holds none of the values: every record but those holding one of them.</summary>
+    NoneOf,
 }
 
 /// <summary>
@@ -91,9 +94,19 @@ public sealed record ExplorerFilter
     /// <summary>The upper bound of a <see cref="ExplorerCondition.Range"/>, left out of it; null for a range open at the top.</summary>
     public string? To { get; init; }
 
-    /// <summary>Whether the condition keeps the records that do not match its comparison: <see cref="ExplorerCondition.IsNot"/> and <see cref="ExplorerCondition.Missing"/>.</summary>
+    /// <summary>
+    /// For a condition on a search term that reaches the record through other records (osdu/docs/search-terms.md): the
+    /// records its values find, or the record ids its key makes, which the node reads from the platform before it asks the
+    /// condition. The condition then compares <see cref="Path"/> with what was found. Null for a condition asked as it is.
+    /// </summary>
+    public ExplorerVia? Via { get; init; }
+
+    /// <summary>
+    /// Whether the condition keeps the records that do not match its comparison: <see cref="ExplorerCondition.IsNot"/>,
+    /// <see cref="ExplorerCondition.NoneOf"/> and <see cref="ExplorerCondition.Missing"/>.
+    /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool Excludes => Condition is ExplorerCondition.IsNot or ExplorerCondition.Missing;
+    public bool Excludes => Condition is ExplorerCondition.IsNot or ExplorerCondition.NoneOf or ExplorerCondition.Missing;
 
     /// <summary>
     /// The comparison as the search service reads it: what a record must hold to match it, or for a condition that
@@ -102,11 +115,16 @@ public sealed record ExplorerFilter
     /// <exception cref="OsduQueryException">The condition cannot be asked as given; the message says why.</exception>
     public OsduQuery Query()
     {
+        if (Via is not null)
+        {
+            throw new OsduQueryException($"the condition on {Via.Term ?? Path} is read through other records first, so it is asked once they are read.");
+        }
+
         var field = OsduField.Of(Path, Index, Nested);
         return Condition switch
         {
             ExplorerCondition.Is or ExplorerCondition.IsNot => OsduQuery.Equal(field, Required()),
-            ExplorerCondition.AnyOf => OsduQuery.AnyOf(field, Listed()),
+            ExplorerCondition.AnyOf or ExplorerCondition.NoneOf => OsduQuery.AnyOf(field, Listed()),
             ExplorerCondition.Contains => OsduQuery.Words(field, Required()),
             ExplorerCondition.StartsWith => OsduQuery.Prefix(field, Required()),
             ExplorerCondition.Range when Index == OsduFieldIndex.Boolean
@@ -128,11 +146,14 @@ public sealed record ExplorerFilter
         return Excludes ? $"NOT ({query})" : Condition == ExplorerCondition.AnyOf ? $"({query})" : query;
     }
 
+    /// <summary>The values the condition compares, as given: the list, else the one value; none for a condition that compares none.</summary>
+    internal IReadOnlyList<string> Compared() => Values ?? (Value is null ? [] : [Value]);
+
     private string Required() => Value ?? throw new OsduQueryException($"'{Path}' is compared with no value; name the value the condition compares.");
 
     private IReadOnlyList<string> Listed()
     {
-        var values = Values ?? (Value is null ? [] : [Value]);
+        var values = Compared();
         return values.Count > MaxValues
             ? throw new OsduQueryException($"'{Path}' is compared with {values.Count} values; a condition compares at most {MaxValues} at once.")
             : values;
@@ -280,12 +301,12 @@ public sealed record ExplorerSearch
 
             if (!Enum.IsDefined(filter.Condition))
             {
-                return "A condition is one of is, isNot, anyOf, contains, startsWith, range, exists or missing.";
+                return "A condition is one of is, isNot, anyOf, noneOf, contains, startsWith, range, exists or missing.";
             }
 
             try
             {
-                _ = filter.Clause();
+                _ = filter.Via is { } via ? via.Check(filter) : filter.Clause();
             }
             catch (OsduQueryException ex)
             {
@@ -370,9 +391,10 @@ public sealed record ExplorerSearch
         {
             ExplorerCondition.Exists => $"{filter.Path} holding a value",
             ExplorerCondition.Missing => $"{filter.Path} holding no value",
-            ExplorerCondition.AnyOf => $"{filter.Path} one of {values ?? $"'{Clip(filter.Value ?? string.Empty)}'"}",
+            ExplorerCondition.AnyOf => $"{filter.Via?.Term ?? filter.Path} one of {values ?? $"'{Clip(filter.Value ?? string.Empty)}'"}",
+            ExplorerCondition.NoneOf => $"{filter.Via?.Term ?? filter.Path} none of {values ?? $"'{Clip(filter.Value ?? string.Empty)}'"}",
             ExplorerCondition.Range => $"{filter.Path} from '{Clip(filter.Value ?? "*")}' up to '{Clip(filter.To ?? "*")}'",
-            _ => $"{filter.Path} {filter.Condition} '{Clip(filter.Value ?? string.Empty)}'",
+            _ => $"{filter.Via?.Term ?? filter.Path} {filter.Condition} '{Clip(filter.Value ?? string.Empty)}'",
         };
     }
 }
@@ -687,10 +709,11 @@ public sealed partial class RecordExplorer
             throw new DeliveryException(problem);
         }
 
+        var notes = new List<string>();
+        search = await ThroughOthersAsync(search, notes, ct).ConfigureAwait(false);
         var reading = Interpret(search, _partition);
         var kind = search.Kind ?? ExplorerKinds.Any;
         var aggregateBy = search.Facet?.AggregateBy();
-        var notes = new List<string>();
         var columns = search.Columns.Distinct(StringComparer.Ordinal).ToList();
         IReadOnlyList<string> returned = columns.Count == 0 ? Shown : [.. Shown.Union(columns, StringComparer.Ordinal)];
         var asked = await AskAsync(reading, search.Filters, kind, search.Sort, search.Offset, search.Limit, aggregateBy, returned, notes, ct).ConfigureAwait(false);
@@ -719,8 +742,9 @@ public sealed partial class RecordExplorer
             throw new DeliveryException(problem);
         }
 
-        var reading = Interpret(search with { Kind = null }, _partition);
         var notes = new List<string>();
+        search = await ThroughOthersAsync(search, notes, ct).ConfigureAwait(false);
+        var reading = Interpret(search with { Kind = null }, _partition);
         var asked = await AskAsync(reading, search.Filters, ExplorerKinds.Any, ExplorerSort.Relevance, 0, 1, "kind", ["id"], notes, ct).ConfigureAwait(false);
         var kinds = asked.Answer.Buckets
             .Where(b => !string.IsNullOrEmpty(b.Key))

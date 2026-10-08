@@ -3,7 +3,9 @@
 The explorer is a browser of what an OSDU partition holds, read live from OSDU's own search and storage services. It
 answers "what is in OSDU?", where the Records page answers "what did the delivery system do?". Nothing it shows comes
 from the ledger, a mapping, the cache or the catalog: the types, the records, their versions, their links and the
-records that mention them are what OSDU answers at that moment.
+records that mention them are what OSDU answers at that moment. The mappings' metadata only helps write a query: a
+search by a column of a source system ([search-terms.md](search-terms.md)) is carried to what the records hold the way a
+delivery carries it, and asked of OSDU like any other.
 
 It is the **Explorer** entry of the OSDU navigation group (`/delivery/explorer`), and it reads the partition the
 workbench's title bar names.
@@ -140,9 +142,15 @@ property, and each is a chip over the grid that reads as a sentence (`Equinor.We
   what it must hold, and the value. Under the value, the values the records in view hold there, the commonest first,
   each with how many records hold it; as a value is typed, those that start with it (in its case, as the index keeps
   the whole value) and those listed that hold it anywhere (in any case). A value listed is picked with a click (for
-  **is one of**, each click adds or drops one), and Enter in the value applies the condition.
+  **is one of** and **is none of**, each click adds or drops one), and Enter in the value applies the condition.
 - **A chip.** A click opens the editor on the condition to change it, the cross drops it, and **Clear all** drops every
   one. The conditions are part of the address, so a link brings them back.
+- **Source columns.** For a type or a kind, the editor lists first the columns of the source systems its delivery flows
+  read ([search-terms.md](search-terms.md)), by the names given them on the Search terms page: Recall's
+  `wellbore_uwi`, say, searched in `WellboreID`. A value is typed as the source holds it, and the control plane carries it
+  through the mapping (through the wellbore search the mapping makes, for `wellbore_uwi`) before OSDU is asked. Its chip
+  names the column, and the search field offers the columns searched in lately beside the properties. The record's
+  properties are offered as ever, after them.
 
 Each condition is written by `OsduQuery`, as the module's own lookups and filters are, the way the platform indexes the
 property:
@@ -152,6 +160,7 @@ property:
 | **contains** | text | its words, as a phrase anywhere in the value, in any case: `data.Equinor.WellboreName:"NO 34/10"` |
 | **is**, **is not** | any | the whole value, exactly: `data.Source.keyword:"Recall"`, `NOT (...)` |
 | **is one of** | any but a boolean | one of up to 50 whole values: `(data.Source.keyword:("Recall" OR "RECALL"))` |
+| **is none of** | any but a boolean | none of up to 50 whole values: `NOT (data.Source.keyword:("Recall" OR "RECALL"))` |
 | **starts with** | text, a keyword | the start of the whole value, in its case: `data.Equinor.WellboreName.keyword:NO\ 34\/10*` |
 | **is in a range** | a number, a date | from a value (included) up to another (not included), either end open: `data.TopMeasuredDepth:["1000" TO "2000"}` |
 | **has a value**, **has no value** | any | whether the property holds one: `_exists_:data.Equinor.FieldId`, `NOT (...)` |
@@ -456,8 +465,9 @@ flow's credentials takes the operate scope.
 ## Kept in the address
 
 The text and whether it is Lucene (`q`, `lq`), the place (`kind`, `*:*:*:*` for every type), the conditions (`f`, a
-JSON list of `{p, i, c, v, vs, t, n}`: the path, the index, the condition when not `is`, the value, the values, the upper
-bound and the nested list; a link made before conditions had names, `[path, index, value]`, still reads as **is**), the
+JSON list of `{p, i, c, v, vs, t, n, st}`: the path, the index, the condition when not `is`, the value, the values, the
+upper bound, the nested list and the search term the condition names; a link made before conditions had names,
+`[path, index, value]`, still reads as **is**), the
 order (`sort`), the types alone (`view=types`), the record open (`id`, and `v` for a version) and a dimension
 being built (`dim`) are the page's address, so a link, Back and a refresh land on the same view; a link naming
 a partition (`partition`) makes it the title bar's. What was read is kept for a minute and reused (the kinds of a whole
@@ -469,7 +479,7 @@ partition for ten), so going back to a type or a page already read shows it at o
 | --- | --- | --- |
 | `GET /api/v1/delivery/explorer/connection?partition=` | read | How the partition (else the workbench's, else the registry's default) is reached: `available`, `through` (the flow, `flow/interface` for a source's interface), `endpoint` as written, `route`, or `reason` when nothing reaches it. |
 | `POST /api/v1/delivery/explorer/types?partition=` | operate | The count of the records a search finds, kind by kind. Body: `text`, `lucene`, `mentions`, `filters`. |
-| `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters`, the conditions, at most 12 (`path`; `index` text, keyword, number, boolean or date; `nested`, the nested list it sits in; `condition` is, isNot, anyOf, contains, startsWith, range, exists or missing, `is` when left out; `value`; `values` for anyOf, at most 50; `to`, a range's upper bound); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`, `nested`) to group by; `columns`, at most 8 property paths whose values each hit carries as `values` (path to its first 20 values, each cut at 256 characters; a column a record holds nothing at is left out). |
+| `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters`, the conditions, at most 12 (`path`; `index` text, keyword, number, boolean or date; `nested`, the nested list it sits in; `condition` is, isNot, anyOf, noneOf, contains, startsWith, range, exists or missing, `is` when left out; `value`; `values` for anyOf and noneOf, at most 50; `to`, a range's upper bound; `term`, a search term's id in place of the property, its values the source's own ([search-terms.md](search-terms.md#searching-by-a-term))); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`, `nested`) to group by; `columns`, at most 8 property paths whose values each hit carries as `values` (path to its first 20 values, each cut at 256 characters; a column a record holds nothing at is left out). |
 | `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold ([The properties of a place](#the-properties-of-a-place)): `fields`, each `path`, `index`, `nested`, `origin` (record, schema or records), `title` and `description`; the `schemaKind` whose schema was read, how many records were `sampled`, the `sampleId`, and `notes`. |
 | `POST /api/v1/delivery/explorer/read?partition=` | operate | One record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
 | `POST /api/v1/delivery/explorer/validate?partition=` | operate | One record checked against the schema of its kind ([Validate](#validate)). Body: `targetId`, `version` (its latest when left out), `schema` (`osdu`, the default, for the Schema service's; `saved` for a saved template), `templateVersion` (with `saved`; the kind's newest when left out). Answers the `targetId`, the `version` checked, whether storage holds the record (`found`), its `kind`, the `schema` used (`kind`, `version`, `source` schema-service or template, the schema ids `read`, the references left `unresolved`, `notes`), the `verdict` as a record's history holds it, or why nothing was checked (`problem`), the template versions saved for the kind (`savedVersions`, newest first), and the `guidance`: one guide per problem and per part not checked, in the verdict's order (`path`, `rule`, the value `found`, the `advice`, and the key of what is `expected` there), the `expectations` by that key (`summary`, `title`, `description`, `types`, `required`, `patterns`, `allowed` and `allowedCount`, `formats`, the bounds, `entityTypes`, `properties`, `items`, `forms`, the schema's `examples`, `osduExample`), the data definitions' `example` quoted (`release`, `path`, `webUrl`), or the `exampleNote` saying why none is. |

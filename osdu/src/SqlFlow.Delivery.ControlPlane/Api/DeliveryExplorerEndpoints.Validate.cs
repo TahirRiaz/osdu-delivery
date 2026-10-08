@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using SqlFlow.Catalog;
 using SqlFlow.ControlPlane.Api;
 using SqlFlow.Delivery.Catalog;
+using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Engine.Search;
@@ -16,6 +17,8 @@ using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
+using SqlFlow.Delivery.SearchTerms;
+using SqlFlow.Delivery.Templates;
 
 namespace SqlFlow.Delivery.ControlPlane.Api;
 
@@ -137,10 +140,19 @@ public static partial class DeliveryExplorerEndpoints
     /// </summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> ValidateListAsync(
         DeliveryExplorerValidateListRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
-        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
+        ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user,
+        OsduDbContext osdu, ITemplateStore templates, TimeProvider clock, CancellationToken ct)
     {
         var asked = body ?? new DeliveryExplorerValidateListRequest();
-        var (search, invalid) = SearchOf((asked.Search ?? new DeliveryExplorerSearchRequest()) with { Offset = null, Limit = null, Facet = null });
+        var searched = (asked.Search ?? new DeliveryExplorerSearchRequest()) with { Offset = null, Limit = null, Facet = null };
+        var (terms, failure) = await TermsOfAsync(
+            searched, partition, db, documents, partitions, ledger, request, new SearchTermDirectory(osdu, templates, documents, clock), ct).ConfigureAwait(false);
+        if (failure is not null)
+        {
+            return failure;
+        }
+
+        var (search, invalid) = SearchOf(searched, terms);
         if (search is null)
         {
             return DeliveryEndpoints.Invalid(invalid!);

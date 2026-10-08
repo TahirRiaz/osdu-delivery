@@ -1131,6 +1131,101 @@ public sealed class DeliveryReversalItem
     public DateTime UpdatedUtc { get; set; }
 }
 
+/// <summary>
+/// A search term a repository's mappings give (osdu/docs/search-terms.md): a column of a source system that the mappings of
+/// the repository's active delivery flows read, with every route by which it reaches the records they render. The sync
+/// writes the rows again whenever it runs, from the mappings the flows pin; what a person makes of a term is kept apart, in
+/// <see cref="DeliverySearchTermRefinement"/>, by the term's identity, so a sync never undoes it.
+/// </summary>
+public sealed class DeliverySearchTerm
+{
+    /// <summary>The longest source system, entity type, dataset and column a term names.</summary>
+    public const int MaxSystemLength = 100;
+
+    public const int MaxEntityTypeLength = 200;
+
+    public const int MaxDatasetLength = 128;
+
+    public const int MaxColumnLength = 128;
+
+    /// <summary>Stable id: derived from the repo id and the term's key.</summary>
+    public Guid Id { get; set; }
+
+    public Guid RepoId { get; set; }
+
+    /// <summary>The term's identity, the same in every repository and on every host: derived from its key alone.</summary>
+    public Guid TermId { get; set; }
+
+    /// <summary>The term's key as text: <c>recall/work-product-component--WellLog/curves/curve_unit</c>.</summary>
+    public string TermKey { get; set; } = string.Empty;
+
+    /// <summary>The source system (<c>dataset.system</c>), in lower case.</summary>
+    public string System { get; set; } = string.Empty;
+
+    /// <summary>The entity type the mappings fill (<c>work-product-component--WellLog</c>).</summary>
+    public string EntityType { get; set; } = string.Empty;
+
+    /// <summary>The child dataset whose rows hold the column; null for the dataset's own row.</summary>
+    public string? Dataset { get; set; }
+
+    /// <summary>The column as the mappings name it.</summary>
+    public string Column { get; set; } = string.Empty;
+
+    /// <summary>The routes by which the column reaches the record, as JSON (<c>SearchRoute</c>).</summary>
+    public string RoutesJson { get; set; } = "[]";
+
+    /// <summary>The active delivery flows whose mappings read the column, as a JSON list of names.</summary>
+    public string FlowsJson { get; set; } = "[]";
+
+    public DateTime FirstSeenUtc { get; set; }
+
+    public DateTime LastSeenUtc { get; set; }
+}
+
+/// <summary>
+/// What a person made of a search term (osdu/docs/search-terms.md): the name it is searched by, whether it is left out of
+/// the search, which of its routes it is searched through, and a note on it, with who changed it last and when. Kept by the
+/// term's identity, apart from the terms a sync writes, so it holds across every sync and every mapping version that keeps
+/// the column; one whose term no mapping gives any longer stays until it is removed, and applies again if the term comes
+/// back.
+/// </summary>
+public sealed class DeliverySearchTermRefinement
+{
+    /// <summary>The longest name a term is given, and the longest note on it.</summary>
+    public const int MaxNameLength = 100;
+
+    public const int MaxNoteLength = 1000;
+
+    /// <summary>The longest route id: a template variable and how the value reaches it.</summary>
+    public const int MaxRouteLength = 1100;
+
+    /// <summary>The term refined (<see cref="DeliverySearchTerm.TermId"/>).</summary>
+    public Guid TermId { get; set; }
+
+    /// <summary>The term's key when it was refined, which names it while no mapping gives it.</summary>
+    public string TermKey { get; set; } = string.Empty;
+
+    /// <summary>The entity type the term searches, within which no two terms share a name.</summary>
+    public string EntityType { get; set; } = string.Empty;
+
+    /// <summary>The name the term is searched by; null to keep the column's own.</summary>
+    public string? Name { get; set; }
+
+    /// <summary>True when the term is left out of the search.</summary>
+    public bool Excluded { get; set; }
+
+    /// <summary>The route the term is searched through (<c>SearchRoute.Id</c>); null for the one the explorer prefers.</summary>
+    public string? Route { get; set; }
+
+    /// <summary>A note on the term, shown beside it wherever it is offered; null for none.</summary>
+    public string? Note { get; set; }
+
+    /// <summary>Who changed the refinement last.</summary>
+    public string UpdatedBy { get; set; } = string.Empty;
+
+    public DateTime UpdatedUtc { get; set; }
+}
+
 /// <summary>A mapping document as the sync found it in a repository: the read model behind the mappings page.</summary>
 public sealed class DeliveryMapping
 {
@@ -2401,6 +2496,9 @@ public static class DeliveryModel
     /// <summary>The widest data-partition-id, as every table that names a partition keeps it.</summary>
     public const int MaxPartitionLength = 200;
 
+    /// <summary>The longest search term key: its source system, entity type, dataset and column (osdu/docs/search-terms.md).</summary>
+    public const int SearchTermKeyLength = 600;
+
     /// <summary>
     /// The collation of the columns that key on an OSDU record id. OSDU ids are case-sensitive:
     /// <c>...UnitOfMeasure:ft</c> (the foot) and <c>...UnitOfMeasure:fT</c> (the femtotesla) are two records, and SQL
@@ -3162,6 +3260,36 @@ public static class DeliveryModel
             e.HasIndex(m => new { m.RepoId, m.Kind });
             // A template delete asks which mappings pin the version.
             e.HasIndex(m => new { m.Kind, m.TemplateVersion });
+        });
+
+        modelBuilder.Entity<DeliverySearchTerm>(e =>
+        {
+            e.ToTable("SearchTerm", SchemaName);
+            e.HasKey(t => t.Id);
+            e.Property(t => t.TermKey).HasMaxLength(SearchTermKeyLength).IsRequired();
+            e.Property(t => t.System).HasMaxLength(DeliverySearchTerm.MaxSystemLength).IsRequired();
+            e.Property(t => t.EntityType).HasMaxLength(DeliverySearchTerm.MaxEntityTypeLength).IsRequired();
+            e.Property(t => t.Dataset).HasMaxLength(DeliverySearchTerm.MaxDatasetLength);
+            e.Property(t => t.Column).HasMaxLength(DeliverySearchTerm.MaxColumnLength).IsRequired();
+            e.Property(t => t.RoutesJson).IsRequired();
+            e.Property(t => t.FlowsJson).IsRequired();
+            e.HasIndex(t => new { t.RepoId, t.TermId }).IsUnique();
+            // The search terms page and the explorer list the terms of one entity type, from every repository.
+            e.HasIndex(t => new { t.EntityType, t.TermId });
+        });
+
+        modelBuilder.Entity<DeliverySearchTermRefinement>(e =>
+        {
+            e.ToTable("SearchTermRefinement", SchemaName);
+            e.HasKey(r => r.TermId);
+            e.Property(r => r.TermKey).HasMaxLength(SearchTermKeyLength).IsRequired();
+            e.Property(r => r.EntityType).HasMaxLength(DeliverySearchTerm.MaxEntityTypeLength).IsRequired();
+            e.Property(r => r.Name).HasMaxLength(DeliverySearchTermRefinement.MaxNameLength);
+            e.Property(r => r.Route).HasMaxLength(DeliverySearchTermRefinement.MaxRouteLength);
+            e.Property(r => r.Note).HasMaxLength(DeliverySearchTermRefinement.MaxNoteLength);
+            e.Property(r => r.UpdatedBy).HasMaxLength(200).IsRequired();
+            // A name is the term's within its entity type: a rename checks it is free there.
+            e.HasIndex(r => new { r.EntityType, r.Name });
         });
 
         modelBuilder.Entity<DeliveryInterface>(e =>

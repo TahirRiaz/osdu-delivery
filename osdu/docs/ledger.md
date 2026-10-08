@@ -556,6 +556,29 @@ Saving a schema that is already saved adds no row. A version is deleted only whi
 (the `(Kind, TemplateVersion)` index answers that), so a template a synced mapping pins cannot be removed from under
 it.
 
+### `osdu.SearchTerm` and `osdu.SearchTermRefinement`: search terms
+
+The columns of the source systems the mappings of active delivery flows read, each with the routes by which it reaches
+the records, and what people made of them ([search-terms.md](search-terms.md)). `osdu.SearchTerm` is a read model the
+repository sync writes, in its transaction, from the interfaces, mappings and cache declarations above; the control
+plane writes it again once when it starts. `osdu.SearchTermRefinement` is written by the Search terms page alone, and
+never by a sync.
+
+| Column | Purpose |
+| --- | --- |
+| `SearchTerm.Id` | Primary key, derived from the repository and the term's key. |
+| `SearchTerm.RepoId`, `TermId`, `TermKey` | The repository, and the term's identity: a UUIDv5 of its key text (`recall/work-product-component--WellLog/curves/curve_unit`), the same in every repository and on every host. Unique on `(RepoId, TermId)`. |
+| `SearchTerm.System`, `EntityType`, `Dataset`, `Column` | The key's parts: the source system in lower case, the entity type the mappings fill, the child dataset (null for the dataset's own row) and the column. Indexed on `(EntityType, TermId)`, which the page and the explorer read a type's terms by. |
+| `SearchTerm.RoutesJson`, `FlowsJson` | The routes as JSON (each its target, path, kind, mappings, location, steps, what they keep, the records a lookup or a search finds, the key's columns, and why it cannot be searched), and the active delivery flows whose mappings read the column. |
+| `SearchTerm.FirstSeenUtc`, `LastSeenUtc` | When a sync first and last wrote the term; a term no mapping gives any longer is deleted by the next sync. |
+| `SearchTermRefinement.TermId` | Primary key: the term's identity, so what was made of it holds across syncs, mapping versions and repositories. |
+| `SearchTermRefinement.TermKey`, `EntityType` | The term it was made for, so it is listed while no sync gives the term. Indexed on `(EntityType, Name)`. |
+| `SearchTermRefinement.Name`, `Note`, `Excluded`, `Route` | The name the term is searched by (null for the column's own), a note, whether the explorer leaves it out, and the route picked (null for the plainest that can be searched). |
+| `SearchTermRefinement.UpdatedBy`, `UpdatedUtc` | Who changed it last, and when. |
+
+No foreign key reaches SQLFlow's tables: `RepoId` is a plain id, and a repository's terms are rewritten by each of its
+syncs. The tables came with `20261008170839_SearchTerms` (module version 1.32.0).
+
 ## Record lifecycle
 
 ```text

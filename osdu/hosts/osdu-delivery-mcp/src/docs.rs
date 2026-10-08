@@ -143,6 +143,16 @@ const SOURCES: &[Source] = &[
         text: osdu_doc!("dimension-plan.md"),
     },
     Source {
+        id: "delivery-search-terms",
+        title: "Search terms",
+        doc_type: "guide",
+        path: "osdu/docs/search-terms.md",
+        summary: "Search terms: the source columns the mappings of active delivery flows read, extracted at sync with their routes to the record, refined on the Search terms page, and searched in the explorer with the source's values carried through the mapping.",
+        keywords: &["search term", "source column", "column", "route", "refine", "rename", "exclude", "explorer", "lookup", "search", "key"],
+        verbs: false,
+        text: osdu_doc!("search-terms.md"),
+    },
+    Source {
         id: "delivery-explorer",
         title: "The explorer",
         doc_type: "guide",

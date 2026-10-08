@@ -311,8 +311,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
     }
 
     /// <summary>
-    /// Reconciles the repository's mapping documents and cache declarations into <paramref name="context"/>: the one write the
-    /// sync extension makes, on whatever connection and transaction the context was opened with.
+    /// Reconciles the repository's mapping documents, cache declarations, interfaces and search terms into
+    /// <paramref name="context"/>: the one write the sync extension makes, on whatever connection and transaction the context
+    /// was opened with.
     /// </summary>
     public async Task<CatalogSyncExtensionResult> ReconcileAsync(
         OsduDbContext context, Guid repoId, string root, DateTime nowUtc, ICollection<string> warnings, CancellationToken ct)
@@ -324,6 +325,9 @@ public sealed class DeliveryCatalogSync : ICatalogSyncExtension
         var mappings = await SyncMappingsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
         var caches = await SyncCacheDefinitionsAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
         var interfaces = await SyncInterfacesAsync(context, repoId, root, nowUtc, warnings, ct).ConfigureAwait(false);
+        // The search terms are read from the rows the passes above wrote: the interfaces' mappings and the cached types. They
+        // are derived from the documents counted above, so the sync's counts stay the documents'; their warnings are reported.
+        await DeliverySearchTermCatalog.ReconcileAsync(context, repoId, _documents, nowUtc, warnings, ct).ConfigureAwait(false);
         return mappings.Add(caches).Add(interfaces);
     }
 

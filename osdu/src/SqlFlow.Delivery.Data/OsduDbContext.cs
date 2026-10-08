@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.31.0";
+    public const string ModuleVersion = "1.32.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -117,6 +117,12 @@ public sealed class OsduDbContext : DbContext
     public DbSet<DeliveryDimensionChange> DeliveryDimensionChanges => Set<DeliveryDimensionChange>();
 
     public DbSet<DeliveryMapping> DeliveryMappings => Set<DeliveryMapping>();
+
+    /// <summary>The search terms the mappings of active delivery flows give, written by every sync (osdu/docs/search-terms.md).</summary>
+    public DbSet<DeliverySearchTerm> DeliverySearchTerms => Set<DeliverySearchTerm>();
+
+    /// <summary>What people made of search terms: their names, whether they are left out, the route each is searched through.</summary>
+    public DbSet<DeliverySearchTermRefinement> DeliverySearchTermRefinements => Set<DeliverySearchTermRefinement>();
 
     public DbSet<DeliveryInterface> DeliveryInterfaces => Set<DeliveryInterface>();
 

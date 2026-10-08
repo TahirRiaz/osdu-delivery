@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { Braces, CornerDownLeft, History, ListFilter, Search, TextSearch, Trash2, X } from "lucide-react";
+import { Braces, Columns3, CornerDownLeft, History, ListFilter, Search, TextSearch, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -10,17 +10,27 @@ import { isRecordReference } from "../osduDocument";
 import { idParts } from "../osduRecordModel";
 import { nestedLabel } from "./explorerFields";
 import { CONDITION_LABELS, fieldLabel, forgetRecentRecords, kindParts, recentRecords, searchInCondition, type RecentRecord } from "./explorerModel";
+import { termSearchInCondition, termTitle, type OfferedTerm } from "./explorerTerms";
 
 /** What a search field offers beside searching every property: the text searched in one property, picked under it or in the editor. */
 export interface SearchIn {
   /** The properties offered first, the likeliest first. */
   choices: ExplorerFieldInfo[];
+  /**
+   * The source columns (search terms, osdu/docs/search-terms.md) offered after the properties: those searched in lately for
+   * the type. None where the place is of many types.
+   */
+  terms?: OfferedTerm[];
+  /** Whether the type has source columns to search in, which the editor lists beside its properties. */
+  hasTerms?: boolean;
   /** Whether the properties are still being read. */
   reading: boolean;
   /** Called as the reader types, so the properties are read only once they may be wanted. */
   onWanted: () => void;
   /** Searches the text in one property, as a condition of the list. */
   onSearchIn: (field: ExplorerFieldInfo, text: string) => void;
+  /** Searches the text in one source column, as a condition of the list, the text as the source holds it. */
+  onSearchInTerm?: (term: OfferedTerm, text: string) => void;
   /** Opens the condition editor with the text, to pick the property it is searched in. */
   onChoose: (text: string) => void;
 }
@@ -86,7 +96,8 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
   const [active, setActive] = useState(0);
   const listId = useId();
   const offering = searchIn !== undefined && hasFocus && !dismissed && typed !== "" && !asLucene && !opens;
-  const options = offering ? searchIn.choices.length + 2 : 0;
+  const termChoices = searchIn?.onSearchInTerm === undefined ? [] : searchIn.terms ?? [];
+  const options = offering ? searchIn.choices.length + termChoices.length + 2 : 0;
   const highlighted = Math.min(active, Math.max(options - 1, 0));
   // The search the field shows is still the list's until it is cleared: an emptied field says Enter clears it.
   const searched = text !== "";
@@ -102,7 +113,8 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
     }
   };
 
-  // The options after the first: each property offered, then another property, picked in the condition editor.
+  // The options after the first: each property offered, each source column offered, then another property or column,
+  // picked in the condition editor.
   const pickOption = (option: number) => {
     if (searchIn === undefined) {
       return;
@@ -111,8 +123,11 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
     setDismissed(true);
     // The text is the condition's from here (or the editor's, to pick its property in), not the field's to search with.
     setDraft("");
-    if (option <= searchIn.choices.length) {
+    const fields = searchIn.choices.length;
+    if (option <= fields) {
       searchIn.onSearchIn(searchIn.choices[option - 1], typed);
+    } else if (option <= fields + termChoices.length) {
+      searchIn.onSearchInTerm?.(termChoices[option - fields - 1], typed);
     } else {
       searchIn.onChoose(typed);
     }
@@ -218,6 +233,7 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
           id={listId}
           typed={typed}
           searchIn={searchIn}
+          terms={termChoices}
           highlighted={highlighted}
           onHighlight={setActive}
           onEverywhere={() => { setDismissed(true); onSearch(typed, false); }}
@@ -231,15 +247,17 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
 
 /**
  * The options under a search field as text is typed: the text searched in every property (what Enter does), in one of the
- * properties offered (those searched in lately for the type, then the record's name), or in another property, picked in
- * the condition editor. Text searched in one property becomes a condition of the list, said beside it: its words for text,
- * its start for a keyword, its whole value otherwise. The arrow keys move among the options and Enter takes the one lit;
- * the field keeps the cursor, since a press on an option does not take it.
+ * properties offered (those searched in lately for the type, then the record's name), in one of the source columns searched
+ * in lately, or in another property or column, picked in the condition editor. Text searched in one property becomes a
+ * condition of the list, said beside it: its words for text, its start for a keyword, its whole value otherwise; in a source
+ * column, as the column's route allows. The arrow keys move among the options and Enter takes the one lit; the field keeps
+ * the cursor, since a press on an option does not take it.
  */
-function SearchInOptions({ id, typed, searchIn, highlighted, onHighlight, onEverywhere, onPick, testId }: {
+function SearchInOptions({ id, typed, searchIn, terms, highlighted, onHighlight, onEverywhere, onPick, testId }: {
   id: string;
   typed: string;
   searchIn: SearchIn;
+  terms: OfferedTerm[];
   highlighted: number;
   onHighlight: (option: number) => void;
   onEverywhere: () => void;
@@ -287,10 +305,24 @@ function SearchInOptions({ id, typed, searchIn, highlighted, onHighlight, onEver
           {nestedLabel(field.nested) !== null && <span className="shrink-0 rounded-sm border px-1 text-[10px] text-muted-foreground">in {nestedLabel(field.nested)}</span>}
         </>
       ), "field", [field.path, field.title, field.description].filter(Boolean).join("\n")))}
-      {option(searchIn.choices.length + 1, () => onPick(searchIn.choices.length + 1), (
+      {terms.length > 0 && <div className="px-2 pt-1.5 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Search in a source column</div>}
+      {terms.map((term, at) => option(searchIn.choices.length + at + 1, () => onPick(searchIn.choices.length + at + 1), (
+        <>
+          <Columns3 className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate">
+            <span>{term.term.name}</span>
+            <span className="text-muted-foreground"> {CONDITION_LABELS[termSearchInCondition(term.route)]} </span>
+            <span className="font-medium">{typed}</span>
+          </span>
+          {term.showSystem && <span className="shrink-0 rounded-sm border px-1 text-[10px] text-muted-foreground">{term.term.system}</span>}
+        </>
+      ), "term", termTitle(term)))}
+      {option(searchIn.choices.length + terms.length + 1, () => onPick(searchIn.choices.length + terms.length + 1), (
         <>
           <ListFilter className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate text-muted-foreground">{searchIn.reading ? "Reading the properties..." : "Search in another property..."}</span>
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">
+            {searchIn.reading ? "Reading the properties..." : searchIn.hasTerms ? "Search in another property or source column..." : "Search in another property..."}
+          </span>
         </>
       ), "choose")}
     </div>

@@ -27,7 +27,7 @@ export type ExplorerSort = "relevance" | "modified" | "created";
  * What a condition asks of a property: its whole value is (or is not) one value or one of several, its text contains
  * words (any case), its whole value starts with a text (exact case), a value in a range, or whether it holds a value.
  */
-export type ExplorerCondition = "is" | "isNot" | "anyOf" | "contains" | "startsWith" | "range" | "exists" | "missing";
+export type ExplorerCondition = "is" | "isNot" | "anyOf" | "noneOf" | "contains" | "startsWith" | "range" | "exists" | "missing";
 
 /** A condition a page narrows to: a property, how the platform indexes it, and what it must hold. */
 export interface ExplorerFilter {
@@ -43,6 +43,11 @@ export interface ExplorerFilter {
   values?: string[];
   /** A range's upper bound, left out of it. */
   to?: string;
+  /**
+   * A search term (osdu/docs/search-terms.md) the condition names in place of the property: its values are the source's
+   * own, and the control plane turns it into the condition on the property `path` names, the one the term's route fills.
+   */
+  term?: string;
 }
 
 /** What the explorer asks of OSDU. */

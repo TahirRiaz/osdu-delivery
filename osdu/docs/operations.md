@@ -195,6 +195,7 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `POST /flows/{pipelineId}/osdu/read` | operate | Read any OSDU record by `targetId` through the flow's route and credentials, and answer with it: a record a document refers to, which the ledger may never have delivered. A version or the trailing colon of a reference is dropped, and the record is read at its latest version. An id that is not `partition:group--Entity:unique` is refused with 400. Nothing is written. |
 | `POST /flows/{pipelineId}/osdu/validate` | operate | Check any OSDU record by `targetId` against the schema of its kind as the explorer checks one ([explorer.md](explorer.md#validate)), read through the flow's route and credentials: the Validation of a record page's OSDU tab. Body and answer as `/explorer/validate`. A flow whose route keeps no record in storage (dspdm, etp) is refused with 409. Nothing is written. |
 | `GET /explorer/connection`, `POST /explorer/types`, `/explorer/search`, `/explorer/fields`, `/explorer/read` | read; operate | The explorer ([explorer.md](explorer.md#the-api)): how a partition of OSDU is reached, and the reads made of it there through a delivery flow's connection (the kinds a search finds with their counts, a page of the records it finds, the properties a kind's records hold, one record from the storage service). Nothing is written, and nothing the ledger keeps is read. |
+| `GET /search-terms`, `/search-terms/entity-types`, `/search-terms/{termId}`; `PUT /search-terms/{termId}`, `DELETE /search-terms/{termId}/refinement` | read; author | The search terms ([search-terms.md](search-terms.md#the-api)): the columns of the source systems the mappings of active delivery flows read, each with its routes to the record and whether it can be searched, and what people made of them (a name, a note, left out of the explorer, a route picked), kept and reset. A condition of an explorer search names a term by `term` in place of a property. |
 | `POST /explorer/element-queries` | operate | The Lucene queries that find records by an element of a record, written from how the saved template of its kind has the platform index it, each said in words ([explorer.md](explorer.md#the-query-of-an-element)). Read from the saved templates alone. |
 | `GET /explorer/dimension/candidates`, `POST /explorer/dimension/keys`, `/explorer/dimension/compose` | operate | The explorer's dimension builder ([explorer.md](explorer.md#building-a-dimension)): the keys a kind's saved template suggests, the commonest keys of a drafted dimension's path read through the explorer's connection, and the draft written as the item a dimension flow lists, read back by the flow loader, checked against the saved templates and the dimensions held, with an example key made into its row as a build makes it. Nothing is saved: the YAML is the answer. |
 | `POST /records/{flowId}/{key}/delete` | operate | Queue a removal of one record (`scope`: `record`, `previous`, `history` or `everything`) on a node. `purgeLedger: true`, with `record` or `everything`, also deletes it from the ledger once OSDU answered for it ([ledger.md](ledger.md#deleting-a-removed-record-from-the-ledger)); with the other scopes it is refused with 400. |
@@ -701,7 +702,7 @@ read from.
 ## The GUI
 
 Everything this product adds sits in one navigation group, **OSDU**, straight after the platform's Workspace group:
-Delivery, Records, Explorer, Tests, Audit trail, Mappings, Templates, Cache, Dimensions, Partitions and Mapping builder. The platform's own groups (Operate,
+Delivery, Records, Explorer, Search terms, Tests, Audit trail, Mappings, Templates, Cache, Dimensions, Partitions and Mapping builder. The platform's own groups (Operate,
 Workspace, Tools, Explore) hold only its generic surfaces, so a delivery flow's own page is still reached through
 Pipelines like any other flow.
 
@@ -744,7 +745,13 @@ Pipelines like any other flow.
   the query that finds exactly it (a value, a list, an object, a nested list's item). **Build a dimension** docks the
   dimension builder beside the records, the workbench's side bar folded meanwhile: the key, the value and the attributes
   are picked on the values as the records are browsed and drilled into, and the YAML a dimension flow lists is written
-  and checked as a flow's own ([explorer.md](explorer.md#building-a-dimension)).
+  and checked as a flow's own ([explorer.md](explorer.md#building-a-dimension)). Beside the record's properties, the
+  explorer searches by the columns of the source systems the delivery flows read, a value typed as the source holds it.
+- **Search terms** (OSDU): the columns of the source systems the mappings of active delivery flows read, by entity type,
+  each with the property it is searched in and how a value gets there, extracted by every repository sync
+  ([search-terms.md](search-terms.md)). A term is renamed to what the people searching call it, left out of the explorer,
+  searched through another of its routes, or given a note; what is made of it holds across syncs, and **Reset** gives it
+  back as its mappings give it.
 - **A flow's page** (Pipelines): the Delivery tab (stats, probe the target, release blocked, sync timelines, and
   **Delete ledger**, which removes every record of every interface from OSDU and then deletes the ledgers whole once the
   partition is typed back, [ledger.md](ledger.md#deleting-the-ledger)),

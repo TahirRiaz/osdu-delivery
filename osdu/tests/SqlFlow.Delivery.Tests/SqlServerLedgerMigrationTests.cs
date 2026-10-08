@@ -57,6 +57,9 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before deliveries recorded what they created in OSDU, to undo it when they do not complete.</summary>
     private const string BeforeArtifacts = "20261007232509_PurgedRecordRecency";
 
+    /// <summary>The migration before the search terms the syncs extract from mappings, and what people make of them.</summary>
+    private const string BeforeSearchTerms = "20261008132311_InventoryRemovals";
+
     /// <summary>The tables of reversals, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] ReversalTables = ["Reversal", "ReversalItem"];
 
@@ -980,6 +983,41 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(0L, await database.ScalarAsync(Table));
         await database.MigrateAsync(null);
         Assert.Equal(1L, await database.ScalarAsync(Table));
+    }
+
+    [Fact]
+    public async Task The_tables_of_search_terms_and_their_refinements_are_added_and_go_back_with_the_migration()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeSearchTerms);
+        const string Tables = "SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name IN (N'SearchTerm', N'SearchTermRefinement');";
+        Assert.Equal(0L, await database.ScalarAsync(Tables));
+
+        await database.MigrateAsync(null);
+
+        Assert.Equal(2L, await database.ScalarAsync(Tables));
+        Assert.Equal("Id", (await database.PrimaryKeyAsync("SearchTerm"))[0]);
+        Assert.Equal("TermId", (await database.PrimaryKeyAsync("SearchTermRefinement"))[0]);
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, ["SearchTerm", "SearchTermRefinement"]), await database.IndexesAsync(["SearchTerm", "SearchTermRefinement"]));
+        }
+
+        // A repository gives a term once: a second row of the same term in the same repository is refused.
+        const string Insert = """
+            INSERT INTO [osdu].[SearchTerm] ([Id], [RepoId], [TermId], [TermKey], [System], [EntityType], [Column], [RoutesJson], [FlowsJson], [FirstSeenUtc], [LastSeenUtc])
+            VALUES (NEWID(), @repo, @term, N'recall/work-product-component--WellLog//log_run', N'recall', N'work-product-component--WellLog', N'log_run', N'[]', N'[]', SYSUTCDATETIME(), SYSUTCDATETIME());
+            """;
+        var repo = Guid.NewGuid();
+        var term = Guid.NewGuid();
+        await database.ExecuteAsync(Insert, ("repo", repo), ("term", term));
+        var second = await Assert.ThrowsAsync<SqlException>(() => database.ExecuteAsync(Insert, ("repo", repo), ("term", term)));
+        Assert.Equal(2601, second.Number);
+
+        await database.MigrateAsync(BeforeSearchTerms);
+        Assert.Equal(0L, await database.ScalarAsync(Tables));
+        await database.MigrateAsync(null);
+        Assert.Equal(2L, await database.ScalarAsync(Tables));
     }
 
     /// <summary>

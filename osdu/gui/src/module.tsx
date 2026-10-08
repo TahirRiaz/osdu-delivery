@@ -1,6 +1,6 @@
 import {
   ClipboardList, CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch, PencilRuler,
-  ScrollText, Shapes, ShieldCheck, Telescope, Workflow,
+  ScrollText, Shapes, ShieldCheck, Telescope, TextSearch, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
 import type { Column } from "@/components/DataTable";
@@ -40,6 +40,7 @@ const AssertionReportPage = lazyRoute("AssertionReportPage", () => import("./fea
 const DeliveryDimensionsPage = lazyRoute("DeliveryDimensionsPage", () => import("./features/delivery/dimensions/DeliveryDimensionsPage"));
 const DeliveryInventoriesPage = lazyRoute("DeliveryInventoriesPage", () => import("./features/delivery/inventories/DeliveryInventoriesPage"));
 const ExplorerPage = lazyRoute("ExplorerPage", () => import("./features/delivery/explorer/ExplorerPage"));
+const SearchTermsPage = lazyRoute("SearchTermsPage", () => import("./features/delivery/searchTerms/SearchTermsPage"));
 
 const DeliveryFlowPanel = lazyRoute(
   "DeliveryFlowPanel",
@@ -335,6 +336,7 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/inventories", component: DeliveryInventoriesPage },
     // What OSDU holds, read live from it through a flow's credentials, which takes the operate scope.
     { path: "/delivery/explorer", component: ExplorerPage, requiredScope: "operate" },
+    { path: "/delivery/search-terms", component: SearchTermsPage },
   ],
   // Everything this product adds is one group of its own, rather than entries threaded through the platform's generic
   // ones. It sits straight after Workspace, and its entries read in the order the work is done: what has been delivered,
@@ -348,6 +350,7 @@ export const osduDeliveryModule: GuiModule = {
     { group: OSDU_GROUP, label: "Delivery", to: "/delivery", icon: PackageCheck, testId: "nav-delivery" },
     { group: OSDU_GROUP, label: "Records", to: "/delivery/records", icon: PackageSearch, testId: "nav-delivery-records" },
     { group: OSDU_GROUP, label: "Explorer", to: "/delivery/explorer", icon: Telescope, testId: "nav-delivery-explorer" },
+    { group: OSDU_GROUP, label: "Search terms", to: "/delivery/search-terms", icon: TextSearch, testId: "nav-delivery-search-terms" },
     { group: OSDU_GROUP, label: "Tests", to: "/delivery/assertions", icon: ListChecks, testId: "nav-delivery-assertions" },
     { group: OSDU_GROUP, label: "Audit trail", to: "/delivery/activity", icon: ScrollText, testId: "nav-delivery-activity" },
     { group: OSDU_GROUP, label: "Mappings", to: "/delivery/documents", icon: FileCode2, testId: "nav-delivery-documents" },

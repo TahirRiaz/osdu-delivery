@@ -9,6 +9,7 @@ using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Engine.Protocols;
 using SqlFlow.Delivery.Engine.Search;
 using SqlFlow.Delivery.Http;
+using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Search;
 using Xunit;
@@ -542,6 +543,139 @@ public class RecordExplorerTests
         // A page with no columns carries no values.
         var plain = RecordExplorer.Hit(new JsonObject { ["id"] = Wellbore }, []);
         Assert.Null(plain!.Values);
+    }
+
+    /// <summary>A condition on wellbores by name, read through the wellbores the name finds, as a search term's lookup reads it.</summary>
+    private static ExplorerFilter ThroughWellbores(ExplorerCondition condition, string value) => new()
+    {
+        Path = "data.WellboreID",
+        Condition = condition,
+        Value = value,
+        Via = new ExplorerVia
+        {
+            Term = "Wellbore name",
+            Kind = "osdu:wks:master-data--Wellbore:*",
+            Match = [new ExplorerField { Path = "data.FacilityName" }],
+            Read = new ExplorerField { Path = "id", Index = OsduFieldIndex.Keyword },
+        },
+    };
+
+    /// <summary>Whether a search request asks for wellbores: its kind names them, whatever its query names.</summary>
+    private static bool SearchesWellbores(string body) => JsonNode.Parse(body)?["kind"]?.GetValue<string>() == "osdu:wks:master-data--Wellbore:*";
+
+    [Fact]
+    public async Task A_condition_through_other_records_finds_them_first_and_compares_the_ids_they_are_named_by()
+    {
+        var handler = new FakeHttpHandler()
+            .OnMatch(r => SearchesWellbores(Body(r)), _ => FakeHttpHandler.Json(HttpStatusCode.OK, Result(2, "dev:master-data--Wellbore:W1", "dev:master-data--Wellbore:W2")))
+            .OnMatch(_ => true, _ => FakeHttpHandler.Json(HttpStatusCode.OK, Result(4, "dev:work-product-component--WellLog:L1")));
+        var (explorer, runtime) = Explorer(handler);
+        using (runtime)
+        {
+            var search = new ExplorerSearch { Kind = "*:*:work-product-component--WellLog:*", Filters = [ThroughWellbores(ExplorerCondition.Contains, "NO 34")] };
+            var page = await explorer.SearchAsync(search, CancellationToken.None);
+
+            // The wellbores first, by their name's words; then the logs naming one of them, in the reference form a log writes.
+            Assert.Equal("(data.WellboreID.keyword:(\"dev:master-data--Wellbore:W1:\" OR \"dev:master-data--Wellbore:W2:\"))", page.Query);
+            Assert.Equal(4, page.Total);
+            var note = Assert.Single(page.Notes);
+            Assert.StartsWith("Wellbore name contains NO 34: 2 Wellbore records found by data.FacilityName:\"NO 34\"", note, StringComparison.Ordinal);
+
+            var found = JsonNode.Parse(handler.Calls[0].Body!)!;
+            Assert.Equal(("osdu:wks:master-data--Wellbore:*", "data.FacilityName:\"NO 34\"", ExplorerVia.MaxFound), (found["kind"]!.GetValue<string>(), found["query"]!.GetValue<string>(), found["limit"]!.GetValue<int>()));
+            Assert.Equal(["id"], found["returnedFields"]!.AsArray().Select(f => f!.GetValue<string>()));
+
+            // The next page of the same search reads the wellbores no more.
+            await explorer.SearchAsync(search with { Offset = 100 }, CancellationToken.None);
+            Assert.Equal(1, handler.Calls.Count(c => SearchesWellbores(c.Body!)));
+        }
+
+        OsduContracts.AssertConform(handler.Calls, null, OsduContracts.Search);
+    }
+
+    [Fact]
+    public async Task A_value_that_finds_no_record_matches_no_record_or_excluding_leaves_every_record()
+    {
+        var handler = new FakeHttpHandler()
+            .OnMatch(r => SearchesWellbores(Body(r)), _ => FakeHttpHandler.Json(HttpStatusCode.OK, Result(0)))
+            .OnMatch(_ => true, _ => FakeHttpHandler.Json(HttpStatusCode.OK, Result(0)));
+        var (explorer, runtime) = Explorer(handler);
+        using (runtime)
+        {
+            var none = await explorer.SearchAsync(new ExplorerSearch { Filters = [ThroughWellbores(ExplorerCondition.Is, "NO 99")] }, CancellationToken.None);
+            Assert.Equal("_exists_:id AND NOT (_exists_:id)", none.Query);
+            Assert.Contains("no record is found by it", Assert.Single(none.Notes), StringComparison.Ordinal);
+
+            var every = await explorer.SearchAsync(new ExplorerSearch { Filters = [ThroughWellbores(ExplorerCondition.IsNot, "NO 99")] }, CancellationToken.None);
+            Assert.Null(every.Query);
+            Assert.Contains("it leaves every record", Assert.Single(every.Notes), StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task A_condition_on_a_key_column_makes_the_ids_with_every_value_the_platform_holds_of_the_other_columns()
+    {
+        var handler = new FakeHttpHandler()
+            .OnMatch(r => Body(r).Contains("aggregateBy", StringComparison.Ordinal), _ => FakeHttpHandler.Json(HttpStatusCode.OK, new JsonObject
+            {
+                ["results"] = new JsonArray(),
+                ["aggregations"] = new JsonArray(new JsonObject { ["key"] = "EQUINOR", ["count"] = 3 }, new JsonObject { ["key"] = "STATOIL", ["count"] = 1 }),
+                ["totalCount"] = 4,
+            }.ToJsonString()))
+            .OnMatch(_ => true, _ => FakeHttpHandler.Json(HttpStatusCode.OK, Result(1, "dev:work-product-component--WellLog:L1")));
+        var (explorer, runtime) = Explorer(handler);
+        using (runtime)
+        {
+            var filter = new ExplorerFilter
+            {
+                Path = "id",
+                Index = OsduFieldIndex.Keyword,
+                Value = "9982/1",
+                Via = new ExplorerVia
+                {
+                    Term = "Recall log id",
+                    Key = new ExplorerViaKey
+                    {
+                        System = "recall",
+                        EntityType = "work-product-component--WellLog",
+                        Columns = ["source_project", "log_id"],
+                        Given = "log_id",
+                        Others = [new ExplorerViaColumn { Column = "source_project", Path = "tags.SourceProject", Index = OsduFieldIndex.Keyword }],
+                    },
+                },
+            };
+
+            var page = await explorer.SearchAsync(new ExplorerSearch { Filters = [filter] }, CancellationToken.None);
+
+            // Each id is the delivery's own: the key's values in its order, under the source system, in the partition read.
+            var ids = new[] { "EQUINOR", "STATOIL" }.Select(p => TargetId.Compose("dev", "work-product-component--WellLog", DeliveryKey.Derive("recall", [p, "9982/1"])));
+            Assert.Equal($"(id:({string.Join(" OR ", ids.Select(i => $"\"{i}\""))}))", page.Query);
+            Assert.Contains("2 record ids made from source_project and log_id with 2 values of source_project (tags.SourceProject)", Assert.Single(page.Notes), StringComparison.Ordinal);
+
+            var grouped = JsonNode.Parse(handler.Calls[0].Body!)!;
+            Assert.Equal(("*:*:work-product-component--WellLog:*", "tags.SourceProject"), (grouped["kind"]!.GetValue<string>(), grouped["aggregateBy"]!.GetValue<string>()));
+        }
+    }
+
+    [Theory]
+    [InlineData(ExplorerCondition.Range, "is is, isNot, anyOf, noneOf, contains or startsWith")]
+    [InlineData(ExplorerCondition.Exists, "compares at least one value")]
+    public void A_condition_through_other_records_that_cannot_be_read_as_asked_is_refused(ExplorerCondition condition, string said)
+    {
+        var filter = ThroughWellbores(condition, "NO 34") with { Value = condition == ExplorerCondition.Exists ? null : "NO 34", To = "NO 35" };
+
+        Assert.Contains(said, new ExplorerSearch { Filters = [filter] }.Problem(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_condition_through_other_records_crosses_to_the_node_as_it_was_asked()
+    {
+        var search = new ExplorerSearch { Filters = [ThroughWellbores(ExplorerCondition.AnyOf, "x") with { Value = null, Values = ["A", "B"] }] };
+
+        var json = search.ToJson();
+
+        Assert.Contains("\"via\":{\"term\":\"Wellbore name\"", json, StringComparison.Ordinal);
+        Assert.Equal(json, ExplorerSearch.Parse(json).ToJson());
     }
 
     [Fact]

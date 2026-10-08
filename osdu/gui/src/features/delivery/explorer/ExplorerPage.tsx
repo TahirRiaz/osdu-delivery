@@ -26,6 +26,7 @@ import { BuildFieldActions } from "./dimension/BuildFieldActions";
 import { DimensionBuildPanel } from "./dimension/DimensionBuildPanel";
 import { useDimensionBuild } from "./dimension/useDimensionBuild";
 import { searchedInType, searchInChoices, useExplorerFields } from "./explorerFields";
+import { offeredTerms, searchInTerms, termCondition, termMemory, useSearchTerms, type OfferedTerm } from "./explorerTerms";
 import {
   ALL_KINDS, columnsOf, filtersOf, filtersText, NAME_FIELDS, recordAt, rememberSearchedIn, rememberType, sameFilter, scopeKind, scopeLabel, scopeOf,
   searchInCondition, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
@@ -176,12 +177,17 @@ export default function ExplorerPage() {
   const request = { text: text === "" ? undefined : text, lucene, kind: scopeKind(scope), filters, sort, columns: columnsOf(filters, NAME_FIELDS) };
 
   // Text searched in one property (osdu/docs/explorer.md, Searching a property): the properties of the place are read once
-  // text is typed in its field, and the condition editor is opened by the search box with the text typed there.
+  // text is typed in its field, and the condition editor is opened by the search box with the text typed there. A type's
+  // source columns (osdu/docs/search-terms.md) are read with them, and those searched in lately are offered after them.
   const [adding, setAdding] = useState<string | null>(null);
   const [fieldsWanted, setFieldsWanted] = useState(false);
   const placeFields = useExplorerFields(active, scopeKind(scope), reachable && picked && fieldsWanted);
-  const searchIn = (kind: string | undefined, fields: ExplorerFieldInfo[] | undefined, reading: boolean): SearchIn => ({
+  const placeTerms = useSearchTerms(scopeKind(scope), reachable && picked && fieldsWanted);
+  const placeOffered = useMemo(() => offeredTerms(placeTerms.data?.terms), [placeTerms.data]);
+  const searchIn = (kind: string | undefined, fields: ExplorerFieldInfo[] | undefined, reading: boolean, terms: OfferedTerm[] = []): SearchIn => ({
     choices: searchInChoices(fields, kind, searchedInType(kind)),
+    terms: searchInTerms(terms, searchedInType(kind)),
+    hasTerms: terms.length > 0,
     reading,
     onWanted: () => setFieldsWanted(true),
     onSearchIn: (field, typed) => {
@@ -194,6 +200,11 @@ export default function ExplorerPage() {
         value: typed,
       };
       // The text is the condition's now, so the field's own search, which it replaced as it was typed, is cleared.
+      navigate({ q: null, lq: null, kind: kind ?? ALL_KINDS, f: filtersText([...filters.filter((f) => !sameFilter(f, condition)), condition]), id: null, v: null });
+    },
+    onSearchInTerm: (term, typed) => {
+      rememberSearchedIn(searchedInType(kind), termMemory(term.term));
+      const condition = termCondition(term, typed);
       navigate({ q: null, lq: null, kind: kind ?? ALL_KINDS, f: filtersText([...filters.filter((f) => !sameFilter(f, condition)), condition]), id: null, v: null });
     },
     onChoose: (typed) => {
@@ -336,7 +347,7 @@ export default function ExplorerPage() {
                     label={`Search ${scopeLabel(scope)}`}
                     onSearch={(typed, asLucene) => navigate({ q: typed, lq: asLucene ? "1" : null, id: null, v: null })}
                     onOpenId={openId}
-                    searchIn={searchIn(scopeKind(scope), placeFields.data?.answer.fields, placeFields.isFetching && placeFields.data === undefined)}
+                    searchIn={searchIn(scopeKind(scope), placeFields.data?.answer.fields, placeFields.isFetching && placeFields.data === undefined, placeOffered)}
                     shortcut
                     focusRequest={editInPlace}
                     testId="explorer-within"
