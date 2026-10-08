@@ -92,13 +92,18 @@ test.describe.serial("search terms", () => {
     await expect(adminPage.getByTestId("page-delivery-search-terms")).toBeVisible();
     await adminPage.goto(`/delivery/search-terms?type=${LOG_TYPE}`);
 
-    // The Recall columns the WellLog mapping reads, each with the property it fills and how.
+    // The Recall columns the WellLog mapping reads, each with the property it fills and how. The grid draws the rows in
+    // view, so a term is found by the page's own find, by its column.
     const grid = adminPage.getByTestId("search-terms-grid");
+    const find = adminPage.getByTestId("search-terms-find");
+    await expect(grid.getByTestId("search-terms-grid-row").first()).toBeVisible({ timeout: 60_000 });
+    await find.fill("log_source");
+    await expect(grid.getByTestId("search-terms-grid-row").filter({ hasText: /^log_source/ })).toBeVisible();
+    await find.fill("wellbore_uwi");
     const row = grid.getByTestId("search-terms-grid-row").filter({ hasText: "wellbore_uwi" });
-    await expect(row).toContainText("WellboreID", { timeout: 60_000 });
+    await expect(row).toContainText("WellboreID");
     await expect(row).toContainText("search");
     await expect(row).toContainText("Searched");
-    await expect(grid.getByTestId("search-terms-grid-row").filter({ hasText: "log_source" })).toBeVisible();
 
     // Renamed to what the people searching call it, with a note: the name is the term's from here on.
     await row.click();
@@ -110,6 +115,7 @@ test.describe.serial("search terms", () => {
     const renamed = grid.getByTestId("search-terms-grid-row").filter({ hasText: "Wellbore UWI" });
     await expect(renamed).toContainText("wellbore_uwi", { timeout: 30_000 });
     await adminPage.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
 
     // Left out, it is listed as such, and the explorer no longer offers it.
     await renamed.click();
@@ -117,6 +123,7 @@ test.describe.serial("search terms", () => {
     await sheet.getByTestId("search-term-save").click();
     await expect(renamed).toContainText("Left out", { timeout: 30_000 });
     await adminPage.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
     await adminPage.getByTestId("search-terms-explore").click();
     await expect(adminPage.getByTestId("explorer-grid").getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
     await adminPage.getByTestId("explorer-add-filter").click();
@@ -126,11 +133,13 @@ test.describe.serial("search terms", () => {
 
     // Offered again.
     await adminPage.goto(`/delivery/search-terms?type=${LOG_TYPE}`);
+    await find.fill("wellbore_uwi");
     await renamed.click();
     await sheet.getByTestId("search-term-offered").click();
     await sheet.getByTestId("search-term-save").click();
     await expect(renamed).toContainText("Searched", { timeout: 30_000 });
     await adminPage.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
   });
 
   test("searches the explorer by a source column, its value as Recall holds it, beside a property", async ({ adminPage }) => {
