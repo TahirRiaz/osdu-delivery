@@ -33,11 +33,16 @@ export type InventoryRemovalOutcome = "removed" | "gone" | "skipped" | "failed";
 /** Every outcome, in the order a page lists them. */
 export const INVENTORY_REMOVAL_OUTCOMES: readonly InventoryRemovalOutcome[] = ["removed", "gone", "skipped", "failed"];
 
-/** What a flow lets an operator remove of what its inventory found, and the platform the removal goes to as the flow writes it. */
+/**
+ * What a flow lets an operator remove of what its inventory found, the platform the removal goes to as the flow writes it, and
+ * the storage paths a soft delete (500 ids a request) and a purge (one id at a time) call there.
+ */
 export interface InventoryRemovalPolicy {
   findings: string[];
   purge: boolean;
   endpoint: string;
+  bulkDeletePath: string;
+  purgePath: string;
 }
 
 /** A removal an operator asks for: the finding, how much of each record, the count shown, the ids picked, and the partition typed back. */

@@ -30,7 +30,9 @@ import {
   type DeliveryTarget,
   type RemovalScope,
 } from "../../api/delivery";
+import { inventoryApi, type Inventory, type InventoryRemovalAccepted, type InventoryRemovalPolicy } from "../../api/inventories";
 import { CorrelationError } from "@/components/CorrelationError";
+import { counted, findingVisual } from "./inventories/inventoryFormat";
 
 /**
  * Which records the removal acts on: the exact ones an operator ticked, or the listing they were looking at with
@@ -41,9 +43,22 @@ export type RemovalSelection =
   | { kind: "keys"; keys: string[] }
   | { kind: "filter"; filter: DeliveryRecordFilter; expected: number };
 
-interface RemovalDialogProps {
-  open: boolean;
-  onClose: () => void;
+/**
+ * What an inventory's removal acts on (docs/inventory-plan.md, Removing what an inventory found): the ids of one finding, those
+ * picked or every one, as many as the operator was shown, through the inventory flow's own source as its policy says.
+ */
+export interface InventoryRemovalTarget {
+  inventory: Inventory;
+  finding: string;
+  /** The ids picked; null removes every id of the finding. */
+  ids: readonly string[] | null;
+  count: number;
+  policy: InventoryRemovalPolicy;
+}
+
+/** The records of a flow's ledger the dialog removes. */
+interface LedgerRemovalProps {
+  inventory?: undefined;
   pipelineId: string;
   /**
    * The ledger whose records these are: the interface of a source (null for the single form) and the partition of a flow
@@ -61,6 +76,15 @@ interface RemovalDialogProps {
   /** Records already removed from OSDU were deleted from the ledger, here and now. */
   onPurged: (result: DeliveryLedgerPurgeResult) => void;
 }
+
+/** The ids of an inventory the dialog removes. */
+interface InventoryRemovalProps {
+  inventory: InventoryRemovalTarget;
+  /** The removal was queued as a run of the inventory flow. */
+  onQueued: (accepted: InventoryRemovalAccepted) => void;
+}
+
+type RemovalDialogProps = { open: boolean; onClose: () => void } & (LedgerRemovalProps | InventoryRemovalProps);
 
 /** What to do in OSDU: one of the removal scopes, or nothing, for records already removed from it. */
 type OsduChoice = RemovalScope | "none";
@@ -151,6 +175,29 @@ function leavesItOut(scope: OsduChoice): boolean {
   return scope === "record" || scope === "everything" || scope === "none";
 }
 
+/** The call a scope makes for an inventory's removal, through the inventory flow's source; null for one it does not offer. */
+function inventoryCall(scope: OsduChoice, policy: InventoryRemovalPolicy): string | null {
+  return scope === "record" ? `POST ${policy.bulkDeletePath}` : scope === "everything" ? `DELETE ${policy.purgePath}` : null;
+}
+
+/** Why an inventory's removal cannot take a scope: a purge its flow does not allow. */
+function inventoryRefusal(scope: OsduChoice, policy: InventoryRemovalPolicy): string | null {
+  return scope === "everything" && !policy.purge ? "The flow allows soft deletes only: removal.purge: true in its YAML lets it purge." : null;
+}
+
+/** What an inventory's removal keeps of each id, where the ledger dialog says what the ledger does. */
+const INVENTORY_KEPT = "Each id's outcome is kept with the removal, with why, and the ids removed are gone from the inventory at once. "
+  + "A stale record's own ledger records the removal on the record.";
+
+/** What is checked again of each id just before it goes, so a removal never takes what moved since the inventory found it. */
+function rechecks(finding: string): string[] {
+  return [
+    `The inventory still finds it ${findingVisual(finding).label.toLowerCase()}, and the ledgers of the partition give it that finding now.`,
+    "OSDU still serves it at the version the inventory listed.",
+    ...(finding === "orphan" ? ["An identity this estate writes as still shows as its creator."] : []),
+  ];
+}
+
 /** The word an operator types to confirm a permanent removal: the partition it is aimed at, or the flow. */
 function confirmationWord(target: DeliveryTarget | undefined, flowName: string): string {
   return target?.dataPartition ?? flowName;
@@ -235,10 +282,18 @@ export function ChoiceRow({ active, permanent, unavailable, children }: { active
  * out of OSDU. Every row carries the same mark of whether it can be undone, and anything permanent asks for the partition
  * to be typed back. What the ledger does and the call each choice makes are on hover, beside it; the endpoint and route
  * are beside the partition, which stays in sight.
+ *
+ * It removes an inventory's ids the same way (`inventory`): the ids of one finding, picked or every one, through the
+ * inventory flow's own source, removed or (where the flow allows it) purged; there is no ledger part, since no ledger holds
+ * them live, what is checked again of each id before it goes is said under the choices, and the partition is typed back
+ * whatever the choice, since one removal may take millions of ids.
  */
-export function RemovalDialog({
-  open, onClose, pipelineId, flowScope, flowName, selection, singleLabel, alreadyRemoved = false, onQueued, onPurged,
-}: RemovalDialogProps) {
+export function RemovalDialog(props: RemovalDialogProps) {
+  const { open, onClose } = props;
+  // A ledger's records, or an inventory's ids.
+  const ledger = props.inventory === undefined ? props : null;
+  const ids = props.inventory === undefined ? null : props;
+  const alreadyRemoved = ledger?.alreadyRemoved ?? false;
   const [scope, setScope] = useState<OsduChoice>(alreadyRemoved ? "none" : "record");
   const [purgeLedger, setPurgeLedger] = useState(alreadyRemoved);
   const [typed, setTyped] = useState("");
@@ -256,23 +311,38 @@ export function RemovalDialog({
     }
   }
 
-  const purging = purgeLedger && leavesItOut(scope);
+  const purging = ledger !== null && purgeLedger && leavesItOut(scope);
   const removalScope: RemovalScope = scope === "none" ? "record" : scope;
-  const request = useMemo(() => requestFor(selection, removalScope, purging), [selection, removalScope, purging]);
+  const selection = ledger?.selection ?? null;
+  const request = useMemo(() => (selection === null ? null : requestFor(selection, removalScope, purging)), [selection, removalScope, purging]);
   const preview = useQuery({
-    queryKey: ["delivery", "removal-preview", pipelineId, flowScope?.interfaceName ?? null, flowScope?.partition ?? null, JSON.stringify(requestFor(selection, "record"))],
-    queryFn: () => deliveryApi.previewRemoval(pipelineId, requestFor(selection, "record"), flowScope),
-    enabled: open,
+    queryKey: [
+      "delivery", "removal-preview", ledger?.pipelineId ?? null, ledger?.flowScope?.interfaceName ?? null, ledger?.flowScope?.partition ?? null,
+      selection === null ? null : JSON.stringify(requestFor(selection, "record")),
+    ],
+    queryFn: () => deliveryApi.previewRemoval(ledger!.pipelineId, requestFor(ledger!.selection, "record"), ledger!.flowScope),
+    enabled: open && ledger !== null,
     staleTime: 0,
     gcTime: 0,
   });
 
   const remove = useMutation({
-    mutationFn: () => deliveryApi.removeRecords(pipelineId, request, flowScope),
-    onSuccess: (accepted) => {
-      onQueued(accepted);
-      onClose();
+    mutationFn: async () => {
+      if (ledger !== null) {
+        ledger.onQueued(await deliveryApi.removeRecords(ledger.pipelineId, request!, ledger.flowScope));
+        return;
+      }
+
+      const of = ids!.inventory;
+      ids!.onQueued(await inventoryApi.remove(of.inventory.partition, of.inventory.inventoryId, {
+        finding: of.finding,
+        scope: removalScope === "everything" ? "everything" : "record",
+        expected: of.count,
+        confirm: typed.trim(),
+        ...(of.ids === null ? {} : { ids: [...of.ids] }),
+      }));
     },
+    onSuccess: () => onClose(),
     onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
@@ -280,41 +350,55 @@ export function RemovalDialog({
   // removal's extra step makes.
   const purge = useMutation({
     mutationFn: () => deliveryApi.purgeRecords(
-      pipelineId,
-      selection.kind === "keys" ? { keys: selection.keys } : { filter: selection.filter, expected: selection.expected },
-      flowScope),
+      ledger!.pipelineId,
+      ledger!.selection.kind === "keys" ? { keys: ledger!.selection.keys } : { filter: ledger!.selection.filter, expected: ledger!.selection.expected },
+      ledger!.flowScope),
     onSuccess: (result) => {
-      onPurged(result);
+      ledger!.onPurged(result);
       onClose();
     },
     onError: (error) => toast.error(isApiError(error) ? error.detail ?? error.title : String(error)),
   });
 
   const choice = SCOPES.find((s) => s.scope === scope)!;
+  const of = ids?.inventory ?? null;
   const target = preview.data?.target;
-  const word = confirmationWord(target, flowName);
-  const records = preview.data?.records ?? (selection.kind === "keys" ? selection.keys.length : selection.expected);
-  const removed = preview.data?.removed ?? (alreadyRemoved ? records : 0);
+  const flowName = ledger?.flowName ?? of!.inventory.flowName;
+  const partition = of === null ? target?.dataPartition ?? null : of.inventory.partition;
+  const word = of === null ? confirmationWord(target, flowName) : of.inventory.partition;
+  const records = of !== null ? of.count : preview.data?.records ?? (selection!.kind === "keys" ? selection!.keys.length : selection!.expected);
+  const removed = of !== null ? 0 : preview.data?.removed ?? (alreadyRemoved ? records : 0);
   // More than one removal takes: the API would refuse it, so the dialog says so and does not offer it.
-  const capped = preview.data?.capped === true;
-  const refused = target === undefined ? null : choice.refusal(target);
+  const capped = of === null && preview.data?.capped === true;
+  const callOf = (option: ScopeChoice) => (of !== null ? inventoryCall(option.scope, of.policy) : target === undefined ? null : option.call(target));
+  const refusalFor = (option: ScopeChoice) => (of !== null ? inventoryRefusal(option.scope, of.policy) : target === undefined ? null : option.refusal(target));
+  const refused = refusalFor(choice);
   const busy = remove.isPending || purge.isPending;
-  const needsTyping = choice.reversible === false || purging;
+  // One inventory removal may take millions of ids, so it is typed back whatever it takes.
+  const needsTyping = of !== null || choice.reversible === false || purging;
   const confirmed = !needsTyping || typed.trim() === word;
   // Nothing in OSDU and nothing in the ledger is no request at all.
   const nothingAsked = scope === "none" && !purging;
   const acting = scope === "none" ? removed : records;
   // Every record of the selection is out of OSDU already: only purging what OSDU keeps of it, or leaving it, still acts on it.
   const allRemoved = records > 0 && removed >= records;
-  const offered = SCOPES.filter((option) => option.scope !== "none" || removed > 0 || scope === "none");
+  const offered = of !== null
+    ? SCOPES.filter((option) => option.scope === "record" || option.scope === "everything")
+    : SCOPES.filter((option) => option.scope !== "none" || removed > 0 || scope === "none");
+  const known = of !== null || target !== undefined;
 
-  const subject = capped
-    ? `More than one removal takes: ${records.toLocaleString()}${selection.kind === "filter" ? "+" : ""} records. Narrow the selection and remove them in parts.`
-    : records === 1
-      ? singleLabel ?? "One record"
-      : selection.kind === "filter"
-        ? `${records.toLocaleString()} records matching the filter`
-        : `${records.toLocaleString()} records`;
+  const label = of === null ? "" : findingVisual(of.finding).label.toLowerCase();
+  const subject = of !== null
+    ? of.ids === null
+      ? `${counted(of.count, `${label} id`)} of ${of.inventory.name}, every one`
+      : `${counted(of.count, `picked ${label} id`)} of ${of.inventory.name}`
+    : capped
+      ? `More than one removal takes: ${records.toLocaleString()}${selection!.kind === "filter" ? "+" : ""} records. Narrow the selection and remove them in parts.`
+      : records === 1
+        ? ledger!.singleLabel ?? "One record"
+        : selection!.kind === "filter"
+          ? `${records.toLocaleString()} records matching the filter`
+          : `${records.toLocaleString()} records`;
   const removedNote = removed === 0
     ? null
     : records === 1 ? "removed from OSDU" : `${removed.toLocaleString()} of them removed from OSDU`;
@@ -341,22 +425,32 @@ export function RemovalDialog({
               <Trash2 className="size-4 shrink-0 text-destructive" />
               Remove
             </AlertDialogTitle>
-            {target === undefined
+            {!known
               ? !preview.isError && <Skeleton className="h-5 w-16 rounded-md" />
               : (
                 <span className="flex items-center gap-0.5" data-testid="removal-target">
-                  {target.dataPartition !== null && (
+                  {partition !== null && (
                     <Badge variant="secondary" className="font-mono" data-testid="removal-partition">
-                      {target.dataPartition}
+                      {partition}
                     </Badge>
                   )}
                   <InfoTip label="Where the records live" testId="removal-target-info">
-                    <div className="flex flex-col gap-1.5">
-                      <TargetFact label="Flow" value={flowName} />
-                      <TargetFact label="Endpoint" value={target.endpoint} mono />
-                      <TargetFact label="Route" value={`${target.protocol} · ${target.authType}`} />
-                      {target.ddms !== null && <span className="text-muted-foreground" data-testid="removal-ddms">{target.ddms}</span>}
-                    </div>
+                    {of !== null
+                      ? (
+                        <div className="flex flex-col gap-1.5">
+                          <TargetFact label="Flow" value={flowName} />
+                          <TargetFact label="Endpoint" value={of.policy.endpoint} mono />
+                          <TargetFact label="Route" value="storage, through the inventory flow's own source and credentials" />
+                        </div>
+                      )
+                      : target !== undefined && (
+                        <div className="flex flex-col gap-1.5">
+                          <TargetFact label="Flow" value={flowName} />
+                          <TargetFact label="Endpoint" value={target.endpoint} mono />
+                          <TargetFact label="Route" value={`${target.protocol} · ${target.authType}`} />
+                          {target.ddms !== null && <span className="text-muted-foreground" data-testid="removal-ddms">{target.ddms}</span>}
+                        </div>
+                      )}
                   </InfoTip>
                 </span>
               )}
@@ -388,13 +482,13 @@ export function RemovalDialog({
               // A scope whose call the flow cannot resolve, or whose route refuses it, is not offered: the node would refuse
               // it anyway, and offering it invites an operator to ask for a removal that never happens. Nor is one that has
               // nothing left to act on: a record out of OSDU has no latest version to step back from or earlier ones to purge.
-              const refusal = target === undefined || option.scope === "none" ? null : option.refusal(target);
+              const refusal = !known || option.scope === "none" ? null : refusalFor(option);
               const unavailable: { line: string; why: string } | null = option.scope === "none"
                 ? removed === 0 ? { line: "None of these is removed yet.", why: "None of these is removed from OSDU yet." } : null
                 : allRemoved && option.scope !== "everything"
                   ? { line: "Removed from OSDU already.", why: "Every record here is removed from OSDU already, so there is nothing of it for this to act on." }
                   : refusal !== null ? { line: "Not available for this flow.", why: refusal } : null;
-              const call = target === undefined ? null : option.call(target);
+              const call = known ? callOf(option) : null;
               const id = `removal-scope-${option.scope}`;
               return (
                 <ChoiceRow key={option.scope} active={active} permanent={option.reversible === false} unavailable={unavailable !== null}>
@@ -420,13 +514,13 @@ export function RemovalDialog({
                   </label>
                   <span className="flex items-center gap-1 pt-1.5">
                     {option.reversible !== null && <Permanence reversible={option.reversible} />}
-                    {target !== undefined && (
+                    {known && (
                       <InfoTip label={`About ${option.title.toLowerCase()}`} testId={`${id}-info`}>
                         {unavailable !== null
                           ? <span>{unavailable.why}</span>
                           : (
                             <div className="flex flex-col gap-1.5">
-                              <span>{option.ledger}</span>
+                              <span>{of !== null ? INVENTORY_KEPT : option.ledger}</span>
                               {call !== null && <span className="break-all font-mono text-[11px] text-muted-foreground">{call}</span>}
                             </div>
                           )}
@@ -439,50 +533,66 @@ export function RemovalDialog({
           </RadioGroup>
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <PartHeading>In the ledger</PartHeading>
-          <ChoiceRow active={purging} permanent unavailable={!leavesItOut(scope)}>
-            <label
-              htmlFor="removal-purge-ledger"
-              className={cn("flex min-w-0 flex-1 items-start gap-2.5 py-2", leavesItOut(scope) ? "cursor-pointer" : "cursor-not-allowed")}
-            >
-              <Checkbox
-                id="removal-purge-ledger"
-                checked={purging}
-                onCheckedChange={(checked) => {
-                  setPurgeLedger(checked === true);
-                  setTyped("");
-                }}
-                disabled={busy || !leavesItOut(scope)}
-                className="mt-0.5"
-                data-testid="removal-purge-ledger"
-              />
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="text-[13px] font-medium leading-tight">Delete from the ledger</span>
-                <span className="text-[12px] leading-snug text-muted-foreground">
-                  {leavesItOut(scope) ? "Its history here goes. One line of each is kept." : "Only with a choice that leaves it out of OSDU."}
-                </span>
-              </span>
-            </label>
-            <span className="flex items-center gap-1 pt-1.5">
-              <Permanence reversible={false} />
-              {target !== undefined && (
-                <InfoTip label="About deleting from the ledger" testId="removal-purge-ledger-info">
-                  <div className="flex flex-col gap-1.5">
-                    <span>
-                      Each record out of OSDU is deleted from the ledger: its attempts and search entries go. One line is kept of
-                      it: what it was, its OSDU id and last version, who deleted it and when.
-                    </span>
-                    <span>
-                      Only a record OSDU no longer holds goes: one whose removal failed, or that OSDU still holds, stays as it was.
-                      If its row is still in the source, the next run that reads it delivers it as a new record.
-                    </span>
-                  </div>
-                </InfoTip>
-              )}
+        {of !== null && (
+          <p className="flex items-start gap-2 text-[12px] leading-snug text-muted-foreground" data-testid="removal-rechecks">
+            <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-warning" />
+            <span className="flex-1">
+              {`Each id is checked again just before it goes; one that moved since the inventory found it is left in OSDU and kept with why.${of.ids === null ? ` The run starts only while the inventory holds exactly ${of.count.toLocaleString()} ${label} id${of.count === 1 ? "" : "s"}.` : ""}`}
             </span>
-          </ChoiceRow>
-        </div>
+            <InfoTip label="What is checked again" testId="removal-rechecks-info">
+              <ul className="flex list-disc flex-col gap-0.5 pl-4">
+                {rechecks(of.finding).map((line) => <li key={line}>{line}</li>)}
+              </ul>
+            </InfoTip>
+          </p>
+        )}
+
+        {ledger !== null && (
+          <div className="flex flex-col gap-1.5">
+            <PartHeading>In the ledger</PartHeading>
+            <ChoiceRow active={purging} permanent unavailable={!leavesItOut(scope)}>
+              <label
+                htmlFor="removal-purge-ledger"
+                className={cn("flex min-w-0 flex-1 items-start gap-2.5 py-2", leavesItOut(scope) ? "cursor-pointer" : "cursor-not-allowed")}
+              >
+                <Checkbox
+                  id="removal-purge-ledger"
+                  checked={purging}
+                  onCheckedChange={(checked) => {
+                    setPurgeLedger(checked === true);
+                    setTyped("");
+                  }}
+                  disabled={busy || !leavesItOut(scope)}
+                  className="mt-0.5"
+                  data-testid="removal-purge-ledger"
+                />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="text-[13px] font-medium leading-tight">Delete from the ledger</span>
+                  <span className="text-[12px] leading-snug text-muted-foreground">
+                    {leavesItOut(scope) ? "Its history here goes. One line of each is kept." : "Only with a choice that leaves it out of OSDU."}
+                  </span>
+                </span>
+              </label>
+              <span className="flex items-center gap-1 pt-1.5">
+                <Permanence reversible={false} />
+                {known && (
+                  <InfoTip label="About deleting from the ledger" testId="removal-purge-ledger-info">
+                    <div className="flex flex-col gap-1.5">
+                      <span>
+                        Each record out of OSDU is deleted from the ledger: its attempts and search entries go. One line is kept of
+                        it: what it was, its OSDU id and last version, who deleted it and when.
+                      </span>
+                      <span>
+                        Only a record OSDU no longer holds goes: one whose removal failed, or that OSDU still holds, stays as it was.
+                        If its row is still in the source, the next run that reads it delivers it as a new record.
+                      </span>
+                    </div>
+                  </InfoTip>
+                )}
+              </span>
+            </ChoiceRow>
+          </div>
+        )}
 
         {scope !== "none" && preview.data !== undefined && preview.data.neverDelivered > 0 && (
           <p className="flex items-start gap-2 text-[12px] text-muted-foreground" data-testid="removal-never-delivered">
@@ -495,7 +605,9 @@ export function RemovalDialog({
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="removal-confirm" className="text-[12px] font-normal text-muted-foreground">
               <span>
-                This cannot be undone. Type <span className="font-mono font-medium text-foreground">{word}</span> to confirm.
+                {choice.reversible === false || purging ? "This cannot be undone." : "OSDU can bring a removed record back."}
+                {" Type "}
+                <span className="font-mono font-medium text-foreground">{word}</span> to confirm.
               </span>
             </Label>
             <Input
@@ -519,7 +631,7 @@ export function RemovalDialog({
             variant={scope === "previous" ? "default" : "destructive"}
             size="sm"
             onClick={() => (scope === "none" ? purge.mutate() : remove.mutate())}
-            disabled={busy || nothingAsked || !confirmed || acting === 0 || capped || preview.isError || refused !== null}
+            disabled={busy || nothingAsked || !confirmed || acting === 0 || capped || (ledger !== null && preview.isError) || refused !== null}
             data-testid="removal-confirm"
           >
             {busy ? <Loader2 className="animate-spin" /> : scope === "previous" ? <Undo2 /> : scope === "none" ? <Eraser /> : null}

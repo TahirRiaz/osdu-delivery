@@ -12,7 +12,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cn } from "@/lib/utils";
 import { deliveryRecordRoute } from "../../../api/delivery";
-import { inventoryApi, type Inventory, type InventoryRecord, type InventoryRemovalPolicy } from "../../../api/inventories";
+import { inventoryApi, type Inventory, type InventoryRecord, type InventoryRemovalAccepted, type InventoryRemovalPolicy } from "../../../api/inventories";
 import { RecordName } from "../RecordName";
 import { idParts } from "../osduRecordModel";
 import { ProblemView } from "../TemplateSheet";
@@ -20,7 +20,7 @@ import { DimensionGrid, GridFooter, GridViewMenu } from "../dimensions/Dimension
 import { useHiddenColumns, type GridColumnChoice } from "../dimensions/dimensionGridState";
 import { ExplainTip, FindingGlyph } from "./InventoryBadges";
 import { InventoryIdPanel } from "./InventoryIdPanel";
-import { InventoryRemovalDialog } from "./InventoryRemovalDialog";
+import { RemovalDialog } from "../RemovalDialog";
 import { findingVisual, findingWhy } from "./inventoryFormat";
 
 const PAGE = 200;
@@ -453,15 +453,11 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
           </DimensionGrid>
         )}
       {removable !== undefined && finding !== null && (
-        <InventoryRemovalDialog
+        <RemovalDialog
           open={removing}
           onClose={() => setRemoving(false)}
-          inventory={inventory}
-          finding={finding}
-          ids={everyOne ? null : pickedIds}
-          count={removalCount}
-          policy={removable}
-          onQueued={(accepted) => {
+          inventory={{ inventory, finding, ids: everyOne ? null : pickedIds, count: removalCount, policy: removable }}
+          onQueued={(accepted: InventoryRemovalAccepted) => {
             clearPicked();
             toast.success(
               `Removal of ${accepted.expected.toLocaleString("en-US")} ${noun}${accepted.expected === 1 ? "" : "s"} of ${accepted.inventory} queued as a run.`,

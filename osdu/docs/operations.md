@@ -364,9 +364,10 @@ lands on it, open in the panel. An inventory flow's pipeline has an Inventories 
 the inventory picked.
 
 Where the flow declares `removal`, the grid of a finding it names (orphan, stale or forgotten) has a box on each row: pick
-ids, or **Select all** to take every id of the finding however many, and **Remove**. The dialog names the partition and
-the platform, offers a soft delete (and a purge where `removal.purge` allows it), says what is checked again of each id
-before it goes, and queues nothing until the partition is typed back. The removal is a run of the flow; while it runs, a
+ids, or **Select all** to take every id of the finding however many, and **Remove**. It opens the removal dialog the
+Records tab removes with: the partition and the platform, **Remove the record** (a soft delete) or **Purge everything**
+where `removal.purge` allows it, what is checked again of each id before it goes, and nothing queued until the partition
+is typed back; there is no ledger part, since no ledger holds these ids live. The removal is a run of the flow; while it runs, a
 line over the tabs says how far it got, and the **Removals** tab lists every removal with its tallies, each opening in the
 bottom panel with what it did to each id and why. A removal that skipped ids left them in OSDU for a reason: look at
 them, and remove again once the next build has listed them as they are.

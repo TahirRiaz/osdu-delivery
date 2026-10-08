@@ -52,10 +52,11 @@ public sealed record DeliveryInventoryDto(
 public sealed record DeliveryInventoryListDto(string? Partition, IReadOnlyList<DeliveryInventoryDto> Inventories);
 
 /// <summary>
-/// What the flow lets an operator remove of what the inventory found: the findings, whether a removal may purge, and the platform
-/// the removal goes to as the flow writes it (a URL, or a reference the node resolves).
+/// What the flow lets an operator remove of what the inventory found: the findings, whether a removal may purge, the platform
+/// the removal goes to as the flow writes it (a URL, or a reference the node resolves), and the storage paths a soft delete
+/// (500 ids a request) and a purge (one id at a time) call there.
 /// </summary>
-public sealed record DeliveryInventoryRemovalPolicyDto(IReadOnlyList<string> Findings, bool Purge, string Endpoint);
+public sealed record DeliveryInventoryRemovalPolicyDto(IReadOnlyList<string> Findings, bool Purge, string Endpoint, string BulkDeletePath, string PurgePath);
 
 /// <summary>
 /// One inventory with its report: its counts by finding read from its rows now (every finding, zeros included), how many ids it
@@ -452,7 +453,7 @@ public static class DeliveryInventoryEndpoints
         var (pipeline, flow, declared) = await DeclaringFlowAsync(db, documents, inventory, ct).ConfigureAwait(false);
         var spec = declared == true ? flow?.Inventory(inventory.Name) : null;
         var owners = InventoryReport.Owners(inventory.OwnersJson, inventory.OwnersSource);
-        var removal = declared == true && flow?.Removal is { } policy ? new DeliveryInventoryRemovalPolicyDto(policy.Findings, policy.Purge, flow.Source.Endpoint) : null;
+        var removal = declared == true && flow?.Removal is { } policy ? new DeliveryInventoryRemovalPolicyDto(policy.Findings, policy.Purge, flow.Source.Endpoint, flow.Source.BulkDeletePath, flow.Source.PurgePath) : null;
         return TypedResults.Json(
             new DeliveryInventoryDetailDto(
                 ToDto(inventory, runs), pipeline?.Id, pipeline?.RepoId, spec?.Description, declared, Counts(counts.ByFinding), counts.ByFinding.Values.Sum(), counts.Raised,
