@@ -9,9 +9,10 @@ delivery minted and a later one replaced, and records a ledger delivered that OS
 A ledger can come out of step with OSDU for reasons no delivery controls: a service that acted after its answer was lost,
 an ingestion workflow that wrote more than it reported, a record written outside the flows, a ledger deleted or a record
 purged from it, a restore of OSDU or of the database. None of these is visible from the ledger alone. This is a flow kind
-of its own, `flowType: inventory`, that only reads OSDU, as assertion and dimension flows do
+of its own, `flowType: inventory`, that reads OSDU, as assertion and dimension flows do
 ([decisions/0010](decisions/0010-assertion-flows-read-only.md), [decisions/0011](decisions/0011-dimension-flows.md),
-[decisions/0013](decisions/0013-inventory-flows.md)).
+[decisions/0013](decisions/0013-inventory-flows.md)), and that removes the orphan, stale and forgotten ids it found when
+its document allows it and an operator asks ([decisions/0014](decisions/0014-inventory-removals.md)).
 
 Each stage lists what it changes and the tests that close it. All work is in `osdu/`: nothing in `sqlflow/` changes, and
 no OSDU table changes without its migration.
@@ -25,6 +26,7 @@ no OSDU table changes without its migration.
 | 3. Reading OSDU: search and storage | Done: `InventoryRunTests` |
 | 4. The reconcile | Done: `InventoryLedgerTests`, `InventoryRunTests` |
 | 5. The API, the CLI and the GUI | In progress |
+| 6. Removing what an inventory found | Done: migration `InventoryRemovals` (module 1.31.0), `InventoryRemovalTests`, `DeliveryInventoryApiTests` |
 
 ## The document
 
@@ -45,6 +47,7 @@ inventories:
   - name: LogFiles
     kind: "osdu:wks:dataset--File.Generic:*"
     query: "data.Endian:BIG"       # optional, search only: narrows the records read
+removal: { findings: [orphan], purge: false }   # optional: what an operator may remove of what it found
 reliability: { concurrency: 4, timeoutSeconds: 100 }
 schedule: { cron: "0 4 * * *" }
 ```
@@ -124,6 +127,38 @@ longer listed is `gone`. A build that reaches the bound says so, and the next bu
 | `build` (default) | Read every inventory (or those the payload names), merge, reconcile. |
 | `reconcile` | Reconcile with the ledgers as they stand now, reading only the missing candidates from storage. |
 | `plan` | Count what each inventory would read; keep nothing. |
+| `remove` | Remove from OSDU the ids of one finding of one inventory, as an operator asked ([Removing what an inventory found](#removing-what-an-inventory-found)). |
+
+## Removing what an inventory found
+
+A flow that declares `removal` lets an operator remove the ids of the findings it names, of `orphan`, `stale` and
+`forgotten`: what OSDU serves that no ledger holds live. Every other finding is acted on through its ledger, and `foreign`
+ids are never removable.
+
+- **The request.** The inventory's page offers a removable finding's ids to pick (at most 1,000), or every one of them at
+  once; the API takes `POST /inventories/{partition}/{inventoryId}/removals` with `finding`, `scope` (`record`, a soft
+  delete, or `everything`, a purge where `removal.purge` allows it), `expected` (the count the operator was shown), the
+  `ids` when they were picked, and `confirm` (the partition, typed back). It is refused unless the flow allows the finding
+  and the scope, the inventory was reconciled, it holds as many ids of the finding as shown (or every id picked, with that
+  finding), and no run of the flow is queued or running. It queues a run of the flow, operation `remove`, whose payload
+  is `{"inventories": [name], "removal": {finding, scope, expected, ids?}, "confirm": partition}`; the run checks all of it
+  again before it removes anything.
+- **The run.** It reads the removal's ids from the inventory 500 at a time, in order. For each it compares the finding the
+  inventory recorded with the one the reconcile's own rule gives it against the ledgers now, reads storage's headers of
+  those still to go (`POST /query/records/headers`), and leaves in OSDU, skipped with why, an id whose finding moved, whose
+  version is not the one the inventory listed, or (an orphan) whose creator is no owner; an id storage no longer holds is
+  already gone. The rest go through the flow's own `source`: a soft delete 500 ids a request (`POST /records/delete`, one
+  at a time for the ids a 207 answer names), or a purge one id at a time (`DELETE /records/{id}`). OSDU refusing a whole
+  chunk with 401 or 403 stops the removal there.
+- **What it keeps.** `osdu.InventoryRemoval` (one row per removal: the run, who asked, the finding, the scope, the count
+  shown, whether ids were picked, where it stands, its tallies, why it stopped, its activity) and
+  `osdu.InventoryRemovalItem` (one row per id it reached: the version, the finding, the outcome, why, and the ledger record a
+  stale or forgotten id rested on). A chunk's outcomes are written with the inventory rows it changed in one transaction:
+  an id removed, or found gone, is marked gone in the inventory at once. A stale record's ledger records the removal on the
+  record (`MarkRemovedAsync`: an attempt naming who asked). The removal is an activity of the audit trail
+  (`inventory-remove`), and a lookup by OSDU id answers what removals did to the id.
+- **Stopped part way.** Every chunk is recorded before the next is read, so a removal stopped part way keeps what it did,
+  and the next removal of the finding finds what is left; a removal its process left running is closed failed by the next.
 
 ## Stages
 
@@ -160,3 +195,15 @@ inventory failing while the others complete.
 across inventories; `sqlflow inventory list|show|records|lookup`; the flow kind's panels and the inventory page with
 counts by finding and a grid that pages in place, whose ids open as OSDU holds them in the workbench's bottom panel, in
 the explorer's record view ([explorer.md](explorer.md#a-record)).
+
+### 6. Removing what an inventory found
+
+`removal` in the document and the census; the `remove` operation and its payload; `osdu.InventoryRemoval` and
+`osdu.InventoryRemovalItem` (migration `InventoryRemovals`, module 1.31.0); the runner's removal through the flow's source
+over `OsduRecordProtocol`'s batched removal; the API (`POST .../removals`, the removals and their items, removals in the
+lookup); `sqlflow inventory removals|removal`; the grid's selection, the removal dialog and the Removals tab. Tests: the
+document's rules, the payload and the operation; against fake services, every orphan soft deleted in chunks with every
+outcome kept and the inventory updated at once, every check again before an id goes (claimed meanwhile, a version moved,
+gone, a creator no owner), the refusals before anything is read, a whole chunk refused for permission stopping the run, a
+207 answer asked again one id at a time, a purge one id at a time with a stale record's ledger recording it, and picked ids;
+over the API, every refusal and the run queued.

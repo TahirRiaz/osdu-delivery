@@ -19,6 +19,7 @@ teams can confirm or overturn it; the code isolates each one so overturning it i
 | [0011](0011-dimension-flows.md) | Dimension flows read every distinct value by ranges, and keep each key beside the value a person picks. | Proposed |
 | [0012](0012-atomic-delivery.md) | Every delivery is a unit of work that completes or is undone, and the ledger names every id it minted. | Proposed |
 | [0013](0013-inventory-flows.md) | Inventory flows read what OSDU serves and compare it with every ledger of the partition. | Proposed |
+| [0014](0014-inventory-removals.md) | An inventory flow may remove the orphan, stale and forgotten ids it found, when its document allows it. | Proposed |
 
 Not decided here, and still open: storage access grants (design 17.4), Change Data Feed (17.7), library
 ownership between osdu-client and osdu-csharp-client (17.8), and whether the other packages adopt the same

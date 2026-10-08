@@ -1475,7 +1475,8 @@ database and compared with every ledger of the partition ([inventory-plan.md](in
 the flows delivered and minted; the inventory says what OSDU serves; where the two disagree is the report: records no
 ledger knows (orphans), records a ledger expects that storage does not hold (missing), ids an unfinished delivery left
 that its undo has not taken back (undoing), and records a ledger removed, never confirmed or forgot that OSDU still
-serves. A build only reads OSDU; nothing is ever written to it.
+serves. A build, a reconcile and a plan only read OSDU; a flow that declares `removal` also lets an operator remove the
+orphan, stale or forgotten ids it found.
 
 ```yaml
 flowType: inventory
@@ -1490,6 +1491,7 @@ source:
   # queryPath, searchPath, recordQueryPath, headersPath, versionsPath, schemaPath: the services' paths, defaulted
 owners: [delivery-sp@contoso.com]        # optional: the identities this estate writes as; inferred when left out
 maxMissingChecks: 100000                 # optional: ids a ledger expects that one build reads from storage (0 to 1,000,000)
+removal: { findings: [orphan, stale], purge: false }   # optional: what an operator may remove of what it found
 reliability: { concurrency: 4 }          # version lists read at once, for versions: all
 
 inventories:
@@ -1515,11 +1517,18 @@ inventories:
   listed before and no longer lists.
 - `versions: all` reads each record's versions (`GET /records/versions/{id}`) for a record that is new or whose latest
   version moved since its versions were read, so a rebuild sends requests only for what moved.
+- `removal` lets an operator remove the ids of the findings `findings` names, of `orphan`, `stale` and `forgotten`, through
+  the flow's own `source`: soft deleted (`POST /records/delete`, 500 ids a request, reversible), or purged
+  (`DELETE /records/{id}`, every version destroyed) where `purge: true` allows it. Left out, nothing the flow found can be
+  removed through it. The source's credentials must be an owner of the records (`users.datalake.editors`, and in each
+  record's owners ACL); `source.deletePath`, `source.bulkDeletePath` and `source.purgePath` name the services' paths
+  where a deployment serves them elsewhere ([inventory-plan.md](inventory-plan.md#removing-what-an-inventory-found)).
 
 The operations are `build` (the default: read each inventory whole, merge, reconcile), `reconcile` (compare each
 inventory, as its last build left it, with the ledgers as they stand now, reading from storage only the ids a ledger
-expects) and `plan` (count what each inventory would read, reading no id and keeping nothing). The payload takes
-`inventories` (names); a run with none takes every one. A run reads one partition. A build merges each inventory in one
+expects), `plan` (count what each inventory would read, reading no id and keeping nothing) and `remove` (remove the ids
+of one finding of one inventory, as an operator asked from the inventory's page). The payload takes `inventories`
+(names); a run with none takes every one; a remove run also takes `removal` and `confirm`. A run reads one partition. A build merges each inventory in one
 transaction once its read is whole: a read that fails part way changes nothing, and the run ends failed with every other
 inventory done. The findings, and what each says, are in [inventory-plan.md](inventory-plan.md), The findings. Lineage
 orders an inventory flow after the flows that write the kinds it reads.

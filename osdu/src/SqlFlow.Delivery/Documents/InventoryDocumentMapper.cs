@@ -1,6 +1,7 @@
 using System.Globalization;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Data;
+using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Snapshots;
 
@@ -83,12 +84,16 @@ internal static class InventoryMapper
                 HeadersPath = ServicePath(src.HeadersPath, InventorySource.DefaultHeadersPath, "source.headersPath", source),
                 VersionsPath = ServicePath(src.VersionsPath, InventorySource.DefaultVersionsPath, "source.versionsPath", source),
                 SchemaPath = ServicePath(src.SchemaPath, InventorySource.DefaultSchemaPath, "source.schemaPath", source),
+                DeletePath = RecordPath(src.DeletePath, InventorySource.DefaultDeletePath, "source.deletePath", source),
+                BulkDeletePath = ServicePath(src.BulkDeletePath, InventorySource.DefaultBulkDeletePath, "source.bulkDeletePath", source),
+                PurgePath = RecordPath(src.PurgePath, InventorySource.DefaultPurgePath, "source.purgePath", source),
             },
             Partitions = partitions,
             FollowsRegistry = followsRegistry,
             Owners = MapOwners(y.Owners, source),
             MaxMissingChecks = maxMissingChecks,
             Inventories = MapInventories(y.Inventories, parameters, read, source),
+            Removal = MapRemoval(y.Removal, source),
             Reliability = FlowMapper.MapReliability(y.Reliability, source),
         };
 
@@ -226,6 +231,55 @@ internal static class InventoryMapper
         }
 
         return inventories;
+    }
+
+    /// <summary>
+    /// The removal a flow allows: at least one of the removable findings, each once, and whether a removal may purge. A flow
+    /// that leaves the key out allows none, so nothing it found can be removed through it.
+    /// </summary>
+    private static InventoryRemovalPolicy? MapRemoval(InventoryRemovalYaml? declared, string source)
+    {
+        if (declared is null)
+        {
+            return null;
+        }
+
+        var removable = string.Join(", ", InventoryRemovals.Removable);
+        if (declared.Findings is null || declared.Findings.Count == 0)
+        {
+            throw new FlowValidationException(
+                $"{source}: removal.findings must name the findings whose ids an operator may remove from OSDU, of {removable}; take removal out for a flow that only reads OSDU.");
+        }
+
+        var findings = new List<string>(declared.Findings.Count);
+        for (var i = 0; i < declared.Findings.Count; i++)
+        {
+            var finding = declared.Findings[i]?.Trim().ToLowerInvariant();
+            if (!InventoryRemovals.IsRemovable(finding))
+            {
+                throw new FlowValidationException(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{source}: removal.findings[{i}] is '{declared.Findings[i]}'; the ids an inventory may remove are those of {removable}: what OSDU serves that no ledger holds live. Every other finding is acted on through its ledger."));
+            }
+
+            if (findings.Contains(finding!, StringComparer.Ordinal))
+            {
+                throw new FlowValidationException(string.Create(CultureInfo.InvariantCulture, $"{source}: removal.findings[{i}] '{finding}' is listed twice."));
+            }
+
+            findings.Add(finding!);
+        }
+
+        return new InventoryRemovalPolicy { Findings = findings, Purge = declared.Purge ?? false };
+    }
+
+    /// <summary>A path of one record's endpoint: a service path that names the record as <c>{id}</c>.</summary>
+    private static string RecordPath(string? declared, string fallback, string key, string source)
+    {
+        var path = ServicePath(declared, fallback, key, source);
+        return path.Contains("{id}", StringComparison.Ordinal)
+            ? path
+            : throw new FlowValidationException($"{source}: {key} '{path}' must name the record it acts on as {{id}}, as '{fallback}' does.");
     }
 
     private static string ServicePath(string? declared, string fallback, string key, string source)

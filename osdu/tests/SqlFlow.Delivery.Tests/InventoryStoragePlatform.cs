@@ -1,0 +1,293 @@
+using System.Globalization;
+using System.Net;
+using System.Text.Json.Nodes;
+using System.Web;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// Storage's own reads over the records the search stand-in holds (openapi storage v2): the listing of a kind's ids a page at
+/// a time under a cursor, the headers of up to a thousand ids (or 404 where the route is not deployed), records by id, a
+/// record's versions, and the schema service's listing of the kinds; and its removals, each taking a record out of what it
+/// serves: the soft delete of a list (204, or 207 naming the ids it did not delete), the soft delete of one id, and its purge.
+/// </summary>
+internal sealed class StoragePlatform : DelegatingHandler
+{
+    private const int Page = 1000;
+
+    public StoragePlatform(FakeDimensionPlatform search)
+        : base(search)
+    {
+        Search = search;
+    }
+
+    public FakeDimensionPlatform Search { get; }
+
+    public HashSet<string> DeletedAfterListing { get; } = new(StringComparer.Ordinal);
+
+    public Dictionary<string, JsonObject> StorageOnly { get; } = new(StringComparer.Ordinal);
+
+    public Dictionary<string, long[]> Versions { get; } = new(StringComparer.Ordinal);
+
+    public bool HeadersDeployed { get; set; } = true;
+
+    /// <summary>The headers route answers 404 with every id it was asked for under notFound: it holds none of them.</summary>
+    public bool HeadersHoldNone { get; set; }
+
+    public ListingCursors Cursors { get; set; }
+
+    private int _listings;
+    private int _headerReads;
+    private int _recordReads;
+    private int _versionReads;
+
+    public int Listings => Volatile.Read(ref _listings);
+
+    public int HeaderReads => Volatile.Read(ref _headerReads);
+
+    public int RecordReads => Volatile.Read(ref _recordReads);
+
+    public int VersionReads => Volatile.Read(ref _versionReads);
+
+    public List<string> KindsListed { get; } = [];
+
+    /// <summary>The ids storage refuses to delete: the bulk soft delete names them as not deleted, a single delete answers 403.</summary>
+    public HashSet<string> Undeletable { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The status every removal answers instead of acting (401 or 403 for a caller that may not delete), or null.</summary>
+    public HttpStatusCode? RemovalsRefused { get; set; }
+
+    /// <summary>The ids soft deleted, in the order they were, and those purged.</summary>
+    public List<string> SoftDeleted { get; } = [];
+
+    public List<string> Purged { get; } = [];
+
+    private int _bulkDeletes;
+    private int _singleDeletes;
+
+    public int BulkDeletes => Volatile.Read(ref _bulkDeletes);
+
+    public int SingleDeletes => Volatile.Read(ref _singleDeletes);
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        var query = HttpUtility.ParseQueryString(request.RequestUri.Query);
+        var body = request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken);
+        if (path == "/api/storage/v2/query/records" && request.Method == HttpMethod.Get)
+        {
+            Interlocked.Increment(ref _listings);
+            var kind = query["kind"]!;
+            KindsListed.Add(kind);
+            var ids = Search.Records.Where(r => r["kind"]!.GetValue<string>() == kind).Select(r => r["id"]!.GetValue<string>()).Order(StringComparer.Ordinal).ToList();
+            if (ids.Count == 0)
+            {
+                return FakeHttpHandler.Json(HttpStatusCode.NotFound, """{"code":404,"reason":"Not Found","message":"Kind not found"}""");
+            }
+
+            if (query["cursor"] is not null && Cursors == ListingCursors.Lost)
+            {
+                return FakeHttpHandler.Json(HttpStatusCode.NotFound, """{"code":404,"reason":"Not Found","message":"Cursor not found"}""");
+            }
+
+            var from = Cursors == ListingCursors.Circling ? 0 : int.Parse(query["cursor"] ?? "0", CultureInfo.InvariantCulture);
+            var page = ids.Skip(from).Take(int.Parse(query["limit"]!, CultureInfo.InvariantCulture)).ToList();
+            var answer = new JsonObject { ["results"] = new JsonArray(page.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray()) };
+            if (from + page.Count < ids.Count)
+            {
+                answer["cursor"] = Cursors == ListingCursors.Circling ? "the-same-cursor" : (from + page.Count).ToString(CultureInfo.InvariantCulture);
+            }
+
+            return FakeHttpHandler.Json(HttpStatusCode.OK, answer.ToJsonString());
+        }
+
+        if (path == "/api/storage/v2/query/records/headers" && request.Method == HttpMethod.Post)
+        {
+            Interlocked.Increment(ref _headerReads);
+            if (!HeadersDeployed)
+            {
+                return new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("no route") };
+            }
+
+            if (HeadersHoldNone)
+            {
+                // The route's own answer when it holds none of the ids it was asked for.
+                var none = JsonNode.Parse(body!)!["records"]!.AsArray().Select(i => (JsonNode?)JsonValue.Create(i!.GetValue<string>())).ToArray();
+                return FakeHttpHandler.Json(HttpStatusCode.NotFound, new JsonObject { ["records"] = new JsonArray(), ["notFound"] = new JsonArray(none) }.ToJsonString());
+            }
+
+            var asked = JsonNode.Parse(body!)!["records"]!.AsArray().Select(i => i!.GetValue<string>()).ToList();
+            Assert.True(asked.Count <= Page);
+            var (found, missing) = Held(asked);
+            return FakeHttpHandler.Json(HttpStatusCode.OK, new JsonObject
+            {
+                ["records"] = new JsonArray(found.Select(r => (JsonNode?)Header(r)).ToArray()),
+                ["notFound"] = new JsonArray(missing.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray()),
+            }.ToJsonString());
+        }
+
+        if (path == "/api/storage/v2/query/records" && request.Method == HttpMethod.Post)
+        {
+            Interlocked.Increment(ref _recordReads);
+            var asked = JsonNode.Parse(body!)!["records"]!.AsArray().Select(i => i!.GetValue<string>()).ToList();
+            Assert.True(asked.Count <= 100);
+            var (found, missing) = Held(asked);
+            return FakeHttpHandler.Json(HttpStatusCode.OK, new JsonObject
+            {
+                ["records"] = new JsonArray(found.Select(r => (JsonNode?)r.DeepClone()).ToArray()),
+                ["invalidRecords"] = new JsonArray(missing.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray()),
+                ["retryRecords"] = new JsonArray(),
+            }.ToJsonString());
+        }
+
+        if (path.StartsWith("/api/storage/v2/records/versions/", StringComparison.Ordinal) && request.Method == HttpMethod.Get)
+        {
+            Interlocked.Increment(ref _versionReads);
+            var id = Uri.UnescapeDataString(path["/api/storage/v2/records/versions/".Length..]);
+            return Versions.TryGetValue(id, out var versions)
+                ? FakeHttpHandler.Json(HttpStatusCode.OK, new JsonObject { ["recordId"] = id, ["versions"] = new JsonArray(versions.Select(v => (JsonNode?)JsonValue.Create(v)).ToArray()) }.ToJsonString())
+                : new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        if (path == "/api/storage/v2/records/delete" && request.Method == HttpMethod.Post)
+        {
+            Interlocked.Increment(ref _bulkDeletes);
+            if (RemovalsRefused is { } refused)
+            {
+                return Refusal(refused);
+            }
+
+            var asked = JsonNode.Parse(body!)!.AsArray().Select(i => i!.GetValue<string>()).ToList();
+            Assert.True(asked.Count <= 500);
+            var notDeleted = new JsonArray();
+            foreach (var id in asked)
+            {
+                if (Undeletable.Contains(id))
+                {
+                    notDeleted.Add(new JsonObject { ["key"] = id, ["value"] = "The user is not authorized to perform this action" });
+                }
+                else if (Take(id))
+                {
+                    SoftDeleted.Add(id);
+                }
+                else
+                {
+                    notDeleted.Add(new JsonObject { ["key"] = id, ["value"] = "Record not found" });
+                }
+            }
+
+            return notDeleted.Count == 0
+                ? new HttpResponseMessage(HttpStatusCode.NoContent)
+                : FakeHttpHandler.Json((HttpStatusCode)207, new JsonObject { ["message"] = "Some records were not deleted", ["notDeletedRecords"] = notDeleted }.ToJsonString());
+        }
+
+        var softDelete = request.Method == HttpMethod.Post && path.EndsWith(":delete", StringComparison.Ordinal);
+        if (path.StartsWith("/api/storage/v2/records/", StringComparison.Ordinal) && (softDelete || request.Method == HttpMethod.Delete))
+        {
+            Interlocked.Increment(ref _singleDeletes);
+            var tail = path["/api/storage/v2/records/".Length..];
+            var id = Uri.UnescapeDataString(softDelete ? tail[..^":delete".Length] : tail);
+            if (RemovalsRefused is { } refused)
+            {
+                return Refusal(refused);
+            }
+
+            if (Undeletable.Contains(id))
+            {
+                return Refusal(HttpStatusCode.Forbidden);
+            }
+
+            if (!Take(id))
+            {
+                return FakeHttpHandler.Json(HttpStatusCode.NotFound, """{"code":404,"reason":"Not Found","message":"Record not found"}""");
+            }
+
+            (softDelete ? SoftDeleted : Purged).Add(id);
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        }
+
+        if (path == "/api/schema-service/v1/schema" && request.Method == HttpMethod.Get)
+        {
+            var offset = int.Parse(query["offset"] ?? "0", CultureInfo.InvariantCulture);
+            var kinds = query["status"] == "PUBLISHED" && query["scope"] == "INTERNAL"
+                ? Search.Records.Select(r => r["kind"]!.GetValue<string>()).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).Skip(offset).ToList()
+                : [];
+            return FakeHttpHandler.Json(HttpStatusCode.OK, new JsonObject
+            {
+                ["schemaInfos"] = new JsonArray(kinds.Select(k => (JsonNode?)new JsonObject { ["schemaIdentity"] = new JsonObject { ["id"] = k }, ["status"] = "PUBLISHED", ["scope"] = "INTERNAL" }).ToArray()),
+            }.ToJsonString());
+        }
+
+        return await base.SendAsync(request, cancellationToken);
+    }
+
+    /// <summary>What storage answers a caller that may not remove what it asks to.</summary>
+    private static HttpResponseMessage Refusal(HttpStatusCode status)
+        => FakeHttpHandler.Json(status, new JsonObject { ["code"] = (int)status, ["reason"] = "Forbidden", ["message"] = "The user is not authorized to perform this action" }.ToJsonString());
+
+    /// <summary>Takes a record out of what storage serves; false when it serves no such record.</summary>
+    private bool Take(string id)
+    {
+        lock (Search.Records)
+        {
+            if (StorageOnly.Remove(id))
+            {
+                return true;
+            }
+
+            var record = Search.Records.FirstOrDefault(r => r["id"]!.GetValue<string>() == id);
+            return record is not null && !DeletedAfterListing.Contains(id) && Search.Records.Remove(record);
+        }
+    }
+
+    private (List<JsonObject> Found, List<string> Missing) Held(IReadOnlyList<string> asked)
+    {
+        var found = new List<JsonObject>();
+        var missing = new List<string>();
+        foreach (var id in asked)
+        {
+            if (StorageOnly.TryGetValue(id, out var only))
+            {
+                found.Add(only);
+            }
+            else if (!DeletedAfterListing.Contains(id) && Search.Records.FirstOrDefault(r => r["id"]!.GetValue<string>() == id) is { } record)
+            {
+                found.Add(record);
+            }
+            else
+            {
+                missing.Add(id);
+            }
+        }
+
+        return (found, missing);
+    }
+
+    private static JsonObject Header(JsonObject record)
+    {
+        var header = new JsonObject();
+        foreach (var name in new[] { "id", "kind", "version", "createUser", "createTime", "modifyUser", "modifyTime" })
+        {
+            if (record[name] is { } value)
+            {
+                header[name] = value.DeepClone();
+            }
+        }
+
+        return header;
+    }
+}
+
+/// <summary>How storage's listing hands out its cursor.</summary>
+internal enum ListingCursors
+{
+    /// <summary>A cursor naming where the next page starts.</summary>
+    Paging,
+
+    /// <summary>The same cursor for every page, and the first page each time.</summary>
+    Circling,
+
+    /// <summary>A cursor storage no longer knows when it is handed back.</summary>
+    Lost,
+}

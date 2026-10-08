@@ -16,8 +16,10 @@ namespace SqlFlow.Delivery.Cli;
 /// without a control plane to reach (docs/inventory-plan.md, Stage 5). <c>list</c> shows a partition's inventories with what
 /// their last reconcile raised, <c>show</c> one with its counts by finding, owners and last runs, <c>records</c> pages through
 /// its ids of one finding, <c>lookup</c> says what every inventory of a partition holds of one OSDU id, <c>runs</c> lists its
-/// builds and reconciles, and <c>export</c> writes its ids as CSV, by the same code as the API's download. Building is a run
-/// like any other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"inventories":["name"]}'</c>.
+/// builds and reconciles, and <c>export</c> writes its ids as CSV, by the same code as the API's download; <c>removals</c> lists
+/// the removals an operator asked of it, and <c>removal</c> pages through what one did to each id. Building is a run like any
+/// other: <c>sqlflow run &lt;flow.yaml&gt; --payload '{"inventories":["name"]}'</c>, and so is a removal, with
+/// <c>--operation remove</c> and the payload the inventory's page sends (docs/inventory-plan.md, Removing what an inventory found).
 /// </summary>
 internal static class DeliveryInventoryVerbs
 {
@@ -38,9 +40,9 @@ internal static class DeliveryInventoryVerbs
         ArgumentNullException.ThrowIfNull(context);
         var ct = context.CancellationToken;
         var verb = context.Arguments.Positional(1)?.ToLowerInvariant() ?? string.Empty;
-        if (verb is not ("list" or "show" or "records" or "lookup" or "runs" or "export"))
+        if (verb is not ("list" or "show" or "records" or "lookup" or "runs" or "export" or "removals" or "removal"))
         {
-            return context.UsageError("say what to show: list, show, records, lookup, runs or export.");
+            return context.UsageError("say what to show: list, show, records, lookup, runs, export, removals or removal.");
         }
 
         var engine = context.Services.GetRequiredService<EngineContext>();
@@ -65,6 +67,14 @@ internal static class DeliveryInventoryVerbs
                 : context.UsageError("name the OSDU id to look up: sqlflow inventory lookup <partition> <osdu-id>.");
         }
 
+        if (verb == "removal")
+        {
+            return context.Arguments.Positional(3) is { } removalText
+                && long.TryParse(removalText, NumberStyles.None, CultureInfo.InvariantCulture, out var removalId) && removalId > 0
+                ? await RemovalAsync(context, ledger, partition, removalId, ct).ConfigureAwait(false)
+                : context.UsageError("name the removal by its number, as 'sqlflow inventory removals' shows it: sqlflow inventory removal <partition> <removal>.");
+        }
+
         if (context.Arguments.Positional(3) is not { } idText)
         {
             return context.UsageError($"name the inventory by its number, as 'sqlflow inventory list' shows it: sqlflow inventory {verb} <partition> <id>.");
@@ -82,6 +92,7 @@ internal static class DeliveryInventoryVerbs
             "show" => await ShowAsync(context, ledger, inventory, ct).ConfigureAwait(false),
             "records" => await RecordsAsync(context, ledger, inventory, ct).ConfigureAwait(false),
             "runs" => await RunsAsync(context, ledger, inventory, ct).ConfigureAwait(false),
+            "removals" => await RemovalsAsync(context, ledger, inventory, ct).ConfigureAwait(false),
             _ => await ExportAsync(context, ledger, inventory, ct).ConfigureAwait(false),
         };
     }
@@ -261,6 +272,7 @@ internal static class DeliveryInventoryVerbs
         }
 
         var hits = records.Where(r => inventories.GetValueOrDefault(r.InventoryId) is not null).ToList();
+        var removed = await ledger.LookupInventoryRemovalItemsAsync(partition, id, ct).ConfigureAwait(false);
         if (context.Json)
         {
             context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
@@ -272,6 +284,7 @@ internal static class DeliveryInventoryVerbs
                     ["inventory"] = Described(inventories[r.InventoryId]!),
                     ["record"] = Described(r, names),
                 }).ToArray()),
+                ["removals"] = new JsonArray(removed.Select(i => (JsonNode)Described(i)).ToArray()),
             }));
             return 0;
         }
@@ -291,6 +304,12 @@ internal static class DeliveryInventoryVerbs
             {
                 context.Out.WriteLine("      " + detail);
             }
+        }
+
+        foreach (var item in removed)
+        {
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  removal {item.InventoryRemovalId} at {Stamp(item.RecordedUtc)}: {item.Outcome} ({item.Finding}){(item.Reason is { Length: > 0 } reason ? ": " + reason : string.Empty)}"));
         }
 
         return 0;
@@ -326,6 +345,98 @@ internal static class DeliveryInventoryVerbs
             {
                 context.Out.WriteLine("            " + error);
             }
+        }
+
+        return 0;
+    }
+
+    /// <summary>The removals an operator asked of the inventory, newest first: what each removed, how much, what it came to, who asked.</summary>
+    private static async Task<int> RemovalsAsync(CliVerbContext context, ILedger ledger, InventoryState inventory, CancellationToken ct)
+    {
+        var limit = Count(context.Arguments.GetOption("--limit"), DefaultRuns, MaxRuns, "--limit");
+        var removals = await ledger.ListInventoryRemovalsAsync(inventory.Partition, inventory.InventoryId, limit, ct).ConfigureAwait(false);
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["partition"] = inventory.Partition,
+                ["inventoryId"] = inventory.InventoryId,
+                ["inventory"] = inventory.Name,
+                ["removals"] = new JsonArray(removals.Select(r => (JsonNode)Described(r)).ToArray()),
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{inventory.Name} in {inventory.Partition}: {removals.Count} removal(s)"));
+        if (removals.Count == 0)
+        {
+            context.Out.WriteLine("  none. A flow that declares removal removes what its inventory found from the inventory's page.");
+        }
+
+        foreach (var removal in removals)
+        {
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  {removal.InventoryRemovalId,8}  {removal.Status,-9}  {Stamp(removal.StartedUtc)}  {removal.Requested} {removal.Finding} {(removal.NamesIds ? "picked" : "(every one)")}, {InventoryRemovals.Describe(removal.Scope)}: {new InventoryRemovalTally(removal.Removed, removal.Gone, removal.Skipped, removal.Failed).Describe()}  by {removal.Actor}"));
+            if (removal.Error is { Length: > 0 } error)
+            {
+                context.Out.WriteLine("            " + error);
+            }
+        }
+
+        return 0;
+    }
+
+    /// <summary>A page of what one removal did to each id, of the outcome --outcome names (every one without it).</summary>
+    private static async Task<int> RemovalAsync(CliVerbContext context, ILedger ledger, string partition, long removalId, CancellationToken ct)
+    {
+        var removal = await ledger.GetInventoryRemovalAsync(partition, removalId, ct).ConfigureAwait(false)
+            ?? throw new FlowValidationException($"No inventory removal {removalId} in partition '{partition}'; 'sqlflow inventory removals <partition> <id>' lists an inventory's removals.");
+        string? outcome = null;
+        if (context.Arguments.GetOption("--outcome") is { } named)
+        {
+            outcome = named.Trim().ToLowerInvariant();
+            if (!InventoryRemovals.IsOutcome(outcome))
+            {
+                throw new FlowValidationException($"--outcome '{named}' is not what a removal comes to for an id; it is one of {string.Join(", ", InventoryRemovals.Outcomes)}.");
+            }
+        }
+
+        long? after = null;
+        if (context.Arguments.GetOption("--after") is { } afterText)
+        {
+            after = long.TryParse(afterText, NumberStyles.None, CultureInfo.InvariantCulture, out var from)
+                ? from
+                : throw new FlowValidationException($"--after '{afterText}' is not an item's number: the one the page before ends with.");
+        }
+
+        var limit = Count(context.Arguments.GetOption("--limit"), DefaultRecords, MaxRecords, "--limit");
+        var read = await ledger.ListInventoryRemovalItemsAsync(partition, removalId, outcome, after, limit + 1, ct).ConfigureAwait(false);
+        var page = read.Take(limit).ToList();
+        long? next = read.Count > limit ? page[^1].InventoryRemovalItemId : null;
+        if (context.Json)
+        {
+            context.Out.WriteLine(CanonicalJson.Pretty(new JsonObject
+            {
+                ["partition"] = partition,
+                ["removal"] = Described(removal),
+                ["outcome"] = outcome,
+                ["items"] = new JsonArray(page.Select(i => (JsonNode)Described(i)).ToArray()),
+                ["next"] = next,
+            }));
+            return 0;
+        }
+
+        context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"removal {removal.InventoryRemovalId} in {partition} ({removal.Status}): {removal.Requested} {removal.Finding}, {InventoryRemovals.Describe(removal.Scope)}, by {removal.Actor} at {Stamp(removal.StartedUtc)}"));
+        foreach (var item in page)
+        {
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                $"  {item.InventoryRemovalItemId,8}  {item.Outcome,-8}  {item.TargetId}{(item.Version is { } version ? " v" + version.ToString(CultureInfo.InvariantCulture) : string.Empty)}{(item.Reason is { Length: > 0 } reason ? ": " + reason : string.Empty)}"));
+        }
+
+        if (next is { } more)
+        {
+            context.Out.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  more: --after {more}"));
         }
 
         return 0;
@@ -543,6 +654,41 @@ internal static class DeliveryInventoryVerbs
         .Where(c => zeros || c.Count > 0)
         .Select(c => (JsonNode)new JsonObject { ["finding"] = c.Finding, ["count"] = c.Count, ["raised"] = c.Raised })
         .ToArray());
+
+    private static JsonObject Described(InventoryRemovalState removal) => new()
+    {
+        ["removal"] = removal.InventoryRemovalId,
+        ["inventoryId"] = removal.InventoryId,
+        ["runId"] = removal.RunId?.ToString("D"),
+        ["actor"] = removal.Actor,
+        ["finding"] = removal.Finding,
+        ["scope"] = removal.Scope,
+        ["namesIds"] = removal.NamesIds,
+        ["requested"] = removal.Requested,
+        ["status"] = removal.Status,
+        ["startedUtc"] = removal.StartedUtc,
+        ["completedUtc"] = removal.CompletedUtc,
+        ["removed"] = removal.Removed,
+        ["gone"] = removal.Gone,
+        ["skipped"] = removal.Skipped,
+        ["failed"] = removal.Failed,
+        ["error"] = removal.Error,
+        ["activityId"] = removal.ActivityId,
+    };
+
+    private static JsonObject Described(InventoryRemovalItemState item) => new()
+    {
+        ["item"] = item.InventoryRemovalItemId,
+        ["removal"] = item.InventoryRemovalId,
+        ["id"] = item.TargetId,
+        ["version"] = item.Version,
+        ["finding"] = item.Finding,
+        ["outcome"] = item.Outcome,
+        ["reason"] = item.Reason,
+        ["ledgerFlowId"] = item.LedgerFlowId?.ToString("D"),
+        ["deliveryKey"] = item.DeliveryKey?.ToString("D"),
+        ["recordedUtc"] = item.RecordedUtc,
+    };
 
     private static int Count(string? value, int fallback, int max, string option)
     {

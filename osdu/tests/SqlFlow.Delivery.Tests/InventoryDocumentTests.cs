@@ -264,12 +264,72 @@ public class InventoryDocumentTests
         Assert.Throws<SqlFlowException>(() => new RetrievalFlowKind(new DeliveryDocumentLoader()).ValidateParameters(new RunParameters { Payload = payload.ToJson() }));
     }
 
+    [Fact]
+    public void A_flow_may_let_an_operator_remove_its_orphan_stale_and_forgotten_ids_soft_deleted_or_purged()
+    {
+        var reading = Parse(Head + WellLogs);
+        Assert.Null(reading.Removal);
+        Assert.Equal(
+            (InventorySource.DefaultDeletePath, InventorySource.DefaultBulkDeletePath, InventorySource.DefaultPurgePath),
+            (reading.Source.DeletePath, reading.Source.BulkDeletePath, reading.Source.PurgePath));
+
+        var removing = Parse(Head + WellLogs + "\nremoval: { findings: [Orphan, stale] }\n");
+        Assert.Equal(["orphan", "stale"], removing.Removal!.Findings);
+        Assert.False(removing.Removal.Purge);
+        Assert.True(removing.Removal.Allows("orphan"));
+        Assert.False(removing.Removal.Allows("forgotten"));
+        Assert.True(Parse(Head + WellLogs + "\nremoval: { findings: [forgotten], purge: true }\n").Removal!.Purge);
+
+        var paths = Parse(Head.Replace("    secretRef: ${env:OSDU_TOKEN}\n", "    secretRef: ${env:OSDU_TOKEN}\n  deletePath: /storage/records/{id}:delete\n  bulkDeletePath: /storage/records/delete\n  purgePath: /storage/records/{id}\n", StringComparison.Ordinal) + WellLogs);
+        Assert.Equal(("/storage/records/{id}:delete", "/storage/records/delete", "/storage/records/{id}"), (paths.Source.DeletePath, paths.Source.BulkDeletePath, paths.Source.PurgePath));
+
+        Assert.Contains("removal.findings must name", Refused(Head + WellLogs + "\nremoval: { findings: [] }\n").Message, StringComparison.Ordinal);
+        Assert.Contains("removal.findings[0] is 'tracked'", Refused(Head + WellLogs + "\nremoval: { findings: [tracked] }\n").Message, StringComparison.Ordinal);
+        Assert.Contains("removal.findings[0] is 'foreign'", Refused(Head + WellLogs + "\nremoval: { findings: [foreign] }\n").Message, StringComparison.Ordinal);
+        Assert.Contains("removal.findings[1] 'orphan' is listed twice", Refused(Head + WellLogs + "\nremoval: { findings: [orphan, orphan] }\n").Message, StringComparison.Ordinal);
+        Assert.Contains("source.purgePath", Refused(Head.Replace("    secretRef: ${env:OSDU_TOKEN}\n", "    secretRef: ${env:OSDU_TOKEN}\n  purgePath: /storage/records\n", StringComparison.Ordinal) + WellLogs).Message, StringComparison.Ordinal);
+        Assert.Throws<FlowValidationException>(() => Parse(Head + WellLogs + "\nremoval: { findings: [orphan], everything: true }\n"));
+    }
+
+    [Fact]
+    public void A_remove_run_names_one_inventory_what_it_removes_and_the_partition_it_confirms_and_no_other_run_takes_a_removal()
+    {
+        var payload = DeliveryRunPayload.Parse("""{ "inventories": ["WellLogs"], "confirm": "dev", "removal": { "finding": "orphan", "scope": "record", "expected": 2, "ids": ["dev:wpc--WellLog:a", "dev:wpc--WellLog:b"] } }""");
+        Assert.Equal(("orphan", "record", 2L, true), (payload.Removal!.Finding, payload.Removal.Scope, payload.Removal.Expected, payload.Removal.NamesIds));
+        Assert.Equal(["dev:wpc--WellLog:a", "dev:wpc--WellLog:b"], payload.Removal.Ids);
+        var again = DeliveryRunPayload.Parse(payload.ToJson()).Removal!;
+        Assert.Equal((payload.Removal.Finding, payload.Removal.Scope, payload.Removal.Expected), (again.Finding, again.Scope, again.Expected));
+        Assert.Equal(payload.Removal.Ids, again.Ids);
+        Assert.False(DeliveryRunPayload.Parse("""{ "removal": { "finding": "stale", "scope": "everything", "expected": 5000000 } }""").Removal!.NamesIds);
+
+        Assert.Contains("removal.finding is 'foreign'", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "removal": { "finding": "foreign", "scope": "record", "expected": 1 } }""")).Message, StringComparison.Ordinal);
+        Assert.Contains("removal.scope is 'history'", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "removal": { "finding": "orphan", "scope": "history", "expected": 1 } }""")).Message, StringComparison.Ordinal);
+        Assert.Contains("removal.expected", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "removal": { "finding": "orphan", "scope": "record", "expected": 0 } }""")).Message, StringComparison.Ordinal);
+        Assert.Contains("names 1 ids and expected says 2", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "removal": { "finding": "orphan", "scope": "record", "expected": 2, "ids": ["a:b:c"] } }""")).Message, StringComparison.Ordinal);
+        Assert.Contains("more than once", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "removal": { "finding": "orphan", "scope": "record", "expected": 2, "ids": ["a:b:c", "a:b:c"] } }""")).Message, StringComparison.Ordinal);
+        Assert.Contains("removal.why", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "removal": { "finding": "orphan", "scope": "record", "expected": 1, "why": "x" } }""")).Message, StringComparison.Ordinal);
+
+        var kind = new InventoryFlowKind(new DeliveryDocumentLoader());
+        kind.ValidateParameters(new RunParameters { Operation = "remove", Payload = payload.ToJson() });
+        Assert.Contains("nothing is removed without all three", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters
+        {
+            Operation = "remove", Payload = """{ "inventories": ["WellLogs"], "removal": { "finding": "orphan", "scope": "record", "expected": 1 } }""",
+        })).Message, StringComparison.Ordinal);
+        Assert.Contains("does not apply to the build operation", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { Payload = payload.ToJson() })).Message, StringComparison.Ordinal);
+        Assert.Contains("does not apply to the reconcile operation", Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { Operation = "reconcile", Payload = """{ "confirm": "dev" }""" })).Message, StringComparison.Ordinal);
+        var removalOnly = DeliveryRunPayload.Parse("""{ "removal": { "finding": "orphan", "scope": "record", "expected": 1 } }""");
+        Assert.Contains("payload removal does not apply to a delivery flow", Assert.Throws<SqlFlowException>(() => removalOnly.Validate(DeliveryOperations.Deliver)).Message, StringComparison.Ordinal);
+        Assert.Throws<SqlFlowException>(() => new DimensionFlowKind(new DeliveryDocumentLoader()).ValidateParameters(new RunParameters { Payload = """{ "removal": { "finding": "orphan", "scope": "record", "expected": 1 } }""" }));
+        Assert.False(DeliveryRunPayload.Parse("""{ "removal": { "finding": "orphan", "scope": "record", "expected": 1 } }""").CarriesOnlyConfiguration);
+    }
+
     [Theory]
     [InlineData(null, "build")]
     [InlineData("build", "build")]
     [InlineData("reconcile", "reconcile")]
     [InlineData("plan", "plan")]
-    public void An_inventory_flow_builds_by_default_and_reconciles_or_plans_when_asked(string? operation, string expected)
+    [InlineData("remove", "remove")]
+    public void An_inventory_flow_builds_by_default_and_reconciles_plans_or_removes_when_asked(string? operation, string expected)
         => Assert.Equal(expected, InventoryFlowKind.Operation(new RunParameters { Operation = operation }));
 
     [Theory]
@@ -283,12 +343,12 @@ public class InventoryDocumentTests
     }
 
     [Fact]
-    public void The_kind_offers_build_reconcile_and_plan_and_only_a_plan_keeps_nothing()
+    public void The_kind_offers_build_reconcile_plan_and_remove_and_only_a_plan_keeps_nothing()
     {
         var kind = new InventoryFlowKind(new DeliveryDocumentLoader());
 
         Assert.Equal("inventory", kind.FlowType);
-        Assert.Equal([("build", true), ("reconcile", true), ("plan", false)], kind.Operations.Select(o => (o.Name, o.WritesTarget)));
+        Assert.Equal([("build", true), ("reconcile", true), ("plan", false), ("remove", true)], kind.Operations.Select(o => (o.Name, o.WritesTarget)));
         var document = Assert.IsType<InventoryFlowDocument>(kind.Parse(Head + WellLogs, "flows/inventory.yaml"));
         Assert.Equal(("welllog-inventory", "inventory", "reconciliation"), (document.Name, document.Kind, document.Batch));
         Assert.Equal(("${env:OSDU_URL}", InventoryFlowDocument.InventoriesTarget), (document.SourceReference, document.TargetReference));

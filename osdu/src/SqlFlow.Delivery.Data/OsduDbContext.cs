@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.30.0";
+    public const string ModuleVersion = "1.31.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -78,6 +78,12 @@ public sealed class OsduDbContext : DbContext
     public DbSet<DeliveryInventoryVersion> DeliveryInventoryVersions => Set<DeliveryInventoryVersion>();
 
     public DbSet<DeliveryInventoryScan> DeliveryInventoryScans => Set<DeliveryInventoryScan>();
+
+    /// <summary>The removals an operator asked of an inventory's ids, one row per removal.</summary>
+    public DbSet<DeliveryInventoryRemoval> DeliveryInventoryRemovals => Set<DeliveryInventoryRemoval>();
+
+    /// <summary>What each removal did to each id it reached: removed, already gone, skipped or failed, and why.</summary>
+    public DbSet<DeliveryInventoryRemovalItem> DeliveryInventoryRemovalItems => Set<DeliveryInventoryRemovalItem>();
 
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
 

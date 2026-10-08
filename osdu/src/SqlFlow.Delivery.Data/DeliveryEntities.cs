@@ -917,6 +917,92 @@ public sealed class DeliveryInventoryVersion
     public long Version { get; set; }
 }
 
+/// <summary>
+/// One removal of an inventory's ids an operator asked for (docs/inventory-plan.md, Removing what an inventory found): the run
+/// it was, who asked, the finding and how much of each record it removes, how many ids the operator was shown, and what it
+/// came to. Every id it reached is a <see cref="DeliveryInventoryRemovalItem"/>.
+/// </summary>
+public sealed class DeliveryInventoryRemoval
+{
+    public short PartitionId { get; set; }
+
+    public long InventoryRemovalId { get; set; }
+
+    public int InventoryId { get; set; }
+
+    /// <summary>The platform run the removal ran as.</summary>
+    public Guid? RunId { get; set; }
+
+    public string Actor { get; set; } = string.Empty;
+
+    /// <summary>The finding whose ids it removes.</summary>
+    public string Finding { get; set; } = string.Empty;
+
+    /// <summary>record (a soft delete) or everything (a purge).</summary>
+    public string Scope { get; set; } = string.Empty;
+
+    /// <summary>True when the removal named its ids; false when it took every id of the finding.</summary>
+    public bool NamesIds { get; set; }
+
+    /// <summary>How many ids the operator was shown, which the removal held the inventory to before it removed anything.</summary>
+    public long Requested { get; set; }
+
+    /// <summary>running, completed or failed.</summary>
+    public string Status { get; set; } = string.Empty;
+
+    public DateTime StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    public long Removed { get; set; }
+
+    public long Gone { get; set; }
+
+    public long Skipped { get; set; }
+
+    public long Failed { get; set; }
+
+    /// <summary>Why the removal stopped, redacted; null for one that completed.</summary>
+    public string? Error { get; set; }
+
+    /// <summary>The audit trail's activity of the removal.</summary>
+    public long? ActivityId { get; set; }
+}
+
+/// <summary>What one removal did to one id: removed, already gone, skipped or failed, at the version it found, and why.</summary>
+public sealed class DeliveryInventoryRemovalItem
+{
+    public short PartitionId { get; set; }
+
+    public long InventoryRemovalItemId { get; set; }
+
+    public long InventoryRemovalId { get; set; }
+
+    public long InventoryRecordId { get; set; }
+
+    /// <summary>The OSDU id, compared exactly.</summary>
+    public string TargetId { get; set; } = string.Empty;
+
+    /// <summary>The version the inventory listed it at.</summary>
+    public long? Version { get; set; }
+
+    /// <summary>The finding it had when the removal reached it.</summary>
+    public string Finding { get; set; } = string.Empty;
+
+    /// <summary>removed, gone, skipped or failed.</summary>
+    public string Outcome { get; set; } = string.Empty;
+
+    /// <summary>Why, in a line: what was asked of OSDU, what moved, or what OSDU answered (redacted).</summary>
+    public string? Reason { get; set; }
+
+    /// <summary>The ledger and record that held it, for a stale or forgotten id.</summary>
+    public Guid? LedgerFlowId { get; set; }
+
+    public Guid? DeliveryKey { get; set; }
+
+    public DateTime RecordedUtc { get; set; }
+}
+
 /// <summary>One id a build listed, staged until the build's read is whole and it is merged into the inventory.</summary>
 public sealed class DeliveryInventoryScan
 {
@@ -2784,6 +2870,36 @@ public static class DeliveryModel
         {
             e.ToTable("InventoryVersion", SchemaName);
             e.HasKey(v => new { v.PartitionId, v.InventoryRecordId, v.Version });
+        });
+
+        modelBuilder.Entity<DeliveryInventoryRemoval>(e =>
+        {
+            e.ToTable("InventoryRemoval", SchemaName);
+            e.HasKey(r => new { r.PartitionId, r.InventoryRemovalId });
+            e.Property(r => r.InventoryRemovalId).ValueGeneratedOnAdd();
+            e.Property(r => r.Actor).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Finding).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Scope).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Error).HasMaxLength(4000);
+            // An inventory's removals, newest first: its page lists them, and a removal closes the earlier ones its process left open.
+            e.HasIndex(r => new { r.PartitionId, r.InventoryId, r.InventoryRemovalId });
+        });
+
+        modelBuilder.Entity<DeliveryInventoryRemovalItem>(e =>
+        {
+            e.ToTable("InventoryRemovalItem", SchemaName);
+            e.HasKey(i => new { i.PartitionId, i.InventoryRemovalItemId });
+            e.Property(i => i.InventoryRemovalItemId).ValueGeneratedOnAdd();
+            OsduId(e.Property(i => i.TargetId)).HasMaxLength(MaxTargetIdLength);
+            e.Property(i => i.Finding).HasMaxLength(16).IsRequired();
+            e.Property(i => i.Outcome).HasMaxLength(16).IsRequired();
+            e.Property(i => i.Reason).HasMaxLength(1000);
+            // A removal's ids in order, and those of one outcome in order: its page pages through either.
+            e.HasIndex(i => new { i.PartitionId, i.InventoryRemovalId, i.InventoryRemovalItemId });
+            e.HasIndex(i => new { i.PartitionId, i.InventoryRemovalId, i.Outcome, i.InventoryRemovalItemId });
+            // An OSDU id across every removal of the partition: a lookup by id answers what was removed of it, by whom and when.
+            e.HasIndex(i => new { i.PartitionId, i.TargetId }).IncludeProperties(i => new { i.InventoryRemovalId, i.Outcome });
         });
 
         modelBuilder.Entity<DeliveryInventoryScan>(e =>

@@ -290,6 +290,148 @@ public sealed class DeliveryInventoryApiTests
         }
     }
 
+    [Fact]
+    public async Task A_removal_is_queued_as_a_run_of_the_flow_only_when_the_flow_allows_it_the_partition_is_confirmed_and_the_count_holds()
+    {
+        var cs = OsduTestServer.Require();
+        await CatalogDatabase.MigrateAsync(cs);
+        await SampleEstate.MigrateModuleAsync(cs);
+
+        var suffix = Guid.NewGuid().ToString("N")[..10];
+        var flowName = "api-removal-" + suffix;
+        var partition = "rm" + suffix;
+        var repoId = FlowIdentity.FromName("repo/cp-removals-" + suffix);
+        var pipelineId = CatalogIdentity.Pipeline(repoId, flowName);
+        var yaml = $$"""
+            flowType: inventory
+            name: {{flowName}}
+            partitions: [{{partition}}]
+            owners: [{{Estate}}]
+            source:
+              endpoint: http://localhost
+            removal: { findings: [orphan] }
+            inventories:
+              - name: WellLogs
+                kind: "{{WellLog}}"
+            """;
+        var flow = new DeliveryDocumentLoader().ParseInventory(yaml, "flows/" + flowName + ".yaml").ForRun(partition, RegisteredPartitions.None);
+        var deliveryFlow = FlowId.Of("api-removal-delivery-" + suffix);
+        var now = new DateTime(DateTime.UtcNow.Ticks / TimeSpan.TicksPerSecond * TimeSpan.TicksPerSecond, DateTimeKind.Utc);
+        string Id(string key) => $"{partition}:work-product-component--WellLog:{key}";
+
+        await using (var db = CatalogDatabase.Create(cs))
+        {
+            db.Repos.Add(new CatalogRepo
+            {
+                Id = repoId, Name = "cp-removals-" + suffix, RemoteUrl = "https://example/cp-removals.git",
+                RootPath = Path.GetTempPath(), FirstSeenUtc = now, LastSyncUtc = now,
+            });
+            db.Pipelines.Add(Pipeline(pipelineId, repoId, flowName, InventoryFlowDefinition.FlowTypeName, yaml, now));
+            await db.SaveChangesAsync();
+        }
+
+        var ledger = new OsduLedger(() => SampleEstate.Context(cs));
+        try
+        {
+            await ledger.RegisterLedgerAsync(new LedgerEntry
+            {
+                FlowId = flow.LedgerId, Partition = partition, Kind = LedgerKinds.Inventory, FlowName = flow.Name, LedgerName = flow.LedgerName,
+            });
+            await ledger.RegisterAsync(deliveryFlow, partition, "api-removal-delivery-" + suffix);
+
+            // Two ids no ledger knows that the estate created (orphans), and one another identity created (foreign).
+            var wellLogs = await ledger.RegisterInventoryAsync(flow.LedgerId, flow.Name, "WellLogs", WellLog, null, "search", "latest");
+            var build = await ledger.StartInventoryRunAsync(flow.LedgerId, wellLogs.InventoryId, InventoryRunStatus.Build, Guid.NewGuid(), "inventory api tests", "search", now.AddHours(-1));
+            await ledger.AppendInventoryScanAsync(flow.LedgerId, build, [Row(Id("ours-1"), 1, Estate), Row(Id("ours-2"), 1, Estate), Row(Id("theirs"), 1, Stranger)]);
+            var merge = await ledger.MergeInventoryAsync(flow.LedgerId, wellLogs.InventoryId, build, now.AddHours(-1));
+            await ledger.ReconcileInventoryAsync(flow.LedgerId, wellLogs.InventoryId, [Estate], now.AddHours(-1));
+            var counts = await ledger.InventoryCountsAsync(flow.LedgerId, wellLogs.InventoryId);
+            await ledger.CompleteInventoryRunAsync(
+                flow.LedgerId, build,
+                new InventoryRunState
+                {
+                    InventoryRunId = build, InventoryId = wellLogs.InventoryId, Operation = InventoryRunStatus.Build, Actor = "inventory api tests",
+                    Status = InventoryRunStatus.Completed, StartedUtc = now.AddHours(-1), ReadMode = "search", Listed = merge.Listed, Added = merge.Added,
+                    FindingsJson = JsonSerializer.Serialize(counts.ByFinding),
+                    OwnersJson = JsonSerializer.Serialize(new { source = "declared", owners = new[] { new { identity = Estate, records = 0 } } }),
+                },
+                "declared", now.AddHours(-1).AddMinutes(1));
+
+            await using var factory = Factory(cs);
+            using var client = factory.CreateClient();
+            var reader = await TokenAsync(client);
+            var operate = await TokenAsync(client, ["read", "operate"]);
+            var inventoryPath = $"/api/v1/delivery/inventories/{partition}/{wellLogs.InventoryId.ToString(CultureInfo.InvariantCulture)}";
+            var removals = inventoryPath + "/removals";
+
+            // The inventory says what its flow lets an operator remove, and where the removal goes.
+            var removal = (await JsonAsync(client, reader, inventoryPath)).GetProperty("removal");
+            Assert.Equal(["orphan"], removal.GetProperty("findings").EnumerateArray().Select(f => f.GetString()!));
+            Assert.Equal((false, "http://localhost"), (removal.GetProperty("purge").GetBoolean(), removal.GetProperty("endpoint").GetString()));
+
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 2 }, HttpStatusCode.BadRequest, "Confirmation required");
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 2, confirm = "prod" }, HttpStatusCode.BadRequest, "is kept in partition");
+            await RefusedAsync(client, operate, removals, new { finding = "foreign", scope = "record", expected = 1, confirm = partition }, HttpStatusCode.BadRequest, "not a finding an inventory removes");
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 2, ids = new[] { Id("ours-1") }, confirm = partition }, HttpStatusCode.BadRequest, "as many as expected says");
+            await RefusedAsync(client, operate, removals, new { finding = "stale", scope = "record", expected = 1, confirm = partition }, HttpStatusCode.Conflict, "allows removing orphan ids, not stale ones");
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "everything", expected = 2, confirm = partition }, HttpStatusCode.Conflict, "soft deletes only");
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 3, confirm = partition }, HttpStatusCode.Conflict, "holds 2 orphan id(s) now");
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 2, ids = new[] { Id("ours-1"), Id("theirs") }, confirm = partition }, HttpStatusCode.Conflict, "not a served orphan id");
+
+            // Every orphan, as many as the operator was shown, in the partition they typed: a run of the flow is queued.
+            Guid runId;
+            using (var accepted = await PostAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 2, confirm = partition.ToUpperInvariant() }))
+            {
+                var body = await accepted.Content.ReadAsStringAsync();
+                Assert.True(accepted.StatusCode == HttpStatusCode.Accepted, body);
+                var answer = JsonDocument.Parse(body).RootElement;
+                runId = answer.GetProperty("runId").GetGuid();
+                Assert.Equal((partition, "WellLogs", "orphan", "record", 2L), (answer.GetProperty("partition").GetString(), answer.GetProperty("inventory").GetString(), answer.GetProperty("finding").GetString(), answer.GetProperty("scope").GetString(), answer.GetProperty("expected").GetInt64()));
+            }
+
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                var run = await db.Runs.SingleAsync(r => r.RunId == runId);
+                Assert.Equal((pipelineId, "remove", "queued"), (run.PipelineId, run.Operation, run.Status));
+                var payload = global::SqlFlow.Delivery.Engine.DeliveryRunPayload.Parse(run.Payload);
+                Assert.Equal(["WellLogs"], payload.Inventories);
+                Assert.Equal((partition, "orphan", 2L, false), (payload.Confirm, payload.Removal!.Finding, payload.Removal.Expected, payload.Removal.NamesIds));
+                Assert.Contains(partition, run.ValuesJson, StringComparison.Ordinal);
+            }
+
+            // While that run is queued, the flow is busy: a second removal waits.
+            await RefusedAsync(client, operate, removals, new { finding = "orphan", scope = "record", expected = 2, confirm = partition }, HttpStatusCode.Conflict, "is queued or running");
+            Assert.Empty((await JsonAsync(client, reader, removals)).EnumerateArray());
+            Assert.Empty((await JsonAsync(client, reader, $"/api/v1/delivery/inventories/{partition}/removals/1/items")).GetProperty("items").EnumerateArray());
+            await ProblemAsync(client, reader, $"/api/v1/delivery/inventories/{partition}/removals/2147480000", HttpStatusCode.NotFound, "No inventory removal");
+            await ProblemAsync(client, reader, $"/api/v1/delivery/inventories/{partition}/removals/1/items?outcome=lost", HttpStatusCode.BadRequest, "not what a removal comes to");
+        }
+        finally
+        {
+            await using (var db = CatalogDatabase.Create(cs))
+            {
+                await db.Runs.Where(r => r.PipelineId == pipelineId).ExecuteDeleteAsync();
+            }
+
+            await CleanUpAsync(cs, repoId, partition, flow.LedgerId, deliveryFlow);
+        }
+    }
+
+    private static async Task<HttpResponseMessage> PostAsync(HttpClient client, string token, string path, object body)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(path, UriKind.Relative)) { Content = JsonContent.Create(body) };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return await client.SendAsync(request);
+    }
+
+    private static async Task RefusedAsync(HttpClient client, string token, string path, object body, HttpStatusCode status, string says)
+    {
+        using var response = await PostAsync(client, token, path, body);
+        var text = await response.Content.ReadAsStringAsync();
+        Assert.True(response.StatusCode == status, $"POST {path} answered {(int)response.StatusCode}, not {(int)status}: {text}");
+        Assert.Contains(says, text, StringComparison.Ordinal);
+    }
+
     private static InventoryScanRow Row(string id, long version, string creator)
         => new(id, "osdu:wks:work-product-component--WellLog:1.4.0", version, creator, new DateTime(2026, 9, 1, 8, 0, 0, DateTimeKind.Utc), creator,
             new DateTime(2026, 9, 2, 8, 0, 0, DateTimeKind.Utc));
@@ -317,6 +459,9 @@ public sealed class DeliveryInventoryApiTests
             var inventories = await osdu.DeliveryInventories.Where(i => i.FlowId == inventoryFlow).Select(i => i.InventoryId).ToListAsync();
             var runs = await osdu.DeliveryInventoryRuns.Where(r => inventories.Contains(r.InventoryId)).Select(r => r.InventoryRunId).ToListAsync();
             var records = osdu.DeliveryInventoryRecords.Where(r => inventories.Contains(r.InventoryId)).Select(r => r.InventoryRecordId);
+            var removals = osdu.DeliveryInventoryRemovals.Where(r => inventories.Contains(r.InventoryId)).Select(r => r.InventoryRemovalId);
+            await osdu.DeliveryInventoryRemovalItems.Where(i => removals.Contains(i.InventoryRemovalId)).ExecuteDeleteAsync();
+            await osdu.DeliveryInventoryRemovals.Where(r => inventories.Contains(r.InventoryId)).ExecuteDeleteAsync();
             await osdu.DeliveryInventoryScans.Where(s => runs.Contains(s.InventoryRunId)).ExecuteDeleteAsync();
             await osdu.DeliveryInventoryVersions.Where(v => records.Contains(v.InventoryRecordId)).ExecuteDeleteAsync();
             await osdu.DeliveryInventoryRecords.Where(r => inventories.Contains(r.InventoryId)).ExecuteDeleteAsync();
@@ -388,11 +533,11 @@ public sealed class DeliveryInventoryApiTests
         return await client.SendAsync(request);
     }
 
-    private static async Task<string> TokenAsync(HttpClient client)
+    private static async Task<string> TokenAsync(HttpClient client, string[]? scopes = null)
     {
         using var response = await client.PostAsJsonAsync(
             new Uri("/api/v1/auth/token", UriKind.Relative),
-            new TokenRequest(ControlPlaneAppFactory.BootstrapSecret, null, ["read"]));
+            new TokenRequest(ControlPlaneAppFactory.BootstrapSecret, null, scopes ?? ["read"]));
         response.EnsureSuccessStatusCode();
         var token = await response.Content.ReadFromJsonAsync<TokenResponse>();
         Assert.NotNull(token);

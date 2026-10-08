@@ -14,7 +14,8 @@ namespace SqlFlow.Delivery.Engine;
 
 /// <summary>
 /// Runs one inventory flow document as one platform run (docs/inventory-plan.md). The run's parameters select the operation:
-/// build (the default), reconcile or plan; the payload names the inventories, none naming every one; the partition run value
+/// build (the default), reconcile, plan or remove; the payload names the inventories, none naming every one (a removal names
+/// one, with what it removes and the partition it confirms); the partition run value
 /// names the partition, settled as every run of the module settles it. The engine's log becomes the run log and live trace, the
 /// outcome becomes <c>run.json</c>, and every build and reconcile is kept with its inventory. A run in which an inventory failed
 /// ends failed, still carrying its outcome, with every other inventory done.
@@ -75,6 +76,13 @@ public sealed class InventoryExecutor : IFlowDocumentExecutor
             log.LogError("{Operation} failed: {Error}", operation, error);
             result = failed.Outcome;
         }
+        catch (InventoryRemovalFailedException stopped)
+        {
+            // The removal stopped part way: the run ends failed, and its outcome says what it removed up to there.
+            error = stopped.Message;
+            log.LogError("{Operation} failed: {Error}", operation, error);
+            result = stopped.Outcome;
+        }
         catch (Exception ex)
         {
             // The run boundary: every failure ends the run as a recorded one. An unexpected kind is a defect, so its stack
@@ -121,6 +129,11 @@ public sealed class InventoryExecutor : IFlowDocumentExecutor
         return operation switch
         {
             DeliveryOperations.Plan => await runner.PlanAsync(payload.Inventories, ct).ConfigureAwait(false),
+            DeliveryOperations.Remove => await runner.RemoveAsync(
+                payload.Inventories.Count == 1 ? payload.Inventories[0] : throw new DeliveryException("A remove run names the one inventory it removes from."),
+                payload.Removal ?? throw new DeliveryException("A remove run names what it removes (removal)."),
+                payload.Confirm ?? throw new DeliveryException("A remove run names the partition it acts in (confirm)."),
+                runId, actor, ct).ConfigureAwait(false),
             DeliveryOperations.Reconcile => await runner.ReconcileAsync(payload.Inventories, runId, actor, ct).ConfigureAwait(false),
             _ => await runner.BuildAsync(payload.Inventories, runId, actor, ct).ConfigureAwait(false),
         };

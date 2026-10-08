@@ -605,6 +605,7 @@ public static class DeliveryEndpoints
 
         // Deleting a flow's whole ledger, every interface's, through a run of the pipeline that removes its records from OSDU first.
         DeliveryLedgerEndpoints.MapWrites(delivery);
+        DeliveryInventoryEndpoints.MapWrites(delivery);
         delivery.MapPost("/ledger/prune", PruneAsync).WithName("PruneDeliveryLedger").RequireAuthorization(ControlPlanePolicies.Admin);
         DeliveryDimensionEndpoints.MapWrites(delivery);
         return group;

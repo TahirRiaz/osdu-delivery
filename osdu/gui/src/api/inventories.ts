@@ -3,7 +3,7 @@
 // compose them with TanStack Query. An answer leaves out what holds no value, so every field that may hold none is optional
 // here, and a page tests it with `=== undefined` or `??`, never `=== null`.
 
-import { get, getText } from "@/api/client";
+import { get, getText, post } from "@/api/client";
 
 /**
  * What an inventory finds of an id: what OSDU serves of it set against what the ledgers hold of it. The first eight are the
@@ -20,6 +20,87 @@ export const INVENTORY_FINDINGS: readonly InventoryFinding[] = [
 
 /** The findings a report raises: where the ledgers and OSDU disagree. */
 export const RAISED_FINDINGS: readonly InventoryFinding[] = ["orphan", "missing", "undoing", "forgotten", "stale", "unconfirmed", "drifted", "unlisted"];
+
+/** The findings whose ids an inventory flow may remove from OSDU, when its document allows it. */
+export const REMOVABLE_FINDINGS: readonly InventoryFinding[] = ["orphan", "stale", "forgotten"];
+
+/** How much of each record a removal takes: a soft delete (`record`, reversible) or a purge (`everything`). */
+export type InventoryRemovalScope = "record" | "everything";
+
+/** What a removal came to for one id. */
+export type InventoryRemovalOutcome = "removed" | "gone" | "skipped" | "failed";
+
+/** Every outcome, in the order a page lists them. */
+export const INVENTORY_REMOVAL_OUTCOMES: readonly InventoryRemovalOutcome[] = ["removed", "gone", "skipped", "failed"];
+
+/** What a flow lets an operator remove of what its inventory found, and the platform the removal goes to as the flow writes it. */
+export interface InventoryRemovalPolicy {
+  findings: string[];
+  purge: boolean;
+  endpoint: string;
+}
+
+/** A removal an operator asks for: the finding, how much of each record, the count shown, the ids picked, and the partition typed back. */
+export interface InventoryRemovalRequest {
+  finding: string;
+  scope: InventoryRemovalScope;
+  expected: number;
+  ids?: string[];
+  confirm: string;
+}
+
+/** A removal queued as a run of the flow. */
+export interface InventoryRemovalAccepted {
+  runId: string;
+  status: string;
+  partition: string;
+  inventory: string;
+  finding: string;
+  scope: InventoryRemovalScope;
+  expected: number;
+}
+
+/** One removal of an inventory's ids: its run, who asked, what and how much, where it stands, and what it came to. */
+export interface InventoryRemoval {
+  inventoryRemovalId: number;
+  inventoryId: number;
+  runId?: string;
+  actor: string;
+  finding: string;
+  scope: InventoryRemovalScope | string;
+  namesIds: boolean;
+  requested: number;
+  status: InventoryRunStatus | string;
+  startedUtc: string;
+  completedUtc?: string;
+  removed: number;
+  gone: number;
+  skipped: number;
+  failed: number;
+  error?: string;
+  activityId?: number;
+}
+
+/** What one removal did to one id, and why. */
+export interface InventoryRemovalItem {
+  inventoryRemovalItemId: number;
+  inventoryRemovalId: number;
+  inventoryRecordId: number;
+  targetId: string;
+  version?: number;
+  finding: string;
+  outcome: InventoryRemovalOutcome | string;
+  reason?: string;
+  ledgerFlowId?: string;
+  deliveryKey?: string;
+  recordedUtc: string;
+}
+
+/** A page of what a removal did to its ids, with the id the next page starts after; left out on the last page. */
+export interface InventoryRemovalItemPage {
+  items: InventoryRemovalItem[];
+  next?: number;
+}
 
 /** A finding with how many ids have it, and whether a report raises it. */
 export interface InventoryCount {
@@ -118,6 +199,8 @@ export interface InventoryDetail {
   owners?: InventoryOwners;
   lastBuild?: InventoryRun;
   lastReconcile?: InventoryRun;
+  /** What the flow lets an operator remove of what the inventory found; left out when it allows none. */
+  removal?: InventoryRemovalPolicy;
 }
 
 /** One id of an inventory: what OSDU serves of it, its finding and why, and what the ledgers hold of it. */
@@ -154,11 +237,12 @@ export interface InventoryRecordPage {
   next?: number;
 }
 
-/** What every inventory of a partition holds of one OSDU id. */
+/** What every inventory of a partition holds of one OSDU id, and what removals did to it, the newest first. */
 export interface InventoryLookup {
   partition: string;
   targetId: string;
   hits: { inventory: Inventory; record: InventoryRecord }[];
+  removals: InventoryRemovalItem[];
 }
 
 /** A parameter a run of an inventory flow takes. */
@@ -219,4 +303,13 @@ export const inventoryApi = {
   /** An inventory's ids of one finding (every id with none) as CSV text. */
   exportCsv: (partition: string, inventoryId: number, finding?: string) =>
     getText(`${inventoryPath(partition, inventoryId)}/export${finding === undefined ? "" : `?finding=${encodeURIComponent(finding)}`}`),
+  /** Queues the run that removes from OSDU the ids of one finding of the inventory, as the caller. */
+  remove: (partition: string, inventoryId: number, request: InventoryRemovalRequest) =>
+    post<InventoryRemovalAccepted>(`${inventoryPath(partition, inventoryId)}/removals`, request),
+  /** An inventory's removals, newest first. */
+  removals: (partition: string, inventoryId: number, limit?: number) =>
+    get<InventoryRemoval[]>(`${inventoryPath(partition, inventoryId)}/removals`, limit === undefined ? {} : { limit }),
+  /** A page of what one removal did to its ids, of one outcome or every one, after the item `after` names. */
+  removalItems: (partition: string, removalId: number, query: { outcome?: string; after?: number; limit?: number } = {}) =>
+    get<InventoryRemovalItemPage>(`/api/v1/delivery/inventories/${encodeURIComponent(partition)}/removals/${removalId}/items`, query),
 };

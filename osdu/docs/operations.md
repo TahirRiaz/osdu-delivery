@@ -133,6 +133,9 @@ Every delivery route lives under `/api/v1/delivery` and uses the platform's toke
 | `GET /inventories/{partition}/{inventoryId}/records?finding=&after=&limit=` | read | A page of its ids (100 by default, at most 1,000), of one finding or every one, in the order the inventory took them in: each with what OSDU served of it (kind, version, who created and last changed it and when), when it was first listed, changed and gone, its finding and why, and the ledger and record, or the artifact, that claims it. `next` is handed back as `after`. 400 for a finding the inventory does not know. |
 | `GET /inventories/{partition}/{inventoryId}/runs?limit=` | read | Its builds and reconciles, newest first (30 by default, at most 200): how each read, what it changed, the ids it read from storage, what it found, the owners it used, who ran it and why one failed. |
 | `GET /inventories/lookup?id=&partition=` | read | What every inventory of the partition holds of one OSDU id: each inventory listing it, or expecting it from a ledger, with its finding there. The workbench's partition when the request names none; 400 when neither does. |
+| `POST /inventories/{partition}/{inventoryId}/removals` | operate | Queue the run that removes from OSDU the ids of one finding of the inventory ([inventory-plan.md](inventory-plan.md#removing-what-an-inventory-found)): `{ "finding", "scope": "record"\|"everything", "expected", "ids"?, "confirm", "pool"? }`. 400 for a finding no inventory removes, an unknown scope, ids that are not as many as `expected`, or a `confirm` that is not the inventory's partition; 409 when the flow does not allow the finding or a purge, the inventory was never reconciled, it holds another count of the finding (or not every id picked with it), or a run of the flow is queued or running. 202 with the run. |
+| `GET /inventories/{partition}/{inventoryId}/removals?limit=` | read | Its removals, newest first (30 by default, at most 200): the run, who asked, the finding and scope, the count shown, where each stands, its tallies and why it stopped. |
+| `GET /inventories/{partition}/removals/{removalId}`, `/items?outcome=&after=&limit=` | read | One removal, and a page of what it did to each id (100 by default, at most 1,000), of one outcome or every one: the version, the finding, the outcome and why. |
 | `GET /inventories/{partition}/{inventoryId}/export?finding=` | read | Its ids, of one finding or every one, as CSV (RFC 4180; a cell a spreadsheet would run as a formula starts with an apostrophe), written a page at a time. |
 | `GET /flows/{pipelineId}/inventories` | read | An inventory flow's inventories for its pipeline tab: those it declares in document order, then those its ledger keeps that it no longer declares, whether the flow reads the partition (`readsPartition`), what stops it (`problem`), and the parameters a run takes. 409 for a flow of another kind. |
 | `GET /runs/{runId}/dimension-builds` | read | The builds a platform run made, each with the dimension it built. |
@@ -345,7 +348,8 @@ ledger when it is removed from OSDU, and deleting the ledger is refused until no
 ## Finding orphans: inventory flows
 
 An inventory flow ([documents.md](documents.md#inventory-flow), [inventory-plan.md](inventory-plan.md)) keeps every id an
-OSDU kind holds in a partition and compares it with every ledger of the partition; it only reads OSDU. OSDU, **Inventories**
+OSDU kind holds in a partition and compares it with every ledger of the partition; it reads OSDU, and removes from it
+only what an operator asks of a flow that allows it. OSDU, **Inventories**
 lists the inventories with what each last raised; an inventory's report shows its ids by finding, a grid of the ids of the
 finding picked, its runs, a lookup by OSDU id, and the export of a finding as CSV. Its findings are one line of tabs over
 the grid, the raised ones first; those the line has no room for, and those no id has, are in its **more** menu. What the
@@ -359,13 +363,21 @@ for a trace. **Open in the explorer** opens the id there. The id open is in the 
 lands on it, open in the panel. An inventory flow's pipeline has an Inventories tab, and **Run pipeline** opens the run dialog with
 the inventory picked.
 
+Where the flow declares `removal`, the grid of a finding it names (orphan, stale or forgotten) has a box on each row: pick
+ids, or **Select all** to take every id of the finding however many, and **Remove**. The dialog names the partition and
+the platform, offers a soft delete (and a purge where `removal.purge` allows it), says what is checked again of each id
+before it goes, and queues nothing until the partition is typed back. The removal is a run of the flow; while it runs, a
+line over the tabs says how far it got, and the **Removals** tab lists every removal with its tallies, each opening in the
+bottom panel with what it did to each id and why. A removal that skipped ids left them in OSDU for a reason: look at
+them, and remove again once the next build has listed them as they are.
+
 | Finding | What to do |
 | --- | --- |
-| `orphan` | OSDU serves an id no ledger knows, written by an identity this estate writes as. Find where it came from (its kind, `createUser` and `createTime`; a lookup by id across inventories), then remove it in OSDU, or deliver it again through a flow so a ledger holds it. |
+| `orphan` | OSDU serves an id no ledger knows, written by an identity this estate writes as. Find where it came from (its kind, `createUser` and `createTime`; a lookup by id across inventories), then remove it from the inventory's page (a flow that declares `removal`), or deliver it again through a flow so a ledger holds it. |
 | `missing` | A ledger expects an id storage does not hold: redeliver the record (its page links from the row), or remove it from the ledger if it should be gone. |
 | `undoing` | An undo is due or failed for it: see [Unfinished deliveries and their undo](#unfinished-deliveries-and-their-undo). |
-| `forgotten` | A record purged from its ledger, or an id a delivery of one minted, that OSDU still serves: remove it in OSDU, or deliver it again. |
-| `stale` | A ledger removed it, or an undo removed or kept it, and OSDU still serves it: look at the record's or the artifact's history; a removal OSDU did not apply is asked again by removing the record once more. |
+| `forgotten` | A record purged from its ledger, or an id a delivery of one minted, that OSDU still serves: remove it from the inventory's page, or deliver it again. |
+| `stale` | A ledger removed it, or an undo removed or kept it, and OSDU still serves it: look at the record's or the artifact's history; a removal OSDU did not apply is asked again by removing the record once more, or from the inventory's page, which records it on the record. |
 | `unconfirmed` | A ledger never confirmed the delivery (pending, held or failed): a write that landed without its answer. The record's next delivery, or its release, settles it. |
 | `drifted` | OSDU serves another version than the ledger delivered: a verify run says whether the edit was legitimate ([Runbook](#runbook)). |
 | `unlisted` | Storage holds it and the read did not list it: the index has not caught up, or the inventory is narrowed. A later build lists it; a storage read (`source.read: storage`) lists it now. |

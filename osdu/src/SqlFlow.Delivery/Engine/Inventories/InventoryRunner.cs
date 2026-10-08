@@ -71,9 +71,10 @@ public sealed class InventoryRunsFailedException : DeliveryException
 /// it into the inventory once whole, reads the versions of what is new or moved when the inventory keeps every version, and
 /// reconciles; a reconcile compares the inventory as its last build left it with the ledgers as they stand now. The comparison
 /// reads every ledger of the partition and writes none of them; the ids a ledger expects that the read did not list are read
-/// from storage, within the flow's bound, to tell missing from merely unlisted. Nothing is written to OSDU.
+/// from storage, within the flow's bound, to tell missing from merely unlisted. Nothing is written to OSDU, but by a removal
+/// an operator asks of a flow that allows it (<see cref="RemoveAsync"/>).
 /// </summary>
-public sealed class InventoryRunner
+public sealed partial class InventoryRunner
 {
     /// <summary>The ids a build stages in one write.</summary>
     public const int StageChunk = 10_000;

@@ -81,6 +81,12 @@ public static class DeliveryOperations
     /// <summary>Compare an inventory flow's inventories, as their last builds left them, with the ledgers as they stand now, reading OSDU only for the ids a ledger expects.</summary>
     public const string Reconcile = "reconcile";
 
+    /// <summary>
+    /// Remove from OSDU the ids of one finding an inventory found, as an operator asked (docs/inventory-plan.md, Removing what an
+    /// inventory found): an inventory flow's operation, run only for a flow whose document allows it.
+    /// </summary>
+    public const string Remove = "remove";
+
     /// <summary>The operation a run of a delivery flow performs: the one it names, or <see cref="Deliver"/>.</summary>
     public static string Of(RunParameters parameters)
     {
@@ -287,12 +293,17 @@ public sealed record DeliveryRunPayload
     /// <summary>The inventories of an inventory flow a run builds or reconciles, by name.</summary>
     public const string InventoriesProperty = "inventories";
 
+    /// <summary>What an inventory flow's remove run removes from OSDU (docs/inventory-plan.md, Removing what an inventory found).</summary>
+    public const string RemovalProperty = "removal";
+
     /// <summary>The most test names, and the most tags, one run selects.</summary>
     public const int MaxSelected = AssertionFlowDefinition.MaxTests;
 
     private static readonly string[] Properties =
         [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty,
-            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty, InventoriesProperty];
+            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty, InventoriesProperty, RemovalProperty];
+
+    private static readonly string[] RemovalProperties = ["finding", "scope", "expected", "ids"];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -384,8 +395,14 @@ public sealed record DeliveryRunPayload
     /// <summary>The inventories of an inventory flow the run builds or reconciles, by name; with none, every inventory.</summary>
     public IReadOnlyList<string> Inventories { get; init; } = [];
 
-    /// <summary>True when the payload selects inventories of an inventory flow.</summary>
-    public bool SelectsInventories => Inventories.Count > 0;
+    /// <summary>
+    /// What an inventory flow's remove run removes: the ids of one finding of the inventory <see cref="Inventories"/> names, with
+    /// <see cref="Confirm"/> naming the partition it acts in. Only that run carries it.
+    /// </summary>
+    public InventoryRemovalRequest? Removal { get; init; }
+
+    /// <summary>True when the payload selects inventories of an inventory flow, or names what one removes.</summary>
+    public bool SelectsInventories => Inventories.Count > 0 || Removal is not null;
 
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
@@ -478,6 +495,7 @@ public sealed record DeliveryRunPayload
             Tags = Selection(root[TagsProperty], TagsProperty, "tags"),
             Dimensions = Selection(root[DimensionsProperty], DimensionsProperty, "dimension names"),
             Inventories = Selection(root[InventoriesProperty], InventoriesProperty, "inventory names"),
+            Removal = root[RemovalProperty] is null ? null : RemovalRequest(root[RemovalProperty]),
         };
     }
 
@@ -580,6 +598,11 @@ public sealed record DeliveryRunPayload
         if (SelectsDimensions)
         {
             throw new SqlFlowException($"payload {DimensionsProperty} does not apply to a delivery flow: only a dimension flow's runs select dimensions.");
+        }
+
+        if (Removal is not null)
+        {
+            throw new SqlFlowException($"payload {RemovalProperty} does not apply to a delivery flow: only an inventory flow's remove run names what it removes; a delivery flow removes its records through its ledger.");
         }
 
         if (SelectsInventories)
@@ -777,6 +800,22 @@ public sealed record DeliveryRunPayload
             root[InventoriesProperty] = new JsonArray(Inventories.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
         }
 
+        if (Removal is { } removal)
+        {
+            var written = new JsonObject
+            {
+                ["finding"] = removal.Finding,
+                ["scope"] = removal.Scope,
+                ["expected"] = removal.Expected,
+            };
+            if (removal.NamesIds)
+            {
+                written["ids"] = new JsonArray(removal.Ids.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
+            }
+
+            root[RemovalProperty] = written;
+        }
+
         return root.ToJsonString();
     }
 
@@ -914,6 +953,83 @@ public sealed record DeliveryRunPayload
     /// a flow writes one (<see cref="SelectableNames.IsName"/>), none twice. Whether each names something of the flow is the
     /// run's to check, since a payload is validated before the flow document is read.
     /// </summary>
+    /// <summary>
+    /// The removal a payload names, parsed strictly: a removable finding, a scope (record or everything), the count the operator
+    /// was shown, and at most <see cref="InventoryRemovalRequest.MaxIds"/> distinct ids, each an OSDU id, whose number is that count.
+    /// </summary>
+    private static InventoryRemovalRequest RemovalRequest(JsonNode? node)
+    {
+        if (node is not JsonObject removal)
+        {
+            throw new SqlFlowException($"payload {RemovalProperty} must be an object naming finding, scope, expected and optionally ids.");
+        }
+
+        foreach (var (name, _) in removal)
+        {
+            if (!RemovalProperties.Contains(name, StringComparer.Ordinal))
+            {
+                throw new SqlFlowException($"payload {RemovalProperty}.{name} is not one of {string.Join(", ", RemovalProperties)}.");
+            }
+        }
+
+        var finding = Text(removal["finding"], $"{RemovalProperty}.finding");
+        if (!InventoryRemovals.IsRemovable(finding))
+        {
+            throw new SqlFlowException(
+                $"payload {RemovalProperty}.finding is '{finding}'; an inventory removes the ids of {string.Join(", ", InventoryRemovals.Removable)}.");
+        }
+
+        var scope = Text(removal["scope"], $"{RemovalProperty}.scope");
+        if (!InventoryRemovals.IsScope(scope))
+        {
+            throw new SqlFlowException(
+                $"payload {RemovalProperty}.scope is '{scope}'; it is {InventoryRemovals.SoftDelete} (a soft delete, reversible) or {InventoryRemovals.Purge} (a purge, every version destroyed).");
+        }
+
+        if (removal["expected"] is not JsonValue expectedValue || !expectedValue.TryGetValue<long>(out var expected) || expected < 1)
+        {
+            throw new SqlFlowException($"payload {RemovalProperty}.expected must be the number of ids the operator was shown, at least 1.");
+        }
+
+        IReadOnlyList<string> ids = [];
+        if (removal["ids"] is { } listed)
+        {
+            if (listed is not JsonArray array || array.Count == 0 || array.Count > InventoryRemovalRequest.MaxIds)
+            {
+                throw new SqlFlowException(
+                    $"payload {RemovalProperty}.ids must be an array of 1 to {InventoryRemovalRequest.MaxIds} OSDU ids; leave it out to remove every id of the finding.");
+            }
+
+            var named = new List<string>(array.Count);
+            foreach (var item in array)
+            {
+                var id = Text(item, $"{RemovalProperty}.ids").Trim();
+                if (id.Length == 0 || id.Length > DeliveryModel.MaxTargetIdLength || id.Any(char.IsWhiteSpace))
+                {
+                    throw new SqlFlowException($"payload {RemovalProperty}.ids holds '{id}', which is not an OSDU id.");
+                }
+
+                if (named.Contains(id, StringComparer.Ordinal))
+                {
+                    throw new SqlFlowException($"payload {RemovalProperty}.ids names '{id}' more than once.");
+                }
+
+                named.Add(id);
+            }
+
+            if (named.Count != expected)
+            {
+                throw new SqlFlowException(string.Create(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    $"payload {RemovalProperty}.ids names {named.Count} ids and expected says {expected}; a removal that names its ids expects as many."));
+            }
+
+            ids = named;
+        }
+
+        return new InventoryRemovalRequest { Finding = finding, Scope = scope, Expected = expected, Ids = ids };
+    }
+
     private static IReadOnlyList<string> Selection(JsonNode? node, string property, string what)
     {
         if (node is null)

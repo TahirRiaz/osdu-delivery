@@ -1324,7 +1324,19 @@ internal sealed class InventoryFlowYaml
 
     public List<InventoryYaml>? Inventories { get; set; }
 
+    /// <summary>What an operator may remove from OSDU of what the inventories found; none when left out.</summary>
+    public InventoryRemovalYaml? Removal { get; set; }
+
     public FlowReliabilityYaml? Reliability { get; set; }
+}
+
+internal sealed class InventoryRemovalYaml
+{
+    /// <summary>The findings whose ids may be removed: orphan, stale, forgotten.</summary>
+    public List<string>? Findings { get; set; }
+
+    /// <summary>Whether a removal may purge rather than soft delete.</summary>
+    public bool? Purge { get; set; }
 }
 
 internal sealed class InventorySourceYaml
@@ -1349,6 +1361,12 @@ internal sealed class InventorySourceYaml
     public string? VersionsPath { get; set; }
 
     public string? SchemaPath { get; set; }
+
+    public string? DeletePath { get; set; }
+
+    public string? BulkDeletePath { get; set; }
+
+    public string? PurgePath { get; set; }
 }
 
 internal sealed class InventoryYaml

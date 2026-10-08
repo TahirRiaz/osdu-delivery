@@ -251,6 +251,8 @@ sqlflow inventory records <partition> <id> [--finding <finding>] [--after <n>] [
 sqlflow inventory lookup <partition> <osdu-id> [--db <ref>] [--json]
 sqlflow inventory runs <partition> <id> [--limit <n>] [--db <ref>] [--json]
 sqlflow inventory export <partition> <id> [--finding <finding>] [--out <file.csv>] [--db <ref>]
+sqlflow inventory removals <partition> <id> [--limit <n>] [--db <ref>] [--json]
+sqlflow inventory removal <partition> <removal> [--outcome <outcome>] [--after <n>] [--limit <n>] [--db <ref>] [--json]
 ```
 
 The inventories an inventory flow's builds keep in the module database ([inventory-plan.md](../../inventory-plan.md)):
@@ -264,13 +266,17 @@ inventory is named by its partition and its number, as `list` shows them.
 | `list` | The inventories of the partition `--partition` names, or of every partition: the number, partition, flow and inventory, the kind it reads, and how many ids its last reconcile raised; a newer run that failed or is under way is named under it. |
 | `show` | One inventory: what it reads and how, its last build and reconcile (what each listed, changed and raised), the owners its last reconcile used and how it knew them (`declared`, `inferred` or `none`), and its ids by finding as its rows hold them now. |
 | `records` | A page of its ids (50 unless `--limit` says otherwise, at most 1,000), of the finding `--finding` names or every one, in the order the inventory took them in: each with its version, why it has its finding, and the ledger, record, status and version or the artifact it rests on. The line under the page names the `--after` of the next. |
-| `lookup` | What every inventory of the partition holds of one OSDU id: each inventory listing it or expecting it from a ledger, with its finding there. |
+| `lookup` | What every inventory of the partition holds of one OSDU id: each inventory listing it or expecting it from a ledger, with its finding there, and what removals did to it. |
 | `runs` | Its builds and reconciles, newest first (20 unless `--limit` says otherwise, at most 200): status, what each listed or checked, what it raised, who ran it and why one failed. |
 | `export` | Its ids, of one finding or every one, as CSV, written by the same code as the control plane's download, to `--out` (written beside its name and moved into place) or the console. |
+| `removals` | The removals asked of it, newest first (20 unless `--limit` says otherwise, at most 200): what each removed (the finding, picked ids or every one), soft deleted or purged, where it stands, its tallies (removed, already gone, skipped, failed), who asked and why one stopped. |
+| `removal` | What one removal did to each id (50 unless `--limit` says otherwise, at most 1,000), of the outcome `--outcome` names (`removed`, `gone`, `skipped`, `failed`) or every one: the id, its version and why. The line under the page names the `--after` of the next. |
 
 Building is a run like any other: `sqlflow run <flow.yaml>` builds every inventory, and the payload picks some
 (`--payload '{"inventories":["WellLogs"]}'`); `--operation reconcile` compares an inventory as its last build left it
-with the ledgers as they stand now.
+with the ledgers as they stand now. A removal is a run too, for a flow that declares `removal`: `--operation remove`
+with the payload the inventory's page sends (`--payload @removal.json` holding
+`{"inventories":["WellLogs"],"removal":{"finding":"orphan","scope":"record","expected":37},"confirm":"dev"}`).
 
 ## The run options
 

@@ -54,7 +54,8 @@ export default function DeliveryInventoriesPage() {
     refetchInterval: REFRESH_MS,
   });
   const reference = referenceOf(params);
-  const view: InventoryView = params.get("tab") === "runs" ? "runs" : "ids";
+  const tab = params.get("tab");
+  const view: InventoryView = tab === "runs" || tab === "removals" ? tab : "ids";
 
   const update = (changes: Record<string, string | null>) => setParams((current) => {
     const next = new URLSearchParams(current);

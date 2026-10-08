@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, ChevronsUpDown, CircleX, ClipboardList, Download, Info, Loader2, Play } from "lucide-react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -32,6 +32,7 @@ import { ExplainTip, RunStatusPill, StandingGlyph } from "./InventoryBadges";
 import { InventoryFindingStrip } from "./InventoryFindingStrip";
 import { InventoryLookupBox } from "./InventoryLookup";
 import { InventoryRecordsGrid } from "./InventoryRecordsGrid";
+import { InventoryRemovals } from "./InventoryRemovals";
 import {
   EVERY_ID, allCounts, counted, downloadInventory, findingVisual, inventoriesPayload, openingFinding, ownersSourceText, runOutcome, standingOf,
   type FindingPick, type InventoryRef, type InventoryView,
@@ -47,8 +48,11 @@ const REFRESH_MS = 30000;
 /** How often an inventory no run is working on is read again. */
 const IDLE_REFRESH_MS = 60000;
 
-/** The runs the Runs tab lists. */
+/** The runs the Runs tab lists, and the removals the Removals tab lists. */
 const RUNS_SHOWN = 50;
+
+/** How often an inventory's removals are read while one runs, so its tallies grow as it goes; once a minute otherwise. */
+const REMOVAL_REFRESH_MS = 5000;
 
 /** The way back to every inventory, as the first words of the report. */
 function InventoriesCrumb({ onBack }: { onBack: () => void }) {
@@ -334,6 +338,7 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
 }) {
   const [launching, setLaunching] = useState(false);
   const [active] = useActivePartition();
+  const queryClient = useQueryClient();
   const { hasScope } = useAuth();
   // The panel reads OSDU through a flow's credentials, as the explorer does, which takes the operate scope.
   const canReadOsdu = hasScope("operate");
@@ -342,6 +347,23 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
     queryFn: () => inventoryApi.inventory(reference.partition, reference.inventoryId),
     refetchInterval: (query) => (query.state.data?.inventory.latest?.status === "running" ? REFRESH_MS : IDLE_REFRESH_MS),
   });
+  const removals = useQuery({
+    queryKey: ["delivery", "inventories", "removals", reference.partition, reference.inventoryId],
+    queryFn: () => inventoryApi.removals(reference.partition, reference.inventoryId, RUNS_SHOWN),
+    refetchInterval: (query) => ((query.state.data ?? []).some((r) => r.status === "running") ? REMOVAL_REFRESH_MS : IDLE_REFRESH_MS),
+  });
+
+  // A removal that finishes changed the inventory's rows: its counts and its grid are read again, rather than a minute later.
+  const running = (removals.data ?? []).filter((r) => r.status === "running").map((r) => r.inventoryRemovalId).join(",");
+  const wasRunning = useRef(running);
+  useEffect(() => {
+    const finished = wasRunning.current.split(",").filter((id) => id !== "" && !running.split(",").includes(id));
+    wasRunning.current = running;
+    if (finished.length > 0) {
+      void queryClient.invalidateQueries({ queryKey: ["delivery", "inventories", "detail", reference.partition, reference.inventoryId] });
+      void queryClient.invalidateQueries({ queryKey: ["delivery", "inventories", "records", reference.partition, reference.inventoryId] });
+    }
+  }, [running, queryClient, reference.partition, reference.inventoryId]);
 
   if (detail.isError) {
     return (
@@ -373,6 +395,7 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
   const canRun = data.pipelineId !== undefined && data.repoId !== undefined && data.declared !== false;
   const built = inventory.lastBuiltUtc !== undefined || inventory.lastReconcileRunId !== undefined;
   const reconciled = data.lastReconcile !== undefined || inventory.lastReconciledUtc !== undefined;
+  const underWay = (removals.data ?? []).find((r) => r.status === "running");
 
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="inventory-report" data-inventory={inventory.name}>
@@ -440,6 +463,20 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
         </Alert>
       )}
 
+      {underWay !== undefined && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded-md border border-info/40 bg-info/5 px-3 py-1.5 text-[12.5px]" data-testid="inventory-removal-running">
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-info" aria-hidden />
+          <span>
+            {`Removal ${underWay.inventoryRemovalId} is removing ${underWay.requested.toLocaleString("en-US")} ${findingVisual(underWay.finding).label.toLowerCase()} id${underWay.requested === 1 ? "" : "s"}: `}
+            <span className="font-mono tabular-nums">{(underWay.removed + underWay.gone + underWay.skipped + underWay.failed).toLocaleString("en-US")}</span>
+            {" reached so far."}
+          </span>
+          <button type="button" onClick={() => onView("removals")} className="text-primary hover:underline" data-testid="inventory-removal-running-open">
+            Its progress
+          </button>
+        </div>
+      )}
+
       {!built
         ? (
           <Card className="gap-0 rounded-lg p-0">
@@ -458,6 +495,9 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
               <TabsList variant="line" data-testid="inventory-tabs">
                 <TabsTrigger value="ids" data-testid="inventory-tab-ids">Ids</TabsTrigger>
                 <TabsTrigger value="runs" data-testid="inventory-tab-runs">Runs</TabsTrigger>
+                {(data.removal !== undefined || (removals.data?.length ?? 0) > 0) && (
+                  <TabsTrigger value="removals" data-testid="inventory-tab-removals">Removals</TabsTrigger>
+                )}
               </TabsList>
             </div>
             <TabsContent value="ids">
@@ -470,7 +510,11 @@ export function InventoryReport({ reference, siblings, finding, onFinding, view,
                 trailing={<ExportMenu inventory={inventory} finding={chosen} />}
                 openId={openId}
                 onOpen={canReadOsdu ? onOpenId : undefined}
+                removal={canReadOsdu ? data.removal : undefined}
               />
+            </TabsContent>
+            <TabsContent value="removals">
+              <InventoryRemovals inventory={inventory} removals={removals.data} error={removals.error} />
             </TabsContent>
             <TabsContent value="runs">
               <InventoryRuns inventory={inventory} />

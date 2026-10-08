@@ -38,5 +38,6 @@ serves, set against everything the ledgers say they delivered, minted, removed o
   at the cost of the admin role and a request per thousand ids.
 - An inventory narrowed by a query, or a concrete kind version, reports as missing only the ids it listed before; only an
   inventory that covers its entity type whole can say a ledger's record of the type is missing.
-- Nothing is ever written to OSDU by an inventory: acting on a finding (removing an orphan, redelivering a missing record)
-  is an operator's decision through the ledger's own actions.
+- Nothing is written to OSDU by a build, a reconcile or a plan: acting on a finding is an operator's decision. A missing,
+  drifted or unconfirmed record is acted on through its ledger's own actions; the ids no ledger holds live (orphan, stale,
+  forgotten) are removed by the inventory flow itself, when its document allows it ([0014](0014-inventory-removals.md)).

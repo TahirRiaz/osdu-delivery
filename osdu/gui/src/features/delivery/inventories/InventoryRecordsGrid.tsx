@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useRef, type CSSProperties, type ReactNode } from "react";
-import { Link } from "react-router-dom";
-import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { keepPreviousData, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DataTable, type Column } from "@/components/DataTable";
 import { RelativeTime } from "@/components/RelativeTime";
@@ -9,7 +12,7 @@ import { TruncatedText } from "@/components/TruncatedText";
 import { useOwnedPanel } from "@/layout/workbench/useOwnedPanel";
 import { cn } from "@/lib/utils";
 import { deliveryRecordRoute } from "../../../api/delivery";
-import { inventoryApi, type Inventory, type InventoryRecord } from "../../../api/inventories";
+import { inventoryApi, type Inventory, type InventoryRecord, type InventoryRemovalPolicy } from "../../../api/inventories";
 import { RecordName } from "../RecordName";
 import { idParts } from "../osduRecordModel";
 import { ProblemView } from "../TemplateSheet";
@@ -17,6 +20,7 @@ import { DimensionGrid, GridFooter, GridViewMenu } from "../dimensions/Dimension
 import { useHiddenColumns, type GridColumnChoice } from "../dimensions/dimensionGridState";
 import { ExplainTip, FindingGlyph } from "./InventoryBadges";
 import { InventoryIdPanel } from "./InventoryIdPanel";
+import { InventoryRemovalDialog } from "./InventoryRemovalDialog";
 import { findingVisual, findingWhy } from "./inventoryFormat";
 
 const PAGE = 200;
@@ -29,6 +33,9 @@ const AT_FIRST_EVERY_ID: readonly string[] = ["created", "since"];
 
 /** The workbench's bottom panel content this grid raises: an OSDU id after this prefix. */
 const PANEL = "inventory-id:";
+
+/** The most ids one removal names; past it, a removal takes every id of the finding. */
+const MAX_PICKED = 1000;
 
 /** The row whose id is open in the panel, marked as the cache history marks the row its panel shows. */
 const OPEN_ROW: CSSProperties = { backgroundColor: "var(--accent)" };
@@ -87,9 +94,11 @@ function LedgerCell({ row }: { row: InventoryRecord }) {
  * it has it on hover, to copy), its version, the ledger that holds it (which opens its record), who created it and when it
  * last changed, and since when it has its finding; columns are left out under View. A reader who can read OSDU opens an
  * id by its row in the workbench's bottom panel, over the page as a run's trace is, and steps through the ids there with
- * Up and Down; Escape or the panel's own close closes it. The id open is the page's, so a link lands on it.
+ * Up and Down; Escape or the panel's own close closes it. The id open is the page's, so a link lands on it. Where the flow
+ * lets an operator remove the finding in view, its ids can be picked, or every one of them at once, however many, and removed
+ * from OSDU through the removal dialog, which queues a run of the flow.
  */
-export function InventoryRecordsGrid({ inventory, finding, total, leading, trailing, openId, onOpen }: {
+export function InventoryRecordsGrid({ inventory, finding, total, leading, trailing, openId, onOpen, removal }: {
   inventory: Inventory;
   /** The finding whose ids are listed; null lists every id, each with its finding. */
   finding: string | null;
@@ -103,6 +112,8 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
   openId: string | null;
   /** Opens an id in the panel, or closes it with null; absent where the reader cannot read OSDU. */
   onOpen?: (id: string | null) => void;
+  /** What the flow lets an operator remove; absent where it allows nothing, or the reader cannot act on OSDU. */
+  removal?: InventoryRemovalPolicy;
 }) {
   // Every id adds a Finding column, so that view starts without the time each id has had its finding too.
   const atFirst = finding === null ? AT_FIRST_EVERY_ID : AT_FIRST_FINDING;
@@ -122,6 +133,20 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
       void pages.fetchNextPage();
     }
   };
+
+  // The ids picked for a removal, by their row's number, or every id of the finding; a removable finding's grid alone offers it.
+  const removable = removal !== undefined && finding !== null && removal.findings.includes(finding) ? removal : undefined;
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
+  const [everyOne, setEveryOne] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const clearPicked = () => {
+    setPicked(new Set());
+    setEveryOne(false);
+  };
+  const pickedIds = rows === undefined ? [] : rows.filter((row) => picked.has(String(row.inventoryRecordId))).map((row) => row.targetId);
+  const removalCount = everyOne ? total ?? 0 : pickedIds.length;
 
   const { ownedId, show, close } = useOwnedPanel(PANEL);
   const wanted = openId !== null && onOpen !== undefined ? openId : null;
@@ -329,13 +354,49 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
   ];
   const columns = all.filter((column) => !hidden.has(column.id));
   const noun = finding === null ? "id" : `${findingVisual(finding).label.toLowerCase()} id`;
+  const picking = removable !== undefined && (picked.size > 0 || everyOne);
+  const tooMany = !everyOne && pickedIds.length > MAX_PICKED;
   const toolbar = (
-    <div className="flex min-w-0 items-center gap-1 border-b border-border pl-1.5 pr-2">
-      {leading}
-      <div className="ml-auto flex shrink-0 items-center gap-0.5">
-        {trailing}
-        <GridViewMenu columns={choices} hidden={hidden} atFirst={atFirst} onToggle={toggleColumn} compact testId="inventory-records-view" />
+    <div className="flex min-w-0 flex-col">
+      <div className="flex min-w-0 items-center gap-1 border-b border-border pl-1.5 pr-2">
+        {leading}
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          {trailing}
+          <GridViewMenu columns={choices} hidden={hidden} atFirst={atFirst} onToggle={toggleColumn} compact testId="inventory-records-view" />
+        </div>
       </div>
+      {picking && (
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-accent/40 px-3 py-1.5" data-testid="inventory-selection-bar">
+          <span className="text-[13px] font-medium tabular-nums" data-testid="inventory-selection-count">
+            {everyOne ? `All ${(total ?? 0).toLocaleString("en-US")} ${noun}s selected` : `${pickedIds.length.toLocaleString("en-US")} selected`}
+          </span>
+          {!everyOne && total !== null && total > pickedIds.length && (
+            <Button variant="link" size="sm" className="h-6 px-0 text-[13px]" onClick={() => setEveryOne(true)} data-testid="inventory-select-every">
+              {`Select all ${total.toLocaleString("en-US")} ${noun}s`}
+            </Button>
+          )}
+          {tooMany && (
+            <span className="text-[12.5px] text-muted-foreground" data-testid="inventory-selection-too-many">
+              {`A removal names at most ${MAX_PICKED.toLocaleString("en-US")} ids; select all to remove every one`}
+            </span>
+          )}
+          <Button variant="link" size="sm" className="h-6 px-0 text-[13px] text-muted-foreground" onClick={clearPicked} data-testid="inventory-clear-selection">
+            Clear
+          </Button>
+          <Button
+            variant="destructive-outline"
+            size="sm"
+            className="ml-auto h-7"
+            onClick={() => setRemoving(true)}
+            disabled={tooMany || removalCount === 0}
+            title="Remove the selected ids from OSDU, each checked again first"
+            data-testid="inventory-remove-selected"
+          >
+            <Trash2 />
+            Remove
+          </Button>
+        </div>
+      )}
     </div>
   );
 
@@ -365,6 +426,14 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
               columns={columns}
               rows={rows}
               rowKey={(row) => row.inventoryRecordId}
+              selection={removable === undefined ? undefined : {
+                selected: everyOne ? new Set((rows ?? []).map((row) => String(row.inventoryRecordId))) : picked,
+                onChange: (next) => {
+                  setPicked(next);
+                  setEveryOne(false);
+                },
+                isSelectable: (row) => row.goneUtc === undefined,
+              }}
               onRowClick={onOpen === undefined ? undefined : (row) => onOpen(row.targetId)}
               rowSx={(row) => (showing && row.targetId === wanted ? OPEN_ROW : undefined)}
               footer={(
@@ -383,6 +452,24 @@ export function InventoryRecordsGrid({ inventory, finding, total, leading, trail
             />
           </DimensionGrid>
         )}
+      {removable !== undefined && finding !== null && (
+        <InventoryRemovalDialog
+          open={removing}
+          onClose={() => setRemoving(false)}
+          inventory={inventory}
+          finding={finding}
+          ids={everyOne ? null : pickedIds}
+          count={removalCount}
+          policy={removable}
+          onQueued={(accepted) => {
+            clearPicked();
+            toast.success(
+              `Removal of ${accepted.expected.toLocaleString("en-US")} ${noun}${accepted.expected === 1 ? "" : "s"} of ${accepted.inventory} queued as a run.`,
+              { action: { label: "Open run", onClick: () => navigate(`/runs/${accepted.runId}`) } });
+            void queryClient.invalidateQueries({ queryKey: ["delivery", "inventories"] });
+          }}
+        />
+      )}
     </div>
   );
 }

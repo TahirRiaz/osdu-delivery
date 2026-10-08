@@ -1815,6 +1815,47 @@ public interface ILedger
     Task<InventoryRunState?> GetInventoryRunAsync(string partition, long inventoryRunId, CancellationToken ct = default);
 
     /// <summary>
+    /// Opens a removal of an inventory's ids (docs/inventory-plan.md, Removing what an inventory found): an earlier one of the
+    /// inventory its process left running is closed as failed first, since a removal is a run of the flow and the flow runs one
+    /// at a time. Returns the removal's number.
+    /// </summary>
+    Task<long> StartInventoryRemovalAsync(Guid flowId, InventoryRemovalStart start, CancellationToken ct = default);
+
+    /// <summary>
+    /// The next ids a removal may act on, at most <paramref name="limit"/>, after <paramref name="after"/>: those of
+    /// <paramref name="finding"/> the inventory holds as served, or with <paramref name="ids"/> those ids whatever they are now;
+    /// each with the finding the reconcile's rule gives it against the ledgers as they stand now and <paramref name="owners"/>.
+    /// </summary>
+    Task<IReadOnlyList<InventoryRemovalCandidate>> InventoryRemovalCandidatesAsync(
+        Guid flowId, int inventoryId, string finding, IReadOnlyList<string>? ids, IReadOnlyList<string> owners, long after, int limit, CancellationToken ct = default);
+
+    /// <summary>
+    /// Keeps what one chunk of a removal came to, in one transaction: every id's outcome and reason, the ids removed from OSDU
+    /// (<paramref name="removedDetail"/>) or found no longer served (<paramref name="goneDetail"/>) marked gone in the inventory,
+    /// and the removal's tallies.
+    /// </summary>
+    Task RecordInventoryRemovalAsync(
+        Guid flowId, int inventoryId, long removalId, IReadOnlyList<InventoryRemovalItem> items, string removedDetail, string goneDetail, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>Closes a removal as completed or failed, with why it stopped (redacted).</summary>
+    Task CompleteInventoryRemovalAsync(Guid flowId, long removalId, string status, string? stoppedBy, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>An inventory's removals, the newest first.</summary>
+    Task<IReadOnlyList<InventoryRemovalState>> ListInventoryRemovalsAsync(string partition, int inventoryId, int limit, CancellationToken ct = default);
+
+    /// <summary>One removal by its partition and number, or null.</summary>
+    Task<InventoryRemovalState?> GetInventoryRemovalAsync(string partition, long removalId, CancellationToken ct = default);
+
+    /// <summary>A page of what a removal did to each id, of one outcome or all, in order after <paramref name="after"/>.</summary>
+    Task<IReadOnlyList<InventoryRemovalItemState>> ListInventoryRemovalItemsAsync(string partition, long removalId, string? outcome, long? after, int limit, CancellationToken ct = default);
+
+    /// <summary>What every removal of the partition did to one OSDU id, the newest first.</summary>
+    Task<IReadOnlyList<InventoryRemovalItemState>> LookupInventoryRemovalItemsAsync(string partition, string targetId, CancellationToken ct = default);
+
+    /// <summary>The rows an inventory holds of <paramref name="targetIds"/>, at most as many as it names; an id it holds no row of is left out.</summary>
+    Task<IReadOnlyList<InventoryRecordState>> InventoryRecordsOfAsync(string partition, int inventoryId, IReadOnlyList<string> targetIds, CancellationToken ct = default);
+
+    /// <summary>
     /// Applies what the lease's worker has appended so far to its records, a slice at a time, and deletes each event with
     /// its application: a try's outcome settles the record and hands it back from the lease; a step is kept for the next
     /// try while the record still holds the work it belongs to. A record another lease holds now is left to that lease.

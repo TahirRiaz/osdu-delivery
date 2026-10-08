@@ -292,11 +292,18 @@ public sealed class DeliveryCliModule : ICliModule
                 "sqlflow inventory export <partition> <id> [--finding <finding>] [--out <file.csv>]",
                 "                                   Its ids, of one finding or every one, as CSV (needs --db). Building",
                 "                                   is a run: sqlflow run <flow.yaml> --payload '{\"inventories\":[\"name\"]}'",
+                "sqlflow inventory removals <partition> <id> [--limit <n>]",
+                "                                   The removals asked of it, newest first: what each removed, soft",
+                "                                   deleted or purged, what it came to, and who asked (needs --db)",
+                "sqlflow inventory removal <partition> <removal> [--outcome <outcome>] [--after <n>] [--limit <n>]",
+                "                                   What one removal did to each id: removed, gone, skipped or failed,",
+                "                                   and why (needs --db). A removal is a run of a flow that declares",
+                "                                   removal: sqlflow run <flow.yaml> --operation remove --payload @removal.json",
             ],
             DeliveryInventoryVerbs.InventoryAsync)
         {
-            Subcommands = ["list", "show", "records", "lookup", "runs", "export"],
-            ValueOptions = ["--partition", "--finding", "--after", "--limit", "--out"],
+            Subcommands = ["list", "show", "records", "lookup", "runs", "export", "removals", "removal"],
+            ValueOptions = ["--partition", "--finding", "--after", "--limit", "--out", "--outcome"],
         },
     ];
 

@@ -92,12 +92,9 @@ internal static partial class SqlServerLedgerBulk
             ORDER BY p.[PurgedRecordId] DESC) AS pur
         """;
 
-    // The findings of the ids OSDU serves, set only where they changed.
-    private const string InventoryReconcileSql = """
-        SELECT r.[InventoryRecordId],
-            COALESCE(rec.[FlowId], art.[FlowId], pur.[FlowId]) AS [LedgerFlowId],
-            COALESCE(rec.[DeliveryKey], art.[DeliveryKey], pur.[DeliveryKey]) AS [DeliveryKey],
-            rec.[Status] AS [LedgerStatus], rec.[TargetVersion] AS [LedgerVersion], art.[ArtifactId], art.[State] AS [ArtifactState],
+    // The finding of an id OSDU serves (r, an inventory row), from what the ledgers hold of it (InventoryLedgerApply) and the
+    // identities this estate writes as (@owners): the one rule a reconcile sets findings by, and a removal checks them again by.
+    private const string InventoryFindingCase = """
             CASE
                 WHEN rec.[DeliveryKey] IS NOT NULL THEN CASE
                     WHEN rec.[Status] = N'deleted' THEN N'stale'
@@ -114,7 +111,16 @@ internal static partial class SqlServerLedgerBulk
                 WHEN pur.[DeliveryKey] IS NOT NULL THEN N'forgotten'
                 WHEN r.[CreateUser] IS NOT NULL AND r.[CreateUser] IN (SELECT o.[value] FROM OPENJSON(@owners) AS o) THEN N'orphan'
                 ELSE N'foreign'
-            END AS [Finding],
+            END
+        """;
+
+    // The findings of the ids OSDU serves, set only where they changed.
+    private const string InventoryReconcileSql = """
+        SELECT r.[InventoryRecordId],
+            COALESCE(rec.[FlowId], art.[FlowId], pur.[FlowId]) AS [LedgerFlowId],
+            COALESCE(rec.[DeliveryKey], art.[DeliveryKey], pur.[DeliveryKey]) AS [DeliveryKey],
+            rec.[Status] AS [LedgerStatus], rec.[TargetVersion] AS [LedgerVersion], art.[ArtifactId], art.[State] AS [ArtifactState],
+            {{finding}} AS [Finding],
             CASE
                 WHEN rec.[DeliveryKey] IS NOT NULL AND rec.[Status] = N'deleted' THEN N'the ledger marks the record removed, and OSDU still serves it'
                 WHEN rec.[DeliveryKey] IS NOT NULL AND rec.[TargetVersion] IS NULL THEN CONCAT(N'the ledger''s record is ', rec.[Status], N' and confirmed no delivery: a write that landed without its answer')
@@ -313,7 +319,7 @@ internal static partial class SqlServerLedgerBulk
     public static Task<int> ReconcileInventoryAsync(OsduDbContext db, short partitionId, int inventoryId, IReadOnlyList<string> owners, DateTime now, CancellationToken ct)
         => InTransactionAsync(db, async (connection, transaction) =>
         {
-            await using var command = Command(connection, transaction, InventoryReconcileSql.Replace("{{ledger}}", InventoryLedgerApply, StringComparison.Ordinal), slice: null);
+            await using var command = Command(connection, transaction, InventorySql(InventoryReconcileSql), slice: null);
             command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
             command.Parameters.Add(new SqlParameter("@inventoryId", SqlDbType.Int) { Value = inventoryId });
             command.Parameters.Add(new SqlParameter("@owners", SqlDbType.NVarChar, -1) { Value = JsonSerializer.Serialize(owners) });
@@ -431,6 +437,10 @@ internal static partial class SqlServerLedgerBulk
             command.Parameters.Add(new SqlParameter("@partitionId", SqlDbType.SmallInt) { Value = partitionId });
             return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }, ct);
+
+    /// <summary>An inventory statement with what the ledgers hold of each id, and the rule its finding is set by, written in.</summary>
+    private static string InventorySql(string sql)
+        => sql.Replace("{{ledger}}", InventoryLedgerApply, StringComparison.Ordinal).Replace("{{finding}}", InventoryFindingCase, StringComparison.Ordinal);
 
     /// <summary>A LIKE pattern matching every id that starts with <paramref name="prefix"/>, its wildcards escaped.</summary>
     private static string LikePrefix(string prefix)

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RelativeTime } from "@/components/RelativeTime";
 import { SearchInput } from "@/components/SearchInput";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { inventoryApi } from "../../../api/inventories";
@@ -49,35 +50,57 @@ export function InventoryLookupBox() {
       return <div className="p-3"><Skeleton className="h-10 w-full" /></div>;
     }
 
+    // What removals did to the id, the newest first: it may be gone from OSDU because an operator removed it.
+    const removed = lookup.data.removals.length === 0 ? null : (
+      <div className="flex flex-col gap-0.5 border-t border-border px-3 py-1.5" data-testid="inventory-lookup-removals">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Removals</span>
+        {lookup.data.removals.slice(0, 5).map((item) => (
+          <span key={item.inventoryRemovalItemId} className="flex min-w-0 items-center gap-1.5 text-[12px]" data-testid="inventory-lookup-removal">
+            <span className="shrink-0 font-medium">{`removal ${item.inventoryRemovalId}: ${item.outcome}`}</span>
+            <span className="shrink-0 text-muted-foreground"><RelativeTime value={item.recordedUtc} absolute={false} /></span>
+            {item.reason !== undefined && <span className="min-w-0 truncate text-muted-foreground" title={item.reason}>{item.reason}</span>}
+          </span>
+        ))}
+      </div>
+    );
+
     if (lookup.data.hits.length === 0) {
-      return <p className="p-3 text-[12.5px] text-muted-foreground" data-testid="inventory-lookup-none">No inventory of {lookup.data.partition} lists it or expects it.</p>;
+      return (
+        <>
+          <p className="p-3 text-[12.5px] text-muted-foreground" data-testid="inventory-lookup-none">No inventory of {lookup.data.partition} lists it or expects it.</p>
+          {removed}
+        </>
+      );
     }
 
     return (
-      <ul className="max-h-80 overflow-y-auto py-1" data-testid="inventory-lookup-hits">
-        {lookup.data.hits.map(({ inventory, record }) => (
-          <li key={`${inventory.inventoryId}-${record.inventoryRecordId}`}>
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                navigate(inventoryRoute({ partition: inventory.partition, inventoryId: inventory.inventoryId }, record.finding, record.targetId));
-              }}
-              className="flex w-full flex-col gap-0.5 px-3 py-1.5 text-left outline-none hover:bg-accent/60 focus-visible:bg-accent/60"
-              data-testid="inventory-lookup-hit"
-            >
-              <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
-                <FindingGlyph finding={record.finding} />
-                <span className="font-medium">{inventory.name}</span>
-                <span className="text-muted-foreground">{findingVisual(record.finding).label.toLowerCase()}</span>
-                {record.version !== undefined && <span className="font-mono text-[12px] tabular-nums text-muted-foreground">v{record.version}</span>}
-                <span className="ml-auto min-w-0 truncate font-mono text-[11px] text-muted-foreground">{inventory.flowName}</span>
-              </span>
-              {record.detail !== undefined && <span className="truncate pl-5 text-[11.5px] text-muted-foreground">{record.detail}</span>}
-            </button>
-          </li>
-        ))}
-      </ul>
+      <>
+        <ul className="max-h-80 overflow-y-auto py-1" data-testid="inventory-lookup-hits">
+          {lookup.data.hits.map(({ inventory, record }) => (
+            <li key={`${inventory.inventoryId}-${record.inventoryRecordId}`}>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  navigate(inventoryRoute({ partition: inventory.partition, inventoryId: inventory.inventoryId }, record.finding, record.targetId));
+                }}
+                className="flex w-full flex-col gap-0.5 px-3 py-1.5 text-left outline-none hover:bg-accent/60 focus-visible:bg-accent/60"
+                data-testid="inventory-lookup-hit"
+              >
+                <span className="flex min-w-0 items-center gap-1.5 text-[13px]">
+                  <FindingGlyph finding={record.finding} />
+                  <span className="font-medium">{inventory.name}</span>
+                  <span className="text-muted-foreground">{findingVisual(record.finding).label.toLowerCase()}</span>
+                  {record.version !== undefined && <span className="font-mono text-[12px] tabular-nums text-muted-foreground">v{record.version}</span>}
+                  <span className="ml-auto min-w-0 truncate font-mono text-[11px] text-muted-foreground">{inventory.flowName}</span>
+                </span>
+                {record.detail !== undefined && <span className="truncate pl-5 text-[11.5px] text-muted-foreground">{record.detail}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+        {removed}
+      </>
     );
   };
 

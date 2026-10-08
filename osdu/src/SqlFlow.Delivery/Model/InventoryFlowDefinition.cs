@@ -8,7 +8,9 @@ namespace SqlFlow.Delivery.Model;
 /// partition, with its version and who created and last changed it, kept in the module's database and compared with every
 /// ledger of the partition. The ledgers say what the flows delivered and minted; the inventory says what OSDU serves, and
 /// where the two disagree is the report: records no ledger knows (orphans), records a ledger never confirmed, removed or
-/// forgot, and records a ledger delivered that OSDU no longer serves. Nothing is ever written to OSDU.
+/// forgot, and records a ledger delivered that OSDU no longer serves. A build, a reconcile and a plan only read OSDU; a flow
+/// that declares <see cref="Removal"/> may also remove what it found of the findings it names, when an operator asks for it
+/// (docs/decisions/0014-inventory-removals.md).
 /// </summary>
 public sealed record InventoryFlowDefinition
 {
@@ -76,6 +78,12 @@ public sealed record InventoryFlowDefinition
 
     /// <summary>The inventories, in the order the document declares them; names are unique within the flow.</summary>
     public required IReadOnlyList<InventorySpec> Inventories { get; init; }
+
+    /// <summary>
+    /// What an operator may remove from OSDU of what the flow's inventories found (<c>removal</c>); null for a flow that declares
+    /// none, which only ever reads OSDU.
+    /// </summary>
+    public InventoryRemovalPolicy? Removal { get; init; }
 
     public FlowReliability Reliability { get; init; } = new();
 
@@ -290,6 +298,15 @@ public sealed record InventorySource
     /// <summary>The schema service, which expands a kind with wildcards into the kinds storage lists one at a time.</summary>
     public const string DefaultSchemaPath = "/api/schema-service/v1/schema";
 
+    /// <summary>Storage's soft delete of one record, openapi storage v2 <c>POST /records/{id}:delete</c>, which a removal falls back to one id at a time.</summary>
+    public const string DefaultDeletePath = "/api/storage/v2/records/{id}:delete";
+
+    /// <summary>Storage's soft delete of a list of records, openapi storage v2 <c>POST /records/delete</c>, which a removal sends 500 ids at a time.</summary>
+    public const string DefaultBulkDeletePath = "/api/storage/v2/records/delete";
+
+    /// <summary>Storage's purge of a record and every version of it, openapi storage v2 <c>DELETE /records/{id}</c>.</summary>
+    public const string DefaultPurgePath = "/api/storage/v2/records/{id}";
+
     public required string Endpoint { get; init; }
 
     public TargetAuth Auth { get; init; } = new() { Type = TargetAuthType.None };
@@ -310,6 +327,55 @@ public sealed record InventorySource
     public string VersionsPath { get; init; } = DefaultVersionsPath;
 
     public string SchemaPath { get; init; } = DefaultSchemaPath;
+
+    public string DeletePath { get; init; } = DefaultDeletePath;
+
+    public string BulkDeletePath { get; init; } = DefaultBulkDeletePath;
+
+    public string PurgePath { get; init; } = DefaultPurgePath;
+}
+
+/// <summary>
+/// What an inventory flow lets an operator remove from OSDU (<c>removal</c>, docs/inventory-plan.md, Removing what an inventory
+/// found): the ids of the findings it names, through the flow's own source and credentials, soft deleted, or purged when it also
+/// allows that. The power to delete is so a line of the flow's document, reviewed where the document is.
+/// </summary>
+public sealed record InventoryRemovalPolicy
+{
+    /// <summary>The findings whose ids may be removed: of orphan, stale and forgotten, at least one.</summary>
+    public required IReadOnlyList<string> Findings { get; init; }
+
+    /// <summary>Whether a removal may purge (<c>DELETE /records/{id}</c>, every version destroyed) rather than soft delete.</summary>
+    public bool Purge { get; init; }
+
+    /// <summary>Whether the ids of <paramref name="finding"/> may be removed.</summary>
+    public bool Allows(string finding) => Findings.Contains(finding, StringComparer.Ordinal);
+}
+
+/// <summary>
+/// What a removal run removes (the run payload's <c>removal</c>, with the inventory in <c>inventories</c> and the partition in
+/// <c>confirm</c>): the ids of one finding, every one of them or those it names, how much of each it takes, and how many the
+/// operator was shown, which the run holds the inventory to before it removes anything.
+/// </summary>
+public sealed record InventoryRemovalRequest
+{
+    /// <summary>The most ids one removal names; a larger removal takes every id of the finding.</summary>
+    public const int MaxIds = 1000;
+
+    /// <summary>The finding whose ids are removed.</summary>
+    public required string Finding { get; init; }
+
+    /// <summary>How much of each record is removed: <c>record</c> (a soft delete, reversible) or <c>everything</c> (a purge).</summary>
+    public required string Scope { get; init; }
+
+    /// <summary>How many ids the operator was shown: every id of the finding, or as many as <see cref="Ids"/> names.</summary>
+    public required long Expected { get; init; }
+
+    /// <summary>The ids removed, when the operator picked them; empty removes every id of the finding.</summary>
+    public IReadOnlyList<string> Ids { get; init; } = [];
+
+    /// <summary>True when the removal names its ids rather than taking every id of the finding.</summary>
+    public bool NamesIds => Ids.Count > 0;
 }
 
 /// <summary>

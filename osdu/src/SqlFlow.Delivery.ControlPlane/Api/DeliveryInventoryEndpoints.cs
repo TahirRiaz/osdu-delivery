@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
@@ -6,8 +7,12 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using SqlFlow.Catalog;
+using SqlFlow.ControlPlane.Api;
+using SqlFlow.ControlPlane.Background;
 using SqlFlow.Core;
+using SqlFlow.Core.Runs;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Inventories;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
@@ -47,14 +52,46 @@ public sealed record DeliveryInventoryDto(
 public sealed record DeliveryInventoryListDto(string? Partition, IReadOnlyList<DeliveryInventoryDto> Inventories);
 
 /// <summary>
+/// What the flow lets an operator remove of what the inventory found: the findings, whether a removal may purge, and the platform
+/// the removal goes to as the flow writes it (a URL, or a reference the node resolves).
+/// </summary>
+public sealed record DeliveryInventoryRemovalPolicyDto(IReadOnlyList<string> Findings, bool Purge, string Endpoint);
+
+/// <summary>
 /// One inventory with its report: its counts by finding read from its rows now (every finding, zeros included), how many ids it
 /// holds and how many of them are raised, the owners its last reconcile used and how it knew them, its last build and reconcile,
 /// and the pipeline declaring it (with its repository, for a run of it) and what the flow says of it (<c>Declared</c> is null
-/// when the flow cannot be read now).
+/// when the flow cannot be read now), with what the flow lets an operator remove (<c>Removal</c>, left out when it allows none).
 /// </summary>
 public sealed record DeliveryInventoryDetailDto(
     DeliveryInventoryDto Inventory, Guid? PipelineId, Guid? RepoId, string? Description, bool? Declared, IReadOnlyList<DeliveryInventoryCountDto> Counts, long Ids,
-    long Raised, DeliveryInventoryOwnersDto? Owners, DeliveryInventoryRunDto? LastBuild, DeliveryInventoryRunDto? LastReconcile);
+    long Raised, DeliveryInventoryOwnersDto? Owners, DeliveryInventoryRunDto? LastBuild, DeliveryInventoryRunDto? LastReconcile, DeliveryInventoryRemovalPolicyDto? Removal);
+
+/// <summary>
+/// A removal of an inventory's ids an operator asks for: the finding, how much of each record it takes (<c>record</c>, a soft
+/// delete, or <c>everything</c>, a purge), how many ids the operator was shown, the ids when they picked them, the partition it
+/// acts in (<c>confirm</c>), and the pool its run is queued on.
+/// </summary>
+public sealed record DeliveryInventoryRemovalRequest(string? Finding, string? Scope, long? Expected, IReadOnlyList<string>? Ids, string? Confirm, string? Pool);
+
+/// <summary>The removal queued: its run, the partition and inventory it acts in, and what it removes.</summary>
+public sealed record DeliveryInventoryRemovalAccepted(Guid RunId, string Status, string Partition, string Inventory, string Finding, string Scope, long Expected);
+
+/// <summary>
+/// One removal of an inventory's ids: its run, who asked, what it removed and how much of each record, how many ids the operator
+/// was shown and whether they picked them, where it stands, what it came to for the ids, why it stopped, and its audit activity.
+/// </summary>
+public sealed record DeliveryInventoryRemovalDto(
+    long InventoryRemovalId, int InventoryId, Guid? RunId, string Actor, string Finding, string Scope, bool NamesIds, long Requested, string Status,
+    DateTime StartedUtc, DateTime? CompletedUtc, long Removed, long Gone, long Skipped, long Failed, string? Error, long? ActivityId);
+
+/// <summary>What one removal did to one id: the version it found, the finding it had, the outcome and why, and the ledger record it rested on.</summary>
+public sealed record DeliveryInventoryRemovalItemDto(
+    long InventoryRemovalItemId, long InventoryRemovalId, long InventoryRecordId, string TargetId, long? Version, string Finding, string Outcome, string? Reason,
+    Guid? LedgerFlowId, Guid? DeliveryKey, DateTime RecordedUtc);
+
+/// <summary>A page of what a removal did to its ids, with the id the next page starts after; left out on the last page.</summary>
+public sealed record DeliveryInventoryRemovalItemPageDto(IReadOnlyList<DeliveryInventoryRemovalItemDto> Items, long? Next);
 
 /// <summary>
 /// One id of an inventory: what OSDU serves of it (kind, version, who created and last changed it and when), when the inventory
@@ -72,8 +109,9 @@ public sealed record DeliveryInventoryRecordPageDto(IReadOnlyList<DeliveryInvent
 /// <summary>What one inventory holds of an id looked up.</summary>
 public sealed record DeliveryInventoryHitDto(DeliveryInventoryDto Inventory, DeliveryInventoryRecordDto Record);
 
-/// <summary>What every inventory of a partition holds of one OSDU id.</summary>
-public sealed record DeliveryInventoryLookupDto(string Partition, string TargetId, IReadOnlyList<DeliveryInventoryHitDto> Hits);
+/// <summary>What every inventory of a partition holds of one OSDU id, and what removals did to it, the newest first.</summary>
+public sealed record DeliveryInventoryLookupDto(
+    string Partition, string TargetId, IReadOnlyList<DeliveryInventoryHitDto> Hits, IReadOnlyList<DeliveryInventoryRemovalItemDto> Removals);
 
 /// <summary>
 /// An inventory a flow declares or keeps: what the flow says of it, whether it still declares it, and the inventory as the
@@ -95,8 +133,10 @@ public sealed record DeliveryInventoryFlowDto(
 /// The report of inventory flows (docs/inventory-plan.md, Stage 5): the inventories of a partition, an inventory flow's
 /// inventories, one inventory with its counts by finding, owners and last runs, its ids of one finding a page at a time (keyset
 /// paged by the inventory's own numbering), its runs, a lookup of an OSDU id across the partition's inventories, and an export
-/// of its ids as CSV, written as it is read. Every read answers from the module's database, nothing here talks to OSDU, and
-/// building an inventory is a run like any other. An answer leaves out what it holds no value for.
+/// of its ids as CSV, written as it is read; and the removals an operator asks of what an inventory found (docs/inventory-plan.md,
+/// Removing what an inventory found), each queued as a run of the flow and read back with what it did to every id. Every read
+/// answers from the module's database, nothing here talks to OSDU, and building an inventory or removing from one is a run like
+/// any other. An answer leaves out what it holds no value for.
 /// </summary>
 public static class DeliveryInventoryEndpoints
 {
@@ -131,6 +171,250 @@ public static class DeliveryInventoryEndpoints
         delivery.MapGet("/inventories/{partition}/{inventoryId:int}/runs", ListRunsAsync).WithName("ListDeliveryInventoryRuns");
         delivery.MapGet("/inventories/{partition}/{inventoryId:int}/export", ExportAsync).WithName("ExportDeliveryInventoryRecords");
         delivery.MapGet("/flows/{pipelineId:guid}/inventories", GetFlowAsync).WithName("GetDeliveryInventoryFlow");
+        delivery.MapGet("/inventories/{partition}/{inventoryId:int}/removals", ListRemovalsAsync).WithName("ListDeliveryInventoryRemovals");
+        delivery.MapGet("/inventories/{partition}/removals/{removalId:long}", GetRemovalAsync).WithName("GetDeliveryInventoryRemoval");
+        delivery.MapGet("/inventories/{partition}/removals/{removalId:long}/items", ListRemovalItemsAsync).WithName("ListDeliveryInventoryRemovalItems");
+    }
+
+    /// <summary>The removal routes, under the operate scope: a removal takes records out of OSDU.</summary>
+    public static void MapWrites(RouteGroupBuilder delivery)
+    {
+        ArgumentNullException.ThrowIfNull(delivery);
+        delivery.MapPost("/inventories/{partition}/{inventoryId:int}/removals", RemoveAsync).WithName("RemoveDeliveryInventoryRecords");
+    }
+
+    /// <summary>
+    /// Queues the run that removes from OSDU the ids of one finding of an inventory, as the caller (docs/inventory-plan.md,
+    /// Removing what an inventory found). Refused with 400 for a request that does not say what it removes, or whose confirmation
+    /// names another partition; with 409 when the flow does not allow it, the inventory was never reconciled, it holds another
+    /// number of ids of the finding than the operator was shown (or does not hold an id they picked with that finding), or a run
+    /// of the flow is already queued or running. The run checks it all again on the node, and every id again before it goes.
+    /// </summary>
+    private static async Task<Results<Accepted<DeliveryInventoryRemovalAccepted>, ProblemHttpResult>> RemoveAsync(
+        string partition, int inventoryId, DeliveryInventoryRemovalRequest? request, CatalogDbContext db, DeliveryDocumentLoader documents, ILedger ledger,
+        IRunDispatcher dispatcher, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var (inventory, problem) = await InventoryAsync(ledger, partition, inventoryId, ct).ConfigureAwait(false);
+        if (inventory is null)
+        {
+            return problem!;
+        }
+
+        if (RemovalProblem(request, inventory) is { } refused)
+        {
+            return refused;
+        }
+
+        var finding = request!.Finding!.Trim().ToLowerInvariant();
+        var scope = request.Scope!.Trim().ToLowerInvariant();
+        var expected = request.Expected!.Value;
+        var ids = request.Ids?.Select(i => i.Trim()).ToList() ?? [];
+        var (pipeline, flow, declared) = await DeclaringFlowAsync(db, documents, inventory, ct).ConfigureAwait(false);
+        if (pipeline is null || flow is null || declared != true)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Not declared",
+                $"No flow in the catalog declares inventory '{inventory.Name}' of '{inventory.FlowName}' now, so nothing can be removed through it.");
+        }
+
+        if (flow.Removal is not { } policy)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Removal not allowed",
+                $"Inventory flow '{flow.Name}' declares no 'removal', so it only reads OSDU. Add removal: {{ findings: [{finding}] }} to the flow to remove what it finds.");
+        }
+
+        if (!policy.Allows(finding))
+        {
+            return Problem(StatusCodes.Status409Conflict, "Removal not allowed",
+                $"Inventory flow '{flow.Name}' allows removing {string.Join(", ", policy.Findings)} ids, not {finding} ones.");
+        }
+
+        if (scope == InventoryRemovals.Purge && !policy.Purge)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Purge not allowed",
+                $"Inventory flow '{flow.Name}' allows soft deletes only; removal.purge: true lets it purge, which destroys every version for good.");
+        }
+
+        if (inventory.LastReconcileRunId is null)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Not reconciled",
+                $"Inventory '{inventory.Name}' has not been reconciled in '{inventory.Partition}', so nothing it found can be removed yet.");
+        }
+
+        if (ids.Count == 0)
+        {
+            var holds = (await ledger.InventoryCountsAsync(inventory.Partition, inventory.InventoryId, ct).ConfigureAwait(false)).Of(finding);
+            if (holds != expected)
+            {
+                return Problem(StatusCodes.Status409Conflict, "Count changed",
+                    $"Inventory '{inventory.Name}' holds {holds} {finding} id(s) now, and the removal was asked for {expected}. Nothing was queued; look at it again and ask again.");
+            }
+        }
+        else
+        {
+            var held = await ledger.InventoryRecordsOfAsync(inventory.Partition, inventory.InventoryId, ids, ct).ConfigureAwait(false);
+            var removable = held.Where(r => r.Finding == finding && r.GoneUtc is null).Select(r => r.TargetId).ToHashSet(StringComparer.Ordinal);
+            var not = ids.Where(i => !removable.Contains(i)).ToList();
+            if (not.Count > 0)
+            {
+                return Problem(StatusCodes.Status409Conflict, "Ids changed",
+                    $"{not.Count} of the ids picked {(not.Count == 1 ? "is" : "are")} not a served {finding} id of inventory '{inventory.Name}' now ({string.Join(", ", not.Take(5))}{(not.Count > 5 ? ", ..." : "")}). Nothing was queued.");
+            }
+        }
+
+        var busy = await db.Runs.AsNoTracking()
+            .Where(r => r.PipelineId == pipeline.Id && (r.Status == RunStatuses.Queued || r.Status == RunStatuses.Running))
+            .Select(r => (Guid?)r.RunId)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+        if (busy is { } running)
+        {
+            return Problem(StatusCodes.Status409Conflict, "Flow busy",
+                $"Run {running:D} of '{pipeline.Name}' is queued or running; a removal waits until the flow is idle, so what it removes is what the inventory holds. Nothing was queued.");
+        }
+
+        var removal = new InventoryRemovalRequest { Finding = finding, Scope = scope, Expected = expected, Ids = ids };
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (flow.Partitioned)
+        {
+            values[PartitionNames.RunValue] = inventory.Partition;
+        }
+
+        var parameters = new RunParameters
+        {
+            Operation = DeliveryOperations.Remove,
+            Values = values,
+            Payload = new DeliveryRunPayload { Inventories = [inventory.Name], Removal = removal, Confirm = inventory.Partition }.ToJson(),
+        };
+        var runId = await dispatcher.EnqueueAsync(
+            db,
+            new RunEnqueueRequest(
+                pipeline.RepoId, pipeline.Name, pipeline.Kind, string.IsNullOrWhiteSpace(request.Pool) ? null : request.Pool.Trim(), null, parameters,
+                RequestedBy: RequestActor.Of(user)),
+            ct).ConfigureAwait(false);
+        return TypedResults.Accepted(
+            $"/api/v1/runs/{runId}",
+            new DeliveryInventoryRemovalAccepted(runId, RunStatuses.Queued, inventory.Partition, inventory.Name, finding, scope, expected));
+    }
+
+    /// <summary>What is wrong with a removal request on its face, before the flow and the inventory are read; null when nothing is.</summary>
+    private static ProblemHttpResult? RemovalProblem(DeliveryInventoryRemovalRequest? request, InventoryState inventory)
+    {
+        if (request is null)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Removal required", "Name the finding, the scope, the count you were shown, and the partition to confirm.");
+        }
+
+        var finding = request.Finding?.Trim().ToLowerInvariant();
+        if (!InventoryRemovals.IsRemovable(finding))
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Unknown finding",
+                $"'{request.Finding}' is not a finding an inventory removes; it removes {string.Join(", ", InventoryRemovals.Removable)}.");
+        }
+
+        if (!InventoryRemovals.IsScope(request.Scope?.Trim().ToLowerInvariant()))
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Unknown scope",
+                $"'{request.Scope}' is not how much a removal takes; it is {InventoryRemovals.SoftDelete} (a soft delete, reversible) or {InventoryRemovals.Purge} (a purge, every version destroyed).");
+        }
+
+        if (request.Expected is not > 0)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Count required", "Name how many ids you were shown (expected); nothing is removed without it.");
+        }
+
+        if (request.Ids is { } ids)
+        {
+            var named = ids.Select(i => i?.Trim() ?? string.Empty).ToList();
+            if (named.Count == 0 || named.Count > InventoryRemovalRequest.MaxIds || named.Any(i => i.Length == 0 || i.Length > MaxIdLength))
+            {
+                return Problem(StatusCodes.Status400BadRequest, "Invalid ids",
+                    $"ids names 1 to {InventoryRemovalRequest.MaxIds} OSDU ids; leave it out to remove every id of the finding.");
+            }
+
+            if (named.Distinct(StringComparer.Ordinal).Count() != named.Count || named.Count != request.Expected)
+            {
+                return Problem(StatusCodes.Status400BadRequest, "Invalid ids", "ids names each id once, as many as expected says.");
+            }
+        }
+
+        var confirm = request.Confirm?.Trim();
+        if (string.IsNullOrEmpty(confirm))
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Confirmation required",
+                "Name the partition the inventory is kept in as 'confirm'; nothing is removed without it.");
+        }
+
+        return string.Equals(confirm, inventory.Partition, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : Problem(StatusCodes.Status400BadRequest, "Confirmation does not match",
+                $"The confirmation names '{confirm}', and inventory '{inventory.Name}' is kept in partition '{inventory.Partition}'. Nothing was queued.");
+    }
+
+    /// <summary>An inventory's removals, the newest first.</summary>
+    private static async Task<Results<JsonHttpResult<IReadOnlyList<DeliveryInventoryRemovalDto>>, ProblemHttpResult>> ListRemovalsAsync(
+        string partition, int inventoryId, int? limit, ILedger ledger, CancellationToken ct)
+    {
+        if (limit is < 1 or > MaxRuns)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Invalid limit", $"limit is how many removals to list: 1 to {MaxRuns}.");
+        }
+
+        var (inventory, problem) = await InventoryAsync(ledger, partition, inventoryId, ct).ConfigureAwait(false);
+        if (inventory is null)
+        {
+            return problem!;
+        }
+
+        var removals = await ledger.ListInventoryRemovalsAsync(inventory.Partition, inventory.InventoryId, limit ?? DefaultRuns, ct).ConfigureAwait(false);
+        return TypedResults.Json<IReadOnlyList<DeliveryInventoryRemovalDto>>(removals.Select(ToDto).ToList(), Json);
+    }
+
+    /// <summary>One removal by its partition and number.</summary>
+    private static async Task<Results<JsonHttpResult<DeliveryInventoryRemovalDto>, ProblemHttpResult>> GetRemovalAsync(
+        string partition, long removalId, ILedger ledger, CancellationToken ct)
+    {
+        if (PartitionProblem(partition) is { } bad)
+        {
+            return bad;
+        }
+
+        var removal = await ledger.GetInventoryRemovalAsync(partition.Trim(), removalId, ct).ConfigureAwait(false);
+        return removal is null
+            ? Problem(StatusCodes.Status404NotFound, "Not found", $"No inventory removal {removalId} in partition '{partition.Trim()}'.")
+            : TypedResults.Json(ToDto(removal), Json);
+    }
+
+    /// <summary>A page of what a removal did to its ids, of one outcome (<c>outcome</c>) or every one, after the id <c>after</c> names.</summary>
+    private static async Task<Results<JsonHttpResult<DeliveryInventoryRemovalItemPageDto>, ProblemHttpResult>> ListRemovalItemsAsync(
+        string partition, long removalId, string? outcome, long? after, int? limit, ILedger ledger, CancellationToken ct)
+    {
+        if (PartitionProblem(partition) is { } bad)
+        {
+            return bad;
+        }
+
+        var chosen = string.IsNullOrWhiteSpace(outcome) ? null : outcome.Trim().ToLowerInvariant();
+        if (chosen is not null && !InventoryRemovals.IsOutcome(chosen))
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Unknown outcome", $"'{outcome}' is not what a removal comes to for an id; it is one of {string.Join(", ", InventoryRemovals.Outcomes)}.");
+        }
+
+        if (after is < 0)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Invalid cursor", "after is the next of the page before: a number, zero or more.");
+        }
+
+        if (limit is < 1 or > MaxPage)
+        {
+            return Problem(StatusCodes.Status400BadRequest, "Invalid limit", $"limit is how many ids a page holds: 1 to {MaxPage}.");
+        }
+
+        var take = limit ?? DefaultPage;
+        var read = await ledger.ListInventoryRemovalItemsAsync(partition.Trim(), removalId, chosen, after, take + 1, ct).ConfigureAwait(false);
+        var page = read.Count > take ? read.Take(take).ToList() : read;
+        return TypedResults.Json(
+            new DeliveryInventoryRemovalItemPageDto(page.Select(ToDto).ToList(), read.Count > take ? page[^1].InventoryRemovalItemId : null),
+            Json);
     }
 
     /// <summary>The inventories of the partition the request reads (its own, else the workbench's), or of every partition.</summary>
@@ -165,14 +449,17 @@ public static class DeliveryInventoryEndpoints
 
         var runs = await InventoryReport.RecentRunsAsync(ledger, inventory, ct).ConfigureAwait(false);
         var counts = await ledger.InventoryCountsAsync(inventory.Partition, inventory.InventoryId, ct).ConfigureAwait(false);
-        var (pipeline, spec, declared) = await DeclarationAsync(db, documents, inventory, ct).ConfigureAwait(false);
+        var (pipeline, flow, declared) = await DeclaringFlowAsync(db, documents, inventory, ct).ConfigureAwait(false);
+        var spec = declared == true ? flow?.Inventory(inventory.Name) : null;
         var owners = InventoryReport.Owners(inventory.OwnersJson, inventory.OwnersSource);
+        var removal = declared == true && flow?.Removal is { } policy ? new DeliveryInventoryRemovalPolicyDto(policy.Findings, policy.Purge, flow.Source.Endpoint) : null;
         return TypedResults.Json(
             new DeliveryInventoryDetailDto(
                 ToDto(inventory, runs), pipeline?.Id, pipeline?.RepoId, spec?.Description, declared, Counts(counts.ByFinding), counts.ByFinding.Values.Sum(), counts.Raised,
                 owners is null ? null : ToDto(owners),
                 runs.LastBuild is null ? null : ToDto(runs.LastBuild, withFindings: true),
-                runs.LastReconcile is null ? null : ToDto(runs.LastReconcile, withFindings: true)),
+                runs.LastReconcile is null ? null : ToDto(runs.LastReconcile, withFindings: true),
+                removal),
             Json);
     }
 
@@ -280,7 +567,8 @@ public static class DeliveryInventoryEndpoints
             }
         }
 
-        return TypedResults.Json(new DeliveryInventoryLookupDto(named, wanted, hits), Json);
+        var removed = await ledger.LookupInventoryRemovalItemsAsync(named, wanted, ct).ConfigureAwait(false);
+        return TypedResults.Json(new DeliveryInventoryLookupDto(named, wanted, hits, removed.Select(ToDto).ToList()), Json);
     }
 
     /// <summary>An inventory's ids of one finding (or every one) as CSV, written a ledger page at a time as it is read.</summary>
@@ -419,10 +707,10 @@ public static class DeliveryInventoryEndpoints
     }
 
     /// <summary>
-    /// The pipeline declaring the inventory (the active one first), its declaration of the inventory, and whether the flow still
-    /// declares it; a null declaration for a flow the catalog no longer holds or cannot read now.
+    /// The pipeline declaring the inventory (the active one first), the flow as it declares it, and whether the flow still
+    /// declares it; a null flow for a flow the catalog no longer holds or cannot read now.
     /// </summary>
-    private static async Task<(CatalogPipeline? Pipeline, InventorySpec? Spec, bool? Declared)> DeclarationAsync(
+    private static async Task<(CatalogPipeline? Pipeline, InventoryFlowDefinition? Flow, bool? Declared)> DeclaringFlowAsync(
         CatalogDbContext db, DeliveryDocumentLoader documents, InventoryState inventory, CancellationToken ct)
     {
         var pipelines = await db.Pipelines.AsNoTracking()
@@ -437,9 +725,9 @@ public static class DeliveryInventoryEndpoints
             try
             {
                 var flow = documents.ParseInventory(pipeline.Yaml, pipeline.RelativePath);
-                if (flow.Inventory(inventory.Name) is { } spec)
+                if (flow.Inventory(inventory.Name) is not null)
                 {
-                    return (pipeline, spec, true);
+                    return (pipeline, flow, true);
                 }
             }
             catch (FlowValidationException)
@@ -514,6 +802,14 @@ public static class DeliveryInventoryEndpoints
         Utc(record.ModifyTime), Utc(record.FirstSeenUtc), Utc(record.ChangedUtc), Utc(record.GoneUtc), record.Finding, Utc(record.FindingUtc), record.LedgerFlowId,
         record.LedgerFlowId is { } flowId ? ledgers.GetValueOrDefault(flowId) : null, record.DeliveryKey, record.LedgerStatus, record.LedgerVersion, record.ArtifactId,
         record.ArtifactState, record.Detail);
+
+    private static DeliveryInventoryRemovalDto ToDto(InventoryRemovalState r) => new(
+        r.InventoryRemovalId, r.InventoryId, r.RunId, r.Actor, r.Finding, r.Scope, r.NamesIds, r.Requested, r.Status, Utc(r.StartedUtc), Utc(r.CompletedUtc),
+        r.Removed, r.Gone, r.Skipped, r.Failed, r.Error, r.ActivityId);
+
+    private static DeliveryInventoryRemovalItemDto ToDto(InventoryRemovalItemState i) => new(
+        i.InventoryRemovalItemId, i.InventoryRemovalId, i.InventoryRecordId, i.TargetId, i.Version, i.Finding, i.Outcome, i.Reason, i.LedgerFlowId, i.DeliveryKey,
+        Utc(i.RecordedUtc));
 
     private static DeliveryInventoryOwnersDto ToDto(InventoryOwners owners)
         => new(owners.Source, owners.Identities.Select(o => new DeliveryInventoryOwnerDto(o.Identity, o.Records)).ToList());
