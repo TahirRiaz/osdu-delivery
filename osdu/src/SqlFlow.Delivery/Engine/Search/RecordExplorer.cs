@@ -5,9 +5,12 @@ using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Delivery.Engine.Protocols;
+using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Search;
+using SqlFlow.Delivery.Snapshots;
 
 namespace SqlFlow.Delivery.Engine.Search;
 
@@ -24,37 +27,133 @@ public enum ExplorerSort
     Created,
 }
 
+/// <summary>What a condition of the explorer asks of a property.</summary>
+public enum ExplorerCondition
+{
+    /// <summary>The property holds exactly the value, whole (<see cref="OsduQuery.Equal"/>).</summary>
+    Is,
+
+    /// <summary>The property does not hold the value: every record but those that do.</summary>
+    IsNot,
+
+    /// <summary>The property holds one of the values, each compared whole (<see cref="OsduQuery.AnyOf"/>).</summary>
+    AnyOf,
+
+    /// <summary>The property's text holds the words as a phrase, their case aside (<see cref="OsduQuery.Words"/>).</summary>
+    Contains,
+
+    /// <summary>The property's whole value starts with the text, case included (<see cref="OsduQuery.Prefix"/>).</summary>
+    StartsWith,
+
+    /// <summary>The property holds a value from <c>value</c> (included) up to <c>to</c> (left out); either end may be open (<see cref="OsduQuery.Range"/>).</summary>
+    Range,
+
+    /// <summary>The property holds a value (<see cref="OsduQuery.Exists"/>).</summary>
+    Exists,
+
+    /// <summary>The property holds no value: every record but those that hold one.</summary>
+    Missing,
+}
+
 /// <summary>
-/// One condition a page of the explorer narrows to: a property of the record equal to one value, asked the way the platform
-/// indexes the property (<see cref="OsduQuery.Equal"/>), so a value picked from the property's groups finds exactly the
-/// records counted under it.
+/// One condition a page of the explorer narrows to: a property of the record, asked the way the platform indexes it, and
+/// what it must (or must not) hold. A value picked from the property's groups is the condition <see cref="ExplorerCondition.Is"/>,
+/// which finds exactly the records counted under it. Every comparison is written by <see cref="OsduQuery"/>, as the module's
+/// own lookups and filters are.
 /// </summary>
 public sealed record ExplorerFilter
 {
+    /// <summary>The most values one condition compares at once: far inside the 1,024 clauses the service allows in a query.</summary>
+    public const int MaxValues = 50;
+
     /// <summary>The property's path from the record root: <c>data.FacilityTypeID</c>, <c>legal.legaltags</c>.</summary>
     public required string Path { get; init; }
 
     /// <summary>How the platform indexes the property.</summary>
     public OsduFieldIndex Index { get; init; } = OsduFieldIndex.Text;
 
-    /// <summary>The whole value the property must hold.</summary>
-    public required string Value { get; init; }
+    /// <summary>The nested array the property sits in (<c>data.GeoContexts</c>), which the query reaches through; null for none.</summary>
+    public string? Nested { get; init; }
 
-    /// <summary>The condition as the search service reads it.</summary>
-    /// <exception cref="OsduQueryException">The path or the value cannot be asked for exactly.</exception>
-    public OsduQuery Query() => OsduQuery.Equal(OsduField.Of(Path, Index), Value);
+    /// <summary>What the property must hold; <see cref="ExplorerCondition.Is"/> when left out.</summary>
+    public ExplorerCondition Condition { get; init; }
+
+    /// <summary>
+    /// The value compared: the whole value (<see cref="ExplorerCondition.Is"/>, <see cref="ExplorerCondition.IsNot"/>), the
+    /// words, the start, or the lower bound of a range. Not read by <see cref="ExplorerCondition.Exists"/> and
+    /// <see cref="ExplorerCondition.Missing"/>.
+    /// </summary>
+    public string? Value { get; init; }
+
+    /// <summary>The values <see cref="ExplorerCondition.AnyOf"/> compares, at most <see cref="MaxValues"/>.</summary>
+    public IReadOnlyList<string>? Values { get; init; }
+
+    /// <summary>The upper bound of a <see cref="ExplorerCondition.Range"/>, left out of it; null for a range open at the top.</summary>
+    public string? To { get; init; }
+
+    /// <summary>Whether the condition keeps the records that do not match its comparison: <see cref="ExplorerCondition.IsNot"/> and <see cref="ExplorerCondition.Missing"/>.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool Excludes => Condition is ExplorerCondition.IsNot or ExplorerCondition.Missing;
+
+    /// <summary>
+    /// The comparison as the search service reads it: what a record must hold to match it, or for a condition that
+    /// <see cref="Excludes"/>, what it must not.
+    /// </summary>
+    /// <exception cref="OsduQueryException">The condition cannot be asked as given; the message says why.</exception>
+    public OsduQuery Query()
+    {
+        var field = OsduField.Of(Path, Index, Nested);
+        return Condition switch
+        {
+            ExplorerCondition.Is or ExplorerCondition.IsNot => OsduQuery.Equal(field, Required()),
+            ExplorerCondition.AnyOf => OsduQuery.AnyOf(field, Listed()),
+            ExplorerCondition.Contains => OsduQuery.Words(field, Required()),
+            ExplorerCondition.StartsWith => OsduQuery.Prefix(field, Required()),
+            ExplorerCondition.Range when Index == OsduFieldIndex.Boolean
+                => throw new OsduQueryException($"'{Path}' is indexed as a boolean, which is true or false: ask whether it is one rather than for a range."),
+            ExplorerCondition.Range => OsduQuery.Range(field, Bound(Value), Bound(To)),
+            ExplorerCondition.Exists or ExplorerCondition.Missing => OsduQuery.Exists(field),
+            _ => throw new OsduQueryException($"'{Condition}' is not a condition the explorer asks."),
+        };
+    }
+
+    /// <summary>
+    /// The condition as one clause a page ANDs with the others: its comparison, grouped where it holds several, and preceded
+    /// by <c>NOT</c> for a condition that <see cref="Excludes"/>.
+    /// </summary>
+    /// <exception cref="OsduQueryException">The condition cannot be asked as given.</exception>
+    public string Clause()
+    {
+        var query = Query().Text;
+        return Excludes ? $"NOT ({query})" : Condition == ExplorerCondition.AnyOf ? $"({query})" : query;
+    }
+
+    private string Required() => Value ?? throw new OsduQueryException($"'{Path}' is compared with no value; name the value the condition compares.");
+
+    private IReadOnlyList<string> Listed()
+    {
+        var values = Values ?? (Value is null ? [] : [Value]);
+        return values.Count > MaxValues
+            ? throw new OsduQueryException($"'{Path}' is compared with {values.Count} values; a condition compares at most {MaxValues} at once.")
+            : values;
+    }
+
+    private static string? Bound(string? bound) => string.IsNullOrEmpty(bound) ? null : bound;
 }
 
-/// <summary>A property the explorer groups records by: its path from the record root, and how the platform indexes it.</summary>
+/// <summary>A property the explorer groups records by: its path from the record root, how the platform indexes it, and the nested array it sits in.</summary>
 public sealed record ExplorerField
 {
     public required string Path { get; init; }
 
     public OsduFieldIndex Index { get; init; } = OsduFieldIndex.Text;
 
+    /// <summary>The nested array the property sits in, which the grouping reaches through; null for none.</summary>
+    public string? Nested { get; init; }
+
     /// <summary>The value the search's <c>aggregateBy</c> names the property by.</summary>
     /// <exception cref="OsduQueryException">The path cannot be written in a query.</exception>
-    public string AggregateBy() => OsduField.Of(Path, Index).AggregateBy;
+    public string AggregateBy() => OsduField.Of(Path, Index, Nested).AggregateBy;
 }
 
 /// <summary>
@@ -82,6 +181,9 @@ public sealed record ExplorerSearch
 
     /// <summary>The longest kind or kind pattern a page is asked of.</summary>
     public const int MaxKindLength = 256;
+
+    /// <summary>The most properties a page shows as columns beside each record.</summary>
+    public const int MaxColumns = 8;
 
     internal static readonly JsonSerializerOptions WireOptions = new()
     {
@@ -119,6 +221,9 @@ public sealed record ExplorerSearch
 
     /// <summary>The property whose distinct values the records are grouped by, with their counts; null for none.</summary>
     public ExplorerField? Facet { get; init; }
+
+    /// <summary>The properties whose values each record of the page carries (<see cref="ExplorerHit.Values"/>), as columns beside it.</summary>
+    public IReadOnlyList<string> Columns { get; init; } = [];
 
     /// <summary>Why the search cannot be asked, in words a reader acts on; null when it can.</summary>
     public string? Problem()
@@ -168,19 +273,39 @@ public sealed record ExplorerSearch
 
         foreach (var filter in Filters)
         {
-            if (filter is null || filter.Value is null || filter.Path is null)
+            if (filter is null || filter.Path is null || (filter.Values is { } values && values.Any(v => v is null)))
             {
-                return "Every value a page narrows to names its property and its value.";
+                return "Every condition a page narrows to names its property, and every value it compares is a text.";
+            }
+
+            if (!Enum.IsDefined(filter.Condition))
+            {
+                return "A condition is one of is, isNot, anyOf, contains, startsWith, range, exists or missing.";
             }
 
             try
             {
-                _ = filter.Query();
+                _ = filter.Clause();
             }
             catch (OsduQueryException ex)
             {
-                return $"The page cannot narrow to {filter.Path} = '{Clip(filter.Value)}': {ex.Message}";
+                return $"The page cannot narrow to {Describe(filter)}: {ex.Message}";
             }
+        }
+
+        if (Columns is null)
+        {
+            return "The columns a page shows are a list.";
+        }
+
+        if (Columns.Count > MaxColumns)
+        {
+            return $"A page shows at most {MaxColumns} properties as columns; {Columns.Count} were asked.";
+        }
+
+        if (Columns.FirstOrDefault(c => !OsduPath.IsPath(c)) is { } column)
+        {
+            return $"'{Clip(column ?? string.Empty)}' is not a property path a page can show, such as data.FacilityName.";
         }
 
         if (Facet is { } facet)
@@ -236,6 +361,20 @@ public sealed record ExplorerSearch
     }
 
     private static string Clip(string text) => text.Length <= 80 ? text : text[..80] + "...";
+
+    /// <summary>A condition as a message names it: its property, and what it compares.</summary>
+    private static string Describe(ExplorerFilter filter)
+    {
+        var values = filter.Values is { Count: > 0 } listed ? string.Join(", ", listed.Take(3).Select(v => $"'{Clip(v)}'")) + (listed.Count > 3 ? ", ..." : string.Empty) : null;
+        return filter.Condition switch
+        {
+            ExplorerCondition.Exists => $"{filter.Path} holding a value",
+            ExplorerCondition.Missing => $"{filter.Path} holding no value",
+            ExplorerCondition.AnyOf => $"{filter.Path} one of {values ?? $"'{Clip(filter.Value ?? string.Empty)}'"}",
+            ExplorerCondition.Range => $"{filter.Path} from '{Clip(filter.Value ?? "*")}' up to '{Clip(filter.To ?? "*")}'",
+            _ => $"{filter.Path} {filter.Condition} '{Clip(filter.Value ?? string.Empty)}'",
+        };
+    }
 }
 
 /// <summary>The kinds the explorer is asked of, as the search service's <c>kind</c> accepts them.</summary>
@@ -291,10 +430,14 @@ public sealed record ExplorerReading(string Reading, string? Query, string? Plai
 /// <summary>
 /// One record of a page, as the search index holds it: what it is, which version, its name, and who wrote it when. The name is
 /// the record's own (its facility name, its name, its project name, its code or its file's name, the first it has), and
-/// <c>NameField</c> says which property it was read from.
+/// <c>NameField</c> says which property it was read from. <c>Values</c> holds what the record holds at each of the page's
+/// columns (<see cref="ExplorerSearch.Columns"/>): every value at the path, through any list on the way, the first
+/// <see cref="RecordExplorer.MaxColumnValues"/> of them; a column the record holds nothing at is left out, and null when the
+/// page shows no columns.
 /// </summary>
 public sealed record ExplorerHit(
-    string Id, string? Kind, long? Version, string? Name, string? NameField, string? CreateTime, string? CreateUser, string? ModifyTime, string? ModifyUser);
+    string Id, string? Kind, long? Version, string? Name, string? NameField, string? CreateTime, string? CreateUser, string? ModifyTime, string? ModifyUser,
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? Values = null);
 
 /// <summary>One distinct value of the property a page groups by, and how many of its records hold it; a null value is one the service named no key for.</summary>
 public sealed record ExplorerBucket(string? Value, long Count);
@@ -318,13 +461,33 @@ public sealed record ExplorerKindCount(string Kind, long Count);
 public sealed record ExplorerTypes(string Reading, string? Query, long Total, IReadOnlyList<ExplorerKindCount> Kinds, long Listed, IReadOnlyList<string> Notes, string? Refusal);
 
 /// <summary>
-/// A property records of a kind hold, and how the platform indexes it (<c>text</c>, <c>keyword</c>, <c>number</c>,
-/// <c>boolean</c> or <c>date</c>), by the explorer's reading of a sample record.
+/// A property records of a kind hold, which a page searches, narrows to, groups by and shows as a column: its path, how the
+/// platform indexes it (<c>text</c>, <c>keyword</c>, <c>number</c>, <c>boolean</c> or <c>date</c>), and the nested array a
+/// query reaches it through.
 /// </summary>
-public sealed record ExplorerFieldInfo(string Path, string Index);
+/// <param name="Path">The property's path from the record root.</param>
+/// <param name="Index">How the platform indexes it.</param>
+/// <param name="Nested">The nested array it sits in (<c>data.GeoContexts</c>); null for none.</param>
+/// <param name="Origin">
+/// Where it was found: <c>record</c> (a property of every record), <c>schema</c> (declared by the schema of the kind read),
+/// or <c>records</c> (held by the records read and not declared by that schema: a property the index adds, such as one of
+/// an index augmentation, one of another version of the kind, or one no schema was read for).
+/// </param>
+/// <param name="Title">The schema's title for it; null where the schema gives none.</param>
+/// <param name="Description">The schema's description of it, its first <see cref="RecordExplorer.MaxDescription"/> characters; null where the schema gives none.</param>
+public sealed record ExplorerFieldInfo(string Path, string Index, string? Nested = null, string? Origin = null, string? Title = null, string? Description = null);
 
-/// <summary>The properties a kind's records hold, read from one of them (<paramref name="SampleId"/>), the record's own envelope first.</summary>
-public sealed record ExplorerFields(string Kind, string? SampleId, IReadOnlyList<ExplorerFieldInfo> Fields);
+/// <summary>
+/// The properties a kind's records hold: the record's own first, then those the schema of the kind declares, then those the
+/// records read hold beyond them.
+/// </summary>
+/// <param name="Kind">The kind (or kind pattern) asked.</param>
+/// <param name="SampleId">The first record read; null when the kind holds none.</param>
+/// <param name="Fields">The properties.</param>
+/// <param name="SchemaKind">The kind whose schema was read from the Schema service: the kind asked, or of a pattern, the kind of one type holding the most records; null when none was read.</param>
+/// <param name="Sampled">How many records were read for the properties they hold.</param>
+/// <param name="Notes">What the reader should know of how the list was made: a schema that could not be read, properties a query does not reach.</param>
+public sealed record ExplorerFields(string Kind, string? SampleId, IReadOnlyList<ExplorerFieldInfo> Fields, string? SchemaKind = null, int Sampled = 0, IReadOnlyList<string>? Notes = null);
 
 /// <summary>
 /// The explorer's reads of the OSDU search service (openapi search v2, <c>POST /query</c>): a page of the records a reader's
@@ -360,17 +523,32 @@ public sealed partial class RecordExplorer
     /// </summary>
     public static readonly IReadOnlyList<ExplorerFieldInfo> EnvelopeFields =
     [
-        new("kind", "keyword"),
-        new("createUser", "keyword"),
-        new("modifyUser", "keyword"),
-        new("acl.viewers", "keyword"),
-        new("acl.owners", "keyword"),
-        new("legal.legaltags", "keyword"),
-        new("legal.otherRelevantDataCountries", "keyword"),
+        new("kind", "keyword", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("id", "keyword", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("createUser", "keyword", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("createTime", "date", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("modifyUser", "keyword", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("modifyTime", "date", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("acl.viewers", "keyword", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("acl.owners", "keyword", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("legal.legaltags", "keyword", Origin: ExplorerFieldCatalog.RecordOrigin),
+        new("legal.otherRelevantDataCountries", "keyword", Origin: ExplorerFieldCatalog.RecordOrigin),
     ];
 
-    /// <summary>The most properties of a kind's data the explorer offers, however many a record holds.</summary>
-    public const int MaxFields = 300;
+    /// <summary>The most properties of a kind's data the explorer offers, however many its schema declares and its records hold.</summary>
+    public const int MaxFields = 600;
+
+    /// <summary>How many records the properties of a kind are read from, beside its schema: enough to meet the properties an index augmentation adds.</summary>
+    public const int SampleSize = 20;
+
+    /// <summary>The longest description of a property an answer carries; the schema's own may run to paragraphs.</summary>
+    public const int MaxDescription = 300;
+
+    /// <summary>The most values of one column a record carries: a list of hundreds shows its first ones.</summary>
+    public const int MaxColumnValues = 20;
+
+    /// <summary>The longest value of a column a record carries; a longer one is cut, with an ellipsis.</summary>
+    public const int MaxColumnValueLength = 256;
 
     /// <summary>How deep into a record's data the explorer looks for properties.</summary>
     private const int MaxFieldDepth = 6;
@@ -478,16 +656,25 @@ public sealed partial class RecordExplorer
         return first.Contains("--", StringComparison.Ordinal);
     }
 
-    /// <summary>The query a reading asks with the page's property values: each of them, and the reading's own query.</summary>
+    /// <summary>
+    /// The query a reading asks with the page's conditions: the reading's own query, and each condition as its clause. The
+    /// service refuses a query whose every clause excludes, so conditions that only exclude, with nothing read beside them,
+    /// start from every record (<see cref="OsduQuery.EveryRecord"/>).
+    /// </summary>
     internal static string? Compose(string? reading, IReadOnlyList<ExplorerFilter> filters)
     {
-        var parts = new List<string>(filters.Count + 1);
-        if (!string.IsNullOrWhiteSpace(reading))
+        var parts = new List<string>(filters.Count + 2);
+        var read = !string.IsNullOrWhiteSpace(reading);
+        if (read)
         {
-            parts.Add(filters.Count == 0 ? reading : $"({reading})");
+            parts.Add(filters.Count == 0 ? reading! : $"({reading})");
+        }
+        else if (filters.Count > 0 && filters.All(f => f.Excludes))
+        {
+            parts.Add(OsduQuery.EveryRecord);
         }
 
-        parts.AddRange(filters.Select(f => f.Query().Text));
+        parts.AddRange(filters.Select(f => f.Clause()));
         return parts.Count == 0 ? null : string.Join(" AND ", parts);
     }
 
@@ -504,14 +691,16 @@ public sealed partial class RecordExplorer
         var kind = search.Kind ?? ExplorerKinds.Any;
         var aggregateBy = search.Facet?.AggregateBy();
         var notes = new List<string>();
-        var asked = await AskAsync(reading, search.Filters, kind, search.Sort, search.Offset, search.Limit, aggregateBy, Shown, notes, ct).ConfigureAwait(false);
+        var columns = search.Columns.Distinct(StringComparer.Ordinal).ToList();
+        IReadOnlyList<string> returned = columns.Count == 0 ? Shown : [.. Shown.Union(columns, StringComparer.Ordinal)];
+        var asked = await AskAsync(reading, search.Filters, kind, search.Sort, search.Offset, search.Limit, aggregateBy, returned, notes, ct).ConfigureAwait(false);
         return new ExplorerPage(
             reading.Reading,
             asked.Query,
             kind,
             asked.Answer.Total,
             search.Offset,
-            asked.Answer.Hits.Select(Hit).OfType<ExplorerHit>().ToList(),
+            asked.Answer.Hits.Select(hit => Hit(hit, columns)).OfType<ExplorerHit>().ToList(),
             search.Facet?.Path,
             aggregateBy is null || asked.Answer.Refusal is not null ? null : asked.Answer.Buckets.Select(b => new ExplorerBucket(b.Key, b.Count)).ToList(),
             notes,
@@ -542,10 +731,14 @@ public sealed partial class RecordExplorer
     }
 
     /// <summary>
-    /// The properties records of <paramref name="kind"/> hold, read from the first record the search finds of it: the
-    /// record's envelope keywords, then every value of its data outside a list of objects, typed by the value it holds.
+    /// The properties records of <paramref name="kind"/> hold, as the remarks on <see cref="ExplorerFieldCatalog"/> describe:
+    /// the record's own, then the values the schema of the kind declares (read from the Schema service through
+    /// <paramref name="schemas"/>; of a kind pattern, the schema of the kind of one type holding the most records), then the
+    /// values the first <see cref="SampleSize"/> records hold beyond them. A value inside a list of objects is offered only
+    /// as the schema has it indexed, since such a list may be nested, which a plain path does not reach; without a schema it
+    /// is left out rather than offered and found empty. A schema that cannot be had leaves the records' own values, with a note.
     /// </summary>
-    public async Task<ExplorerFields> FieldsAsync(string kind, CancellationToken ct)
+    public async Task<ExplorerFields> FieldsAsync(string kind, SchemaServiceReader? schemas, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(kind);
         if (ExplorerKinds.Problem(kind) is { } problem)
@@ -553,78 +746,113 @@ public sealed partial class RecordExplorer
             throw new DeliveryException(problem);
         }
 
-        var answer = await _search.PageAsync(new OsduSearchQuery { Kind = kind }, 0, 1, null, ct).ConfigureAwait(false);
+        var pattern = kind.Contains('*', StringComparison.Ordinal);
+        var answer = await _search.PageAsync(new OsduSearchQuery { Kind = kind }, 0, SampleSize, pattern ? "kind" : null, ct).ConfigureAwait(false);
         if (answer.Refusal is { } refusal)
         {
-            throw new DeliveryException($"The search service refused to read a record of {kind}: {refusal}");
+            throw new DeliveryException($"The search service refused to read the records of {kind}: {refusal}");
         }
 
-        var sample = answer.Hits.Count > 0 ? answer.Hits[0] : null;
-        var fields = new List<ExplorerFieldInfo>(EnvelopeFields);
-        if (sample?["data"] is JsonObject data)
+        var held = new Dictionary<string, ExplorerFieldCatalog.Held>(StringComparer.Ordinal);
+        foreach (var hit in answer.Hits)
         {
-            var found = new List<ExplorerFieldInfo>();
-            Collect(data, "data", 1, found);
-            fields.AddRange(found.OrderBy(f => f.Path, StringComparer.Ordinal));
-        }
-
-        return new ExplorerFields(kind, sample?["id"] is JsonValue id && id.TryGetValue<string>(out var text) ? text : null, fields);
-    }
-
-    /// <summary>The leaves of a record's data a page can group by and narrow to, each typed by the value the sample holds.</summary>
-    private static void Collect(JsonObject node, string path, int depth, List<ExplorerFieldInfo> found)
-    {
-        foreach (var (key, value) in node)
-        {
-            if (found.Count >= MaxFields)
+            if (hit["data"] is JsonObject data)
             {
-                return;
+                ExplorerFieldCatalog.Collect(data, held, MaxFields, MaxFieldDepth);
             }
+        }
 
-            // A key a query cannot name (a dot, a space) is not a property a page can ask for.
-            var child = $"{path}.{key}";
-            if (!OsduPath.IsPath(child))
+        var notes = new List<string>();
+        var schemaKind = pattern ? SchemaKindOf(answer.Buckets, notes) : kind;
+        var schema = schemas is null || schemaKind is null ? null : await SchemaAsync(schemas, schemaKind, notes, ct).ConfigureAwait(false);
+        var content = new List<ExplorerFieldInfo>();
+        var offered = new HashSet<string>(StringComparer.Ordinal);
+        if (schema is not null)
+        {
+            var (declared, unreached) = ExplorerFieldCatalog.Declared(schema, MaxFields, MaxDescription);
+            content.AddRange(declared);
+            offered.UnionWith(declared.Select(f => f.Path));
+            if (unreached > 0)
+            {
+                notes.Add(string.Create(CultureInfo.InvariantCulture,
+                    $"{unreached} {(unreached == 1 ? "value" : "values")} the schema of {schemaKind} declares {(unreached == 1 ? "is" : "are")} left out: the index holds nothing there a query compares (inside a list of objects the schema gives no indexing hint, or a value of no type)."));
+            }
+        }
+
+        var beyond = new List<ExplorerFieldInfo>();
+        foreach (var value in held.Values)
+        {
+            if (offered.Contains(value.Path) || content.Count + beyond.Count >= MaxFields)
             {
                 continue;
             }
 
-            switch (value)
+            if (schema is not null && SearchFields.ClassifyValue(schema, value.Path).Field is { } field)
             {
-                case JsonObject inner when depth < MaxFieldDepth:
-                    Collect(inner, child, depth + 1, found);
-                    break;
-                case JsonArray items when items.Count > 0 && items.All(i => i is JsonValue):
-                    // A list of values is asked as its property, each value matching; a list of objects may be nested, which a
-                    // plain path does not reach, so it is left out rather than offered and found empty.
-                    if (IndexOf(items[0]!) is { } listed)
-                    {
-                        found.Add(new ExplorerFieldInfo(child, listed));
-                    }
-
-                    break;
-                case JsonValue leaf when IndexOf(leaf) is { } index:
-                    found.Add(new ExplorerFieldInfo(child, index));
-                    break;
+                // One of a list's forms the template does not list apart, or a value the walk of the schema met through a choice.
+                var (title, description) = ExplorerFieldCatalog.Described(schema, value.Path, MaxDescription);
+                content.Add(new ExplorerFieldInfo(value.Path, ExplorerFieldCatalog.IndexName(field.Index), field.NestedPath, ExplorerFieldCatalog.SchemaOrigin, title, description));
+            }
+            else if (!value.InList)
+            {
+                beyond.Add(new ExplorerFieldInfo(value.Path, value.Index, Origin: ExplorerFieldCatalog.RecordsOrigin));
             }
         }
+
+        var fields = new List<ExplorerFieldInfo>(EnvelopeFields);
+        fields.AddRange(content.OrderBy(f => f.Path, StringComparer.Ordinal));
+        fields.AddRange(beyond.OrderBy(f => f.Path, StringComparer.Ordinal));
+        var sample = answer.Hits.Count > 0 ? answer.Hits[0] : null;
+        return new ExplorerFields(
+            kind, sample?["id"] is JsonValue id && id.TryGetValue<string>(out var text) ? text : null, fields, schema is null ? null : schemaKind, answer.Hits.Count, notes);
     }
 
-    /// <summary>How the indexer keeps a value like <paramref name="value"/>: text, a number, a boolean, or a date written as one.</summary>
-    private static string? IndexOf(JsonNode value)
+    /// <summary>
+    /// The kind whose schema describes the records of a kind pattern: of one type, the kind holding the most of them (the
+    /// last of those as many); null for records of several types, which no one schema describes, with a note saying so.
+    /// </summary>
+    private static string? SchemaKindOf(IReadOnlyList<OsduSearchBucket> kinds, List<string> notes)
     {
-        if (value is not JsonValue leaf)
+        var held = kinds.Where(k => !string.IsNullOrEmpty(k.Key) && k.Count > 0).ToList();
+        var types = held.Select(k => ExplorerKinds.EntityTypeOf(k.Key) ?? k.Key!).Distinct(StringComparer.Ordinal).Count();
+        if (types > 1)
         {
+            notes.Add("The records are of several types, which no one schema describes, so the properties of their content are those the records read hold.");
             return null;
         }
 
-        return leaf.GetValueKind() switch
+        return held.OrderByDescending(k => k.Count).ThenByDescending(k => k.Key, StringComparer.Ordinal).Select(k => k.Key).FirstOrDefault();
+    }
+
+    /// <summary>The schema of <paramref name="kind"/> as the Schema service holds it; null with a note when it cannot be had.</summary>
+    private static async Task<SchemaSnapshot?> SchemaAsync(SchemaServiceReader schemas, string kind, List<string> notes, CancellationToken ct)
+    {
+        SchemaServiceRead read;
+        try
         {
-            JsonValueKind.String when leaf.TryGetValue<string>(out var text) && IsoInstant().IsMatch(text) => "date",
-            JsonValueKind.String => "text",
-            JsonValueKind.Number => "number",
-            JsonValueKind.True or JsonValueKind.False => "boolean",
-            _ => null,
-        };
+            read = await schemas.ReadAsync(kind, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is DeliveryException or HttpRequestException && !ct.IsCancellationRequested)
+        {
+            notes.Add($"The schema of {kind} could not be read from the Schema service, so the properties of the content are those the records read hold: {HeaderRedaction.RedactMessage(ex.Message)}");
+            return null;
+        }
+
+        if (read.Schema is null)
+        {
+            notes.Add(read.Unresolved.Count > 0
+                ? $"The schema of {kind} could not be read from the Schema service, so the properties of the content are those the records read hold: {read.Unresolved[0]}"
+                : $"The Schema service holds no schema of {kind}, so the properties of the content are those the records read hold.");
+            return null;
+        }
+
+        if (read.Unresolved.Count > 0)
+        {
+            notes.Add(string.Create(CultureInfo.InvariantCulture,
+                $"{read.Unresolved.Count} {(read.Unresolved.Count == 1 ? "reference" : "references")} of the schema of {kind} could not be followed; the values behind {(read.Unresolved.Count == 1 ? "it" : "them")} are listed only where the records read hold them."));
+        }
+
+        return read.Schema;
     }
 
     /// <summary>
@@ -703,6 +931,100 @@ public sealed partial class RecordExplorer
 
     private static string SortField(ExplorerSort sort) => sort == ExplorerSort.Created ? "createTime" : "modifyTime";
 
+    /// <summary>
+    /// A hit as a page lists it, with what it holds at each of <paramref name="columns"/> (none asked: no values); null for a
+    /// hit with no id, which names no record a reader could open.
+    /// </summary>
+    internal static ExplorerHit? Hit(JsonObject hit, IReadOnlyList<string> columns)
+    {
+        var listed = Hit(hit);
+        if (listed is null || columns.Count == 0)
+        {
+            return listed;
+        }
+
+        var values = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var column in columns)
+        {
+            if (ValuesAt(hit, column) is { Count: > 0 } held)
+            {
+                values[column] = held;
+            }
+        }
+
+        return listed with { Values = values };
+    }
+
+    /// <summary>
+    /// Every value a hit holds at <paramref name="path"/>, through any list on the way (each of a wellbore's geographic contexts),
+    /// whichever way the service projected it: as nested objects, or under a name holding dots itself, as the record's root
+    /// carries a projected path (<c>data.Code</c>) and an index augmentation names its properties (<c>Equinor.WellboreName</c>).
+    /// The first <see cref="MaxColumnValues"/>, each cut at <see cref="MaxColumnValueLength"/> characters.
+    /// </summary>
+    internal static IReadOnlyList<string> ValuesAt(JsonObject hit, string path)
+    {
+        ArgumentNullException.ThrowIfNull(hit);
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var found = new List<string>();
+        Gather(hit, path.Split('.'), 0, found);
+        return found;
+    }
+
+    private static void Gather(JsonNode? node, string[] segments, int at, List<string> found)
+    {
+        if (node is null || found.Count >= MaxColumnValues)
+        {
+            return;
+        }
+
+        if (at == segments.Length)
+        {
+            IEnumerable<JsonValue> values = node switch { JsonArray list => list.OfType<JsonValue>(), JsonValue one => [one], _ => [] };
+            foreach (var value in values)
+            {
+                if (found.Count < MaxColumnValues && ColumnText(value) is { } text)
+                {
+                    found.Add(text.Length <= MaxColumnValueLength ? text : string.Concat(text.AsSpan(0, MaxColumnValueLength - 3), "..."));
+                }
+            }
+
+            return;
+        }
+
+        switch (node)
+        {
+            case JsonArray items:
+                foreach (var item in items)
+                {
+                    Gather(item, segments, at, found);
+                }
+
+                break;
+            case JsonObject holder:
+                // The longest name the object holds first: a name with dots is the whole of the path it spells.
+                for (var end = segments.Length; end > at; end--)
+                {
+                    if (holder.TryGetPropertyValue(string.Join('.', segments[at..end]), out var next))
+                    {
+                        Gather(next, segments, end, found);
+                        return;
+                    }
+                }
+
+                break;
+        }
+    }
+
+    /// <summary>A value as a column shows it: a text as it is, a number as written, a boolean as true or false; null for a JSON null.</summary>
+    private static string? ColumnText(JsonValue value) => value.GetValueKind() switch
+    {
+        JsonValueKind.String => value.GetValue<string>(),
+        JsonValueKind.Number => value.ToJsonString(),
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        _ => null,
+    };
+
     /// <summary>A hit as a page lists it; null for a hit with no id, which names no record a reader could open.</summary>
     internal static ExplorerHit? Hit(JsonObject hit)
     {
@@ -760,8 +1082,4 @@ public sealed partial class RecordExplorer
     /// <summary>A unique part a machine minted: hex digits and hyphens, at least eight of them, a digit among them.</summary>
     [GeneratedRegex(@"^(?=[0-9a-fA-F-]*[0-9])[0-9a-fA-F-]{8,}$", RegexOptions.CultureInvariant)]
     private static partial Regex Minted();
-
-    /// <summary>A date and time as OSDU writes one (ISO 8601, a date with a time after it).</summary>
-    [GeneratedRegex(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", RegexOptions.CultureInvariant)]
-    private static partial Regex IsoInstant();
 }

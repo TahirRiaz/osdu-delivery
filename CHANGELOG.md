@@ -13,6 +13,21 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **The explorer searches one property as readily as every one.** Text typed in a search field is offered, under it, in
+  one property instead of every one (the properties searched in lately for the type, then the record's name), or in
+  any other picked in the new condition editor. **Filter**, beside Group by, asks any property a condition: contains (its
+  words, any case), is, is not, is one of, starts with, is in a range, has a value, has no value, each offered as the
+  platform indexes the property and written by `OsduQuery` (new `Words`, `Prefix`, `Exists` and `EveryRecord`). The
+  editor lists the values the records in view hold there with their counts, narrowed as a value is typed. Each condition
+  is a chip that reads as a sentence and opens the editor to change it, and each property a condition asks is a column
+  of the grid (`columns` on `/explorer/search`, each hit's `values`). Conditions that only exclude start from every
+  record, since the search service refuses a query that only excludes. The properties offered (`/explorer/fields`) are
+  now the kind's schema, read from the Schema service (nested lists through them, a list of forms through its forms),
+  and what its first 20 records hold beyond it, such as the properties an index augmentation adds (`Equinor.*`), each
+  with its origin, title and description; Group by groups a property of a nested list through it. Links made before
+  conditions had names still open. Referenced by, Validate and the refresh are glyphs at the end of the place's line,
+  which now fits a 1024-pixel window ([osdu/docs/explorer.md](osdu/docs/explorer.md#searching-a-property)).
+
 - **A delivery that does not complete is undone, and the ledger names every id a delivery ever minted.** A delivery of one
   record is now a unit of work across its tries: every object it creates in OSDU, or sets out to create, is written to the
   new `osdu.Artifact` in the transaction of the step that made it, and a call whose id the service mints is preceded by an

@@ -23,11 +23,26 @@ export type ExplorerIndex = "text" | "keyword" | "number" | "boolean" | "date";
 
 export type ExplorerSort = "relevance" | "modified" | "created";
 
-/** A property value a page narrows to. */
+/**
+ * What a condition asks of a property: its whole value is (or is not) one value or one of several, its text contains
+ * words (any case), its whole value starts with a text (exact case), a value in a range, or whether it holds a value.
+ */
+export type ExplorerCondition = "is" | "isNot" | "anyOf" | "contains" | "startsWith" | "range" | "exists" | "missing";
+
+/** A condition a page narrows to: a property, how the platform indexes it, and what it must hold. */
 export interface ExplorerFilter {
   path: string;
   index: ExplorerIndex;
-  value: string;
+  /** The nested list the property sits in, which the query reaches it through. */
+  nested?: string;
+  /** `is` when left out. */
+  condition?: ExplorerCondition;
+  /** The whole value, the words, the start, or a range's lower bound. */
+  value?: string;
+  /** The values `anyOf` compares. */
+  values?: string[];
+  /** A range's upper bound, left out of it. */
+  to?: string;
 }
 
 /** What the explorer asks of OSDU. */
@@ -40,7 +55,9 @@ export interface ExplorerSearchRequest {
   sort?: ExplorerSort;
   offset?: number;
   limit?: number;
-  facet?: { path: string; index: ExplorerIndex };
+  facet?: { path: string; index: ExplorerIndex; nested?: string };
+  /** The properties whose values each record carries, as columns beside it; at most 8. */
+  columns?: string[];
 }
 
 /** How the explorer read a search: everything, a Lucene query, an id, the start of one, text, or a record's mentions. */
@@ -56,6 +73,8 @@ export interface ExplorerHit {
   createUser: string | null;
   modifyTime: string | null;
   modifyUser: string | null;
+  /** What the record holds at each column asked, its first values; a column it holds nothing at is left out, as the whole is without columns. */
+  values?: Record<string, string[]>;
 }
 
 export interface ExplorerBucket {
@@ -89,15 +108,32 @@ export interface ExplorerTypes {
   refusal?: string | null;
 }
 
+/**
+ * Where a property was found: `record`, a property of every record; `schema`, declared by the kind's schema; `records`,
+ * held by the records read and declared by no schema read (an index augmentation, such as Equinor.WellboreName).
+ */
+export type ExplorerFieldOrigin = "record" | "schema" | "records";
+
 export interface ExplorerFieldInfo {
   path: string;
   index: ExplorerIndex;
+  /** The nested list a query reaches it through; left out for none, as every null of the answer is. */
+  nested?: string | null;
+  origin?: ExplorerFieldOrigin | null;
+  title?: string | null;
+  description?: string | null;
 }
 
+/** The properties a kind's records hold: the record's own, those its schema declares, and those its records hold beyond them. */
 export interface ExplorerFields {
   kind: string;
-  sampleId: string | null;
+  sampleId?: string | null;
   fields: ExplorerFieldInfo[];
+  /** The kind whose schema was read from the Schema service; left out when none was. */
+  schemaKind?: string | null;
+  /** How many records were read for the properties they hold. */
+  sampled?: number;
+  notes?: string[] | null;
 }
 
 /** One of the explorer's answers, with the connection and partition it was read through. */

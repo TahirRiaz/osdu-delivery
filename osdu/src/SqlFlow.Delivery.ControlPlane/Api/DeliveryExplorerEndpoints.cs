@@ -35,16 +35,22 @@ namespace SqlFlow.Delivery.ControlPlane.Api;
 /// <param name="Reason">Why no connection reaches the partition; null when one does.</param>
 public sealed record DeliveryExplorerConnectionDto(string? Partition, bool Available, string? Through, string? Endpoint, string? Route, string? Reason);
 
-/// <summary>A property value a page of the explorer narrows to, as the GUI sends it.</summary>
+/// <summary>A condition a page of the explorer narrows to, as the GUI sends it.</summary>
 /// <param name="Path">The property's path from the record root.</param>
 /// <param name="Index">How the platform indexes it: text (the default), keyword, number, boolean or date.</param>
-/// <param name="Value">The whole value the property holds.</param>
-public sealed record DeliveryExplorerFilterDto(string? Path, string? Index, string? Value);
+/// <param name="Value">The value compared: the whole value (is, isNot), the words (contains), the start (startsWith), or a range's lower bound.</param>
+/// <param name="Condition">is (the default), isNot, anyOf, contains, startsWith, range, exists or missing.</param>
+/// <param name="Values">The values anyOf compares.</param>
+/// <param name="To">A range's upper bound, left out of it.</param>
+/// <param name="Nested">The nested array the property sits in, which the query reaches through.</param>
+public sealed record DeliveryExplorerFilterDto(
+    string? Path, string? Index, string? Value, string? Condition = null, IReadOnlyList<string>? Values = null, string? To = null, string? Nested = null);
 
 /// <summary>A property the explorer groups records by.</summary>
 /// <param name="Path">The property's path from the record root.</param>
 /// <param name="Index">How the platform indexes it: text (the default), keyword, number, boolean or date.</param>
-public sealed record DeliveryExplorerFieldDto(string? Path, string? Index);
+/// <param name="Nested">The nested array the property sits in, which the grouping reaches through.</param>
+public sealed record DeliveryExplorerFieldDto(string? Path, string? Index, string? Nested = null);
 
 /// <summary>
 /// What the explorer asks of OSDU: a text (read as an id, the start of one, or words; or a Lucene query with
@@ -60,6 +66,7 @@ public sealed record DeliveryExplorerFieldDto(string? Path, string? Index);
 /// <param name="Offset">Where the page starts; 0 when left out.</param>
 /// <param name="Limit">How many records the page holds; 100 when left out.</param>
 /// <param name="Facet">The property whose distinct values the records are grouped by.</param>
+/// <param name="Columns">The properties whose values each record carries, as columns beside it.</param>
 public sealed record DeliveryExplorerSearchRequest(
     string? Text = null,
     bool Lucene = false,
@@ -69,7 +76,8 @@ public sealed record DeliveryExplorerSearchRequest(
     string? Sort = null,
     int? Offset = null,
     int? Limit = null,
-    DeliveryExplorerFieldDto? Facet = null);
+    DeliveryExplorerFieldDto? Facet = null,
+    IReadOnlyList<string>? Columns = null);
 
 /// <summary>The kind whose properties the explorer offers to group and narrow by.</summary>
 public sealed record DeliveryExplorerFieldsRequest(string? Kind);
@@ -146,7 +154,7 @@ public static partial class DeliveryExplorerEndpoints
         ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
         => QueueSearchAsync(ExploreOperation.SearchAction, body, partition, db, documents, partitions, ledger, config, direct, loggers, request, user, ct);
 
-    /// <summary>The properties the records of a kind hold, read from one of them.</summary>
+    /// <summary>The properties the records of a kind hold: the record's own, those its schema declares, and those its records hold beyond them.</summary>
     private static async Task<Results<ContentHttpResult, ProblemHttpResult>> FieldsAsync(
         DeliveryExplorerFieldsRequest? body, [FromQuery] string? partition, CatalogDbContext db, DeliveryDocumentLoader documents, IPartitionRegistry partitions,
         ILedger ledger, DeliveryConfigStore config, DirectOperations direct, ILoggerFactory loggers, HttpRequest request, ClaimsPrincipal user, CancellationToken ct)
@@ -224,9 +232,9 @@ public static partial class DeliveryExplorerEndpoints
         var filters = new List<ExplorerFilter>(body.Filters?.Count ?? 0);
         foreach (var filter in body.Filters ?? [])
         {
-            if (filter?.Path is not { Length: > 0 } path || filter.Value is null)
+            if (filter?.Path is not { Length: > 0 } path)
             {
-                return (null, "Every value a page narrows to names its property and its value.");
+                return (null, "Every condition a page narrows to names its property.");
             }
 
             if (!TryParse<OsduFieldIndex>(filter.Index, OsduFieldIndex.Text, out var index))
@@ -234,7 +242,21 @@ public static partial class DeliveryExplorerEndpoints
                 return (null, $"'{filter.Index}' is not how a property is indexed: text, keyword, number, boolean or date.");
             }
 
-            filters.Add(new ExplorerFilter { Path = path.Trim(), Index = index, Value = filter.Value });
+            if (!TryParse<ExplorerCondition>(filter.Condition, ExplorerCondition.Is, out var condition))
+            {
+                return (null, $"'{filter.Condition}' is not a condition: is, isNot, anyOf, contains, startsWith, range, exists or missing.");
+            }
+
+            filters.Add(new ExplorerFilter
+            {
+                Path = path.Trim(),
+                Index = index,
+                Nested = string.IsNullOrWhiteSpace(filter.Nested) ? null : filter.Nested.Trim(),
+                Condition = condition,
+                Value = filter.Value,
+                Values = filter.Values,
+                To = filter.To,
+            });
         }
 
         ExplorerField? facet = null;
@@ -250,7 +272,7 @@ public static partial class DeliveryExplorerEndpoints
                 return (null, $"'{grouped.Index}' is not how a property is indexed: text, keyword, number, boolean or date.");
             }
 
-            facet = new ExplorerField { Path = path.Trim(), Index = index };
+            facet = new ExplorerField { Path = path.Trim(), Index = index, Nested = string.IsNullOrWhiteSpace(grouped.Nested) ? null : grouped.Nested.Trim() };
         }
 
         var search = new ExplorerSearch
@@ -264,6 +286,7 @@ public static partial class DeliveryExplorerEndpoints
             Offset = body.Offset ?? 0,
             Limit = body.Limit ?? ExplorerSearch.DefaultLimit,
             Facet = facet,
+            Columns = body.Columns?.Select(c => c?.Trim() ?? string.Empty).ToList() ?? [],
         };
         return search.Problem() is { } problem ? (null, problem) : (search, null);
     }

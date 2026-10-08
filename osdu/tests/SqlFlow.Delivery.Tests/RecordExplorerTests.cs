@@ -288,50 +288,260 @@ public class RecordExplorerTests
     }
 
     [Fact]
-    public async Task The_properties_of_a_kind_are_read_from_one_record_each_typed_by_its_value()
+    public async Task Without_a_schema_the_properties_of_a_kind_are_those_its_records_hold_each_typed_by_its_value()
+    {
+        var handler = new FakeHttpHandler()
+            .OnMatch(r => Path(r).StartsWith("/api/schema-service/v1/schema/", StringComparison.Ordinal), _ => FakeHttpHandler.Json(HttpStatusCode.NotFound, "{\"message\":\"not found\"}"))
+            .On(HttpMethod.Post, "/api/search/v2/query", HttpStatusCode.OK, new JsonObject
+            {
+                ["results"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["id"] = Wellbore,
+                        ["data"] = new JsonObject
+                        {
+                            ["FacilityName"] = "NO 33/9-C-28 B",
+                            ["SpudDate"] = "2019-03-01T00:00:00Z",
+                            ["TotalDepth"] = 3120.5,
+                            ["GeoContexts"] = new JsonArray(new JsonObject { ["GeoPoliticalEntityID"] = "dev:x--Y:z:" }),
+                            ["SourceKeys"] = new JsonArray("a", "b"),
+                            ["VerticalMeasurement"] = new JsonObject { ["Depth"] = 12 },
+                            ["odd key"] = "left out",
+                        },
+                    },
+                    // A second record adds what the first does not hold; a path both hold is typed by the first.
+                    new JsonObject { ["id"] = Wellbore + "-2", ["data"] = new JsonObject { ["IsActive"] = true, ["TotalDepth"] = "deep" } }),
+                ["totalCount"] = 2,
+            }.ToJsonString());
+        var (explorer, runtime, client) = Connect(handler);
+        using (runtime)
+        {
+            var fields = await explorer.FieldsAsync("osdu:wks:master-data--Wellbore:1.1.0", new SchemaServiceReader(client, new TestClock()), CancellationToken.None);
+
+            Assert.Equal((Wellbore, 2, (string?)null), (fields.SampleId, fields.Sampled, fields.SchemaKind));
+            Assert.Equal(RecordExplorer.EnvelopeFields, fields.Fields.Take(RecordExplorer.EnvelopeFields.Count));
+            Assert.Equal(
+                [
+                    new ExplorerFieldInfo("data.FacilityName", "text", Origin: "records"),
+                    new ExplorerFieldInfo("data.IsActive", "boolean", Origin: "records"),
+                    new ExplorerFieldInfo("data.SourceKeys", "text", Origin: "records"),
+                    new ExplorerFieldInfo("data.SpudDate", "date", Origin: "records"),
+                    new ExplorerFieldInfo("data.TotalDepth", "number", Origin: "records"),
+                    new ExplorerFieldInfo("data.VerticalMeasurement.Depth", "number", Origin: "records"),
+                ],
+                fields.Fields.Skip(RecordExplorer.EnvelopeFields.Count));
+
+            // A value inside a list of objects is left out without a schema: the list may be nested, which a plain path misses.
+            Assert.DoesNotContain(fields.Fields, f => f.Path.StartsWith("data.GeoContexts", StringComparison.Ordinal));
+            Assert.Contains(fields.Notes!, n => n.Contains("The Schema service holds no schema of osdu:wks:master-data--Wellbore:1.1.0", StringComparison.Ordinal));
+
+            // Whole records, nothing projected away, enough of them to meet what an index augmentation adds.
+            var body = JsonNode.Parse(handler.Calls.Single(c => c.Method == HttpMethod.Post).Body!)!;
+            Assert.Null(body["returnedFields"]);
+            Assert.Null(body["aggregateBy"]);
+            Assert.Equal(RecordExplorer.SampleSize, body["limit"]!.GetValue<int>());
+        }
+    }
+
+    [Fact]
+    public async Task The_properties_of_a_type_are_its_schemas_declared_values_and_those_its_records_hold_beyond_them()
+    {
+        const string Kind = "osdu:wks:master-data--Wellbore:1.1.0";
+        var handler = new FakeHttpHandler()
+            .OnMatch(r => Path(r) == "/api/schema-service/v1/schema/" + Kind, _ => FakeHttpHandler.Json(HttpStatusCode.OK, WellboreSchema))
+            .On(HttpMethod.Post, "/api/search/v2/query", HttpStatusCode.OK, new JsonObject
+            {
+                ["results"] = new JsonArray(new JsonObject
+                {
+                    ["id"] = Wellbore,
+                    ["data"] = new JsonObject
+                    {
+                        ["FacilityName"] = "NO 33/9-C-28 B",
+                        ["GeoContexts"] = new JsonArray(new JsonObject { ["FieldID"] = "dev:master-data--Field:GULLFAKS:", ["GeoTypeID"] = "dev:reference-data--GeoPoliticalEntityType:Field:" }),
+                        // What an index augmentation adds: no schema declares it, and the index names it with a dot.
+                        ["Equinor.WellboreName"] = "NO 33/9-C-28 B",
+                        ["Remarks"] = new JsonArray(new JsonObject { ["Remark"] = "left out: the list is not indexed inside" }),
+                    },
+                }),
+                ["aggregations"] = new JsonArray(
+                    new JsonObject { ["key"] = "osdu:wks:master-data--Wellbore:1.0.0", ["count"] = 3 },
+                    new JsonObject { ["key"] = Kind, ["count"] = 40 }),
+                ["totalCount"] = 43,
+            }.ToJsonString());
+        var (explorer, runtime, client) = Connect(handler);
+        using (runtime)
+        {
+            var fields = await explorer.FieldsAsync("*:*:master-data--Wellbore:*", new SchemaServiceReader(client, new TestClock()), CancellationToken.None);
+
+            // The kind of the type holding the most records is the one whose schema is read.
+            Assert.Equal(Kind, fields.SchemaKind);
+            var content = fields.Fields.Skip(RecordExplorer.EnvelopeFields.Count).ToList();
+            Assert.Equal(
+                [
+                    "data.FacilityName", "data.GeoContexts.FieldID", "data.GeoContexts.GeoPoliticalEntityID", "data.GeoContexts.GeoTypeID",
+                    "data.NameAliases.AliasName", "data.SpudDate", "data.TotalDepth", "data.Equinor.WellboreName",
+                ],
+                content.Select(f => f.Path));
+            Assert.Equal(new ExplorerFieldInfo("data.FacilityName", "text", null, "schema", "Facility Name", "The name of the facility."), content[0]);
+            Assert.Equal(new ExplorerFieldInfo("data.GeoContexts.FieldID", "text", "data.GeoContexts", "schema", "Field ID"), content[1]);
+            Assert.Equal(("data.NameAliases", "schema"), (content[4].Nested, content[4].Origin));
+            Assert.Equal(("date", "number"), (content[5].Index, content[6].Index));
+            Assert.Equal(new ExplorerFieldInfo("data.Equinor.WellboreName", "text", Origin: "records"), content[7]);
+            Assert.Contains(fields.Notes!, n => n.StartsWith("1 value the schema of " + Kind + " declares is left out", StringComparison.Ordinal));
+
+            var body = JsonNode.Parse(handler.Calls.Single(c => c.Method == HttpMethod.Post).Body!)!;
+            Assert.Equal("kind", body["aggregateBy"]!.GetValue<string>());
+        }
+    }
+
+    [Fact]
+    public async Task Records_of_several_types_are_described_by_no_one_schema_so_none_is_read()
     {
         var handler = new FakeHttpHandler().On(HttpMethod.Post, "/api/search/v2/query", HttpStatusCode.OK, new JsonObject
         {
-            ["results"] = new JsonArray(new JsonObject
-            {
-                ["id"] = Wellbore,
-                ["data"] = new JsonObject
+            ["results"] = new JsonArray(new JsonObject { ["id"] = Wellbore, ["data"] = new JsonObject { ["FacilityName"] = "A" } }),
+            ["aggregations"] = new JsonArray(
+                new JsonObject { ["key"] = "osdu:wks:master-data--Wellbore:1.1.0", ["count"] = 3 },
+                new JsonObject { ["key"] = "osdu:wks:master-data--Well:1.1.0", ["count"] = 4 }),
+            ["totalCount"] = 7,
+        }.ToJsonString());
+        var (explorer, runtime, client) = Connect(handler);
+        using (runtime)
+        {
+            var fields = await explorer.FieldsAsync("*:*:master-data--*:*", new SchemaServiceReader(client, new TestClock()), CancellationToken.None);
+
+            Assert.Null(fields.SchemaKind);
+            Assert.Equal(new ExplorerFieldInfo("data.FacilityName", "text", Origin: "records"), fields.Fields[^1]);
+            Assert.Contains(fields.Notes!, n => n.Contains("several types", StringComparison.Ordinal));
+            Assert.Single(handler.Calls);
+        }
+    }
+
+    [Fact]
+    public void Each_condition_is_asked_as_the_platform_indexes_the_property_and_an_exclusion_alone_starts_from_every_record()
+    {
+        ExplorerFilter Filter(ExplorerCondition condition, string path = "data.Source", OsduFieldIndex index = OsduFieldIndex.Text, string? value = null, string? to = null, IReadOnlyList<string>? values = null, string? nested = null)
+            => new() { Path = path, Index = index, Condition = condition, Value = value, To = to, Values = values, Nested = nested };
+
+        Assert.Equal("data.Source.keyword:\"Recall\"", Filter(ExplorerCondition.Is, value: "Recall").Clause());
+        Assert.Equal("NOT (data.Source.keyword:\"Recall\")", Filter(ExplorerCondition.IsNot, value: "Recall").Clause());
+        Assert.Equal("(data.Source.keyword:(\"Recall\" OR \"RECALL\"))", Filter(ExplorerCondition.AnyOf, values: ["Recall", "RECALL"]).Clause());
+        Assert.Equal("data.Source:\"recall database\"", Filter(ExplorerCondition.Contains, value: "recall database").Clause());
+        Assert.Equal("data.Source.keyword:RECALL\\ D*", Filter(ExplorerCondition.StartsWith, value: "RECALL D").Clause());
+        Assert.Equal("data.TotalDepth:[\"1000\" TO \"2000\"}", Filter(ExplorerCondition.Range, "data.TotalDepth", OsduFieldIndex.Number, "1000", "2000").Clause());
+        Assert.Equal("createTime:[\"2026-01-01\" TO *]", Filter(ExplorerCondition.Range, "createTime", OsduFieldIndex.Date, "2026-01-01", "").Clause());
+        Assert.Equal("_exists_:data.Source", Filter(ExplorerCondition.Exists).Clause());
+        Assert.Equal("NOT (_exists_:data.Equinor.FieldId)", Filter(ExplorerCondition.Missing, "data.Equinor.FieldId").Clause());
+        Assert.Equal(
+            "nested(data.GeoContexts, (FieldID.keyword:\"dev:master-data--Field:GULLFAKS:\"))",
+            Filter(ExplorerCondition.Is, "data.GeoContexts.FieldID", value: "dev:master-data--Field:GULLFAKS:", nested: "data.GeoContexts").Clause());
+
+        // The service refuses a query that only excludes; one that also reads text or includes needs no start.
+        var missing = Filter(ExplorerCondition.Missing, "data.Equinor.FieldId");
+        Assert.Equal("_exists_:id AND NOT (_exists_:data.Equinor.FieldId)", RecordExplorer.Compose(null, [missing]));
+        Assert.Equal("(\"NO 34\") AND NOT (_exists_:data.Equinor.FieldId)", RecordExplorer.Compose("\"NO 34\"", [missing]));
+        Assert.Equal(
+            "(data.Source.keyword:(\"Recall\" OR \"RECALL\")) AND NOT (_exists_:data.Equinor.FieldId)",
+            RecordExplorer.Compose(null, [Filter(ExplorerCondition.AnyOf, values: ["Recall", "RECALL"]), missing]));
+    }
+
+    [Theory]
+    [InlineData("{\"filters\":[{\"path\":\"kind\",\"index\":\"keyword\",\"condition\":\"contains\",\"value\":\"Well\"}]}", "compared whole")]
+    [InlineData("{\"filters\":[{\"path\":\"data.GeoContexts.FieldID\",\"nested\":\"data.GeoContexts\",\"condition\":\"exists\"}]}", "does not see inside")]
+    [InlineData("{\"filters\":[{\"path\":\"data.GeoContexts.FieldID\",\"nested\":\"data.GeoContexts\",\"condition\":\"startsWith\",\"value\":\"a\"}]}", "rewrites the query")]
+    [InlineData("{\"filters\":[{\"path\":\"data.IsActive\",\"index\":\"boolean\",\"condition\":\"range\",\"value\":\"false\"}]}", "true or false")]
+    [InlineData("{\"filters\":[{\"path\":\"data.TotalDepth\",\"index\":\"number\",\"condition\":\"range\"}]}", "open at both ends")]
+    [InlineData("{\"filters\":[{\"path\":\"data.Source\",\"condition\":\"is\"}]}", "compared with no value")]
+    [InlineData("{\"filters\":[{\"path\":\"data.Source\",\"condition\":\"near\",\"value\":\"x\"}]}", "is not one the explorer reads")]
+    [InlineData("{\"columns\":[\"data.Name\",\"data..Name\"]}", "is not a property path a page can show")]
+    [InlineData("{\"columns\":[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\",\"i\"]}", "at most 8 properties")]
+    public void A_condition_or_column_that_cannot_be_asked_is_refused_with_why(string json, string said)
+    {
+        var refused = Assert.Throws<DeliveryException>(() => ExplorerSearch.Parse(json));
+        Assert.Contains(said, refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_condition_compares_at_most_fifty_values()
+    {
+        var search = new ExplorerSearch
+        {
+            Filters = [new ExplorerFilter { Path = "data.Source", Condition = ExplorerCondition.AnyOf, Values = Enumerable.Range(0, ExplorerFilter.MaxValues + 1).Select(i => $"v{i}").ToList() }],
+        };
+
+        Assert.Contains("at most 50 at once", search.Problem(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_condition_crosses_to_the_node_as_it_was_asked()
+    {
+        var search = new ExplorerSearch
+        {
+            Kind = "*:*:work-product-component--WellLog:*",
+            Filters =
+            [
+                new ExplorerFilter { Path = "data.Source", Condition = ExplorerCondition.AnyOf, Values = ["Recall", "RECALL"] },
+                new ExplorerFilter { Path = "data.GeoContexts.FieldID", Nested = "data.GeoContexts", Value = "dev:master-data--Field:GULLFAKS:" },
+                new ExplorerFilter { Path = "data.TotalDepth", Index = OsduFieldIndex.Number, Condition = ExplorerCondition.Range, Value = "10", To = "20" },
+            ],
+            Facet = new ExplorerField { Path = "data.GeoContexts.FieldID", Nested = "data.GeoContexts" },
+            Columns = ["data.Equinor.WellboreName"],
+        };
+
+        var json = search.ToJson();
+        var back = ExplorerSearch.Parse(json);
+
+        Assert.Contains("\"condition\":\"anyOf\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("excludes", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(json, back.ToJson());
+        Assert.Equal("nested(data.GeoContexts, FieldID.keyword)", back.Facet!.AggregateBy());
+    }
+
+    [Fact]
+    public async Task A_page_carries_what_each_record_holds_at_its_columns_through_lists_and_dotted_names()
+    {
+        var handler = new FakeHttpHandler().On(HttpMethod.Post, "/api/search/v2/query", HttpStatusCode.OK, new JsonObject
+        {
+            ["results"] = new JsonArray(
+                new JsonObject
                 {
-                    ["FacilityName"] = "NO 33/9-C-28 B",
-                    ["SpudDate"] = "2019-03-01T00:00:00Z",
-                    ["TotalDepth"] = 3120.5,
-                    ["IsActive"] = true,
-                    ["GeoContexts"] = new JsonArray(new JsonObject { ["GeoPoliticalEntityID"] = "dev:x--Y:z:" }),
-                    ["SourceKeys"] = new JsonArray("a", "b"),
-                    ["VerticalMeasurement"] = new JsonObject { ["Depth"] = 12 },
-                    ["odd key"] = "left out",
+                    ["id"] = Wellbore,
+                    ["data"] = new JsonObject
+                    {
+                        ["Equinor.WellboreName"] = "NO 34/10-A-30",
+                        ["GeoContexts"] = new JsonArray(new JsonObject { ["FieldID"] = "dev:master-data--Field:GULLFAKS:" }, new JsonObject { ["GeoTypeID"] = "x" }, new JsonObject { ["FieldID"] = "dev:master-data--Field:SNORRE:" }),
+                        ["TotalDepth"] = 3120.5,
+                        ["Remark"] = new string('r', RecordExplorer.MaxColumnValueLength + 10),
+                    },
                 },
-            }),
-            ["totalCount"] = 1,
+                new JsonObject { ["id"] = Wellbore + "-2", ["data"] = new JsonObject { ["Equinor"] = new JsonObject { ["WellboreName"] = "NO 34/10-B-1" } } }),
+            ["totalCount"] = 2,
         }.ToJsonString());
         var (explorer, runtime) = Explorer(handler);
         using (runtime)
         {
-            var fields = await explorer.FieldsAsync("osdu:wks:master-data--Wellbore:1.1.0", CancellationToken.None);
+            var columns = new[] { "data.Equinor.WellboreName", "data.GeoContexts.FieldID", "data.TotalDepth", "data.Remark" };
+            var page = await explorer.SearchAsync(new ExplorerSearch { Kind = "*:*:master-data--Wellbore:*", Columns = columns }, CancellationToken.None);
 
-            Assert.Equal(Wellbore, fields.SampleId);
-            Assert.Equal(RecordExplorer.EnvelopeFields, fields.Fields.Take(RecordExplorer.EnvelopeFields.Count));
-            Assert.Equal(
-                [
-                    new ExplorerFieldInfo("data.FacilityName", "text"),
-                    new ExplorerFieldInfo("data.IsActive", "boolean"),
-                    new ExplorerFieldInfo("data.SourceKeys", "text"),
-                    new ExplorerFieldInfo("data.SpudDate", "date"),
-                    new ExplorerFieldInfo("data.TotalDepth", "number"),
-                    new ExplorerFieldInfo("data.VerticalMeasurement.Depth", "number"),
-                ],
-                fields.Fields.Skip(RecordExplorer.EnvelopeFields.Count));
+            var first = page.Hits[0].Values!;
+            Assert.Equal(["NO 34/10-A-30"], first["data.Equinor.WellboreName"]);
+            Assert.Equal(["dev:master-data--Field:GULLFAKS:", "dev:master-data--Field:SNORRE:"], first["data.GeoContexts.FieldID"]);
+            Assert.Equal(["3120.5"], first["data.TotalDepth"]);
+            Assert.Equal(RecordExplorer.MaxColumnValueLength, first["data.Remark"][0].Length);
+            Assert.EndsWith("...", first["data.Remark"][0], StringComparison.Ordinal);
 
-            // One whole record, nothing projected away.
-            var body = JsonNode.Parse(Assert.Single(handler.Calls).Body!)!;
-            Assert.Null(body["returnedFields"]);
-            Assert.Equal(1, body["limit"]!.GetValue<int>());
+            // A column a record holds nothing at is left out of its values.
+            Assert.Equal(["data.Equinor.WellboreName"], page.Hits[1].Values!.Keys);
+            Assert.Equal(["NO 34/10-B-1"], page.Hits[1].Values!["data.Equinor.WellboreName"]);
+
+            var returned = JsonNode.Parse(Assert.Single(handler.Calls).Body!)!["returnedFields"]!.AsArray().Select(f => f!.GetValue<string>()).ToList();
+            Assert.All(columns, c => Assert.Contains(c, returned));
+            Assert.Contains("data.FacilityName", returned);
         }
+
+        // A page with no columns carries no values.
+        var plain = RecordExplorer.Hit(new JsonObject { ["id"] = Wellbore }, []);
+        Assert.Null(plain!.Values);
     }
 
     [Fact]
@@ -393,14 +603,64 @@ public class RecordExplorerTests
 
     private static (RecordExplorer Explorer, HttpRuntime Runtime) Explorer(FakeHttpHandler handler)
     {
+        var (explorer, runtime, _) = Connect(handler);
+        return (explorer, runtime);
+    }
+
+    /// <summary>The explorer over <paramref name="handler"/>, with its connection, which the Schema service is read through as well.</summary>
+    private static (RecordExplorer Explorer, HttpRuntime Runtime, OsduHttpClient Client) Connect(FakeHttpHandler handler)
+    {
         var runtime = new HttpRuntime(
             new FlowReliability { Retry = new FlowRetry { Attempts = 1, BaseDelayMs = 1, MaxDelayMs = 1 } },
             new SecretResolver([new EnvSecretProvider()]), new TestClock(), handler, allowLoopback: true);
         var client = new OsduHttpClient(
             runtime, "http://localhost", new TargetAuth { Type = TargetAuthType.None },
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["data-partition-id"] = "dev" });
-        return (new RecordExplorer(client, "dev", NullLogger.Instance), runtime);
+        return (new RecordExplorer(client, "dev", NullLogger.Instance), runtime, client);
     }
+
+    /// <summary>
+    /// A wellbore schema as the Schema service answers it: a text with a title, a date, a number, a nested list, a list of
+    /// objects with no indexing hint (which no query reaches inside), and a nested list whose items are a choice of forms.
+    /// </summary>
+    private const string WellboreSchema = """
+        {
+          "$schema": "http://json-schema.org/draft-07/schema#",
+          "x-osdu-schema-source": "osdu:wks:master-data--Wellbore:1.1.0",
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "kind": { "type": "string" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "FacilityName": { "type": "string", "title": "Facility Name", "description": "The name of the facility." },
+                "SpudDate": { "type": "string", "format": "date-time" },
+                "TotalDepth": { "type": "number" },
+                "NameAliases": {
+                  "type": "array",
+                  "x-osdu-indexing": { "type": "nested" },
+                  "items": { "type": "object", "properties": { "AliasName": { "type": "string" } } }
+                },
+                "Remarks": {
+                  "type": "array",
+                  "items": { "type": "object", "properties": { "Remark": { "type": "string" } } }
+                },
+                "GeoContexts": {
+                  "type": "array",
+                  "x-osdu-indexing": { "type": "nested" },
+                  "items": {
+                    "oneOf": [
+                      { "type": "object", "title": "Field", "properties": { "FieldID": { "type": "string", "title": "Field ID" }, "GeoTypeID": { "type": "string" } } },
+                      { "type": "object", "title": "Country", "properties": { "GeoPoliticalEntityID": { "type": "string" }, "GeoTypeID": { "type": "string" } } }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+        """;
 
     private static string Result(long total, params string[] ids)
         => new JsonObject

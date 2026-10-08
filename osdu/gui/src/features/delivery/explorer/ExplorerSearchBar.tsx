@@ -1,13 +1,29 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { Braces, CornerDownLeft, History, Search, Trash2, X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { Braces, CornerDownLeft, History, ListFilter, Search, TextSearch, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { RelativeTime } from "@/components/RelativeTime";
 import { cn } from "@/lib/utils";
+import type { ExplorerFieldInfo } from "../../../api/explorer";
 import { isRecordReference } from "../osduDocument";
 import { idParts } from "../osduRecordModel";
-import { forgetRecentRecords, kindParts, recentRecords, type RecentRecord } from "./explorerModel";
+import { nestedLabel } from "./explorerFields";
+import { CONDITION_LABELS, fieldLabel, forgetRecentRecords, kindParts, recentRecords, searchInCondition, type RecentRecord } from "./explorerModel";
+
+/** What a search field offers beside searching every property: the text searched in one property, picked under it or in the editor. */
+export interface SearchIn {
+  /** The properties offered first, the likeliest first. */
+  choices: ExplorerFieldInfo[];
+  /** Whether the properties are still being read. */
+  reading: boolean;
+  /** Called as the reader types, so the properties are read only once they may be wanted. */
+  onWanted: () => void;
+  /** Searches the text in one property, as a condition of the list. */
+  onSearchIn: (field: ExplorerFieldInfo, text: string) => void;
+  /** Opens the condition editor with the text, to pick the property it is searched in. */
+  onChoose: (text: string) => void;
+}
 
 /**
  * A search field of the explorer: the page's own, which searches every type, and the one over the records of a group, a
@@ -19,7 +35,7 @@ import { forgetRecentRecords, kindParts, recentRecords, type RecentRecord } from
  * search sent leaves the cursor where it was. Asked to (`focusRequest`), it takes the cursor to the end of what it shows,
  * so a query the page put there is edited at once.
  */
-export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, onOpenId, shortcut = false, focusRequest = 0, className, testId }: {
+export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, onOpenId, searchIn, shortcut = false, focusRequest = 0, className, testId }: {
   text: string;
   lucene: boolean;
   placeholder: string;
@@ -27,6 +43,8 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
   label: string;
   onSearch: (text: string, lucene: boolean) => void;
   onOpenId: (id: string) => void;
+  /** Searching the text in one property, offered under the field as it is typed; none where the field searches every property alone. */
+  searchIn?: SearchIn;
   /** Whether `/` is the page's way into this field, shown at its end while it is empty and the cursor elsewhere. */
   shortcut?: boolean;
   /** Raised by the page to put the cursor in the field, at the end of what it shows; the value it starts with does not. */
@@ -62,6 +80,14 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
   }, [focusRequest]);
   const typed = draft.trim();
   const opens = !asLucene && isRecordReference(typed);
+  // Under the field as text is typed: every property (Enter), each property offered, and another property to pick.
+  const [hasFocus, setHasFocus] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const [active, setActive] = useState(0);
+  const listId = useId();
+  const offering = searchIn !== undefined && hasFocus && !dismissed && typed !== "" && !asLucene && !opens;
+  const options = offering ? searchIn.choices.length + 2 : 0;
+  const highlighted = Math.min(active, Math.max(options - 1, 0));
   // The search the field shows is still the list's until it is cleared: an emptied field says Enter clears it.
   const searched = text !== "";
   const hint = typed === "" ? (searched ? "clear" : null) : opens ? "open" : asLucene ? "query" : "search";
@@ -76,8 +102,30 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
     }
   };
 
+  // The options after the first: each property offered, then another property, picked in the condition editor.
+  const pickOption = (option: number) => {
+    if (searchIn === undefined) {
+      return;
+    }
+
+    setDismissed(true);
+    // The text is the condition's from here (or the editor's, to pick its property in), not the field's to search with.
+    setDraft("");
+    if (option <= searchIn.choices.length) {
+      searchIn.onSearchIn(searchIn.choices[option - 1], typed);
+    } else {
+      searchIn.onChoose(typed);
+    }
+  };
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    if (offering && highlighted > 0) {
+      pickOption(highlighted);
+      return;
+    }
+
+    setDismissed(true);
     if (opens) {
       onOpenId(typed);
     } else if (typed !== "" || searched) {
@@ -86,6 +134,18 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
   };
 
   const keyed = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (offering && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      setActive((highlighted + (event.key === "ArrowDown" ? 1 : options - 1)) % options);
+      return;
+    }
+
+    if (event.key === "Escape" && offering) {
+      event.preventDefault();
+      setDismissed(true);
+      return;
+    }
+
     if (event.key === "Escape" && (draft !== "" || searched)) {
       event.preventDefault();
       clear();
@@ -98,8 +158,19 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
       <Input
         ref={input}
         value={draft}
-        onChange={(event) => setDraft(event.target.value)}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setDismissed(false);
+          setActive(0);
+          searchIn?.onWanted();
+        }}
         onKeyDown={keyed}
+        onFocus={() => setHasFocus(true)}
+        onBlur={() => setHasFocus(false)}
+        role={searchIn === undefined ? undefined : "combobox"}
+        aria-expanded={searchIn === undefined ? undefined : offering}
+        aria-controls={offering ? listId : undefined}
+        aria-activedescendant={offering ? `${listId}-${highlighted}` : undefined}
         placeholder={asLucene ? "A Lucene query: createTime:[2024-01-01 TO *] AND kind:*Wellbore*" : placeholder}
         aria-label={label}
         spellCheck={false}
@@ -142,7 +213,87 @@ export function ExplorerSearchBar({ text, lucene, placeholder, label, onSearch, 
           <Braces />
         </Button>
       </div>
+      {offering && (
+        <SearchInOptions
+          id={listId}
+          typed={typed}
+          searchIn={searchIn}
+          highlighted={highlighted}
+          onHighlight={setActive}
+          onEverywhere={() => { setDismissed(true); onSearch(typed, false); }}
+          onPick={pickOption}
+          testId={`${testId}-in`}
+        />
+      )}
     </form>
+  );
+}
+
+/**
+ * The options under a search field as text is typed: the text searched in every property (what Enter does), in one of the
+ * properties offered (those searched in lately for the type, then the record's name), or in another property, picked in
+ * the condition editor. Text searched in one property becomes a condition of the list, said beside it: its words for text,
+ * its start for a keyword, its whole value otherwise. The arrow keys move among the options and Enter takes the one lit;
+ * the field keeps the cursor, since a press on an option does not take it.
+ */
+function SearchInOptions({ id, typed, searchIn, highlighted, onHighlight, onEverywhere, onPick, testId }: {
+  id: string;
+  typed: string;
+  searchIn: SearchIn;
+  highlighted: number;
+  onHighlight: (option: number) => void;
+  onEverywhere: () => void;
+  onPick: (option: number) => void;
+  testId: string;
+}) {
+  const option = (index: number, onChoose: () => void, children: ReactNode, suffix: string, title?: string) => (
+    <div
+      key={`${suffix}:${index}`}
+      id={`${id}-${index}`}
+      role="option"
+      aria-selected={highlighted === index}
+      title={title}
+      className={cn("flex h-8 cursor-pointer items-center gap-2 rounded-md px-2 text-[13px]", highlighted === index && "bg-accent text-accent-foreground")}
+      // The field keeps the cursor: a press on an option does not blur it.
+      onMouseDown={(event) => event.preventDefault()}
+      onMouseEnter={() => onHighlight(index)}
+      onClick={onChoose}
+      data-testid={`${testId}-${suffix}`}
+    >
+      {children}
+    </div>
+  );
+
+  return (
+    <div id={id} role="listbox" aria-label="Where to search" className="absolute top-full right-0 left-0 z-50 mt-1 rounded-md border bg-popover p-1 text-popover-foreground shadow-md" data-testid={testId}>
+      {option(0, onEverywhere, (
+        <>
+          <Search className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate">
+            Search every property for <span className="font-medium">{typed}</span>
+          </span>
+          <CornerDownLeft className="size-3.5 shrink-0 text-muted-foreground" />
+        </>
+      ), "everywhere")}
+      <div className="px-2 pt-1.5 pb-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Search in one property</div>
+      {searchIn.choices.map((field, at) => option(at + 1, () => onPick(at + 1), (
+        <>
+          <TextSearch className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate">
+            <span className="font-mono text-[12px]">{fieldLabel(field.path)}</span>
+            <span className="text-muted-foreground"> {CONDITION_LABELS[searchInCondition(field)]} </span>
+            <span className="font-medium">{typed}</span>
+          </span>
+          {nestedLabel(field.nested) !== null && <span className="shrink-0 rounded-sm border px-1 text-[10px] text-muted-foreground">in {nestedLabel(field.nested)}</span>}
+        </>
+      ), "field", [field.path, field.title, field.description].filter(Boolean).join("\n")))}
+      {option(searchIn.choices.length + 1, () => onPick(searchIn.choices.length + 1), (
+        <>
+          <ListFilter className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{searchIn.reading ? "Reading the properties..." : "Search in another property..."}</span>
+        </>
+      ), "choose")}
+    </div>
   );
 }
 

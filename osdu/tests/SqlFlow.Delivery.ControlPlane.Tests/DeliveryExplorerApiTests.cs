@@ -126,6 +126,27 @@ public sealed class DeliveryExplorerApiTests
             Assert.Equal(new ExplorerFilter { Path = "legal.legaltags", Index = OsduFieldIndex.Keyword, Value = "dev-private" }, Assert.Single(search.Filters));
             Assert.Equal(new ExplorerField { Path = "data.FacilityTypeID", Index = OsduFieldIndex.Text }, search.Facet);
 
+            // A condition names what the property must hold, the nested list it is reached through, and the columns shown.
+            var conditioned = await RanAsync(client, token, $"/api/v1/delivery/explorer/search?partition={named}", new
+            {
+                kind = "*:*:master-data--Wellbore:*",
+                filters = new object[]
+                {
+                    new { path = "data.Source", condition = "AnyOf", values = new[] { "Recall", "RECALL" } },
+                    new { path = "data.GeoContexts.FieldID", nested = " data.GeoContexts ", value = "dev:master-data--Field:GULLFAKS:" },
+                    new { path = "data.Equinor.FieldId", condition = "missing" },
+                },
+                facet = new { path = "data.GeoContexts.FieldID", nested = "data.GeoContexts" },
+                columns = new[] { " data.Equinor.WellboreName " },
+            });
+            var conditions = ExplorerSearch.Parse(conditioned.Argument(ExploreOperation.SearchArgument));
+            Assert.Equal(
+                [(ExplorerCondition.AnyOf, (string?)null), (ExplorerCondition.Is, "data.GeoContexts"), (ExplorerCondition.Missing, null)],
+                conditions.Filters.Select(f => (f.Condition, f.Nested)));
+            Assert.Equal(["Recall", "RECALL"], conditions.Filters[0].Values!);
+            Assert.Equal("nested(data.GeoContexts, FieldID.keyword)", conditions.Facet!.AggregateBy());
+            Assert.Equal(["data.Equinor.WellboreName"], conditions.Columns);
+
             var types = await RanAsync(client, token, $"/api/v1/delivery/explorer/types?partition={named}", new { text = "NO 33" });
             Assert.Equal(ExploreOperation.TypesAction, types.Argument(ExploreOperation.ActionArgument));
             var fields = await RanAsync(client, token, $"/api/v1/delivery/explorer/fields?partition={named}", new { kind = "osdu:wks:master-data--Wellbore:1.1.0" });
@@ -209,6 +230,8 @@ public sealed class DeliveryExplorerApiTests
             await RefusedAsync(client, token, search400, new { sort = "1" }, HttpStatusCode.BadRequest, "is not an order");
             await RefusedAsync(client, token, search400, new { filters = new[] { new { path = "data.Name", index = "fuzzy", value = "x" } } }, HttpStatusCode.BadRequest, "is not how a property is indexed");
             await RefusedAsync(client, token, search400, new { filters = new[] { new { path = "data.Name", index = "text", value = new string('x', 300) } } }, HttpStatusCode.BadRequest, "cannot narrow to data.Name");
+            await RefusedAsync(client, token, search400, new { filters = new[] { new { path = "data.Name", condition = "near", value = "x" } } }, HttpStatusCode.BadRequest, "is not a condition");
+            await RefusedAsync(client, token, search400, new { filters = new[] { new { path = "kind", index = "keyword", condition = "contains", value = "Well" } } }, HttpStatusCode.BadRequest, "compared whole");
             await RefusedAsync(client, token, search400, new { offset = 9950, limit = 100 }, HttpStatusCode.BadRequest, "first 10,000 records");
             await RefusedAsync(client, token, search400, new { text = "a", mentions = "dev:master-data--Well:1" }, HttpStatusCode.BadRequest, "not both");
             await RefusedAsync(client, token, $"/api/v1/delivery/explorer/fields?partition={named}", new { kind = " " }, HttpStatusCode.BadRequest, "Name the kind");

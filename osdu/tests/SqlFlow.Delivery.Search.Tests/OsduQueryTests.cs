@@ -355,4 +355,73 @@ public class OsduQueryTests
         var group = OsduQuery.All(OsduQuery.Exact("AliasName", "A"), OsduQuery.Exact("AliasNameTypeID", "B"));
         Assert.Contains("one comparison", Assert.Throws<OsduQueryException>(() => OsduQuery.Nested("data.NameAliases", group)).Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Words_ask_the_analysed_field_as_a_phrase_and_reach_a_nested_array_through_its_form()
+    {
+        // The analysed field keeps the words apart and in lower case, so the phrase is found anywhere in the value, any case.
+        Assert.Equal("data.Equinor.WellboreName:\"NO 34/10\"", OsduQuery.Words(OsduField.Text("data.Equinor.WellboreName"), "NO 34/10").Text);
+        Assert.Equal(
+            "nested(data.NameAliases, (AliasName:\"Gullfaks A\"))",
+            OsduQuery.Words(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), "Gullfaks A").Text);
+    }
+
+    [Theory]
+    [InlineData("keyword", "compared whole: ask whether it is a value or starts with one")]
+    [InlineData("number", "compared whole: ask whether it is a value.")]
+    public void Words_are_refused_for_a_property_whose_words_are_not_indexed_apart(string index, string said)
+    {
+        var field = OsduField.Of("data.X", Enum.Parse<OsduFieldIndex>(index, ignoreCase: true));
+        Assert.Contains(said, Assert.Throws<OsduQueryException>(() => OsduQuery.Words(field, "1")).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_start_is_a_bare_term_before_the_wildcard_on_the_whole_value_with_every_reserved_character_escaped()
+    {
+        Assert.Equal("data.Equinor.WellboreName.keyword:NO\\ 34\\/10*", OsduQuery.Prefix(OsduField.Text("data.Equinor.WellboreName"), "NO 34/10").Text);
+        Assert.Equal("legal.legaltags:dev\\-equinor*", OsduQuery.Prefix(OsduField.Keyword("legal.legaltags"), "dev-equinor").Text);
+
+        // A star the reader typed is a character to match, not a second wildcard.
+        Assert.Equal("data.Name.keyword:A\\*B*", OsduQuery.Prefix(OsduField.Text("data.Name"), "A*B").Text);
+    }
+
+    [Theory]
+    [InlineData("number", "has no start to compare")]
+    [InlineData("date", "has no start to compare")]
+    public void A_start_is_refused_for_a_value_with_no_start(string index, string said)
+        => Assert.Contains(
+            said,
+            Assert.Throws<OsduQueryException>(() => OsduQuery.Prefix(OsduField.Of("data.X", Enum.Parse<OsduFieldIndex>(index, ignoreCase: true)), "1")).Message,
+            StringComparison.Ordinal);
+
+    [Fact]
+    public void A_start_is_refused_inside_a_nested_array_past_the_keyword_length_and_with_an_angle_bracket()
+    {
+        Assert.Contains(
+            "nested list 'data.NameAliases'",
+            Assert.Throws<OsduQueryException>(() => OsduQuery.Prefix(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"), "A")).Message,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ignore_above",
+            Assert.Throws<OsduQueryException>(() => OsduQuery.Prefix(OsduField.Text("data.Name"), new string('a', OsduQuery.KeywordIgnoreAbove + 1))).Message,
+            StringComparison.Ordinal);
+        Assert.Contains("angle bracket", Assert.Throws<OsduQueryException>(() => OsduQuery.Prefix(OsduField.Text("data.Name"), "a<b")).Message, StringComparison.Ordinal);
+        Assert.Contains("empty", Assert.Throws<OsduQueryException>(() => OsduQuery.Prefix(OsduField.Text("data.Name"), string.Empty)).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Holding_a_value_asks_the_property_itself_and_is_refused_inside_a_nested_array()
+    {
+        // The analysed field of text holds a value of any length; its keyword sub-field none past 256 characters.
+        Assert.Equal("_exists_:data.FacilityName", OsduQuery.Exists(OsduField.Text("data.FacilityName")).Text);
+        Assert.Equal("_exists_:data.TotalDepth", OsduQuery.Exists(OsduField.Number("data.TotalDepth")).Text);
+        Assert.Contains(
+            "does not see inside",
+            Assert.Throws<OsduQueryException>(() => OsduQuery.Exists(OsduField.Text("data.NameAliases.AliasName", "data.NameAliases"))).Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Every_record_holds_an_id()
+        => Assert.Equal("_exists_:id", OsduQuery.EveryRecord);
 }

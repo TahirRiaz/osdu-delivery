@@ -22,7 +22,7 @@ namespace SqlFlow.Delivery.Engine.Operations;
 /// <list type="bullet">
 /// <item><description><c>types</c>: the kinds of the records a search finds, with their counts (<c>search</c>).</description></item>
 /// <item><description><c>search</c>: one page of the records a search finds (<c>search</c>).</description></item>
-/// <item><description><c>fields</c>: the properties the records of a <c>kind</c> hold, read from one of them.</description></item>
+/// <item><description><c>fields</c>: the properties the records of a <c>kind</c> hold: the record's own, those the kind's schema declares (read from the Schema service), and those its records hold beyond them.</description></item>
 /// <item><description><c>read</c>: one record from the storage service by its <c>targetId</c>, at its latest or at a <c>version</c>, with its version list.</description></item>
 /// <item><description><c>dimension-keys</c>: the commonest keys of a drafted dimension's path, which the builder's example steps through (<see cref="DimensionSampler.KeysAsync"/>), asked by the <c>keys</c> long argument.</description></item>
 /// <item><description><c>dimension-example</c>: one key of a drafted dimension made into its row as a build makes it (<see cref="DimensionSampler.ExampleAsync"/>): the dimension's item as YAML (<c>item</c>), the <c>key</c>, and how the key and each collected path are indexed (<c>fields</c>).</description></item>
@@ -149,7 +149,7 @@ public sealed class ExploreOperation : DeliveryOperation
             DimensionKeysAction => await Sampler(client, context).KeysAsync(KeysOf(payload, partition), ct).ConfigureAwait(false),
             DimensionExampleAction => await ExampleAsync(context, Sampler(client, context), payload, partition, ct).ConfigureAwait(false),
             ReferencedByAction => await ReferencedByAsync(context, flow, client, partition, payload, ct).ConfigureAwait(false),
-            _ => await explorer.FieldsAsync(payload.RequireArgument(KindArgument), ct).ConfigureAwait(false),
+            _ => await explorer.FieldsAsync(payload.RequireArgument(KindArgument), new SchemaServiceReader(client, context.Time), ct).ConfigureAwait(false),
         };
 
         return new

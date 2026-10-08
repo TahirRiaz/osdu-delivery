@@ -63,7 +63,9 @@ Once asked, the records of the place picked stand beside the kinds of the partit
 - **Records.** A grid of one row per record: its name (`data.FacilityName`, `data.Name`, `data.ProjectName`,
   `data.Code` or its file's name, the first it holds; else the unique part of its id), its type and kind version when
   every type is in view, its id cut from the start so the end that tells ids apart stays visible (a copy on hover), and
-  when it last changed. The grid fits its panel and scrolls inside it under a fixed header; only the rows in view are
+  when it last changed, and a column for each property a condition asks ([Searching a property](#searching-a-property)),
+  so the grid shows why each record is there: the first value a record holds there, and how many more on hover. The grid
+  fits its panel and scrolls inside it under a fixed header; only the rows in view are
   drawn, so ten thousand rows scroll as lightly as a hundred. Rows load a hundred at a time as the grid is scrolled. The
   arrow keys, Page Up and Down, Home and End move through the rows, and Enter opens one. The records of a group, a type
   or a kind have a search field of their own over them, in line with the filter over the types, which searches inside
@@ -71,14 +73,15 @@ Once asked, the records of the place picked stand beside the kinds of the partit
 - **The place.** One line over the grid says where the records are (the partition, the group, the type, the kind, each a
   step back), how many there are (the index's exact count, `trackTotalCount`), how the search was read, and what the
   service made the explorer do (an order it would not sort by, a clause it refused), with the query sent one copy away.
+  At its end stand the order, **Filter** and **Group by**, then as glyphs **Referenced by**, **Validate** and the
+  refresh, so the line fits a narrow panel.
 - **Order.** Index order (best match once something is typed), last modified or last created, newest first. An order
   the service refuses is dropped with a note.
 - **Group by.** Any property of the records in view, grouped by its distinct values with their counts, and a value
-  picked narrows the records to it. The properties offered are the record's own (its kind, who created and changed it,
-  its viewers, owners, legal tags and countries) for every type, and for a type the properties of its content, read from
-  one of its records and typed by the value it holds. A list of objects is left out, since it may be indexed as nested,
-  which a plain path does not reach. Each value narrowed to is a chip, asked exactly as the platform indexes the property
-  (`OsduQuery.Equal`: the `keyword` sub-field of text).
+  picked narrows the records to it, as the condition **is** ([Searching a property](#searching-a-property)), asked exactly
+  as the platform indexes the property (`OsduQuery.Equal`: the `keyword` sub-field of text). The properties offered are
+  those of [The properties of a place](#the-properties-of-a-place); a property of a nested list is grouped through it
+  (`nested(data.GeoContexts, FieldID.keyword)`), so a wellbore's fields are counted by the field contexts that name them.
 
 The search service pages through the first 10,000 records a query matches (Elasticsearch's result window); past them
 the foot of the grid says to narrow by type, text or a value. A partition of millions reads as fast as one of hundreds:
@@ -115,10 +118,78 @@ page's answer with the service's words. Anything else that keeps an answer from 
 page would say OSDU holds nothing.
 
 Under the place, every list says what it is read by, exactly as the explorer sends it to the search service: the
-`kind` and the Lucene `query` (none where the list is every record of the kind). The search box, the place and the values
-narrowed to all make it, so it is the expression to reuse: copied as written or as a search request, or taken as a
+`kind` and the Lucene `query` (none where the list is every record of the kind). The search box, the place and the
+conditions all make it, so it is the expression to reuse: copied as written or as a search request, or taken as a
 Lucene query (**Edit**) into the field that shows the search (the type's, or the header's for every type) with the
 cursor at its end, to be changed there, the place kept.
+
+## Searching a property
+
+What is typed in a search field is searched in every property of a record. It can be searched in one property instead,
+and any property can be asked a condition of its own; every condition holds, together with what is searched in every
+property, and each is a chip over the grid that reads as a sentence (`Equinor.WellboreName starts with NO 34/10`).
+
+- **From the search field.** As text is typed in the field that is the list's (the type's, or the header's while no
+  place is picked), the options under it say where it is searched: **every property** (what Enter does, as ever), one
+  of the properties offered (those searched in lately for the type, kept in the browser, then the record's name
+  properties; across every type, the name properties alone, which most kinds hold), or **another property**, which
+  opens the condition editor with the text. The arrow keys move among the options and Enter takes the one lit; Escape
+  closes them. Text searched in one property is a condition from then on, and the field empties: its words for text
+  (**contains**), its start for a keyword (**starts with**), its whole value otherwise (**is**).
+- **Filter.** Beside **Group by**, it opens the condition editor: the property (found by any part of its path or title),
+  what it must hold, and the value. Under the value, the values the records in view hold there, the commonest first,
+  each with how many records hold it; as a value is typed, those that start with it (in its case, as the index keeps
+  the whole value) and those listed that hold it anywhere (in any case). A value listed is picked with a click (for
+  **is one of**, each click adds or drops one), and Enter in the value applies the condition.
+- **A chip.** A click opens the editor on the condition to change it, the cross drops it, and **Clear all** drops every
+  one. The conditions are part of the address, so a link brings them back.
+
+Each condition is written by `OsduQuery`, as the module's own lookups and filters are, the way the platform indexes the
+property:
+
+| Condition | For | Query |
+| --- | --- | --- |
+| **contains** | text | its words, as a phrase anywhere in the value, in any case: `data.Equinor.WellboreName:"NO 34/10"` |
+| **is**, **is not** | any | the whole value, exactly: `data.Source.keyword:"Recall"`, `NOT (...)` |
+| **is one of** | any but a boolean | one of up to 50 whole values: `(data.Source.keyword:("Recall" OR "RECALL"))` |
+| **starts with** | text, a keyword | the start of the whole value, in its case: `data.Equinor.WellboreName.keyword:NO\ 34\/10*` |
+| **is in a range** | a number, a date | from a value (included) up to another (not included), either end open: `data.TopMeasuredDepth:["1000" TO "2000"}` |
+| **has a value**, **has no value** | any | whether the property holds one: `_exists_:data.Equinor.FieldId`, `NOT (...)` |
+
+A property of a nested list (`data.GeoContexts.FieldID`) is asked inside the service's nested form, `nested(data.GeoContexts,
+(FieldID.keyword:"..."))`, where the service rewrites the inner query by pattern; **starts with** and whether it holds
+a value are not offered there, since `_exists_` does not see inside a nested list and a prefix there is not a form this
+module has seen the service read. The search service refuses a query whose every clause excludes, so conditions that only
+exclude, with nothing searched beside them, start from every record: `_exists_:id AND NOT (...)`. A condition the
+service cannot be asked (a value past the 256 characters the index keeps whole, the text `null`, a word of a number) is
+refused before anything is read, with why.
+
+### The properties of a place
+
+The properties **Filter**, **Group by** and the search field offer for a type or a kind (`fields`) are read in one ask:
+
+- **Content**: every value the kind's schema declares that a query reaches, read from the partition's Schema service as
+  [Validate](#validate) reads it, each asked as the schema has the platform index it (text, a keyword, a number, a
+  boolean or a date; inside a nested list through it), with the schema's title and description on hover. A list whose
+  items are a choice of forms (a wellbore's geographic contexts) is read through its forms. For a type, the schema read
+  is that of its kind holding the most records. A value the index holds nothing comparable of (inside a list of objects
+  the schema gives no indexing hint, or of no type) is left out, and counted in a note.
+- **Not in the schema**: the values the first 20 records of the place hold that the schema does not declare, typed by
+  the value held. These are what the index adds to a record, such as the properties an index augmentation copies onto
+  it (`data.Equinor.WellboreName` on a well log, from its wellbore), and properties of another version of the kind. A
+  record names such a property with a dot in its key (`Equinor.WellboreName`), which reads as the path it spells.
+  Without a schema, every value the records hold outside a list of objects is listed here, since such a list may be
+  nested, which a plain path does not reach.
+- **Record**: the record's own properties, which every kind holds alike: its kind, id, who created and changed it and
+  when, its viewers, owners, legal tags and countries.
+
+Across every type, the record's own properties and the record's name properties are offered, since a property of one
+kind's content means nothing in another's. A schema the Schema service does not hold or cannot be read, records of several
+types, which no one schema describes, and a reference of the schema that could not be followed are each a note at the foot
+of the list, which says what it was read from.
+
+An opened record is read from the storage service, which holds no property an index augmentation adds: those are seen
+in the grid's columns and in the values grouped, which are read from the index.
 
 ## A record
 
@@ -384,8 +455,10 @@ flow's credentials takes the operate scope.
 
 ## Kept in the address
 
-The text and whether it is Lucene (`q`, `lq`), the place (`kind`, `*:*:*:*` for every type), the values narrowed to
-(`f`), the order (`sort`), the types alone (`view=types`), the record open (`id`, and `v` for a version) and a dimension
+The text and whether it is Lucene (`q`, `lq`), the place (`kind`, `*:*:*:*` for every type), the conditions (`f`, a
+JSON list of `{p, i, c, v, vs, t, n}`: the path, the index, the condition when not `is`, the value, the values, the upper
+bound and the nested list; a link made before conditions had names, `[path, index, value]`, still reads as **is**), the
+order (`sort`), the types alone (`view=types`), the record open (`id`, and `v` for a version) and a dimension
 being built (`dim`) are the page's address, so a link, Back and a refresh land on the same view; a link naming
 a partition (`partition`) makes it the title bar's. What was read is kept for a minute and reused (the kinds of a whole
 partition for ten), so going back to a type or a page already read shows it at once; the refresh button reads again.
@@ -396,8 +469,8 @@ partition for ten), so going back to a type or a page already read shows it at o
 | --- | --- | --- |
 | `GET /api/v1/delivery/explorer/connection?partition=` | read | How the partition (else the workbench's, else the registry's default) is reached: `available`, `through` (the flow, `flow/interface` for a source's interface), `endpoint` as written, `route`, or `reason` when nothing reaches it. |
 | `POST /api/v1/delivery/explorer/types?partition=` | operate | The count of the records a search finds, kind by kind. Body: `text`, `lucene`, `mentions`, `filters`. |
-| `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters` (`path`, `index` text, keyword, number, boolean or date, `value`; at most 12); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`) to group by. |
-| `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold, read from one of them. |
+| `POST /api/v1/delivery/explorer/search?partition=` | operate | One page of the records a search finds. Body: `text`, `lucene`, or `mentions` (an id); `kind` (wildcards per segment); `filters`, the conditions, at most 12 (`path`; `index` text, keyword, number, boolean or date; `nested`, the nested list it sits in; `condition` is, isNot, anyOf, contains, startsWith, range, exists or missing, `is` when left out; `value`; `values` for anyOf, at most 50; `to`, a range's upper bound); `sort` (relevance, modified, created); `offset` and `limit` (1 to 200, inside the first 10,000); `facet` (`path`, `index`, `nested`) to group by; `columns`, at most 8 property paths whose values each hit carries as `values` (path to its first 20 values, each cut at 256 characters; a column a record holds nothing at is left out). |
+| `POST /api/v1/delivery/explorer/fields?partition=` | operate | The properties the records of a `kind` hold ([The properties of a place](#the-properties-of-a-place)): `fields`, each `path`, `index`, `nested`, `origin` (record, schema or records), `title` and `description`; the `schemaKind` whose schema was read, how many records were `sampled`, the `sampleId`, and `notes`. |
 | `POST /api/v1/delivery/explorer/read?partition=` | operate | One record by `targetId` from the storage service, at its latest or at `version`, with its version list. |
 | `POST /api/v1/delivery/explorer/validate?partition=` | operate | One record checked against the schema of its kind ([Validate](#validate)). Body: `targetId`, `version` (its latest when left out), `schema` (`osdu`, the default, for the Schema service's; `saved` for a saved template), `templateVersion` (with `saved`; the kind's newest when left out). Answers the `targetId`, the `version` checked, whether storage holds the record (`found`), its `kind`, the `schema` used (`kind`, `version`, `source` schema-service or template, the schema ids `read`, the references left `unresolved`, `notes`), the `verdict` as a record's history holds it, or why nothing was checked (`problem`), the template versions saved for the kind (`savedVersions`, newest first), and the `guidance`: one guide per problem and per part not checked, in the verdict's order (`path`, `rule`, the value `found`, the `advice`, and the key of what is `expected` there), the `expectations` by that key (`summary`, `title`, `description`, `types`, `required`, `patterns`, `allowed` and `allowedCount`, `formats`, the bounds, `entityTypes`, `properties`, `items`, `forms`, the schema's `examples`, `osduExample`), the data definitions' `example` quoted (`release`, `path`, `webUrl`), or the `exampleNote` saying why none is. |
 | `POST /api/v1/delivery/flows/{pipelineId}/osdu/validate?interface=&partition=` | operate | The same check of one record, read through the flow's own route and credentials as a record page reads it (`interface` and `partition` naming the ledger, as every route of a flow's records does). Body and answer as `/explorer/validate`. A flow whose route keeps no record in storage (dspdm, etp) is refused with 409. |

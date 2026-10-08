@@ -11,7 +11,7 @@ import { EmptyState } from "@/components/EmptyState";
 import { Page } from "@/components/Page";
 import { RichTooltip } from "@/components/RichTooltip";
 import type { DeliveryOsduRead } from "../../../api/delivery";
-import { explorerApi, type ExplorerFilter, type ExplorerSearchRequest, type ExplorerSort, type ExplorerTypes } from "../../../api/explorer";
+import { explorerApi, type ExplorerFieldInfo, type ExplorerFilter, type ExplorerSearchRequest, type ExplorerSort, type ExplorerTypes } from "../../../api/explorer";
 import { isPartitionId, useActivePartition } from "../activePartition";
 import { useWindowFit } from "../useWindowFit";
 import { failureText } from "../answers";
@@ -19,14 +19,16 @@ import { ElementQueryButton } from "./ExplorerElementQuery";
 import { ExplorerProblem } from "./ExplorerProblem";
 import { ExplorerRecord } from "./ExplorerRecord";
 import { ExplorerResults } from "./ExplorerResults";
-import { ExplorerRecent, ExplorerSearchBar } from "./ExplorerSearchBar";
+import { ExplorerRecent, ExplorerSearchBar, type SearchIn } from "./ExplorerSearchBar";
 import { ExplorerTypeRail } from "./ExplorerTypeRail";
 import { ExplorerWelcome } from "./ExplorerWelcome";
 import { BuildFieldActions } from "./dimension/BuildFieldActions";
 import { DimensionBuildPanel } from "./dimension/DimensionBuildPanel";
 import { useDimensionBuild } from "./dimension/useDimensionBuild";
+import { searchedInType, searchInChoices, useExplorerFields } from "./explorerFields";
 import {
-  ALL_KINDS, filtersOf, filtersText, recordAt, rememberType, scopeKind, scopeLabel, scopeOf, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
+  ALL_KINDS, columnsOf, filtersOf, filtersText, NAME_FIELDS, recordAt, rememberSearchedIn, rememberType, sameFilter, scopeKind, scopeLabel, scopeOf,
+  searchInCondition, sortOf, useExplorerRead, type ExplorerScope, type RecentRecord,
 } from "./explorerModel";
 
 /** The kind a dimension built here reads from the explorer's place: a kind, or every version of a type; null for a group or every type. */
@@ -170,7 +172,36 @@ export default function ExplorerPage() {
     // The kinds of a whole partition move slowly; those a search finds are read again sooner.
     typesRequest.text === undefined && filters.length === 0 ? 10 * 60_000 : undefined,
   );
-  const request = { text: text === "" ? undefined : text, lucene, kind: scopeKind(scope), filters, sort };
+  // Each property a condition asks is a column of the grid, so the grid shows why each record is listed.
+  const request = { text: text === "" ? undefined : text, lucene, kind: scopeKind(scope), filters, sort, columns: columnsOf(filters, NAME_FIELDS) };
+
+  // Text searched in one property (osdu/docs/explorer.md, Searching a property): the properties of the place are read once
+  // text is typed in its field, and the condition editor is opened by the search box with the text typed there.
+  const [adding, setAdding] = useState<string | null>(null);
+  const [fieldsWanted, setFieldsWanted] = useState(false);
+  const placeFields = useExplorerFields(active, scopeKind(scope), reachable && picked && fieldsWanted);
+  const searchIn = (kind: string | undefined, fields: ExplorerFieldInfo[] | undefined, reading: boolean): SearchIn => ({
+    choices: searchInChoices(fields, kind, searchedInType(kind)),
+    reading,
+    onWanted: () => setFieldsWanted(true),
+    onSearchIn: (field, typed) => {
+      rememberSearchedIn(searchedInType(kind), field.path);
+      const condition: ExplorerFilter = {
+        path: field.path,
+        index: field.index,
+        ...(field.nested ? { nested: field.nested } : {}),
+        ...(searchInCondition(field) !== "is" ? { condition: searchInCondition(field) } : {}),
+        value: typed,
+      };
+      // The text is the condition's now, so the field's own search, which it replaced as it was typed, is cleared.
+      navigate({ q: null, lq: null, kind: kind ?? ALL_KINDS, f: filtersText([...filters.filter((f) => !sameFilter(f, condition)), condition]), id: null, v: null });
+    },
+    onChoose: (typed) => {
+      // The text goes to the editor, to be searched in the property picked there; it replaced the field's search as it was typed.
+      navigate({ q: null, lq: null, kind: kind ?? ALL_KINDS, view: null, id: null, v: null });
+      setAdding(typed);
+    },
+  });
 
   // Every type is a place picked like any other, so the address keeps it rather than falling back to the welcome.
   const goScope = (next: ExplorerScope) => {
@@ -223,6 +254,8 @@ export default function ExplorerPage() {
           navigate({ q: typed, lq: asLucene ? "1" : null, kind: picked ? ALL_KINDS : kindParam, id: null, v: null });
         }}
         onOpenId={openId}
+        // The header's field is the list's while no place is picked: across every type, text is searched in the record's name.
+        searchIn={picked ? undefined : searchIn(undefined, undefined, false)}
         shortcut={!picked && recordId === null}
         focusRequest={editInHeader}
         className="min-w-[280px] max-w-[760px] flex-1"
@@ -303,6 +336,7 @@ export default function ExplorerPage() {
                     label={`Search ${scopeLabel(scope)}`}
                     onSearch={(typed, asLucene) => navigate({ q: typed, lq: asLucene ? "1" : null, id: null, v: null })}
                     onOpenId={openId}
+                    searchIn={searchIn(scopeKind(scope), placeFields.data?.answer.fields, placeFields.isFetching && placeFields.data === undefined)}
                     shortcut
                     focusRequest={editInPlace}
                     testId="explorer-within"
@@ -315,6 +349,8 @@ export default function ExplorerPage() {
                     partition={active}
                     request={request}
                     scope={scope}
+                    adding={adding}
+                    onAdding={setAdding}
                     onScope={goScope}
                     onOpen={(hit) => openId(hit.id)}
                     onFilters={(next: ExplorerFilter[]) => navigate({ f: filtersText(next) })}

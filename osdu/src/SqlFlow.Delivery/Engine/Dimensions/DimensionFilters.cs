@@ -122,7 +122,7 @@ public static class DimensionFilters
     }
 
     /// <summary>The clause every record matches: each holds an id.</summary>
-    public const string EveryRecord = "_exists_:id";
+    public const string EveryRecord = OsduQuery.EveryRecord;
 
     /// <summary>Whether a query can carry the key <paramref name="original"/> of <paramref name="field"/>, so a filter can find its records.</summary>
     public static bool Filterable(OsduField field, string original) => OsduQuery.EqualProblem(field, original) is null;

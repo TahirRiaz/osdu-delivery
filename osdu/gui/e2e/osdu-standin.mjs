@@ -163,9 +163,10 @@ function unescape(term) {
 
 /**
  * Whether a record answers one clause of the queries the explorer and the dimension builder write: every record, a phrase
- * anywhere in it, an id exactly, an id that starts with a prefix or ends with a unique part, a property's whole value, one
- * of several whole values, or a property that is there; and a clause of clauses joined by AND, OR and AND NOT. Enough of
- * Lucene to answer them, and nothing more: what it does not read matches nothing.
+ * anywhere in it, an id exactly, an id that starts with a prefix or ends with a unique part, a property's whole value, the
+ * words of a property of the record's data (any case), one of several whole values, the start of a property's whole
+ * value, or a property that is there; and a clause of clauses joined by AND, OR and AND NOT. Enough of Lucene to answer
+ * them, and nothing more: what it does not read matches nothing.
  */
 function matches(record, query) {
   const text = query.trim();
@@ -205,9 +206,14 @@ function matches(record, query) {
       : record.id.startsWith(`${unescape(head)}:`) && record.id.split(":").slice(2).join(":").startsWith(unescape(tail));
   }
 
-  const property = /^([\w.]+?)(?:\.keyword)?:"((?:[^"\\]|\\.)*)"$/.exec(text);
+  const property = /^([\w.]+?)(\.keyword)?:"((?:[^"\\]|\\.)*)"$/.exec(text);
   if (property !== null) {
-    return texts(valueAt(record, property[1])).includes(unescape(property[2]));
+    const wanted = unescape(property[3]);
+    const held = texts(valueAt(record, property[1]));
+    // A property of the record's data asked by its words (no keyword sub-field named): the words anywhere in a value, any case.
+    return property[2] === undefined && property[1].startsWith("data.")
+      ? held.some((value) => value.toLowerCase().includes(wanted.toLowerCase()))
+      : held.includes(wanted);
   }
 
   // One of several whole values, as a dimension's filter and the reads of the records a key names ask: id:("a" OR "b").
@@ -220,6 +226,12 @@ function matches(record, query) {
 
     const held = anyOf[1] === "id" ? [record.id] : texts(valueAt(record, anyOf[1]));
     return wanted.some((phrase) => held.includes(unescape(phrase[1])));
+  }
+
+  // The start of a property's whole value, as a condition asks it: data.FacilityName.keyword:NO\ 33*.
+  const start = /^([\w.]+?)(?:\.keyword)?:((?:\\.|[^\\\s*"():])+)\*$/.exec(text);
+  if (start !== null) {
+    return texts(valueAt(record, start[1])).some((value) => value.startsWith(unescape(start[2])));
   }
 
   // A property that is there, which is how every record is asked for alongside a NOT: _exists_:id.

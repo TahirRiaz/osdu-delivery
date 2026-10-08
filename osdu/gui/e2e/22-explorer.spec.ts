@@ -93,7 +93,7 @@ test.describe.serial("explorer", () => {
 
     // A property's values group the records, and a value narrows them to it.
     await adminPage.getByTestId("explorer-group-by").click();
-    await adminPage.getByTestId("explorer-group-by-field").filter({ hasText: "FacilityName" }).click({ timeout: 60_000 });
+    await adminPage.locator('[data-testid="explorer-group-by-attributes-field"][data-path="data.FacilityName"]').click({ timeout: 60_000 });
     await adminPage.getByTestId("explorer-group-by-value").filter({ hasText: "NO 33/9-C-28 B" }).click({ timeout: 60_000 });
     await expect(adminPage.getByTestId("explorer-filter")).toContainText("NO 33/9-C-28 B");
     await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
@@ -132,6 +132,75 @@ test.describe.serial("explorer", () => {
     await expect(adminPage.getByTestId("explorer-sent-query")).toContainText("every record of the kind", { timeout: 60_000 });
     await expect(adminPage.getByTestId("explorer-sent-kind")).toHaveText("*:*:*:*");
     await expect(adminPage.getByTestId("explorer-welcome")).toHaveCount(0);
+  });
+
+  test("searches text in one property, and narrows by conditions changed in place, each property a column", async ({ adminPage }) => {
+    await adminPage.goto("/delivery/explorer?kind=*:*:master-data--Wellbore:*");
+    const grid = adminPage.getByTestId("explorer-grid");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
+
+    // Text typed is searched in every property on Enter; under the field, it is offered in one property instead.
+    const within = adminPage.getByTestId("explorer-within-input");
+    await within.fill("33/9-c-28");
+    const options = adminPage.getByTestId("explorer-within-in");
+    await expect(options.getByTestId("explorer-within-in-everywhere")).toContainText("Search every property for 33/9-c-28");
+    await expect(options.getByTestId("explorer-within-in-choose")).toContainText("Search in another property", { timeout: 60_000 });
+    await options.getByTestId("explorer-within-in-field").filter({ hasText: "FacilityName" }).click();
+
+    // The text is a condition now, its words in any case, and no longer the field's search.
+    const chips = adminPage.getByTestId("explorer-filter");
+    await expect(chips).toHaveCount(1);
+    await expect(chips.first()).toContainText("FacilityName contains 33/9-c-28");
+    await expect(within).toHaveValue("");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
+    await expect(adminPage.getByTestId("explorer-sent-query")).toHaveText('data.FacilityName:"33/9-c-28"');
+
+    // A chip opens the editor to change it: every wellbore but one, picked from the values the wellbores hold. A query that
+    // only excludes starts from every record, since the search service refuses one that does not.
+    await chips.first().getByTestId("explorer-filter-edit").click();
+    const editor = adminPage.getByTestId("explorer-filter-editor");
+    await editor.getByTestId("explorer-filter-condition").click();
+    await adminPage.getByTestId("explorer-filter-condition-option").filter({ hasText: /^is not$/ }).click();
+    await editor.getByTestId("explorer-filter-held-value").filter({ hasText: "NO 33/9-C-28 B" }).click({ timeout: 60_000 });
+    await expect(editor.getByTestId("explorer-filter-value")).toHaveValue("NO 33/9-C-28 B");
+    await editor.getByTestId("explorer-filter-apply").click();
+    await expect(chips.first()).toContainText("FacilityName is not NO 33/9-C-28 B");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(6, { timeout: 60_000 });
+    await expect(adminPage.getByTestId("explorer-sent-query")).toHaveText('_exists_:id AND NOT (data.FacilityName.keyword:"NO 33/9-C-28 B")');
+
+    // Filter adds a condition, the property found by part of its name: the wellbores whose name starts with NO 33.
+    await adminPage.getByTestId("explorer-add-filter").click();
+    await adminPage.getByTestId("explorer-filter-attributes-find").fill("facility");
+    await adminPage.locator('[data-testid="explorer-filter-attributes-field"][data-path="data.FacilityName"]').click({ timeout: 60_000 });
+    await editor.getByTestId("explorer-filter-condition").click();
+    await adminPage.getByTestId("explorer-filter-condition-option").filter({ hasText: "starts with" }).click();
+    await editor.getByTestId("explorer-filter-value").fill("NO 33");
+    await editor.getByTestId("explorer-filter-value").press("Enter");
+    await expect(chips).toHaveCount(2);
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(2, { timeout: 60_000 });
+    await expect(grid).toContainText("NO 33/9-A-24 AT2");
+    await expect(grid).toContainText("NO 33/9-C-28 A");
+
+    // The conditions are the page's address, so a link brings them back; Clear all drops them.
+    await adminPage.reload();
+    await expect(chips).toHaveCount(2, { timeout: 60_000 });
+    await adminPage.getByTestId("explorer-filters-clear").click();
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(7, { timeout: 60_000 });
+
+    // A property a condition asks is a column, so the grid shows why each record is there: the log's source.
+    await adminPage.goto("/delivery/explorer?kind=*:*:work-product-component--WellLog:*");
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+    await adminPage.getByTestId("explorer-add-filter").click();
+    await adminPage.locator('[data-testid="explorer-filter-attributes-field"][data-path="data.LogSource"]').click({ timeout: 60_000 });
+    await editor.getByTestId("explorer-filter-condition").click();
+    await adminPage.getByTestId("explorer-filter-condition-option").filter({ hasText: /^is$/ }).click();
+    await editor.getByTestId("explorer-filter-held-value").filter({ hasText: "STAT_COMP" }).click({ timeout: 60_000 });
+    await editor.getByTestId("explorer-filter-apply").click();
+    await expect(grid.getByTestId("explorer-grid-row")).toHaveCount(1, { timeout: 60_000 });
+    await expect(grid).toContainText("LogSource");
+    await expect(grid.getByTestId("explorer-grid-row").first()).toContainText("STAT_COMP");
+    await chips.first().getByTestId("explorer-filter-drop").click();
+    await expect(chips).toHaveCount(0);
   });
 
   test("reads a record under its place, follows what mentions it, and compares two versions of that", async ({ adminPage }) => {

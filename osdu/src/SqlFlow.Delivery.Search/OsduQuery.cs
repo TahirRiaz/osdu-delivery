@@ -79,6 +79,12 @@ public sealed record OsduQuery
     /// </summary>
     public const int MaxTermBytes = 32766;
 
+    /// <summary>
+    /// The clause every record matches, since each holds an id. The service refuses a query whose every clause excludes
+    /// (<c>NOT ...</c>), so a query that only excludes starts from this.
+    /// </summary>
+    public const string EveryRecord = "_exists_:id";
+
     /// <summary>The query as the service receives it.</summary>
     public string Text { get; }
 
@@ -236,6 +242,90 @@ public sealed record OsduQuery
         ArgumentNullException.ThrowIfNull(value);
         CheckValue(path, value, "phrase");
         return new OsduQuery($"{path}:{LuceneText.Phrase(value)}", [value]);
+    }
+
+    /// <summary>
+    /// Finds the records whose text <paramref name="field"/> holds <paramref name="words"/> as a phrase anywhere in its value,
+    /// their case aside: the analysed field, whose words the indexer keeps apart and in lower case, inside the service's
+    /// nested form for a property of a nested array. <c>NO 34/10</c> finds <c>NO 34/10-A-30</c> and <c>Well NO 34/10</c>
+    /// alike. Only text has its words indexed apart; a keyword, a number, a boolean and a date are compared whole.
+    /// </summary>
+    /// <exception cref="OsduQueryException">The property is not text, or the words cannot be asked for; the message says which.</exception>
+    public static OsduQuery Words(OsduField field, string words)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        ArgumentNullException.ThrowIfNull(words);
+        if (field.Index != OsduFieldIndex.Text)
+        {
+            throw new OsduQueryException(
+                $"'{field.Path}' is indexed as a {OsduField.Describe(field.Index)}, whose words are not indexed apart, so it is compared whole: ask whether it is a value{(field.Index == OsduFieldIndex.Keyword ? " or starts with one" : string.Empty)}.");
+        }
+
+        CheckValue(field.Path, words, "words");
+        var term = new OsduQuery($"{field.QueryPath}:{LuceneText.Phrase(words)}", [words]);
+        return field.NestedPath is { } nested ? Nested(nested, term) : term;
+    }
+
+    /// <summary>
+    /// Finds the records whose <paramref name="field"/> holds a whole value starting with <paramref name="prefix"/>, case
+    /// included: the keyword sub-field of text, which holds the value unanalysed, or a keyword itself. The prefix is a bare
+    /// term in front of the wildcard, every character the syntax reserves escaped (<see cref="LuceneText.Escape"/>).
+    /// </summary>
+    /// <remarks>
+    /// A property of a nested array is not asked: inside the service's nested form the inner query is rewritten by pattern
+    /// (<see cref="ServiceParser"/>), and the form a prefix takes there is not one this type has seen the service read.
+    /// </remarks>
+    /// <exception cref="OsduQueryException">
+    /// The property is a number, a boolean or a date, sits in a nested array, or the prefix cannot be carried; the message
+    /// says which.
+    /// </exception>
+    public static OsduQuery Prefix(OsduField field, string prefix)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        ArgumentNullException.ThrowIfNull(prefix);
+        if (field.Index is not (OsduFieldIndex.Text or OsduFieldIndex.Keyword))
+        {
+            throw new OsduQueryException($"'{field.Path}' is indexed as a {OsduField.Describe(field.Index)}, which has no start to compare; ask whether it is a value, or for a range.");
+        }
+
+        if (field.NestedPath is { } nested)
+        {
+            throw new OsduQueryException(
+                $"'{field.Path}' sits in the nested list '{nested}', where the search service rewrites the query it is asked; ask whether it is a value or holds words instead.");
+        }
+
+        CheckValue(field.Path, prefix, "start");
+        if (field.Index == OsduFieldIndex.Text && prefix.Length > KeywordIgnoreAbove)
+        {
+            throw new OsduQueryException(
+                $"the start compared with '{field.Path}' is {prefix.Length} characters, and the indexer keeps no value longer than {KeywordIgnoreAbove} in the '{KeywordSubField}' sub-field (ignore_above), so no value there can start with it.");
+        }
+
+        if (!LuceneText.IsEscapable(prefix))
+        {
+            throw new OsduQueryException(
+                $"the start compared with '{field.Path}' holds an angle bracket, which no escape carries in front of a wildcard; ask whether it is the whole value instead.");
+        }
+
+        return new OsduQuery($"{field.ExactPath}:{LuceneText.Escape(prefix)}*", [prefix]);
+    }
+
+    /// <summary>
+    /// Finds the records holding any value of <paramref name="field"/>: <c>_exists_</c> of the property itself, which for text
+    /// is the analysed field, holding a value of any length where the keyword sub-field holds none past 256 characters.
+    /// </summary>
+    /// <remarks>
+    /// A property of a nested array is not asked: <c>_exists_</c> is not a property the service's nested rewriting finds,
+    /// and a top-level query does not see inside a nested array.
+    /// </remarks>
+    /// <exception cref="OsduQueryException">The property sits in a nested array.</exception>
+    public static OsduQuery Exists(OsduField field)
+    {
+        ArgumentNullException.ThrowIfNull(field);
+        return field.NestedPath is { } nested
+            ? throw new OsduQueryException(
+                $"'{field.Path}' sits in the nested list '{nested}', which a query of whether a property holds a value does not see inside; ask for a value it holds instead.")
+            : new OsduQuery($"_exists_:{field.Path}", compared: null);
     }
 
     /// <summary>

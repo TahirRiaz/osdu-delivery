@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Braces, ChevronRight, Hash, History, Layers, Search, TextCursorInput, Trash2, Type } from "lucide-react";
+import { Braces, ChevronRight, Hash, History, Layers, Search, TextCursorInput, TextSearch, Trash2, Type } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { CopyButton } from "@/components/CopyButton";
@@ -57,7 +57,8 @@ function searches(partition: string | null): { icon: ReactNode; what: string; ex
   return [
     { icon: <Hash />, what: "A record id", example: `${partition ?? "dev"}:master-data--Wellbore:…`, does: "opens the record" },
     { icon: <TextCursorInput />, what: "The start of an id", example: "master-data--Well:", does: "ids starting with it" },
-    { icon: <Type />, what: "A name or any text", example: "Norway", does: "anywhere in a record" },
+    { icon: <Type />, what: "A name or any text", example: "Norway", does: "in every property" },
+    { icon: <TextSearch />, what: "Text in one property", example: "NO 34/10, then: in WellboreName", does: "pick it under the field" },
     { icon: <Braces />, what: "A Lucene query", example: "createTime:[2024-01-01 TO *]", does: "with { } on, sent as written" },
   ];
 }

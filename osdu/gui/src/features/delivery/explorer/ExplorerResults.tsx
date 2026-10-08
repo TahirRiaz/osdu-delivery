@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ArrowDownWideNarrow, ChevronRight, Info, Loader2, Pencil, RefreshCw, SearchCode, SearchX, ShieldCheck, Waypoints, X } from "lucide-react";
+import { ArrowDownWideNarrow, ChevronRight, Info, Loader2, Pencil, RefreshCw, SearchCode, SearchX, ShieldCheck, Waypoints } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -20,13 +20,14 @@ import {
 import { isRecordReference } from "../osduDocument";
 import { idParts } from "../osduRecordModel";
 import { RecordName } from "../RecordName";
+import { ExplorerAddFilter, ExplorerFilterChips } from "./ExplorerFilters";
 import { ExplorerGroupBy } from "./ExplorerGroupBy";
 import { ExplorerGrid, type GridColumn } from "./ExplorerGrid";
 import { ExplorerProblem } from "./ExplorerProblem";
 import { ExplorerReferencesDialog } from "./ExplorerReferences";
 import { ExplorerValidateDialog } from "./ExplorerValidation";
 import { ReadingBar } from "./ReadingBar";
-import { counted, fieldLabel, kindParts, SORT_LABELS, type ExplorerScope } from "./explorerModel";
+import { counted, fieldLabel, kindParts, sameFilter, SORT_LABELS, type ExplorerScope } from "./explorerModel";
 
 /** How a search was read, as a word after the count; nothing for the plain cases. */
 const READINGS: Partial<Record<ExplorerReading, string>> = {
@@ -133,16 +134,38 @@ export function ScopeCrumbs({ partition, scope, onScope, last = true }: {
 }
 
 /**
- * The records a search finds in the place picked, a page at a time as the grid is scrolled, under one line that says
- * where they are, how many there are and how they were read, with the order and the grouping beside it and the values
- * the records are narrowed to under it. A partition of millions reads as fast as one of hundreds: each page is one query
- * of the search index, and the total is the index's own count. The service pages through the first ten thousand records
- * a query matches; past them the reader narrows, and the foot of the grid says so.
+ * What a record holds at a column: its first value, a record named by its id as a record is, and how many more it holds
+ * after it, every value on hover.
  */
-export function ExplorerResults({ partition, request, scope, onScope, onOpen, onFilters, onSort, onSearchEverywhere, onEditQuery }: {
+function ColumnValues({ values }: { values: string[] | undefined }) {
+  if (values === undefined || values.length === 0) {
+    return <span className="text-[12px] text-muted-foreground/60" aria-label="No value">-</span>;
+  }
+
+  const [first] = values;
+  return (
+    <span className="flex min-w-0 items-center gap-1" title={values.join("\n")}>
+      <span className="min-w-0 truncate text-[12px]">{isRecordReference(first) ? <RecordName id={first} /> : first}</span>
+      {values.length > 1 && <span className="shrink-0 text-[11px] text-muted-foreground">+{values.length - 1}</span>}
+    </span>
+  );
+}
+
+/**
+ * The records a search finds in the place picked, a page at a time as the grid is scrolled, under one line that says
+ * where they are, how many there are and how they were read, with the order, the conditions and the grouping beside it
+ * and the conditions the records are narrowed to under it. Each property a condition asks is a column, so the grid shows
+ * why each record is listed. A partition of millions reads as fast as one of hundreds: each page is one query of the
+ * search index, and the total is the index's own count. The service pages through the first ten thousand records a query
+ * matches; past them the reader narrows, and the foot of the grid says so.
+ */
+export function ExplorerResults({ partition, request, scope, adding, onAdding, onScope, onOpen, onFilters, onSort, onSearchEverywhere, onEditQuery }: {
   partition: string | null;
   /** The search, without its page. */
-  request: ExplorerSearchRequest & { sort: ExplorerSort; filters: ExplorerFilter[] };
+  request: ExplorerSearchRequest & { sort: ExplorerSort; filters: ExplorerFilter[]; columns: string[] };
+  /** The text a new condition starts with while the condition editor is open; null while it is closed. */
+  adding: string | null;
+  onAdding: (startValue: string | null) => void;
   scope: ExplorerScope;
   onScope: (scope: ExplorerScope) => void;
   onOpen: (hit: ExplorerHit) => void;
@@ -226,6 +249,12 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
         </span>
       ),
     },
+    ...request.columns.map((path): GridColumn<ExplorerHit> => ({
+      id: `column:${path}`,
+      header: <span className="block truncate font-mono text-[11px] normal-case" title={path}>{fieldLabel(path)}</span>,
+      flex: 1.3,
+      render: (hit) => <ColumnValues values={hit.values?.[path]} />,
+    })),
     {
       id: "modified",
       header: "Changed",
@@ -347,49 +376,39 @@ export function ExplorerResults({ partition, request, scope, onScope, onOpen, on
         </span>
         <div className="ml-auto flex items-center gap-1">
           {sortMenu}
-          <ExplorerGroupBy partition={partition} base={request} onFilter={(filter) => onFilters([...request.filters.filter((f) => f.path !== filter.path || f.value !== filter.value), filter])} />
+          <ExplorerAddFilter
+            partition={partition}
+            request={request}
+            open={adding !== null}
+            startValue={adding ?? ""}
+            onOpenChange={(open) => onAdding(open ? "" : null)}
+            onAdd={(filter) => onFilters([...request.filters.filter((f) => !sameFilter(f, filter)), filter])}
+          />
+          <ExplorerGroupBy partition={partition} base={request} onFilter={(filter) => onFilters([...request.filters.filter((f) => !sameFilter(f, filter)), filter])} />
+          <span className="mx-0.5 h-5 w-px bg-border" aria-hidden />
           {referencedType !== null && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 gap-1.5 px-2.5 text-[13px]"
-              title={`The types whose schemas have a property naming ${kindParts(`*:*:${referencedType}:*`).type} records, and in which versions`}
+            <IconAction
+              label={`Referenced by: the types whose schemas have a property naming ${kindParts(`*:*:${referencedType}:*`).type} records, and in which versions`}
+              icon={<Waypoints />}
+              variant="ghost"
+              className="size-8"
               onClick={() => setReferencing(true)}
               data-testid="explorer-referenced-by"
-            >
-              <Waypoints />
-              Referenced by
-            </Button>
+            />
           )}
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" title="Check these records against the schemas of their kinds" onClick={() => setValidating(true)} data-testid="explorer-validate-records">
-            <ShieldCheck />
-            Validate
-          </Button>
+          <IconAction
+            label="Validate: check these records against the schemas of their kinds"
+            icon={<ShieldCheck />}
+            variant="ghost"
+            className="size-8"
+            onClick={() => setValidating(true)}
+            data-testid="explorer-validate-records"
+          />
           <IconAction label="Read again from OSDU" icon={<RefreshCw />} variant="ghost" className="size-8" onClick={() => void pages.refetch()} data-testid="explorer-refresh" />
         </div>
       </div>
       {first !== undefined && <SentQuery kind={first.kind} query={first.query} onEdit={onEditQuery} />}
-      {request.filters.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-1.5" data-testid="explorer-filters">
-          {request.filters.map((filter) => (
-            <span key={`${filter.path}=${filter.value}`} className="inline-flex max-w-full items-center gap-1 rounded-md border bg-muted/60 py-0.5 pr-1 pl-2 text-[12px]" data-testid="explorer-filter">
-              <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{fieldLabel(filter.path)}</span>
-              <span className="min-w-0 truncate" title={filter.value}>{isRecordReference(filter.value) ? <RecordName id={filter.value} /> : filter.value}</span>
-              <button
-                type="button"
-                className="rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                onClick={() => onFilters(request.filters.filter((f) => f !== filter))}
-                aria-label={`Stop narrowing to ${fieldLabel(filter.path)} ${filter.value}`}
-              >
-                <X className="size-3" />
-              </button>
-            </span>
-          ))}
-          {request.filters.length > 1 && (
-            <button type="button" className="px-1 text-[12px] text-muted-foreground hover:text-foreground hover:underline" onClick={() => onFilters([])}>Clear all</button>
-          )}
-        </div>
-      )}
+      <ExplorerFilterChips partition={partition} request={request} onFilters={onFilters} />
       {body}
       {referencedType !== null && (
         <ExplorerReferencesDialog
