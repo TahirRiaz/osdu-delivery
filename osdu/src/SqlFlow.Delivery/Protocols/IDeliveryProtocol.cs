@@ -48,10 +48,18 @@ public sealed record DeliveryWork
     public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> CompletedSteps { get; init; } = NoSteps;
 
     /// <summary>
-    /// Called by the protocol after every step that changed the target, with what the target returned. The worker
-    /// persists it on the record before the next step starts, so a crash never repeats a completed step.
+    /// Called by the protocol after every step that changed the target, with what the target returned and what the step
+    /// created in OSDU (docs/atomic-delivery-plan.md), and before a call whose id the service chooses, with its intent. The
+    /// worker persists it on the record, the artifacts in the same transaction, before the next step starts, so a crash never
+    /// repeats a completed step and never loses an id a step minted.
     /// </summary>
-    public Func<string, IReadOnlyDictionary<string, string>, CancellationToken, Task>? StepCompleted { get; init; }
+    public Func<StepReport, CancellationToken, Task>? StepCompleted { get; init; }
+
+    /// <summary>
+    /// The unit of work this delivery belongs to (docs/atomic-delivery-plan.md): a later try of the same pending work carries
+    /// the same unit. Null outside the worker (a restore, a test), where nothing records what the delivery creates.
+    /// </summary>
+    public DeliveryUnit? Unit { get; init; }
 
     /// <summary>The identifiers the target returned for this record in earlier deliveries (dataset ids, a workflow run).</summary>
     public IReadOnlyDictionary<string, string> TargetState { get; init; } = NoValues;
@@ -87,7 +95,31 @@ public sealed record DeliveryWork
 
     /// <summary>Reports a completed step to the worker (a no-op when nobody listens).</summary>
     public Task ReportStepAsync(string step, IReadOnlyDictionary<string, string> returned, CancellationToken ct)
-        => StepCompleted is null ? Task.CompletedTask : StepCompleted(step, returned, ct);
+        => ReportStepAsync(step, returned, [], ct);
+
+    /// <summary>
+    /// Reports a completed step to the worker with what it created in OSDU, or, for a step marked before its call goes, with
+    /// the intent of what the call will create (a no-op when nobody listens). Every artifact is checked first, so a route that
+    /// reports one the ledger cannot keep fails here, before the call it describes.
+    /// </summary>
+    /// <exception cref="DeliveryException">An artifact is not one the ledger can keep.</exception>
+    public Task ReportStepAsync(string step, IReadOnlyDictionary<string, string> returned, IReadOnlyList<TargetArtifact> artifacts, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(step);
+        ArgumentNullException.ThrowIfNull(returned);
+        ArgumentNullException.ThrowIfNull(artifacts);
+        if (string.Equals(step, DeliveryUnit.StepName, StringComparison.Ordinal))
+        {
+            throw new DeliveryException($"A route reported a step named '{DeliveryUnit.StepName}', the name the worker keeps a delivery's unit of work under.");
+        }
+
+        foreach (var artifact in artifacts)
+        {
+            artifact.Validate();
+        }
+
+        return StepCompleted is null ? Task.CompletedTask : StepCompleted(new StepReport(step, returned, artifacts), ct);
+    }
 }
 
 /// <summary>One part of a record's payload as a route that sends parts reads it.</summary>
@@ -177,6 +209,13 @@ public sealed record DeliveryOutcome
 
     /// <summary>Set when the work failed; the worker classifies it (held, retried, failed) exactly as a thrown one.</summary>
     public Exception? Failure { get; init; }
+
+    /// <summary>
+    /// The OSDU ids an earlier delivery of the record minted that this delivery made obsolete (the datasets of files a payload
+    /// change replaced): they stay live in OSDU, since earlier versions of the record name them, and the ledger marks them
+    /// superseded so the inventory tells them from an orphan.
+    /// </summary>
+    public IReadOnlyList<string> Superseded { get; init; } = [];
 
     public bool Succeeded => Failure is null;
 
@@ -343,6 +382,29 @@ public interface IDeliveryProtocol
 
     /// <summary>A reachability and credential check against the service's info endpoint, under the flow's auth.</summary>
     Task<ProbeOutcome> ProbeAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Whether a delivery on this route can create anything in OSDU before its last call (docs/atomic-delivery-plan.md): files,
+    /// datasets, a record before its bulk data, rows, a session. Such a route reports each artifact with the step that created
+    /// it and undoes an aborted unit (<see cref="UndoAsync"/>); the worker reads and undoes artifacts only for it. A route
+    /// that makes one atomic write has nothing to undo.
+    /// </summary>
+    bool Undoes => false;
+
+    /// <summary>
+    /// Undoes what aborted units created (docs/atomic-delivery-plan.md, When the undo runs): removes what they created,
+    /// reversibly where the route can, writes back the version a write replaced where the route can, and answers every other
+    /// artifact kept, with why. Results answer every item of every work, in any order; an item the route cannot reach is
+    /// answered <see cref="ArtifactStatus.Failed"/> rather than thrown, so one record's failure never hides another's undo.
+    /// An undo is idempotent: an artifact OSDU no longer holds is <see cref="ArtifactStatus.Gone"/>. The default keeps every
+    /// artifact, for a route that creates none.
+    /// </summary>
+    Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var note = $"the {DeliveryProtocols.Name(Kind)} route makes one write, so it has nothing to undo";
+        return Task.FromResult<IReadOnlyList<UndoResult>>(works.SelectMany(w => w.Items).Select(i => UndoResult.Kept(i, note)).ToList());
+    }
 
     /// <summary>
     /// Writes each record back as OSDU held it at an earlier version, as the record's next version (a reversal,

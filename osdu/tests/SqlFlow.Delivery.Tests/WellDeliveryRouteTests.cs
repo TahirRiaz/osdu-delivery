@@ -87,9 +87,9 @@ public sealed class WellDeliveryRouteTests
             ExistingVersion = existing,
             TargetState = state ?? new Dictionary<string, string>(StringComparer.Ordinal),
             CompletedSteps = completed ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal),
-            StepCompleted = (step, values, _) =>
+            StepCompleted = (report, _) =>
             {
-                reported?.Add((step, values, platform?.Calls.Count ?? 0));
+                reported?.Add((report.Step, report.Returned, platform?.Calls.Count ?? 0));
                 return Task.CompletedTask;
             },
         };

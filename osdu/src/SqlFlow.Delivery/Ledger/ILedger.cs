@@ -61,6 +61,12 @@ public enum AttemptOutcome
     /// version before the latest.
     /// </summary>
     Restored,
+
+    /// <summary>
+    /// What an aborted delivery left in OSDU was undone (phase <see cref="AttemptPhases.Undo"/>, docs/atomic-delivery-plan.md):
+    /// its result names each artifact and what became of it. The record's own state is what the delivery left it in.
+    /// </summary>
+    Undone,
 }
 
 /// <summary>The phases of the attempts that record a decision not to send, beside the delivery phases the worker reports.</summary>
@@ -68,6 +74,12 @@ public static class AttemptPhases
 {
     /// <summary>A skipped attempt: the source carried a version older than the one delivered or queued.</summary>
     public const string Stale = "stale";
+
+    /// <summary>
+    /// The record's newer work was not sent: what an earlier delivery of it left in OSDU is not undone yet. Skipped and not
+    /// charged while the undo has tries left, held once it has none (docs/atomic-delivery-plan.md, When the undo runs).
+    /// </summary>
+    public const string UndoWait = "undo-wait";
 
     /// <summary>A skipped attempt: the final hash check found OSDU already holding the queued document and payload.</summary>
     public const string Unchanged = "unchanged";
@@ -98,6 +110,12 @@ public static class AttemptPhases
     /// version): the version before it was written back as a new version (outcome restored), naming both in its result.
     /// </summary>
     public const string RestorePrevious = "restore-previous";
+
+    /// <summary>
+    /// An undo of what an aborted delivery left in OSDU (outcome undone, docs/atomic-delivery-plan.md): its result names why
+    /// the delivery was undone and each artifact with what became of it, and its error what could not be undone yet.
+    /// </summary>
+    public const string Undo = "undo";
 }
 
 public enum VerifyOutcome
@@ -555,8 +573,9 @@ public sealed record RecordCompletion
     public bool Promote { get; init; }
 
     /// <summary>
-    /// The promotion settles work the final hash check found OSDU already holding: the pending state becomes current
-    /// but nothing reached the target, so the delivery and verification times stay as they were.
+    /// Nothing reached the target. A promotion settles work the final hash check found OSDU already holding: the pending
+    /// state becomes current, and the delivery and verification times stay as they were. Any other completion hands the try
+    /// back uncharged (the claim counted it against the retry budget): newer work waiting for an earlier unit's undo.
     /// </summary>
     public bool NothingSent { get; init; }
 
@@ -584,6 +603,15 @@ public sealed record RecordCompletion
 
     /// <summary>What the check of the try's document came to, which the record keeps; null for a try that checked none.</summary>
     public RecordValidation? Validation { get; init; }
+
+    /// <summary>
+    /// The unit of work the try belonged to, when it began one (docs/atomic-delivery-plan.md): a delivered completion makes the
+    /// ids the unit minted live and deletes what stood only for its progress; a held or failed one makes its artifacts due.
+    /// </summary>
+    public Guid? UnitId { get; init; }
+
+    /// <summary>The OSDU ids an earlier delivery minted that this one made obsolete: the ledger marks them superseded.</summary>
+    public IReadOnlyList<string> Superseded { get; init; } = [];
 }
 
 /// <summary>What a check of a record's document came to, as the record keeps it: the outcome, the problems, and when.</summary>
@@ -980,10 +1008,24 @@ public sealed record ClaimedRecords(LeaseState? Lease, IReadOnlyList<RecordState
 /// record's next try resumes after. It belongs to the pending work the record was claimed with (the submission and the
 /// document reference), and never reaches newer work queued behind the try.
 /// </summary>
-public sealed record RecordStep(DeliveryKey DeliveryKey, Guid? SubmissionId, string DocumentRef, string StepJson, DateTime AtUtc);
+public sealed record RecordStep(DeliveryKey DeliveryKey, Guid? SubmissionId, string DocumentRef, string StepJson, DateTime AtUtc)
+{
+    /// <summary>The unit of work the step belongs to; null for a step reported outside one.</summary>
+    public DeliveryUnit? Unit { get; init; }
+
+    /// <summary>What the step created in OSDU, or an intent of what its call will create, written with the step.</summary>
+    public IReadOnlyList<TargetArtifact> Artifacts { get; init; } = [];
+
+    /// <summary>The platform run the step happened in.</summary>
+    public Guid? RunId { get; init; }
+}
 
 /// <summary>What a worker appends under its lease in one write: steps that completed, and tries that ended.</summary>
-public sealed record LeaseAppend(IReadOnlyList<RecordStep> Steps, IReadOnlyList<RecordCompletion> Completions);
+public sealed record LeaseAppend(IReadOnlyList<RecordStep> Steps, IReadOnlyList<RecordCompletion> Completions)
+{
+    /// <summary>The undos of aborted units the worker ran under the lease, each written with its attempt after the completions.</summary>
+    public IReadOnlyList<RecordUndo> Undos { get; init; } = [];
+}
 
 /// <summary>How a lease ends, which decides what happens to the work it did not reach.</summary>
 public enum LeaseEnd
@@ -1519,6 +1561,8 @@ public static class LedgerKinds
     public const string Assertion = "assertion";
 
     public const string Dimension = "dimension";
+
+    public const string Inventory = "inventory";
 }
 
 /// <summary>
@@ -1651,10 +1695,124 @@ public interface ILedger
 
     /// <summary>
     /// Appends, in one write, the steps that completed and the tries that ended under a lease: each try's attempt, and
-    /// the events the lease later applies to the records. Nothing is updated. A step is written before the delivery that
-    /// reported it goes on, so a crash never repeats it.
+    /// the events the lease later applies to the records. A step is written before the delivery that reported it goes on, so
+    /// a crash never repeats it. The artifacts a step reports are written in the same transaction (docs/atomic-delivery-plan.md),
+    /// one row per slot of a unit, so the ledger names what a delivery created before it goes on; a completion settles its
+    /// unit's artifacts (live and the progress rows deleted when it delivered, due when it held or failed, the ids it made
+    /// obsolete superseded); an undo writes its attempt and what it settled each artifact as.
     /// </summary>
     Task AppendAsync(Guid flowId, string token, LeaseAppend append, CancellationToken ct = default);
+
+    /// <summary>
+    /// The artifacts of <paramref name="keys"/> that may still be undone (docs/atomic-delivery-plan.md): intents, pending ones
+    /// of an open or abandoned unit, and those due or failed to undo, in the order they were created.
+    /// </summary>
+    Task<IReadOnlyList<LedgerArtifact>> OpenArtifactsAsync(Guid flowId, IReadOnlyCollection<DeliveryKey> keys, CancellationToken ct = default);
+
+    /// <summary>Every artifact of one record, the newest first, at most <paramref name="max"/>: what its page shows.</summary>
+    Task<IReadOnlyList<LedgerArtifact>> RecordArtifactsAsync(Guid flowId, DeliveryKey key, int max, CancellationToken ct = default);
+
+    /// <summary>
+    /// The next page of artifacts the sweep undoes (docs/atomic-delivery-plan.md, When the undo runs): the next
+    /// <paramref name="maxRecords"/> records after <paramref name="after"/>, whole, with their artifacts due; failed ones past
+    /// their backoff and, unless <paramref name="exhausted"/>, short of <see cref="ArtifactLimits.MaxUndoAttempts"/> (with it,
+    /// every failed one); and the intents and pending ones of a unit their record no longer carries. Only artifacts of records
+    /// no lease holds are listed, so nothing a worker is delivering, or has not finished applying, is undone under it.
+    /// </summary>
+    Task<ArtifactSweepPage> SweepArtifactsAsync(Guid flowId, DateTime nowUtc, DeliveryKey? after, int maxRecords, bool exhausted, CancellationToken ct = default);
+
+    /// <summary>
+    /// Writes undos run outside a lease (the sweep, a removal), each with its attempt and what it settled each artifact as, in
+    /// one transaction. Only open artifacts are settled, unless <paramref name="minted"/>: deleting the ledger removes the ids
+    /// committed deliveries minted, which are live or superseded, too.
+    /// </summary>
+    Task SettleArtifactsAsync(Guid flowId, IReadOnlyList<RecordUndo> undos, bool minted = false, CancellationToken ct = default);
+
+    /// <summary>
+    /// The ids the committed deliveries of <paramref name="keys"/> minted, live or superseded, that nothing names once their
+    /// ledger is deleted: datasets, content and outputs (<see cref="ArtifactRoles.KeptAfterCommit"/>), never a dataspace, whose
+    /// removal would purge an OSDU record other records share.
+    /// </summary>
+    Task<IReadOnlyList<LedgerArtifact>> MintedArtifactsAsync(Guid flowId, IReadOnlyCollection<DeliveryKey> keys, CancellationToken ct = default);
+
+    /// <summary>How many artifacts of the flow are still open, by state, read through the open artifacts' index.</summary>
+    Task<ArtifactCounts> ArtifactCountsAsync(Guid flowId, CancellationToken ct = default);
+
+    /// <summary>
+    /// A page of the flow's records whose artifacts an undo may still take, read through the open artifacts' index: first the
+    /// records with an undo the sweep has stopped trying, then those with failed undos, then those with artifacts due, then the
+    /// oldest; each with its open artifacts counted by state. <see cref="OpenArtifactRecordPage.Total"/> counts every such record.
+    /// </summary>
+    Task<OpenArtifactRecordPage> OpenArtifactRecordsAsync(Guid flowId, int offset, int max, CancellationToken ct = default);
+
+    /// <summary>
+    /// The inventory <paramref name="name"/> of the inventory flow whose ledger is <paramref name="flowId"/>, created on its first
+    /// build and kept in step with what the flow declares (docs/inventory-plan.md, The tables).
+    /// </summary>
+    Task<InventoryState> RegisterInventoryAsync(Guid flowId, string flowName, string name, string kind, string? query, string readMode, string versions, CancellationToken ct = default);
+
+    /// <summary>
+    /// Starts a build or a reconcile of an inventory: an earlier one its process left running is closed as failed, and what it
+    /// staged is deleted, since a run of a flow is the only one of it.
+    /// </summary>
+    Task<long> StartInventoryRunAsync(Guid flowId, int inventoryId, string operation, Guid? runId, string actor, string readMode, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>Stages one chunk of a build's read; nothing of the inventory changes until <see cref="MergeInventoryAsync"/>.</summary>
+    Task AppendInventoryScanAsync(Guid flowId, long inventoryRunId, IReadOnlyList<InventoryScanRow> rows, CancellationToken ct = default);
+
+    /// <summary>Merges a build's whole read into its inventory: ids added, changed, served again, and those it did not list marked gone.</summary>
+    Task<InventoryMerge> MergeInventoryAsync(Guid flowId, int inventoryId, long inventoryRunId, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>The records of an inventory keeping every version whose versions are to be read: new, or moved since they were read.</summary>
+    Task<IReadOnlyList<InventoryVersionsDue>> InventoryVersionsDueAsync(Guid flowId, int inventoryId, int max, CancellationToken ct = default);
+
+    /// <summary>Replaces the versions kept of each record read.</summary>
+    Task WriteInventoryVersionsAsync(Guid flowId, IReadOnlyList<InventoryVersionsRead> reads, CancellationToken ct = default);
+
+    /// <summary>The identities that created ids of the inventory a ledger of the partition claims, each with how many.</summary>
+    Task<IReadOnlyList<InventoryOwner>> InventoryOwnersAsync(Guid flowId, int inventoryId, CancellationToken ct = default);
+
+    /// <summary>Sets the finding of every id of the inventory OSDU serves, comparing it with every ledger of the partition.</summary>
+    Task ReconcileInventoryAsync(Guid flowId, int inventoryId, IReadOnlyList<string> owners, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>
+    /// The ids a ledger of the partition expects that the inventory's read did not list, at most <paramref name="max"/>; with
+    /// <paramref name="typePrefix"/> (an inventory covering its entity type whole), the ledgers' ids of the type too.
+    /// </summary>
+    Task<IReadOnlyList<InventoryCandidate>> InventoryCandidatesAsync(Guid flowId, int inventoryId, string? typePrefix, int max, CancellationToken ct = default);
+
+    /// <summary>Settles the ids OSDU no longer serves: gone, or what storage answered for the ones a ledger expects (missing, unlisted).</summary>
+    Task RecordInventoryChecksAsync(Guid flowId, int inventoryId, IReadOnlyList<InventoryCheck> checks, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>An inventory's ids by finding, read from its rows.</summary>
+    Task<InventoryCounts> InventoryCountsAsync(Guid flowId, int inventoryId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Closes a build or a reconcile with what it did and found; a completed one becomes its inventory's last of its kind, and a
+    /// failed one's staged read is discarded.
+    /// </summary>
+    Task CompleteInventoryRunAsync(Guid flowId, long inventoryRunId, InventoryRunState outcome, string? ownersSource, DateTime nowUtc, CancellationToken ct = default);
+
+    /// <summary>The inventories of a partition (or of every partition), with their flows.</summary>
+    Task<IReadOnlyList<InventoryState>> ListInventoriesAsync(string? partition, CancellationToken ct = default);
+
+    /// <summary>One inventory by its partition and number, or null.</summary>
+    Task<InventoryState?> GetInventoryAsync(string partition, int inventoryId, CancellationToken ct = default);
+
+    /// <summary>An inventory's counts by finding, read from its rows.</summary>
+    Task<InventoryCounts> InventoryCountsAsync(string partition, int inventoryId, CancellationToken ct = default);
+
+    /// <summary>A page of an inventory's ids, of one finding or all, in id order after <paramref name="after"/>.</summary>
+    Task<IReadOnlyList<InventoryRecordState>> ListInventoryRecordsAsync(string partition, int inventoryId, string? finding, long? after, int limit, CancellationToken ct = default);
+
+    /// <summary>What every inventory of the partition holds of one OSDU id.</summary>
+    Task<IReadOnlyList<InventoryRecordState>> LookupInventoryRecordsAsync(string partition, string targetId, CancellationToken ct = default);
+
+    /// <summary>An inventory's latest builds and reconciles, the newest first.</summary>
+    Task<IReadOnlyList<InventoryRunState>> ListInventoryRunsAsync(string partition, int inventoryId, int limit, CancellationToken ct = default);
+
+    /// <summary>One build or reconcile by its partition and number, or null: the run an inventory names as its last build or reconcile.</summary>
+    Task<InventoryRunState?> GetInventoryRunAsync(string partition, long inventoryRunId, CancellationToken ct = default);
 
     /// <summary>
     /// Applies what the lease's worker has appended so far to its records, a slice at a time, and deletes each event with
@@ -1938,8 +2096,9 @@ public interface ILedger
 
     /// <summary>
     /// Deletes records from the ledger that were removed from OSDU (docs/ledger.md, Deleting a removed record from the
-    /// ledger), a slice to a transaction. Only a record the ledger marks deleted goes, and none a lease holds; any other is
-    /// left as it is. Each record deleted keeps one line (<see cref="PurgedRecordState"/>: what it was, its OSDU id and last
+    /// ledger), a slice to a transaction. Only a record the ledger marks deleted goes, none a lease holds, and none with an
+    /// artifact an undo has still to settle (intent, pending, due or failed), whose undo reaches it through its record; any
+    /// other is left as it is. Each record deleted keeps one line (<see cref="PurgedRecordState"/>: what it was, its OSDU id and last
     /// version, who deleted it and when) and is named under <paramref name="activityId"/>; its attempts, its search entries
     /// and its row are deleted. The activities that name it stay, as the audit trail does. Nothing else of the ledger moves:
     /// its watermarks stay, so a row whose record was deleted is read again when it changes, as any row is, and planned then

@@ -113,10 +113,31 @@ public sealed record SourceRunOutcome(string Operation, string Source, IReadOnly
     public long Removed => Sum(r => r is DeleteLedgerOutcome d ? d.Removed : 0);
 
     /// <summary>
-    /// The run's headline count on the run row (<c>result.rowsLoaded</c>): the records the run delivered, or for a run
-    /// deleting the ledger, the records it deleted.
+    /// What was undone of unfinished deliveries across the interfaces (docs/atomic-delivery-plan.md): an undo run's whole
+    /// work, the sweep a deliver or drain ended with, or what a run deleting the ledger undid before it removed anything.
     /// </summary>
-    public long RowsLoaded => Operation == DeliveryOperations.DeleteLedger ? Deleted : Delivered;
+    public UndoSummary Undone => Interfaces
+        .Where(i => i.Result is not null)
+        .Select(i => i.Result switch
+        {
+            UndoRunOutcome u => u.ToSummary(),
+            DeliverOutcome d => d.Undone,
+            DrainOutcome d => d.Undone,
+            DeleteLedgerOutcome d => d.Undone,
+            _ => UndoSummary.Empty,
+        })
+        .Aggregate(UndoSummary.Empty, (total, one) => total.Add(one));
+
+    /// <summary>
+    /// The run's headline count on the run row (<c>result.rowsLoaded</c>): the records the run delivered; for a run deleting
+    /// the ledger, the records it deleted; for an undo run, the artifacts it settled.
+    /// </summary>
+    public long RowsLoaded => Operation switch
+    {
+        DeliveryOperations.DeleteLedger => Deleted,
+        DeliveryOperations.Undo => Undone.Artifacts - Undone.Failed,
+        _ => Delivered,
+    };
 
     /// <summary>True when every interface completed.</summary>
     public bool Succeeded => Interfaces.All(i => i.State == InterfaceStates.Completed);
@@ -127,7 +148,9 @@ public sealed record SourceRunOutcome(string Operation, string Source, IReadOnly
         var deleting = Operation == DeliveryOperations.DeleteLedger;
         var counts = deleting
             ? string.Create(CultureInfo.InvariantCulture, $"{Removed} record(s) removed from OSDU, {Deleted} deleted from the ledger")
-            : string.Create(CultureInfo.InvariantCulture, $"{Delivered} record(s) delivered, {Held} held, {Failed} failed, {Waiting} waiting");
+            : Operation == DeliveryOperations.Undo
+                ? Undone.Describe()
+                : string.Create(CultureInfo.InvariantCulture, $"{Delivered} record(s) delivered, {Held} held, {Failed} failed, {Waiting} waiting");
         var text = string.Create(
             CultureInfo.InvariantCulture,
             $"{Operation} of '{Source}': {Completed} of {Interfaces.Count} interface(s) completed ({counts})");
@@ -539,6 +562,7 @@ public sealed class SourceRuntime
         DrainOutcome d => string.Create(CultureInfo.InvariantCulture, $"{d.Processed} processed, {d.Delivered} delivered, {d.Held} held, {d.Failed} failed, {d.Waiting} waiting"),
         VerifyRunOutcome v => string.Create(CultureInfo.InvariantCulture, $"{v.Checked} checked, {v.Matched} matched, {v.Drifted} drifted, {v.Missing} missing"),
         DeleteLedgerOutcome d => d.Describe(),
+        UndoRunOutcome u => new UndoSummary(u.Records, u.Removed, u.Restored, u.Gone, u.Kept, u.Superseded, u.Failed).Describe(),
         _ => result.ToString() ?? string.Empty,
     };
 

@@ -842,9 +842,9 @@ public sealed class ExternalDataServicesTests
         CompletedSteps = steps is null ? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal) : (IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>)new Dictionary<string, IReadOnlyDictionary<string, string>>(steps, StringComparer.Ordinal),
         StepCompleted = steps is null
             ? null
-            : (step, values, _) =>
+            : (report, _) =>
             {
-                steps[step] = values;
+                steps[report.Step] = report.Returned;
                 return Task.CompletedTask;
             },
     };

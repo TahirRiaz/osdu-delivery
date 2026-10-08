@@ -323,6 +323,35 @@ export interface DeliveryAttemptResult {
   returned?: Record<string, string>;
   /** What an attempt that did not fail has to say (chunks sent, why nothing was sent, what a removal took). */
   detail?: string;
+  /** For an undo (outcome `undone`, phase `undo`): why it ran and what became of each artifact it took. */
+  undo?: DeliveryUndoResult;
+}
+
+/**
+ * What one undo of an unfinished delivery did (docs/atomic-delivery-plan.md): why it ran (`held`, `failed`, `abandoned`,
+ * `removed`), whether it left the record itself to newer work, the units it took, its outcome counts in a line, and each
+ * artifact with what became of it.
+ */
+export interface DeliveryUndoResult {
+  reason?: string;
+  keptRecord?: boolean;
+  units?: string[];
+  summary?: string;
+  artifacts?: DeliveryUndoArtifact[];
+}
+
+/** One artifact an undo took: its slot and role, its id or what finds it, its versions, and how the undo settled it. */
+export interface DeliveryUndoArtifact {
+  artifactId: number;
+  slot: string;
+  role: string;
+  /** removed, restored, gone, kept, superseded (left to newer work) or failed. */
+  outcome: string;
+  targetId?: string;
+  locator?: string;
+  version?: number;
+  priorVersion?: number;
+  note?: string;
 }
 
 /** One delivery try, as the append-only history holds it. */
@@ -334,7 +363,8 @@ export interface DeliveryAttempt {
   worker: string;
   startedUtc: string;
   completedUtc: string;
-  outcome: "delivered" | "skipped" | "failed" | "held" | "deleted" | "historypurged" | "restored";
+  /** `undone` is an undo of what an unfinished delivery left (phase `undo`); a skipped or held try of phase `undo-wait` waited for one. */
+  outcome: "delivered" | "skipped" | "failed" | "held" | "deleted" | "historypurged" | "restored" | "undone";
   phase: string;
   metadataHash: string | null;
   payloadHash: string | null;

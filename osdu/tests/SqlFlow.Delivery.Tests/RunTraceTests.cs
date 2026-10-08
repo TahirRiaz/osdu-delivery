@@ -378,7 +378,21 @@ public sealed class RunTraceDeliveryTests : IDisposable
         var sending = Lines("deliver", RunEventLevels.Info).Where(m => m.Contains("Sending ", StringComparison.Ordinal)).ToList();
         Assert.Equal(logs, sending.Count);
         Assert.All(sending, m => Assert.Contains("the record and its payload", m, StringComparison.Ordinal));
-        Assert.Equal(logs, Lines("deliver", RunEventLevels.Debug).Count(m => m.Contains(" done", StringComparison.Ordinal)));
+        // The record's write is named before it goes (bulk data follows it), then the write, then the bulk data: each once.
+        var done = Lines("deliver", RunEventLevels.Debug).Where(m => m.Contains(" done", StringComparison.Ordinal)).ToList();
+        Assert.Equal(logs * 3, done.Count);
+        foreach (var step in new[] { ": metadata-intent done", ": metadata done", ": bulk done" })
+        {
+            Assert.Equal(logs, done.Count(m => m.Contains(step, StringComparison.Ordinal)));
+        }
+
+        Assert.All(done.Where(m => m.Contains(": metadata-intent done", StringComparison.Ordinal)), m => Assert.Contains("intent record dev:work-product-component--WellLog:", m, StringComparison.Ordinal));
+        foreach (var record in done.Select(m => m[..m.IndexOf(": ", StringComparison.Ordinal)]).Distinct())
+        {
+            Assert.Equal(
+                [": metadata-intent done", ": metadata done", ": bulk done"],
+                done.Where(m => m.StartsWith(record + ": ", StringComparison.Ordinal)).Select(m => m[record.Length..(m.IndexOf(" done", StringComparison.Ordinal) + 5)]));
+        }
         var delivered = Lines("deliver", RunEventLevels.Info).Where(m => m.Contains("Delivered ", StringComparison.Ordinal)).ToList();
         Assert.Equal(logs, delivered.Count);
         Assert.All(delivered, m => Assert.Matches(@"as dev:work-product-component--WellLog:[0-9a-f]{32} version \d+ \(metadata\+payload\) in [\d.]+ m?s; metadata HTTP 200 in [\d.]+ m?s; payload in [\d.]+ m?s, chunks 1\.$", m));

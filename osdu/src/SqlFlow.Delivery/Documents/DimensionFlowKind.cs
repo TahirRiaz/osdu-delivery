@@ -74,10 +74,10 @@ public sealed class DimensionFlowKind : IFlowDocumentKind
         DeliveryOperations.RefuseBuiltInOverrides(parameters, DimensionFlowDefinition.FlowTypeName, "a build reads every value the index holds; name the dimensions to build in the payload.");
         var payload = DeliveryRunPayload.Parse(parameters);
         if (payload.Force || payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Rerender || payload.Slices.Count > 0
-            || payload.Interface is not null || payload.Interfaces.Count > 0 || payload.SelectsTests)
+            || payload.Interface is not null || payload.Interfaces.Count > 0 || payload.SelectsTests || payload.SelectsInventories)
         {
             throw new SqlFlowException(
-                "A dimension flow's payload names the dimensions a run builds (dimensions) and nothing else; a dimension has no submission, record, slice, interface or test to name.");
+                "A dimension flow's payload names the dimensions a run builds (dimensions) and nothing else; a dimension has no submission, record, slice, interface, test or inventory to name.");
         }
     }
 

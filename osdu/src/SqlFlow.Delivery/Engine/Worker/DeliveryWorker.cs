@@ -684,6 +684,11 @@ public sealed class DeliveryWorker
         var works = new List<(int Index, RecordState Record, DeliveryWork Work)>(group.Count);
         // The step progress each record reported during this try, so the completion keeps it for the next try.
         var reportedSteps = new System.Collections.Concurrent.ConcurrentDictionary<Guid, string>();
+
+        // What these records' aborted or abandoned units left in OSDU, and what the units they resume created
+        // (docs/atomic-delivery-plan.md); read only on a route that can create anything before its last call.
+        var open = await OpenArtifactsAsync(group.Select(g => g.Record.DeliveryKey).ToList(), ct).ConfigureAwait(false);
+        var settledEarly = new List<RecordState>();
         foreach (var (index, state, item) in group)
         {
             if (item is null || state.TargetId is null)
@@ -692,6 +697,7 @@ public sealed class DeliveryWorker
                     state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null,
                     "no pending document on the record; release or redeliver it to plan it again", null, null);
                 await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+                settledEarly.Add(state);
                 continue;
             }
 
@@ -704,6 +710,7 @@ public sealed class DeliveryWorker
                     $"the record's OSDU id {state.TargetId} is not claimed by this flow (claimed: {state.ClaimedTargetId ?? "none"}), so nothing was sent; redeliver it to plan it again",
                     null, null);
                 await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+                settledEarly.Add(state);
                 continue;
             }
 
@@ -716,6 +723,7 @@ public sealed class DeliveryWorker
                     + (state.PendingPayload ? $", payload hash {state.PendingPayloadHash ?? "none"}" : string.Empty) + "); nothing was sent";
                 var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Delivered, AttemptOutcome.Skipped, AttemptPhases.Unchanged, null, held, null, null, null, promote: true, nothingSent: true);
                 await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+                settledEarly.Add(state);
                 continue;
             }
 
@@ -728,6 +736,7 @@ public sealed class DeliveryWorker
             {
                 var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, $"the pending document is not valid JSON: {ex.Message}", null, null);
                 await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+                settledEarly.Add(state);
                 continue;
             }
 
@@ -740,6 +749,7 @@ public sealed class DeliveryWorker
                     $"the queued document is written to {documentId}, and the record's OSDU id is {state.TargetId}, so nothing was sent; redeliver it to plan it again",
                     null, null);
                 await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+                settledEarly.Add(state);
                 continue;
             }
 
@@ -760,6 +770,7 @@ public sealed class DeliveryWorker
                     {
                         var (completion, evt, summary) = Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, "none", null, null, ex.Message, null, null);
                         await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+                        settledEarly.Add(state);
                         continue;
                     }
 
@@ -774,7 +785,11 @@ public sealed class DeliveryWorker
                 }
             }
 
-            var completedSteps = ParseSteps(state.PendingStepJson);
+            // The unit of work this try belongs to: the one an earlier try of the same work began, kept with its steps, or a new
+            // one. The route is given the steps without it.
+            var kept = ParseSteps(state.PendingStepJson);
+            var unit = DeliveryUnit.FromSteps(kept) ?? new DeliveryUnit(Guid.CreateVersion7(), started);
+            var completedSteps = kept.Where(kv => kv.Key != DeliveryUnit.StepName).ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
             var key = state.DeliveryKey;
             works.Add((index, state, new DeliveryWork
             {
@@ -791,10 +806,28 @@ public sealed class DeliveryWorker
                 Label = state.Label,
                 CompletedSteps = completedSteps,
                 TargetState = JsonMerge.ToValues(state.TargetStateJson),
-                StepCompleted = (step, returned, _) => SaveStepAsync(state, completedSteps, step, returned, reportedSteps, journal),
+                Unit = unit,
+                StepCompleted = (report, _) => SaveStepAsync(state, unit, completedSteps, report, reportedSteps, journal),
             }));
         }
 
+        // Before anything is sent: what an aborted or abandoned unit of these records left is undone, under the lease. A record
+        // the route is about to write keeps the record itself when the newer work writes its metadata again; one settled
+        // without reaching the route has everything its units left taken back.
+        var waiting = await UndoBeforeSendingAsync(open, settledEarly, works.Select(w => (w.Record, w.Work.Unit!, w.Work.DeliverMetadata)).ToList(), journal, ct).ConfigureAwait(false);
+
+        // A record whose earlier unit could not be undone yet is not sent: the newer work would write the ids the undo still has
+        // to take back, and the undo, when it lands, would take back the newer work's. The try is not charged: nothing was sent.
+        foreach (var (index, state, _) in works.Where(w => waiting.ContainsKey(w.Record.DeliveryKey)))
+        {
+            var wait = waiting[state.DeliveryKey];
+            var (completion, evt, summary) = wait.RetryAtUtc is { } retryAt
+                ? Settle(state, batch, started, RecordStatus.Pending, AttemptOutcome.Skipped, AttemptPhases.UndoWait, null, wait.Detail, null, null, null, keepSteps: true, nextAttempt: retryAt, nothingSent: true)
+                : Settle(state, batch, started, RecordStatus.Held, AttemptOutcome.Held, AttemptPhases.UndoWait, null, null, wait.Detail, null, null);
+            await record(index, completion, evt, summary, null, []).ConfigureAwait(false);
+        }
+
+        works.RemoveAll(w => waiting.ContainsKey(w.Record.DeliveryKey));
         if (works.Count == 0)
         {
             return;
@@ -841,13 +874,202 @@ public sealed class DeliveryWorker
             throw;
         }
 
+        var settled = new List<(int Index, RecordState State, DeliveryWork Work, DeliveryOutcome Outcome, RecordCompletion Completion, DeliveryEvent Event, WorkerSummary Summary)>(works.Count);
         for (var i = 0; i < works.Count; i++)
         {
             var (index, state, work) = works[i];
             var latestSteps = reportedSteps.TryGetValue(state.DeliveryKey.Value, out var reported) ? reported : state.PendingStepJson;
             var outcome = outcomes[i]!;
             var (completion, evt, summary) = Classify(state, batch, started, work, outcome, latestSteps, correlation.Id, verdicts[i]);
+            completion = completion with { UnitId = work.Unit?.Id, Superseded = outcome.Succeeded ? outcome.Superseded : [] };
+            settled.Add((index, state, work, outcome, completion, evt, summary));
+        }
+
+        // A try that ended held or failed aborts its unit: what the unit created is undone now, under the lease, and written
+        // after the try's completion, which makes the unit's artifacts due.
+        var aborted = settled
+            .Where(s => s.Completion.Status is RecordStatus.Held or RecordStatus.Failed)
+            .Select(s => (s.State, s.Work, s.Completion.Status))
+            .ToList();
+        var undos = await UndoAbortedAsync(aborted, correlation.Id, ct).ConfigureAwait(false);
+        foreach (var (index, state, _, outcome, completion, evt, summary) in settled)
+        {
             await record(index, completion, evt, summary, outcome.Failure, outcome.Steps).ConfigureAwait(false);
+            if (undos.TryGetValue(state.DeliveryKey, out var undo))
+            {
+                await journal.UndoAsync(undo).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The open artifacts of <paramref name="keys"/>, by record, on a route that can create anything before its last call; none
+    /// on any other, which reads nothing.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<DeliveryKey, List<LedgerArtifact>>> OpenArtifactsAsync(IReadOnlyList<DeliveryKey> keys, CancellationToken ct)
+    {
+        if (!_protocol.Undoes || keys.Count == 0)
+        {
+            return new Dictionary<DeliveryKey, List<LedgerArtifact>>();
+        }
+
+        var open = await _ledger.OpenArtifactsAsync(_flow.Id, keys, ct).ConfigureAwait(false);
+        return open.GroupBy(a => a.Key).ToDictionary(g => g.Key, g => g.ToList());
+    }
+
+    /// <summary>
+    /// Undoes, before anything is sent, what aborted or abandoned units of the group's records left: for a record about to be
+    /// written, every open artifact of another unit than the one it resumes, the record itself kept when the work about to go
+    /// writes its metadata again; for a record settled without reaching the route, every open artifact. Each undo is
+    /// journaled under the lease. Returns the records about to be written whose earlier units are not undone yet, which wait.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<DeliveryKey, UndoWait>> UndoBeforeSendingAsync(
+        IReadOnlyDictionary<DeliveryKey, List<LedgerArtifact>> open,
+        IReadOnlyList<RecordState> settledEarly,
+        IReadOnlyList<(RecordState Record, DeliveryUnit Unit, bool WritesMetadata)> sending,
+        LeaseJournal journal,
+        CancellationToken ct)
+    {
+        var waiting = new Dictionary<DeliveryKey, UndoWait>();
+        if (open.Count == 0)
+        {
+            return waiting;
+        }
+
+        var requests = new List<UndoRequest>();
+        foreach (var record in settledEarly)
+        {
+            if (open.TryGetValue(record.DeliveryKey, out var artifacts) && artifacts.Count > 0)
+            {
+                requests.Add(new UndoRequest(record, artifacts, ReasonOf(record, artifacts), KeepRecord: false));
+            }
+        }
+
+        foreach (var (record, unit, writesMetadata) in sending)
+        {
+            if (open.TryGetValue(record.DeliveryKey, out var artifacts) && artifacts.Where(a => a.UnitId != unit.Id).ToList() is { Count: > 0 } left)
+            {
+                requests.Add(new UndoRequest(record, left, ReasonOf(record, left), KeepRecord: writesMetadata));
+            }
+        }
+
+        if (requests.Count == 0)
+        {
+            return waiting;
+        }
+
+        var writing = sending.Select(s => s.Record.DeliveryKey).ToHashSet();
+        using var correlation = OsduCorrelation.Begin();
+        var undos = await new UndoRunner(_protocol, _time, _workerId, RunId).RunAsync(requests, correlation.Id, ct).ConfigureAwait(false);
+        foreach (var undo in undos)
+        {
+            TraceUndo(undo);
+            await journal.UndoAsync(undo).ConfigureAwait(false);
+            if (writing.Contains(undo.DeliveryKey) && UndoWait.Of(undo) is { } wait)
+            {
+                waiting[undo.DeliveryKey] = wait;
+            }
+        }
+
+        return waiting;
+    }
+
+    /// <summary>
+    /// Why a record's newer work waits: what an earlier unit left that its undo could not take back, and when the undo is tried
+    /// again; no retry once the undo has used its tries, and the record is held until an operator releases it.
+    /// </summary>
+    private sealed record UndoWait(string Detail, DateTime? RetryAtUtc)
+    {
+        /// <summary>The wait <paramref name="undo"/> leaves its record in; null when every artifact was settled.</summary>
+        public static UndoWait? Of(RecordUndo undo)
+        {
+            var failed = undo.Settlements.Where(s => s.Status == ArtifactStatus.Failed).ToList();
+            if (failed.Count == 0)
+            {
+                return null;
+            }
+
+            var count = failed.Count.ToString(CultureInfo.InvariantCulture);
+            var notes = ArtifactLimits.Note(string.Join("; ", failed.Select(s => s.Note).Where(n => !string.IsNullOrWhiteSpace(n)).Distinct(StringComparer.Ordinal)));
+            return failed.Any(s => s.RetryAtUtc is null)
+                ? new UndoWait(
+                    string.Create(CultureInfo.InvariantCulture, $"an earlier delivery of this record left {count} item(s) in OSDU that {ArtifactLimits.MaxUndoAttempts} undo tries could not take back ({notes}), so the newer work was not sent; once what stops the undo is fixed, release the record and the undo is tried again before it"),
+                    null)
+                : new UndoWait(
+                    $"an earlier delivery of this record left {count} item(s) in OSDU that its undo could not take back yet ({notes}), so the newer work waits for the undo's next try",
+                    failed.Min(s => s.RetryAtUtc));
+        }
+    }
+
+    /// <summary>
+    /// Undoes the units of the tries that ended held or failed: every open artifact each unit created, read from the ledger, where
+    /// the unit's steps wrote them before the try went on. Returns each record's undo, to be journaled after its completion.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<DeliveryKey, RecordUndo>> UndoAbortedAsync(
+        IReadOnlyList<(RecordState State, DeliveryWork Work, RecordStatus Status)> aborted, string correlationId, CancellationToken ct)
+    {
+        if (!_protocol.Undoes || aborted.Count == 0)
+        {
+            return new Dictionary<DeliveryKey, RecordUndo>();
+        }
+
+        var open = await _ledger.OpenArtifactsAsync(_flow.Id, aborted.Select(a => a.State.DeliveryKey).ToList(), ct).ConfigureAwait(false);
+        var byKey = open.GroupBy(a => a.Key).ToDictionary(g => g.Key, g => g.ToList());
+        var requests = new List<UndoRequest>();
+        foreach (var (state, work, status) in aborted)
+        {
+            if (work.Unit is not { } unit || !byKey.TryGetValue(state.DeliveryKey, out var artifacts))
+            {
+                continue;
+            }
+
+            var mine = artifacts.Where(a => a.UnitId == unit.Id).ToList();
+            if (mine.Count > 0)
+            {
+                requests.Add(new UndoRequest(state, mine, status == RecordStatus.Held ? UndoReason.Held : UndoReason.Failed, KeepRecord: false));
+            }
+        }
+
+        var undos = await new UndoRunner(_protocol, _time, _workerId, RunId).RunAsync(requests, correlationId, ct).ConfigureAwait(false);
+        foreach (var undo in undos)
+        {
+            TraceUndo(undo);
+        }
+
+        return undos.ToDictionary(u => u.DeliveryKey);
+    }
+
+    /// <summary>Why a record's open artifacts are undone, from what the record is now and what is left of its units.</summary>
+    internal static UndoReason ReasonOf(RecordState record, IReadOnlyList<LedgerArtifact> artifacts)
+    {
+        ArgumentNullException.ThrowIfNull(record);
+        ArgumentNullException.ThrowIfNull(artifacts);
+        if (artifacts.Any(a => a.Status is ArtifactStatus.Intent or ArtifactStatus.Pending))
+        {
+            return UndoReason.Abandoned;
+        }
+
+        return record.Status switch
+        {
+            RecordStatus.Held => UndoReason.Held,
+            RecordStatus.Failed => UndoReason.Failed,
+            RecordStatus.Deleted => UndoReason.Removed,
+            _ => UndoReason.Abandoned,
+        };
+    }
+
+    /// <summary>An undo on the run's trace: what it took back for the record, and what is still to undo.</summary>
+    private void TraceUndo(RecordUndo undo)
+    {
+        var outcomes = undo.Settlements.Select(s => s.Status).ToList();
+        if (undo.Attempt.Error is { } error)
+        {
+            _logger.LogWarning(
+                "Undoing what an unfinished delivery of {Record} left in OSDU: {Summary}; {Error}", undo.DeliveryKey, ArtifactLimits.Describe(outcomes), error);
+        }
+        else if (Describes(undo.DeliveryKey))
+        {
+            _logger.LogInformation("Undid what an unfinished delivery of {Record} left in OSDU: {Summary}.", undo.DeliveryKey, ArtifactLimits.Describe(outcomes));
         }
     }
 
@@ -1020,7 +1242,7 @@ public sealed class DeliveryWorker
     private (RecordCompletion Completion, DeliveryEvent Event, WorkerSummary Summary) Classify(
         RecordState record, WorkBatchState? batch, DateTime started, DeliveryWork work, DeliveryOutcome outcome, string? latestSteps, string correlationId, ValidationVerdict? verdict)
     {
-        var resultJson = AttemptResult.WithValidation(ResultJson(outcome, work.CompletedSteps, latestSteps, correlationId), verdict);
+        var resultJson = AttemptResult.WithValidation(ResultJson(outcome, work.CompletedSteps, latestSteps, correlationId, work.Unit), verdict);
         record = record with { PendingStepJson = latestSteps };
         if (outcome.Succeeded)
         {
@@ -1196,12 +1418,17 @@ public sealed class DeliveryWorker
     /// The attempt's result: the correlation id its OSDU requests carried, every step (including the ones resumed from an
     /// earlier try) and what came back.
     /// </summary>
-    internal static string? ResultJson(DeliveryOutcome outcome, IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> completedBefore, string? reportedDuringTry = null, string? correlationId = null)
+    internal static string? ResultJson(
+        DeliveryOutcome outcome,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> completedBefore,
+        string? reportedDuringTry = null,
+        string? correlationId = null,
+        DeliveryUnit? unit = null)
     {
         var steps = new JsonArray();
         foreach (var (name, returned) in completedBefore)
         {
-            if (!outcome.Steps.Any(s => s.Name == name))
+            if (name != DeliveryUnit.StepName && !outcome.Steps.Any(s => s.Name == name))
             {
                 steps.Add(new JsonObject { ["name"] = name, ["resumed"] = true, ["returned"] = ToNode(returned) });
             }
@@ -1211,7 +1438,7 @@ public sealed class DeliveryWorker
         // resumes after them, so the attempt says so even though the protocol produced no outcome.
         foreach (var (name, returned) in ParseSteps(reportedDuringTry))
         {
-            if (!completedBefore.ContainsKey(name) && !outcome.Steps.Any(s => s.Name == name))
+            if (name != DeliveryUnit.StepName && !completedBefore.ContainsKey(name) && !outcome.Steps.Any(s => s.Name == name))
             {
                 steps.Add(new JsonObject { ["name"] = name, ["completed"] = true, ["returned"] = ToNode(returned) });
             }
@@ -1259,6 +1486,12 @@ public sealed class DeliveryWorker
             result["correlationId"] = correlationId;
         }
 
+        // The unit of work the try belonged to, which the artifacts it created carry (docs/atomic-delivery-plan.md).
+        if (unit is not null && (steps.Count > 0 || outcome.Returned.Count > 0))
+        {
+            result["unit"] = unit.Id.ToString("D");
+        }
+
         result["steps"] = steps;
         if (outcome.Returned.Count > 0)
         {
@@ -1300,41 +1533,64 @@ public sealed class DeliveryWorker
     /// </summary>
     private Task SaveStepAsync(
         RecordState claimed,
+        DeliveryUnit unit,
         IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> completed,
-        string step,
-        IReadOnlyDictionary<string, string> returned,
+        StepReport report,
         System.Collections.Concurrent.ConcurrentDictionary<Guid, string> reported,
         LeaseJournal journal)
     {
         var key = claimed.DeliveryKey;
         var reference = claimed.PendingDocumentRef
             ?? throw new DeliveryException($"Record {key} is being delivered without a pending document reference, so its step progress cannot be tied to the document it belongs to.");
-        var node = new JsonObject();
-        foreach (var (name, values) in completed)
-        {
-            node[name] = ToNode(values);
-        }
+        string json;
 
-        if (reported.TryGetValue(key.Value, out var earlier))
+        // A route reports the steps of a request's records at once, each building on the record's own progress so far, so the
+        // progress of one record is read and written under one lock.
+        lock (reported)
         {
-            foreach (var (name, value) in JsonMerge.Parse(earlier))
+            var node = new JsonObject
             {
-                node[name] = value?.DeepClone();
+                // The unit goes with the steps, so it is dropped exactly when they are, and a later try resumes the same unit.
+                [DeliveryUnit.StepName] = ToNode(unit.ToValues()),
+            };
+            foreach (var (name, values) in completed)
+            {
+                node[name] = ToNode(values);
             }
+
+            if (reported.TryGetValue(key.Value, out var earlier))
+            {
+                foreach (var (name, value) in JsonMerge.Parse(earlier))
+                {
+                    node[name] = value?.DeepClone();
+                }
+            }
+
+            node[report.Step] = ToNode(report.Returned);
+            json = node.ToJsonString();
+            reported[key.Value] = json;
         }
 
-        node[step] = ToNode(returned);
-        var json = node.ToJsonString();
-        reported[key.Value] = json;
         if (Describes(key))
         {
-            var values = string.Join(", ", returned.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key} {kv.Value}"));
+            var values = string.Join(", ", report.Returned.OrderBy(kv => kv.Key, StringComparer.Ordinal).Select(kv => $"{kv.Key} {kv.Value}"));
+            var created = report.Artifacts.Count == 0
+                ? string.Empty
+                : "; " + string.Join(", ", report.Artifacts.Select(a => $"{ArtifactStatuses.Name(a.Status)} {a.Role} {a.TargetId ?? a.Locator}"));
             _logger.LogDebug(
-                "{Record}: {Step} done{Values}.",
-                RunTrace.Record(claimed.SourceKey, claimed.Label, key), step, HeaderRedaction.RedactMessage(values.Length == 0 ? string.Empty : $" ({values})"));
+                "{Record}: {Step} done{Values}{Created}.",
+                RunTrace.Record(claimed.SourceKey, claimed.Label, key),
+                report.Step,
+                HeaderRedaction.RedactMessage(values.Length == 0 ? string.Empty : $" ({values})"),
+                HeaderRedaction.RedactMessage(created));
         }
 
-        return journal.StepAsync(new RecordStep(key, claimed.LastSubmissionId, reference, json, _time.GetUtcNow().UtcDateTime));
+        return journal.StepAsync(new RecordStep(key, claimed.LastSubmissionId, reference, json, _time.GetUtcNow().UtcDateTime)
+        {
+            Unit = unit,
+            Artifacts = report.Artifacts,
+            RunId = RunId,
+        });
     }
 
     private async Task<WorkItem?> LoadItemAsync(RecordState record, CancellationToken ct)

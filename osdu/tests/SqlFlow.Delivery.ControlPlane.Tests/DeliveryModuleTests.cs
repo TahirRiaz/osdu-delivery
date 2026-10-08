@@ -16,6 +16,7 @@ using SqlFlow.Delivery.ControlPlane.Background;
 using SqlFlow.Delivery.ControlPlane.Configuration;
 using SqlFlow.Delivery.Data;
 using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
 using SqlFlow.Delivery.Engine.Operations;
 using SqlFlow.Delivery.Hosting;
 using SqlFlow.Delivery.Identity;
@@ -51,7 +52,9 @@ public sealed class DeliveryModuleTests
         Assert.Contains(CacheDefinition.FlowTypeName, kinds);
         Assert.Contains(AssertionFlowDefinition.FlowTypeName, kinds);
         Assert.Contains(DimensionFlowDefinition.FlowTypeName, kinds);
-        Assert.Equal(5, executors.Count);
+        Assert.Contains(InventoryFlowDefinition.FlowTypeName, kinds);
+        Assert.Equal(6, executors.Count);
+        Assert.Contains(executors, e => e is InventoryExecutor);
 
         // A node runs only what scans or writes (a value check, a removal); what a person asks for and waits on is run by the
         // control plane itself, and is never offered to a node.

@@ -50,9 +50,9 @@ public class FileProtocolTests
             TargetState = targetState ?? new Dictionary<string, string>(StringComparer.Ordinal),
             StepCompleted = reported is null
                 ? null
-                : (step, values, _) =>
+                : (report, _) =>
                 {
-                    reported.Add(step + "=" + string.Join(";", values.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => v.Key + ":" + v.Value)));
+                    reported.Add(report.Step + "=" + string.Join(";", report.Returned.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => v.Key + ":" + v.Value)));
                     return Task.CompletedTask;
                 },
         };
@@ -105,8 +105,9 @@ public class FileProtocolTests
             Assert.Equal("2", outcome.Returned["files"]);
             Assert.Equal(["upload-0", "upload-1", "register-0", "register-1", "records"], outcome.Steps.Select(s => s.Name));
 
-            // Each registration is reported twice: the mark before the request, then what the service returned.
-            Assert.Equal(["upload-0", "upload-1", "register-0", "register-0", "register-1", "register-1", "records"], Names(reported));
+            // Each registration is reported twice: the mark before the request, then what the service returned. The record's write,
+            // which names the new datasets, is declared before it goes and reported once it answered.
+            Assert.Equal(["upload-0", "upload-1", "register-0", "register-0", "register-1", "register-1", OsduFileProtocol.RecordIntentStep, "records", "records"], Names(reported));
             Assert.Contains("fileSource:/landing/blob-0", reported[0], StringComparison.Ordinal);
             Assert.DoesNotContain("SECRET", string.Join("\n", reported), StringComparison.Ordinal);
 
@@ -176,7 +177,7 @@ public class FileProtocolTests
             Assert.False(outcome.Steps[1].Resumed);
             Assert.True(outcome.Steps[2].Resumed);
             Assert.False(outcome.Steps[3].Resumed);
-            Assert.Equal(["upload-1", "register-1", "register-1", "records"], Names(reported));
+            Assert.Equal(["upload-1", "register-1", "register-1", OsduFileProtocol.RecordIntentStep, "records", "records"], Names(reported));
             Assert.Equal(4, handler.Calls.Count);
             Assert.Equal("dev:dataset--File.Generic:old-0,dev:dataset--File.Generic:ds-0", outcome.Returned["datasetIds"]);
             var record = JsonNode.Parse(handler.Calls[3].Body!)!.AsArray();
@@ -203,7 +204,7 @@ public class FileProtocolTests
             var outcome = await protocol.DeliverAsync(Work(true, true, 1, reported: reported));
 
             Assert.True(outcome.Succeeded);
-            Assert.Equal(["upload-0", "register-0", "register-0", "records"], Names(reported));
+            Assert.Equal(["upload-0", "register-0", "register-0", OsduFileProtocol.RecordIntentStep, "records", "records"], Names(reported));
             Assert.Contains("state:" + FileUploads.RegisteringState, reported[1], StringComparison.Ordinal);
             Assert.Contains("fileSource:/landing/blob-0", reported[1], StringComparison.Ordinal);
             Assert.DoesNotContain("datasetId", reported[1], StringComparison.Ordinal);
@@ -240,7 +241,7 @@ public class FileProtocolTests
             Assert.Equal("dev:dataset--File.Generic:ds-lost", outcome.Returned["datasetIds"]);
             Assert.Equal(["upload-0", "register-0", "records"], outcome.Steps.Select(s => s.Name));
             Assert.True(outcome.Steps[1].Resumed);
-            Assert.Equal(["register-0", "records"], Names(reported));
+            Assert.Equal(["register-0", OsduFileProtocol.RecordIntentStep, "records", "records"], Names(reported));
             Assert.Contains("adopted:true", reported[0], StringComparison.Ordinal);
 
             // Nothing was uploaded and nothing was registered: the lookup and the record write are the only calls.
@@ -280,27 +281,34 @@ public class FileProtocolTests
     }
 
     [Fact]
-    public async Task Two_datasets_for_one_landing_zone_path_hold_the_record()
+    public async Task Two_datasets_for_one_landing_zone_path_keep_the_first_and_remove_the_second()
     {
-        // Which of the two the record should point at is not something the delivery can decide: an operator deletes
-        // the one nothing references, or releases the record.
+        // The landing-zone path is one upload's alone, so both datasets registered for it are this record's: two
+        // registrations of the same file, one of them sent again after an answer was lost. The record keeps the first in
+        // id order, and the second, which nothing references, is removed reversibly before the record is written.
+        var reported = new List<string>();
         var completed = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
         {
             ["upload-0"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = "/landing/blob-0", ["name"] = "curve_0.parquet", ["size"] = "7" },
             ["register-0"] = new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = "/landing/blob-0", ["state"] = FileUploads.RegisteringState },
         };
         var handler = new FakeHttpHandler()
-            .On(HttpMethod.Post, "/search/v2/query", HttpStatusCode.OK, """{"results":[{"id":"dev:dataset--File.Generic:ds-one"},{"id":"dev:dataset--File.Generic:ds-two"}],"totalCount":2}""");
+            .On(HttpMethod.Post, "/search/v2/query", HttpStatusCode.OK, """{"results":[{"id":"dev:dataset--File.Generic:ds-one"},{"id":"dev:dataset--File.Generic:ds-two"}],"totalCount":2}""")
+            .On(HttpMethod.Post, "ds-two:delete", HttpStatusCode.NoContent, null)
+            .On(HttpMethod.Put, "/records", HttpStatusCode.Created, """{"recordIdVersions":["dev:work-product-component--WellLog:abc:15"]}""");
         var (client, runtime, _) = Client(handler);
         using (runtime)
         {
             var protocol = new OsduFileProtocol(client, new ProtocolOptions());
-            var held = await Assert.ThrowsAsync<RecordHeldException>(() => protocol.DeliverAsync(Work(true, true, 1, completed: completed)));
+            var outcome = await protocol.DeliverAsync(Work(true, true, 1, completed: completed, reported: reported));
 
-            Assert.Contains("curve_0.parquet", held.Message, StringComparison.Ordinal);
-            Assert.Contains("ds-one", held.Message, StringComparison.Ordinal);
-            Assert.Contains("ds-two", held.Message, StringComparison.Ordinal);
-            Assert.Single(handler.Calls);
+            Assert.True(outcome.Succeeded);
+            Assert.Equal("dev:dataset--File.Generic:ds-one", outcome.Returned["datasetIds"]);
+            Assert.Equal(3, handler.Calls.Count);
+            Assert.EndsWith("ds-two:delete", handler.Calls[1].Uri.AbsolutePath, StringComparison.Ordinal);
+            Assert.Contains("removedDuplicates:dev:dataset--File.Generic:ds-two", reported[0], StringComparison.Ordinal);
+            var record = JsonNode.Parse(handler.Calls[2].Body!)!.AsArray();
+            Assert.Equal(["dev:dataset--File.Generic:ds-one:"], record[0]!["data"]!["Datasets"]!.AsArray().Select(n => n!.GetValue<string>()));
         }
     }
 
@@ -444,8 +452,10 @@ public class FileProtocolTests
             Assert.True(outcome.Steps[0].Resumed);
             Assert.Contains("failed", outcome.Steps[1].Error, StringComparison.Ordinal);
             Assert.Equal(409, outcome.Steps[2].Status);
-            var manifestReport = Assert.Single(reported);
-            Assert.StartsWith("manifest=", manifestReport, StringComparison.Ordinal);
+            // The new run is declared before its trigger, triggered, and the record it wrote reported; the old run is not named again.
+            Assert.Equal(["manifest-intent", "manifest", "records"], Names(reported));
+            Assert.DoesNotContain(reported, r => r.Contains("run-old", StringComparison.Ordinal));
+            var manifestReport = Assert.Single(reported, r => r.StartsWith("manifest=", StringComparison.Ordinal));
             Assert.DoesNotContain("run-old", manifestReport, StringComparison.Ordinal);
             Assert.Contains("priorVersion:4", manifestReport, StringComparison.Ordinal);
             Assert.Equal(5, handler.Calls.Count);

@@ -55,6 +55,9 @@ public sealed class OsduDdmsProtocol : IDeliveryProtocol
 
     public DeliveryProtocol Kind => DeliveryProtocol.Ddms;
 
+    /// <summary>A record goes before the data its DDMS keeps for it, so a delivery can leave a record without its data until its undo.</summary>
+    public bool Undoes => true;
+
     /// <summary>Where the protocol sends each record: the flow's DDMSs, every registration among them read.</summary>
     public DdmsRouting Routing => _routing;
 
@@ -178,8 +181,7 @@ public sealed class OsduDdmsProtocol : IDeliveryProtocol
         {
             // The storage service's own paths under the platform endpoint, with the flow's batching; nothing of the DDMS's
             // paths applies to it.
-            _storage ??= new OsduRecordProtocol(_client, RecordRestores.WriterOptions(new ProtocolOptions { BatchSize = _options.BatchSize }), _time);
-            var written = await RecordRestores.WriteAsync(_storage, writable.Select(w => w.Restore).ToList(), ct).ConfigureAwait(false);
+            var written = await RecordRestores.WriteAsync(StorageWriter(), writable.Select(w => w.Restore).ToList(), ct).ConfigureAwait(false);
             for (var j = 0; j < writable.Count; j++)
             {
                 results[writable[j].Index] = written[j];
@@ -191,6 +193,90 @@ public sealed class OsduDdmsProtocol : IDeliveryProtocol
 
     /// <summary>The storage service's record writer under the platform endpoint, made when a restore first needs it.</summary>
     private OsduRecordProtocol? _storage;
+
+    /// <summary>
+    /// Undoes what unfinished deliveries left (docs/atomic-delivery-plan.md): for each record, what its DDMS's shape made
+    /// beside it (a session, content datasets, rows, a dataset and its lock), then the record itself, removed through the
+    /// DDMS when the unit created it and given back the version the unit replaced when it updated it.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var results = new List<UndoResult>();
+        foreach (var work in works)
+        {
+            results.AddRange(await UndoRecordAsync(work, ct).ConfigureAwait(false));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Undoes one record's units on the record's DDMS: what its shape made beside the record first, then the record itself. A
+    /// composed route undoes its own artifacts and hands the DDMS's here. A record the flow can no longer route has every
+    /// artifact answered failed, naming why, for the sweep to try again once the flow can.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoRecordAsync(UndoWork work, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        DdmsRecordPaths paths;
+        try
+        {
+            paths = _routing.ForRecord(work.TargetId);
+        }
+        catch (DeliveryException ex)
+        {
+            return work.Items.Select(i => UndoResult.Failed(i, $"the record cannot be routed to its DDMS: {HeaderRedaction.RedactMessage(ex.Message)}")).ToList();
+        }
+
+        var shape = ShapeOf(paths);
+        var record = work.Items.Where(i => ArtifactRoles.IsTheRecord(i.Artifact.Role)).ToList();
+        var beside = work.Items.Except(record).ToList();
+        var results = new List<UndoResult>(work.Items.Count);
+        if (beside.Count > 0)
+        {
+            results.AddRange(await shape.UndoAsync(work, paths, beside, ct).ConfigureAwait(false));
+        }
+
+        // What the delivery made beside the record and could not undo yet is found through the record (a content dataset by its
+        // URN) or can still write into it (a session settling): the record waits with it, for the next undo.
+        if (record.Count > 0 && !work.KeepRecord && results.Where(r => r.Outcome == ArtifactStatus.Failed).ToList() is { Count: > 0 } waiting)
+        {
+            results.AddRange(record.Select(i => UndoResult.Failed(i, string.Create(
+                CultureInfo.InvariantCulture,
+                $"{waiting.Count} item(s) the delivery made beside the record could not be undone yet ({waiting[0].Note}); the record is taken back with them, on the next undo"))));
+            return results;
+        }
+
+        if (record.Count > 0)
+        {
+            var side = shape.RecordSide(paths);
+            side = paths.Shape == DdmsShape.WellboreDdmsV3
+                ? side with
+                {
+                    // A Wellbore DDMS record goes back through storage with its own bulk link (RestoreBatchAsync), which also
+                    // brings back the bulk data that version names.
+                    Restorer = Reversals.ReversalRoute.DdmsRestoreRefusal(_routing, work.TargetId) is null ? this : null,
+                    RestoreRefusal = Reversals.ReversalRoute.DdmsRestoreRefusal(_routing, work.TargetId),
+                    Versions = VersionsAsync,
+                }
+                : side with
+                {
+                    // Every other shape's record is a storage record; its metadata goes back through storage, under a platform
+                    // endpoint, while what the DDMS keeps beside it is undone by the shape.
+                    Restorer = side.Restorer ?? (_routing.PlatformEndpoint ? StorageWriter() : null),
+                    RestoreRefusal = side.RestoreRefusal ?? (_routing.PlatformEndpoint ? null : "the flow's endpoint is the DDMS itself, so the storage service that keeps the record's versions is not under it"),
+                    Versions = side.Versions ?? (_routing.PlatformEndpoint ? (id, token) => RecordWriter.VersionsAsync(_client, OsduRecordProtocol.DefaultVerifyPath, id, token) : null),
+                };
+            results.AddRange(await ArtifactUndo.RecordItselfAsync(work, record, side, ct).ConfigureAwait(false));
+        }
+
+        return results;
+    }
+
+    /// <summary>The storage service's record writer under the platform endpoint, with the flow's batching.</summary>
+    private OsduRecordProtocol StorageWriter()
+        => _storage ??= new OsduRecordProtocol(_client, RecordRestores.WriterOptions(new ProtocolOptions { BatchSize = _options.BatchSize }), _time);
 
     /// <summary>
     /// Asks each DDMS the flow reaches for its service description, as its shape describes itself (<c>GET /about</c> of

@@ -71,9 +71,9 @@ public sealed class RetrievalFlowKind : IFlowDocumentKind
             parameters, RetrievalDefinition.FlowTypeName, "force in the payload restarts an incremental retrieval at its declared start.");
         var payload = DeliveryRunPayload.Parse(parameters);
         if (payload.SubmissionId is not null || payload.RecordKeys.Count > 0 || payload.Redeliver is not null || payload.Rerender || payload.Slices.Count > 0 || payload.SelectsTests
-            || payload.SelectsDimensions)
+            || payload.SelectsDimensions || payload.SelectsInventories)
         {
-            throw new SqlFlowException("A retrieval flow's payload carries only force; a retrieval has no submission, records, slices, tests or dimensions to name.");
+            throw new SqlFlowException("A retrieval flow's payload carries only force; a retrieval has no submission, records, slices, tests, dimensions or inventories to name.");
         }
     }
 

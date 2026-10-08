@@ -344,6 +344,8 @@ public sealed class DeleteRecordOperation : DeliveryOperation
             summary.Skipped,
             summary.Failed,
             summary.Truncated,
+            // What the records' unfinished deliveries left, undone before anything was removed.
+            undone = summary.Undone,
             records = summary.Records,
             summary = summary.Describe(),
             actor = runtime.Actor,

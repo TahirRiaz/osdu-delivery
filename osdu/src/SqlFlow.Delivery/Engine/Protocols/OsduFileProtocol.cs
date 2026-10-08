@@ -13,7 +13,9 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// endpoint with its dataset list pointing at the registered ids, batched with the other records of the batch
 /// (section 16.2). Every upload and registration is a resumable step (section 16.3), and a metadata-only change
 /// rewrites the record with the datasets its earlier delivery registered. A purge removes the dataset records and
-/// their files with the record.
+/// their files with the record. Every registration is an artifact of the record's unit of work, an intent before its call
+/// (docs/atomic-delivery-plan.md): a delivery that does not complete has the datasets it registered removed reversibly, a
+/// registration whose answer was lost found by where its file landed, and a payload change names the datasets it replaced.
 /// </summary>
 public sealed class OsduFileProtocol : IDeliveryProtocol
 {
@@ -35,6 +37,12 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
     }
 
     public DeliveryProtocol Kind => DeliveryProtocol.File;
+
+    /// <summary>The files are registered before the record is written, so a delivery can leave datasets behind until its undo.</summary>
+    public bool Undoes => true;
+
+    /// <summary>The step a record's write is named under before it goes, when the unit registered files for it.</summary>
+    public const string RecordIntentStep = "record-intent";
 
     public int MaxBatch => _records.MaxBatch;
 
@@ -103,6 +111,14 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
             return outcomes;
         }
 
+        // A record whose files this unit registered names them from its write on: the write is named before it goes, so one that
+        // lands without its answer is taken back with the datasets when the delivery does not complete.
+        var declaring = staged.Where(s => s.Files > 0).ToList();
+        await Task.WhenAll(declaring.Select(s => s.Original.ReportStepAsync(
+            RecordIntentStep,
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = s.Original.TargetId },
+            [TargetArtifact.RecordWritten(s.Original.TargetId, null, s.Original.ExistingVersion) with { Status = ArtifactStatus.Intent }],
+            ct))).ConfigureAwait(false);
         var written = await _records.DeliverBatchAsync(staged.Select(s => s.Record).ToList(), ct).ConfigureAwait(false);
         for (var j = 0; j < staged.Count; j++)
         {
@@ -121,9 +137,22 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
                 returned[FileUploads.DatasetIdsValue] = string.Join(",", datasets);
             }
 
+            // A payload that went registered new datasets, and the record now names them: the ones its earlier delivery named
+            // stay live (earlier versions of the record name them) and are superseded.
+            var superseded = original.DeliverPayload
+                ? FileUploads.DatasetIds(original.TargetState).Except(datasets, StringComparer.Ordinal).ToList()
+                : [];
+
             if (files > 0)
             {
                 returned["files"] = files.ToString(CultureInfo.InvariantCulture);
+
+                // The write answered: the record is the unit's version of it until the delivery commits a moment later.
+                await original.ReportStepAsync(
+                    OsduRecordProtocol.RecordsStep,
+                    returned,
+                    [TargetArtifact.RecordWritten(original.TargetId, result.TargetVersion, original.ExistingVersion)],
+                    ct).ConfigureAwait(false);
             }
 
             outcomes[index] = new DeliveryOutcome
@@ -135,10 +164,44 @@ public sealed class OsduFileProtocol : IDeliveryProtocol
                 Detail = files > 0 ? $"{files.ToString(CultureInfo.InvariantCulture)} file(s) uploaded and registered" : result.Detail,
                 Returned = returned,
                 Steps = allSteps,
+                Superseded = superseded,
             };
         }
 
         return outcomes;
+    }
+
+    /// <summary>
+    /// Undoes what unfinished deliveries registered (docs/atomic-delivery-plan.md): the record first, when its write that names
+    /// the new datasets may have landed (removed when the unit created it, given back the version before when it updated it),
+    /// then each dataset removed reversibly through storage, a registration whose answer was lost found by where its file
+    /// landed. A record that cannot be taken back yet keeps its datasets with it. The files a registration copied stay in the
+    /// landing zone, which no call removes.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var side = new RecordSide
+        {
+            Remove = (id, token) => _records.DeleteAsync(id, RemovalScope.Record, null, token),
+            Read = _records.ReadAsync,
+            Restorer = _records,
+            Versions = _records.VersionsAsync,
+        };
+        var results = new List<UndoResult>();
+        foreach (var work in works)
+        {
+            var record = work.Items.Where(i => ArtifactRoles.IsTheRecord(i.Artifact.Role)).ToList();
+            var recordResults = await ArtifactUndo.RecordItselfAsync(work, record, side, ct).ConfigureAwait(false);
+            results.AddRange(recordResults);
+            var datasets = work.Items.Where(i => i.Artifact.Role == ArtifactRoles.Dataset).ToList();
+            results.AddRange(ArtifactUndo.WaitForRecord(recordResults) is { } blocked
+                ? datasets.Select(i => UndoResult.Failed(i, blocked))
+                : await ArtifactUndo.DatasetsAsync(_client, _options, _records, work, datasets, ct).ConfigureAwait(false));
+            results.AddRange(ArtifactUndo.Keep(work.Items.Except(datasets).Except(record), "the file route creates nothing of this kind"));
+        }
+
+        return results;
     }
 
     public Task<VerifyResult> VerifyAsync(string targetId, long? expectedVersion, CancellationToken ct = default)

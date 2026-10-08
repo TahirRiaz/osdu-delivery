@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using SqlFlow.Core;
@@ -38,6 +40,18 @@ internal static class FileUploads
     public static string UploadStep(int index) => "upload-" + index.ToString(CultureInfo.InvariantCulture);
 
     public static string RegisterStep(int index) => "register-" + index.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The slot a registration's artifact is kept under (docs/atomic-delivery-plan.md): the file's place and the landing-zone
+    /// path it was uploaded to, hashed to a fixed width. A try that uploads the file again lands it at a new path, so each
+    /// registration it may have made is an artifact of its own, and none is lost when an answer was.
+    /// </summary>
+    public static string DatasetSlot(UploadedFile file)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(file.FileSource)))[..24].ToLowerInvariant();
+        return string.Create(CultureInfo.InvariantCulture, $"file:{file.Index}:{hash}");
+    }
 
     /// <summary>
     /// Lists the payload chunks and checks each against the declared request body ceiling before anything is sent,
@@ -139,24 +153,36 @@ internal static class FileUploads
             // registering a second dataset for the same file.
             if (done.TryGetValue("fileSource", out var attempted)
                 && string.Equals(attempted, file.FileSource, StringComparison.Ordinal)
-                && await RegisteredForAsync(client, options, time, file, ct).ConfigureAwait(false) is { } adopted)
+                && await RegisteredForAsync(client, options, time, file, ct).ConfigureAwait(false) is { } found)
             {
+                var (adopted, extra) = (found[0], found.Skip(1).ToList());
                 var recovered = new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     ["datasetId"] = adopted,
                     ["fileSource"] = file.FileSource,
                     ["adopted"] = "true",
                 };
+                var artifacts = new List<TargetArtifact> { TargetArtifact.Created(DatasetSlot(file), ArtifactRoles.Dataset, adopted, locator: file.FileSource) };
+                artifacts.AddRange(await RemoveExtraAsync(client, options, file, extra, ct).ConfigureAwait(false));
+                if (extra.Count > 0)
+                {
+                    recovered["removedDuplicates"] = string.Join(",", extra);
+                }
+
                 steps.Resumed(step, recovered);
-                await work.ReportStepAsync(step, recovered, ct).ConfigureAwait(false);
+                await work.ReportStepAsync(step, recovered, artifacts, ct).ConfigureAwait(false);
                 return adopted;
             }
         }
 
         var started = steps.Now;
+
+        // The intent goes with the mark: the dataset this call may mint is in the ledger before the call is sent, findable by
+        // where its file landed if the answer is lost.
         await work.ReportStepAsync(
             step,
             new Dictionary<string, string>(StringComparer.Ordinal) { ["fileSource"] = file.FileSource, ["state"] = RegisteringState },
+            [TargetArtifact.Intent(DatasetSlot(file), ArtifactRoles.Dataset, file.FileSource)],
             ct).ConfigureAwait(false);
         var url = client.Url(options.FileMetadataPath ?? DefaultFileMetadataPath);
         // Not repeated on an unclear outcome: every accepted POST mints another dataset record. The step is
@@ -170,60 +196,110 @@ internal static class FileUploads
 
         var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["datasetId"] = datasetId, ["fileSource"] = file.FileSource };
         steps.Add(step, started, (int)result.Status, returned);
-        await work.ReportStepAsync(step, returned, ct).ConfigureAwait(false);
+        await work.ReportStepAsync(step, returned, [TargetArtifact.Created(DatasetSlot(file), ArtifactRoles.Dataset, datasetId, locator: file.FileSource)], ct).ConfigureAwait(false);
         return datasetId;
     }
 
     /// <summary>
-    /// The dataset record the file service holds for a landing-zone path, asked of the search service (openapi
-    /// search v2, POST query), or null when it lists none.
+    /// Removes reversibly the datasets a lost answer let a later try register again for one landing-zone path (the path is one
+    /// upload's alone, so every dataset registered for it is this record's), and returns each as the artifact it is: removed by
+    /// the route, or, when its removal failed, an intent naming it by id alone, which the unit's end makes due whatever the
+    /// delivery comes to, so the sweep removes it. It carries no landing path: an undo that searched by the path would find the
+    /// dataset the record keeps as well.
+    /// </summary>
+    private static async Task<IReadOnlyList<TargetArtifact>> RemoveExtraAsync(OsduHttpClient client, ProtocolOptions options, UploadedFile file, IReadOnlyList<string> extra, CancellationToken ct)
+    {
+        var artifacts = new List<TargetArtifact>(extra.Count);
+        foreach (var id in extra)
+        {
+            var slot = DatasetSlot(file) + ":" + id;
+            try
+            {
+                var outcome = await RecordWriter.DeleteAsync(client, RemovalPaths.From(options), id, RemovalScope.Record, ct).ConfigureAwait(false);
+                artifacts.Add(TargetArtifact.Created(slot, ArtifactRoles.Dataset, id, locator: file.FileSource) with
+                {
+                    Status = ArtifactStatus.Removed,
+                    Note = $"a second registration of {file.Name} for the same landing-zone path, {outcome.Detail}",
+                });
+            }
+            catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
+            {
+                artifacts.Add(TargetArtifact.Intent(slot, ArtifactRoles.Dataset, null, id) with
+                {
+                    Note = $"a second registration of {file.Name} for the landing-zone path {file.FileSource}, which could not be removed yet: {Http.HeaderRedaction.RedactMessage(ex.Message)}",
+                });
+            }
+        }
+
+        return artifacts;
+    }
+
+    /// <summary>
+    /// Every dataset record the index lists for a landing-zone path, asked once (openapi search v2, POST query): what an undo
+    /// finds a registration whose answer was lost by.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> RegisteredAtAsync(OsduHttpClient client, ProtocolOptions options, string fileSource, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileSource);
+        return await SearchFileSourceAsync(client, options, fileSource, MaxRegistrationsPerPath, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The most dataset records one landing-zone path is looked up for: more than one is already a repeated registration.</summary>
+    private const int MaxRegistrationsPerPath = 20;
+
+    private static async Task<IReadOnlyList<string>> SearchFileSourceAsync(OsduHttpClient client, ProtocolOptions options, string fileSource, int limit, CancellationToken ct)
+    {
+        var url = client.Url(options.SearchQueryPath ?? OsduManifestProtocol.DefaultSearchQueryPath);
+        var body = new JsonObject
+        {
+            ["kind"] = options.DatasetKind,
+            ["query"] = "data.DatasetProperties.FileSourceInfo.FileSource:\"" + fileSource.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"",
+            ["limit"] = limit,
+            ["returnedFields"] = new JsonArray(JsonValue.Create("id")),
+        };
+        var result = await client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
+        var ids = new List<string>();
+        foreach (var hit in JsonPathReader.SelectElements(OsduHttpClient.ParseJson(result, url), "results[*]"))
+        {
+            if (hit.ValueKind == JsonValueKind.Object
+                && hit.TryGetProperty("id", out var id)
+                && id.ValueKind == JsonValueKind.String
+                && id.GetString() is { Length: > 0 } text
+                && !ids.Contains(text, StringComparer.Ordinal))
+            {
+                ids.Add(text);
+            }
+        }
+
+        ids.Sort(StringComparer.Ordinal);
+        return ids;
+    }
+
+    /// <summary>
+    /// The dataset records the file service holds for a landing-zone path, asked of the search service (openapi search v2,
+    /// POST query), the one the record keeps first; null when it lists none.
     ///
     /// The file service mints the dataset id itself and reads metadata back by that id alone (openapi file v2,
     /// GET files/{id}/metadata), so a registration whose response was lost leaves the landing-zone path as the only
     /// way back to it, and only search can answer by it. A dataset reaches the index a moment after it is
     /// registered, so the ask is repeated until <see cref="ProtocolOptions.DatasetIndexWaitSeconds"/> runs out, as
     /// the manifest protocol's wait for its own datasets does. Nothing listed means the registration never landed
-    /// (or is still not indexed) and the file is registered again. Two datasets for one path is not something this
-    /// can choose between: the record is held, naming both.
+    /// (or is still not indexed) and the file is registered again. Two datasets for one path are two registrations of this
+    /// record's one upload: the record keeps the first in id order, and the caller removes the rest.
     /// </summary>
-    private static async Task<string?> RegisteredForAsync(OsduHttpClient client, ProtocolOptions options, TimeProvider time, UploadedFile file, CancellationToken ct)
+    private static async Task<IReadOnlyList<string>?> RegisteredForAsync(OsduHttpClient client, ProtocolOptions options, TimeProvider time, UploadedFile file, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(time);
-        var url = client.Url(options.SearchQueryPath ?? OsduManifestProtocol.DefaultSearchQueryPath);
-        var body = new JsonObject
-        {
-            ["kind"] = options.DatasetKind,
-            ["query"] = "data.DatasetProperties.FileSourceInfo.FileSource:\"" + file.FileSource + "\"",
-            ["limit"] = 2,
-            ["returnedFields"] = new JsonArray(JsonValue.Create("id")),
-        };
         var deadline = time.GetUtcNow() + TimeSpan.FromSeconds(Math.Max(0, options.DatasetIndexWaitSeconds));
         var interval = TimeSpan.FromSeconds(Math.Max(1, options.WorkflowPollSeconds));
         while (true)
         {
-            var result = await client.SendJsonAsync(HttpMethod.Post, url, body, null, ct, idempotent: true).ConfigureAwait(false);
-            var ids = new List<string>();
-            foreach (var hit in JsonPathReader.SelectElements(OsduHttpClient.ParseJson(result, url), "results[*]"))
+            var ids = await SearchFileSourceAsync(client, options, file.FileSource, MaxRegistrationsPerPath, ct).ConfigureAwait(false);
+            if (ids.Count > 0)
             {
-                if (hit.ValueKind == JsonValueKind.Object
-                    && hit.TryGetProperty("id", out var id)
-                    && id.ValueKind == JsonValueKind.String
-                    && id.GetString() is { Length: > 0 } text
-                    && !ids.Contains(text, StringComparer.Ordinal))
-                {
-                    ids.Add(text);
-                }
-            }
-
-            if (ids.Count > 1)
-            {
-                throw new RecordHeldException(
-                    $"the landing zone path of {file.Name} is registered as {ids.Count.ToString(CultureInfo.InvariantCulture)} dataset records ({string.Join(", ", ids)}); delete the ones the record does not reference, then release the record");
-            }
-
-            if (ids.Count == 1)
-            {
-                return ids[0];
+                return ids;
             }
 
             if (time.GetUtcNow() + interval > deadline)

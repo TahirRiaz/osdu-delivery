@@ -32,6 +32,9 @@ import { CompactTime, OsduTarget, RecordIdentity, type RecordOrigin } from "./Re
 import { useInterfaceChoice } from "./useInterfaceChoice";
 import { RemovalDialog, type RemovalSelection } from "./RemovalDialog";
 import { DeleteLedgerDialog } from "./DeleteLedgerDialog";
+import { OpenUndosCard, UndoUnfinishedButton } from "./DeliveryOpenUndos";
+import { UndoneFirst } from "./ArtifactMarks";
+import { undoneFirst } from "../../api/artifacts";
 import { RedeliverDialog, type RedeliverSelection } from "./RedeliverDialog";
 import { PLANNED_PER_PASS, ReleaseDialog } from "./ReleaseDialog";
 import { failureText } from "./answers";
@@ -298,6 +301,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                       <RefreshCw />
                       Sync timelines
                     </Button>
+                    <UndoUnfinishedButton pipelineId={pipelineId} flowName={flowName} scope={scope} ready={ready} />
                     <Button
                       variant="outline"
                       size="sm"
@@ -335,6 +339,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
               )}
             </Card>
           )}
+          <OpenUndosCard pipelineId={pipelineId} scope={scope} many={many} onSelectInterface={selectInterface} ready={ready} />
           {many && (
             <Card className="gap-2 overflow-hidden rounded-lg p-0" data-testid="delivery-interfaces">
               <div className="flex flex-wrap items-baseline gap-2 px-3 pt-3 text-[13px]">
@@ -499,6 +504,7 @@ export function DeliveryFlowPanel({ pipelineId, flowName, section }: { pipelineI
                 {removal.data?.claimedByNode && <span className="font-mono text-[11px] text-muted-foreground">{removal.data.claimedByNode}</span>}
               </div>
               {removal.data?.error && <p className="text-[13px] text-destructive">{removal.data.error}</p>}
+              {isTerminalTask(removal.data) && <UndoneFirst undone={undoneFirst(removal.data?.result)} testId="delivery-removal-undone" />}
               {removalJson !== null && (
                 <CodeView value={removalJson} language="json" height={260} data-testid="delivery-removal-json" />
               )}

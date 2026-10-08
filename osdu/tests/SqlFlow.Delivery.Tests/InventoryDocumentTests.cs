@@ -1,0 +1,332 @@
+using SqlFlow.Core;
+using SqlFlow.Core.Lineage;
+using SqlFlow.Core.Runs;
+using SqlFlow.Delivery.Documents;
+using SqlFlow.Delivery.Engine;
+using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Snapshots;
+using SqlFlow.Yaml;
+using Xunit;
+
+namespace SqlFlow.Delivery.Tests;
+
+/// <summary>
+/// The inventory flow document (<c>flowType: inventory</c>, docs/inventory-plan.md, The document): what it declares, every
+/// rule the loader holds it to, each refusal naming the place in the document it is about, how a run binds it to a partition
+/// and selects its inventories, the payload and operations it takes, and the lineage it contributes.
+/// </summary>
+public class InventoryDocumentTests
+{
+    private const string Head = """
+        flowType: inventory
+        name: welllog-inventory
+        batch: reconciliation
+        partitions: [dev, test]
+        source:
+          endpoint: ${env:OSDU_URL}
+          auth:
+            type: bearer
+            secretRef: ${env:OSDU_TOKEN}
+
+        """;
+
+    private const string WellLogs = """
+        inventories:
+          - name: WellLogs
+            kind: "*:*:work-product-component--WellLog:*"
+        """;
+
+    private static InventoryFlowDefinition Parse(string yaml) => new DeliveryDocumentLoader().ParseInventory(yaml, "flows/inventory.yaml");
+
+    private static FlowValidationException Refused(string yaml) => Assert.Throws<FlowValidationException>(() => Parse(yaml));
+
+    private static string Inventories(int count) => "inventories:\n" + string.Concat(Enumerable.Range(0, count).Select(i => $"  - {{ name: I{i}, kind: \"osdu:wks:master-data--Well:1.0.0\" }}\n"));
+
+    [Fact]
+    public void A_document_declares_its_inventories_owners_and_bound_with_every_service_path_defaulted()
+    {
+        var flow = Parse(Head + """
+            parameters:
+              country: { default: NO }
+            owners: [delivery-sp@contoso.com, 5f2c0e1a-app]
+            maxMissingChecks: 2500
+            inventories:
+              - name: WellLogs
+                description: Every well log.
+                kind: "*:*:work-product-component--WellLog:*"
+                versions: all
+              - name: NorwegianWells
+                kind: "osdu:wks:master-data--Well:1.*.*"
+                query: 'data.Country:"{country}" AND data.Partition:"{partition}"'
+            """);
+
+        Assert.Equal(("welllog-inventory", "reconciliation"), (flow.Name, flow.Batch));
+        Assert.Equal(["dev", "test"], flow.Partitions);
+        Assert.Equal(["delivery-sp@contoso.com", "5f2c0e1a-app"], flow.Owners);
+        Assert.Equal(2500, flow.MaxMissingChecks);
+        Assert.Equal(InventoryRead.Search, flow.Source.Read);
+        Assert.Equal(
+            (InventorySource.DefaultQueryPath, InventorySource.DefaultSearchPath, InventorySource.DefaultRecordQueryPath, InventorySource.DefaultHeadersPath, InventorySource.DefaultVersionsPath, InventorySource.DefaultSchemaPath),
+            (flow.Source.QueryPath, flow.Source.SearchPath, flow.Source.RecordQueryPath, flow.Source.HeadersPath, flow.Source.VersionsPath, flow.Source.SchemaPath));
+
+        var logs = flow.Inventories[0];
+        Assert.Equal(("Every well log.", InventoryVersions.All, (string?)null), (logs.Description, logs.Versions, logs.Query));
+        Assert.Equal(("work-product-component--WellLog", true), (logs.EntityType, logs.CoversEntityType));
+        var wells = flow.Inventories[1];
+        Assert.Equal((InventoryVersions.Latest, "master-data--Well", false), (wells.Versions, wells.EntityType, wells.CoversEntityType));
+        Assert.Equal("data.Country:\"{country}\" AND data.Partition:\"{partition}\"", wells.Query);
+    }
+
+    [Fact]
+    public void Left_out_the_owners_are_inferred_the_bound_is_its_default_and_a_storage_read_takes_its_own_service_paths()
+    {
+        var flow = Parse(Head.Replace("  auth:", "  read: STORAGE\n  headersPath: /storage/headers/\n  versionsPath: /storage/versions\n  auth:", StringComparison.Ordinal) + WellLogs);
+
+        Assert.Empty(flow.Owners);
+        Assert.Equal(InventoryFlowDefinition.DefaultMaxMissingChecks, flow.MaxMissingChecks);
+        Assert.Equal((InventoryRead.Storage, "/storage/headers", "/storage/versions"), (flow.Source.Read, flow.Source.HeadersPath, flow.Source.VersionsPath));
+        Assert.Equal(0, Parse(Head + "maxMissingChecks: 0\n" + WellLogs).MaxMissingChecks);
+        Assert.Equal(InventoryFlowDefinition.MaxMissingChecksCeiling, Parse(Head + "maxMissingChecks: 1000000\n" + WellLogs).MaxMissingChecks);
+    }
+
+    [Theory]
+    [InlineData("source:\n  endpoint: http://x\n  read: index\n", "source.read is 'index'")]
+    [InlineData("source:\n  endpoint: http://x\n  queryPath: api/search\n", "source.queryPath 'api/search' must be a path under the endpoint")]
+    [InlineData("source:\n  endpoint: http://x\n  schemaPath: /schema?x=1\n", "source.schemaPath '/schema?x=1' must be a path")]
+    [InlineData("source:\n  endpoint: http://x\n  versionsPath: /a b\n", "source.versionsPath '/a b' must be a path")]
+    [InlineData("source:\n  endpoint: http://x\n  headers: { data-partition-id: dev }\n", "source.headers names 'data-partition-id', and the flow names its partitions")]
+    [InlineData("parameters:\n  partition: { default: dev }\n", "parameters declares 'partition'")]
+    [InlineData("maxMissingChecks: -1\n", "maxMissingChecks is -1")]
+    [InlineData("maxMissingChecks: 1000001\n", "maxMissingChecks is 1000001")]
+    [InlineData("owners: ['two words']\n", "owners[0] is not an identity")]
+    [InlineData("owners: ['']\n", "owners[0] is not an identity")]
+    [InlineData("owners: [a@x.com, A@X.COM]\n", "owners[1] 'A@X.COM' is listed twice")]
+    [InlineData("reliability: { concurrency: 0 }\n", "concurrency")]
+    public void A_flow_level_rule_broken_is_refused_naming_its_key(string fragment, string expected)
+    {
+        var head = fragment.StartsWith("source:", StringComparison.Ordinal)
+            ? "flowType: inventory\nname: welllog-inventory\npartitions: [dev]\n"
+            : Head;
+        var message = Refused(head + fragment + WellLogs).Message;
+
+        Assert.Contains("flows/inventory.yaml", message, StringComparison.Ordinal);
+        Assert.Contains(expected, message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("  - name: 'two words'\n    kind: \"osdu:wks:master-data--Well:1.0.0\"\n", "inventories[0].name 'two words' is not an inventory name")]
+    [InlineData("  - kind: \"osdu:wks:master-data--Well:1.0.0\"\n", "inventories[0].name")]
+    [InlineData("  - name: Wells\n", "inventories[0].kind")]
+    [InlineData("  - name: Wells\n    kind: master-data--Well\n", "kind 'master-data--Well' is not authority:source:entityType:version")]
+    [InlineData("  - name: Wells\n    kind: \"osdu:wks:master-data--Well\"\n", "is not authority:source:entityType:version")]
+    [InlineData("  - name: Wells\n    kind: \"osdu:wks:master-data--Well:1.0.0\"\n    versions: some\n", "inventories[0] 'Wells': versions is 'some'")]
+    [InlineData("  - name: Wells\n    kind: \"osdu:wks:master-data--Well:1.0.0\"\n    query: 'data.Country:\"{country}\"'\n", "query uses '{country}', which is not declared under parameters")]
+    [InlineData("  - name: Wells\n    kind: \"osdu:wks:master-data--Well:1.0.0\"\n  - name: WELLS\n    kind: \"osdu:wks:master-data--Wellbore:1.0.0\"\n", "inventories[1] is named 'WELLS', as an earlier inventory is")]
+    public void An_inventory_rule_broken_is_refused_naming_the_inventory(string inventories, string expected)
+        => Assert.Contains(expected, Refused(Head + "inventories:\n" + inventories).Message, StringComparison.Ordinal);
+
+    [Fact]
+    public void A_query_is_refused_where_storage_is_read_and_a_query_or_kind_too_long_for_its_column_is_refused()
+    {
+        var storage = Head.Replace("  auth:", "  read: storage\n  auth:", StringComparison.Ordinal);
+        Assert.Contains(
+            "query narrows a search, and the flow reads storage",
+            Refused(storage + "inventories:\n  - name: Wells\n    kind: \"osdu:wks:master-data--Well:1.0.0\"\n    query: 'data.Country:NO'\n").Message,
+            StringComparison.Ordinal);
+
+        var longQuery = "data.Name:" + new string('a', Data.DeliveryModel.MaxInventoryQueryLength);
+        Assert.Contains("an inventory keeps at most", Refused(Head + $"inventories:\n  - name: Wells\n    kind: \"osdu:wks:master-data--Well:1.0.0\"\n    query: '{longQuery}'\n").Message, StringComparison.Ordinal);
+
+        var longKind = "osdu:wks:" + new string('w', Data.DeliveryModel.MaxInventoryKindLength) + ":1.0.0";
+        Assert.Contains("is not authority:source:entityType:version", Refused(Head + $"inventories:\n  - name: Wells\n    kind: \"{longKind}\"\n").Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_flow_holds_between_one_and_a_hundred_inventories_and_names_at_most_fifty_owners()
+    {
+        Assert.Contains("inventories must list at least one inventory", Refused(Head).Message, StringComparison.Ordinal);
+        Assert.Contains("inventories must list at least one inventory", Refused(Head + "inventories: []\n").Message, StringComparison.Ordinal);
+        Assert.Equal(InventoryFlowDefinition.MaxInventories, Parse(Head + Inventories(InventoryFlowDefinition.MaxInventories)).Inventories.Count);
+        Assert.Contains("one flow holds at most 100", Refused(Head + Inventories(InventoryFlowDefinition.MaxInventories + 1)).Message, StringComparison.Ordinal);
+
+        var owners = "owners: [" + string.Join(", ", Enumerable.Range(0, InventoryFlowDefinition.MaxOwners + 1).Select(i => $"app{i}")) + "]\n";
+        Assert.Contains("a flow names at most 50", Refused(Head + owners + WellLogs).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_key_the_document_does_not_know_is_refused_as_are_another_kinds_keys_and_another_flow_type()
+    {
+        Assert.Throws<FlowValidationException>(() => Parse(Head + "dimensions: []\n" + WellLogs));
+        Assert.Throws<FlowValidationException>(() => Parse(Head.Replace("  auth:", "  aggregationSize: 5\n  auth:", StringComparison.Ordinal) + WellLogs));
+        Assert.Throws<FlowValidationException>(() => Parse(Head + "inventories:\n  - name: Wells\n    kind: \"osdu:wks:master-data--Well:1.0.0\"\n    path: data.Name\n"));
+        Assert.Contains("expected 'flowType: inventory', found 'dimension'", Refused(Head.Replace("flowType: inventory", "flowType: dimension", StringComparison.Ordinal) + WellLogs).Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("*:*:work-product-component--WellLog:*", null, true)]
+    [InlineData("osdu:*:work-product-component--WellLog:*", null, false)]
+    [InlineData("*:wks:work-product-component--WellLog:*", null, false)]
+    [InlineData("*:*:work-product-component--WellLog:1.0.0", null, false)]
+    [InlineData("*:*:*:*", null, false)]
+    [InlineData("*:*:work-product-component--WellLog:*", "data.Name:A", false)]
+    public void An_inventory_covers_its_type_whole_only_when_it_names_the_type_and_leaves_every_other_segment_and_the_query_open(string kind, string? query, bool covers)
+        => Assert.Equal(covers, new InventorySpec { Name = "I", Kind = kind, Query = query }.CoversEntityType);
+
+    [Fact]
+    public void A_flow_naming_its_partitions_binds_to_each_and_keeps_its_inventories_per_partition()
+    {
+        var flow = Parse(Head + WellLogs);
+
+        var dev = flow.ForPartition("DEV");
+        Assert.Equal(("dev", "dev"), (dev.Partition, dev.Source.Headers["data-partition-id"]));
+        Assert.Equal("welllog-inventory@dev", dev.LedgerName);
+        Assert.NotEqual(dev.LedgerId, flow.ForPartition("test").LedgerId);
+        Assert.Equal(Identity.FlowId.Of("welllog-inventory", "dev"), dev.LedgerId);
+        Assert.Throws<InvalidOperationException>(() => flow.LedgerId);
+        Assert.Contains("does not read partition 'prod'", Assert.Throws<DeliveryException>(() => flow.ForPartition("prod")).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_run_reads_one_partition_the_one_it_names_the_registrys_default_or_the_flows_only_one()
+    {
+        var two = Parse(Head + WellLogs);
+        var registry = new RegisteredPartitions([new RegisteredPartition("dev", null, false), new RegisteredPartition("test", null, true)]);
+        var none = new RegisteredPartitions([]);
+
+        Assert.Equal("test", two.ForRun(null, registry).Partition);
+        Assert.Equal("dev", two.ForRun("dev", registry).Partition);
+        Assert.True(two.NeedsRegistry(null));
+        Assert.False(two.NeedsRegistry("dev"));
+        Assert.Contains("name the partition this run reads", Assert.Throws<DeliveryException>(() => two.ForRun(null, none)).Message, StringComparison.Ordinal);
+        Assert.Contains("reads one partition per run", Assert.Throws<DeliveryException>(() => two.ForRun(PartitionNames.Every, registry)).Message, StringComparison.Ordinal);
+
+        var one = Parse(Head.Replace("partitions: [dev, test]", "partitions: [dev]", StringComparison.Ordinal) + WellLogs);
+        Assert.Equal("dev", one.ForRun(null, none).Partition);
+        Assert.False(one.NeedsRegistry(null));
+
+        var registered = Parse(Head.Replace("partitions: [dev, test]\n", "", StringComparison.Ordinal) + WellLogs);
+        Assert.True(registered.FollowsRegistry);
+        Assert.Equal("test", registered.ForRun(null, registry).Partition);
+        Assert.Throws<DeliveryException>(() => registered.ForRun("prod", registry));
+        Assert.Contains("No partition is registered", Assert.Throws<DeliveryException>(() => registered.ForRun(null, none)).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_flow_whose_partition_is_its_header_reads_that_one_and_cannot_be_bound_to_another()
+    {
+        var flow = Parse(Head.Replace("partitions: [dev, test]\n", "", StringComparison.Ordinal).Replace("  auth:", "  headers: { data-partition-id: dev }\n  auth:", StringComparison.Ordinal) + WellLogs);
+
+        Assert.False(flow.Partitioned);
+        Assert.Same(flow, flow.ForRun(null, new RegisteredPartitions([])));
+        Assert.Equal(Identity.FlowId.Of("welllog-inventory"), flow.LedgerId);
+        Assert.Equal("welllog-inventory", flow.LedgerName);
+        Assert.Throws<DeliveryException>(() => flow.ForRun("test", new RegisteredPartitions([])));
+        Assert.Throws<DeliveryException>(() => flow.ForPartition("dev"));
+        Assert.Contains("is empty", Refused(Head.Replace("partitions: [dev, test]\n", "", StringComparison.Ordinal).Replace("  auth:", "  headers: { data-partition-id: ' ' }\n  auth:", StringComparison.Ordinal) + WellLogs).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_run_selects_inventories_by_name_in_document_order_and_refuses_one_the_flow_does_not_have()
+    {
+        var flow = Parse(Head + "inventories:\n  - { name: Wells, kind: \"osdu:wks:master-data--Well:1.0.0\" }\n  - { name: Logs, kind: \"osdu:wks:work-product-component--WellLog:1.0.0\" }\n");
+
+        Assert.Equal(["Wells", "Logs"], flow.Select(["logs", "WELLS"]).Select(i => i.Name));
+        Assert.Equal(2, flow.Select([]).Count);
+        Assert.Equal("Logs", flow.Inventory(" logs ")!.Name);
+        Assert.Null(flow.Inventory("Nope"));
+        var refused = Assert.Throws<DeliveryException>(() => flow.Select(["Nope", "Logs"])).Message;
+        Assert.Contains("has no inventory named 'Nope'; its inventories are Wells, Logs.", refused, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_payload_carries_the_inventories_a_run_builds_and_no_other_kind_takes_them()
+    {
+        var payload = DeliveryRunPayload.Parse("""{ "inventories": ["WellLogs", "Wells"] }""");
+        Assert.Equal(["WellLogs", "Wells"], payload.Inventories);
+        Assert.True(payload.SelectsInventories);
+        Assert.Equal("""{"inventories":["WellLogs","Wells"]}""", payload.ToJson());
+        Assert.False(payload.CarriesOnlyConfiguration);
+
+        Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "inventories": ["not a name"] }"""));
+        Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "inventories": ["A", "a"] }"""));
+        Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("""{ "inventories": "WellLogs" }"""));
+        Assert.Contains("only an inventory flow", Assert.Throws<SqlFlowException>(() => payload.Validate(DeliveryOperations.Deliver)).Message, StringComparison.Ordinal);
+
+        var kind = new InventoryFlowKind(new DeliveryDocumentLoader());
+        kind.ValidateParameters(new RunParameters { Payload = payload.ToJson() });
+        kind.ValidateParameters(new RunParameters());
+        Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { Payload = """{ "tests": ["t"] }""" }));
+        Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { Payload = """{ "dimensions": ["d"] }""" }));
+        Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { Payload = """{ "recordKeys": ["k"] }""" }));
+        Assert.Throws<SqlFlowException>(() => kind.ValidateParameters(new RunParameters { FullLoad = true }));
+        Assert.Throws<SqlFlowException>(() => new DimensionFlowKind(new DeliveryDocumentLoader()).ValidateParameters(new RunParameters { Payload = payload.ToJson() }));
+        Assert.Throws<SqlFlowException>(() => new AssertionFlowKind(new DeliveryDocumentLoader()).ValidateParameters(new RunParameters { Payload = payload.ToJson() }));
+        Assert.Throws<SqlFlowException>(() => new RetrievalFlowKind(new DeliveryDocumentLoader()).ValidateParameters(new RunParameters { Payload = payload.ToJson() }));
+    }
+
+    [Theory]
+    [InlineData(null, "build")]
+    [InlineData("build", "build")]
+    [InlineData("reconcile", "reconcile")]
+    [InlineData("plan", "plan")]
+    public void An_inventory_flow_builds_by_default_and_reconciles_or_plans_when_asked(string? operation, string expected)
+        => Assert.Equal(expected, InventoryFlowKind.Operation(new RunParameters { Operation = operation }));
+
+    [Theory]
+    [InlineData("deliver")]
+    [InlineData("undo")]
+    [InlineData("delete-ledger")]
+    public void An_inventory_flow_runs_no_other_operation_and_a_delivery_flow_does_not_reconcile(string operation)
+    {
+        Assert.Throws<SqlFlowException>(() => InventoryFlowKind.Operation(new RunParameters { Operation = operation }));
+        Assert.Contains("'reconcile' is not an operation of a delivery flow", Assert.Throws<SqlFlowException>(() => DeliveryRunPayload.Parse("{}").Validate(DeliveryOperations.Reconcile)).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_kind_offers_build_reconcile_and_plan_and_only_a_plan_keeps_nothing()
+    {
+        var kind = new InventoryFlowKind(new DeliveryDocumentLoader());
+
+        Assert.Equal("inventory", kind.FlowType);
+        Assert.Equal([("build", true), ("reconcile", true), ("plan", false)], kind.Operations.Select(o => (o.Name, o.WritesTarget)));
+        var document = Assert.IsType<InventoryFlowDocument>(kind.Parse(Head + WellLogs, "flows/inventory.yaml"));
+        Assert.Equal(("welllog-inventory", "inventory", "reconciliation"), (document.Name, document.Kind, document.Batch));
+        Assert.Equal(("${env:OSDU_URL}", InventoryFlowDocument.InventoriesTarget), (document.SourceReference, document.TargetReference));
+        Assert.False(document.RequiresRepoTree);
+    }
+
+    [Fact]
+    public void Lineage_reads_each_inventorys_kind_once_in_each_partition_and_writes_nothing()
+    {
+        var flow = Parse(Head + "inventories:\n  - { name: Logs, kind: \"*:*:work-product-component--WellLog:*\" }\n  - { name: Logs2, kind: \"*:*:work-product-component--WellLog:*\", versions: all }\n  - { name: Wells, kind: \"osdu:wks:master-data--Well:1.0.0\" }\n");
+
+        var lineage = InventoryLineage.Describe(flow);
+
+        Assert.Equal(
+            ["osdu-type/dev/*:*:work-product-component--WellLog:*", "osdu-type/dev/osdu:wks:master-data--Well:1.0.0", "osdu-type/test/*:*:work-product-component--WellLog:*", "osdu-type/test/osdu:wks:master-data--Well:1.0.0"],
+            lineage.Datasets.Select(d => $"{d.System}/{d.Namespace}/{d.Name}"));
+        Assert.All(lineage.Datasets, d => Assert.Equal(LineageRelation.Reads, d.Relation));
+        Assert.Empty(lineage.Warnings);
+
+        var registered = InventoryLineage.Describe(Parse(Head.Replace("partitions: [dev, test]\n", "", StringComparison.Ordinal) + WellLogs));
+        Assert.Equal([PartitionNames.Every], registered.Datasets.Select(d => d.Namespace));
+        var bound = InventoryLineage.Describe(flow.ForPartition("test"));
+        Assert.All(bound.Datasets, d => Assert.Equal("test", d.Namespace));
+    }
+
+    [Fact]
+    public void Its_secrets_are_references_the_hygiene_check_inspects()
+    {
+        var flow = Parse(Head.Replace("partitions: [dev, test]\n", "", StringComparison.Ordinal).Replace("  auth:", "  headers: { data-partition-id: '${env:OSDU_PARTITION}', x-tenant: plain }\n  auth:", StringComparison.Ordinal) + WellLogs);
+
+        var references = new InventoryFlowDocument { Flow = flow }.CredentialReferences.ToList();
+
+        Assert.Equal(
+            [
+                new KeyValuePair<string, string>("source.auth.secretRef", "${env:OSDU_TOKEN}"),
+                new KeyValuePair<string, string>("source.endpoint", "${env:OSDU_URL}"),
+                new KeyValuePair<string, string>("source.headers.data-partition-id", "${env:OSDU_PARTITION}"),
+            ],
+            references);
+    }
+}

@@ -1,0 +1,171 @@
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { ClipboardList } from "lucide-react";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { DataTable, type Column } from "@/components/DataTable";
+import { EmptyState } from "@/components/EmptyState";
+import { Page } from "@/components/Page";
+import { PageHeader } from "@/components/PageHeader";
+import { RelativeTime } from "@/components/RelativeTime";
+import { inventoryApi, type Inventory } from "../../../api/inventories";
+import { KindText } from "../KindText";
+import { useActivePartition } from "../activePartition";
+import { ProblemView } from "../TemplateSheet";
+import { RaisedCounts, RunStatusPill, StandingGlyph } from "./InventoryBadges";
+import { InventoryLookupBox } from "./InventoryLookup";
+import { InventoryReport } from "./InventoryReport";
+import { counted, inventoryRoute, standingOf, type InventoryRef, type InventoryView } from "./inventoryFormat";
+
+/** How often the inventories are read again, so a run under way shows its outcome as it lands. */
+const REFRESH_MS = 15000;
+
+/** The partition a link names, when it is one. */
+const PARTITION_ID = /^[A-Za-z0-9_.-]{1,64}$/;
+
+/** The inventory the address names, or null for every inventory. */
+function referenceOf(params: URLSearchParams): InventoryRef | null {
+  const partition = params.get("partition");
+  const inventoryId = Number.parseInt(params.get("inventory") ?? "", 10);
+  return partition !== null && PARTITION_ID.test(partition) && Number.isSafeInteger(inventoryId) && inventoryId > 0 ? { partition, inventoryId } : null;
+}
+
+/**
+ * The inventories of the partition picked in the title bar (docs/inventory-plan.md): every id an OSDU kind holds, set against
+ * every ledger of the partition, each id with its finding. The page is two views of one address: every inventory, with what
+ * its last reconcile raised and its newest run, and one inventory's report, whose grid takes the page's whole width and
+ * scrolls inside it. A lookup by OSDU id across the partition's inventories is in the heading of both. The inventory, the
+ * finding and the tab live in the address, so a link lands on the same view.
+ */
+export default function DeliveryInventoriesPage() {
+  const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
+  const [active] = useActivePartition();
+  const list = useQuery({
+    queryKey: ["delivery", "inventories", "list", active],
+    queryFn: () => inventoryApi.list(),
+    refetchInterval: REFRESH_MS,
+  });
+  const reference = referenceOf(params);
+  const view: InventoryView = params.get("tab") === "runs" ? "runs" : "ids";
+
+  const update = (changes: Record<string, string | null>) => setParams((current) => {
+    const next = new URLSearchParams(current);
+    for (const [key, changed] of Object.entries(changes)) {
+      if (changed === null) {
+        next.delete(key);
+      } else {
+        next.set(key, changed);
+      }
+    }
+
+    return next;
+  }, { replace: true });
+
+  const open = (ref: InventoryRef | null) => (ref === null
+    ? update({ partition: null, inventory: null, finding: null, tab: null })
+    : navigate(inventoryRoute(ref)));
+
+  if (reference !== null) {
+    return (
+      <Page data-testid="page-delivery-inventories">
+        <InventoryReport
+          key={`${reference.partition}-${reference.inventoryId}`}
+          reference={reference}
+          siblings={list.data?.inventories ?? []}
+          finding={params.get("finding")}
+          onFinding={(finding) => update({ finding })}
+          view={view}
+          onView={(next) => update({ tab: next === "ids" ? null : next })}
+          onOpen={open}
+        />
+      </Page>
+    );
+  }
+
+  if (list.isError) {
+    return (
+      <Page data-testid="page-delivery-inventories">
+        <PageHeader title="Inventories" />
+        <ProblemView error={list.error} testId="inventories-error" />
+      </Page>
+    );
+  }
+
+  if (list.data === undefined) {
+    return (
+      <Page data-testid="page-delivery-inventories">
+        <PageHeader title="Inventories" />
+        <Skeleton className="h-96 w-full rounded-lg" />
+      </Page>
+    );
+  }
+
+  const inventories = list.data.inventories;
+  const raised = inventories.reduce((sum, inventory) => sum + (inventory.raised ?? 0), 0);
+  const columns: Column<Inventory>[] = [
+    {
+      id: "inventory",
+      header: "Inventory",
+      render: (row) => (
+        <span className="flex items-center gap-2">
+          <StandingGlyph standing={standingOf(row)} />
+          <span className="font-medium">{row.name}</span>
+        </span>
+      ),
+    },
+    { id: "flow", header: "Flow", render: (row) => <span className="font-mono text-[12px]">{row.flowName}</span> },
+    { id: "kind", header: "Kind", fill: true, floor: 200, render: (row) => <KindText kind={row.kind} /> },
+    { id: "raised", header: "Raised", render: (row) => <RaisedCounts counts={row.reconciled} testId={`inventories-raised-${row.inventoryId}`} /> },
+    {
+      id: "reconciled",
+      header: "Reconciled",
+      render: (row) => (row.lastReconciledUtc === undefined
+        ? <span className="text-[12px] text-muted-foreground">{row.lastBuiltUtc === undefined ? "not built" : "not yet"}</span>
+        : <span className="whitespace-nowrap text-[12px]"><RelativeTime value={row.lastReconciledUtc} absolute={false} /></span>),
+    },
+    {
+      id: "newest",
+      header: "Newest run",
+      render: (row) => (row.latest === undefined || row.latest.inventoryRunId === row.lastReconcileRunId
+        ? null
+        : <RunStatusPill status={row.latest.status} testId={`inventories-newest-${row.inventoryId}`} />),
+    },
+  ];
+  if (active === null) {
+    columns.splice(1, 0, { id: "partition", header: "Partition", render: (row) => <span className="font-mono text-[12px]">{row.partition}</span> });
+  }
+
+  return (
+    <Page data-testid="page-delivery-inventories">
+      <PageHeader
+        title="Inventories"
+        subtitle={inventories.length === 0
+          ? `No inventory${list.data.partition === undefined ? "" : ` in ${list.data.partition}`} yet.`
+          : `${inventories.length.toLocaleString("en-US")} ${inventories.length === 1 ? "inventory" : "inventories"}${list.data.partition === undefined ? "" : ` in ${list.data.partition}`}, ${counted(raised, "id")} raised by their last reconciles.`}
+        actions={<InventoryLookupBox />}
+      />
+      {inventories.length === 0
+        ? (
+          <Card className="gap-0 rounded-lg p-0">
+            <EmptyState
+              icon={<ClipboardList />}
+              title="No inventory has been built here"
+              description="An inventory flow (flowType: inventory) keeps every id the kinds it names hold, and compares each with the ledgers of the partition. Its first build registers its inventories."
+              data-testid="inventories-empty"
+            />
+          </Card>
+        )
+        : (
+          <DataTable
+            columns={columns}
+            rows={inventories}
+            rowKey={(row) => `${row.partition}-${row.inventoryId}`}
+            onRowClick={(row) => open({ partition: row.partition, inventoryId: row.inventoryId })}
+            emptyMessage="No inventory."
+            data-testid="inventories-table"
+          />
+        )}
+    </Page>
+  );
+}

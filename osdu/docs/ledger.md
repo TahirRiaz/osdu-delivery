@@ -114,8 +114,8 @@ A route that sends its payload in parts (the composed routes and the workflow ro
 
 ### `osdu.Attempt`: append-only, one row per delivery try
 
-The record it belongs to (`FlowId`, `DeliveryKey`), worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`, `restored`), the
-phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `reverse`, `restore-previous`, `none`), the hashes
+The record it belongs to (`FlowId`, `DeliveryKey`), worker, start and end, outcome (`delivered`, `skipped`, `failed`, `held`, `deleted`, `historypurged`, `restored`, `undone`), the
+phase delivered (`metadata`, `payload`, `metadata+payload`, `delete`, `purge-history`, `reverse`, `restore-previous`, `undo`, `undo-wait`, `none`), the hashes
 established, the version returned, the origin of the row it was built from (`SourceFileName`, `SourceRowNumber`,
 `SourceUpdatedUtc`, and `SourceDeletedUtc` for the hold of a row the ingestion table marked deleted),
 the redacted error (for a held or failed try only: a try that did not fail keeps its note, chunks sent or why nothing
@@ -134,6 +134,13 @@ attempts however much of the record's history is pruned later. A reversal's trie
 delivered it), `deleted` (a record the source created, removed again), `skipped` (passed over, with why) or `failed`,
 each with the reversal's id, its source and its outcome under `reversal` in the result.
 
+An undo of a unit that did not complete ([osdu.Artifact](#osduartifact-what-a-delivery-made-in-osdu)) is an attempt of
+its own, phase `undo`: `undone` when every artifact it reached was removed, restored, found gone or kept with why, and
+`failed` when one could not be undone yet, naming each artifact and what became of it, with who ran it (the worker that
+aborted the unit, the claim that found it abandoned, the sweep, an `undo` run, or the removal that undid it first). A try
+skipped because an earlier unit's undo has not finished is `skipped`, phase `undo-wait`; it sent nothing, so it does not
+count towards the record's retry budget.
+
 The intake also writes the plan decisions that are changes of the record although nothing is sent, so the record's
 history holds every change of its row:
 
@@ -149,6 +156,34 @@ so the attempt can be found in the services' own logs (a removal names the id it
 held for the record under `returned`), and the error of a refused or failed request quotes the id the
 service answered with. The OpenAPI descriptions do not declare the header; the storage service answers with the id it
 is sent, and with one of its own when it is sent none.
+
+### `osdu.Artifact`: what a delivery made in OSDU
+
+Every object a unit of work created in OSDU, or set out to create ([atomic-delivery-plan.md](atomic-delivery-plan.md),
+Artifacts), written in the transaction that writes the step that made it, so the ledger names it before the delivery goes
+on, whatever happens next. A record's completed steps carry the unit (`$unit`, with when it began), so the unit is dropped
+exactly when the steps are.
+
+| Column | Purpose |
+| --- | --- |
+| `PartitionId`, `ArtifactId` | The ledger partition, then an identity: the key, and the order rows are stored in. |
+| `FlowId`, `DeliveryKey` | The record whose delivery made it. No foreign key: a purged record's artifacts stay, so an id it minted stays known. |
+| `UnitId`, `UnitStartedUtc` | The unit that made it, and when the unit began: what an undo compares OSDU's `createTime` with before it removes a record. |
+| `Slot` | The route's name for it, unique within its unit (`record`, `dataset:0`, `content:Kr`, `session`, `run:<id>`): a slot reported again (an intent completed by its id, a step a resumed try reports again) updates its one row. |
+| `Role` | `record`, `version`, `dataset`, `content`, `output`, `dataspace`, `session`, `lock`, `rows`, `points`, `objects` or `run`. A slot first reported as the record the unit created is never made a version of it. |
+| `TargetId`, `Locator` | The OSDU id, or the key the target gave it (null for an intent whose call has not answered); and what finds it when the id is not known, or what else names it (a landing-zone path, a session's record, a DSPDM row's kind and key). |
+| `Version`, `PriorVersion` | The version the unit wrote, and the version its write replaced: what an undo writes back. The first replaced version reported is kept. |
+| `State` | `intent`, `pending`, `live` (its unit committed), `superseded` (a later delivery replaced it; kept live, since earlier versions of the record name it), `due` (its unit aborted), `removed`, `restored`, `gone` (OSDU no longer held it), `kept` (no call removes it) or `failed` (the undo was refused or could not reach OSDU). |
+| `Note`, `UndoAttempts`, `NextUndoUtc` | Why it was kept or why its undo failed, redacted; how many undos were tried, at most ten; and when the next is due. |
+| `SubmissionId`, `CreatedRunId`, `CreatedUtc`, `UpdatedUtc` | The submission and platform run it was made in. |
+| `SettledUtc`, `SettledRunId`, `SettledBy` | When an undo settled it, in which run, and who: the worker, the sweep, an `undo` run, or the operator whose removal undid it. A slot the route settled itself (a duplicate it removed) opens again when a later try reports it; one an undo settled never does. |
+
+Unique on `(PartitionId, FlowId, DeliveryKey, UnitId, Slot)`; indexed on `(PartitionId, TargetId)` for the inventory
+and a lookup by OSDU id, on `(PartitionId, FlowId, DeliveryKey)` for a record's page, and filtered on the open states for
+the sweep. When a unit commits, its artifacts of a role kept after commit (`dataset`, `content`, `output`, `dataspace`)
+become `live`, and the rest are deleted: what they stood for is the record's own state then. An OSDU id a delivery minted
+stays for good, `live` or `superseded`, which is what an inventory joins ([inventory-plan.md](inventory-plan.md)). The
+table came with `20261008010208_DeliveryArtifacts` (module version 1.29.0).
 
 ### `osdu.WorkBatch`: one file of rendered documents
 
@@ -290,6 +325,39 @@ their numbers and the two attribute tables keys of their own, and added `TableNa
 `20261001200214_DimensionColumnNames` (module version 1.23.0) added `KeyColumn` and `ValueColumn`. A dimension built before any of
 them keeps its keys and values, with no label, key filter or attribute until its next build, and no table of its own
 until its next build or the first read of its table.
+
+### `osdu.Inventory`, `osdu.InventoryRun`, `osdu.InventoryRecord`, `osdu.InventoryVersion` and `osdu.InventoryScan`: inventories
+
+An inventory flow's builds keep here every id an OSDU kind holds in a partition, compared with every ledger of the
+partition ([inventory-plan.md](inventory-plan.md)). Every table is keyed by the ledger partition first and an identity of
+its own; an OSDU id compares in the binary collation, exactly.
+
+| Column | Purpose |
+| --- | --- |
+| `Inventory.InventoryId`, `FlowId`, `FlowName`, `Name` | One inventory, unique by its flow's ledger identity in the partition and its name. |
+| `Kind`, `Query`, `ReadMode`, `Versions` | What its last run read with: the kind (wildcards allowed), the query with its tokens filled, `search` or `storage`, `latest` or `all`. |
+| `OwnersJson`, `OwnersSource` | The identities the last reconcile took as this estate's, each with how many records it created that a ledger claims, and `declared`, `inferred` or `none`. |
+| `LastBuildRunId`, `LastBuiltUtc`, `LastReconcileRunId`, `LastReconciledUtc` | The last build and the last reconcile that completed (a build reconciles too). |
+| `InventoryRun.InventoryRunId`, `RunId`, `Operation`, `Actor`, `Status`, `ReadMode` | One build or reconcile: the platform run, who asked, `running`, `completed` or `failed`. |
+| `Listed`, `Pages`, `Requests` | How it read: the ids listed, repeats left out, and the pages and requests it took. |
+| `Added`, `Changed`, `Gone`, `Returned`, `MissingChecked` | What its merge changed, and how many ids a ledger expects it read from storage. |
+| `FindingsJson`, `OwnersJson`, `Error` | The counts by finding it left, the owners it used, and the redacted reason it failed. |
+| `InventoryRecord.InventoryRecordId`, `TargetId`, `Kind`, `Version` | One id OSDU served, or one a ledger expects, with the version OSDU served. |
+| `CreateUser`, `CreateTime`, `ModifyUser`, `ModifyTime` | Who created and last changed it, and when, as OSDU says. |
+| `FirstSeenUtc`, `ChangedUtc`, `GoneUtc`, `VersionsAt` | When a build first listed it (null for an id a ledger expects that OSDU never served while the inventory read it), last saw it change, and first did not list it; and the version its versions were read at. |
+| `Finding`, `FindingUtc`, `Detail` | What the ledgers hold of it ([inventory-plan.md](inventory-plan.md), The findings), since when, and why in a line. |
+| `LedgerFlowId`, `DeliveryKey`, `LedgerStatus`, `LedgerVersion`, `ArtifactId`, `ArtifactState` | The ledger record, or the artifact, that claims it. |
+| `InventoryVersion.InventoryRecordId`, `Version` | A version storage keeps of a record, for `versions: all`. |
+| `InventoryScan.InventoryRunId`, `TargetId`, ... | An id a build read, staged until the build merges it. |
+
+A build stages its read in chunks of 10,000 ids and merges only once the kind was read whole, in one transaction under an
+application lock per inventory: a read that fails part way changes nothing, a failed run discards its stage, and a run
+whose process stopped is closed failed by the next run of its inventory, which discards its stage too. An id no longer
+listed is marked gone, never deleted. A reconcile reads every ledger of the partition (`osdu.Record`, `osdu.Artifact`,
+`osdu.PurgedRecord`) and writes none of them. `InventoryRecord` is indexed by `TargetId` across inventories (the lookup by
+OSDU id), by finding within an inventory (a report's page and its counts), and in order within an inventory (the grid of
+every id and the export). The tables came with `20261008024435_InventoryFlows`
+(module version 1.30.0).
 
 ### `osdu.Activity`: the audit trail of runs and interventions
 
@@ -591,8 +659,10 @@ keeps the source version it is blocked at. Its activity kind is `restore-previou
 A removal that takes a record out of OSDU (`record` or `everything`) can take it out of the ledger too, as an extra step
 the operator asks for (`purgeLedger`). Once OSDU has answered for the record (removed, or already gone), the ledger
 deletes its attempts, its search entries and its row, in the same chunk, a slice of records to a transaction. Only a
-record the ledger marks `deleted` goes, and none a lease holds: a record whose removal failed, or one OSDU still holds,
-stays as it was, whatever is asked. History purges and `previous` never delete from the ledger; the API and the node
+record the ledger marks `deleted` goes, none a lease holds, and none with something an unfinished delivery left that its
+undo has not taken back yet ([osdu.Artifact](#osduartifact-what-a-delivery-made-in-osdu)), since the undo reaches it
+through the record: a record whose removal failed, one OSDU still holds, or one an undo still has to finish, stays as it
+was, whatever is asked. History purges and `previous` never delete from the ledger; the API and the node
 refuse the extra step with them.
 
 The ledger keeps one line of each record it deletes, in `osdu.PurgedRecord`: its key, source key and label, the OSDU id
@@ -605,7 +675,8 @@ of the record stays: it is the reversal's.
 A record removed from OSDU earlier is deleted from the ledger alone, asking nothing of OSDU, by the same deletion: the
 removal dialog's "Leave as it is" with the ledger step, or `POST /flows/{pipelineId}/records/purge` (keys, a filter, or
 every record removed) and `POST /records/{flowId}/{key}/purge`. It runs in the control plane as an intervention of kind
-`purge`, and a record OSDU may still hold is left as it is and counted as left (the record route refuses it with 409).
+`purge`, and a record OSDU may still hold, or one an undo still has to finish, is left as it is and counted as left (the
+record route refuses it with 409, titled "Not removed from OSDU" or "Undo unfinished").
 
 What goes is the record's history, for good, and nothing else of the ledger: its watermarks stay. A row whose record was
 deleted is read again when it changes, as any row is, and planned then as a record the ledger never held, under the OSDU id
@@ -625,12 +696,16 @@ back in the dialog), and the run checks it again on the node before it touches a
 2. Removes from OSDU every record it may hold, reversibly (the `record` scope), through the removal a selection takes, a
    page of the ledger at a time in key order: each record gets its removal attempt, and a record the ledger already marks
    removed is not asked about again. A route with no reversible removal (dspdm, etp) is refused before anything is asked.
+   Before a record is removed, what an unfinished delivery of it left is undone ([osdu.Artifact](#osduartifact-what-a-delivery-made-in-osdu));
+   once a record is out of OSDU, the datasets, content and outputs its committed deliveries minted are removed reversibly
+   with it, since nothing would name them any more.
 3. Only when OSDU answered for every record (removed, or already gone), deletes the ledger whole: every record whatever its
    state, a slice to a transaction, each kept as one line in `osdu.PurgedRecord` named under the run's activity (kind
    `delete-ledger`), with its attempts, search entries and lease events; then, in one transaction, its submissions and work
    batches, its leases, its watermarks, and its reversals with their items. A record OSDU refused to remove leaves the
    ledger as it was, with the records it did remove marked removed, and the run fails naming the refusals: OSDU never holds
-   a record the ledger forgot. Deleting the ledger again does the rest.
+   a record the ledger forgot. An artifact whose undo failed keeps the ledger the same way, so no id the ledger still has to
+   take back is forgotten. Deleting the ledger again does the rest.
 
 What stays: the activities and their links (the audit trail), the lines of the deleted records, and the ledger's entry in
 the directory. The work batch files under `source.work` are not touched. The next run of the flow, a scheduled one

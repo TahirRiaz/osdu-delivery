@@ -35,7 +35,8 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// </list>
 /// A verify reads the rows by primary key and compares versions. Removal deletes a row for good
 /// (<c>DELETE /delete/{boName}/{id}</c>, the everything scope): DSPDM keeps no deleted rows and no versions, so the record and
-/// history scopes are refused.
+/// history scopes are refused. An insert is declared before it is sent, with the business object and the key that find the
+/// row again, so a row whose save answer was lost is deleted when its delivery does not complete (docs/atomic-delivery-plan.md).
 /// </summary>
 public sealed class OsduDspdmProtocol : IDeliveryProtocol
 {
@@ -91,6 +92,147 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
     }
 
     public DeliveryProtocol Kind => DeliveryProtocol.Dspdm;
+
+    /// <summary>An insert's answer can be lost after DSPDM drew the row's key, so a delivery can leave a row no record names.</summary>
+    public bool Undoes => true;
+
+    /// <summary>The slot of the row a delivery inserts.</summary>
+    public const string RowSlot = "row";
+
+    /// <summary>
+    /// Undoes what unfinished deliveries inserted (docs/atomic-delivery-plan.md): the row, deleted for good (DSPDM keeps no
+    /// deleted rows), by the key DSPDM gave it, or, when the insert's answer was lost, by the record's key, which no row had
+    /// before the insert. A row is deleted even when newer work follows: that work finds the row by its key, does not know it
+    /// as the record's, and would be held. An update leaves nothing to undo: DSPDM keeps no versions.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var results = new List<UndoResult>();
+        foreach (var work in works)
+        {
+            foreach (var item in work.Items)
+            {
+                if (item.Artifact.Role != ArtifactRoles.Rows)
+                {
+                    results.Add(UndoResult.Kept(item, "the dspdm route makes nothing of this kind"));
+                    continue;
+                }
+
+                try
+                {
+                    results.Add(await UndoRowAsync(work, item, ct).ConfigureAwait(false));
+                }
+                catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+                {
+                    results.Add(UndoResult.Failed(item, ArtifactUndo.Redact(ex)));
+                }
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Deletes the row one artifact names: by its primary key when the insert answered, else the one row its key finds. The
+    /// business object is the one the insert's kind names, or, for a row known by its primary key alone, the one the record's id
+    /// names, as a verify reads it.
+    /// </summary>
+    private async Task<UndoResult> UndoRowAsync(UndoWork work, UndoItem item, CancellationToken ct)
+    {
+        var locator = RowLocator.Parse(item.Artifact.Locator);
+        var given = DspdmValues.Key(item.Artifact.TargetId is { } known ? JsonValue.Create(known) : null);
+        DspdmObject business;
+        if (locator is not null)
+        {
+            business = await _catalog.ForKindAsync(locator.Kind, ct).ConfigureAwait(false);
+        }
+        else if (given is not null && EntityOf(work.TargetId) is { } entity)
+        {
+            business = await _catalog.ForEntityAsync(entity, ct).ConfigureAwait(false);
+        }
+        else if (given is { } orphaned)
+        {
+            return UndoResult.Kept(item, string.Create(CultureInfo.InvariantCulture, $"row {orphaned}: the insert recorded no business object, and the record's id {work.TargetId} names no entity to read it from, so the row cannot be reached"));
+        }
+        else
+        {
+            return UndoResult.Kept(item, "the insert recorded neither the key DSPDM gave its row nor the business object and key to find it by (a key too long to record), so an inventory of the business object finds it");
+        }
+
+        long id;
+        if (given is { } primary)
+        {
+            id = primary;
+        }
+        else if (locator is null)
+        {
+            return UndoResult.Kept(item, "the insert recorded no key to find its row by (a key too long to record), so an inventory of the business object finds it");
+        }
+        else
+        {
+            var filters = new List<DspdmFilter>(business.Key.Count);
+            foreach (var attribute in business.Key)
+            {
+                if (!locator.Key.TryGetPropertyValue(attribute.Name, out var value))
+                {
+                    return UndoResult.Kept(item, $"the key the insert recorded has no {attribute.Name}, which the rows of {business.Name} are found by now, so its row cannot be told");
+                }
+
+                filters.Add(new DspdmFilter(attribute.Name, DspdmFilter.EqualsOperator, [value?.DeepClone()]));
+            }
+
+            var found = await _service.ReadAsync(business.Name, business.LookupAttributes, filters, business.PrimaryKey.Name, ct).ConfigureAwait(false);
+            if (found.Count == 0)
+            {
+                return UndoResult.Gone(item, $"no row of {business.Name} has the key the insert was sent with: the insert did not land");
+            }
+
+            if (found.Count > 1 || IdOf(business, found[0]) is not { } only)
+            {
+                return UndoResult.Kept(item, string.Create(CultureInfo.InvariantCulture, $"{found.Count} rows of {business.Name} have the key the insert was sent with, so which one it made cannot be told; none was deleted"));
+            }
+
+            id = only;
+        }
+
+        var removal = await _service.DeleteAsync(business.Name, id, ct).ConfigureAwait(false);
+        return removal == DspdmRemoval.Gone
+            ? UndoResult.Gone(item, string.Create(CultureInfo.InvariantCulture, $"row {id} of {business.Name} not found in DSPDM"))
+            : UndoResult.Removed(item, string.Create(CultureInfo.InvariantCulture, $"row {id} of {business.Name} deleted from DSPDM, for good (DSPDM keeps no deleted rows)"));
+    }
+
+    /// <summary>What finds an inserted row again: the kind its business object is read by, and its key's values as the save sent them.</summary>
+    private sealed record RowLocator(string Kind, JsonObject Key)
+    {
+        /// <summary>The locator as the ledger keeps it; null when it does not fit, and the row is then found only by the key DSPDM gives it.</summary>
+        public string? Text()
+        {
+            var text = new JsonObject { ["kind"] = Kind, ["key"] = Key.DeepClone() }.ToJsonString();
+            return text.Length <= SqlFlow.Delivery.Data.DeliveryModel.MaxArtifactLocatorLength ? text : null;
+        }
+
+        public static RowLocator? Parse(string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return null;
+            }
+
+            try
+            {
+                return JsonNode.Parse(text) is JsonObject node
+                    && node["kind"] is JsonValue kind && kind.TryGetValue<string>(out var name) && !string.IsNullOrWhiteSpace(name)
+                    && node["key"] is JsonObject key
+                    ? new RowLocator(name, (JsonObject)key.DeepClone())
+                    : null;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+    }
 
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, MaxRowsPerSave);
 
@@ -405,6 +547,12 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
 
         public (string Name, long Id)? Stored { get; init; }
 
+        /// <summary>What finds the row again by its key, as the ledger keeps it; null when it does not fit.</summary>
+        public string? Locator { get; init; }
+
+        /// <summary>The row an earlier try of the unit inserted, whose answer was lost, taken as the record's.</summary>
+        public bool Adopted { get; set; }
+
         public string KeyText => string.Join('', Tokens);
 
         public string KeyDisplay => string.Join(", ", Business.Key.Select((k, i) => $"{k.Name} '{Tokens[i]}'"));
@@ -530,8 +678,10 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
             }
 
             var tokens = new List<string>(key.Count);
+            var located = new JsonObject();
             foreach (var attribute in key)
             {
+                located[attribute.Name] = values.ContainsKey(attribute.Name) ? Filtered(values[attribute.Name]) : null;
                 var token = values.ContainsKey(attribute.Name) ? DspdmValues.Token(attribute.Type, values[attribute.Name], protocol._service.Zone) : null;
                 if (string.IsNullOrEmpty(token))
                 {
@@ -561,6 +711,7 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
                 Tokens = tokens,
                 Fingerprint = ContentHash.Of(business.Name + "\n" + string.Join('\n', tokens)),
                 Stored = stored,
+                Locator = new RowLocator(kind, located).Text(),
             };
         }
 
@@ -659,16 +810,24 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
             }
 
             // The marker a later try reads when this save's answer is lost: the row it finds by this key is the one this try saved.
+            // An insert goes with its intent, which finds the row by the same key when the delivery does not complete.
             await Task.WhenAll(toSave.Select(row =>
             {
                 var begun = new Dictionary<string, string>(StringComparer.Ordinal)
                 {
                     [FingerprintValue] = row.Fingerprint,
                     [BusinessObjectValue] = business.Name,
-                    [OperationValue] = row.Insert ? "insert" : "update",
+                    // A row an earlier try inserted and this one takes over is still the unit's insert, so a try after this one, whose
+                    // answer is lost too, takes it over again and reports it as the unit's.
+                    [OperationValue] = row.Insert || row.Adopted ? "insert" : "update",
                 };
                 row.Steps.Add(SaveBeginStep, row.Steps.Now, null, begun);
-                return row.Work.ReportStepAsync(SaveBeginStep, begun, ct);
+
+                // A key too long to record has no intent: a row it inserts whose answer is lost is left for an inventory.
+                IReadOnlyList<TargetArtifact> intent = (row.Insert || row.Adopted) && row.Locator is not null
+                    ? [TargetArtifact.Intent(RowSlot, ArtifactRoles.Rows, row.Locator)]
+                    : [];
+                return row.Work.ReportStepAsync(SaveBeginStep, begun, intent, ct);
             })).ConfigureAwait(false);
 
             await SaveAsync(business, toSave, ct).ConfigureAwait(false);
@@ -746,7 +905,7 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
         }
 
         /// <summary>A value as a filter sends it: text trimmed, as DSPDM trims what it saves.</summary>
-        private static JsonNode? Filtered(JsonNode? value)
+        internal static JsonNode? Filtered(JsonNode? value)
             => value is JsonValue text && text.GetValueKind() == JsonValueKind.String ? JsonValue.Create(text.GetValue<string>().Trim()) : value?.DeepClone();
 
         /// <summary>Which row the record is, or why it is held; false when it is held.</summary>
@@ -808,6 +967,7 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
             // A row the record did not write holds its key, unless the record's earlier try saved it and its answer was lost.
             if (row.Work.Completed(SaveBeginStep) is { } begun && begun.GetValueOrDefault(FingerprintValue) == row.Fingerprint)
             {
+                row.Adopted = begun.GetValueOrDefault(OperationValue) == "insert";
                 return Update(row, candidateId!.Value, candidate, "the row an earlier try saved, whose answer was lost");
             }
 
@@ -1032,7 +1192,12 @@ public sealed class OsduDspdmProtocol : IDeliveryProtocol
                 }
 
                 row.Steps.Add(SaveStep, started, 200, values);
-                reports.Add(row.Work.ReportStepAsync(SaveStep, values, ct));
+
+                // The row the unit inserted, under the key DSPDM drew for it: what an undo deletes when the delivery does not complete.
+                IReadOnlyList<TargetArtifact> made = row.Insert || row.Adopted
+                    ? [TargetArtifact.Created(RowSlot, ArtifactRoles.Rows, row.Id.Value.ToString(CultureInfo.InvariantCulture), locator: row.Locator)]
+                    : [];
+                reports.Add(row.Work.ReportStepAsync(SaveStep, values, made, ct));
                 var detail = operation switch
                 {
                     Inserted => string.Create(CultureInfo.InvariantCulture, $"inserted as row {row.Id} of {business.Name}"),

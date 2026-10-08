@@ -95,11 +95,14 @@ public sealed class DatasetRouteTests
         Assert.DoesNotContain(outcome.Steps.SelectMany(s => s.Returned.Values), v => v.Contains("sig=", StringComparison.Ordinal));
         Assert.Contains(outcome.Steps, s => s.Name == OsduDatasetProtocol.RegisterStep && s.Returned["retrievable"] == "true");
 
+        // Storage is asked before the registration whether it holds the dataset, so the registration's intent says whether it
+        // creates the dataset or writes a version over the one storage holds.
         Assert.Equal(
             [
                 "core/dataset POST /retrievalInstructions",
                 "core/dataset POST /storageInstructions",
                 "core/dataset PUT /registerDataset",
+                "core/storage POST /query/records",
             ],
             AssertConform(platform));
     }

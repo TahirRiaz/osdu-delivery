@@ -307,7 +307,9 @@ internal static partial class SqlServerLedgerBulk
             [PendingPayload] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN CAST(0 AS bit) ELSE r.[PendingPayload] END,
             [PendingPayloadLocation] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingPayloadLocation] END,
             [PendingReferences] = CASE WHEN s.[Promote] = 1 AND x.[Superseded] = 0 THEN NULL ELSE r.[PendingReferences] END,
-            [AttemptCount] = CASE WHEN s.[Promote] = 1 OR x.[Superseded] = 1 THEN 0 ELSE r.[AttemptCount] END
+            [AttemptCount] = CASE WHEN s.[Promote] = 1 OR x.[Superseded] = 1 THEN 0
+                WHEN s.[NothingSent] = 1 AND r.[AttemptCount] > 0 THEN r.[AttemptCount] - 1
+                ELSE r.[AttemptCount] END
         FROM [osdu].[Record] AS r WITH (FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
         INNER JOIN #Latest AS s ON r.[PartitionId] = s.[PartitionId] AND r.[FlowId] = s.[FlowId] AND r.[DeliveryKey] = s.[DeliveryKey]
         CROSS APPLY (SELECT CASE
@@ -439,7 +441,7 @@ internal static partial class SqlServerLedgerBulk
     /// Appends a lease's attempts and record events in one transaction: two bulk copies, and nothing updated. A deadlock
     /// rolls both back, and the caller writes them again.
     /// </summary>
-    public static Task<int> AppendAsync(OsduDbContext db, IReadOnlyList<DeliveryAttempt> attempts, IReadOnlyList<DeliveryRecordEvent> events, CancellationToken ct)
+    public static Task<int> AppendAsync(OsduDbContext db, IReadOnlyList<DeliveryAttempt> attempts, IReadOnlyList<DeliveryRecordEvent> events, ArtifactWrites? artifacts, CancellationToken ct)
         => InTransactionAsync(db, async (connection, transaction) =>
         {
             if (attempts.Count > 0)
@@ -452,6 +454,13 @@ internal static partial class SqlServerLedgerBulk
             {
                 using var table = EventTable(events);
                 await BulkCopyAsync(connection, transaction, "[osdu].[RecordEvent]", table, ct).ConfigureAwait(false);
+            }
+
+            // What the steps created, and what the tries and undos settled of it, in the transaction that writes them: an id a
+            // step minted is in the ledger exactly when the step is.
+            if (artifacts is not null)
+            {
+                await WriteArtifactsAsync(connection, transaction, artifacts, ct).ConfigureAwait(false);
             }
 
             return attempts.Count + events.Count;

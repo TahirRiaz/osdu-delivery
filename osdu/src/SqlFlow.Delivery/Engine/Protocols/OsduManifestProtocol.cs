@@ -26,7 +26,10 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// the run, because a run that drops a record still finishes and a record that existed is still present afterwards, so
 /// only a version that moved counts as written. The manifest step records the run id before polling starts
 /// (section 16.3), so a retry after a poll timeout resumes the same run; a run that failed, or that finished without
-/// writing the record, is triggered again on the next try, and the failed run stays on the attempt.
+/// writing the record, is triggered again on the next try, and the failed run stays on the attempt. Every registration, the
+/// record a run is to write, and a manifest stored by reference are artifacts of the record's unit of work
+/// (docs/atomic-delivery-plan.md): a delivery that does not complete has its datasets removed and the record removed or given
+/// back the version it replaced, once the run that could still write it has ended.
 /// </summary>
 public sealed class OsduManifestProtocol : IDeliveryProtocol
 {
@@ -83,6 +86,18 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     private bool? _byReferenceRegistered;
 
     public DeliveryProtocol Kind => DeliveryProtocol.Manifest;
+
+    /// <summary>The files are registered, and a manifest may be stored, before a run writes the record.</summary>
+    public bool Undoes => true;
+
+    /// <summary>The slot of the record a run is to write: one per unit, so a retry's new run takes it over rather than adding another.</summary>
+    private const string RecordSlot = TargetArtifact.RecordSlot;
+
+    /// <summary>The slot of a manifest stored by reference for a run.</summary>
+    private static string ManifestSlot(string runId) => "manifest:" + runId;
+
+    /// <summary>What finds the run an artifact waits on: the workflow and its run id.</summary>
+    private static string RunLocator(string workflow, string runId) => workflow + "|" + runId;
 
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, ProtocolOptions.MaxBatchSize);
 
@@ -172,7 +187,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
             try
             {
                 var run = await PollAsync(workflow, runId, _time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-                await RemoveManifestAsync(manifestDataset, ct).ConfigureAwait(false);
+                await RemoveManifestAsync(manifestDataset, runId, group, ct).ConfigureAwait(false);
                 if (run.HasFailed)
                 {
                     _logger.LogWarning("Workflow run {RunId} of {Workflow} failed; {Count} record(s) go into a new run.", runId, workflow, group.Count);
@@ -239,7 +254,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         {
             var triggered = await TriggerAsync(group, ct).ConfigureAwait(false);
             var run = await PollAsync(triggered.Run.Workflow, triggered.Run.RunId, triggered.Run.Started, ct).ConfigureAwait(false);
-            await RemoveManifestAsync(triggered.ManifestDataset, ct).ConfigureAwait(false);
+            await RemoveManifestAsync(triggered.ManifestDataset, triggered.Run.RunId, group, ct).ConfigureAwait(false);
             if (run.HasFailed)
             {
                 var failure = new DeliveryException($"workflow run {run.RunId} of {run.Workflow} failed; the next try triggers a new run");
@@ -323,9 +338,10 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
 
     /// <summary>
     /// Removes the dataset a manifest by reference was stored as, reversibly, once its run has settled: it is a transport,
-    /// not a delivered record. A failure to remove it is logged and does not fail the records the run wrote.
+    /// not a delivered record. Its removal ends its artifact on every record of the run. A failure to remove it does not fail
+    /// the records the run wrote: its artifact stays an intent, which the unit's end makes due, so the sweep removes it.
     /// </summary>
-    private async Task RemoveManifestAsync(string? datasetId, CancellationToken ct)
+    private async Task RemoveManifestAsync(string? datasetId, string runId, List<Staged> group, CancellationToken ct)
     {
         if (datasetId is null)
         {
@@ -336,10 +352,17 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         {
             var removed = await _datasets.SoftDeleteAsync(datasetId, ct).ConfigureAwait(false);
             _logger.LogInformation("The manifest dataset {DatasetId} is removed: {Detail}.", datasetId, removed.Detail);
+            var done = TargetArtifact.Created(ManifestSlot(runId), ArtifactRoles.Dataset, datasetId) with
+            {
+                Status = ArtifactStatus.Removed,
+                Note = "the manifest a run read by reference, removed once its run settled",
+            };
+            await Task.WhenAll(group.Select(s => s.Work.ReportStepAsync(
+                "manifest-removed", new Dictionary<string, string>(StringComparer.Ordinal) { [ManifestDatasetValue] = datasetId }, [done], ct))).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException)
         {
-            _logger.LogWarning("The manifest dataset {DatasetId} could not be removed after its run settled: {Message}", datasetId, HeaderRedaction.RedactMessage(ex.Message));
+            _logger.LogWarning("The manifest dataset {DatasetId} could not be removed after its run settled: {Message}; the unfinished-delivery sweep removes it.", datasetId, HeaderRedaction.RedactMessage(ex.Message));
         }
     }
 
@@ -384,6 +407,90 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
         return FileUploads.DeleteRecordAndDatasetsAsync(_client, _options, targetId, scope, targetState, ct);
     }
+
+    /// <summary>
+    /// Undoes what unfinished deliveries left (docs/atomic-delivery-plan.md): nothing while a run that could still write the
+    /// record is going (each artifact is tried again by the sweep once it ends); then every dataset the unit registered, and a
+    /// manifest stored by reference, removed reversibly, and the record a run wrote removed when the run created it, or given
+    /// back the version storage held before the run.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var results = new List<UndoResult>();
+        foreach (var work in works)
+        {
+            results.AddRange(await UndoWorkAsync(work, ct).ConfigureAwait(false));
+        }
+
+        return results;
+    }
+
+    /// <summary>One record's undo, as the composed route of manifests and DDMS bulk data also takes it for what its manifests made.</summary>
+    internal async Task<IReadOnlyList<UndoResult>> UndoWorkAsync(UndoWork work, CancellationToken ct)
+    {
+        var runs = work.Items.Where(i => i.Artifact.Role == ArtifactRoles.Run).ToList();
+        if (await RunningAsync(work, ct).ConfigureAwait(false) is { } running)
+        {
+            return work.Items.Select(i => UndoResult.Failed(i, running)).ToList();
+        }
+
+        var (waiting, ended) = await WorkflowRuns.SettleAsync(_workflows, runs, ct).ConfigureAwait(false);
+        if (waiting is not null)
+        {
+            return work.Items.Select(i => UndoResult.Failed(i, waiting)).ToList();
+        }
+
+        // The record goes back first, so a record that cannot be taken back yet never names datasets already removed: its
+        // datasets wait with it.
+        var storage = StorageWriter();
+        var results = new List<UndoResult>(work.Items.Count);
+        results.AddRange(runs.Select(i => UndoResult.Kept(i, ended[i.ArtifactId])));
+        var record = work.Items.Where(i => ArtifactRoles.IsTheRecord(i.Artifact.Role)).ToList();
+        var recordResults = await ArtifactUndo.RecordItselfAsync(work, record, StorageSide(storage), ct).ConfigureAwait(false);
+        results.AddRange(recordResults);
+        var datasets = work.Items.Where(i => i.Artifact.Role == ArtifactRoles.Dataset).ToList();
+        results.AddRange(ArtifactUndo.WaitForRecord(recordResults) is { } blocked
+            ? datasets.Select(i => UndoResult.Failed(i, blocked))
+            : await ArtifactUndo.DatasetsAsync(_client, _options, storage, work, datasets, ct).ConfigureAwait(false));
+        results.AddRange(ArtifactUndo.Keep(work.Items.Except(runs).Except(datasets).Except(record), "the manifest route makes nothing of this kind"));
+        return results;
+    }
+
+    /// <summary>Why the undo waits: a run an artifact names that has not ended, which may still write the record; null when none is going.</summary>
+    private async Task<string?> RunningAsync(UndoWork work, CancellationToken ct)
+    {
+        var runs = work.Items
+            .Where(i => ArtifactRoles.IsTheRecord(i.Artifact.Role) && i.Artifact.Locator?.Split('|') is [_, _])
+            .Select(i => i.Artifact.Locator!.Split('|'))
+            .Select(p => (Workflow: p[0], RunId: p[1]))
+            .Distinct()
+            .ToList();
+        foreach (var (workflow, runId) in runs)
+        {
+            if ((await WorkflowRuns.StateAsync(_workflows, workflow, runId, ct).ConfigureAwait(false)).Waiting is { } waiting)
+            {
+                return waiting;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>The storage writer an undo removes and restores through: the storage service's own paths, with the flow's batching.</summary>
+    private OsduRecordProtocol StorageWriter()
+        => _storage ??= new OsduRecordProtocol(_client, RecordRestores.WriterOptions(new ProtocolOptions { BatchSize = _options.BatchSize }), _time);
+
+    private OsduRecordProtocol? _storage;
+
+    /// <summary>The record a run wrote is a storage record: storage removes it, says when it created it, and writes an earlier version back.</summary>
+    private RecordSide StorageSide(OsduRecordProtocol storage) => new()
+    {
+        Remove = (id, token) => storage.DeleteAsync(id, RemovalScope.Record, null, token),
+        Read = (id, token) => RecordWriter.ReadAsync(_client, OsduRecordProtocol.DefaultVerifyPath, id, token),
+        Restorer = storage,
+        Versions = (id, token) => RecordWriter.VersionsAsync(_client, OsduRecordProtocol.DefaultVerifyPath, id, token),
+    };
 
     /// <summary>
     /// The dataset id of one file of a record, derived from the record id and the dataset kind so that it is the
@@ -547,8 +654,22 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     $"the flow sends every manifest by reference, and this partition's Workflow service has no workflow named {_options.ByReferenceWorkflowName}; not every deployment registers it (osdu/specs/workflows/INTEGRATION.md section 3.3)");
             }
 
-            (manifestDataset, context) = await StoreManifestAsync(group, manifest, context, runId, ct).ConfigureAwait(false);
             workflow = _options.ByReferenceWorkflowName;
+            manifestDataset = ManifestDatasetId(runId);
+        }
+
+        // Before anything of the run is sent: the record the run is to write, and the manifest stored for it, are the unit's,
+        // so a run whose trigger or poll is lost is still waited out and its record taken back when the delivery does not
+        // complete. The manifest dataset stays an intent until the route removes it.
+        await Task.WhenAll(group.Select(s => s.Work.ReportStepAsync(
+            "manifest-intent",
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["runId"] = runId, [WorkflowValue] = workflow },
+            RunArtifacts(s, workflow, runId, manifestDataset),
+            ct))).ConfigureAwait(false);
+
+        if (byReference)
+        {
+            context = await StoreManifestAsync(group, manifest, context, runId, manifestDataset!, ct).ConfigureAwait(false);
         }
 
         var run = await _workflows.TriggerAsync(workflow, runId, context, ct).ConfigureAwait(false);
@@ -587,14 +708,12 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
     /// the manifest's top level, which the workflow copies onto the files it writes itself; and returns the context that
     /// names it (osdu/specs/workflows/INTEGRATION.md section 3.3).
     /// </summary>
-    private async Task<(string DatasetId, JsonObject Context)> StoreManifestAsync(List<Staged> group, JsonObject manifest, JsonObject inline, string runId, CancellationToken ct)
+    private async Task<JsonObject> StoreManifestAsync(List<Staged> group, JsonObject manifest, JsonObject inline, string runId, string datasetId, CancellationToken ct)
     {
         var first = group[0].Document;
         var acl = first["acl"]?.DeepClone() ?? throw new DeliveryException("the records have no acl block to give the manifest");
         var legal = first["legal"]?.DeepClone() ?? throw new DeliveryException("the records have no legal block to give the manifest");
-        var partition = _client.Header("data-partition-id") ?? throw new DeliveryException("the flow names no data-partition-id to store the manifest in");
         var entityType = TargetId.EntityTypeFromKind(_options.DatasetKind);
-        var datasetId = $"{partition}:{entityType}:osdu-delivery-manifest-{runId}";
         var file = (JsonObject)manifest.DeepClone();
         file["acl"] = acl.DeepClone();
         file["legal"] = legal.DeepClone();
@@ -620,14 +739,42 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
         await _datasets.RegisterAsync([record], ct).ConfigureAwait(false);
         _logger.LogInformation("The manifest of {Count} record(s) is stored as {DatasetId} ({Bytes} bytes) and sent by reference.", group.Count, datasetId, bytes.LongLength);
 
-        var context = new JsonObject
+        return new JsonObject
         {
             ["Payload"] = inline["Payload"]!.DeepClone(),
             ["acl"] = acl,
             ["legal"] = legal,
             ["manifest"] = datasetId,
         };
-        return (datasetId, context);
+    }
+
+    /// <summary>The id a run's manifest is stored under when it goes by reference: derived from the run's, so a retry of the run stores it again under the same id.</summary>
+    private string ManifestDatasetId(string runId)
+    {
+        var partition = _client.Header("data-partition-id") ?? throw new DeliveryException("the flow names no data-partition-id to store the manifest in");
+        return $"{partition}:{TargetId.EntityTypeFromKind(_options.DatasetKind)}:osdu-delivery-manifest-{runId}";
+    }
+
+    /// <summary>
+    /// What a run is to make for one record, as intents: the record itself (new when storage held no version of it before the
+    /// run, else a version over the one it held), and the manifest stored for the run.
+    /// </summary>
+    private static IReadOnlyList<TargetArtifact> RunArtifacts(Staged staged, string workflow, string runId, string? manifestDataset)
+    {
+        var record = new TargetArtifact
+        {
+            Slot = RecordSlot,
+            Role = staged.PriorVersion is null ? ArtifactRoles.Record : ArtifactRoles.Version,
+            TargetId = staged.Work.TargetId,
+            PriorVersion = staged.PriorVersion,
+            Locator = RunLocator(workflow, runId),
+            Status = ArtifactStatus.Intent,
+        };
+        // Each run is named under a slot of its own, so the run a later try triggers never hides one whose trigger answer was lost.
+        var run = WorkflowRuns.Artifact(workflow, runId);
+        return manifestDataset is null
+            ? [record, run]
+            : [record, run, TargetArtifact.Intent(ManifestSlot(runId), ArtifactRoles.Dataset, null, manifestDataset)];
     }
 
     /// <summary>Polls the run until it finishes, or the flow's timeout passes (the next try resumes the same run).</summary>
@@ -683,7 +830,23 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     returned["files"] = staged.Files.ToString(CultureInfo.InvariantCulture);
                 }
 
+                var superseded = staged.Work.DeliverPayload
+                    ? FileUploads.DatasetIds(staged.Work.TargetState).Except(staged.Ids, StringComparer.Ordinal).ToList()
+                    : [];
+
                 OwnedContent.Record(returned, staged.Document, staged.Preserved, staged.Work.TargetState);
+
+                // The run wrote the record: its intent is a record the unit made, which the unit's commit ends.
+                var written = new TargetArtifact
+                {
+                    Slot = RecordSlot,
+                    Role = staged.PriorVersion is null ? ArtifactRoles.Record : ArtifactRoles.Version,
+                    TargetId = id,
+                    Version = version,
+                    PriorVersion = staged.PriorVersion,
+                    Locator = RunLocator(run.Workflow, run.RunId),
+                };
+                await staged.Work.ReportStepAsync(RecordsStep, recordValues, [written], ct).ConfigureAwait(false);
                 outcomes[staged.Index] = new DeliveryOutcome
                 {
                     MetadataDelivered = true,
@@ -693,6 +856,7 @@ public sealed class OsduManifestProtocol : IDeliveryProtocol
                     Detail = $"workflow run {run.RunId} {run.Status}",
                     Returned = returned,
                     Steps = staged.Steps.Steps,
+                    Superseded = superseded,
                 };
             }
             else if (!present && read.Retry.Contains(id))

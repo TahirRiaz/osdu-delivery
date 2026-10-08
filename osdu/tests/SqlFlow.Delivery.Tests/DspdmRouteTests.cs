@@ -107,7 +107,7 @@ public sealed class DspdmRouteTests
             ExistingVersion = existing,
             TargetState = state ?? new Dictionary<string, string>(StringComparer.Ordinal),
             CompletedSteps = completed ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal),
-            StepCompleted = reports is null ? null : (step, values, _) => reports.Add(step, values),
+            StepCompleted = reports is null ? null : (report, _) => reports.Add(report.Step, report.Returned),
         };
 
     private static List<string> Sent(FakeOsduPlatform platform, int from = 0)

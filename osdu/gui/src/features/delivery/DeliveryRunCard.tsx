@@ -8,7 +8,9 @@ import { CodeView } from "@/components/CodeView";
 import { deliveryApi, type ReversalSource } from "../../api/delivery";
 import { prettyJson } from "./prettyJson";
 import { ReversalCard } from "./ReversalCard";
-import { runRequest, runScope } from "./runOutcome";
+import { runRequest, runResult, runScope } from "./runOutcome";
+import { undoneFirst, undoRunCounts } from "../../api/artifacts";
+import { UndoneFirst } from "./ArtifactMarks";
 
 const OUTCOME_COPY: Record<string, string> = {
   cache: "What the refresh reported when it finished: the version it wrote (or that nothing changed), each type's record count and changes, and the delivered records those changes reach.",
@@ -51,6 +53,11 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
     refetchInterval: (q) => ((q.state.data?.length ?? 0) === 0 && (run.status === "queued" || run.status === "running") ? 3000 : false),
   });
   const reversalId = reversal.data?.[0]?.reversalId ?? null;
+  const result = runResult(run);
+  const undone = run.operation === "undo" ? undoRunCounts(result) : null;
+  const ledgerUndone = run.operation === "delete-ledger" ? undoneFirst(result) : null;
+  // A deliver, replan or drain run ends with the sweep that undoes what unfinished deliveries left.
+  const sweptUndone = run.operation === null || run.operation === "deliver" || run.operation === "replan" || run.operation === "drain" ? undoneFirst(result) : null;
 
   return (
     <>
@@ -111,6 +118,25 @@ export default function DeliveryRunCard({ run }: { run: RunDetail }) {
       )}
 
       {reversalId !== null && <ReversalCard reversalId={reversalId} />}
+
+      {/* What an undo run took back, what deleting the ledger undid before it removed anything, and what a delivery run's sweep undid. */}
+      {run.operation === "undo" && undone !== null && (
+        <Card className="gap-1 rounded-lg p-3" data-testid="run-undo">
+          {undone.records === 0
+            ? <p className="text-[13px] text-muted-foreground">Nothing unfinished deliveries left was due an undo.</p>
+            : <UndoneFirst undone={undone} heading="Undone" testId="run-undo-counts" />}
+        </Card>
+      )}
+      {ledgerUndone !== null && ledgerUndone.records > 0 && (
+        <Card className="gap-1 rounded-lg p-3" data-testid="run-undone-first">
+          <UndoneFirst undone={ledgerUndone} testId="run-undone-first-counts" />
+        </Card>
+      )}
+      {sweptUndone !== null && sweptUndone.records > 0 && (
+        <Card className="gap-1 rounded-lg p-3" data-testid="run-undone-after">
+          <UndoneFirst undone={sweptUndone} heading="Undone after the run" testId="run-undone-after-counts" />
+        </Card>
+      )}
 
       {run.resultJson !== null && (
         <Card className="gap-2 rounded-lg p-3" data-testid="run-result">

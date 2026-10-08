@@ -39,6 +39,48 @@ public sealed class OsduFileAndDdmsProtocol : IDeliveryProtocol
 
     public DeliveryProtocol Kind => DeliveryProtocol.FileAndDdms;
 
+    /// <summary>The files are registered before the record goes to its DDMS, and the record before its bulk data.</summary>
+    public bool Undoes => true;
+
+    /// <summary>
+    /// Undoes what unfinished deliveries left (docs/atomic-delivery-plan.md): what the record's DDMS made (a session abandoned,
+    /// and the record removed or given back the version it replaced), then the datasets the record's files were registered as,
+    /// removed reversibly through storage (a registration whose answer was lost found by where its file landed). The record
+    /// goes first, so it never names datasets already removed.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var results = new List<UndoResult>();
+        foreach (var work in works)
+        {
+            var datasets = work.Items.Where(i => i.Artifact.Role == ArtifactRoles.Dataset).ToList();
+            var ddms = work.Items.Except(datasets).ToList();
+
+            // The record (and what its DDMS made beside it) goes back first, so a record that cannot be taken back yet never
+            // names datasets already removed: its datasets wait with it.
+            var record = ddms.Count > 0 ? await _ddms.UndoRecordAsync(work with { Items = ddms }, ct).ConfigureAwait(false) : [];
+            results.AddRange(record);
+            if (datasets.Count > 0)
+            {
+                var recordResults = record.Where(r => ArtifactRoles.IsTheRecord(r.Item.Artifact.Role)).ToList();
+                if (ArtifactUndo.WaitForRecord(recordResults) is { } blocked)
+                {
+                    results.AddRange(datasets.Select(i => UndoResult.Failed(i, blocked)));
+                    continue;
+                }
+
+                _storage ??= new OsduRecordProtocol(_client, RecordRestores.WriterOptions(new ProtocolOptions { BatchSize = _options.BatchSize }), _time);
+                results.AddRange(await ArtifactUndo.DatasetsAsync(_client, _files, _storage, work, datasets, ct).ConfigureAwait(false));
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>The storage service's writer an undo removes the files' datasets through, made when an undo first needs it.</summary>
+    private OsduRecordProtocol? _storage;
+
     /// <summary>Where the protocol sends each record: the flow's DDMSs, every registration among them read.</summary>
     public DdmsRouting Routing => _ddms.Routing;
 
@@ -133,6 +175,9 @@ public sealed class OsduFileAndDdmsProtocol : IDeliveryProtocol
             Detail = detail.Count == 0 ? null : string.Join("; ", detail),
             Returned = returned,
             Steps = [.. steps.Steps, .. written.Steps],
+
+            // Files that went registered new datasets the record now names; the ones its earlier delivery named stay live.
+            Superseded = sendsFiles ? FileUploads.DatasetIds(work.TargetState).Except(datasets, StringComparer.Ordinal).ToList() : [],
         };
     }
 

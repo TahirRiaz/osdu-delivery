@@ -299,7 +299,7 @@ public sealed record LedgerPurgeSummary(int Selected, int Purged)
     /// <summary>The one line the activity trail carries.</summary>
     public string Describe() => string.Create(
         CultureInfo.InvariantCulture,
-        $"{Purged} of {Selected} record(s) deleted from the ledger{(Left > 0 ? $"; {Left} left as they were (not removed from OSDU, or work in flight)" : string.Empty)}");
+        $"{Purged} of {Selected} record(s) deleted from the ledger{(Left > 0 ? $"; {Left} left as they were (not removed from OSDU, work in flight, or something an unfinished delivery left that its undo has not taken back yet)" : string.Empty)}");
 }
 
 /// <summary>
@@ -309,10 +309,13 @@ public sealed record LedgerPurgeSummary(int Selected, int Purged)
 /// </summary>
 public sealed record LedgerDeleteSummary(string Partition, int Removed, int AlreadyGone, int AlreadyRemoved, int NeverInOsdu, LedgerDeletion Deleted)
 {
+    /// <summary>What unfinished deliveries left that was undone first, and the ids committed deliveries minted that were removed reversibly.</summary>
+    public UndoSummary Undone { get; init; } = UndoSummary.Empty;
+
     /// <summary>The one line the activity trail and the run log carry.</summary>
     public string Describe() => string.Create(
         CultureInfo.InvariantCulture,
-        $"in partition '{Partition}': {Removed} record(s) removed from OSDU (reversible), {AlreadyGone} already gone, {AlreadyRemoved} removed before, {NeverInOsdu} never in OSDU; {Deleted.Describe()}");
+        $"in partition '{Partition}': {Removed} record(s) removed from OSDU (reversible), {AlreadyGone} already gone, {AlreadyRemoved} removed before, {NeverInOsdu} never in OSDU{(Undone.Idle ? string.Empty : $"; {Undone.Describe()}")}; {Deleted.Describe()}");
 }
 
 /// <summary>What a removal did to one record: enough to answer "what happened to this one" without a second query.</summary>
@@ -347,6 +350,9 @@ public sealed record RemovalSummary(
     RemovalChoice Scope, int Selected, int Removed, int Restored, int AlreadyGone, int Skipped, int Failed,
     IReadOnlyList<RemovalRecordResult> Records, bool Truncated, int Purged = 0)
 {
+    /// <summary>What unfinished deliveries of the records left in OSDU, undone before the removal (docs/atomic-delivery-plan.md).</summary>
+    public UndoSummary Undone { get; init; } = UndoSummary.Empty;
+
     public static RemovalSummary Of(RemovalChoice scope, int selected, IReadOnlyList<RemovalRecordResult> results, int purged = 0)
     {
         ArgumentNullException.ThrowIfNull(results);
@@ -380,6 +386,6 @@ public sealed record RemovalSummary(
         };
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"{Selected} record(s) selected: {Removed} {what}, {AlreadyGone} already gone, {Skipped} skipped, {Failed} failed{(Purged > 0 ? $"; {Purged} deleted from the ledger" : string.Empty)}");
+            $"{Selected} record(s) selected: {Removed} {what}, {AlreadyGone} already gone, {Skipped} skipped, {Failed} failed{(Purged > 0 ? $"; {Purged} deleted from the ledger" : string.Empty)}{(Undone.Idle ? string.Empty : $"; first {Undone.Describe()}")}");
     }
 }

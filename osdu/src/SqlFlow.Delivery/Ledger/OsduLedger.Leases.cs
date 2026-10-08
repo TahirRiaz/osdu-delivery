@@ -311,14 +311,28 @@ public sealed partial class OsduLedger
             }
         }
 
-        if (append.Steps.Count == 0 && append.Completions.Count == 0)
+        foreach (var undo in append.Undos)
+        {
+            if (undo.Attempt.DeliveryKey != undo.DeliveryKey)
+            {
+                throw new ArgumentException(
+                    $"The undo of record {undo.DeliveryKey} carries an attempt of record {undo.Attempt.DeliveryKey}; an attempt belongs to the record it undoes.",
+                    nameof(append));
+            }
+        }
+
+        if (append.Steps.Count == 0 && append.Completions.Count == 0 && append.Undos.Count == 0)
         {
             return;
         }
 
         // Every try belongs to a record of this flow's ledger, or its attempt would be history no record owns.
         var partition = await WritePartitionAsync(flowId, ct).ConfigureAwait(false);
-        var keys = append.Steps.Select(s => s.DeliveryKey.Value).Concat(append.Completions.Select(c => c.DeliveryKey.Value)).Distinct().ToList();
+        var keys = append.Steps.Select(s => s.DeliveryKey.Value)
+            .Concat(append.Completions.Select(c => c.DeliveryKey.Value))
+            .Concat(append.Undos.Select(u => u.DeliveryKey.Value))
+            .Distinct()
+            .ToList();
         foreach (var chunk in keys.Chunk(LookupChunk))
         {
             var wanted = chunk.ToList();
@@ -334,11 +348,15 @@ public sealed partial class OsduLedger
         var events = append.Steps.Select(s => ToEvent(partition, flowId, token, s))
             .Concat(append.Completions.Select(c => ToEvent(partition, flowId, token, c)))
             .ToList();
-        var attempts = append.Completions.Select(c => ToEntity(partition, flowId, c.Attempt)).ToList();
+        var attempts = append.Completions.Select(c => c.Attempt)
+            .Concat(append.Undos.Select(u => u.Attempt))
+            .Select(a => ToEntity(partition, flowId, a))
+            .ToList();
+        var artifacts = ArtifactWritesOf(partition, flowId, append, Now);
         await using var db = Open();
 
-        // A deadlock rolls the whole append back, attempts included, and the append is written again.
-        await RetryDeadlockAsync(() => SqlServerLedgerBulk.AppendAsync(db, attempts, events, ct), ct).ConfigureAwait(false);
+        // A deadlock rolls the whole append back, attempts and artifacts included, and the append is written again.
+        await RetryDeadlockAsync(() => SqlServerLedgerBulk.AppendAsync(db, attempts, events, artifacts, ct), ct).ConfigureAwait(false);
     }
 
     public async Task<LeaseApplied> CheckpointLeaseAsync(string token, DateTime nowUtc, CancellationToken ct = default)

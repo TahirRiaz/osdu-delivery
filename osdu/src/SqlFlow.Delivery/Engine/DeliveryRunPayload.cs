@@ -54,6 +54,14 @@ public static class DeliveryOperations
     /// </summary>
     public const string DeleteLedger = "delete-ledger";
 
+    /// <summary>
+    /// Undo what unfinished deliveries left in OSDU (docs/atomic-delivery-plan.md, When the undo runs): every artifact due, every
+    /// one whose undo failed and is past its backoff, and what a unit its record no longer carries created. A deliver run and a
+    /// flow-wide drain end with the same sweep; this runs it alone. With <c>force</c> it also takes artifacts whose undo failed
+    /// as many times as the sweep tries.
+    /// </summary>
+    public const string Undo = "undo";
+
     /// <summary>Capture a cache flow's types into its partition's cache: the cache kind's default.</summary>
     public const string Refresh = "refresh";
 
@@ -63,8 +71,15 @@ public static class DeliveryOperations
     /// <summary>Run an assertion flow's tests against what OSDU holds and record their results: the assertion kind's default.</summary>
     public const string Test = "test";
 
-    /// <summary>Read every distinct value of a dimension flow's dimensions and keep them with their clean values: the dimension kind's default.</summary>
+    /// <summary>
+    /// Read every distinct value of a dimension flow's dimensions and keep them with their clean values: the dimension kind's
+    /// default. An inventory flow's default too: read every id its inventories' kinds hold, keep them, and reconcile them with
+    /// the ledgers of the partition.
+    /// </summary>
     public const string Build = "build";
+
+    /// <summary>Compare an inventory flow's inventories, as their last builds left them, with the ledgers as they stand now, reading OSDU only for the ids a ledger expects.</summary>
+    public const string Reconcile = "reconcile";
 
     /// <summary>The operation a run of a delivery flow performs: the one it names, or <see cref="Deliver"/>.</summary>
     public static string Of(RunParameters parameters)
@@ -269,12 +284,15 @@ public sealed record DeliveryRunPayload
     /// <summary>The dimensions of a dimension flow a run builds, by name.</summary>
     public const string DimensionsProperty = "dimensions";
 
+    /// <summary>The inventories of an inventory flow a run builds or reconciles, by name.</summary>
+    public const string InventoriesProperty = "inventories";
+
     /// <summary>The most test names, and the most tags, one run selects.</summary>
     public const int MaxSelected = AssertionFlowDefinition.MaxTests;
 
     private static readonly string[] Properties =
         [ForceProperty, SubmissionIdProperty, RunIdProperty, RecordKeysProperty, RedeliverProperty, RerenderProperty, SlicesProperty, InterfaceProperty, InterfacesProperty, ReferencesProperty,
-            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty];
+            PartitionReferencesProperty, ConfirmProperty, TestsProperty, TagsProperty, DimensionsProperty, InventoriesProperty];
 
     public static DeliveryRunPayload None { get; } = new();
 
@@ -363,10 +381,16 @@ public sealed record DeliveryRunPayload
     /// <summary>True when the payload selects dimensions of a dimension flow.</summary>
     public bool SelectsDimensions => Dimensions.Count > 0;
 
+    /// <summary>The inventories of an inventory flow the run builds or reconciles, by name; with none, every inventory.</summary>
+    public IReadOnlyList<string> Inventories { get; init; } = [];
+
+    /// <summary>True when the payload selects inventories of an inventory flow.</summary>
+    public bool SelectsInventories => Inventories.Count > 0;
+
     /// <summary>True when the payload carries nothing.</summary>
     public bool IsEmpty
         => !Force && SubmissionId is null && RunId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && Confirm is null && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests && !SelectsDimensions;
+            && Confirm is null && References.Count == 0 && PartitionReferences.Count == 0 && !SelectsTests && !SelectsDimensions && !SelectsInventories;
 
     /// <summary>
     /// True when the payload carries nothing but the central configuration the control plane supplied: what the payload of
@@ -374,7 +398,7 @@ public sealed record DeliveryRunPayload
     /// </summary>
     public bool CarriesOnlyConfiguration
         => !Force && SubmissionId is null && RunId is null && RecordKeys.Count == 0 && Redeliver is null && !Rerender && Slices.Count == 0 && Interface is null && Interfaces.Count == 0
-            && Confirm is null && !SelectsTests && !SelectsDimensions;
+            && Confirm is null && !SelectsTests && !SelectsDimensions && !SelectsInventories;
 
     /// <summary>
     /// The configuration a run resolves its references with when it acts on <paramref name="partition"/>: the partition's
@@ -453,6 +477,7 @@ public sealed record DeliveryRunPayload
             Tests = Selection(root[TestsProperty], TestsProperty, "test names"),
             Tags = Selection(root[TagsProperty], TagsProperty, "tags"),
             Dimensions = Selection(root[DimensionsProperty], DimensionsProperty, "dimension names"),
+            Inventories = Selection(root[InventoriesProperty], InventoriesProperty, "inventory names"),
         };
     }
 
@@ -557,6 +582,11 @@ public sealed record DeliveryRunPayload
             throw new SqlFlowException($"payload {DimensionsProperty} does not apply to a delivery flow: only a dimension flow's runs select dimensions.");
         }
 
+        if (SelectsInventories)
+        {
+            throw new SqlFlowException($"payload {InventoriesProperty} does not apply to a delivery flow: only an inventory flow's runs select inventories.");
+        }
+
         switch (operation)
         {
             case DeliveryOperations.Deliver:
@@ -618,6 +648,13 @@ public sealed record DeliveryRunPayload
                 Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "deleting the ledger takes every record of it; remove records with a removal");
                 Refuse(Redeliver is not null, RedeliverProperty, operation, "deleting the ledger sends nothing");
                 Refuse(Rerender, RerenderProperty, operation, "deleting the ledger renders nothing");
+                Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
+                break;
+            case DeliveryOperations.Undo:
+                Refuse(SubmissionId is not null, SubmissionIdProperty, operation, "an undo takes what every unfinished delivery of the ledger left, not a submission's");
+                Refuse(RecordKeys.Count > 0, RecordKeysProperty, operation, "an undo takes what every unfinished delivery of the ledger left");
+                Refuse(Redeliver is not null, RedeliverProperty, operation, "an undo sends nothing the flow renders");
+                Refuse(Rerender, RerenderProperty, operation, "an undo renders nothing");
                 Refuse(Slices.Count > 0, SlicesProperty, operation, "only an intake member plans slices");
                 break;
             case DeliveryOperations.Replan:
@@ -733,6 +770,11 @@ public sealed record DeliveryRunPayload
         if (Dimensions.Count > 0)
         {
             root[DimensionsProperty] = new JsonArray(Dimensions.Select(d => (JsonNode?)JsonValue.Create(d)).ToArray());
+        }
+
+        if (Inventories.Count > 0)
+        {
+            root[InventoriesProperty] = new JsonArray(Inventories.Select(i => (JsonNode?)JsonValue.Create(i)).ToArray());
         }
 
         return root.ToJsonString();

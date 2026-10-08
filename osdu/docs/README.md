@@ -4,8 +4,8 @@ How OSDU Delivery turns rows in the ingestion tables into OSDU records and keeps
 of the whole thing, and how the module meets the vendored SQLFlow, is in [architecture.md](architecture.md); the
 platform underneath is documented in the vendored tree
 ([../../sqlflow/docs/architecture.md](../../sqlflow/docs/architecture.md)). These pages describe the flow kinds
-that run on it, `flowType: delivery`, `flowType: retrieval`, `flowType: cache`, `flowType: assertion` and `flowType: dimension`, and the ledger
-behind them.
+that run on it, `flowType: delivery`, `flowType: retrieval`, `flowType: cache`, `flowType: assertion`, `flowType: dimension` and
+`flowType: inventory`, and the ledger behind them.
 
 Data arrives through SQLFlow's own flows: a pre-ingestion flow lands the source files, an ingestion flow loads the
 keyed ingestion tables, and the OSDU flow reads those tables. There is no drop manifest, no drop reader and no
@@ -14,7 +14,9 @@ replica.
 | Page | What it covers |
 | --- | --- |
 | [design.md](design.md) | The design: the render inputs and the render context, identity, change detection and the cache, the ledger, the delivery protocols, the document model, the preflight gate, streaming, the retrieval, assertion and dimension kinds (section 15), the streaming intake, work batches, returned values and fan-out (section 16). Section numbers are referenced from the code. |
-| [documents.md](documents.md) | The delivery flow (a single OSDU type, or a source with interfaces), retrieval flow, assertion flow, dimension flow, cache flow and mapping documents key by key. |
+| [documents.md](documents.md) | The delivery flow (a single OSDU type, or a source with interfaces), retrieval flow, assertion flow, dimension flow, inventory flow, cache flow and mapping documents key by key. |
+| [atomic-delivery-plan.md](atomic-delivery-plan.md) | Deliveries that complete or undo themselves: the unit of work, the artifacts every delivery records before or as it creates them, when the undo runs, the order within a record, and what each route declares and how it undoes. |
+| [inventory-plan.md](inventory-plan.md) | Inventory flows: every id an OSDU kind holds in a partition, read through search or storage, kept in the module's database and compared with every ledger of the partition, and the findings that make the orphan report. |
 | [dimension-plan.md](dimension-plan.md) | Dimension flows: the distinct values of any part of an OSDU document, read past the search's limit by value ranges, each key (exactly what the index holds) kept beside the value a person picks (its label read from the record it names, cleaned), the tables they live in, every key's and value's search filter, and the search composed across dimensions. A dimension's YAML is built in the explorer from picks ([explorer.md](explorer.md), Building a dimension). |
 | [../../docs/assertions-design.md](../../docs/assertions-design.md) | Assertion flows: tests of what a partition holds once the data has landed, how a test is checked against its template and evaluated, the reports and where they are kept. |
 | [mapping-templates.md](mapping-templates.md) | Templates and mappings: the template an OSDU schema becomes and where it is saved, the mapping format as the record tree it lays out (the `$` words of the mapping language, `$findBy`, modifiers, `$when`, `$required`), the checks, and the mapping builder. |

@@ -72,6 +72,18 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
     public const string UploadStep = "upload";
     public const string CloseStep = "close";
 
+    /// <summary>The step that records the dataset opened for writing, and what that took: its write lock, and its read-only flag lifted.</summary>
+    public const string OpenStep = "open";
+
+    // The artifacts of a Seismic Store delivery (docs/atomic-delivery-plan.md): the dataset a unit registered, the write lock
+    // it holds, and the read-only flag it lifted, each undone in its own way when the delivery does not complete.
+    private const string DatasetSlot = "seismic-dataset";
+    private const string LockSlot = "lock";
+    private const string ReadOnlySlot = "readonly";
+
+    /// <summary>The slot of the record a registration carries, named before it is sent and given way to the record slot once it answers.</summary>
+    private const string RegisteredRecordSlot = "record:register";
+
     /// <summary>The idempotency key register, lock and close take (not in the contract; osdu/specs/seismic-ddms/INTEGRATION.md section 1.3).</summary>
     public const string LockHeader = "x-seismic-dms-lockid";
 
@@ -321,6 +333,110 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
     }
 
     /// <summary>
+    /// Undoes what unfinished deliveries left in Seismic Store: a dataset a unit registered is deleted with its files and its
+    /// lock (not on gc, where one dataset's delete takes the files of every dataset in its subproject, and not while newer work
+    /// of the record will take it over); a lock a unit holds is released; a read-only flag it lifted is set again. Objects an
+    /// update overwrote cannot be put back: Seismic Store keeps no earlier objects, and the ledger no earlier bytes.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(UndoWork work, DdmsRecordPaths paths, IReadOnlyList<UndoItem> items, CancellationToken ct)
+    {
+        var route = RouteOf(paths);
+        var results = new List<UndoResult>(items.Count);
+        SeismicDataset dataset;
+        try
+        {
+            dataset = DatasetOf(route, work.TargetId);
+        }
+        catch (RecordHeldException ex)
+        {
+            return items.Select(i => UndoResult.Kept(i, ex.Message)).ToList();
+        }
+
+        var deleted = false;
+        foreach (var item in items.Where(i => i.Artifact.Slot == DatasetSlot))
+        {
+            if (work.KeepRecord)
+            {
+                results.Add(UndoResult.Superseded(item, $"the record's newer work takes {dataset.SdPath} over, so it is left as it is"));
+                continue;
+            }
+
+            try
+            {
+                var provider = Settings(route).Provider ?? ProviderOf(work.TargetState.GetValueOrDefault(ProviderKey)) ?? await ServiceProviderAsync(route, ct).ConfigureAwait(false);
+                if (provider == DdmsProvider.Gc)
+                {
+                    results.Add(UndoResult.Kept(item, $"Seismic Store on gc deletes the files of every dataset in a subproject when one dataset is deleted, so {dataset.SdPath}, which the unfinished delivery registered, is left with its files"));
+                    continue;
+                }
+
+                var result = await _client.SendJsonAsync(HttpMethod.Delete, DatasetUrl(route, dataset, string.Empty), null, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
+                deleted = true;
+                results.Add((int)result.Status == 404
+                    ? UndoResult.Gone(item, $"Seismic Store no longer holds {dataset.SdPath}")
+                    : UndoResult.Removed(item, $"{dataset.SdPath} deleted with its files and its lock (Seismic Store has no reversible delete)"));
+            }
+            catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+            {
+                results.Add(UndoResult.Failed(item, ArtifactUndo.Redact(ex)));
+            }
+        }
+
+        // The lock goes before the read-only flag is set again: a dataset is made read-only once no write lock of the delivery holds it.
+        foreach (var item in items.Where(i => i.Artifact.Slot != DatasetSlot).OrderBy(i => i.Artifact.Slot == ReadOnlySlot ? 1 : 0))
+        {
+            if (item.Artifact.Role != ArtifactRoles.Lock)
+            {
+                results.Add(UndoResult.Kept(item, "the Seismic Store shape makes nothing of this kind beside a record"));
+                continue;
+            }
+
+            if (deleted)
+            {
+                results.Add(UndoResult.Gone(item, $"{dataset.SdPath} was deleted, and its lock and flags with it"));
+                continue;
+            }
+
+            try
+            {
+                if (item.Artifact.Slot == ReadOnlySlot)
+                {
+                    var result = await _client.SendJsonAsync(HttpMethod.Patch, DatasetUrl(route, dataset, string.Empty), new JsonObject { ["readonly"] = true }, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
+                    results.Add((int)result.Status == 404
+                        ? UndoResult.Gone(item, $"Seismic Store no longer holds {dataset.SdPath}")
+                        : UndoResult.Removed(item, $"{dataset.SdPath} read-only again"));
+                }
+                else if (item.Artifact.Locator is not { } lockId)
+                {
+                    results.Add(UndoResult.Kept(item, $"the lock on {dataset.SdPath} was recorded without its id, so it is left to lapse rather than release whoever's lock the dataset holds"));
+                }
+                else
+                {
+                    results.Add(await ReleaseLockAsync(route, dataset, lockId, ct).ConfigureAwait(false)
+                        ? UndoResult.Removed(item, $"the write lock on {dataset.SdPath} released")
+                        : UndoResult.Gone(item, $"Seismic Store holds no lock on {dataset.SdPath} under this delivery's id: it lapsed, and any lock the dataset holds now is another writer's, left as it is"));
+                }
+            }
+            catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+            {
+                results.Add(UndoResult.Failed(item, ArtifactUndo.Redact(ex)));
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>The record is a Storage record: its reversible removal and its read are storage's.</summary>
+    public RecordSide RecordSide(DdmsRecordPaths paths) => new()
+    {
+        Remove = _routing.StorageDeletePath is { } delete
+            ? (id, token) => RecordWriter.DeleteAsync(_client, new RemovalPaths(delete, delete, delete), id, RemovalScope.Record, token)
+            : null,
+        RemoveRefusal = "the record is a Storage record, and this flow does not say where the storage service is; give the DDMS its root under target.ddms, the flow's endpoint being the OSDU platform root",
+        Read = (id, token) => RecordWriter.ReadAsync(_client, RouteOf(paths).RecordPath, id, token),
+    };
+
+    /// <summary>
     /// Points <paramref name="document"/> at its dataset (<c>DatasetProperties.FileCollectionPath</c> and one
     /// <c>FileSourceInfos</c> entry naming the dataset). Returns false when the document pointed elsewhere.
     /// </summary>
@@ -510,6 +626,12 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         /// <summary>Whether this try holds the dataset's write lock: it registered or opened the dataset and has not closed it.</summary>
         public bool HoldsLock { get; set; }
 
+        /// <summary>Whether this try lifted the dataset's read-only flag to open it, which the close sets again.</summary>
+        public bool ReadOnlyLifted { get; set; }
+
+        /// <summary>Whether an earlier try of the unit sent a registration it never heard back from.</summary>
+        public bool RegisteredBefore { get; set; }
+
         public int Sent { get; set; }
 
         public bool PayloadDelivered { get; set; }
@@ -592,6 +714,7 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         }
         else if (work.DeliverMetadata && !attempt.RecordWritten)
         {
+            await RecordIntentAsync(attempt, ct).ConfigureAwait(false);
             await PatchAsync(attempt, new JsonObject { ["seismicmeta"] = attempt.Document.DeepClone() }, ct).ConfigureAwait(false);
             await RecordWrittenAsync(attempt, ct).ConfigureAwait(false);
         }
@@ -676,6 +799,7 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         if (carriesRecord)
         {
             body["seismicmeta"] = attempt.Document.DeepClone();
+            await RecordIntentAsync(attempt, ct).ConfigureAwait(false);
         }
 
         await CloseAsync(attempt, body, ct).ConfigureAwait(false);
@@ -753,12 +877,27 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
             ["ltag"] = FirstLegalTag(attempt.Document),
         };
         var body = new JsonObject { ["seismicmeta"] = attempt.Document.DeepClone() };
+
+        // Every id the registration makes is the route's own (the dataset's path, the lock's id, the record it carries), so each
+        // is named before the request: a registration whose answer is lost after it landed is undone all the same. An earlier
+        // try of the unit that named them too sent a registration whose answer it never had.
+        attempt.RegisteredBefore = attempt.Work.Completed(RegisterStep + "-intent") is not null;
+        await attempt.Work.ReportStepAsync(
+            RegisterStep + "-intent",
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["dataset"] = dataset.SdPath, ["lockId"] = headers[LockHeader] },
+            [
+                TargetArtifact.Intent(DatasetSlot, ArtifactRoles.Objects, null, dataset.SdPath),
+                TargetArtifact.Intent(LockSlot, ArtifactRoles.Lock, headers[LockHeader], dataset.SdPath),
+                TargetArtifact.RecordWritten(attempt.Work.TargetId, null, attempt.Work.ExistingVersion) with { Slot = RegisteredRecordSlot, Status = ArtifactStatus.Intent },
+            ],
+            ct).ConfigureAwait(false);
         for (var round = 1; round <= 2; round++)
         {
             var result = await _client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 409, 423 }, ct, idempotent: true, headers: headers).ConfigureAwait(false);
             switch ((int)result.Status)
             {
                 case 423:
+                    await WithdrawRegistrationAsync(attempt, "the registration answered that another writer holds the dataset's lock; it made nothing", ct).ConfigureAwait(false);
                     throw new DeliveryException(
                         $"Seismic Store keeps {dataset.SdPath} locked for another writer ({HeaderRedaction.RedactMessage(OsduError.Describe(result.BodyText))}); the next try registers it again once the lock is released or has expired.");
                 case 409:
@@ -773,6 +912,7 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
                         var holder = Text(found, "seismicmeta_guid");
                         if (!string.Equals(holder, attempt.Work.TargetId, StringComparison.Ordinal))
                         {
+                            await WithdrawRegistrationAsync(attempt, $"the dataset exists and belongs to {(holder is null ? "no record" : holder)}, not to this delivery", ct).ConfigureAwait(false);
                             throw new RecordHeldException(
                                 $"the dataset {dataset.SdPath} already exists and belongs to {(holder is null ? "no record" : holder)}; the dataset's name is the record key, so {attempt.Work.TargetId} cannot take it");
                         }
@@ -797,6 +937,21 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
 
         throw new DeliveryException($"Seismic Store answered two registrations of {dataset.SdPath} without the dataset it registered; the next try registers it again.");
     }
+
+    /// <summary>
+    /// Settles what a registration named before it went, once its answer says it made none of it: the dataset and the record it
+    /// carried, so no undo deletes a dataset that is not this delivery's. The lock stays named: an undo releases only a lock held
+    /// under this delivery's id, which another writer's is not.
+    /// </summary>
+    private static Task WithdrawRegistrationAsync(Attempt attempt, string why, CancellationToken ct)
+        => attempt.Work.ReportStepAsync(
+            RegisterStep + "-refused",
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["dataset"] = attempt.Dataset.SdPath },
+            [
+                TargetArtifact.Created(DatasetSlot, ArtifactRoles.Objects, attempt.Dataset.SdPath) with { Status = ArtifactStatus.Gone, Note = why },
+                TargetArtifact.RecordWritten(attempt.Work.TargetId, null, attempt.Work.ExistingVersion) with { Slot = RegisteredRecordSlot, Status = ArtifactStatus.Gone, Note = why },
+            ],
+            ct);
 
     private static async Task<IReadOnlyDictionary<string, string>> RecordRegistrationAsync(
         Attempt attempt, DateTime started, int status, JsonElement answered, HttpFetchResult result, string took, CancellationToken ct)
@@ -825,7 +980,24 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         }
 
         attempt.Steps.Add(RegisterStep, started, status, values);
-        await attempt.Work.ReportStepAsync(RegisterStep, values, ct).ConfigureAwait(false);
+
+        // A dataset this delivery registered is the unit's until the delivery completes, with the write lock the registration
+        // took, and so is one it takes over that an earlier try of the unit registered without hearing back. One that held the
+        // record before the unit began is not this unit's to delete. Either way the registration has answered, so the intent of
+        // the record it carried gives way: the record slot names what the delivery writes of it.
+        var settled = TargetArtifact.RecordWritten(attempt.Work.TargetId, null, attempt.Work.ExistingVersion) with
+        {
+            Slot = RegisteredRecordSlot,
+            Status = ArtifactStatus.Gone,
+            Note = took == TookLock ? "the registration answered; the record slot names the record it wrote" : "the registration answered that the dataset exists; it wrote no record",
+        };
+        var dataset = TargetArtifact.Created(DatasetSlot, ArtifactRoles.Objects, attempt.Dataset.SdPath, locator: values.GetValueOrDefault(LocationKey));
+        IReadOnlyList<TargetArtifact> made = took == TookLock
+            ? [dataset, TargetArtifact.Created(LockSlot, ArtifactRoles.Lock, attempt.Dataset.SdPath, locator: attempt.LockId), settled]
+            : attempt.RegisteredBefore
+                ? [dataset with { Note = "registered by an earlier try of this delivery whose answer was lost, and taken over" }, settled]
+                : [dataset with { Status = ArtifactStatus.Gone, Note = "taken over: the dataset held this record before this delivery, so it is not this delivery's to delete" }, settled];
+        await attempt.Work.ReportStepAsync(RegisterStep, values, made, ct).ConfigureAwait(false);
         return values;
     }
 
@@ -844,8 +1016,23 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
             {
                 return null;
             }
+
+            // The flag is lifted from here, whatever the lock's request comes to: the unit sets it again if it does not finish.
+            attempt.ReadOnlyLifted = true;
+            await attempt.Work.ReportStepAsync(
+                OpenStep + "-readonly",
+                new Dictionary<string, string>(StringComparer.Ordinal) { ["readonly"] = "lifted" },
+                [TargetArtifact.Created(ReadOnlySlot, ArtifactRoles.Lock, dataset.SdPath, locator: "readonly")],
+                ct).ConfigureAwait(false);
         }
 
+        // The lock is asked for under the delivery's own id, named before the request so an answer lost after the service took
+        // it still leaves its release to the undo.
+        await attempt.Work.ReportStepAsync(
+            OpenStep + "-intent",
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["lockId"] = attempt.LockId ?? throw new InvalidOperationException("A dataset is opened under a lock id.") },
+            [TargetArtifact.Intent(LockSlot, ArtifactRoles.Lock, attempt.LockId, dataset.SdPath)],
+            ct).ConfigureAwait(false);
         var url = OsduHttpClient.WithQuery(DatasetUrl(attempt.Route, dataset, "/lock"), "openmode", "write");
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -864,8 +1051,13 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
                     $"Seismic Store keeps {dataset.SdPath} locked for another reader or writer ({HeaderRedaction.RedactMessage(OsduError.Describe(result.BodyText))}); the next try opens it again.");
         }
 
-        // The lock is this try's from here, whatever the dataset says next.
+        // The lock is this try's from here, whatever the dataset says next, and the unit's until the close releases it.
         attempt.HoldsLock = true;
+        await attempt.Work.ReportStepAsync(
+            OpenStep,
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["lockId"] = attempt.LockId },
+            [TargetArtifact.Created(LockSlot, ArtifactRoles.Lock, dataset.SdPath, locator: attempt.LockId)],
+            ct).ConfigureAwait(false);
         var answered = OsduHttpClient.ParseJson(result, url);
         CheckNotDeleting(dataset, answered);
         return (Text(answered, "gcsurl"), Header(result, ProviderHeader));
@@ -895,7 +1087,18 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         }
 
         attempt.Steps.Add(CloseStep, started, (int)result.Status, values);
-        await attempt.Work.ReportStepAsync(CloseStep, values, ct).ConfigureAwait(false);
+
+        // The close released the lock, and set the read-only flag as the flow closes datasets: neither is left to undo.
+        var released = new List<TargetArtifact>
+        {
+            TargetArtifact.Created(LockSlot, ArtifactRoles.Lock, dataset.SdPath, locator: lockId) with { Status = ArtifactStatus.Removed, Note = "released by the close" },
+        };
+        if (attempt.ReadOnlyLifted)
+        {
+            released.Add(TargetArtifact.Created(ReadOnlySlot, ArtifactRoles.Lock, dataset.SdPath, locator: "readonly") with { Status = ArtifactStatus.Removed, Note = "set again by the close" });
+        }
+
+        await attempt.Work.ReportStepAsync(CloseStep, values, released, ct).ConfigureAwait(false);
         Merge(attempt.Returned, values);
     }
 
@@ -910,13 +1113,29 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         }
     }
 
+    /// <summary>
+    /// Releases the write lock held under <paramref name="lockId"/> alone (<c>PATCH ...?close={id}</c> with an empty body), never
+    /// another writer's: a dataset locked under another id, or no longer there, answers 404. Returns whether a lock was released.
+    /// </summary>
+    private async Task<bool> ReleaseLockAsync(DdmsRoute route, SeismicDataset dataset, string lockId, CancellationToken ct)
+    {
+        var url = OsduHttpClient.WithQuery(DatasetUrl(route, dataset, string.Empty), "close", lockId);
+        var result = await _client.SendJsonAsync(HttpMethod.Patch, url, new JsonObject(), new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
+        return (int)result.Status != 404;
+    }
+
     /// <summary>Releases the write lock a try that stops here holds, so the dataset is not locked for the lock's day.</summary>
     private async Task ReleaseAsync(Attempt attempt, CancellationToken ct)
     {
         try
         {
-            await _client.SendJsonAsync(HttpMethod.Put, DatasetUrl(attempt.Route, attempt.Dataset, "/unlock"), null, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
+            await ReleaseLockAsync(attempt.Route, attempt.Dataset, attempt.LockId ?? throw new InvalidOperationException("A lock is released under its id."), ct).ConfigureAwait(false);
             attempt.HoldsLock = false;
+            await attempt.Work.ReportStepAsync(
+                "unlock",
+                new Dictionary<string, string>(StringComparer.Ordinal) { ["lockId"] = attempt.LockId ?? string.Empty },
+                [TargetArtifact.Created(LockSlot, ArtifactRoles.Lock, attempt.Dataset.SdPath, locator: attempt.LockId) with { Status = ArtifactStatus.Removed, Note = "released when the delivery was held" }],
+                CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is DeliveryException or HttpRequestException)
         {
@@ -1158,13 +1377,28 @@ internal sealed class SeismicStoreShape(DdmsShapeContext context) : IDdmsShape
         return version;
     }
 
+    /// <summary>
+    /// Names the record before a call that carries it (<c>seismicmeta</c>) goes: Seismic Store writes it through storage, and a
+    /// call whose answer is lost after it landed leaves the record, or its new version, for the undo.
+    /// </summary>
+    private static Task RecordIntentAsync(Attempt attempt, CancellationToken ct)
+        => attempt.Work.ReportStepAsync(
+            OsduDdmsProtocol.MetadataStep + "-intent",
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = attempt.Work.TargetId },
+            [TargetArtifact.RecordWritten(attempt.Work.TargetId, null, attempt.Work.ExistingVersion) with { Status = ArtifactStatus.Intent }],
+            ct);
+
     private static async Task RecordWrittenAsync(Attempt attempt, CancellationToken ct)
     {
         attempt.RecordWritten = true;
         var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = attempt.Work.TargetId };
         var now = attempt.Steps.Now;
         attempt.Steps.Add(OsduDdmsProtocol.MetadataStep, now, null, values);
-        await attempt.Work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, values, ct).ConfigureAwait(false);
+
+        // The record goes with the dataset's registration or close, before the files land or its version is read: it is the
+        // unit's until the delivery completes. Seismic Store does not say which version it wrote.
+        await attempt.Work.ReportStepAsync(
+            OsduDdmsProtocol.MetadataStep, values, [TargetArtifact.RecordWritten(attempt.Work.TargetId, null, attempt.Work.ExistingVersion)], ct).ConfigureAwait(false);
     }
 
     private SeismicDataset DatasetOf(DdmsRoute route, string targetId)

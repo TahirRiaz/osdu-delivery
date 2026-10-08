@@ -63,7 +63,9 @@ internal static class DeliveryRecordVerbs
             "release" => await ReleaseAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
             "reverse" => await DeliveryReversalVerbs.ReverseAsync(context, ledger, engine, flow, label, ct).ConfigureAwait(false),
             "reversals" => await DeliveryReversalVerbs.ListAsync(context, ledger, flow, label, ct).ConfigureAwait(false),
-            _ => context.UsageError("say what to do with the records: list, show, issues, release, reverse or reversals."),
+            "artifacts" => await DeliveryArtifactVerbs.ArtifactsAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
+            "undos" => await DeliveryArtifactVerbs.UndosAsync(context, ledger, flowId, label, ct).ConfigureAwait(false),
+            _ => context.UsageError("say what to do with the records: list, show, issues, release, reverse, reversals, artifacts or undos."),
         };
     }
 
@@ -384,7 +386,10 @@ internal static class DeliveryRecordVerbs
         return 0;
     }
 
-    /// <summary>The steps a try took, as its result records them: the name of each and what the target answered.</summary>
+    /// <summary>
+    /// What a try's result records, one line each: the steps it took with what the target answered, for an undo what became
+    /// of each artifact, and what a try that sent nothing had to say.
+    /// </summary>
     private static IEnumerable<string> Steps(AttemptRecord attempt)
     {
         if (attempt.ResultJson is not { Length: > 0 } text)
@@ -402,19 +407,30 @@ internal static class DeliveryRecordVerbs
             yield break;
         }
 
-        if (parsed?["steps"] is not JsonArray steps)
+        if (parsed?["steps"] is JsonArray steps)
         {
-            yield break;
+            foreach (var step in steps.OfType<JsonObject>())
+            {
+                var name = step["name"]?.GetValue<string>() ?? "step";
+                var status = step["status"] is JsonValue value && value.TryGetValue<int>(out var code) ? $" {code}" : string.Empty;
+                var returned = step["returned"] is JsonObject values && values.Count > 0
+                    ? " " + string.Join(", ", values.Select(v => $"{v.Key}={v.Value}"))
+                    : string.Empty;
+                yield return string.Create(CultureInfo.InvariantCulture, $"{name}{status}{returned}");
+            }
         }
 
-        foreach (var step in steps.OfType<JsonObject>())
+        if (parsed?["undo"] is JsonObject undo)
         {
-            var name = step["name"]?.GetValue<string>() ?? "step";
-            var status = step["status"] is JsonValue value && value.TryGetValue<int>(out var code) ? $" {code}" : string.Empty;
-            var returned = step["returned"] is JsonObject values && values.Count > 0
-                ? " " + string.Join(", ", values.Select(v => $"{v.Key}={v.Value}"))
-                : string.Empty;
-            yield return string.Create(CultureInfo.InvariantCulture, $"{name}{status}{returned}");
+            foreach (var line in DeliveryArtifactVerbs.UndoLines(undo))
+            {
+                yield return line;
+            }
+        }
+
+        if (parsed?["detail"] is JsonValue detail && detail.TryGetValue<string>(out var said) && !string.IsNullOrWhiteSpace(said))
+        {
+            yield return One(said);
         }
     }
 

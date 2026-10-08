@@ -84,6 +84,22 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
 
     public DeliveryProtocol Kind => DeliveryProtocol.Workflow;
 
+    /// <summary>Inputs and the anchor are written before the runs, and the runs write records before the results are found.</summary>
+    public bool Undoes => true;
+
+    /// <summary>The step the anchor's intent is reported under, before the anchor is written.</summary>
+    public const string AnchorIntentStep = "anchor-intent";
+
+    /// <summary>The slot of a dataset the route registers for an input, or for a storage anchor's files: one per registration name.</summary>
+    public static string DatasetSlot(string name) => "dataset:" + name;
+
+    /// <summary>The slot of a run the route triggered.</summary>
+    public static string RunSlot(string runId) => WorkflowRuns.Slot(runId);
+
+    /// <summary>The slot of a record the runs created that the results found: a digest of its id, which may be longer than a slot.</summary>
+    public static string OutputSlot(string id)
+        => "output:" + Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(id)))[..24];
+
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(work);
@@ -292,12 +308,14 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
 
         var source = part.Source!;
         var records = new List<JsonObject>();
+        var names = new List<string>();
         if (DatasetService.IsCollectionType(entityType))
         {
             var staged = await DatasetUploads.UploadAsync(_client, _datasets, _options, work, part.Payload, source, entityType, _requestBodyCeiling, steps, ct).ConfigureAwait(false);
             var record = InputRecord(anchor, kind, WorkflowValues.DerivedDatasetId(work.TargetId, entityType, part.Payload));
             DatasetUploads.Point(record, staged);
             records.Add(record);
+            names.Add(part.Payload);
         }
         else
         {
@@ -311,21 +329,42 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
                 var record = InputRecord(anchor, kind, WorkflowValues.DerivedDatasetId(work.TargetId, entityType, slot));
                 DatasetUploads.Point(record, staged);
                 records.Add(record);
+                names.Add(slot);
             }
         }
 
         var started = steps.Now;
-        var landed = await _datasets.RegisterAsync(records, ct).ConfigureAwait(false);
         var ids = records.Select(r => r["id"]!.GetValue<string>()).ToList();
+
+        // What the registration writes, before it is sent: its answer can be lost after it landed.
+        var declared = await DeclareAsync(work, step + "-intent", ids.Select((id, i) => new Registration(DatasetSlot(names[i]), id)).ToList(), ct).ConfigureAwait(false);
+        var landed = await _datasets.RegisterAsync(records, ct).ConfigureAwait(false);
         var values = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["ids"] = string.Join(",", ids),
             ["datasets"] = ids.Count.ToString(CultureInfo.InvariantCulture),
         };
         steps.Add(step, started, 201, values);
-        await work.ReportStepAsync(step, values, ct).ConfigureAwait(false);
+        await work.ReportStepAsync(step, values, declared.Select(d => RegistrationIntents.Landed(d, landed.GetValueOrDefault(d.TargetId!))).ToList(), ct).ConfigureAwait(false);
         _logger.LogDebug("Registered {Count} input dataset(s) for {TargetId} ({Versions}).", landed.Count, work.TargetId, string.Join(", ", landed.Values));
         return ids;
+    }
+
+    /// <summary>
+    /// Reports what registrations under ids the route chose are about to write (<see cref="RegistrationIntents"/>), under
+    /// <paramref name="step"/>, before they are sent; storage that cannot say what one would replace stops them all.
+    /// </summary>
+    private async Task<IReadOnlyList<TargetArtifact>> DeclareAsync(DeliveryWork work, string step, IReadOnlyList<Registration> registrations, CancellationToken ct)
+    {
+        var intents = await RegistrationIntents.DeclareAsync(_records, registrations, ct).ConfigureAwait(false);
+        if (intents.FirstOrDefault(i => i.Artifact is null) is { } refused)
+        {
+            throw new DeliveryException(refused.Refusal!);
+        }
+
+        var declared = intents.Select(i => i.Artifact!).ToList();
+        await work.ReportStepAsync(step, new Dictionary<string, string>(StringComparer.Ordinal) { ["ids"] = string.Join(",", registrations.Select(r => r.Id)) }, declared, ct).ConfigureAwait(false);
+        return declared;
     }
 
     /// <summary>A dataset record for an input, carrying the anchor's access and legal blocks, never restating them.</summary>
@@ -364,14 +403,17 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
 
         var started = steps.Now;
         long? version;
+        TargetArtifact written;
         var owned = new Dictionary<string, string>(StringComparer.Ordinal);
         if (_route.Anchor == WorkflowAnchor.Dataset && sendsFiles)
         {
             var entityType = TargetId.EntityTypeFromKind(document["kind"]?.GetValue<string>() ?? throw new RecordHeldException("the record has no kind"));
             var staged = await DatasetUploads.UploadAsync(_client, _datasets, _options, work, files!.Payload, files.Source!, entityType, _requestBodyCeiling, steps, ct).ConfigureAwait(false);
             DatasetUploads.Point(document, staged);
+            var declared = (await DeclareAsync(work, AnchorIntentStep, [new Registration(TargetArtifact.RecordSlot, work.TargetId)], ct).ConfigureAwait(false))[0];
             var landed = await _datasets.RegisterAsync([document], ct).ConfigureAwait(false);
             version = landed.GetValueOrDefault(work.TargetId);
+            written = RegistrationIntents.Landed(declared, version);
 
             // A registration writes the record whole and carries nothing forward, so no hash of the flow's own content stands.
             OwnedContent.Record(owned, document, [], work.TargetState);
@@ -390,6 +432,12 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
                 FileUploads.SetDatasets(document, _options.DatasetsProperty, fileIds);
             }
 
+            // The storage write's answer can be lost after it landed, and the runs follow it, so it is declared first.
+            await work.ReportStepAsync(
+                AnchorIntentStep,
+                new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId },
+                [TargetArtifact.RecordWritten(work.TargetId, null, work.ExistingVersion) with { Status = ArtifactStatus.Intent }],
+                ct).ConfigureAwait(false);
             var outcome = (await _records.DeliverBatchAsync([work with { Document = document, DeliverMetadata = true, DeliverPayload = false, Payload = null, Parts = [] }], ct).ConfigureAwait(false))[0];
             if (outcome.Failure is { } failure)
             {
@@ -397,6 +445,7 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
             }
 
             version = outcome.TargetVersion;
+            written = TargetArtifact.RecordWritten(work.TargetId, version, work.ExistingVersion);
             foreach (var key in OwnedValues)
             {
                 if (outcome.Returned.TryGetValue(key, out var value))
@@ -418,7 +467,7 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
         }
 
         steps.Add(AnchorStep, started, null, values);
-        await work.ReportStepAsync(AnchorStep, values, ct).ConfigureAwait(false);
+        await work.ReportStepAsync(AnchorStep, values, [written], ct).ConfigureAwait(false);
         foreach (var (name, value) in values)
         {
             returned[name] = value;
@@ -557,7 +606,10 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
             ["workflow"] = stage.Workflow,
             ["context"] = Bounded(shown.ToJsonString()),
         };
-        await work.ReportStepAsync(step, marked, ct).ConfigureAwait(false);
+
+        // The run is named before it is triggered, under the id the route chose, so an undo waits for it to end whether or not
+        // the trigger's answer came back.
+        await work.ReportStepAsync(step, marked, [WorkflowRuns.Artifact(stage.Workflow, runId)], ct).ConfigureAwait(false);
         var run = await _workflows.TriggerAsync(stage.Workflow, runId, sent, ct).ConfigureAwait(false);
         var triggered = new Dictionary<string, string>(run.Values(), StringComparer.Ordinal)
         {
@@ -573,7 +625,8 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
     /// <summary>
     /// What the runs created, found the way the route declares and read back from storage. Fewer records than the route
     /// requires fails the record for this try; the runs are not repeated, only the finding. The ids are kept on the
-    /// record up to the declared number, with their count, and a search is kept so a removal can repeat it.
+    /// record up to the declared number, with their count, and a search is kept so a removal can repeat it. Each id kept is
+    /// reported as the runs' output, found or not enough found, so an undo can reach what the runs created.
     /// </summary>
     private async Task<Dictionary<string, string>> ResultsAsync(DeliveryWork work, WorkflowValues values, DeliverySteps steps, CancellationToken ct)
     {
@@ -604,6 +657,16 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
 
         found[RecordsValue] = ids.Count.ToString(CultureInfo.InvariantCulture);
         found[RecordIdsValue] = string.Join(",", ids.Take(results.MaxRecorded));
+        var outputs = ids
+            .Where(id => !string.Equals(id, work.TargetId, StringComparison.Ordinal))
+            .Take(results.MaxRecorded)
+            .Select(id => TargetArtifact.Created(OutputSlot(id), ArtifactRoles.Output, id))
+            .ToList();
+        if (outputs.Count > 0)
+        {
+            await work.ReportStepAsync(ResultsStep, new Dictionary<string, string>(StringComparer.Ordinal) { [RecordsValue] = found[RecordsValue] }, outputs, ct).ConfigureAwait(false);
+        }
+
         if (ids.Count < results.Minimum)
         {
             var reason = string.Create(
@@ -782,6 +845,105 @@ public sealed class OsduWorkflowProtocol : IDeliveryProtocol
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Undoes what unfinished deliveries left (docs/atomic-delivery-plan.md), once no run they triggered is still going, since
+    /// a run reads the inputs and can write the anchor until it ends: the records the runs created that the results found,
+    /// removed reversibly when the route removes them and storage confirms OSDU created them after the unit began; the anchor,
+    /// removed when the unit created it and given back the version before when it updated it; and the datasets registered for
+    /// the inputs and a storage anchor's files the same way. A dataset anchor and the inputs are taken back even when newer
+    /// work follows, since that work reads what OSDU holds of them. Records a run wrote that no result named stay, for an
+    /// inventory of their kind to find.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var results = new List<UndoResult>();
+        foreach (var work in works)
+        {
+            var runs = work.Items.Where(i => i.Artifact.Role == ArtifactRoles.Run).ToList();
+            var (waiting, ended) = await WorkflowRuns.SettleAsync(_workflows, runs, ct).ConfigureAwait(false);
+            if (waiting is not null)
+            {
+                results.AddRange(work.Items.Select(i => UndoResult.Failed(i, waiting)));
+                continue;
+            }
+
+            results.AddRange(runs.Select(i => UndoResult.Kept(i, ended[i.ArtifactId])));
+            var outputs = work.Items.Where(i => i.Artifact.Role == ArtifactRoles.Output).ToList();
+            results.AddRange(await OutputsAsync(work, outputs, ct).ConfigureAwait(false));
+
+            var side = new RecordSide
+            {
+                Remove = (id, token) => RecordWriter.DeleteAsync(_client, RemovalPaths.From(_options), id, RemovalScope.Record, token),
+                Read = _records.ReadAsync,
+                Restorer = _records,
+                Versions = _records.VersionsAsync,
+            };
+            var anchor = work.Items.Where(i => ArtifactRoles.IsTheRecord(i.Artifact.Role) && i.Artifact.Slot == TargetArtifact.RecordSlot).ToList();
+            var anchorSide = _route.Anchor == WorkflowAnchor.Dataset ? side with { Remove = (id, token) => _datasets.SoftDeleteAsync(id, token) } : side;
+            var anchorWork = _route.Anchor == WorkflowAnchor.Dataset ? work with { KeepRecord = false } : work;
+            results.AddRange(await ArtifactUndo.RecordItselfAsync(anchorWork, anchor, anchorSide, ct).ConfigureAwait(false));
+
+            var registered = work.Items.Where(i => ArtifactRoles.IsTheRecord(i.Artifact.Role) && i.Artifact.Slot != TargetArtifact.RecordSlot).ToList();
+            results.AddRange(await ArtifactUndo.RecordItselfAsync(work with { KeepRecord = false }, registered, side, ct).ConfigureAwait(false));
+            results.AddRange(ArtifactUndo.Keep(work.Items.Except(runs).Except(outputs).Except(anchor).Except(registered), "the workflow route makes nothing of this kind"));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// The records the runs created that the results found: kept when the route does not remove them with the anchor, or when
+    /// OSDU created one before the unit began (a run that updated it), else removed reversibly through storage.
+    /// </summary>
+    private async Task<IReadOnlyList<UndoResult>> OutputsAsync(UndoWork work, IReadOnlyList<UndoItem> outputs, CancellationToken ct)
+    {
+        if (outputs.Count == 0)
+        {
+            return [];
+        }
+
+        if (!_route.Results.Remove)
+        {
+            return ArtifactUndo.Keep(outputs, "the route does not remove the records its runs create (results.remove is off), so the records an unfinished delivery's runs created stay").ToList();
+        }
+
+        var results = new List<UndoResult>(outputs.Count);
+        var targets = new List<(UndoItem Item, string Id)>();
+        foreach (var item in outputs)
+        {
+            if (item.Artifact.TargetId is not { } id)
+            {
+                results.Add(UndoResult.Kept(item, "the output names no record"));
+                continue;
+            }
+
+            try
+            {
+                var stored = await _records.ReadAsync(id, ct).ConfigureAwait(false);
+                if (stored is null)
+                {
+                    results.Add(UndoResult.Gone(item, $"{id}: OSDU no longer holds the record"));
+                }
+                else if (ArtifactUndo.CreateTimeOf(stored) is { } created && created < item.UnitStartedUtc - ArtifactLimits.ClockSkew)
+                {
+                    results.Add(UndoResult.Kept(item, string.Create(CultureInfo.InvariantCulture, $"{id}: OSDU created the record at {created:u}, before this delivery began at {item.UnitStartedUtc:u}, so a run updated it and it is not this delivery's to remove")));
+                }
+                else
+                {
+                    targets.Add((item, id));
+                }
+            }
+            catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+            {
+                results.Add(UndoResult.Failed(item, $"{id}: {ArtifactUndo.Redact(ex)}"));
+            }
+        }
+
+        results.AddRange(await ArtifactUndo.SoftDeleteAsync(_records, work.Key, targets, ct).ConfigureAwait(false));
+        return results;
     }
 
     /// <summary>The ids among <paramref name="ids"/> storage holds, in the order given (openapi storage v2, POST query/records, in batches).</summary>

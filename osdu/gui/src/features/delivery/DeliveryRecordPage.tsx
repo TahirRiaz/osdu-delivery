@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { isApiError } from "@/api/client";
 import { useAuth } from "@/auth/AuthContext";
 import { deliveryApi, flowLedgerRoute, ledgerLabel, type DeliveryFlowScope, type DeliveryRecordRef, type RemovalScope } from "../../api/delivery";
+import { artifactApi } from "../../api/artifacts";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { CorrelationError } from "@/components/CorrelationError";
 import { EmptyState } from "@/components/EmptyState";
@@ -19,6 +20,7 @@ import { useTabTitle } from "@/layout/workbench/TabsContext";
 import { BlockedBadge, RecordStatusBadge } from "./DeliveryBadges";
 import { RecordJourney, RecordMilestones } from "./RecordJourney";
 import { RecordName } from "./RecordName";
+import { RECORD_ARTIFACTS_SHOWN, RecordArtifacts, RecordUndoNotice } from "./RecordArtifacts";
 import { RecordOsduView } from "./RecordOsduView";
 import { settle } from "./answers";
 import { RecordRenderTab, type RenderResults } from "./RecordRenderTab";
@@ -33,10 +35,10 @@ import { shortId } from "./idTail";
 
 /**
  * The record page's tabs, one question each: what happened to it, where it came from, what the mapping makes of it
- * (and whether OSDU holds that), and what OSDU holds. `?tab=` opens the page on one of them, and `?tab=osdu` also reads
- * the record from OSDU.
+ * (and whether OSDU holds that), what OSDU holds, and what its deliveries created there beside it. `?tab=` opens the page
+ * on one of them, and `?tab=osdu` also reads the record from OSDU.
  */
-const RECORD_TABS = ["timeline", "source", "render", "osdu"] as const;
+const RECORD_TABS = ["timeline", "source", "render", "osdu", "artifacts"] as const;
 type RecordTab = (typeof RECORD_TABS)[number];
 
 /** What the task card under the header calls a removal this page queued, by its scope. */
@@ -125,6 +127,12 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
     queryKey: ["delivery", "record", flowId, deliveryKey, "chain"],
     queryFn: () => deliveryApi.recordChain(ref),
     refetchInterval: 30000,
+  });
+  // What the record's deliveries created in OSDU: its own tab, and the header's line while an undo still has some to take.
+  const artifacts = useQuery({
+    queryKey: ["delivery", "record", flowId, deliveryKey, "artifacts"],
+    queryFn: () => artifactApi.recordArtifacts(ref, RECORD_ARTIFACTS_SHOWN),
+    refetchInterval: 15000,
   });
   const removalTask = useComputeTask(removal?.taskId ?? null);
   useTabTitle(query.data ? (query.data.record.label ?? query.data.record.sourceKey) : undefined);
@@ -301,6 +309,7 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           {record.lastSubmissionId && <IdChip label="submission" value={record.lastSubmissionId} display={shortId(record.lastSubmissionId)} to={`/delivery/submissions/${record.lastSubmissionId}`} testId="record-submission-link" copyTestId="copy-record-submission" />}
         </div>
         <RecordSituation record={record} waitsOn={detail.waitsOn} waitedOnBy={detail.waitedOnBy ?? []} />
+        <RecordUndoNotice artifacts={artifacts.data} onOpen={() => setTab("artifacts")} />
       </Card>
 
       <RecordMilestones record={record} attempts={attempts.data} chain={chain.data} />
@@ -313,6 +322,12 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
           <TabsTrigger value="source" data-testid="record-tab-source">Source</TabsTrigger>
           <TabsTrigger value="render" data-testid="record-tab-render">Render</TabsTrigger>
           <TabsTrigger value="osdu" data-testid="record-tab-osdu">OSDU</TabsTrigger>
+          <TabsTrigger value="artifacts" data-testid="record-tab-artifacts">
+            Artifacts
+            {(artifacts.data?.length ?? 0) > 0 && (
+              <span className="font-mono text-[11px] tabular-nums text-muted-foreground">{artifacts.data!.length.toLocaleString()}</span>
+            )}
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="timeline">
           <RecordJourney record={record} attempts={attempts.data} activities={activities.data} chain={chain.data} />
@@ -348,6 +363,9 @@ function DeliveryRecordContent({ flowId, deliveryKey }: DeliveryRecordRef) {
             osdu={osdu}
             popout
           />
+        </TabsContent>
+        <TabsContent value="artifacts">
+          <RecordArtifacts query={artifacts} />
         </TabsContent>
       </Tabs>
 

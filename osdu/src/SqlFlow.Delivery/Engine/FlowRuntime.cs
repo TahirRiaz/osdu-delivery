@@ -15,6 +15,7 @@ using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Identity;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
+using SqlFlow.Delivery.Planning;
 using SqlFlow.Delivery.Protocols;
 using SqlFlow.Delivery.Rendering;
 using SqlFlow.Delivery.Snapshots;
@@ -101,9 +102,21 @@ public sealed record EngineContext(
     public EngineContext ForInterface(string interfaceName) => this with { Loggers = new InterfaceLoggerFactory(Loggers, interfaceName) };
 }
 
+/// <summary>
+/// What a drain did: what its worker sent, and what the sweep a drain of the whole flow ends with undid of unfinished
+/// deliveries (docs/atomic-delivery-plan.md); a drain of one submission does not sweep, and its undo is empty.
+/// </summary>
+public sealed record DrainResult(WorkerSummary Work, UndoSummary Undone)
+{
+    public override string ToString() => Undone.Idle ? Work.ToString() : $"{Work}; {Undone.Describe()}";
+}
+
 /// <summary>What a deliver run did: the intake, the drain, the submission it left, and how far it fanned out.</summary>
 public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, SubmissionState Submission, int IntakeMembers = 0, int DrainMembers = 0)
 {
+    /// <summary>What the sweep the run ended with undid of unfinished deliveries (docs/atomic-delivery-plan.md).</summary>
+    public UndoSummary Undone { get; init; } = UndoSummary.Empty;
+
     /// <summary>
     /// What the run did itself: a run re-sending two records of a delivered submission counts two, and one that found the
     /// submission already completed counts none. A fan-out root is the exception, because its members' planning and
@@ -122,7 +135,7 @@ public sealed record RunResult(IntakeResult Intake, WorkerSummary Work, Submissi
     /// or on a record it refers to. Rows it read and found unchanged or stale change nothing. The audit trail leaves such a
     /// run out unless asked for it.
     /// </summary>
-    public bool Idle => Work.Processed == 0
+    public bool Idle => Work.Processed == 0 && Undone.Idle
         && Own is { Planned: 0, AwaitingApproval: 0, UnchangedAtPush: 0, Blocked: 0, Delivered: 0, Held: 0, Failed: 0, Retried: 0, Waiting: 0 };
 }
 
@@ -579,15 +592,16 @@ public sealed class FlowRuntime : IDisposable
                     var sent = await PassUntilNothingClaimableAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
                     sent = sent.Add(await SendOrphanedLeasesAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false));
                     var leftovers = await SendSettledLeftoversAsync(worker, intake.Submission.SubmissionId, ct).ConfigureAwait(false);
+                    var swept = await SweepAfterRunAsync(ct).ConfigureAwait(false);
                     if (sent.Processed == 0 && leftovers.Processed == 0 && sent.Waiting == 0 && leftovers.Waiting == 0)
                     {
-                        return Tracked(new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers));
+                        return Tracked(new RunResult(intake, WorkerSummary.Empty, intake.Submission, intakeMembers) { Undone = swept });
                     }
 
                     var settled = sent.Processed > 0 || sent.Waiting > 0
                         ? await Intake.CompleteAsync(intake.Submission.SubmissionId, Flow.Id, ct).ConfigureAwait(false)
                         : intake.Submission;
-                    return Tracked(new RunResult(intake, sent.Add(leftovers), settled, intakeMembers));
+                    return Tracked(new RunResult(intake, sent.Add(leftovers), settled, intakeMembers) { Undone = swept });
                 }
 
                 var (work, drainMembers) = await DrainWithFanOutAsync(intake.Submission, h => handle = h, ct).ConfigureAwait(false);
@@ -596,7 +610,10 @@ public sealed class FlowRuntime : IDisposable
 
                 // Its own records sent, the run takes what settled submissions still hold (records released after their run).
                 var settledLeftovers = await SendSettledLeftoversAsync(await WorkerAsync(ct).ConfigureAwait(false), intake.Submission.SubmissionId, ct).ConfigureAwait(false);
-                return Tracked(new RunResult(intake, work.Add(settledLeftovers), submission, intakeMembers, drainMembers));
+
+                // Every delivery of the run has ended, its fan-out members' too: what unfinished deliveries left is undone now.
+                var undone = await SweepAfterRunAsync(ct).ConfigureAwait(false);
+                return Tracked(new RunResult(intake, work.Add(settledLeftovers), submission, intakeMembers, drainMembers) { Undone = undone });
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -652,7 +669,7 @@ public sealed class FlowRuntime : IDisposable
         }, ct);
 
     /// <summary>Drains the pending work of the flow (one pass, or until nothing is due), optionally of one submission: the <c>drain</c> operation.</summary>
-    public Task<WorkerSummary> WorkAsync(bool once, Guid? submissionId = null, CancellationToken ct = default)
+    public Task<DrainResult> WorkAsync(bool once, Guid? submissionId = null, CancellationToken ct = default)
         => TrackAsync("drain", new { once, submissionId }, null, async () =>
         {
             await ReleaseEndedWaitsAsync(ct).ConfigureAwait(false);
@@ -661,10 +678,115 @@ public sealed class FlowRuntime : IDisposable
             if (submissionId is { } s)
             {
                 await Intake.CompleteAsync(s, Flow.Id, ct).ConfigureAwait(false);
+                return (new DrainResult(summary, UndoSummary.Empty), summary.Headline, submissionId, summary.Idle);
             }
 
-            return (summary, summary.Headline, submissionId, summary.Idle);
+            // A drain of the whole flow ends with the sweep a deliver run ends with. A drain of a submission does not: it is what a
+            // fan-out member runs while its coordinator and other members deliver, and the coordinator sweeps once they are done.
+            var undone = await SweepAfterRunAsync(ct).ConfigureAwait(false);
+            var headline = undone.Idle ? summary.Headline : $"{summary.Headline}; {undone.Describe()}";
+            return (new DrainResult(summary, undone), headline, submissionId, summary.Idle && undone.Idle);
         }, ct);
+
+    /// <summary>
+    /// Undoes what unfinished deliveries of the flow left in OSDU (docs/atomic-delivery-plan.md, When the undo runs): the
+    /// <c>undo</c> operation. Every artifact due, every one whose undo failed and is past its backoff (with
+    /// <paramref name="exhausted"/>, also those whose undo failed as often as the sweep tries), and what a unit its record no
+    /// longer carries created, a page of whole records at a time, up to <see cref="ArtifactLimits.SweepPerRun"/> records. Each
+    /// record's undo is an attempt of phase undo on its history.
+    /// </summary>
+    public Task<UndoSummary> UndoUnfinishedAsync(bool exhausted, CancellationToken ct = default)
+        => TrackAsync(DeliveryOperations.Undo, new { exhausted }, null, async () =>
+        {
+            var summary = await SweepAsync(exhausted, ct).ConfigureAwait(false);
+            return (summary, summary.Describe(), (Guid?)null, summary.Idle);
+        }, ct);
+
+    /// <summary>
+    /// The sweep a deliver run and a flow-wide drain end with. Its failure is not the run's: what the run delivered stands, the
+    /// artifacts stay as they were, and the next run sweeps them.
+    /// </summary>
+    private async Task<UndoSummary> SweepAfterRunAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await SweepAsync(exhausted: false, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is DeliveryException or System.Data.Common.DbException or TimeoutException or InvalidOperationException)
+        {
+            _log.LogWarning(
+                "Undoing what unfinished deliveries left could not finish ({Message}); what is left stays recorded, and the next run undoes it.",
+                HeaderRedaction.RedactMessage(ex.Message));
+            return UndoSummary.Empty;
+        }
+    }
+
+    private async Task<UndoSummary> SweepAsync(bool exhausted, CancellationToken ct)
+    {
+        var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
+        if (!protocol.Undoes)
+        {
+            return UndoSummary.Empty;
+        }
+
+        var ledger = RequireLedger();
+
+        // A lease a stopped worker left is applied first, so the records it held say which unit they carry before anything of
+        // theirs is told abandoned.
+        await ledger.RecoverExpiredLeasesAsync(Flow.Id, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
+        var runner = new UndoRunner(protocol, _context.Time, Truncate($"{Environment.MachineName}/{Environment.ProcessId}/undo", 200), RunId);
+        var total = UndoSummary.Empty;
+        DeliveryKey? after = null;
+        while (total.Records < ArtifactLimits.SweepPerRun)
+        {
+            ct.ThrowIfCancellationRequested();
+            var now = _context.Time.GetUtcNow().UtcDateTime;
+            var page = await ledger.SweepArtifactsAsync(Flow.Id, now, after, Math.Min(ArtifactLimits.SweepPage, ArtifactLimits.SweepPerRun - total.Records), exhausted, ct).ConfigureAwait(false);
+            if (page.Artifacts.Count == 0)
+            {
+                break;
+            }
+
+            after = page.Last;
+            var records = await ledger.GetRecordsAsync(Flow.Id, page.Artifacts.Select(a => a.Key).Distinct().ToList(), ct).ConfigureAwait(false);
+            var requests = page.Artifacts
+                .GroupBy(a => a.Key)
+                .Where(g => records.TryGetValue(g.Key, out var record) && record.LeaseOwner is null)
+                .Select(g =>
+                {
+                    var record = records[g.Key];
+                    var artifacts = g.ToList();
+
+                    // A record with work queued that writes its metadata, as the final hash check will find it, keeps the
+                    // record itself, which that work writes again; any other has everything its unfinished units left taken back.
+                    return new UndoRequest(record, artifacts, DeliveryWorker.ReasonOf(record, artifacts), KeepRecord: record.HasPendingWork && ChangeDetector.AtPush(record, Flow.Change).Metadata);
+                })
+                .ToList();
+            if (requests.Count == 0)
+            {
+                continue;
+            }
+
+            using var correlation = OsduCorrelation.Begin();
+            var undos = await runner.RunAsync(requests, correlation.Id, ct).ConfigureAwait(false);
+            await ledger.SettleArtifactsAsync(Flow.Id, undos, ct: ct).ConfigureAwait(false);
+            var swept = UndoSummary.Of(undos);
+            total = total.Add(swept);
+            if (swept.Failed > 0)
+            {
+                _log.LogWarning("{Summary}; the undos that failed are tried again later.", swept.Describe());
+            }
+        }
+
+        if (!total.Idle)
+        {
+            _log.LogInformation(RunTrace.Bounded, "Undid what unfinished deliveries left: {Summary}.", total.Describe());
+        }
+
+        return total;
+    }
+
+    private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max];
 
     /// <summary>The drift pass: the <c>verify</c> operation.</summary>
     public Task<VerifySummary> VerifyAsync(int max, TimeSpan? notVerifiedWithin, bool reconcile, IReadOnlyList<DeliveryKey>? keys = null, CancellationToken ct = default)
@@ -702,8 +824,8 @@ public sealed class FlowRuntime : IDisposable
     /// <summary>
     /// Deletes records already removed from OSDU from the ledger (docs/ledger.md, Deleting a removed record from the ledger),
     /// asking nothing of OSDU: the named records, or with null keys every record the ledger marks deleted, a page at a time.
-    /// Only a record the ledger marks deleted goes, and none a lease holds; any other named record is left as it is and
-    /// counted as such. Each record deleted keeps one line and is named under this intervention's activity, the same way the
+    /// Only a record the ledger marks deleted goes, none a lease holds, and none whose unfinished deliveries left something
+    /// the undo has not taken back yet; any other named record is left as it is and counted as such. Each record deleted keeps one line and is named under this intervention's activity, the same way the
     /// removal's extra step deletes one (<see cref="ILedger.PurgeRecordsAsync"/>).
     /// </summary>
     public Task<LedgerPurgeSummary> PurgeFromLedgerAsync(IReadOnlyList<DeliveryKey>? keys, CancellationToken ct = default)
@@ -725,9 +847,11 @@ public sealed class FlowRuntime : IDisposable
                 }
                 else
                 {
-                    // Every record the ledger marks deleted, a selection's worth at a time. A page that leaves any record (a lease holds
-                    // it) ends the walk, so no record is counted twice and the intervention ends however the ledger moves underneath it.
-                    var selected = 0;
+                    // Every record the ledger marks deleted, a selection's worth at a time. A record a page leaves (a lease holds it,
+                    // or an undo has still to settle what its deliveries left) comes back on the next page, so the walk goes on while
+                    // a page deletes something and ends on one that deletes nothing: it ends however the ledger moves underneath it,
+                    // and each record is counted once.
+                    var seen = new HashSet<DeliveryKey>();
                     var total = 0;
                     while (true)
                     {
@@ -739,15 +863,15 @@ public sealed class FlowRuntime : IDisposable
                         }
 
                         var purged = await ledger.PurgeRecordsAsync(Flow.Id, page, Actor, activity, now, ct).ConfigureAwait(false);
-                        selected += page.Count;
+                        seen.UnionWith(page);
                         total += purged.Count;
-                        if (purged.Count < page.Count || page.Count < RemovalLimits.MaxSelection)
+                        if (purged.Count == 0 || page.Count < RemovalLimits.MaxSelection)
                         {
                             break;
                         }
                     }
 
-                    summary = new LedgerPurgeSummary(selected, total);
+                    summary = new LedgerPurgeSummary(seen.Count, total);
                 }
 
                 return (summary, summary.Describe(), (Guid?)null, false);
@@ -936,15 +1060,21 @@ public sealed class FlowRuntime : IDisposable
                 ? new Reversals.PreviousVersionRestore(Flow, ledger, protocol, _context.Time, Actor, RunId)
                 : null;
             var purged = 0;
+            var undone = UndoSummary.Empty;
 
             foreach (var chunk in keys.Chunk(RemovalLimits.Chunk))
             {
                 ct.ThrowIfCancellationRequested();
                 var records = await ledger.GetRecordsAsync(Flow.Id, chunk, ct).ConfigureAwait(false);
-                purged += await RemoveChunkAsync(ledger, protocol, chunk, records, scope, purgeLedger, activity, stepBack, results, ct).ConfigureAwait(false);
+
+                // What unfinished deliveries of these records left is undone first, through the one undo path, so the removal
+                // never leaves behind a dataset, session or version no record names.
+                var (chunkUndone, unsettled) = await UndoForRemovalAsync(ledger, protocol, records.Values.ToList(), open: true, minted: false, ct).ConfigureAwait(false);
+                undone = undone.Add(chunkUndone);
+                purged += await RemoveChunkAsync(ledger, protocol, chunk, records, scope, purgeLedger, activity, stepBack, results, unsettled, ct).ConfigureAwait(false);
             }
 
-            var summary = RemovalSummary.Of(scope, keys.Count, results, purged);
+            var summary = RemovalSummary.Of(scope, keys.Count, results, purged) with { Undone = undone };
             return (summary, summary.Describe(), results.Count == 1 ? results[0].SubmissionId : null, false);
         }, ct);
     }
@@ -954,11 +1084,14 @@ public sealed class FlowRuntime : IDisposable
     /// records of <paramref name="chunk"/> OSDU may hold are removed to the extent <paramref name="scope"/> asks, or with
     /// <paramref name="stepBack"/> given the version before the latest back, under one correlation id, and the ledger is settled
     /// for the records the target answered for. A record the flow never wrote to OSDU is reported as skipped. Each record's
-    /// result is added to <paramref name="results"/>; returns how many records the extra step deleted from the ledger.
+    /// result is added to <paramref name="results"/>; returns how many records the extra step deleted from the ledger. A
+    /// record in <paramref name="unsettled"/> still has artifacts its unfinished deliveries left that could not be undone, so the
+    /// extra step keeps it in the ledger, where the sweep goes on undoing them.
     /// </summary>
     private async Task<int> RemoveChunkAsync(
         ILedger ledger, IDeliveryProtocol protocol, IReadOnlyList<DeliveryKey> chunk, IReadOnlyDictionary<DeliveryKey, RecordState> records,
-        RemovalChoice scope, bool purgeLedger, long? activity, Reversals.PreviousVersionRestore? stepBack, List<RemovalRecordResult> results, CancellationToken ct)
+        RemovalChoice scope, bool purgeLedger, long? activity, Reversals.PreviousVersionRestore? stepBack, List<RemovalRecordResult> results,
+        IReadOnlySet<DeliveryKey> unsettled, CancellationToken ct)
     {
         var removals = new List<RecordRemoval>(chunk.Count);
         foreach (var key in chunk)
@@ -1012,17 +1145,72 @@ public sealed class FlowRuntime : IDisposable
         var settled = outcomes.Where(o => o.Succeeded).Select(o => o.Removal.Key).ToList();
         await ledger.MarkRemovedAsync(Flow.Id, settled, scope.Scope(), Actor, _context.Time.GetUtcNow().UtcDateTime, correlation.Id, ct).ConfigureAwait(false);
 
-        // The extra step: what OSDU no longer holds goes from the ledger too, one line of each kept.
-        var gone = purgeLedger && settled.Count > 0
-            ? (await ledger.PurgeRecordsAsync(Flow.Id, settled, Actor, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false)).ToHashSet()
+        // The extra step: what OSDU no longer holds goes from the ledger too, one line of each kept; a record whose unfinished
+        // deliveries left something the undo could not take back stays, so nothing in OSDU loses the record that names it.
+        var purgeable = settled.Where(k => !unsettled.Contains(k)).ToList();
+        var gone = purgeLedger && purgeable.Count > 0
+            ? (await ledger.PurgeRecordsAsync(Flow.Id, purgeable, Actor, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false)).ToHashSet()
             : [];
         foreach (var outcome in outcomes)
         {
             var result = await AnnounceRemovalAsync(outcome, scope.Scope(), records[outcome.Removal.Key], ct).ConfigureAwait(false);
-            results.Add(gone.Contains(outcome.Removal.Key) ? result with { Detail = result.Detail + "; deleted from the ledger" } : result);
+            results.Add(gone.Contains(outcome.Removal.Key) ? result with { Detail = result.Detail + "; deleted from the ledger" }
+                : purgeLedger && outcome.Succeeded && unsettled.Contains(outcome.Removal.Key)
+                    ? result with { Detail = result.Detail + "; kept in the ledger, since what its unfinished deliveries left could not all be undone yet" }
+                    : result);
         }
 
         return gone.Count;
+    }
+
+    /// <summary>
+    /// Undoes, before records are removed or their ledger deleted (docs/atomic-delivery-plan.md, When the undo runs), what
+    /// deliveries of <paramref name="records"/> left in OSDU, through the one undo path, for each record no worker holds: with
+    /// <paramref name="open"/>, every open artifact of their unfinished deliveries, the record itself included; with
+    /// <paramref name="minted"/>, the ids their committed deliveries minted (datasets, content, outputs), removed reversibly,
+    /// since nothing names them once the ledger is gone. Returns what the undo did, and the records left with an artifact it
+    /// could not take back yet, which the sweep goes on undoing.
+    /// </summary>
+    private async Task<(UndoSummary Undone, IReadOnlySet<DeliveryKey> Unsettled)> UndoForRemovalAsync(
+        ILedger ledger, IDeliveryProtocol protocol, IReadOnlyList<RecordState> records, bool open, bool minted, CancellationToken ct)
+    {
+        var free = records.Where(r => r.LeaseOwner is null).ToDictionary(r => r.DeliveryKey);
+        if (!protocol.Undoes || free.Count == 0)
+        {
+            return (UndoSummary.Empty, new HashSet<DeliveryKey>());
+        }
+
+        var artifacts = new List<LedgerArtifact>();
+        if (open)
+        {
+            artifacts.AddRange(await ledger.OpenArtifactsAsync(Flow.Id, free.Keys, ct).ConfigureAwait(false));
+        }
+
+        if (minted)
+        {
+            artifacts.AddRange(await ledger.MintedArtifactsAsync(Flow.Id, free.Keys, ct).ConfigureAwait(false));
+        }
+
+        if (artifacts.Count == 0)
+        {
+            return (UndoSummary.Empty, new HashSet<DeliveryKey>());
+        }
+
+        var requests = artifacts
+            .GroupBy(a => a.Key)
+            .Select(g => new UndoRequest(free[g.Key], g.OrderBy(a => a.ArtifactId).ToList(), UndoReason.Removed, KeepRecord: false))
+            .ToList();
+        using var correlation = OsduCorrelation.Begin();
+        var undos = await new UndoRunner(protocol, _context.Time, Truncate(Actor, 200), RunId).RunAsync(requests, correlation.Id, ct).ConfigureAwait(false);
+        await ledger.SettleArtifactsAsync(Flow.Id, undos, minted, ct).ConfigureAwait(false);
+        var unsettled = undos.Where(u => u.Settlements.Any(s => s.Status == ArtifactStatus.Failed)).Select(u => u.DeliveryKey).ToHashSet();
+        var undone = UndoSummary.Of(undos);
+        if (undone.Failed > 0)
+        {
+            _log.LogWarning("{Summary}; the undos that failed are tried again later.", undone.Describe());
+        }
+
+        return (undone, unsettled);
     }
 
     /// <summary>
@@ -1032,8 +1220,11 @@ public sealed class FlowRuntime : IDisposable
     /// in key order; a record the ledger already marks removed is not asked about again. Only when OSDU answered for every
     /// one is the ledger deleted whole (<see cref="ILedger.DeleteLedgerAsync"/>): its records, whatever their state, each
     /// kept as one line, and what it keeps of its runs, so the next run reads every row and delivers each as a new record.
-    /// A removal OSDU refused leaves the ledger as it was, with the records it did remove marked removed, and fails naming
-    /// the refusals: OSDU never holds a record the ledger forgot. A route with no reversible removal is refused outright.
+    /// Before a page's records are removed, what their unfinished deliveries left is undone; once a record is out of OSDU, the
+    /// datasets, content and outputs its committed deliveries minted are removed reversibly too, since nothing would name them
+    /// afterwards. A removal OSDU refused, or an undo it could not take, leaves the ledger as it was, with the records it did
+    /// remove marked removed, and fails naming them: OSDU never holds a record or an id the ledger forgot. A route with no
+    /// reversible removal is refused outright.
     /// </summary>
     public Task<LedgerDeleteSummary> DeleteLedgerAsync(string confirm, CancellationToken ct = default)
     {
@@ -1065,6 +1256,7 @@ public sealed class FlowRuntime : IDisposable
 
             var protocol = await ProtocolAsync(ct).ConfigureAwait(false);
             var tally = new RemovalTally();
+            var undone = UndoSummary.Empty;
             DeliveryKey? after = null;
             while (true)
             {
@@ -1076,18 +1268,24 @@ public sealed class FlowRuntime : IDisposable
                 }
 
                 after = page[^1].DeliveryKey;
+
+                // What the page's unfinished deliveries left, a removed record's included, is undone before anything is removed.
+                undone = undone.Add((await UndoForRemovalAsync(ledger, protocol, page, open: true, minted: false, ct).ConfigureAwait(false)).Undone);
                 var held = page.Where(r => r.Status != RecordStatus.Deleted).ToList();
                 tally.AlreadyRemoved += page.Count - held.Count;
-                if (held.Count == 0)
+                var results = new List<RemovalRecordResult>(held.Count);
+                if (held.Count > 0)
                 {
-                    continue;
+                    await RemoveChunkAsync(
+                        ledger, protocol, held.Select(r => r.DeliveryKey).ToList(), held.ToDictionary(r => r.DeliveryKey), RemovalChoice.Record,
+                        purgeLedger: false, activity, stepBack: null, results, new HashSet<DeliveryKey>(), ct).ConfigureAwait(false);
+                    tally.Add(results);
                 }
 
-                var results = new List<RemovalRecordResult>(held.Count);
-                await RemoveChunkAsync(
-                    ledger, protocol, held.Select(r => r.DeliveryKey).ToList(), held.ToDictionary(r => r.DeliveryKey), RemovalChoice.Record,
-                    purgeLedger: false, activity, stepBack: null, results, ct).ConfigureAwait(false);
-                tally.Add(results);
+                // Once a record is out of OSDU, the ids its committed deliveries minted are removed reversibly with it.
+                var outOfOsdu = results.Where(r => r.Outcome is "removed" or "already-gone").Select(r => new DeliveryKey(r.DeliveryKey)).ToHashSet();
+                var retired = page.Where(r => r.Status == RecordStatus.Deleted || outOfOsdu.Contains(r.DeliveryKey)).ToList();
+                undone = undone.Add((await UndoForRemovalAsync(ledger, protocol, retired, open: false, minted: true, ct).ConfigureAwait(false)).Undone);
             }
 
             if (tally.Failed > 0)
@@ -1097,8 +1295,17 @@ public sealed class FlowRuntime : IDisposable
                     $"{tally.Failed} record(s) of '{Flow.Label}' could not be removed from OSDU, so the ledger was kept as it was and OSDU holds nothing it forgot: {tally.Failures}. The {tally.Removed + tally.AlreadyGone} record(s) OSDU answered for are marked removed; delete the ledger again once OSDU removes the rest."));
             }
 
+            // An id the undo could not take back keeps the ledger too: the ledger is the one place that names it.
+            var left = await ledger.ArtifactCountsAsync(Flow.Id, ct).ConfigureAwait(false);
+            if (left.ToUndo > 0)
+            {
+                throw new DeliveryException(string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{left.ToUndo} item(s) the deliveries of '{Flow.Label}' left in OSDU could not be undone ({undone.Describe()}), so the ledger was kept as it was and OSDU holds nothing it forgot. Every record OSDU answered for is marked removed; the sweep goes on undoing the rest, and the ledger can be deleted again once it has."));
+            }
+
             var deleted = await ledger.DeleteLedgerAsync(Flow.Id, Actor, activity, _context.Time.GetUtcNow().UtcDateTime, ct).ConfigureAwait(false);
-            var summary = new LedgerDeleteSummary(partition, tally.Removed, tally.AlreadyGone, tally.AlreadyRemoved, tally.Skipped, deleted);
+            var summary = new LedgerDeleteSummary(partition, tally.Removed, tally.AlreadyGone, tally.AlreadyRemoved, tally.Skipped, deleted) { Undone = undone };
             return (summary, summary.Describe(), (Guid?)null, false);
         }, ct);
     }

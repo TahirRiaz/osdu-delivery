@@ -52,6 +52,19 @@ internal interface IDdmsShape
     /// DDMS manages it, so the document's is replaced.
     /// </summary>
     bool CarryLink(JsonObject? stored, JsonObject document);
+
+    /// <summary>
+    /// Undoes what unfinished deliveries made beside the record (docs/atomic-delivery-plan.md): every item of
+    /// <paramref name="items"/>, none of them the record itself, answered once, a failure answered rather than thrown. The
+    /// route undoes the record itself after them, through <see cref="RecordSide"/>.
+    /// </summary>
+    Task<IReadOnlyList<UndoResult>> UndoAsync(UndoWork work, DdmsRecordPaths paths, IReadOnlyList<UndoItem> items, CancellationToken ct);
+
+    /// <summary>
+    /// How an undo reaches the record itself on this shape: its reversible removal and the read of when OSDU created it. The
+    /// route adds the write-back of an earlier version, which depends on where the record's versions are kept.
+    /// </summary>
+    RecordSide RecordSide(DdmsRecordPaths paths);
 }
 
 /// <summary>Values the ddms route's shapes read from a record and its target state.</summary>

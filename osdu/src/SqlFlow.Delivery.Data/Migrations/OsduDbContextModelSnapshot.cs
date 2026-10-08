@@ -127,6 +127,110 @@ namespace SqlFlow.Delivery.Data.Migrations
                     b.ToTable("ActivityRecord", "osdu");
                 });
 
+            modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryArtifact", b =>
+                {
+                    b.Property<short>("PartitionId")
+                        .HasColumnType("smallint");
+
+                    b.Property<long>("ArtifactId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("ArtifactId"));
+
+                    b.Property<Guid?>("CreatedRunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("DeliveryKey")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("FlowId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Locator")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<DateTime?>("NextUndoUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Note")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<long?>("PriorVersion")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("SettledBy")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<Guid?>("SettledRunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("SettledUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Slot")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<Guid?>("SubmissionId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("TargetId")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<int>("UndoAttempts")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("UnitId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("UnitStartedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long?>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("PartitionId", "ArtifactId");
+
+                    b.HasIndex("PartitionId", "TargetId")
+                        .HasFilter("[TargetId] IS NOT NULL");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("PartitionId", "TargetId"), new[] { "State", "Role", "FlowId", "DeliveryKey" });
+
+                    b.HasIndex("PartitionId", "FlowId", "State", "NextUndoUtc")
+                        .HasDatabaseName("IX_Artifact_Open")
+                        .HasFilter("[State] IN (N'intent', N'pending', N'due', N'failed')");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("PartitionId", "FlowId", "State", "NextUndoUtc"), new[] { "DeliveryKey", "UnitId", "UndoAttempts", "CreatedUtc" });
+
+                    b.HasIndex("PartitionId", "FlowId", "DeliveryKey", "UnitId", "Slot")
+                        .IsUnique();
+
+                    b.ToTable("Artifact", "osdu");
+                });
+
             modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryAssertionResult", b =>
                 {
                     b.Property<short>("PartitionId")
@@ -1459,6 +1563,331 @@ namespace SqlFlow.Delivery.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("Interface", "osdu");
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryInventory", b =>
+                {
+                    b.Property<short>("PartitionId")
+                        .HasColumnType("smallint");
+
+                    b.Property<int>("InventoryId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("InventoryId"));
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("FlowId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("FlowName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<long?>("LastBuildRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("LastBuiltUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long?>("LastReconcileRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("LastReconciledUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<string>("OwnersJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("OwnersSource")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("Query")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("ReadMode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Versions")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.HasKey("PartitionId", "InventoryId");
+
+                    b.HasIndex("PartitionId", "FlowId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("Inventory", "osdu");
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryInventoryRecord", b =>
+                {
+                    b.Property<short>("PartitionId")
+                        .HasColumnType("smallint");
+
+                    b.Property<long>("InventoryRecordId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("InventoryRecordId"));
+
+                    b.Property<long?>("ArtifactId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ArtifactState")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<DateTime?>("ChangedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("CreateTime")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreateUser")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<Guid?>("DeliveryKey")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Detail")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.Property<string>("Finding")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<DateTime>("FindingUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("FirstSeenUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("GoneUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("InventoryId")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Kind")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<Guid?>("LedgerFlowId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("LedgerStatus")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<long?>("LedgerVersion")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("ModifyTime")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ModifyUser")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("TargetId")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<long?>("Version")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("VersionsAt")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("PartitionId", "InventoryRecordId");
+
+                    b.HasIndex("PartitionId", "TargetId");
+
+                    SqlServerIndexBuilderExtensions.IncludeProperties(b.HasIndex("PartitionId", "TargetId"), new[] { "InventoryId", "Finding", "GoneUtc" });
+
+                    b.HasIndex("PartitionId", "InventoryId", "TargetId")
+                        .IsUnique();
+
+                    b.HasIndex("PartitionId", "InventoryId", "Finding", "InventoryRecordId");
+
+                    b.HasIndex("PartitionId", "InventoryId", "InventoryRecordId");
+
+                    b.ToTable("InventoryRecord", "osdu");
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryInventoryRun", b =>
+                {
+                    b.Property<short>("PartitionId")
+                        .HasColumnType("smallint");
+
+                    b.Property<long>("InventoryRunId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("InventoryRunId"));
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)");
+
+                    b.Property<long>("Added")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Changed")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("FindingsJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<long>("Gone")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("InventoryId")
+                        .HasColumnType("int");
+
+                    b.Property<long>("Listed")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("MissingChecked")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<string>("OwnersJson")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("Pages")
+                        .HasColumnType("int");
+
+                    b.Property<string>("ReadMode")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.Property<long>("Requests")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Returned")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("RunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("StartedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)");
+
+                    b.HasKey("PartitionId", "InventoryRunId");
+
+                    b.HasIndex("PartitionId", "InventoryId", "InventoryRunId");
+
+                    b.ToTable("InventoryRun", "osdu");
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryInventoryScan", b =>
+                {
+                    b.Property<short>("PartitionId")
+                        .HasColumnType("smallint");
+
+                    b.Property<long>("ScanId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("ScanId"));
+
+                    b.Property<DateTime?>("CreateTime")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("CreateUser")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<long>("InventoryRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Kind")
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)");
+
+                    b.Property<DateTime?>("ModifyTime")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ModifyUser")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("TargetId")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .UseCollation("Latin1_General_100_BIN2");
+
+                    b.Property<long?>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("PartitionId", "ScanId");
+
+                    b.HasIndex("PartitionId", "InventoryRunId", "TargetId");
+
+                    b.ToTable("InventoryScan", "osdu");
+                });
+
+            modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryInventoryVersion", b =>
+                {
+                    b.Property<short>("PartitionId")
+                        .HasColumnType("smallint");
+
+                    b.Property<long>("InventoryRecordId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("PartitionId", "InventoryRecordId", "Version");
+
+                    b.ToTable("InventoryVersion", "osdu");
                 });
 
             modelBuilder.Entity("SqlFlow.Delivery.Data.DeliveryLease", b =>

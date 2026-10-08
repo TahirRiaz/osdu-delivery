@@ -117,9 +117,9 @@ public sealed class SeismicStoreRouteTests
             CompletedSteps = completed ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal),
             StepCompleted = reported is null
                 ? null
-                : (step, values, _) =>
+                : (report, _) =>
                 {
-                    reported[step] = values;
+                    reported[report.Step] = report.Returned;
                     return Task.CompletedTask;
                 },
         };
@@ -795,7 +795,10 @@ public sealed class SeismicStoreRouteTests
 
         var held = await Assert.ThrowsAsync<RecordHeldException>(() => rig.Protocol.DeliverAsync(Work(Line(), Files(("line-001.sgy", Bytes(10))))));
         Assert.StartsWith(expected, held.Message, StringComparison.Ordinal);
-        Assert.Equal($"PUT {Base}/unlock?path=surveys/north", ServiceCalls(platform)[^1]);
+
+        // The lock is released under the delivery's own id alone (a close with an empty patch), never another writer's.
+        Assert.Equal(Close(LockIdOf(platform)), ServiceCalls(platform)[^1]);
+        Assert.Equal("{}", platform.Calls.Last(c => c.Method == HttpMethod.Patch).Body);
         Assert.Empty(platform.SeismicLocks);
         Assert.Equal(0, platform.SeismicCredentialsIssued);
 

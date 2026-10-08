@@ -1468,6 +1468,62 @@ failed with every other dimension built. A dimension flow's pipeline has a Dimen
 page of every dimension and of the search builder ([operations.md](operations.md#the-gui)). A cache flow can hold a
 dimension's values as a lookup table ([Cache flow](#cache-flow)).
 
+## Inventory flow
+
+Every id an OSDU kind holds in a partition, with its version and who created and last changed it, kept in the module's
+database and compared with every ledger of the partition ([inventory-plan.md](inventory-plan.md)). The ledgers say what
+the flows delivered and minted; the inventory says what OSDU serves; where the two disagree is the report: records no
+ledger knows (orphans), records a ledger expects that storage does not hold (missing), ids an unfinished delivery left
+that its undo has not taken back (undoing), and records a ledger removed, never confirmed or forgot that OSDU still
+serves. A build only reads OSDU; nothing is ever written to it.
+
+```yaml
+flowType: inventory
+name: welllog-inventory
+batch: reconciliation
+partitions: [dev]                        # or none: the partition a run names, or the registry's default
+
+source:
+  endpoint: ${env:OSDU_URL}
+  auth: { type: oauth2ClientCredentials, secondarySecretRef: ${env:OSDU_CLIENT_ID}, secretRef: ${env:OSDU_CLIENT_SECRET}, token: { url: ${env:OSDU_TOKEN_URL} } }
+  read: search                           # search (the default) or storage (every active record; storage's admin role)
+  # queryPath, searchPath, recordQueryPath, headersPath, versionsPath, schemaPath: the services' paths, defaulted
+owners: [delivery-sp@contoso.com]        # optional: the identities this estate writes as; inferred when left out
+maxMissingChecks: 100000                 # optional: ids a ledger expects that one build reads from storage (0 to 1,000,000)
+reliability: { concurrency: 4 }          # version lists read at once, for versions: all
+
+inventories:
+  - name: WellLogs
+    kind: "*:*:work-product-component--WellLog:*"   # covers its type whole: missing records of the type are reported
+    versions: all                                   # latest (the default) or every version storage keeps
+  - name: NorwegianWells
+    kind: "osdu:wks:master-data--Well:1.*.*"
+    query: 'data.Country:"NO"'                      # search only; {name} parameters and {partition} are filled in
+```
+
+- `source.read: search` pages the search index (a viewer's entitlements suffice). The index lags writes and leaves out a
+  record it failed to index, so an id a ledger expects that the read did not list is read from storage by id and
+  reported `unlisted` when storage holds it. `source.read: storage` lists every active record of each kind from storage
+  itself, reads their system properties a thousand at a time (a hundred where the headers route is not deployed), and
+  expands a kind with wildcards through the schema service. It takes no `query`.
+- `owners` decides `orphan` from `foreign` for an id no ledger knows: an owner created it, or another identity did. Left
+  out, a build infers them: every identity that created at least 1% of the inventory's ids a ledger claims. The run says
+  which it used and how it knew.
+- An inventory **covers its type whole** when its kind names the entity type and leaves the authority, source and version
+  as `*`, and no query narrows it. A ledger's delivered record, or live minted id, of the type that the read did not list
+  is then read from storage and reported `missing` or `unlisted`. An inventory narrowed further reports only the ids it
+  listed before and no longer lists.
+- `versions: all` reads each record's versions (`GET /records/versions/{id}`) for a record that is new or whose latest
+  version moved since its versions were read, so a rebuild sends requests only for what moved.
+
+The operations are `build` (the default: read each inventory whole, merge, reconcile), `reconcile` (compare each
+inventory, as its last build left it, with the ledgers as they stand now, reading from storage only the ids a ledger
+expects) and `plan` (count what each inventory would read, reading no id and keeping nothing). The payload takes
+`inventories` (names); a run with none takes every one. A run reads one partition. A build merges each inventory in one
+transaction once its read is whole: a read that fails part way changes nothing, and the run ends failed with every other
+inventory done. The findings, and what each says, are in [inventory-plan.md](inventory-plan.md), The findings. Lineage
+orders an inventory flow after the flows that write the kinds it reads.
+
 ## Cache flow
 
 The reference data the mappings resolve against ([design.md](design.md) section 6.2). A cache flow is the one place what

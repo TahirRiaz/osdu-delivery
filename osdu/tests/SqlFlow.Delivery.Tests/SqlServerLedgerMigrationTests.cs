@@ -54,6 +54,9 @@ public sealed class SqlServerLedgerMigrationTests
     /// <summary>The migration before a record removed from OSDU could be deleted from the ledger.</summary>
     private const string BeforePurges = "20261005205855_RecordReversals";
 
+    /// <summary>The migration before deliveries recorded what they created in OSDU, to undo it when they do not complete.</summary>
+    private const string BeforeArtifacts = "20261007232509_PurgedRecordRecency";
+
     /// <summary>The tables of reversals, each a ledger table keyed by the partition first.</summary>
     private static readonly string[] ReversalTables = ["Reversal", "ReversalItem"];
 
@@ -935,6 +938,45 @@ public sealed class SqlServerLedgerMigrationTests
         Assert.Equal(1L, await database.ScalarAsync(Binary));
 
         await database.MigrateAsync(BeforePurges);
+        Assert.Equal(0L, await database.ScalarAsync(Table));
+        await database.MigrateAsync(null);
+        Assert.Equal(1L, await database.ScalarAsync(Table));
+    }
+
+    [Fact]
+    public async Task The_table_of_what_deliveries_created_is_added_keyed_by_partition_and_goes_back_with_the_migration()
+    {
+        await using var database = await ScratchDatabase.CreateAsync();
+        await database.MigrateAsync(BeforeArtifacts);
+        const string Table = "SELECT COUNT_BIG(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'osdu' AND t.name = N'Artifact';";
+        Assert.Equal(0L, await database.ScalarAsync(Table));
+
+        await database.MigrateAsync(null);
+
+        Assert.Equal(1L, await database.ScalarAsync(Table));
+        Assert.Equal("PartitionId", (await database.PrimaryKeyAsync("Artifact"))[0]);
+        await using (var db = database.Context())
+        {
+            Assert.Equal(ModelIndexes(db, ["Artifact"]), await database.IndexesAsync(["Artifact"]));
+        }
+
+        // The OSDU id an artifact names compares exactly, as a record's claim of it does, so the inventory joins it to OSDU's ids.
+        const string Binary = "SELECT COUNT_BIG(*) FROM sys.columns WHERE [object_id] = OBJECT_ID(N'[osdu].[Artifact]') AND [name] = N'TargetId' AND [collation_name] = N'Latin1_General_100_BIN2';";
+        Assert.Equal(1L, await database.ScalarAsync(Binary));
+
+        // A unit reports a slot once: a second row for the same unit and slot is refused.
+        const string Insert = """
+            INSERT INTO [osdu].[Artifact] ([PartitionId], [FlowId], [DeliveryKey], [UnitId], [UnitStartedUtc], [Slot], [Role], [State], [UndoAttempts], [CreatedUtc], [UpdatedUtc])
+            VALUES (1, @flow, @key, @unit, SYSUTCDATETIME(), N'record', N'record', N'pending', 0, SYSUTCDATETIME(), SYSUTCDATETIME());
+            """;
+        var flow = Guid.NewGuid();
+        var key = Guid.NewGuid();
+        var unit = Guid.NewGuid();
+        await database.ExecuteAsync(Insert, ("flow", flow), ("key", key), ("unit", unit));
+        var second = await Assert.ThrowsAsync<SqlException>(() => database.ExecuteAsync(Insert, ("flow", flow), ("key", key), ("unit", unit)));
+        Assert.Equal(2601, second.Number);
+
+        await database.MigrateAsync(BeforeArtifacts);
         Assert.Equal(0L, await database.ScalarAsync(Table));
         await database.MigrateAsync(null);
         Assert.Equal(1L, await database.ScalarAsync(Table));

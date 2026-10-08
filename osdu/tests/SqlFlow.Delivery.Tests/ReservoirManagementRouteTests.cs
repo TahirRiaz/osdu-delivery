@@ -110,9 +110,9 @@ public sealed class ReservoirManagementRouteTests
             CompletedSteps = completed ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal),
             StepCompleted = reported is null
                 ? null
-                : (step, values, _) =>
+                : (report, _) =>
                 {
-                    reported[step] = values;
+                    reported[report.Step] = report.Returned;
                     return Task.CompletedTask;
                 },
         };
@@ -262,7 +262,9 @@ public sealed class ReservoirManagementRouteTests
 
         var failed = await Assert.ThrowsAsync<OsduStatusException>(() => rig.Protocol.DeliverAsync(Work(PhiK(), Rows(TwoRockTypes), reported: reported)));
         Assert.Equal(502, failed.StatusCode);
-        Assert.Equal(["metadata", "sync", "rows-begin"], reported.Keys);
+
+        // The rows posted since the last block, and the row whose post may have landed, are reported before the try fails.
+        Assert.Equal(["metadata", "sync", "rows-begin", ReservoirManagementShape.RowsPartialStep], reported.Keys);
         Assert.Equal(3, platform.Rows("phi-k-synthesis-rt").Count + platform.Rows("phi-k-synthesis-phi-k").Count);
 
         var calls = platform.Calls.Count;
@@ -300,7 +302,7 @@ public sealed class ReservoirManagementRouteTests
         var reported = new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal);
 
         await Assert.ThrowsAsync<OsduStatusException>(() => rig.Protocol.DeliverAsync(Work(PhiK(), Rows(rows), reported: reported)));
-        Assert.Equal(["metadata", "sync", "rows-begin", "rows-0"], reported.Keys);
+        Assert.Equal(["metadata", "sync", "rows-begin", "rows-0", ReservoirManagementShape.RowsPartialStep], reported.Keys);
         Assert.Equal(76, platform.Rows("phi-k-synthesis-rt").Count + platform.Rows("phi-k-synthesis-phi-k").Count);
 
         var calls = platform.Calls.Count;

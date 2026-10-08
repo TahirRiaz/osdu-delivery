@@ -811,6 +811,21 @@ public class DeliverRunScopeTests
     }
 
     [Fact]
+    public void An_undo_run_takes_everything_unfinished_deliveries_left_and_force_alone()
+    {
+        // The sweep of the whole ledger, and with force the undos that have used their tries too.
+        DeliveryRunPayload.None.Validate(DeliveryOperations.Undo);
+        new DeliveryRunPayload { Force = true }.Validate(DeliveryOperations.Undo);
+
+        string Refused(DeliveryRunPayload payload) => Assert.Throws<SqlFlowException>(() => payload.Validate(DeliveryOperations.Undo)).Message;
+        Assert.Contains("not a submission's", Refused(new DeliveryRunPayload { SubmissionId = Guid.NewGuid() }), StringComparison.Ordinal);
+        Assert.Contains("every unfinished delivery of the ledger left", Refused(new DeliveryRunPayload { RecordKeys = [Guid.NewGuid()] }), StringComparison.Ordinal);
+        Assert.Contains("an undo sends nothing the flow renders", Refused(new DeliveryRunPayload { Redeliver = RedeliverScopes.All }), StringComparison.Ordinal);
+        Assert.Contains("an undo renders nothing", Refused(new DeliveryRunPayload { Rerender = true }), StringComparison.Ordinal);
+        Assert.Contains("only an intake member plans slices", Refused(new DeliveryRunPayload { Slices = [0] }), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void The_payload_a_run_carries_is_checked_against_the_operation_it_travels_with()
     {
         // The kind validates its own arguments at every trust boundary, so a member's payload can never ask a drain to

@@ -598,9 +598,9 @@ public sealed class WorkflowRouteTests
         DeliveryWork Tracked() => Work(document) with
         {
             CompletedSteps = steps,
-            StepCompleted = (step, values, _) =>
+            StepCompleted = (report, _) =>
             {
-                steps[step] = values;
+                steps[report.Step] = report.Returned;
                 return Task.CompletedTask;
             },
         };
@@ -646,9 +646,9 @@ public sealed class WorkflowRouteTests
         DeliveryWork Tracked() => Work(document) with
         {
             CompletedSteps = steps,
-            StepCompleted = (step, values, _) =>
+            StepCompleted = (report, _) =>
             {
-                steps[step] = values;
+                steps[report.Step] = report.Returned;
                 return Task.CompletedTask;
             },
         };

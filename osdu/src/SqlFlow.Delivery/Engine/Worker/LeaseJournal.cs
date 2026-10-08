@@ -47,11 +47,11 @@ internal sealed class LeaseJournal
         }
     }
 
-    /// <summary>Appends a completed step; the task completes once it is written.</summary>
+    /// <summary>Appends a completed step, with the artifacts it reports; the task completes once it is written.</summary>
     public Task StepAsync(RecordStep step)
     {
         ArgumentNullException.ThrowIfNull(step);
-        return Enqueue(new Entry(step, null, null));
+        return Enqueue(new Entry(step, null, null, null));
     }
 
     /// <summary>Appends how a try ended, with its event for the listener; the task completes once both are out.</summary>
@@ -59,7 +59,18 @@ internal sealed class LeaseJournal
     {
         ArgumentNullException.ThrowIfNull(completion);
         ArgumentNullException.ThrowIfNull(evt);
-        return Enqueue(new Entry(null, completion, evt));
+        return Enqueue(new Entry(null, completion, evt, null));
+    }
+
+    /// <summary>
+    /// Appends an undo of a record's aborted units (docs/atomic-delivery-plan.md): its attempt and what it settled each artifact
+    /// as, written after the completions of the same write, so a held try's completion makes its artifacts due before the undo
+    /// settles them. The task completes once it is written.
+    /// </summary>
+    public Task UndoAsync(RecordUndo undo)
+    {
+        ArgumentNullException.ThrowIfNull(undo);
+        return Enqueue(new Entry(null, null, null, undo));
     }
 
     private Task Enqueue(Entry entry)
@@ -111,7 +122,8 @@ internal sealed class LeaseJournal
             {
                 var steps = batch.Where(e => e.Step is not null).Select(e => e.Step!).ToList();
                 var completions = batch.Where(e => e.Completion is not null).Select(e => e.Completion!).ToList();
-                await _ledger.AppendAsync(_flowId, _token, new LeaseAppend(steps, completions), CancellationToken.None).ConfigureAwait(false);
+                var undos = batch.Where(e => e.Undo is not null).Select(e => e.Undo!).ToList();
+                await _ledger.AppendAsync(_flowId, _token, new LeaseAppend(steps, completions) { Undos = undos }, CancellationToken.None).ConfigureAwait(false);
                 lock (_gate)
                 {
                     foreach (var completion in completions)
@@ -148,7 +160,7 @@ internal sealed class LeaseJournal
         }
     }
 
-    private sealed record Entry(RecordStep? Step, RecordCompletion? Completion, DeliveryEvent? Event)
+    private sealed record Entry(RecordStep? Step, RecordCompletion? Completion, DeliveryEvent? Event, RecordUndo? Undo)
     {
         public TaskCompletionSource Written { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }

@@ -50,6 +50,15 @@ public sealed class OsduDatasetProtocol : IDeliveryProtocol
 
     public DeliveryProtocol Kind => DeliveryProtocol.Dataset;
 
+    /// <summary>A record of another kind registers its dataset before it is written, so a delivery can leave the dataset behind until its undo.</summary>
+    public bool Undoes => true;
+
+    /// <summary>The step a registration's intent is reported under, before the registration is sent.</summary>
+    public const string RegisterIntentStep = "register-intent";
+
+    /// <summary>The slot of the dataset a record of another kind keeps its files in; a dataset record is reported as the record itself.</summary>
+    public const string FilesDatasetSlot = "files-dataset";
+
     /// <summary>Records per request: a registration takes at most 20.</summary>
     public int MaxBatch => Math.Clamp(_options.BatchSize, 1, DatasetService.MaxRecords);
 
@@ -227,12 +236,18 @@ public sealed class OsduDatasetProtocol : IDeliveryProtocol
 
     private async Task RegisterChunkAsync(IReadOnlyList<Staged> chunk, CancellationToken ct)
     {
+        var ready = await DeclareAsync(chunk, ct).ConfigureAwait(false);
+        if (ready.Count == 0)
+        {
+            return;
+        }
+
         var started = _time.GetUtcNow().UtcDateTime;
-        var records = chunk.Select(c => c.Registration!).ToList();
+        var records = ready.Select(c => c.Registration!).ToList();
         var landed = await _datasets.RegisterAsync(records, ct).ConfigureAwait(false);
         var ids = records.Select(r => r["id"]!.GetValue<string>()).ToList();
         var retrievable = await _datasets.RetrievableAsync(ids, ct).ConfigureAwait(false);
-        foreach (var item in chunk)
+        foreach (var item in ready)
         {
             var id = item.Registration!["id"]!.GetValue<string>();
             if (!retrievable.Contains(id))
@@ -249,8 +264,74 @@ public sealed class OsduDatasetProtocol : IDeliveryProtocol
             }
 
             item.Steps.Add(RegisterStep, started, 201, values);
-            await item.Work.ReportStepAsync(RegisterStep, values, ct).ConfigureAwait(false);
+            await item.Work.ReportStepAsync(RegisterStep, values, item.Declared is { } declared ? [RegistrationIntents.Landed(declared, item.RegisteredVersion)] : [], ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Reports what each registration of <paramref name="chunk"/> is about to write, before it is sent, so a registration
+    /// whose answer is lost is still undone (<see cref="RegistrationIntents"/>): the dataset a record of another kind keeps its
+    /// files in, or a dataset record itself, under the id the route gives it. A record storage could not answer for fails
+    /// alone, unregistered; the others go on.
+    /// </summary>
+    private async Task<List<Staged>> DeclareAsync(IReadOnlyList<Staged> chunk, CancellationToken ct)
+    {
+        var intents = await RegistrationIntents.DeclareAsync(
+            _records,
+            chunk.Select(c => new Registration(c.IsDataset ? TargetArtifact.RecordSlot : FilesDatasetSlot, c.Registration!["id"]!.GetValue<string>())).ToList(),
+            ct).ConfigureAwait(false);
+        var ready = new List<Staged>(chunk.Count);
+        for (var i = 0; i < chunk.Count; i++)
+        {
+            var item = chunk[i];
+            if (intents[i].Artifact is not { } declared)
+            {
+                item.Failure = new DeliveryException(intents[i].Refusal!);
+                continue;
+            }
+
+            item.Declared = declared;
+            var values = new Dictionary<string, string>(StringComparer.Ordinal) { ["datasetId"] = declared.TargetId! };
+            if (declared.PriorVersion is { } version)
+            {
+                values["priorVersion"] = version.ToString(CultureInfo.InvariantCulture);
+            }
+
+            await item.Work.ReportStepAsync(RegisterIntentStep, values, [declared], ct).ConfigureAwait(false);
+            ready.Add(item);
+        }
+
+        return ready;
+    }
+
+    /// <summary>
+    /// Undoes what unfinished deliveries registered (docs/atomic-delivery-plan.md): a dataset the unit created is removed
+    /// reversibly through the Dataset service, once storage confirms OSDU created it after the unit began, and a dataset the
+    /// unit wrote a new version of is given back the version before. Newer work of the record does not keep what the unit
+    /// wrote: a record of another kind names its dataset without a version, and a dataset record's own write carries the
+    /// <c>DatasetProperties</c> storage holds, so either would take on the files of a delivery that did not complete. The
+    /// record of another kind is written last, in one write, so a unit never leaves it behind; the files a registration
+    /// staged stay in the platform's storage, which no public OSDU operation deletes.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var side = new RecordSide
+        {
+            Remove = (id, token) => DeleteAsync(id, RemovalScope.Record, null, token),
+            Read = _records.ReadAsync,
+            Restorer = _records,
+            Versions = _records.VersionsAsync,
+        };
+        var results = new List<UndoResult>();
+        foreach (var work in works)
+        {
+            var registered = work.Items.Where(i => ArtifactRoles.IsTheRecord(i.Artifact.Role)).ToList();
+            results.AddRange(await ArtifactUndo.RecordItselfAsync(work with { KeepRecord = false }, registered, side, ct).ConfigureAwait(false));
+            results.AddRange(ArtifactUndo.Keep(work.Items.Except(registered), "the dataset route creates nothing of this kind"));
+        }
+
+        return results;
     }
 
     /// <summary>The storage writes: a dataset record whose record alone changed, and the records that refer to a dataset.</summary>
@@ -366,6 +447,9 @@ public sealed class OsduDatasetProtocol : IDeliveryProtocol
         public int Files { get; set; }
 
         public long? RegisteredVersion { get; set; }
+
+        /// <summary>What the registration was declared to write, before it was sent.</summary>
+        public TargetArtifact? Declared { get; set; }
 
         public DeliveryOutcome? Written { get; set; }
 

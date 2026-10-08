@@ -61,6 +61,9 @@ say what the suites prove; the live column says which of them a live platform ha
 | Reading the ingestion tables, watermarks, fingerprints, key slices | `SqlServerIngestionSourceTests`, `IngestionFingerprintTests`, `KeySlicesTests` |
 | The chain end to end, fanned out over several nodes | `SqlServerChainTests`, `ScaleEngineTests` |
 | Isolation and lock escalation under six thousand records | `SqlServerLedgerTests` |
+| Units of work and their artifacts: recorded with each step, undone on held, failed, abandoned and removed units, the sweep, the wait of newer work, deleting the ledger | `AtomicDeliveryTests`, `AtomicShapeLedgerTests`, `ArtifactUndoTests`, `UndoRunnerTests` |
+| Every route's undo, a failure at each step for a create and an update, a lost answer | `AtomicFileRouteTests`, `AtomicDatasetRouteTests`, `AtomicManifestRouteTests`, `AtomicWorkflowRouteTests`, `AtomicComposedRouteTests`, `AtomicWellboreDdmsTests`, `AtomicWellDeliveryTests`, `AtomicRafsTests`, `AtomicTimeSeriesTests`, `AtomicSeismicStoreTests`, `AtomicReservoirManagementTests`, `AtomicDspdmRouteTests`, `AtomicEtpRouteTests` |
+| Inventory flows: the document, the merge and every finding, builds through search and storage end to end | `InventoryDocumentTests`, `InventoryLedgerTests`, `InventoryRunTests` |
 
 ## Sources, interfaces and order
 

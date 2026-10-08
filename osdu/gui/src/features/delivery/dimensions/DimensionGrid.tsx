@@ -26,11 +26,13 @@ const tableContainer = (element: HTMLElement) => element.querySelector<HTMLEleme
  * place, in rows a little denser than a list's, and it is as tall as the window leaves below where it starts, so the page
  * itself does not scroll for the rows. Scrolling near the end asks for the next page (`onNearEnd`).
  */
-export function DimensionGrid({ children, onNearEnd, className }: {
+export function DimensionGrid({ children, onNearEnd, className, testId = "dimension-grid" }: {
   children: ReactNode;
   /** Called when the rows are scrolled near their end; the caller reads the next page when there is one. */
   onNearEnd?: () => void;
   className?: string;
+  /** The grid's test id, for a page that is not a dimension's. */
+  testId?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -55,7 +57,7 @@ export function DimensionGrid({ children, onNearEnd, className }: {
         "[&_td:first-child]:pl-3 [&_th:first-child]:pl-3 [&_td:last-child]:pr-3 [&_th:last-child]:pr-3",
         className,
       )}
-      data-testid="dimension-grid"
+      data-testid={testId}
     >
       {children}
     </div>

@@ -25,10 +25,20 @@ internal sealed record WellboreBulkPlan(IReadOnlyList<PayloadFile> Chunks, IRead
 /// after a payload failure resumes past the metadata step it already completed. Every rule the Wellbore DDMS applies that
 /// can be checked from the record and its chunks' footers is checked before the first request
 /// (<see cref="WellboreDdmsRules"/>), and a metadata update carries the bulk link the DDMS manages
-/// (<see cref="WellboreDdmsBulkLink"/>).
+/// (<see cref="WellboreDdmsBulkLink"/>). A record written before its bulk data, and every session, are artifacts of the
+/// record's unit of work (docs/atomic-delivery-plan.md): a delivery that does not complete has its sessions abandoned and
+/// the record removed, or given back the version it replaced.
 /// </summary>
 internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
 {
+    /// <summary>The step that records the bulk data landed, so a try that failed after it reads the record back without sending it again.</summary>
+    public const string BulkStep = "bulk";
+
+    /// <summary>How often a commit answered "committing" is asked again, and how many times, before the try gives up on it.</summary>
+    private static readonly TimeSpan CommittingPoll = TimeSpan.FromSeconds(2);
+
+    private const int CommittingPolls = 30;
+
     private readonly OsduHttpClient _client = context.Client;
     private readonly ProtocolOptions _options = context.Options;
     private readonly DdmsRouting _routing = context.Routing;
@@ -91,6 +101,17 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
             else
             {
                 var started = steps.Now;
+                if (work.DeliverPayload)
+                {
+                    // Bulk data follows the record: the write is named before it goes, so a write that lands without its answer
+                    // is still taken back when the delivery does not complete.
+                    await work.ReportStepAsync(
+                        OsduDdmsProtocol.MetadataStep + "-intent",
+                        new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId },
+                        [TargetArtifact.RecordWritten(work.TargetId, null, work.ExistingVersion) with { Status = ArtifactStatus.Intent }],
+                        ct).ConfigureAwait(false);
+                }
+
                 var (written, status) = await WriteRecordAsync(work, paths, ct).ConfigureAwait(false);
                 version = written ?? version;
                 var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["recordId"] = work.TargetId };
@@ -100,7 +121,11 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
                 }
 
                 steps.Add(OsduDdmsProtocol.MetadataStep, started, status, returned);
-                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
+
+                // Bulk data follows the record, so the record is the unit's until the bulk data lands: a delivery that does
+                // not get there removes it, or gives back the version it replaced.
+                IReadOnlyList<TargetArtifact> recordItself = work.DeliverPayload ? [TargetArtifact.RecordWritten(work.TargetId, version, work.ExistingVersion)] : [];
+                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, recordItself, ct).ConfigureAwait(false);
             }
 
             metadataDelivered = true;
@@ -114,21 +139,39 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
             var started = steps.Now;
             string? sessionId = null;
 
-            // One chunk may go straight to the bulk endpoint, and only one: that request carries "the entire bulk
-            // which will replace as latest version any previous bulk" (openapi wellbore_ddms,
-            // POST /ddms/v3/{collection}/{record_id}/data). Posting several chunks to it in turn would leave the record
-            // holding the last one and report every one of them as delivered. Aggregating chunks is what a session
-            // is for, so anything past the first uses one.
-            if (!session)
+            if (work.Completed(BulkStep) is { } landedBefore)
             {
-                var chunk = chunks[0];
-                var url = _client.Url(paths.Data!, work.TargetId);
-                await _client.SendStreamAsync(HttpMethod.Post, url, () => OsduDdmsProtocol.OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct, idempotent: true).ConfigureAwait(false);
-                chunksSent = 1;
+                // An earlier try's bulk data landed and the try failed after it (reading the record back): it is not sent again.
+                steps.Resumed(BulkStep, landedBefore);
+                chunksSent = landedBefore.TryGetValue("chunks", out var count) && int.TryParse(count, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : chunks.Count;
+                sessionId = landedBefore.TryGetValue("sessionId", out var landedSession) ? landedSession : null;
             }
             else
             {
-                (chunksSent, sessionId) = await SendSessionAsync(work, paths, payload, chunks, version, ct).ConfigureAwait(false);
+                // One chunk may go straight to the bulk endpoint, and only one: that request carries "the entire bulk
+                // which will replace as latest version any previous bulk" (openapi wellbore_ddms,
+                // POST /ddms/v3/{collection}/{record_id}/data). Posting several chunks to it in turn would leave the record
+                // holding the last one and report every one of them as delivered. Aggregating chunks is what a session
+                // is for, so anything past the first uses one.
+                if (!session)
+                {
+                    var chunk = chunks[0];
+                    var url = _client.Url(paths.Data!, work.TargetId);
+                    await _client.SendStreamAsync(HttpMethod.Post, url, () => OsduDdmsProtocol.OpenSync(payload, chunk), _options.PayloadContentType, chunk.Size > 0 ? chunk.Size : null, ct, idempotent: true).ConfigureAwait(false);
+                    chunksSent = 1;
+                }
+                else
+                {
+                    (chunksSent, sessionId) = await SendSessionAsync(work, paths, payload, chunks, version, ct).ConfigureAwait(false);
+                }
+
+                var bulkLanded = new Dictionary<string, string>(StringComparer.Ordinal) { ["chunks"] = chunksSent.ToString(CultureInfo.InvariantCulture) };
+                if (sessionId is not null)
+                {
+                    bulkLanded["sessionId"] = sessionId;
+                }
+
+                await work.ReportStepAsync(BulkStep, bulkLanded, ct).ConfigureAwait(false);
             }
 
             var returned = new Dictionary<string, string>(StringComparer.Ordinal) { ["chunks"] = chunksSent.ToString(CultureInfo.InvariantCulture) };
@@ -248,6 +291,124 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
     }
 
     public bool CarryLink(JsonObject? stored, JsonObject document) => WellboreDdmsBulkLink.Carry(stored, document);
+
+    /// <summary>
+    /// Undoes the sessions unfinished deliveries opened: each abandoned (<c>PATCH {state: abandon}</c>), a session already
+    /// committed or abandoned left as it is; a session whose create was never answered is found among the record's open
+    /// sessions and abandoned. What a session aggregated stays in the DDMS's store, which no call removes.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(UndoWork work, DdmsRecordPaths paths, IReadOnlyList<UndoItem> items, CancellationToken ct)
+    {
+        var results = new List<UndoResult>(items.Count);
+        foreach (var item in items)
+        {
+            if (item.Artifact.Role != ArtifactRoles.Session)
+            {
+                results.Add(UndoResult.Kept(item, "the Wellbore DDMS shape makes nothing of this kind beside a record"));
+                continue;
+            }
+
+            if (paths.Session is null || paths.Sessions is null)
+            {
+                results.Add(UndoResult.Kept(item, "the flow names no session path for the record's collection, so its session cannot be reached"));
+                continue;
+            }
+
+            try
+            {
+                results.Add(item.Artifact.TargetId is { } session
+                    ? await AbandonForUndoAsync(work.TargetId, paths, session, item, ct).ConfigureAwait(false)
+                    : await AbandonOpenAsync(work.TargetId, paths, item, ct).ConfigureAwait(false));
+            }
+            catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+            {
+                results.Add(UndoResult.Failed(item, ArtifactUndo.Redact(ex)));
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>The record's reversible removal is the DDMS's logical delete; its read says when OSDU created it.</summary>
+    public RecordSide RecordSide(DdmsRecordPaths paths) => new()
+    {
+        Remove = (id, token) => DeleteAsync(paths, id, RemovalScope.Record, null, token),
+        Read = (id, token) => RecordWriter.ReadAsync(_client, paths.Record, id, token),
+    };
+
+    private async Task<UndoResult> AbandonForUndoAsync(string targetId, DdmsRecordPaths paths, string sessionId, UndoItem item, CancellationToken ct)
+    {
+        // A state that cannot be read throws, and the item is answered failed for a later undo: a session is gone only when the
+        // DDMS says so.
+        var state = await ReadSessionStateAsync(targetId, paths, sessionId, ct).ConfigureAwait(false);
+        if (state is null)
+        {
+            return UndoResult.Gone(item, $"session {sessionId} is no longer known to the DDMS");
+        }
+
+        if (Settling(state))
+        {
+            return UndoResult.Failed(item, SettlingNote(sessionId, state));
+        }
+
+        if (state is not "open")
+        {
+            return UndoResult.Gone(item, $"session {sessionId} is {state}, so there is nothing to abandon");
+        }
+
+        var url = _client.Url(paths.Session!, targetId, sessionId);
+        await _client.SendJsonAsync(HttpMethod.Patch, url, new JsonObject { ["state"] = "abandon" }, null, ct).ConfigureAwait(false);
+        return UndoResult.Removed(item, $"session {sessionId} abandoned");
+    }
+
+    /// <summary>A session whose create was never answered: the record's open sessions are listed, and each abandoned.</summary>
+    private async Task<UndoResult> AbandonOpenAsync(string targetId, DdmsRecordPaths paths, UndoItem item, CancellationToken ct)
+    {
+        var url = _client.Url(paths.Sessions!, targetId);
+        var result = await _client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
+        if ((int)result.Status == 404 || result.Body.Length == 0)
+        {
+            return UndoResult.Gone(item, $"the DDMS lists no session of {targetId}");
+        }
+
+        var open = new List<string>();
+        var settling = new List<(string Id, string State)>();
+        var root = OsduHttpClient.ParseJson(result, url);
+        var listed = root.ValueKind == System.Text.Json.JsonValueKind.Array ? root : root.TryGetProperty("sessions", out var inner) ? inner : default;
+        if (listed.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var session in listed.EnumerateArray())
+            {
+                if (session.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && session.TryGetProperty("id", out var id) && id.GetString() is { Length: > 0 } sessionId
+                    && session.TryGetProperty("state", out var state) && state.GetString()?.ToLowerInvariant() is { } listedState)
+                {
+                    if (listedState == "open")
+                    {
+                        open.Add(sessionId);
+                    }
+                    else if (Settling(listedState))
+                    {
+                        settling.Add((sessionId, listedState));
+                    }
+                }
+            }
+        }
+
+        if (settling.Count > 0)
+        {
+            return UndoResult.Failed(item, SettlingNote(string.Join(", ", settling.Select(s => s.Id)), string.Join(", ", settling.Select(s => s.State).Distinct(StringComparer.Ordinal))));
+        }
+
+        foreach (var sessionId in open)
+        {
+            await _client.SendJsonAsync(HttpMethod.Patch, _client.Url(paths.Session!, targetId, sessionId), new JsonObject { ["state"] = "abandon" }, null, ct).ConfigureAwait(false);
+        }
+
+        return open.Count == 0
+            ? UndoResult.Gone(item, $"no session of {targetId} is open: the create never landed, or its session ended")
+            : UndoResult.Removed(item, $"open session(s) {string.Join(", ", open)} of {targetId} abandoned");
+    }
 
     /// <summary>
     /// Writes the record through its collection. A record of a bulk collection carries the bulk link the DDMS holds for
@@ -457,9 +618,15 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
             ["fromVersion"] = version ?? 0,
             ["timeToLive"] = 1440,
         };
+
+        // The DDMS mints the session's id, and the create is never resent: an intent goes first, so a session whose answer is
+        // lost is found among the record's open sessions and abandoned when the delivery does not complete.
+        var slot = "session:" + Guid.NewGuid().ToString("N");
+        await work.ReportStepAsync("session", new Dictionary<string, string>(StringComparer.Ordinal) { ["state"] = "opening" }, [TargetArtifact.Intent(slot, ArtifactRoles.Session, work.TargetId)], ct).ConfigureAwait(false);
         var created = await _client.SendJsonAsync(HttpMethod.Post, createUrl, createBody, null, ct, idempotent: false).ConfigureAwait(false);
         var sessionId = JsonPathReader.SelectValue(OsduHttpClient.ParseJson(created, createUrl), "id")
             ?? throw new DeliveryException($"{createUrl} did not return a session id.");
+        await work.ReportStepAsync("session", new Dictionary<string, string>(StringComparer.Ordinal) { ["sessionId"] = sessionId }, [TargetArtifact.Created(slot, ArtifactRoles.Session, sessionId, locator: work.TargetId)], ct).ConfigureAwait(false);
 
         var sent = 0;
         try
@@ -477,9 +644,20 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
             await CommitAsync(work.TargetId, paths, sessionId, ct).ConfigureAwait(false);
             return (sent, sessionId);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception)
         {
-            await AbandonAsync(work.TargetId, paths, sessionId).ConfigureAwait(false);
+            // Abandoned whatever stopped the session, a cancelled run included: a session left open holds nothing back, but
+            // it is the DDMS's to keep until it expires. An abandon that worked ends the session's artifact; one that did not
+            // leaves it for the unit's undo.
+            if (await AbandonAsync(work.TargetId, paths, sessionId).ConfigureAwait(false))
+            {
+                await work.ReportStepAsync(
+                    "session",
+                    new Dictionary<string, string>(StringComparer.Ordinal) { ["sessionId"] = sessionId, ["state"] = "abandoned" },
+                    [TargetArtifact.Created(slot, ArtifactRoles.Session, sessionId, locator: work.TargetId) with { Status = ArtifactStatus.Removed, Note = "abandoned when its delivery failed" }],
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+
             throw;
         }
     }
@@ -506,15 +684,25 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
         catch (Exception ex) when (ex is OsduStatusException { StatusCode: 409 or 412 or >= 500 } || ex is DeliveryException { InnerException: HttpRequestException or IOException or TaskCanceledException })
         {
             var state = await SessionStateAsync(targetId, paths, sessionId, ct).ConfigureAwait(false);
-            if (state is not ("committed" or "committing"))
+
+            // "committing" is a commit under way, not one that worked: the DDMS is still writing the merged bulk and the record
+            // version that names it, and either can still fail and send the session back to open. It is asked again until it
+            // settles, and a commit still under way when the polls run out is not taken as landed.
+            for (var poll = 0; state == "committing" && poll < CommittingPolls; poll++)
+            {
+                await Task.Delay(CommittingPoll, _time, ct).ConfigureAwait(false);
+                state = await SessionStateAsync(targetId, paths, sessionId, ct).ConfigureAwait(false);
+            }
+
+            if (state != "committed")
             {
                 throw new DeliveryException(
                     $"session {sessionId} for {targetId} could not be committed and is {state ?? "in an unknown state"}; the payload did not land.", ex);
             }
 
             _logger.LogInformation(
-                "Session {SessionId} for {TargetId} was already {State} when the commit was resent; the payload landed on the first commit.",
-                sessionId, targetId, state);
+                "Session {SessionId} for {TargetId} was already committed when the commit was resent; the payload landed on the first commit.",
+                sessionId, targetId);
         }
     }
 
@@ -523,14 +711,7 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
     {
         try
         {
-            var url = _client.Url(paths.Session!, targetId, sessionId);
-            var result = await _client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
-            if ((int)result.Status == 404 || result.Body.Length == 0)
-            {
-                return null;
-            }
-
-            return JsonPathReader.SelectValue(OsduHttpClient.ParseJson(result, url), "state")?.ToLowerInvariant();
+            return await ReadSessionStateAsync(targetId, paths, sessionId, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
         {
@@ -539,16 +720,38 @@ internal sealed class WellboreDdmsV3Shape(DdmsShapeContext context) : IDdmsShape
         }
     }
 
-    private async Task AbandonAsync(string targetId, DdmsRecordPaths paths, string sessionId)
+    /// <summary>A session's state as the DDMS answers it, lower case; null only when the DDMS no longer knows the session (404). Any other failure throws.</summary>
+    private async Task<string?> ReadSessionStateAsync(string targetId, DdmsRecordPaths paths, string sessionId, CancellationToken ct)
+    {
+        var url = _client.Url(paths.Session!, targetId, sessionId);
+        var result = await _client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
+        if ((int)result.Status == 404 || result.Body.Length == 0)
+        {
+            return null;
+        }
+
+        return JsonPathReader.SelectValue(OsduHttpClient.ParseJson(result, url), "state")?.ToLowerInvariant();
+    }
+
+    /// <summary>A session the DDMS is still settling: a commit or an abandon in progress, which can still write the unit's bulk data.</summary>
+    private static bool Settling(string state) => state is "committing" or "abandoning";
+
+    private static string SettlingNote(string sessions, string state)
+        => $"session {sessions} is still {state}, and a commit that lands writes the unfinished delivery's bulk data under the record; the undo waits until it settles";
+
+    /// <summary>Abandons a session after its delivery failed; true when the DDMS took the abandon.</summary>
+    private async Task<bool> AbandonAsync(string targetId, DdmsRecordPaths paths, string sessionId)
     {
         try
         {
             var url = _client.Url(paths.Session!, targetId, sessionId);
             await _client.SendJsonAsync(HttpMethod.Patch, url, new JsonObject { ["state"] = "abandon" }, null, CancellationToken.None).ConfigureAwait(false);
+            return true;
         }
-        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException)
+        catch (Exception ex) when (ex is SqlFlowException or HttpRequestException or IOException or OperationCanceledException)
         {
-            _logger.LogWarning("Could not abandon session {SessionId} for {TargetId}: {Message}", sessionId, targetId, HeaderRedaction.RedactMessage(ex.Message));
+            _logger.LogWarning("Could not abandon session {SessionId} for {TargetId}: {Message}; the delivery's undo abandons it.", sessionId, targetId, HeaderRedaction.RedactMessage(ex.Message));
+            return false;
         }
     }
 }

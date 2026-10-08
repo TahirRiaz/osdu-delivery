@@ -45,7 +45,10 @@ internal sealed record RafsUrn(string Urn, string ContentId, string SchemaVersio
 /// <c>data.DDMSDatasets</c> at it, and writes a new record version; the tables of one record go one after the other, and
 /// the record is read back for the version it ends at. RAFS never removes those datasets, so the ledger keeps their ids
 /// and a removal takes them through Storage. <c>data.DDMSDatasets</c> belongs to RAFS: a metadata update carries the URNs
-/// the stored record holds. Reads bypass the service's response cache.
+/// the stored record holds. Reads bypass the service's response cache. The record written before its content, and each
+/// content dataset, are artifacts of the record's unit of work (docs/atomic-delivery-plan.md): a delivery that does not
+/// complete has the content datasets it minted removed, a dataset it gave a new version written back, and the record
+/// removed or given back the version it replaced.
 /// </summary>
 internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
 {
@@ -175,13 +178,19 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
                 }
 
                 steps.Add(OsduDdmsProtocol.MetadataStep, started, status, returned);
-                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
+
+                // Content follows the record, so the record is the unit's until the content lands.
+                IReadOnlyList<TargetArtifact> recordItself = work.DeliverPayload && plan.Contents.Count > 0
+                    ? [TargetArtifact.RecordWritten(work.TargetId, version, work.ExistingVersion)]
+                    : [];
+                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, recordItself, ct).ConfigureAwait(false);
             }
 
             metadataDelivered = true;
         }
 
-        var datasets = DdmsShapeValues.Ids(work.TargetState, DatasetsKey).ToList();
+        var committed = DdmsShapeValues.Ids(work.TargetState, DatasetsKey);
+        var datasets = committed.ToList();
         var sent = 0;
         var payloadDelivered = false;
         if (work.DeliverPayload && plan.Contents.Count > 0)
@@ -191,7 +200,10 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
             {
                 var step = "content-" + content.ContentType;
                 IReadOnlyDictionary<string, string> values;
-                if (work.Completed(step) is { } written)
+
+                // Only a table whose write answered is resumed: an earlier try's intent alone says the write may not have
+                // landed, and a write sent again re-versions the dataset the record names.
+                if (work.Completed(step) is { } written && written.ContainsKey("urn"))
                 {
                     steps.Resumed(step, written);
                     values = written;
@@ -203,6 +215,15 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
                         _client.Url(route.DataPath!, new Dictionary<string, string>(StringComparer.Ordinal) { ["id"] = work.TargetId, ["contentType"] = content.ContentType }),
                         "content_schema_version",
                         content.SchemaVersion);
+
+                    // RAFS mints the content's dataset: an intent goes first, so a write whose answer is lost is found by the URN
+                    // RAFS wrote into the record when the delivery does not complete.
+                    var slot = ContentSlot(content.ContentType);
+                    await work.ReportStepAsync(
+                        step + "-intent",
+                        new Dictionary<string, string>(StringComparer.Ordinal) { ["state"] = "writing" },
+                        [TargetArtifact.Intent(slot, ArtifactRoles.Content, ContentLocator(work.TargetId, content.ContentType))],
+                        ct).ConfigureAwait(false);
 
                     // A second write of the same table re-versions the same dataset and replaces its URN, so a write whose
                     // answer was lost may be sent again.
@@ -221,7 +242,7 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
                     }
 
                     steps.Add(step, started, (int)result.Status, answered);
-                    await work.ReportStepAsync(step, answered, ct).ConfigureAwait(false);
+                    await work.ReportStepAsync(step, answered, ContentArtifacts(work, content.ContentType, urn, committed), ct).ConfigureAwait(false);
                     values = answered;
                     sent++;
                 }
@@ -345,6 +366,226 @@ internal sealed partial class RafsShape(DdmsShapeContext context) : IDdmsShape
                 $"; {removedDatasets} of {datasets.Count} content dataset(s) {(scope == RemovalScope.Record ? "removed (reversible)" : "purged")}, the rest already gone");
         return new DeleteOutcome(true, false, what + contents);
     }
+
+    /// <summary>
+    /// Undoes the content unfinished deliveries wrote: a content dataset RAFS minted for the unit is removed reversibly through
+    /// storage (RAFS never removes one); a write whose answer was lost is found by the URN RAFS wrote into the record, and
+    /// its dataset removed when it is not one an earlier delivery made. A dataset the unit gave a new version is the record's
+    /// to write back (<see cref="ArtifactRoles.Version"/>), with the record. The files a content dataset points at stay.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(UndoWork work, DdmsRecordPaths paths, IReadOnlyList<UndoItem> items, CancellationToken ct)
+    {
+        var route = RouteOf(paths);
+        var results = new List<UndoResult>(items.Count);
+        var committed = DdmsShapeValues.Ids(work.TargetState, DatasetsKey).ToHashSet(StringComparer.Ordinal);
+        JsonObject? stored = null;
+        var read = false;
+        foreach (var item in items)
+        {
+            if (item.Artifact.Role == ArtifactRoles.Objects)
+            {
+                results.Add(UndoResult.Kept(item, "blob-mode content stays in RAFS's own store, which no call removes; the record given back its earlier version no longer names it"));
+                continue;
+            }
+
+            if (item.Artifact.Role != ArtifactRoles.Content)
+            {
+                results.Add(UndoResult.Kept(item, "the RAFS shape makes nothing of this kind beside a record"));
+                continue;
+            }
+
+            if (_routing.StorageDeletePath is not { } storage)
+            {
+                results.Add(UndoResult.Kept(item, "RAFS never removes a content dataset, and this flow does not say where the storage service is to remove it; give the DDMS its root under target.ddms when the endpoint is the OSDU platform root"));
+                continue;
+            }
+
+            try
+            {
+                var id = item.Artifact.TargetId;
+                if (id is null)
+                {
+                    if (!read)
+                    {
+                        stored = await RecordWriter.ReadAsync(_client, RecordUrl(route, work.TargetId), ct, DdmsShapeValues.NoStore).ConfigureAwait(false);
+                        read = true;
+                    }
+
+                    var type = item.Artifact.Locator is { } locator && locator.LastIndexOf('#') is var hash and > 0 ? locator[(hash + 1)..] : null;
+                    id = type is null ? null : MintedFor(stored, type, committed);
+                    if (id is null && type is not null && RevisedFor(stored, type, committed, work.TargetState) is { } revised)
+                    {
+                        // The write landed on the dataset an earlier delivery made and gave it a new version: that version is
+                        // taken back as the answered write's would be, the version the ledger holds written back.
+                        results.Add(await RewriteAsync(work, item, revised.Dataset, revised.Version, revised.Prior, ct).ConfigureAwait(false));
+                        continue;
+                    }
+
+                    if (id is null)
+                    {
+                        results.Add(UndoResult.Gone(item, $"{work.TargetId} names no {type ?? "such"} content dataset an earlier delivery did not make: RAFS did not write the content, or failed before naming it in the record (an inventory of the dataset kind finds a dataset it registered then)"));
+                        continue;
+                    }
+                }
+
+                var outcome = await RecordWriter.DeleteAsync(_client, RemovalPaths.From(_options) with { Delete = storage }, id, RemovalScope.Record, ct).ConfigureAwait(false);
+                results.Add(outcome.AlreadyGone ? UndoResult.Gone(item, $"{id}: {outcome.Detail}") : UndoResult.Removed(item, $"{id}: {outcome.Detail}"));
+            }
+            catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+            {
+                results.Add(UndoResult.Failed(item, ArtifactUndo.Redact(ex)));
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>The record's reversible removal is RAFS's logical delete; its read (past RAFS's cache) says when OSDU created it.</summary>
+    public RecordSide RecordSide(DdmsRecordPaths paths)
+    {
+        var route = RouteOf(paths);
+        return new RecordSide
+        {
+            Remove = async (id, token) => await RecordWriter.RemoveAtAsync(_client, HttpMethod.Delete, RecordUrl(route, id), token).ConfigureAwait(false)
+                ? new DeleteOutcome(true, false, "removed through RAFS (reversible)")
+                : new DeleteOutcome(false, true, "record not found in OSDU"),
+            Read = (id, token) => RecordWriter.ReadAsync(_client, RecordUrl(route, id), token, DdmsShapeValues.NoStore),
+        };
+    }
+
+    /// <summary>The slot of a content table's artifact: one per content type of a unit, as RAFS keeps one table per type.</summary>
+    private static string ContentSlot(string contentType) => "content:" + contentType;
+
+    /// <summary>What finds a content write whose answer was lost: the record, and the content type whose URN RAFS writes into it.</summary>
+    private static string ContentLocator(string targetId, string contentType) => targetId + "#" + contentType;
+
+    /// <summary>
+    /// What a content write made, as its artifact: a dataset RAFS minted for the unit (<see cref="ArtifactRoles.Content"/>),
+    /// or a new version of a dataset an earlier delivery made (<see cref="ArtifactRoles.Version"/>, with the version the record
+    /// named before, which an undo writes back); none in blob mode, where RAFS keeps no dataset.
+    /// </summary>
+    private static IReadOnlyList<TargetArtifact> ContentArtifacts(DeliveryWork work, string contentType, RafsUrn urn, IReadOnlyCollection<string> committed)
+    {
+        if (urn.DatasetId is not { } dataset)
+        {
+            // Blob mode: RAFS keeps the table in its own store, not as an OSDU record, so it stands only for the unit's progress.
+            return [TargetArtifact.Created(ContentSlot(contentType), ArtifactRoles.Objects, urn.ContentId, locator: ContentLocator(work.TargetId, contentType))];
+        }
+
+        var version = VersionOf(urn.ContentId);
+        if (!committed.Contains(dataset, StringComparer.Ordinal))
+        {
+            return [TargetArtifact.Created(ContentSlot(contentType), ArtifactRoles.Content, dataset, version, ContentLocator(work.TargetId, contentType))];
+        }
+
+        var prior = work.TargetState.TryGetValue($"content.{contentType}.contentId", out var named) ? VersionOf(named) : null;
+        return [new TargetArtifact
+        {
+            Slot = ContentSlot(contentType),
+            Role = ArtifactRoles.Version,
+            TargetId = dataset,
+            Version = version,
+            PriorVersion = prior,
+            Locator = ContentLocator(work.TargetId, contentType),
+        }];
+    }
+
+    /// <summary>The version a content id names after its last colon (<c>{dataset id}:{version}</c>), or null.</summary>
+    private static long? VersionOf(string contentId)
+    {
+        var colon = contentId.LastIndexOf(':');
+        return colon > 0 && long.TryParse(contentId[(colon + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var version) ? version : null;
+    }
+
+    /// <summary>
+    /// The content dataset RAFS minted for <paramref name="contentType"/> that the record names and no earlier delivery made:
+    /// RAFS names a dataset it mints <c>{partition}:dataset--File.Generic:{contentType}-{uuid}</c>, and writes its URN into
+    /// <c>data.DDMSDatasets</c>.
+    /// </summary>
+    private static string? MintedFor(JsonObject? stored, string contentType, IReadOnlySet<string> committed)
+    {
+        if ((stored?["data"] as JsonObject)?[DdmsDatasets] is not JsonArray list)
+        {
+            return null;
+        }
+
+        foreach (var urn in list.Select(Text).OfType<string>().Where(u => u.StartsWith("urn://rafs-v2/", StringComparison.Ordinal)))
+        {
+            var segments = urn.Split('/');
+            if (segments.Length < 5)
+            {
+                continue;
+            }
+
+            var contentId = segments[^2];
+            var colon = contentId.LastIndexOf(':');
+            var dataset = colon > 0 && contentId[(colon + 1)..].All(char.IsAsciiDigit) ? contentId[..colon] : contentId;
+            if (!committed.Contains(dataset) && DdmsShapeValues.EntityId(dataset) is { } entity && entity.StartsWith(contentType + "-", StringComparison.Ordinal))
+            {
+                return dataset;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// The content dataset of <paramref name="contentType"/> an earlier delivery made that the record names at another version
+    /// than the one the ledger holds (<c>content.{type}.contentId</c>): a content write whose answer was lost landed on it.
+    /// </summary>
+    private static (string Dataset, long? Version, long? Prior)? RevisedFor(JsonObject? stored, string contentType, IReadOnlySet<string> committed, IReadOnlyDictionary<string, string> targetState)
+    {
+        if ((stored?["data"] as JsonObject)?[DdmsDatasets] is not JsonArray list
+            || !targetState.TryGetValue($"content.{contentType}.contentId", out var held))
+        {
+            return null;
+        }
+
+        foreach (var urn in list.Select(Text).OfType<string>().Where(u => u.StartsWith("urn://rafs-v2/", StringComparison.Ordinal)))
+        {
+            var segments = urn.Split('/');
+            if (segments.Length < 5)
+            {
+                continue;
+            }
+
+            var contentId = segments[^2];
+            var colon = contentId.LastIndexOf(':');
+            var dataset = colon > 0 && contentId[(colon + 1)..].All(char.IsAsciiDigit) ? contentId[..colon] : contentId;
+            if (committed.Contains(dataset) && DdmsShapeValues.EntityId(dataset) is { } entity && entity.StartsWith(contentType + "-", StringComparison.Ordinal)
+                && !string.Equals(contentId, held, StringComparison.Ordinal))
+            {
+                return (dataset, VersionOf(contentId), VersionOf(held));
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Writes back the version of a content dataset the ledger holds over the one a lost write gave it, through storage (the
+    /// write a reversal makes), and answers for <paramref name="item"/>.
+    /// </summary>
+    private async Task<UndoResult> RewriteAsync(UndoWork work, UndoItem item, string dataset, long? version, long? prior, CancellationToken ct)
+    {
+        _storage ??= new OsduRecordProtocol(_client, RecordRestores.WriterOptions(new ProtocolOptions { BatchSize = _options.BatchSize }), _time);
+        var revised = item with
+        {
+            Artifact = item.Artifact with { Role = ArtifactRoles.Version, TargetId = dataset, Version = version, PriorVersion = prior },
+        };
+        var side = new RecordSide
+        {
+            Read = _storage.ReadAsync,
+            Restorer = _storage,
+            Versions = _storage.VersionsAsync,
+            RemoveRefusal = "a content dataset an earlier delivery made is given back its version, not removed",
+        };
+        var result = (await ArtifactUndo.RecordItselfAsync(work with { KeepRecord = false }, [revised], side, ct).ConfigureAwait(false))[0];
+        return result with { Item = item };
+    }
+
+    /// <summary>The storage writer an undo writes a content dataset's version back through, made when one first needs it.</summary>
+    private OsduRecordProtocol? _storage;
 
     /// <summary>
     /// Carries the content URNs <paramref name="stored"/> holds in <c>data.DDMSDatasets</c> into <paramref name="document"/>,

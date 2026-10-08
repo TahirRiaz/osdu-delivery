@@ -16,7 +16,7 @@ public sealed class OsduDbContext : DbContext
     public const string MigrationsHistoryTable = "__EFMigrationsHistory";
 
     /// <summary>The module version the current migrations produce; written to <see cref="OsduSchemaVersion.ModuleVersion"/>.</summary>
-    public const string ModuleVersion = "1.28.0";
+    public const string ModuleVersion = "1.30.0";
 
     /// <summary>
     /// The oldest SQLFlow catalog migration this schema works with: the one that added fan-out run groups and run
@@ -64,6 +64,20 @@ public sealed class OsduDbContext : DbContext
 
     /// <summary>What the ledger keeps of a record deleted from it after it was removed from OSDU: one line each.</summary>
     public DbSet<DeliveryPurgedRecord> DeliveryPurgedRecords => Set<DeliveryPurgedRecord>();
+
+    /// <summary>What deliveries created in OSDU, or set out to create: one row per object, minted id, session or rows a unit made.</summary>
+    public DbSet<DeliveryArtifact> DeliveryArtifacts => Set<DeliveryArtifact>();
+
+    /// <summary>The inventories of inventory flows: every id an OSDU kind holds, compared with the ledgers of its partition.</summary>
+    public DbSet<DeliveryInventory> DeliveryInventories => Set<DeliveryInventory>();
+
+    public DbSet<DeliveryInventoryRun> DeliveryInventoryRuns => Set<DeliveryInventoryRun>();
+
+    public DbSet<DeliveryInventoryRecord> DeliveryInventoryRecords => Set<DeliveryInventoryRecord>();
+
+    public DbSet<DeliveryInventoryVersion> DeliveryInventoryVersions => Set<DeliveryInventoryVersion>();
+
+    public DbSet<DeliveryInventoryScan> DeliveryInventoryScans => Set<DeliveryInventoryScan>();
 
     public DbSet<DeliveryRetrieval> DeliveryRetrievals => Set<DeliveryRetrieval>();
 

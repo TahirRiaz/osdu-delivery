@@ -45,7 +45,8 @@ export interface RunRecordCounts {
 
 /** The record counts a run reported: a deliver run's own, or a verify run's read as the same headline numbers. */
 export function runRecordCounts(result: Record<string, unknown> | null): RunRecordCounts {
-  if (result === null) {
+  // An undo run counts artifacts, not records: its own card says what became of them.
+  if (result === null || result.operation === "undo") {
     return { planned: null, delivered: null, held: null, failed: null, unchanged: null, waiting: null };
   }
 

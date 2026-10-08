@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
 using SqlFlow.Core;
 using SqlFlow.Delivery.Engine.Protocols.Etp;
+using SqlFlow.Delivery.Http;
 using SqlFlow.Delivery.Ledger;
 using SqlFlow.Delivery.Model;
 using SqlFlow.Delivery.Protocols;
@@ -30,7 +31,10 @@ namespace SqlFlow.Delivery.Engine.Protocols;
 /// </list>
 /// A verify lists the dataspace's resources and compares the store's last write with the one the delivery recorded.
 /// Removal deletes the object (the everything scope): ETP keeps no earlier versions of an object and no deleted ones,
-/// and the route never deletes a dataspace, because the server purges its OSDU record when it does (section 7.8).
+/// and the route never deletes a dataspace, because the server purges its OSDU record when it does (section 7.8). An object
+/// a delivery creates is declared before its transaction commits, so a commit whose answer was lost, or one whose large
+/// arrays were never filled, is deleted when its delivery does not complete (docs/atomic-delivery-plan.md); a dataspace the
+/// delivery created is recorded with the OSDU record the server registers for it, and kept.
 /// </summary>
 public sealed class OsduEtpProtocol : IDeliveryProtocol
 {
@@ -63,6 +67,15 @@ public sealed class OsduEtpProtocol : IDeliveryProtocol
     /// <summary>Why the history scope is refused.</summary>
     public const string HistoryScopeRefused =
         "the Reservoir DDMS keeps only an object's latest content, so there is no history to purge; the everything scope deletes the object for good";
+
+    /// <summary>The slot of a dataspace a delivery created, reported on the first record that needed it.</summary>
+    public const string DataspaceSlot = "dataspace";
+
+    /// <summary>The slot of the object a delivery creates.</summary>
+    public const string ObjectSlot = "object";
+
+    /// <summary>The step an object's intent is reported under, before the transaction that writes it commits.</summary>
+    public const string CommitIntentStep = "commit-intent";
 
     /// <summary>The four values the server requires on a dataspace it registers (section 4.3).</summary>
     private static readonly string[] Required = ["viewers", "owners", "legaltags", "otherRelevantDataCountries"];
@@ -107,6 +120,9 @@ public sealed class OsduEtpProtocol : IDeliveryProtocol
 
     /// <summary>A verify needs the URI the delivery recorded, because the store knows nothing of the ledger's ids.</summary>
     public bool VerifiesWithTargetState => true;
+
+    /// <summary>A transaction commits the objects before their large arrays are filled, and a commit's answer can be lost.</summary>
+    public bool Undoes => true;
 
     public async Task<DeliveryOutcome> DeliverAsync(DeliveryWork work, CancellationToken ct = default)
     {
@@ -236,6 +252,12 @@ public sealed class OsduEtpProtocol : IDeliveryProtocol
             var live = items.Where(item => !failed.Contains(item.Index)).ToList();
             var fills = await PutArraysAsync(session, live, outcomes, steps, ct).ConfigureAwait(false);
 
+            // The objects the ledger knows no object of are this delivery's to create: each is named before the commit, whose
+            // answer can be lost after it landed, and named again once it lands.
+            var creating = live.Where(item => !string.Equals(item.Work.TargetState.GetValueOrDefault(UriValue), item.Uri, StringComparison.Ordinal)).ToList();
+            await Task.WhenAll(creating.Select(item => item.Work.ReportStepAsync(
+                CommitIntentStep, Values(("uri", item.Uri), ("transaction", transaction.ToString())), [ObjectArtifact(item, ArtifactStatus.Intent)], ct))).ConfigureAwait(false);
+
             var commit = await session.CallAsync(new CommitTransaction { TransactionUuid = transaction }, ct).ConfigureAwait(false);
             var result = commit.Part<CommitTransactionResponse>();
             committed = result.Successful;
@@ -244,6 +266,9 @@ public sealed class OsduEtpProtocol : IDeliveryProtocol
             {
                 throw Refused(result.FailureReason, path);
             }
+
+            await Task.WhenAll(creating.Select(item => item.Work.ReportStepAsync(
+                CommitStep, Values(("uri", item.Uri), ("transaction", transaction.ToString())), [ObjectArtifact(item, ArtifactStatus.Pending)], ct))).ConfigureAwait(false);
 
             await FillAsync(session, dataspace, fills, steps, ct).ConfigureAwait(false);
             if (_target.Lock)
@@ -325,7 +350,200 @@ public sealed class OsduEtpProtocol : IDeliveryProtocol
         _log.LogInformation(
             "The Reservoir DDMS created the dataspace {Dataspace} at {Endpoint} and registered its storage record {Record}",
             path, _connection.Endpoint, record);
-        steps.Add(DataspaceStep, began, null, Values(("dataspace", path), ("created", "yes"), ("record", record)));
+        var values = Values(("dataspace", path), ("created", "yes"), ("record", record));
+        steps.Add(DataspaceStep, began, null, values);
+
+        // The dataspace's OSDU record is an id this delivery caused: the ledger keeps it on the record that needed the dataspace.
+        await first.Work.ReportStepAsync(DataspaceStep, values, [TargetArtifact.Created(DataspaceSlot, ArtifactRoles.Dataspace, record, locator: path)], ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The object a delivery creates: its URI, in the dataspace that finds it.</summary>
+    private static TargetArtifact ObjectArtifact(Prepared item, ArtifactStatus status)
+        => new() { Slot = ObjectSlot, Role = ArtifactRoles.Objects, TargetId = item.Uri, Locator = item.Dataspace, Status = status };
+
+    /// <summary>
+    /// Undoes what unfinished deliveries created (docs/atomic-delivery-plan.md): each object, deleted for good (the store keeps
+    /// no deleted objects) in one transaction per dataspace, once the store confirms it created the object after the unit
+    /// began; an object it held before keeps the content the delivery wrote, since the store keeps no earlier versions. A
+    /// locked dataspace is unlocked for the delete and locked again. A deleted object's arrays stay in the dataspace: the store
+    /// does not delete them with it (osdu/specs/reservoir-ddms/INTEGRATION.md section 7.7). A dataspace is never deleted: the
+    /// server purges its OSDU record when it is, and other records' objects may live in it.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var results = new List<UndoResult>();
+        var objects = new List<UndoItem>();
+        foreach (var item in works.SelectMany(w => w.Items))
+        {
+            if (item.Artifact.Role == ArtifactRoles.Dataspace)
+            {
+                results.Add(UndoResult.Kept(item, "the route never deletes a dataspace: the Reservoir DDMS purges the dataspace's OSDU record when it does, and other records' objects may live in it"));
+            }
+            else if (item.Artifact.Role != ArtifactRoles.Objects)
+            {
+                results.Add(UndoResult.Kept(item, "the etp route makes nothing of this kind"));
+            }
+            else if (item.Artifact.TargetId is null || item.Artifact.Locator is null)
+            {
+                results.Add(UndoResult.Kept(item, "the object's URI or dataspace was not recorded, so nothing can find it"));
+            }
+            else
+            {
+                objects.Add(item);
+            }
+        }
+
+        if (objects.Count == 0)
+        {
+            return results;
+        }
+
+        try
+        {
+            await using var session = await _connection.OpenAsync(ct).ConfigureAwait(false);
+            foreach (var group in objects.GroupBy(i => i.Artifact.Locator!, StringComparer.Ordinal))
+            {
+                var items = group.ToList();
+                try
+                {
+                    results.AddRange(await UndoObjectsAsync(session, group.Key, items, ct).ConfigureAwait(false));
+                }
+                catch (Exception ex) when (UndoAnswerable(ex, ct))
+                {
+                    results.AddRange(items.Select(i => UndoResult.Failed(i, $"the dataspace {group.Key}: {ArtifactUndo.Redact(ex)}")));
+                }
+            }
+
+            await session.CloseAsync("undo done", CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (UndoAnswerable(ex, ct))
+        {
+            var answered = results.Select(r => r.Item.ArtifactId).ToHashSet();
+            results.AddRange(objects.Where(i => !answered.Contains(i.ArtifactId)).Select(i => UndoResult.Failed(i, ArtifactUndo.Redact(ex))));
+        }
+
+        return results;
+    }
+
+    /// <summary>A failure an ETP undo answers for its artifacts: an undo's own, or the WebSocket the session runs on.</summary>
+    private static bool UndoAnswerable(Exception ex, CancellationToken ct)
+        => ArtifactUndo.Answerable(ex, ct) || ex is System.Net.WebSockets.WebSocketException;
+
+    /// <summary>The objects of one dataspace: read for when the store created them, then the ones this delivery created deleted in one transaction.</summary>
+    private async Task<IReadOnlyList<UndoResult>> UndoObjectsAsync(EtpSession session, string path, IReadOnlyList<UndoItem> items, CancellationToken ct)
+    {
+        var dataspace = EtpObjectXml.DataspaceUri(path);
+        var keyed = items.Select((item, n) => (Key: n.ToString(CultureInfo.InvariantCulture), Item: item, Uri: item.Artifact.TargetId!)).ToList();
+        var read = await session.CallAsync(new GetDataObjects { Uris = keyed.ToDictionary(k => k.Key, k => k.Uri, StringComparer.Ordinal), Format = "xml" }, ct).ConfigureAwait(false);
+        if (read.Error is { } whole)
+        {
+            throw new EtpProtocolException(whole.Code, whole.Message, $"the objects of {path}");
+        }
+
+        var held = read.All<GetDataObjectsResponse>().SelectMany(r => r.DataObjects).ToDictionary(kv => kv.Key, kv => kv.Value.Resource, StringComparer.Ordinal);
+        var results = new List<UndoResult>(items.Count);
+        var doomed = new List<(string Key, UndoItem Item, string Uri)>();
+        foreach (var (key, item, uri) in keyed)
+        {
+            if (held.TryGetValue(key, out var resource))
+            {
+                var created = EtpTime.At(resource.StoreCreated).UtcDateTime;
+                if (resource.StoreCreated > 0 && created < item.UnitStartedUtc - ArtifactLimits.ClockSkew)
+                {
+                    results.Add(UndoResult.Kept(item, string.Create(CultureInfo.InvariantCulture, $"{uri}: the Reservoir DDMS created the object at {created:u}, before this delivery began at {item.UnitStartedUtc:u}, so it is not this delivery's to delete; it keeps the content the delivery wrote (the store keeps no earlier versions)")));
+                }
+                else
+                {
+                    doomed.Add((key, item, uri));
+                }
+            }
+            else if (read.Errors.TryGetValue(key, out var error) && error.Code != EtpErrorCodes.NotFound)
+            {
+                results.Add(UndoResult.Failed(item, $"{uri}: {HeaderRedaction.RedactMessage(error.Message)}"));
+            }
+            else
+            {
+                results.Add(UndoResult.Gone(item, $"the dataspace {path} holds no object at {uri}: the commit that would have created it did not land"));
+            }
+        }
+
+        if (doomed.Count == 0)
+        {
+            return results;
+        }
+
+        var steps = new DeliverySteps(_time);
+        var relock = _target.Lock && await LockedAsync(session, dataspace, ct).ConfigureAwait(false);
+        if (relock)
+        {
+            await LockAsync(session, dataspace, locked: false, steps, ct).ConfigureAwait(false);
+        }
+
+        try
+        {
+            var transaction = await StartAsync(session, dataspace, steps, ct).ConfigureAwait(false);
+            var committed = false;
+            try
+            {
+                var deleted = await session.CallAsync(new DeleteDataObjects { Uris = doomed.ToDictionary(d => d.Key, d => d.Uri, StringComparer.Ordinal) }, ct).ConfigureAwait(false);
+                if (deleted.Error is { } refused)
+                {
+                    throw new EtpProtocolException(refused.Code, refused.Message, $"the delete of {doomed.Count.ToString(CultureInfo.InvariantCulture)} object(s) in {path}");
+                }
+
+                var commit = (await session.CallAsync(new CommitTransaction { TransactionUuid = transaction }, ct).ConfigureAwait(false)).Part<CommitTransactionResponse>();
+                committed = commit.Successful;
+                foreach (var (key, item, uri) in doomed)
+                {
+                    results.Add(!commit.Successful
+                        ? UndoResult.Failed(item, $"{uri}: the Reservoir DDMS refused the commit of the delete: {HeaderRedaction.RedactMessage(commit.FailureReason)}")
+                        : deleted.Errors.TryGetValue(key, out var error)
+                            ? error.Code == EtpErrorCodes.NotFound
+                                ? UndoResult.Gone(item, $"the dataspace {path} no longer holds {uri}")
+                                : UndoResult.Failed(item, $"{uri}: {HeaderRedaction.RedactMessage(error.Message)}")
+                            : UndoResult.Removed(item, $"{uri} deleted from the dataspace {path}, for good (the store keeps no deleted objects); its arrays stay in the dataspace, since the store does not delete an object's arrays with it"));
+                }
+            }
+            finally
+            {
+                if (!committed)
+                {
+                    await RollbackAsync(session, transaction).ConfigureAwait(false);
+                }
+            }
+        }
+        finally
+        {
+            if (relock)
+            {
+                await RelockAsync(session, dataspace, steps).ConfigureAwait(false);
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>Whether the server holds <paramref name="dataspace"/> locked.</summary>
+    private static async Task<bool> LockedAsync(EtpSession session, string dataspace, CancellationToken ct)
+    {
+        var info = await session.CallAsync(new GetDataspaceInfo { Uris = One(dataspace) }, ct).ConfigureAwait(false);
+        info.Failed();
+        var found = info.All<GetDataspaceInfoResponse>().SelectMany(r => r.Dataspaces.Values).FirstOrDefault();
+        return found is not null && found.CustomData.TryGetValue("locked", out var locked) && locked.Flag == true;
+    }
+
+    /// <summary>Locks a dataspace an undo unlocked again, whatever the undo came to; a lock that fails is logged, and the next delivery locks it.</summary>
+    private async Task RelockAsync(EtpSession session, string dataspace, DeliverySteps steps)
+    {
+        try
+        {
+            await LockAsync(session, dataspace, locked: true, steps, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (UndoAnswerable(ex, CancellationToken.None))
+        {
+            _log.LogWarning("The dataspace {Dataspace} could not be locked again after an undo deleted objects from it; the next delivery to it locks it: {Reason}", dataspace, HeaderRedaction.RedactMessage(ex.Message));
+        }
     }
 
     /// <summary>The ACLs and legal tags of the record that first needed the dataspace, which is where a flow declares them.</summary>

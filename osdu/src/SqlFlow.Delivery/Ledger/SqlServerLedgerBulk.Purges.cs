@@ -16,8 +16,9 @@ internal static partial class SqlServerLedgerBulk
     // One slice of records deleted from the ledger. A removal's extra step and the ledger-only deletion take only a record
     // OSDU no longer holds, one the ledger marks deleted; deleting the whole ledger (@everyState) takes every record, after
     // the run that deletes it removed from OSDU every one OSDU held. Either way only a record no lease holds goes, so no work
-    // is in flight on it and no lease event waits to be applied to it; the record is locked from the check to the end of
-    // the transaction. Each goes with one line saying what it was (its key, source key, label, OSDU id, the last version an
+    // is in flight on it and no lease event waits to be applied to it, and only one with no artifact an undo has still to
+    // settle (docs/atomic-delivery-plan.md), since the sweep reaches an artifact through its record and an id the ledger has
+    // still to take back would otherwise be stranded; the record is locked from the check to the end of the transaction. Each goes with one line saying what it was (its key, source key, label, OSDU id, the last version an
     // attempt of it named, how many attempts went with it), who deleted it and under which intervention; the intervention
     // names it too, so the audit trail reaches it however many records it reached. The rows of the audit trail that name it
     // (the activities and their links) and a reversal's item of it stay: they are another record's, or the trail's.
@@ -30,7 +31,11 @@ internal static partial class SqlServerLedgerBulk
         FROM (SELECT DISTINCT CAST(j.[value] AS uniqueidentifier) AS [DeliveryKey] FROM OPENJSON(@keys) AS j) AS k
         INNER JOIN [osdu].[Record] AS r WITH (UPDLOCK, FORCESEEK ({{RecordKey}} ([PartitionId], [FlowId], [DeliveryKey])))
             ON r.[PartitionId] = @partitionId AND r.[FlowId] = @flowId AND r.[DeliveryKey] = k.[DeliveryKey]
-        WHERE (@everyState = 1 OR r.[Status] = N'deleted') AND r.[LeaseOwner] IS NULL;
+        WHERE (@everyState = 1 OR r.[Status] = N'deleted') AND r.[LeaseOwner] IS NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM [osdu].[Artifact] AS o
+                WHERE o.[PartitionId] = @partitionId AND o.[FlowId] = @flowId AND o.[DeliveryKey] = r.[DeliveryKey]
+                    AND o.[State] IN (N'intent', N'pending', N'due', N'failed'));
 
         INSERT INTO [osdu].[PurgedRecord] ([PartitionId], [FlowId], [DeliveryKey], [SourceKey], [Label], [TargetId], [LastVersion], [Attempts],
             [ActivityId], [PurgedBy], [PurgedUtc])

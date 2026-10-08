@@ -1,5 +1,5 @@
 import {
-  CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch, PencilRuler,
+  ClipboardList, CloudDownload, DatabaseZap, FileCode2, GitCompare, Layers, LayoutTemplate, ListChecks, PackageCheck, PackageSearch, PencilRuler,
   ScrollText, Shapes, ShieldCheck, Telescope, Workflow,
 } from "lucide-react";
 import type { RunSummary } from "@/api/types";
@@ -13,6 +13,8 @@ import { AssertionTriggerFields } from "./features/delivery/assertions/Assertion
 import { CacheRunActions, DeliveryRunActions, DeliveryRunCounts, DeliveryRunMeta } from "./features/delivery/DeliveryRunHeader";
 import { DimensionRunActions, DimensionRunCounts } from "./features/delivery/dimensions/DimensionRunHeader";
 import { DimensionTriggerFields } from "./features/delivery/dimensions/DimensionTriggerFields";
+import { InventoryRunActions, InventoryRunCounts } from "./features/delivery/inventories/InventoryRunHeader";
+import { InventoryTriggerFields } from "./features/delivery/inventories/InventoryTriggerFields";
 import { DeliveryTriggerFields } from "./features/delivery/DeliveryTriggerFields";
 import { activePartition } from "./features/delivery/activePartition";
 import { PartitionSwitcher } from "./features/delivery/PartitionSwitcher";
@@ -36,6 +38,7 @@ const DeliveryPartitionsPage = lazyRoute("DeliveryPartitionsPage", () => import(
 const DeliveryAssertionsPage = lazyRoute("DeliveryAssertionsPage", () => import("./features/delivery/assertions/DeliveryAssertionsPage"));
 const AssertionReportPage = lazyRoute("AssertionReportPage", () => import("./features/delivery/assertions/AssertionReportPage"));
 const DeliveryDimensionsPage = lazyRoute("DeliveryDimensionsPage", () => import("./features/delivery/dimensions/DeliveryDimensionsPage"));
+const DeliveryInventoriesPage = lazyRoute("DeliveryInventoriesPage", () => import("./features/delivery/inventories/DeliveryInventoriesPage"));
 const ExplorerPage = lazyRoute("ExplorerPage", () => import("./features/delivery/explorer/ExplorerPage"));
 
 const DeliveryFlowPanel = lazyRoute(
@@ -78,6 +81,10 @@ const DimensionsPanel = lazyRoute(
   "DimensionsPanel",
   () => import("./features/delivery/dimensions/DimensionFlowPanels").then((loaded) => ({ default: loaded.DimensionsPanel })),
 );
+const InventoriesPanel = lazyRoute(
+  "InventoriesPanel",
+  () => import("./features/delivery/inventories/InventoryFlowPanels").then((loaded) => ({ default: loaded.InventoriesPanel })),
+);
 const DeliveryRunCard = lazyRoute("DeliveryRunCard", () => import("./features/delivery/DeliveryRunCard"));
 const RecordSearchHits = lazyRoute(
   "RecordSearchHits",
@@ -95,6 +102,7 @@ const census: GuiModule["census"] = [
   { flowType: "cache", load: () => import("../../docs/census/keys.cache.json?raw").then((file) => file.default) },
   { flowType: "assertion", load: () => import("../../docs/census/keys.assertion.json?raw").then((file) => file.default) },
   { flowType: "dimension", load: () => import("../../docs/census/keys.dimension.json?raw").then((file) => file.default) },
+  { flowType: "inventory", load: () => import("../../docs/census/keys.inventory.json?raw").then((file) => file.default) },
   { documentType: "mapping", load: () => import("../../docs/census/keys.mapping.json?raw").then((file) => file.default) },
   { documentType: "dictionary", load: () => import("../../docs/census/keys.dictionary.json?raw").then((file) => file.default) },
 ];
@@ -283,6 +291,29 @@ const dimensionKind: FlowKindContribution = {
   trigger: { Fields: DimensionTriggerFields },
 };
 
+// An inventory flow only reads OSDU and sets what it holds against the ledgers, so it wears the neutral tone the checking
+// kinds wear, with the icon of the page its inventories are read on.
+const inventoryKind: FlowKindContribution = {
+  kind: "inventory",
+  identity: { label: "Inventory", icon: ClipboardList, tone: "neutral" },
+  pipelineTabs: [
+    {
+      value: "inventories",
+      label: "Inventories",
+      testId: "pipeline-tab-inventories",
+      render: (pipeline) => <Deferred><InventoriesPanel pipelineId={pipeline.id} /></Deferred>,
+    },
+  ],
+  defaultPipelineTab: "inventories",
+  hiddenPipelineTabs: HIDDEN_PIPELINE_TABS,
+  runColumns,
+  run: runPanels({
+    headerActions: () => <InventoryRunActions />,
+    headerDetails: (run) => <InventoryRunCounts run={run} />,
+  }),
+  trigger: { Fields: InventoryTriggerFields },
+};
+
 export const osduDeliveryModule: GuiModule = {
   id: "osdu-delivery",
   routes: [
@@ -301,6 +332,7 @@ export const osduDeliveryModule: GuiModule = {
     { path: "/delivery/assertions", component: DeliveryAssertionsPage },
     { path: "/delivery/assertions/runs/:assertionRunId", component: AssertionReportPage },
     { path: "/delivery/dimensions", component: DeliveryDimensionsPage },
+    { path: "/delivery/inventories", component: DeliveryInventoriesPage },
     // What OSDU holds, read live from it through a flow's credentials, which takes the operate scope.
     { path: "/delivery/explorer", component: ExplorerPage, requiredScope: "operate" },
   ],
@@ -322,6 +354,7 @@ export const osduDeliveryModule: GuiModule = {
     { group: OSDU_GROUP, label: "Templates", to: "/delivery/templates", icon: LayoutTemplate, testId: "nav-delivery-templates" },
     { group: OSDU_GROUP, label: "Cache", to: "/delivery/cache", icon: DatabaseZap, testId: "nav-delivery-cache" },
     { group: OSDU_GROUP, label: "Dimensions", to: "/delivery/dimensions", icon: Shapes, testId: "nav-delivery-dimensions" },
+    { group: OSDU_GROUP, label: "Inventories", to: "/delivery/inventories", icon: ClipboardList, testId: "nav-delivery-inventories" },
     { group: OSDU_GROUP, label: "Partitions", to: "/delivery/partitions", icon: Layers, testId: "nav-delivery-partitions" },
     { group: OSDU_GROUP, label: "Mapping builder", to: "/delivery/mappings/build", icon: PencilRuler, testId: "nav-delivery-mapping-builder" },
   ],
@@ -330,7 +363,7 @@ export const osduDeliveryModule: GuiModule = {
     { pattern: /^\/delivery\/submissions\/([^/]+)/, title: (match) => `Submission ${shortId(match[1])}` },
     { pattern: /^\/delivery\/assertions\/runs\/(\d+)/, title: (match) => `Report #${match[1]}` },
   ],
-  kinds: [deliveryKind, retrievalKind, cacheKind, assertionKind, dimensionKind],
+  kinds: [deliveryKind, retrievalKind, cacheKind, assertionKind, dimensionKind, inventoryKind],
   searchCategories: [
     {
       key: "records",

@@ -50,7 +50,10 @@ internal sealed record SeriesAnswer(string Id, int Code, long? Version, long? Po
 /// Stream Mapping") is waited for; one that is still missing when the time is up leaves the record for the next try, which
 /// reads it back again without sending the points again.
 ///
-/// The historian has no delete for points (section 6.3): a removal takes the record through Storage and says so.
+/// The historian has no delete for points (section 6.3): a removal takes the record through Storage and says so. The record
+/// written before its points, and the series versions each request was accepted under, are artifacts of the record's unit
+/// of work (docs/atomic-delivery-plan.md): a delivery that does not complete has the record removed or given back the version
+/// it replaced, and its points named on the undo, which cannot take them back.
 /// </summary>
 internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context) : IDdmsShape
 {
@@ -177,7 +180,12 @@ internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context
                 }
 
                 steps.Add(OsduDdmsProtocol.MetadataStep, started, status, returned);
-                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
+
+                // Points follow the record, so the record is the unit's until they are accepted.
+                IReadOnlyList<TargetArtifact> recordItself = work.DeliverPayload && plan.Points > 0
+                    ? [TargetArtifact.RecordWritten(work.TargetId, version, work.ExistingVersion)]
+                    : [];
+                await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, recordItself, ct).ConfigureAwait(false);
             }
 
             metadataDelivered = true;
@@ -255,6 +263,32 @@ internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context
         ArgumentNullException.ThrowIfNull(document);
         return (Text(document["id"]) ?? Text(stored?["id"])) is not { } id || EnsureLink(document, id);
     }
+
+    /// <summary>
+    /// Undoes what unfinished deliveries made beside the record: nothing a call can take back. The historian has no delete for
+    /// points (section 6.3), so each request's accepted series versions are kept and named; the record given back its earlier
+    /// version, or removed, no longer describes them.
+    /// </summary>
+    public Task<IReadOnlyList<UndoResult>> UndoAsync(UndoWork work, DdmsRecordPaths paths, IReadOnlyList<UndoItem> items, CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<UndoResult>>(items
+            .Select(i => i.Artifact.Role == ArtifactRoles.Points
+                ? UndoResult.Kept(i, $"the historian has no delete for points, so the series versions it accepted stay ({i.Artifact.Locator ?? "versions not recorded"})")
+                : UndoResult.Kept(i, "the historian shape makes nothing of this kind beside a record"))
+            .ToList());
+
+    /// <summary>The record is a Storage record: its reversible removal and its read are storage's.</summary>
+    public RecordSide RecordSide(DdmsRecordPaths paths) => new()
+    {
+        Remove = _routing.StorageDeletePath is { } delete
+            ? (id, token) => RecordWriter.DeleteAsync(_client, new RemovalPaths(delete, delete, delete), id, RemovalScope.Record, token)
+            : null,
+        RemoveRefusal = "the record is a Storage record, and this flow does not say where the storage service is; give the DDMS its root under target.ddms, the flow's endpoint being the OSDU platform root",
+        Read = (id, token) => RecordWriter.ReadAsync(_client, RouteOf(paths).RecordPath, id, token),
+    };
+
+    /// <summary>The series versions a request was accepted under, as an artifact's locator names them: <c>series=version</c>, a few at most.</summary>
+    private static string VersionsNamed(IReadOnlyDictionary<string, long> versions)
+        => DdmsShapeValues.Bounded(versions.OrderBy(v => v.Key, StringComparer.Ordinal).Select(v => string.Create(CultureInfo.InvariantCulture, $"{v.Key}={v.Value}")).ToList(), 10);
 
     /// <summary>The link a ProductionValues record carries to its points (section 2).</summary>
     public static string Link(string recordId) => $"{LinkPrefix}production-values/{recordId}/timeseries";
@@ -532,7 +566,25 @@ internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context
             }
 
             var started = steps.Now;
-            var (status, answers) = await PostAsync(work.TargetId, url, request, ct).ConfigureAwait(false);
+            int status;
+            IReadOnlyList<SeriesAnswer> answers;
+            try
+            {
+                (status, answers) = await PostAsync(work.TargetId, url, request, ct).ConfigureAwait(false);
+            }
+            catch (PartlyAcceptedException partly)
+            {
+                // The service stored the series it accepted as new versions, which no call takes back: they are the unit's, and
+                // named, before the try fails.
+                var kept = partly.Accepted.ToDictionary(a => a.Id, a => a.Version!.Value, StringComparer.Ordinal);
+                var partial = new Dictionary<string, string>(StringComparer.Ordinal) { [HashValue] = request.Hash, ["accepted"] = VersionsNamed(kept) };
+                await work.ReportStepAsync(
+                    step + "-partial",
+                    partial,
+                    [TargetArtifact.Created($"points:{request.Number.ToString(CultureInfo.InvariantCulture)}:partial:{Guid.NewGuid():N}", ArtifactRoles.Points, work.TargetId, locator: VersionsNamed(kept))],
+                    ct).ConfigureAwait(false);
+                throw partly.Failure;
+            }
             var values = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 [HashValue] = request.Hash,
@@ -549,7 +601,11 @@ internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context
             }
 
             steps.Add(step, started, status, values);
-            await work.ReportStepAsync(step, values, ct).ConfigureAwait(false);
+            await work.ReportStepAsync(
+                step,
+                values,
+                [TargetArtifact.Created("points:" + request.Number.ToString(CultureInfo.InvariantCulture), ArtifactRoles.Points, work.TargetId, locator: VersionsNamed(versions))],
+                ct).ConfigureAwait(false);
             accepted.Add(new AcceptedRequest(step, request.Series, versions, values, resumed: false));
         }
 
@@ -630,10 +686,20 @@ internal sealed partial class ProductionTimeSeriesShape(DdmsShapeContext context
             return ((int)result.Status, answers);
         }
 
-        var taken = answers.Where(a => a.Accepted && a.Version is not null).Select(a => string.Create(CultureInfo.InvariantCulture, $"{a.Id} as version {a.Version}")).ToList();
+        var acceptedSeries = answers.Where(a => a.Accepted && a.Version is not null).ToList();
+        var taken = acceptedSeries.Select(a => string.Create(CultureInfo.InvariantCulture, $"{a.Id} as version {a.Version}")).ToList();
         var message = $"the ingestion service did not take every series of request {number} of the points of {recordId}: {string.Join("; ", refused)}"
             + (taken.Count == 0 ? string.Empty : $". It accepted {string.Join(", ", taken)}, which a later delivery sends again as new versions");
-        throw held ? new RecordHeldException(message) : new DeliveryException(message);
+        Exception failure = held ? new RecordHeldException(message) : new DeliveryException(message);
+        throw acceptedSeries.Count == 0 ? failure : new PartlyAcceptedException(acceptedSeries, failure);
+    }
+
+    /// <summary>A request the ingestion service took part of: the series it accepted, and the failure the try ends with.</summary>
+    private sealed class PartlyAcceptedException(IReadOnlyList<SeriesAnswer> accepted, Exception failure) : DeliveryException(failure.Message, failure)
+    {
+        public IReadOnlyList<SeriesAnswer> Accepted { get; } = accepted;
+
+        public Exception Failure { get; } = failure;
     }
 
     /// <summary>

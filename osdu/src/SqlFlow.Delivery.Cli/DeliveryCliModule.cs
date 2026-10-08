@@ -11,7 +11,7 @@ namespace SqlFlow.Delivery.Cli;
 /// The OSDU module as the <c>sqlflow</c> CLI composes it: the delivery, retrieval, cache, assertion and dimension flow kinds (so SQLFlow's
 /// own <c>validate</c>, <c>run</c> and <c>worker</c> verbs read and execute them), the ledger, templates and caches over the
 /// module's database, and the module's own verbs: <c>check</c>, <c>preview</c>, <c>values</c>, <c>records</c>, <c>config</c>, <c>partition</c>,
-/// <c>cache</c>, <c>template</c>, <c>assertions</c> and <c>dimensions</c>.
+/// <c>cache</c>, <c>template</c>, <c>assertions</c>, <c>dimensions</c> and <c>inventory</c>.
 /// </summary>
 /// <remarks>
 /// A command's database is the catalog the command line names (<c>--db</c>, else <c>${env:SQLFLOW_CATALOG_DB}</c>) unless
@@ -107,10 +107,19 @@ public sealed class DeliveryCliModule : ICliModule
                 "                          [--outcome <outcome>] [--max <n>]",
                 "                                   The reversals the ledger keeps, newest first; or one, with its records",
                 "                                   counted by outcome, and with --outcome the records it settled so (needs --db)",
+                "sqlflow records artifacts <flow.yaml> --key <delivery key | source key> [--interface <name>] [--max <n>]",
+                "                                   What deliveries of one record created in OSDU, newest first: each",
+                "                                   dataset, session, version and the like with its OSDU id or what finds",
+                "                                   it, its versions, where it stands and who settled it (needs --db)",
+                "sqlflow records undos <flow.yaml> [--interface <name>] [--partition <id>] [--max <n>]",
+                "                                   What unfinished deliveries left in OSDU that an undo may still take,",
+                "                                   counted by state, and the records holding it, those whose undo used",
+                "                                   every try first. The undo is a run: sqlflow run <flow.yaml> --operation",
+                "                                   undo (with --payload '{\"force\":true}' it retries those too) (needs --db)",
             ],
             DeliveryRecordVerbs.RecordsAsync)
         {
-            Subcommands = ["list", "show", "issues", "release", "reverse", "reversals"],
+            Subcommands = ["list", "show", "issues", "release", "reverse", "reversals", "artifacts", "undos"],
             Flags = ["--contains", "--preview"],
             ValueOptions = ["--interface", "--partition", "--search", "--status", "--max", "--key", "--attempts", "--issue", "--run", "--submission", "--outcome"],
         },
@@ -259,6 +268,35 @@ public sealed class DeliveryCliModule : ICliModule
             Subcommands = ["list", "table", "values", "keys", "attributes", "filter", "search", "history", "changes", "export", "remove"],
             ValueOptions = ["--partition", "--dimension", "--search", "--order", "--value", "--pick", "--where", "--attr", "--attribute", "--kind", "--within", "--max", "--build", "--change", "--set", "--format", "--out"],
             Flags = ["--removed", "--left-out", "--desc"],
+        },
+        new CliVerb(
+            "inventory",
+            [
+                "sqlflow inventory list [--partition <id>]",
+                "                                   The inventories of a partition (of every partition without",
+                "                                   --partition): each with its flow, the kind it reads, and what its",
+                "                                   last reconcile raised (needs --db)",
+                "sqlflow inventory show <partition> <id>",
+                "                                   One inventory: its ids by finding as its rows hold them now, the",
+                "                                   owners its last reconcile used and how it knew them, and its last",
+                "                                   build and reconcile (needs --db)",
+                "sqlflow inventory records <partition> <id> [--finding <finding>] [--after <n>] [--limit <n>]",
+                "                                   A page of its ids, of one finding or every one: what OSDU serves of",
+                "                                   each, why it has its finding, and what the ledgers hold of it; the",
+                "                                   line under the page names the --after of the next (needs --db)",
+                "sqlflow inventory lookup <partition> <osdu-id>",
+                "                                   What every inventory of the partition holds of one OSDU id (needs --db)",
+                "sqlflow inventory runs <partition> <id> [--limit <n>]",
+                "                                   Its builds and reconciles, newest first: what each read, changed",
+                "                                   and raised (needs --db)",
+                "sqlflow inventory export <partition> <id> [--finding <finding>] [--out <file.csv>]",
+                "                                   Its ids, of one finding or every one, as CSV (needs --db). Building",
+                "                                   is a run: sqlflow run <flow.yaml> --payload '{\"inventories\":[\"name\"]}'",
+            ],
+            DeliveryInventoryVerbs.InventoryAsync)
+        {
+            Subcommands = ["list", "show", "records", "lookup", "runs", "export"],
+            ValueOptions = ["--partition", "--finding", "--after", "--limit", "--out"],
         },
     ];
 

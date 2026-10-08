@@ -40,6 +40,37 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
 
     public DeliveryProtocol Kind => DeliveryProtocol.ManifestAndDdms;
 
+    /// <summary>The manifest writes the record before its DDMS takes its bulk data, so a delivery can leave the record without it until its undo.</summary>
+    public bool Undoes => true;
+
+    /// <summary>
+    /// Undoes what unfinished deliveries left (docs/atomic-delivery-plan.md): what the record's DDMS made for its bulk data (an
+    /// open session), then, once no run that could still write the record is going, what the manifest made: the datasets its
+    /// files were registered as, a manifest stored by reference, and the record, removed when the run created it or given back
+    /// the version storage held before.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(IReadOnlyList<UndoWork> works, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(works);
+        var results = new List<UndoResult>();
+        foreach (var work in works)
+        {
+            var manifested = work.Items.Where(i => i.Artifact.Role is ArtifactRoles.Dataset or ArtifactRoles.Run || ArtifactRoles.IsTheRecord(i.Artifact.Role)).ToList();
+            var bulk = work.Items.Except(manifested).ToList();
+            if (bulk.Count > 0)
+            {
+                results.AddRange(await _ddms.UndoRecordAsync(work with { Items = bulk }, ct).ConfigureAwait(false));
+            }
+
+            if (manifested.Count > 0)
+            {
+                results.AddRange(await _manifest.UndoWorkAsync(work with { Items = manifested }, ct).ConfigureAwait(false));
+            }
+        }
+
+        return results;
+    }
+
     public int MaxBatch => _manifest.MaxBatch;
 
     /// <summary>Where the protocol sends each record's bulk data: the flow's DDMSs, every registration among them read.</summary>
@@ -250,6 +281,7 @@ public sealed class OsduManifestAndDdmsProtocol : IDeliveryProtocol
             Detail = detail.Count == 0 ? null : string.Join("; ", detail),
             Returned = returned,
             Steps = steps,
+            Superseded = manifested?.Superseded ?? [],
         };
     }
 

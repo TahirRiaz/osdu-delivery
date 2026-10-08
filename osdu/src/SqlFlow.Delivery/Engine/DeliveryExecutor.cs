@@ -391,6 +391,11 @@ public sealed class DeliveryExecutor : IFlowDocumentExecutor
                 LogOutcome(log, $"reverse: {reversal.Describe(reversed)}");
                 return ReverseRunOutcome.From(operation, reversed, reversal);
 
+            case DeliveryOperations.Undo:
+                var undone = await runtime.UndoUnfinishedAsync(payload.Force, ct).ConfigureAwait(false);
+                LogOutcome(log, $"undo: {undone.Describe()}");
+                return UndoRunOutcome.From(operation, undone);
+
             case DeliveryOperations.DeleteLedger:
                 var confirm = payload.Confirm ?? throw new DeliveryException("A run deleting the ledger names the partition it acts in (payload confirm), and this one names none.");
                 var cleared = await runtime.DeleteLedgerAsync(confirm, ct).ConfigureAwait(false);
@@ -770,6 +775,9 @@ public sealed record DeliverOutcome(
     /// </summary>
     public long RowsLoaded => Delivered;
 
+    /// <summary>What the sweep the run ended with undid of unfinished deliveries (docs/atomic-delivery-plan.md, When the undo runs).</summary>
+    public UndoSummary Undone { get; init; } = UndoSummary.Empty;
+
     /// <summary>
     /// A run's counts are its own work (<see cref="RunResult.Own"/>): a run re-sending two records of a delivered submission
     /// reports two, and one that found the submission already completed reports none, while a fan-out root reports the
@@ -786,7 +794,10 @@ public sealed record DeliverOutcome(
             operation, s.SubmissionId, source, selection, s.Status.ToString().ToLowerInvariant(), s.RecordCount,
             own.Planned, own.SkippedUnchanged, own.AwaitingApproval, own.SkippedStale, own.UnchangedAtPush, own.Blocked, own.Delivered, own.Held, own.Failed, own.Retried, own.Batches,
             run.IntakeMembers, run.DrainMembers, run.Intake.NothingToDo && run.Work.Processed == 0, requested.FirstSubmissionId, requested.Planned, s.Error, totals, own.Waiting,
-            requested.Passes);
+            requested.Passes)
+        {
+            Undone = run.Undone,
+        };
     }
 }
 
@@ -900,12 +911,38 @@ public sealed record DrainOutcome(string Operation, Guid? SubmissionId, long Pro
     /// <summary>The run's headline count on the run row (<c>result.rowsLoaded</c>): the records this drain delivered.</summary>
     public long RowsLoaded => Delivered;
 
-    public static DrainOutcome From(WorkerSummary summary, Guid? submissionId)
+    /// <summary>What the sweep a drain of the whole flow ends with undid of unfinished deliveries; empty for a drain of one submission.</summary>
+    public UndoSummary Undone { get; init; } = UndoSummary.Empty;
+
+    public static DrainOutcome From(DrainResult drained, Guid? submissionId)
+    {
+        ArgumentNullException.ThrowIfNull(drained);
+        var summary = drained.Work;
+        return new DrainOutcome(
+            DeliveryOperations.Drain, submissionId, summary.Processed, summary.Delivered, summary.Unchanged, summary.Retried, summary.Held, summary.Failed, summary.Batches, summary.Waiting)
+        {
+            Undone = drained.Undone,
+        };
+    }
+}
+
+/// <summary>
+/// The <c>result</c> of an undo run (docs/atomic-delivery-plan.md): the records it took up and what became of what unfinished
+/// deliveries left of them.
+/// </summary>
+public sealed record UndoRunOutcome(string Operation, int Records, int Removed, int Restored, int Gone, int Kept, int Superseded, int Failed)
+{
+    /// <summary>The run's headline count on the run row (<c>result.rowsLoaded</c>): the artifacts it settled.</summary>
+    public long RowsLoaded => Removed + Restored + Gone + Kept + Superseded;
+
+    public static UndoRunOutcome From(string operation, UndoSummary summary)
     {
         ArgumentNullException.ThrowIfNull(summary);
-        return new DrainOutcome(
-            DeliveryOperations.Drain, submissionId, summary.Processed, summary.Delivered, summary.Unchanged, summary.Retried, summary.Held, summary.Failed, summary.Batches, summary.Waiting);
+        return new UndoRunOutcome(operation, summary.Records, summary.Removed, summary.Restored, summary.Gone, summary.Kept, summary.Superseded, summary.Failed);
     }
+
+    /// <summary>The run's counts as the summary they came from, so a source's interfaces add up.</summary>
+    public UndoSummary ToSummary() => new(Records, Removed, Restored, Gone, Kept, Superseded, Failed);
 }
 
 /// <summary>The <c>result</c> of a verify run.</summary>
@@ -940,13 +977,22 @@ public sealed record DeleteLedgerOutcome(
     /// <summary>The run's headline count on the run row (<c>result.rowsLoaded</c>): the records deleted from the ledger.</summary>
     public long RowsLoaded => Records;
 
+    /// <summary>
+    /// What was undone before anything was removed (docs/atomic-delivery-plan.md, When the undo runs): what unfinished deliveries
+    /// left, and the ids committed deliveries minted that nothing names once the ledger is gone.
+    /// </summary>
+    public UndoSummary Undone { get; init; } = UndoSummary.Empty;
+
     public static DeleteLedgerOutcome From(string operation, LedgerDeleteSummary summary)
     {
         ArgumentNullException.ThrowIfNull(summary);
         var deleted = summary.Deleted;
         return new DeleteLedgerOutcome(
             operation, summary.Partition, summary.Removed, summary.AlreadyGone, summary.AlreadyRemoved, summary.NeverInOsdu,
-            deleted.Records, deleted.Submissions, deleted.WorkBatches, deleted.Watermarks, deleted.Reversals);
+            deleted.Records, deleted.Submissions, deleted.WorkBatches, deleted.Watermarks, deleted.Reversals)
+        {
+            Undone = summary.Undone,
+        };
     }
 
     /// <summary>One line: what went from OSDU and from the ledger.</summary>

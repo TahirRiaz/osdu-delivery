@@ -110,7 +110,7 @@ public sealed class DeliveryDocumentLoader
         return ParseMapping(File.ReadAllText(path), source);
     }
 
-    /// <summary>The discriminator of a document: "delivery", "retrieval", "cache", "assertion" or "dimension" for a flow, "mapping" or "dictionary" for a document.</summary>
+    /// <summary>The discriminator of a document: "delivery", "retrieval", "cache", "assertion", "dimension" or "inventory" for a flow, "mapping" or "dictionary" for a document.</summary>
     public string Probe(string yaml, string source = "<inline>")
     {
         var probe = Deserialize<DocumentProbeYaml>(_probe, yaml, source);
@@ -212,6 +212,31 @@ public sealed class DeliveryDocumentLoader
 
         var y = Deserialize<DimensionFlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
         return DimensionMapper.Map(y, source);
+    }
+
+    /// <summary>Parses an inventory flow document (<c>flowType: inventory</c>): every id OSDU kinds hold, compared with the ledgers of their partition.</summary>
+    public InventoryFlowDefinition ParseInventory(string yaml, string source = "<inline>")
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        var kind = Probe(yaml, source);
+        if (!kind.Equals(InventoryFlowDefinition.FlowTypeName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new FlowValidationException($"{source}: expected 'flowType: {InventoryFlowDefinition.FlowTypeName}', found '{kind}'.");
+        }
+
+        var y = Deserialize<InventoryFlowYaml>(_strict, yaml, source) ?? throw new FlowValidationException($"{source}: the document is empty.");
+        return InventoryMapper.Map(y, source);
+    }
+
+    public InventoryFlowDefinition LoadInventory(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!File.Exists(path))
+        {
+            throw new FlowValidationException($"Inventory flow file not found: '{path}'.");
+        }
+
+        return ParseInventory(File.ReadAllText(path), path);
     }
 
     /// <summary>Loads the dictionary file at <paramref name="path"/>, naming it <paramref name="source"/> in every message.</summary>

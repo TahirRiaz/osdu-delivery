@@ -314,6 +314,18 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
             return chunk.Select(r => new RemovalResult(r, null, ex)).ToList();
         }
 
+        if ((int)result.Status == 207 && NotDeleted(result) is { } refused)
+        {
+            // The others are deleted (osdu/specs/core/INTEGRATION.md, D2): only the ids the answer names are asked about one
+            // at a time, so an id the bulk call removed is said to be removed, not found gone by the second call.
+            var asked = chunk.Where(r => refused.Contains(r.TargetId)).ToList();
+            var answered = asked.Count == 0 ? [] : await OneByOneAsync(asked, RemovalScope.Record, ct).ConfigureAwait(false);
+            var byId = answered.ToDictionary(r => r.Removal.TargetId, StringComparer.Ordinal);
+            return chunk
+                .Select(r => byId.TryGetValue(r.TargetId, out var one) ? one : new RemovalResult(r, new DeleteOutcome(true, false, "removed from OSDU (reversible, in bulk)"), null))
+                .ToList();
+        }
+
         if ((int)result.Status is 207 or 404)
         {
             return await OneByOneAsync(chunk, RemovalScope.Record, ct).ConfigureAwait(false);
@@ -322,6 +334,48 @@ public sealed class OsduRecordProtocol : IDeliveryProtocol
         return chunk
             .Select(r => new RemovalResult(r, new DeleteOutcome(true, false, "removed from OSDU (reversible, in bulk)"), null))
             .ToList();
+    }
+
+    /// <summary>
+    /// The ids a partly refused bulk soft delete names as not deleted (<c>DeleteRecordsException.notDeletedRecords</c>, each a
+    /// <c>{key, value}</c> pair keyed by the id); null when the answer does not name them, and every id is then asked about.
+    /// </summary>
+    private static HashSet<string>? NotDeleted(HttpFetchResult result)
+    {
+        if (result.Body.Length == 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(result.Body);
+            if (document.RootElement.ValueKind != JsonValueKind.Object
+                || !document.RootElement.TryGetProperty("notDeletedRecords", out var listed)
+                || listed.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var pair in listed.EnumerateArray())
+            {
+                if (pair.ValueKind == JsonValueKind.Object && pair.TryGetProperty("key", out var key) && key.ValueKind == JsonValueKind.String && key.GetString() is { Length: > 0 } id)
+                {
+                    ids.Add(id);
+                }
+                else
+                {
+                    return null;
+                }
+            }
+
+            return ids;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>The shared per-record removal, which is what every fallback here lands on.</summary>
@@ -455,6 +509,7 @@ internal static class RecordWriter
             var result = await client.SendJsonAsync(HttpMethod.Post, url, body, new HashSet<int> { 404 }, ct, idempotent: true).ConfigureAwait(false);
             var versions = new Dictionary<string, long?>(StringComparer.Ordinal);
             var invalid = new HashSet<string>(StringComparer.Ordinal);
+            var retry = new HashSet<string>(StringComparer.Ordinal);
             if (result.Body.Length > 0)
             {
                 var root = OsduHttpClient.ParseJson(result, url);
@@ -473,11 +528,19 @@ internal static class RecordWriter
                 {
                     invalid.Add(id);
                 }
+
+                foreach (var id in JsonPathReader.SelectValues(root, "retryRecords[*]"))
+                {
+                    retry.Add(id);
+                }
             }
 
             foreach (var (request, index) in chunk)
             {
-                results[index] = SettleVerify(request, versions, invalid);
+                // An id storage asks to be read again was not answered for: it is neither held nor missing yet.
+                results[index] = retry.Contains(request.TargetId) && !versions.ContainsKey(request.TargetId)
+                    ? new VerifyResult(VerifyOutcome.Error, null, "storage asked for the record to be read again (retryRecords), so whether it holds it is not known")
+                    : SettleVerify(request, versions, invalid);
             }
         }
 

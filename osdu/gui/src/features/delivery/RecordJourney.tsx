@@ -3,7 +3,7 @@ import { Link as RouterLink } from "react-router-dom";
 import { format, formatDistanceToNow } from "date-fns";
 import {
   ArchiveRestore, CheckCircle2, ChevronRight, CircleDashed, CircleDot, Database, DatabaseZap, Eraser, FileInput, FilePen,
-  FileQuestion, FileX2, Layers, PauseCircle, RefreshCw, ScanSearch, ShieldCheck, Trash2, Undo2, XCircle,
+  FileQuestion, FileX2, Hourglass, Layers, PauseCircle, RefreshCw, ScanSearch, ShieldCheck, Trash2, Undo2, XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -19,12 +19,14 @@ import { SummaryStrip, type SummaryCell } from "@/components/SummaryStrip";
 import { TruncatedText } from "@/components/TruncatedText";
 import type {
   DeliveryActivity, DeliveryAttempt, DeliveryAttemptStep, DeliveryChainLanding, DeliveryChainRun, DeliveryRecord,
-  DeliveryRecordChain, DeliverySourceChange, DeliverySourceChangeKind,
+  DeliveryRecordChain, DeliverySourceChange, DeliverySourceChangeKind, DeliveryUndoArtifact,
 } from "../../api/delivery";
+import { UndoOutcomeBadge } from "./ArtifactMarks";
 import { RunRef, SubmissionRef } from "./DeliveryRefs";
 import { Fact, FactGrid, NoFact } from "./Facts";
 import { prettyJson } from "./prettyJson";
 import { RecordName } from "./RecordName";
+import { NoteMark } from "./RecordArtifacts";
 
 type Tone = "success" | "destructive" | "warning" | "info" | "muted";
 
@@ -539,8 +541,9 @@ function reachedTarget(attempt: DeliveryAttempt): boolean {
     || attempt.outcome === "deleted"
     || attempt.outcome === "historypurged"
     || attempt.outcome === "restored"
+    || attempt.outcome === "undone"
     || (attempt.result?.steps?.length ?? 0) > 0
-    || (attempt.outcome === "held" && attempt.worker !== "intake" && refusalOf(attempt.error) !== null);
+    || (attempt.outcome === "held" && attempt.worker !== "intake" && attempt.phase !== "undo-wait" && refusalOf(attempt.error) !== null);
 }
 
 const PHASE_TEXT: Record<string, string> = {
@@ -548,6 +551,44 @@ const PHASE_TEXT: Record<string, string> = {
   payload: "payload only",
   "metadata+payload": "record and payload",
 };
+
+/** Why an undo ran, as its attempt's result names the reason. */
+const UNDO_REASON: Record<string, string> = {
+  held: "after a try that held",
+  failed: "after the delivery used its tries",
+  abandoned: "newer work replaced the delivery",
+  removed: "before the record was removed",
+};
+
+/**
+ * What an undo did to each artifact of an unfinished delivery, one line each: how the undo settled it, what it is, its OSDU
+ * id or what finds it, the versions it names, and what the route answered, behind a note mark with its copy.
+ */
+function UndoList({ artifacts, keptRecord }: { artifacts: DeliveryUndoArtifact[]; keptRecord: boolean }) {
+  return (
+    <div className="flex flex-col gap-1" data-testid="journey-undo">
+      {keptRecord && <span className="text-[12px] text-muted-foreground">The record itself was left to the newer work, which writes it again.</span>}
+      <ul className="flex flex-col gap-1 text-[12px]">
+        {artifacts.map((artifact) => (
+          <li
+            key={artifact.artifactId}
+            className="grid grid-cols-[minmax(0,auto)_minmax(0,auto)_minmax(0,1fr)_auto] items-center gap-x-2"
+            data-testid="journey-undo-artifact"
+          >
+            <UndoOutcomeBadge outcome={artifact.outcome} />
+            <span className="whitespace-nowrap">{artifact.role}</span>
+            <span className="inline-flex min-w-0 items-baseline gap-1.5">
+              <TruncatedText text={artifact.targetId ?? artifact.locator ?? artifact.slot} mono maxWidth={420} copy title={artifact.targetId !== undefined ? "OSDU id" : "Found by"} />
+              {artifact.version !== undefined && <Mono>{`v${artifact.version}`}</Mono>}
+              {artifact.priorVersion !== undefined && <span className="text-muted-foreground"><Mono>{`replaced v${artifact.priorVersion}`}</Mono></span>}
+            </span>
+            <NoteMark note={artifact.note} testId={`journey-undo-note-${artifact.artifactId}`} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 function statusText(refusal: Refusal): string {
   return `HTTP ${refusal.status}${refusal.reason !== "" ? ` ${refusal.reason}` : ""}`;
@@ -588,6 +629,42 @@ function attemptShape(attempt: DeliveryAttempt, refusal: Refusal | null, reached
       default:
         return { title: "A reversal passed it over", tone: "muted", icon: Undo2, then: null, outcome: null };
     }
+  }
+
+  // What an unfinished delivery left in OSDU, undone: an undo decides nothing about the record, so it settles no chapter.
+  if (attempt.outcome === "undone") {
+    const left = (attempt.result?.undo?.artifacts ?? []).filter((artifact) => artifact.outcome === "failed").length;
+    const summary = attempt.result?.undo?.summary;
+    return {
+      title: left > 0
+        ? `Undo of an unfinished delivery: ${summary ?? `${left} not undone yet`}`
+        : `Unfinished delivery undone${summary !== undefined ? `: ${summary}` : ""}`,
+      tone: left > 0 ? "warning" : "muted",
+      icon: Eraser,
+      then: left > 0
+        ? { text: "What could not be undone yet is tried again by the sweep; newer work for the record waits for it.", tone: "muted" }
+        : null,
+      outcome: null,
+    };
+  }
+
+  // Newer work that was not sent because what an earlier delivery left is not undone yet.
+  if (attempt.phase === "undo-wait") {
+    return attempt.outcome === "held"
+      ? {
+        title: "Held: an earlier delivery's undo used every try",
+        tone: "warning",
+        icon: PauseCircle,
+        then: { text: "Once what stops the undo is fixed, a release tries the undo again before the newer work.", tone: "warning" },
+        outcome: { text: "Held: waits for an undo", tone: "warning" },
+      }
+      : {
+        title: "Waited for an earlier delivery's undo",
+        tone: "muted",
+        icon: Hourglass,
+        then: { text: "Nothing was sent and the try was not charged; the newer work goes once the undo lands.", tone: "muted" },
+        outcome: null,
+      };
   }
 
   // An operator took the latest version out of being current: the version before it written back as a new version.
@@ -660,7 +737,9 @@ function errorShape(error: string | null): string {
 function attemptEntry(attempt: DeliveryAttempt): Entry {
   const steps = attempt.result?.steps ?? [];
   const correlationId = attempt.result?.correlationId;
-  const refusal = refusalOf(attempt.error);
+  const undo = attempt.outcome === "undone" ? attempt.result?.undo : undefined;
+  // An undo's error lists what it could not take back, and a wait's names what it waits for; neither is a request OSDU refused.
+  const refusal = attempt.outcome === "undone" || attempt.phase === "undo-wait" ? null : refusalOf(attempt.error);
   const reached = reachedTarget(attempt);
   const shape = attemptShape(attempt, refusal, reached);
   const took = between(attempt.startedUtc, attempt.completedUtc);
@@ -677,7 +756,7 @@ function attemptEntry(attempt: DeliveryAttempt): Entry {
     icon: shape.icon,
     facts: reached
       ? [
-        PHASE_TEXT[attempt.phase],
+        undo !== undefined ? UNDO_REASON[undo.reason ?? ""] : PHASE_TEXT[attempt.phase],
         request !== null && <Mono key="q">{request}</Mono>,
         took !== null && `took ${took}`,
         version !== null && <Mono key="v">{`version ${version}`}</Mono>,
@@ -695,6 +774,7 @@ function attemptEntry(attempt: DeliveryAttempt): Entry {
     more: (
       <div className="flex flex-col gap-2.5">
         {steps.length > 0 && <StepList steps={steps} />}
+        {undo?.artifacts !== undefined && undo.artifacts.length > 0 && <UndoList artifacts={undo.artifacts} keptRecord={undo.keptRecord === true} />}
         <FactGrid>
           {refusal?.url != null && <Fact label="Request" wide><Mono>{`${refusal.method ?? ""} ${refusal.url}`}</Mono></Fact>}
           {attempt.error !== null && <Fact label="Error" wide><span className="text-destructive">{attempt.error}</span></Fact>}
@@ -716,7 +796,7 @@ function attemptEntry(attempt: DeliveryAttempt): Entry {
     ),
     order: 4,
     outcome: shape.outcome,
-    foldKey: attempt.outcome === "failed" || attempt.outcome === "held" || attempt.outcome === "skipped"
+    foldKey: attempt.outcome === "failed" || attempt.outcome === "held" || attempt.outcome === "skipped" || attempt.outcome === "undone"
       ? `${attempt.outcome}|${attempt.phase}|${lane}|${errorShape(attempt.error)}`
       : null,
     testId: `journey-attempt-${attempt.outcome}`,

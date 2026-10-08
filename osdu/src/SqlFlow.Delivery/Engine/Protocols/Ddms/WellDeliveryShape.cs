@@ -145,7 +145,8 @@ internal sealed partial class WellDeliveryShape(DdmsShapeContext context) : IDdm
         }
 
         steps.Add(OsduDdmsProtocol.MetadataStep, started, status, returned);
-        await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, ct).ConfigureAwait(false);
+        var write = work.Completed(VersionStep)?.GetValueOrDefault("write") ?? (work.ExistingVersion == version ? "in place" : "new");
+        await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, returned, WriteArtifacts(work, route, version, write, ArtifactStatus.Pending), ct).ConfigureAwait(false);
 
         var warnings = new List<string>();
         if (valid == false)
@@ -229,6 +230,97 @@ internal sealed partial class WellDeliveryShape(DdmsShapeContext context) : IDdm
 
     /// <summary>The Well Delivery DDMS keeps no bulk data, so a record carries no link to any.</summary>
     public bool CarryLink(JsonObject? stored, JsonObject document) => true;
+
+    /// <summary>
+    /// Undoes the version of an entity an unfinished delivery wrote: that version alone is soft-deleted
+    /// (<c>DELETE /storage/v1/{type}/{id}/{version}</c>, which a write of the same version reverses), so the version the ledger
+    /// holds is the latest again, and an entity another system wrote under the same id keeps its versions. Where the
+    /// deployment copies entities into Storage, the copy of an entity the ledger held no version of is removed too when Storage
+    /// says the unit's write created it; any other copy keeps the version the write gave it, since the DDMS never deletes a copy
+    /// and nothing records the copy's version before. On Azure and IBM the DDMS's reads keep returning a soft-deleted version.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(UndoWork work, DdmsRecordPaths paths, IReadOnlyList<UndoItem> items, CancellationToken ct)
+    {
+        var route = RouteOf(paths);
+        var results = new List<UndoResult>(items.Count);
+        foreach (var item in items)
+        {
+            if (item.Artifact.Role != ArtifactRoles.Objects || item.Artifact.Version is not { } version)
+            {
+                results.Add(UndoResult.Kept(item, "the Well Delivery shape makes nothing of this kind beside a record"));
+                continue;
+            }
+
+            if (work.KeepRecord)
+            {
+                results.Add(UndoResult.Superseded(item, "the record's newer work writes the entity again, so its version is left as it is"));
+                continue;
+            }
+
+            try
+            {
+                var entityId = DdmsShapeValues.EntityId(work.TargetId)
+                    ?? throw new RecordHeldException($"the record id '{work.TargetId}' names no entity id after its type");
+                var url = _client.Url(route.RecordPath + "/{version}", new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["entityId"] = entityId,
+                    ["version"] = version.ToString(CultureInfo.InvariantCulture),
+                });
+                var removed = await RecordWriter.RemoveAtAsync(_client, HttpMethod.Delete, url, ct).ConfigureAwait(false);
+                var (copy, copyRemoved) = item.Artifact.Locator is { } storageId ? await CopyAsync(item, storageId, ct).ConfigureAwait(false) : (string.Empty, false);
+                var latest = item.Artifact.PriorVersion is { } prior
+                    ? string.Create(CultureInfo.InvariantCulture, $"so version {prior} is the latest again")
+                    : "the version the unit wrote, the only one the ledger knows of";
+                results.Add(removed
+                    ? UndoResult.Removed(item, string.Create(CultureInfo.InvariantCulture, $"version {version} of {work.TargetId} soft-deleted, {latest} (a write of the same version restores it){copy}"))
+                    : copyRemoved
+                        ? UndoResult.Removed(item, string.Create(CultureInfo.InvariantCulture, $"the DDMS holds no version {version} of {work.TargetId} (its store refused the write){copy}"))
+                        : UndoResult.Gone(item, string.Create(CultureInfo.InvariantCulture, $"the DDMS holds no version {version} of {work.TargetId}{copy}")));
+            }
+            catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+            {
+                results.Add(UndoResult.Failed(item, ArtifactUndo.Redact(ex)));
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// What became of an entity's Storage copy after the undo of the version a unit wrote: removed (reversibly) when the ledger
+    /// held no version of the entity and Storage says the copy was created after the unit began, else kept at the version the
+    /// write gave it, with why. A copy Storage cannot be asked about is left for the next undo to look at again.
+    /// </summary>
+    private async Task<(string Note, bool Removed)> CopyAsync(UndoItem item, string storageId, CancellationToken ct)
+    {
+        if (item.Artifact.PriorVersion is not null || _routing.StorageDeletePath is not { } delete)
+        {
+            return ($"; its Storage copy {storageId} keeps the version this write gave it", false);
+        }
+
+        var stored = await RecordWriter.ReadAsync(_client, OsduRecordProtocol.DefaultVerifyPath, storageId, ct).ConfigureAwait(false);
+        if (stored is null)
+        {
+            return ($"; Storage holds no copy {storageId}", false);
+        }
+
+        if (ArtifactUndo.CreateTimeOf(stored) is { } created && created < item.UnitStartedUtc - Ledger.ArtifactLimits.ClockSkew)
+        {
+            return (string.Create(CultureInfo.InvariantCulture, $"; its Storage copy {storageId}, created at {created:u} before this delivery began, keeps the version this write gave it"), false);
+        }
+
+        var removed = await RecordWriter.RemoveAtAsync(_client, HttpMethod.Post, _client.Url(delete, storageId), ct).ConfigureAwait(false);
+        return removed ? ($", and its Storage copy {storageId} removed (reversible)", true) : ($"; its Storage copy {storageId} was already gone", false);
+    }
+
+    /// <summary>
+    /// The entity the ledger knows is the version a unit wrote, undone above version by version, so nothing of the entity is
+    /// removed through the record itself: an entity another system wrote under the same id keeps its versions.
+    /// </summary>
+    public RecordSide RecordSide(DdmsRecordPaths paths) => new()
+    {
+        Remove = (id, token) => DeleteAsync(paths, id, RemovalScope.Record, null, token),
+    };
 
     /// <summary>
     /// Why the Well Delivery DDMS would refuse <paramref name="document"/>, or store less of it than was sent, or null
@@ -359,10 +451,36 @@ internal sealed partial class WellDeliveryShape(DdmsShapeContext context) : IDdm
             ["version"] = version.ToString(CultureInfo.InvariantCulture),
             ["write"] = write,
         };
-        await work.ReportStepAsync(VersionStep, returned, ct).ConfigureAwait(false);
+
+        // The DDMS copies the entity into Storage before its own store takes it, so a write that fails can leave the copy, or
+        // the entity, behind: the write's intent goes with the version, before the write is sent.
+        await work.ReportStepAsync(VersionStep, returned, WriteArtifacts(work, route, version, write, ArtifactStatus.Intent), ct).ConfigureAwait(false);
         steps.Add(VersionStep, started, null, returned);
         return version;
     }
+
+    /// <summary>The slot of a write's artifact: the entity, or the new version of it, the unit wrote.</summary>
+    private const string WriteSlot = "record";
+
+    /// <summary>
+    /// What a write of <paramref name="version"/> makes, as its artifact: the version of the entity the unit wrote
+    /// (<see cref="ArtifactRoles.Objects"/>, which an undo soft-deletes alone, never the entity's other versions), with the
+    /// version the ledger held before (none for an entity the ledger held no version of) and, where the deployment copies
+    /// entities into Storage, the copy's id; nothing for a version the ledger holds written again in place.
+    /// </summary>
+    private IReadOnlyList<TargetArtifact> WriteArtifacts(DeliveryWork work, DdmsRoute route, long version, string write, ArtifactStatus status)
+        => work.ExistingVersion is null || write == "new"
+            ? [new TargetArtifact
+            {
+                Slot = WriteSlot,
+                Role = ArtifactRoles.Objects,
+                TargetId = work.TargetId,
+                Version = version,
+                PriorVersion = work.ExistingVersion,
+                Locator = (route.Service.WellDelivery ?? new WellDeliverySettings()).Mirror ? StorageId(work.TargetId) : null,
+                Status = status,
+            }]
+            : [];
 
     /// <summary>
     /// Writes the entity through the gate of its DDMS. An answer lost to a server error or a dropped connection is settled

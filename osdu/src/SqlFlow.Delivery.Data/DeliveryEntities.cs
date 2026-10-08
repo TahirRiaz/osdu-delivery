@@ -661,6 +661,287 @@ public sealed class DeliveryPurgedRecord
 }
 
 /// <summary>
+/// One thing a delivery created in OSDU, or set out to create (docs/atomic-delivery-plan.md): a dataset it registered, the
+/// record it wrote before a later call, a bulk session it opened, rows it posted. Written in the transaction that writes the
+/// step that created it, so the ledger names it before the delivery goes on; an intent is written before a call whose id the
+/// service chooses, with what finds the object when the answer is lost, and completed with the id. A unit of work that
+/// commits makes the ids it minted live and deletes what stood only for its progress; one that aborts is undone, and each
+/// artifact says how: removed, restored, gone, or kept with why.
+/// </summary>
+public sealed class DeliveryArtifact
+{
+    /// <summary>The partition the row belongs to, as the ledger directory numbers it (<see cref="DeliveryLedgerPartition"/>): the first column of the key.</summary>
+    public short PartitionId { get; set; }
+
+    public long ArtifactId { get; set; }
+
+    public Guid FlowId { get; set; }
+
+    public Guid DeliveryKey { get; set; }
+
+    /// <summary>The unit of work (one delivery of the record's pending work, across its tries) that created it.</summary>
+    public Guid UnitId { get; set; }
+
+    /// <summary>When that unit began: what an undo compares OSDU's creation time with before it removes a record.</summary>
+    public DateTime UnitStartedUtc { get; set; }
+
+    /// <summary>The route's name for it, unique within its unit: <c>record</c>, <c>dataset:0</c>, <c>content:Kr</c>, <c>session</c>.</summary>
+    public string Slot { get; set; } = string.Empty;
+
+    /// <summary>What it is: record, version, dataset, content, output, dataspace, session, lock, rows, points, objects or run.</summary>
+    public string Role { get; set; } = string.Empty;
+
+    /// <summary>The OSDU id, or the key the target gave it; null for an intent whose call has not answered.</summary>
+    public string? TargetId { get; set; }
+
+    /// <summary>What finds it when its id is not known, or what else names it (a file's landing-zone path, a session's record).</summary>
+    public string? Locator { get; set; }
+
+    /// <summary>The version the unit wrote, when it wrote one.</summary>
+    public long? Version { get; set; }
+
+    /// <summary>The version the unit's write replaced, for a version of a record that existed: what an undo writes back.</summary>
+    public long? PriorVersion { get; set; }
+
+    /// <summary>intent, pending, live, superseded, due, removed, restored, gone, kept or failed.</summary>
+    public string State { get; set; } = string.Empty;
+
+    /// <summary>Why it was kept, or why its undo failed, redacted.</summary>
+    public string? Note { get; set; }
+
+    /// <summary>How many undos of it were tried.</summary>
+    public int UndoAttempts { get; set; }
+
+    /// <summary>When an undo that failed is tried again; null when none is due.</summary>
+    public DateTime? NextUndoUtc { get; set; }
+
+    /// <summary>The submission whose work the unit delivered.</summary>
+    public Guid? SubmissionId { get; set; }
+
+    /// <summary>The platform run the artifact was created in.</summary>
+    public Guid? CreatedRunId { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    public DateTime UpdatedUtc { get; set; }
+
+    /// <summary>When its unit's undo settled it (removed, restored, gone or kept); null while it is not settled by one.</summary>
+    public DateTime? SettledUtc { get; set; }
+
+    /// <summary>The platform run that settled it.</summary>
+    public Guid? SettledRunId { get; set; }
+
+    /// <summary>Who settled it: the worker, the sweep, or the operator whose removal undid it.</summary>
+    public string? SettledBy { get; set; }
+}
+
+/// <summary>
+/// One inventory of an inventory flow in a partition (docs/inventory-plan.md, The tables): what it reads, the owners its last
+/// reconcile used and how it knew them, and its last build and reconcile. Its counts by finding are read from its records.
+/// </summary>
+public sealed class DeliveryInventory
+{
+    public short PartitionId { get; set; }
+
+    public int InventoryId { get; set; }
+
+    /// <summary>The ledger identity of the inventory flow in the partition.</summary>
+    public Guid FlowId { get; set; }
+
+    public string FlowName { get; set; } = string.Empty;
+
+    /// <summary>The inventory's name in its flow.</summary>
+    public string Name { get; set; } = string.Empty;
+
+    /// <summary>The kind it reads, as the flow declares it (wildcards allowed).</summary>
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>The query that narrows a search read; null for every record of the kind.</summary>
+    public string? Query { get; set; }
+
+    /// <summary>search or storage.</summary>
+    public string ReadMode { get; set; } = string.Empty;
+
+    /// <summary>latest or all.</summary>
+    public string Versions { get; set; } = string.Empty;
+
+    /// <summary>The identities the last reconcile took as this estate's, each with how many records it created that a ledger claims (JSON).</summary>
+    public string? OwnersJson { get; set; }
+
+    /// <summary>declared (the flow names them), inferred (from the records a ledger claims), or none.</summary>
+    public string? OwnersSource { get; set; }
+
+    public DateTime CreatedUtc { get; set; }
+
+    public DateTime UpdatedUtc { get; set; }
+
+    /// <summary>The last build that completed, and when.</summary>
+    public long? LastBuildRunId { get; set; }
+
+    public DateTime? LastBuiltUtc { get; set; }
+
+    /// <summary>The last reconcile that completed (a build's or one of its own), and when.</summary>
+    public long? LastReconcileRunId { get; set; }
+
+    public DateTime? LastReconciledUtc { get; set; }
+}
+
+/// <summary>
+/// One build or reconcile of an inventory: the platform run and who asked, how it read OSDU, what it found and changed, and its
+/// counts by finding as it left them.
+/// </summary>
+public sealed class DeliveryInventoryRun
+{
+    public short PartitionId { get; set; }
+
+    public long InventoryRunId { get; set; }
+
+    public int InventoryId { get; set; }
+
+    public Guid? RunId { get; set; }
+
+    /// <summary>build or reconcile.</summary>
+    public string Operation { get; set; } = string.Empty;
+
+    public string Actor { get; set; } = string.Empty;
+
+    /// <summary>running, completed or failed.</summary>
+    public string Status { get; set; } = string.Empty;
+
+    public DateTime StartedUtc { get; set; }
+
+    public DateTime? CompletedUtc { get; set; }
+
+    /// <summary>search or storage.</summary>
+    public string ReadMode { get; set; } = string.Empty;
+
+    /// <summary>The ids the read listed, repeats left out.</summary>
+    public long Listed { get; set; }
+
+    /// <summary>The pages and requests the read took.</summary>
+    public int Pages { get; set; }
+
+    public long Requests { get; set; }
+
+    /// <summary>What the merge changed: ids new to the inventory, ids whose version or headers moved, ids no longer served, and ids served again.</summary>
+    public long Added { get; set; }
+
+    public long Changed { get; set; }
+
+    public long Gone { get; set; }
+
+    public long Returned { get; set; }
+
+    /// <summary>The ids a ledger expects that the reconcile read from storage to tell missing from merely unlisted.</summary>
+    public long MissingChecked { get; set; }
+
+    /// <summary>The counts by finding the reconcile left (JSON).</summary>
+    public string? FindingsJson { get; set; }
+
+    /// <summary>The owners the reconcile used, each with its count, and how it knew them (JSON).</summary>
+    public string? OwnersJson { get; set; }
+
+    public string? Error { get; set; }
+}
+
+/// <summary>
+/// One id an inventory holds, or a ledger of its partition expects: its kind, version and system properties as OSDU served
+/// them, when it was first listed, last changed and found gone, and what the ledgers hold of it (the finding).
+/// </summary>
+public sealed class DeliveryInventoryRecord
+{
+    public short PartitionId { get; set; }
+
+    public long InventoryRecordId { get; set; }
+
+    public int InventoryId { get; set; }
+
+    /// <summary>The OSDU id, compared exactly.</summary>
+    public string TargetId { get; set; } = string.Empty;
+
+    public string? Kind { get; set; }
+
+    public long? Version { get; set; }
+
+    public string? CreateUser { get; set; }
+
+    public DateTime? CreateTime { get; set; }
+
+    public string? ModifyUser { get; set; }
+
+    public DateTime? ModifyTime { get; set; }
+
+    /// <summary>When a build first listed it; null for an id a ledger expects that OSDU never served while the inventory read it.</summary>
+    public DateTime? FirstSeenUtc { get; set; }
+
+    /// <summary>When a build last saw its version or system properties change.</summary>
+    public DateTime? ChangedUtc { get; set; }
+
+    /// <summary>When a complete build first did not list it; null while OSDU serves it.</summary>
+    public DateTime? GoneUtc { get; set; }
+
+    /// <summary>The latest version its versions were read at (<c>versions: all</c>), so a rebuild reads versions only for what moved.</summary>
+    public long? VersionsAt { get; set; }
+
+    /// <summary>What the ledgers hold of it: tracked, drifted, unconfirmed, stale, superseded, undoing, forgotten, orphan, foreign, missing, unlisted, gone or unreconciled.</summary>
+    public string Finding { get; set; } = string.Empty;
+
+    /// <summary>When its finding became what it is.</summary>
+    public DateTime FindingUtc { get; set; }
+
+    /// <summary>The ledger and record that claim it, with the record's status and the version it holds, when one does.</summary>
+    public Guid? LedgerFlowId { get; set; }
+
+    public Guid? DeliveryKey { get; set; }
+
+    public string? LedgerStatus { get; set; }
+
+    public long? LedgerVersion { get; set; }
+
+    /// <summary>The artifact a delivery recorded for it, with its state, when the ledgers know it as one.</summary>
+    public long? ArtifactId { get; set; }
+
+    public string? ArtifactState { get; set; }
+
+    /// <summary>What the finding rests on, in a line.</summary>
+    public string? Detail { get; set; }
+}
+
+/// <summary>One version storage keeps of a record an inventory holds (<c>versions: all</c>).</summary>
+public sealed class DeliveryInventoryVersion
+{
+    public short PartitionId { get; set; }
+
+    public long InventoryRecordId { get; set; }
+
+    public long Version { get; set; }
+}
+
+/// <summary>One id a build listed, staged until the build's read is whole and it is merged into the inventory.</summary>
+public sealed class DeliveryInventoryScan
+{
+    public short PartitionId { get; set; }
+
+    public long ScanId { get; set; }
+
+    public long InventoryRunId { get; set; }
+
+    public string TargetId { get; set; } = string.Empty;
+
+    public string? Kind { get; set; }
+
+    public long? Version { get; set; }
+
+    public string? CreateUser { get; set; }
+
+    public DateTime? CreateTime { get; set; }
+
+    public string? ModifyUser { get; set; }
+
+    public DateTime? ModifyTime { get; set; }
+}
+
+/// <summary>
 /// One reversal: what one run or one submission put into OSDU, put back record by record as OSDU held it before
 /// (docs/reversal-plan.md). There is one per source of a ledger; asking again resumes it. Its counts are read from its
 /// items, never kept here.
@@ -2062,6 +2343,33 @@ public static class DeliveryModel
     /// <summary>The longest lease token, and the longest worker name a lease records as its owner.</summary>
     public const int MaxLeaseTokenLength = 200;
 
+    /// <summary>The longest slot a route names an artifact by within its unit.</summary>
+    public const int MaxArtifactSlotLength = 200;
+
+    /// <summary>The longest locator an artifact keeps (a landing-zone path, a list of row keys in runs).</summary>
+    public const int MaxArtifactLocatorLength = 1000;
+
+    /// <summary>The longest note an artifact keeps of why it was kept or why its undo failed.</summary>
+    public const int MaxArtifactNoteLength = 1000;
+
+    /// <summary>
+    /// The filtered index of the artifacts still open (an intent, a pending one of an open or abandoned unit, one due or failed
+    /// to undo), named because the sweep reaches it by name and repeats its filter.
+    /// </summary>
+    public const string OpenArtifactIndex = "IX_Artifact_Open";
+
+    /// <summary>The longest kind an inventory reads or a record of it carries.</summary>
+    public const int MaxInventoryKindLength = 300;
+
+    /// <summary>The longest query an inventory narrows a search with.</summary>
+    public const int MaxInventoryQueryLength = 4000;
+
+    /// <summary>The longest identity an inventory keeps as a record's creator or last modifier.</summary>
+    public const int MaxInventoryUserLength = 256;
+
+    /// <summary>The longest line an inventory record keeps of what its finding rests on.</summary>
+    public const int MaxInventoryDetailLength = 1000;
+
     /// <summary>
     /// The longest identity token, and the longest display value beside it: 200 characters keep the
     /// (token, flow, key) primary key well under SQL Server's 1700-byte limit for a nonclustered index key, and a
@@ -2389,6 +2697,106 @@ public static class DeliveryModel
             // What a ledger deleted lately, by when: an assertion run asks it before it judges what the search index lists, which
             // can still list a record a removal took out of OSDU moments before.
             e.HasIndex(p => new { p.PartitionId, p.FlowId, p.PurgedUtc }).IncludeProperties(p => p.TargetId);
+        });
+
+        modelBuilder.Entity<DeliveryArtifact>(e =>
+        {
+            e.ToTable("Artifact", SchemaName);
+            e.HasKey(a => new { a.PartitionId, a.ArtifactId });
+            e.Property(a => a.ArtifactId).ValueGeneratedOnAdd();
+            e.Property(a => a.Slot).HasMaxLength(MaxArtifactSlotLength).IsRequired();
+            e.Property(a => a.Role).HasMaxLength(16).IsRequired();
+            OptionalOsduId(e.Property(a => a.TargetId)).HasMaxLength(MaxTargetIdLength);
+            e.Property(a => a.Locator).HasMaxLength(MaxArtifactLocatorLength);
+            e.Property(a => a.State).HasMaxLength(16).IsRequired();
+            e.Property(a => a.Note).HasMaxLength(MaxArtifactNoteLength);
+            e.Property(a => a.SettledBy).HasMaxLength(200);
+            // One row per slot of a unit: an intent completed by its id, and a step reported again by a resumed try, update it.
+            // Its prefix is a record's artifacts, one seek for the record's page and for a claim.
+            e.HasIndex(a => new { a.PartitionId, a.FlowId, a.DeliveryKey, a.UnitId, a.Slot }).IsUnique();
+            // Every id a delivery minted, by OSDU id: what the inventory joins with what OSDU serves, and a lookup by id.
+            e.HasIndex(a => new { a.PartitionId, a.TargetId })
+                .HasFilter("[TargetId] IS NOT NULL")
+                .IncludeProperties(a => new { a.State, a.Role, a.FlowId, a.DeliveryKey });
+            // What is still to undo, and what an abandoned unit left: the sweep reads only these, and the flow's counts and its
+            // records with an undo to finish are read from it alone, however many an outage left open.
+            e.HasIndex(a => new { a.PartitionId, a.FlowId, a.State, a.NextUndoUtc })
+                .HasDatabaseName(OpenArtifactIndex)
+                .HasFilter("[State] IN (N'intent', N'pending', N'due', N'failed')")
+                .IncludeProperties(a => new { a.DeliveryKey, a.UnitId, a.UndoAttempts, a.CreatedUtc });
+        });
+
+        modelBuilder.Entity<DeliveryInventory>(e =>
+        {
+            e.ToTable("Inventory", SchemaName);
+            e.HasKey(i => new { i.PartitionId, i.InventoryId });
+            e.Property(i => i.InventoryId).ValueGeneratedOnAdd();
+            e.Property(i => i.FlowName).HasMaxLength(DeliveryLedger.MaxFlowNameLength).IsRequired();
+            e.Property(i => i.Name).HasMaxLength(200).IsRequired();
+            e.Property(i => i.Kind).HasMaxLength(MaxInventoryKindLength).IsRequired();
+            e.Property(i => i.Query).HasMaxLength(MaxInventoryQueryLength);
+            e.Property(i => i.ReadMode).HasMaxLength(16).IsRequired();
+            e.Property(i => i.Versions).HasMaxLength(16).IsRequired();
+            e.Property(i => i.OwnersSource).HasMaxLength(16);
+            // One row per inventory of a flow's ledger in the partition: a build finds its own by flow and name.
+            e.HasIndex(i => new { i.PartitionId, i.FlowId, i.Name }).IsUnique();
+        });
+
+        modelBuilder.Entity<DeliveryInventoryRun>(e =>
+        {
+            e.ToTable("InventoryRun", SchemaName);
+            e.HasKey(r => new { r.PartitionId, r.InventoryRunId });
+            e.Property(r => r.InventoryRunId).ValueGeneratedOnAdd();
+            e.Property(r => r.Operation).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Actor).HasMaxLength(200).IsRequired();
+            e.Property(r => r.Status).HasMaxLength(16).IsRequired();
+            e.Property(r => r.ReadMode).HasMaxLength(16).IsRequired();
+            e.Property(r => r.Error).HasMaxLength(4000);
+            // An inventory's runs, newest first: its page and its next build's look at the last ones.
+            e.HasIndex(r => new { r.PartitionId, r.InventoryId, r.InventoryRunId });
+        });
+
+        modelBuilder.Entity<DeliveryInventoryRecord>(e =>
+        {
+            e.ToTable("InventoryRecord", SchemaName);
+            e.HasKey(r => new { r.PartitionId, r.InventoryRecordId });
+            e.Property(r => r.InventoryRecordId).ValueGeneratedOnAdd();
+            OsduId(e.Property(r => r.TargetId)).HasMaxLength(MaxTargetIdLength);
+            e.Property(r => r.Kind).HasMaxLength(MaxInventoryKindLength);
+            e.Property(r => r.CreateUser).HasMaxLength(MaxInventoryUserLength);
+            e.Property(r => r.ModifyUser).HasMaxLength(MaxInventoryUserLength);
+            e.Property(r => r.Finding).HasMaxLength(16).IsRequired();
+            e.Property(r => r.LedgerStatus).HasMaxLength(16);
+            e.Property(r => r.ArtifactState).HasMaxLength(16);
+            e.Property(r => r.Detail).HasMaxLength(MaxInventoryDetailLength);
+            // One row per id of an inventory: the merge seeks it by id.
+            e.HasIndex(r => new { r.PartitionId, r.InventoryId, r.TargetId }).IsUnique();
+            // An inventory's records of one finding, in order: the report's grid pages through them, and its counts are read here.
+            e.HasIndex(r => new { r.PartitionId, r.InventoryId, r.Finding, r.InventoryRecordId });
+            // An inventory's records in order, whatever their finding: the report's grid of every id and the export page through
+            // them, seeking the inventory rather than walking every inventory of the partition.
+            e.HasIndex(r => new { r.PartitionId, r.InventoryId, r.InventoryRecordId });
+            // An OSDU id across every inventory of the partition: a lookup by id answers what each inventory found of it.
+            e.HasIndex(r => new { r.PartitionId, r.TargetId }).IncludeProperties(r => new { r.InventoryId, r.Finding, r.GoneUtc });
+        });
+
+        modelBuilder.Entity<DeliveryInventoryVersion>(e =>
+        {
+            e.ToTable("InventoryVersion", SchemaName);
+            e.HasKey(v => new { v.PartitionId, v.InventoryRecordId, v.Version });
+        });
+
+        modelBuilder.Entity<DeliveryInventoryScan>(e =>
+        {
+            e.ToTable("InventoryScan", SchemaName);
+            e.HasKey(s => new { s.PartitionId, s.ScanId });
+            e.Property(s => s.ScanId).ValueGeneratedOnAdd();
+            OsduId(e.Property(s => s.TargetId)).HasMaxLength(MaxTargetIdLength);
+            e.Property(s => s.Kind).HasMaxLength(MaxInventoryKindLength);
+            e.Property(s => s.CreateUser).HasMaxLength(MaxInventoryUserLength);
+            e.Property(s => s.ModifyUser).HasMaxLength(MaxInventoryUserLength);
+            // A build's ids by id: its merge reads them in this order, and a build's leftovers are deleted by run.
+            e.HasIndex(s => new { s.PartitionId, s.InventoryRunId, s.TargetId });
         });
 
         modelBuilder.Entity<DeliveryReversal>(e =>

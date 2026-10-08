@@ -13,6 +13,50 @@ previous implementation's history is not carried over here; `docs/plan.md` descr
 
 ### Added
 
+- **A delivery that does not complete is undone, and the ledger names every id a delivery ever minted.** A delivery of one
+  record is now a unit of work across its tries: every object it creates in OSDU, or sets out to create, is written to the
+  new `osdu.Artifact` in the transaction of the step that made it, and a call whose id the service mints is preceded by an
+  intent holding what finds the object when its answer is lost (migration `DeliveryArtifacts`, module 1.29.0). A unit
+  that ends held or failed is undone at once under the record's lease; one abandoned by newer work is undone when the
+  record is next claimed, before the newer work goes; the sweep at the end of every deliver and drain run, and the new
+  `undo` operation, finish what is left; a removal and deleting the ledger undo first. An undo removes what the unit
+  created at the route's reversible scope, writes back the version it replaced where the route can, removes a record only
+  when storage's `createTime` says the unit created it, takes the record back before the datasets it names, and keeps with
+  why what no call removes. Its result is an attempt (outcome `undone`, phase `undo`). Newer work waits while an undo is
+  unfinished (phase `undo-wait`, not charged to the retry budget) and is held once the undo has used its ten tries.
+  Every route declares what it creates and undoes it: file and dataset registrations, the Wellbore DDMS session and
+  metadata, Well Delivery versions and their Storage copies, RAFS content datasets, historian records, Seismic Store
+  datasets, locks and the read-only flag, Reservoir Management rows, manifest and workflow runs, inputs and outputs, DSPDM
+  rows and ETP objects. The audit also fixed: a storage read's `retryRecords` taken as missing; a bulk delete answered 207
+  taken as whole; a Wellbore DDMS commit answered `committing` taken as committed and a cancelled try leaving its session
+  open; a RAFS table resumed before its write answered; a Seismic Store lock never released after a failed try; a workflow
+  or manifest run in a state not known as ended taken as ended. A record's page has an **Artifacts** tab, with a line under
+  its header while an undo is due or failed, and its Timeline shows each undo and each try that waited for one
+  (`GET /records/{flowId}/{key}/artifacts`, `sqlflow records artifacts`); a flow's overview counts the unfinished
+  deliveries it has to undo, lists the records holding them, and runs the undo (`GET /flows/{pipelineId}/undos`,
+  `sqlflow records undos`); deliver, drain, undo, removal and delete-ledger results say what was undone. Deleting a record
+  from the ledger leaves one whose undo is unfinished, since the undo reaches it through the record (docs:
+  `osdu/docs/atomic-delivery-plan.md`, `osdu/docs/protocols.md`, When a delivery does not complete,
+  `osdu/docs/operations.md`, Unfinished deliveries and their undo; decision 0012).
+- **Inventory flows: every id an OSDU kind holds, compared with every ledger of the partition, for the orphan report.** A
+  new flow kind, `flowType: inventory`, keeps inventories: each a kind (wildcards allowed), optionally narrowed by a search
+  query, with the latest version of each record or every version. A build reads the kind whole through the search index
+  or through storage itself (every active record, unindexed ones included, the headers read a thousand at a time with a
+  fallback where the route is not deployed, a wildcard expanded through the schema service), merges it in one
+  transaction once the read is whole (a read that fails part way changes nothing), and compares every id with the
+  records, artifacts and purged records of every ledger of the partition: `orphan` (no ledger knows it, created by an
+  identity this estate writes as, declared or inferred), `foreign`, `missing` (a ledger expects it and storage does not
+  hold it), `unlisted`, `undoing`, `forgotten`, `stale`, `unconfirmed`, `drifted`, `superseded`, `tracked`, `gone`. The
+  ids a ledger expects that the read did not list are read from storage by id, within `maxMissingChecks` a build. The
+  operations are `build`, `reconcile` (the last build against the ledgers as they stand) and `plan`; nothing is ever
+  written to OSDU. Migration `InventoryFlows` (module 1.30.0) adds `osdu.Inventory`, `osdu.InventoryRun`,
+  `osdu.InventoryRecord`, `osdu.InventoryVersion` and `osdu.InventoryScan`. OSDU, **Inventories** lists them with what
+  each raised; an inventory's report shows its ids by finding, a grid of one finding's ids with the ledger record or
+  artifact each rests on, its runs, a lookup by OSDU id across inventories and a CSV export; an inventory flow's pipeline
+  has an Inventories tab (`GET /inventories`, `/inventories/{partition}/{id}` with `records`, `runs` and `export`,
+  `/inventories/lookup`, `/flows/{pipelineId}/inventories`; `sqlflow inventory list|show|records|lookup|runs|export`)
+  (docs: `osdu/docs/inventory-plan.md`, `osdu/docs/documents.md`, Inventory flow, `osdu/docs/operations.md`, Finding
+  orphans; decision 0013).
 - **An assertion test of records just changed is skipped until the search index has had time to list them.** OSDU indexes
   a change from a queue, so a test run right after a delivery judged an index that did not list the delivery yet and failed
   on records that were fine (after a full redelivery of the Recall external units, 9 of 13 tests). Before it judges

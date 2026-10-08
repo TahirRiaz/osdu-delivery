@@ -549,6 +549,9 @@ public static class DeliveryEndpoints
 
         // The dimensions of dimension flows: boards, members and originals, builds, the change log, filters and exports.
         DeliveryDimensionEndpoints.MapReads(delivery);
+
+        // The inventories of inventory flows: what OSDU serves set against the ledgers, by finding, a page at a time, and exports.
+        DeliveryInventoryEndpoints.MapReads(delivery);
         delivery.MapGet("/caches", ListCachesAsync).WithName("ListDeliveryCaches");
         delivery.MapGet("/cache/items", ListCachedItemsAsync).WithName("ListDeliveryCachedItems");
         delivery.MapGet("/cache/versions", ListCacheVersionsAsync).WithName("ListDeliveryCacheVersions");
@@ -557,6 +560,9 @@ public static class DeliveryEndpoints
         delivery.MapGet("/cache/tags", ListUpdateTagsAsync).WithName("ListDeliveryUpdateTags");
         delivery.MapGet("/cache/gaps", ListCacheGapsAsync).WithName("ListDeliveryCacheGaps");
         delivery.MapGet("/records/{flowId:guid}/{key:guid}/cache", ListRecordCacheUsesAsync).WithName("ListDeliveryRecordCacheUses");
+
+        // What deliveries created in OSDU: a record's artifacts, and a flow's open undos with the records that hold them.
+        DeliveryArtifactEndpoints.MapReads(delivery);
         return group;
     }
 
@@ -1961,6 +1967,16 @@ public static class DeliveryEndpoints
                 detail: $"The record is {record.Status.ToString().ToLowerInvariant()}, so OSDU may still hold it: only a record removed from OSDU is deleted from the ledger. Remove it from OSDU first.",
                 statusCode: StatusCodes.Status409Conflict,
                 title: "Not removed from OSDU");
+        }
+
+        if ((await ledger.OpenArtifactsAsync(flow.Flow.Id, [new DeliveryKey(key)], ct).ConfigureAwait(false)).Count is > 0 and var open)
+        {
+            return TypedResults.Problem(
+                detail: string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"An unfinished delivery of the record left {open} item(s) in OSDU that its undo has not taken back yet; the undo reaches them through the record, so it stays in the ledger. Run the flow's undo, then ask again."),
+                statusCode: StatusCodes.Status409Conflict,
+                title: "Undo unfinished");
         }
 
         using var runtime = FlowRuntime.ForTarget(await ConfiguredAsync(engine, config, flow, ct).ConfigureAwait(false), flow.Flow);

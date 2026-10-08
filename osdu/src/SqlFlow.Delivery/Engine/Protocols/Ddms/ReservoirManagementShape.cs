@@ -62,6 +62,21 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
     /// <summary>The rows of the record's delivery, as the target state keeps them: <c>table=key,key-key;table=key</c>, in the order they were posted.</summary>
     public const string RowsKey = "reservoirManagement.rows";
 
+    /// <summary>The step a row whose post failed is recorded under, with the rows posted since the last block, before the try fails.</summary>
+    public const string RowsPartialStep = "rows-partial";
+
+    /// <summary>The step marking that every row is posted and the earlier delivery's rows are being deleted.</summary>
+    public const string RowsReplaceStep = "rows-replace";
+
+    // The artifacts of a Reservoir Management delivery (docs/atomic-delivery-plan.md): each block of rows posted, a row whose
+    // post was not answered, and the replacement of the earlier delivery's rows once every row is posted.
+    private const string RowsSlotPrefix = "rows:";
+    private const string PendingRowSlotPrefix = "rows-pending:";
+    private const string ReplaceSlot = "rows-replace";
+
+    /// <summary>The longest run of row keys one artifact's locator holds, so a locator is never cut short.</summary>
+    private const int MaxRowsLocator = 900;
+
     /// <summary>The parent the service's copy of the record names, which the rows took.</summary>
     public const string ParentKey = "reservoirManagement.parent";
 
@@ -129,7 +144,7 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
         var version = work.ExistingVersion;
         if (work.DeliverMetadata)
         {
-            version = await WriteRecordAsync(work, route, steps, ct).ConfigureAwait(false);
+            version = await WriteRecordAsync(work, route, steps, rowsFollow: work.DeliverPayload && plan.Rows.Count > 0, ct).ConfigureAwait(false);
         }
 
         string? detail = null;
@@ -415,8 +430,11 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
         };
     }
 
-    /// <summary>Writes the record through Storage, with the data keys OSDU owns carried from the stored record.</summary>
-    private async Task<long?> WriteRecordAsync(DeliveryWork work, DdmsRoute route, DeliverySteps steps, CancellationToken ct)
+    /// <summary>
+    /// Writes the record through Storage, with the data keys OSDU owns carried from the stored record. When rows follow, the
+    /// record is the unit's until they are posted.
+    /// </summary>
+    private async Task<long?> WriteRecordAsync(DeliveryWork work, DdmsRoute route, DeliverySteps steps, bool rowsFollow, CancellationToken ct)
     {
         if (work.Completed(OsduDdmsProtocol.MetadataStep) is { } done)
         {
@@ -444,7 +462,8 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
         }
 
         steps.Add(OsduDdmsProtocol.MetadataStep, started, status, values);
-        await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, values, ct).ConfigureAwait(false);
+        IReadOnlyList<TargetArtifact> recordItself = rowsFollow ? [TargetArtifact.RecordWritten(work.TargetId, version, work.ExistingVersion)] : [];
+        await work.ReportStepAsync(OsduDdmsProtocol.MetadataStep, values, recordItself, ct).ConfigureAwait(false);
         return version;
     }
 
@@ -509,7 +528,18 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
 
             for (var i = next; i < plan.Rows.Count; i++)
             {
-                keys[i] = await PostAsync(work, route, plan, header, keys, i, ct).ConfigureAwait(false);
+                try
+                {
+                    keys[i] = await PostAsync(work, route, plan, header, keys, i, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    // Every row posted since the last block, and the row whose post may have landed without an answer, are the
+                    // unit's before the try fails: a delivery that does not complete has each of them deleted.
+                    await RecordPartialAsync(work, plan, header, keys, i, Unanswered(ex)).ConfigureAwait(false);
+                    throw;
+                }
+
                 sent++;
                 if ((i + 1) % RowsPerStep == 0 || i == plan.Rows.Count - 1)
                 {
@@ -519,9 +549,20 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
             }
         }
 
-        // The rows the record's earlier delivery posted give way to the new ones, the rows below first.
+        // The rows the record's earlier delivery posted give way to the new ones, the rows below first. A delivery that fails
+        // from here may have deleted some of them, which nothing puts back: the step says the replacement began.
         var posted = plan.Rows.Select((r, i) => (r.Table.Segment, keys[i]!.Value)).ToHashSet();
-        var removed = await RemoveRowsAsync(route, earlier.Where(e => !posted.Contains((e.Table, e.Key))).ToList(), ct).ConfigureAwait(false);
+        var replacing = earlier.Where(e => !posted.Contains((e.Table, e.Key))).ToList();
+        if (replacing.Count > 0)
+        {
+            await work.ReportStepAsync(
+                RowsReplaceStep,
+                new Dictionary<string, string>(StringComparer.Ordinal) { ["fingerprint"] = plan.Fingerprint, ["earlier"] = replacing.Count.ToString(CultureInfo.InvariantCulture) },
+                [TargetArtifact.Created(ReplaceSlot, ArtifactRoles.Rows, work.TargetId, locator: string.Create(CultureInfo.InvariantCulture, $"{replacing.Count} earlier row(s) to delete"))],
+                ct).ConfigureAwait(false);
+        }
+
+        var removed = await RemoveRowsAsync(route, replacing, ct).ConfigureAwait(false);
         var finished = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["fingerprint"] = plan.Fingerprint,
@@ -593,8 +634,181 @@ internal sealed class ReservoirManagementShape(DdmsShapeContext context) : IDdms
         };
         var name = RowsStepPrefix + block.ToString(CultureInfo.InvariantCulture);
         steps.Add(name, started, null, values);
-        await work.ReportStepAsync(name, values, ct).ConfigureAwait(false);
+        await work.ReportStepAsync(name, values, BlockArtifacts(work, plan, keys, block, last), ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Records, before a try that failed posting row <paramref name="failed"/> ends, the rows it posted since the last block,
+    /// and, when the post's answer was lost rather than a refusal, the row it may have made: which table, under which parent.
+    /// </summary>
+    private static async Task RecordPartialAsync(DeliveryWork work, ReservoirManagementPlan plan, HeaderRow header, long?[] keys, int failed, bool unanswered)
+    {
+        var block = failed / RowsPerStep;
+        var artifacts = BlockArtifacts(work, plan, keys, block, failed).ToList();
+        if (unanswered)
+        {
+            var row = plan.Rows[failed];
+            var parent = row.Parent is { } above ? keys[above]!.Value.ToString(CultureInfo.InvariantCulture) : work.TargetId;
+            artifacts.Add(TargetArtifact.Intent(PendingRowSlotPrefix + failed.ToString(CultureInfo.InvariantCulture), ArtifactRoles.Rows, $"{row.Table.Segment}|{parent}"));
+        }
+
+        if (artifacts.Count == 0)
+        {
+            return;
+        }
+
+        var values = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["fingerprint"] = plan.Fingerprint,
+            ["failedAt"] = failed.ToString(CultureInfo.InvariantCulture),
+            ["parent"] = header.ParentObjectId,
+        };
+
+        // Written whatever stopped the try: what it records already happened in the service.
+        await work.ReportStepAsync(RowsPartialStep, values, artifacts, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The rows of block <paramref name="block"/> posted up to <paramref name="end"/> (exclusive), as artifacts whose locators
+    /// name them by table and key in runs, a block split where its runs would not fit one locator.
+    /// </summary>
+    private static IReadOnlyList<TargetArtifact> BlockArtifacts(DeliveryWork work, ReservoirManagementPlan plan, long?[] keys, int block, int end)
+    {
+        var first = block * RowsPerStep;
+        var rows = Enumerable.Range(first, Math.Max(0, end - first)).Where(i => keys[i] is not null).Select(i => (plan.Rows[i].Table.Segment, keys[i]!.Value)).ToList();
+        var artifacts = new List<TargetArtifact>();
+        var part = new List<(string, long)>();
+        foreach (var row in rows)
+        {
+            part.Add(row);
+            if (ReservoirManagementRows.Encode(part).Length > MaxRowsLocator)
+            {
+                part.RemoveAt(part.Count - 1);
+                artifacts.Add(RowsArtifact(work, block, artifacts.Count, part));
+                part = [row];
+            }
+        }
+
+        if (part.Count > 0)
+        {
+            artifacts.Add(RowsArtifact(work, block, artifacts.Count, part));
+        }
+
+        return artifacts;
+    }
+
+    private static TargetArtifact RowsArtifact(DeliveryWork work, int block, int part, IReadOnlyList<(string Table, long Key)> rows)
+        => TargetArtifact.Created(
+            RowsSlotPrefix + block.ToString(CultureInfo.InvariantCulture) + (part == 0 ? string.Empty : ":" + part.ToString(CultureInfo.InvariantCulture)),
+            ArtifactRoles.Rows,
+            work.TargetId,
+            locator: ReservoirManagementRows.Encode(rows));
+
+    /// <summary>Whether a failed post may have landed without an answer: anything but the service's refusal of the row.</summary>
+    private static bool Unanswered(Exception ex) => ex is not (RecordHeldException or OsduStatusException { StatusCode: >= 400 and < 500 });
+
+    /// <summary>
+    /// Undoes the rows unfinished deliveries posted under the record: every row a unit recorded is deleted, the rows below
+    /// before the rows above; a row whose post was never answered is looked for among the rows the service holds under its
+    /// parent, and deleted when exactly one row there is named by no delivery. The rows of the record's earlier delivery that
+    /// a replacement deleted before the delivery failed cannot be put back; the record's next delivery posts its rows again.
+    /// </summary>
+    public async Task<IReadOnlyList<UndoResult>> UndoAsync(UndoWork work, DdmsRecordPaths paths, IReadOnlyList<UndoItem> items, CancellationToken ct)
+    {
+        var route = RouteOf(paths);
+        var results = new List<UndoResult>(items.Count);
+        var blocks = items
+            .Where(i => i.Artifact.Slot.StartsWith(RowsSlotPrefix, StringComparison.Ordinal) && i.Artifact.Locator is not null)
+            .OrderBy(i => i.ArtifactId)
+            .ToList();
+        var mine = blocks.SelectMany(b => ReservoirManagementRows.Parse(b.Artifact.Locator)).ToHashSet();
+        var committed = ReservoirManagementRows.Parse(work.TargetState.GetValueOrDefault(RowsKey)).ToHashSet();
+
+        // A post whose answer never came was sent after every row a block names, and its row can stand under one of them: it goes
+        // first, so the rows it hangs from are free to go.
+        foreach (var item in items.Except(blocks))
+        {
+            if (item.Artifact.Slot == ReplaceSlot)
+            {
+                results.Add(UndoResult.Kept(item, $"the delivery had posted every row and began deleting the earlier delivery's ({item.Artifact.Locator}); the ones it deleted cannot be put back, and the record's next delivery posts its rows again"));
+                continue;
+            }
+
+            if (!item.Artifact.Slot.StartsWith(PendingRowSlotPrefix, StringComparison.Ordinal) || item.Artifact.Locator?.Split('|') is not [var segment, var parent])
+            {
+                results.Add(UndoResult.Kept(item, "the Reservoir Management shape makes nothing of this kind beside a record"));
+                continue;
+            }
+
+            try
+            {
+                results.Add(await UndoUnansweredAsync(route, item, segment, parent, mine, committed, ct).ConfigureAwait(false));
+            }
+            catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+            {
+                results.Add(UndoResult.Failed(item, ArtifactUndo.Redact(ex)));
+            }
+        }
+
+        // The rows a unit posted go in the reverse of the order they were posted, across every block of it.
+        if (blocks.Count > 0)
+        {
+            try
+            {
+                var rows = blocks.SelectMany(b => ReservoirManagementRows.Parse(b.Artifact.Locator)).ToList();
+                var deleted = await RemoveRowsAsync(route, rows, ct).ConfigureAwait(false);
+                results.AddRange(blocks.Select(b => deleted == 0
+                    ? UndoResult.Gone(b, $"the service no longer holds the rows {b.Artifact.Locator}")
+                    : UndoResult.Removed(b, $"rows {b.Artifact.Locator} deleted (the service has no reversible delete)")));
+            }
+            catch (Exception ex) when (ArtifactUndo.Answerable(ex, ct))
+            {
+                results.AddRange(blocks.Select(b => UndoResult.Failed(b, ArtifactUndo.Redact(ex))));
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>A row whose post was never answered: the one row under its parent that no delivery names, if there is one.</summary>
+    private async Task<UndoResult> UndoUnansweredAsync(
+        DdmsRoute route, UndoItem item, string segment, string parent, IReadOnlySet<(string Table, long Key)> mine, IReadOnlySet<(string Table, long Key)> committed, CancellationToken ct)
+    {
+        if (ReservoirManagementTables.Table(segment) is not { } table)
+        {
+            return UndoResult.Kept(item, $"{segment} is not a table of the Reservoir Management DDMS this route knows, so its rows cannot be read");
+        }
+
+        var held = await HeldRowsAsync(route, table, parent, ct).ConfigureAwait(false);
+        var unnamed = held
+            .Select(r => KeyOf(r, table))
+            .OfType<long>()
+            .Where(k => !mine.Contains((segment, k)) && !committed.Contains((segment, k)))
+            .Distinct()
+            .ToList();
+        if (unnamed.Count == 0)
+        {
+            return UndoResult.Gone(item, $"no row of {segment} under {parent} is outside what the deliveries name: the post never landed");
+        }
+
+        if (unnamed.Count > 1)
+        {
+            return UndoResult.Kept(item, string.Create(CultureInfo.InvariantCulture, $"{unnamed.Count} rows of {segment} under {parent} are named by no delivery ({string.Join(", ", unnamed.Take(10))}); which one the unanswered post made cannot be told, so none is deleted"));
+        }
+
+        await RemoveRowsAsync(route, [(segment, unnamed[0])], ct).ConfigureAwait(false);
+        return UndoResult.Removed(item, string.Create(CultureInfo.InvariantCulture, $"row {unnamed[0]} of {segment} under {parent}, which the unanswered post made, deleted"));
+    }
+
+    /// <summary>The record is a Storage record: its reversible removal and its read are storage's.</summary>
+    public RecordSide RecordSide(DdmsRecordPaths paths) => new()
+    {
+        Remove = _routing.StorageDeletePath is { } delete
+            ? (id, token) => RecordWriter.DeleteAsync(_client, new RemovalPaths(delete, delete, delete), id, RemovalScope.Record, token)
+            : null,
+        RemoveRefusal = "the record is a Storage record, and this flow does not say where the storage service is; give the DDMS its root under target.ddms, the flow's endpoint being the OSDU platform root",
+        Read = (id, token) => RecordWriter.ReadAsync(_client, RouteOf(paths).RecordPath, id, token),
+    };
 
     /// <summary>
     /// Takes the service's copy of the record in: its copy is read, and while it is missing the list call, which copies

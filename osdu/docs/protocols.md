@@ -830,6 +830,7 @@ do not ask; they send nothing.
 | Held | 400, 403, 404, 405, 409, 413, 415, 422, any status in `reliability.skipStatusCodes`, no payload chunks, an empty file, a staging location no upload can reach, a workflow context its contract refuses, a pending payload in parts this version did not write, a `RecordHeldException` | `held` (terminal until released) |
 | Failed | the record-level retry budget (`reliability.retry.attempts`) is exhausted | `failed` (released like held) |
 | Waiting | the document refers to a record another record of the ledger holds and has not delivered (docs/interfaces-design.md section 7) | `waiting`; decided by the claim, so nothing is sent and no try is charged, and back to `pending` when that record lands |
+| Waiting for an undo | an earlier delivery of the record left items in OSDU that its undo has not taken back yet ([When a delivery does not complete](#when-a-delivery-does-not-complete)) | `pending`, the try skipped with phase `undo-wait` and not charged; `held` once the undo has used its ten tries, and a release tries the undo again first |
 | Held | with `target.verifyReferences: storage`, the document refers to an id neither the ledger nor OSDU's storage service holds | `held`, naming the ids and the properties |
 | Held | the gate's verdict on the document: `invalid` under `target.validation.mode: enforce`, `unverified` under `target.validation.unverified: hold` ([documents.md](documents.md#validation-before-a-record-is-sent)) | `held` with the document kept, the error starting `validation:` and naming the rules; a release sends that document as it is |
 
@@ -872,6 +873,37 @@ problem's `title` and `detail` (the 415 storage sends for a missing `Content-Typ
 the fields a validation error names, or DSPDM's `messages` and its exception's `message`, never the stack trace it prints
 beside them. Anything else is kept as a bounded, single-line preview.
 
+## When a delivery does not complete
+
+A delivery of one record is a **unit of work** that either completes or is undone
+([atomic-delivery-plan.md](atomic-delivery-plan.md)). Every object a unit creates in OSDU, or sets out to create, is an
+**artifact** in `osdu.Artifact` ([ledger.md](ledger.md#osduartifact-what-a-delivery-made-in-osdu)), written in the
+transaction that writes the step that made it. A call whose id the service chooses, and whose answer can be lost, is
+preceded by an **intent**: the artifact is written before the call with what finds the object when the answer never comes
+(a file's landing-zone path, the URN a record names), and completed with the id when it does.
+
+| When | What undoes the unit |
+| --- | --- |
+| A try ends held or failed | The worker, at once, under the record's lease. |
+| New work is staged for a record while a unit is unfinished, or a plan holds it | The claim that next takes the record, before the newer work is sent; it keeps the record itself when the newer work writes its metadata again. |
+| Anything left: an undo that failed and is past its backoff, a unit nothing claimed again | The sweep at the end of every deliver and drain run, and the `undo` operation. |
+| A removal, and deleting the ledger | The removal, before it takes the record out of OSDU. |
+
+An undo removes what the unit created at the route's reversible scope (a soft delete, a logical DDMS delete, an abandoned
+session, a released lock), writes back the version the unit replaced where the route can write a version back, and keeps,
+with why, what no call removes. A record is removed only when storage's `createTime` says the unit created it (no
+earlier than the unit's start, less five minutes for clocks). The record goes back before the datasets it names, and what
+a DDMS made beside the record (a session, a content dataset) goes before the record; when one of them cannot be undone
+yet, the others wait with it, so OSDU never serves a record naming what the undo already removed. An undo is idempotent,
+and one that cannot reach OSDU is tried again with backoff, up to ten times, then left for an operator's `undo` run. The
+plan's route table says, route by route, what each declares and how each undoes; `storage`, one atomic write under a
+client id, declares nothing.
+
+Newer work for a record waits while an earlier unit's undo has not finished: it would write the ids the undo still has to
+take back, and the undo, when it lands, would take back the newer work's. The try is skipped (phase `undo-wait`), nothing
+is sent, and the record's retry budget is not charged. Once the undo has used its tries, the record is held, and releasing
+it tries the undo again first.
+
 ## Adding a protocol
 
 1. Add the enum value to `DeliveryProtocol` and, when the protocol streams a payload, to
@@ -880,7 +912,13 @@ beside them. Anything else is kept as a bounded, single-line preview.
 2. Implement `IDeliveryProtocol` in `src/SqlFlow.Delivery/Engine/Protocols`, reusing `OsduHttpClient`,
    `RecordWriter` and `FileUploads`. Report every step that changes the target through
    `DeliveryWork.ReportStepAsync`, skip the steps `DeliveryWork.Completed` says an earlier try finished, and
-   put every value the target returned in the outcome.
+   put every value the target returned in the outcome. A route that makes more than one call that changes OSDU reports
+   what each creates with the step that creates it (`ReportStepAsync` takes the artifacts), reports an intent before a
+   call whose id the service mints, names what a delivery made obsolete (`DeliveryOutcome.Superseded`), sets `Undoes`,
+   and implements `UndoAsync`: idempotent, answering for each artifact removed, restored, gone, kept (with why) or
+   failed, in the order [When a delivery does not complete](#when-a-delivery-does-not-complete) gives.
 3. Register it in `ProtocolFactory`.
 4. Add defaults for its paths to `ProtocolOptions` and document them in [documents.md](documents.md) and here.
-5. Cover it with a `FakeHttpHandler` test like the existing ones, including the resume of a completed step.
+5. Cover it with a `FakeHttpHandler` test like the existing ones, including the resume of a completed step, and, for a
+   route that undoes, a failure at each step for a create and an update, an answer lost after the call landed, and the
+   undo run twice.

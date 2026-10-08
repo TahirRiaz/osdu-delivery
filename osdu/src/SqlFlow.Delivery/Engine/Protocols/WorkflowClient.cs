@@ -137,6 +137,30 @@ public sealed class WorkflowClient
     }
 
     /// <summary>
+    /// The run's status as the Workflow service reports it now, upper case (openapi workflow v1, GET
+    /// /v1/workflow/{workflow_name}/workflowRun/{runId}), or null when the service knows no such run (404): a trigger that
+    /// never landed. What an undo asks before it takes back what a run may still write.
+    /// </summary>
+    public async Task<string?> StatusAsync(string workflow, string runId, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(workflow);
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        var url = _client.Url(_statusPath, new Dictionary<string, string>(StringComparer.Ordinal) { ["workflow"] = workflow, ["runId"] = runId });
+        var result = await _client.SendJsonAsync(HttpMethod.Get, url, null, new HashSet<int> { 404 }, ct).ConfigureAwait(false);
+        if ((int)result.Status == 404)
+        {
+            return null;
+        }
+
+        var status = JsonPathReader.SelectValue(OsduHttpClient.ParseJson(result, url), "status")
+            ?? throw new DeliveryException($"{url.AbsolutePath} did not report the run's status.");
+        return status.ToUpperInvariant();
+    }
+
+    /// <summary>Whether <paramref name="status"/> is one a run that has not ended reports.</summary>
+    public static bool IsPending(string status) => Pending.Contains(status);
+
+    /// <summary>
     /// Whether the Workflow service knows <paramref name="workflow"/> in this partition (openapi workflow v1, GET
     /// /v1/workflow/{workflow_name}, which answers 200 with the workflow's metadata and lists 404). Workflow names are
     /// deployment configuration (section 1.4), so a route asks before it relies on one. Any other answer throws.

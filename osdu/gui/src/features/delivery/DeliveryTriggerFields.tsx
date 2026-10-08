@@ -141,6 +141,9 @@ const FORCE_HINTS: Record<string, string> = {
   cache: "Capture every declared type again, even where the last refresh found nothing to change.",
 };
 
+/** What force does to an undo run (docs/atomic-delivery-plan.md, When the undo runs). */
+const UNDO_FORCE_HINT = "Also retry the undos that failed as often as the sweep tries (10 times), which no deliver or drain run retries any more: run it once what OSDU refused them for is fixed.";
+
 function isRedeliverScope(value: unknown): value is RedeliverScope {
   return value === "all" || value === "metadata" || value === "payload" || (typeof value === "string" && value in PART_LABELS);
 }
@@ -356,7 +359,9 @@ export function DeliveryTriggerFields({ flowKind, pipelineId, operation, initial
             Force
           </Label>
           <p className="pl-10 text-xs text-muted-foreground">
-            {FORCE_HINTS[flowKind] ?? "Run past the change gates that would otherwise skip work."}
+            {deliveryKind && effectiveOperation === "undo"
+              ? UNDO_FORCE_HINT
+              : FORCE_HINTS[flowKind] ?? "Run past the change gates that would otherwise skip work."}
           </p>
         </div>
       )}

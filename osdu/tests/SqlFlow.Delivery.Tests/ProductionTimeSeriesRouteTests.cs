@@ -178,9 +178,9 @@ public sealed class ProductionTimeSeriesRouteTests
             CompletedSteps = completed ?? new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal),
             StepCompleted = reported is null
                 ? null
-                : (step, values, _) =>
+                : (report, _) =>
                 {
-                    reported[step] = values;
+                    reported[report.Step] = report.Returned;
                     return Task.CompletedTask;
                 },
         };
